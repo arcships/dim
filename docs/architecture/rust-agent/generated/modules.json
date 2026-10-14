@@ -1671,6 +1671,17 @@
       ]
     },
     {
+      "id": "dim_cli::@bin:dimcode::projection::tests",
+      "crate": "dim_cli::@bin:dimcode",
+      "parent": "dim_cli::@bin:dimcode::projection",
+      "file": "crates/dim-cli/src/projection.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "serde_json::json"
+      ]
+    },
+    {
       "id": "dim_cli::@bin:dimcode::session",
       "crate": "dim_cli::@bin:dimcode",
       "parent": "dim_cli::@bin:dimcode",
@@ -1797,6 +1808,15 @@
         "assert_ne",
         "format",
         "vec"
+      ]
+    },
+    {
+      "id": "dim_cli::@bin:dimcode::ui::config",
+      "crate": "dim_cli::@bin:dimcode",
+      "parent": "dim_cli::@bin:dimcode::ui",
+      "file": "crates/dim-cli/src/ui/config.rs",
+      "unexpandedMacros": [
+        "serde_json::json"
       ]
     },
     {
@@ -1962,6 +1982,7 @@
       "parent": "dim_cli::@bin:dimcode::ui::render",
       "file": "crates/dim-cli/src/ui/render/screen.rs",
       "unexpandedMacros": [
+        "matches",
         "vec",
         "write"
       ]
@@ -1974,7 +1995,8 @@
       "unexpandedMacros": [
         "assert",
         "assert_eq",
-        "format"
+        "format",
+        "vec"
       ]
     },
     {
@@ -2193,7 +2215,6 @@
       "unexpandedMacros": [
         "format",
         "matches",
-        "serde_json::json",
         "vec"
       ]
     },
@@ -2229,7 +2250,11 @@
       "file": "crates/dim-cli/src/ui/transcript/block.rs",
       "unexpandedMacros": [
         "assert",
-        "assert_ne"
+        "assert_eq",
+        "format",
+        "json",
+        "panic",
+        "vec"
       ]
     },
     {
@@ -2308,25 +2333,14 @@
       ]
     },
     {
-      "id": "dim_cli::@bin:dimcode::ui::transcript::tools",
+      "id": "dim_cli::@bin:dimcode::ui::transcript::tool_group",
       "crate": "dim_cli::@bin:dimcode",
       "parent": "dim_cli::@bin:dimcode::ui::transcript",
-      "file": "crates/dim-cli/src/ui/transcript/tools.rs",
+      "file": "crates/dim-cli/src/ui/transcript/tool_group.rs",
       "unexpandedMacros": [
         "format",
+        "matches",
         "vec"
-      ]
-    },
-    {
-      "id": "dim_cli::@bin:dimcode::ui::transcript::tools::tests",
-      "crate": "dim_cli::@bin:dimcode",
-      "parent": "dim_cli::@bin:dimcode::ui::transcript::tools",
-      "file": "crates/dim-cli/src/ui/transcript/tools.rs",
-      "unexpandedMacros": [
-        "assert",
-        "assert_eq",
-        "format",
-        "json"
       ]
     },
     {
@@ -2348,6 +2362,7 @@
       "parent": "dim_cli::@bin:dimcode::ui::tui",
       "file": "crates/dim-cli/src/ui/tui.rs",
       "unexpandedMacros": [
+        "assert",
         "assert_eq",
         "vec"
       ]
@@ -13312,7 +13327,10 @@
         "path ContentBlock",
         "path ContentBlock::Image",
         "path ContentBlock::Text",
-        "use dim_agent_types::ContentBlock"
+        "path ToolContent::Blocks",
+        "path ToolContent::Text",
+        "use dim_agent_types::ContentBlock",
+        "use dim_agent_types::ToolContent"
       ]
     },
     {
@@ -13320,11 +13338,20 @@
       "to": "dim_agent_types::events",
       "references": [
         "path ModelOutputOutcome::Failed",
+        "path TurnOutcome",
         "path TurnOutcome::Cancelled",
         "path TurnOutcome::Completed",
         "path TurnOutcome::Failed",
         "use dim_agent_types::ModelOutputOutcome",
         "use dim_agent_types::TurnOutcome"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::projection",
+      "to": "dim_agent_types::tool",
+      "references": [
+        "path ToolResult",
+        "use dim_agent_types::ToolResult"
       ]
     },
     {
@@ -13337,6 +13364,7 @@
         "path RowKind::Error",
         "path RowKind::Status",
         "path RowKind::StreamingAssistant",
+        "path RowKind::Thinking",
         "path RowKind::ToolCall",
         "path RowKind::UserMessage",
         "path RowTone::Danger",
@@ -13351,6 +13379,13 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::projection",
+      "to": "dim_cli::@bin:dimcode::projection::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::projection",
       "to": "dim_cli::@bin:dimcode::wire",
       "references": [
         "path Event",
@@ -13358,12 +13393,28 @@
         "path EventContent::ModelEnd",
         "path EventContent::Other",
         "path EventContent::Text",
+        "path EventContent::Thinking",
         "path EventContent::ToolCompleted",
         "path EventContent::ToolResult",
         "path EventContent::ToolUse",
         "path EventContent::TurnEnd",
         "use crate::wire::Event",
         "use crate::wire::EventContent"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::projection::tests",
+      "to": "dim_cli::@bin:dimcode::projection",
+      "references": [
+        "path Projection",
+        "path Projection::default"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::projection::tests",
+      "to": "dim_cli::@bin:dimcode::wire",
+      "references": [
+        "path Event"
       ]
     },
     {
@@ -13581,6 +13632,13 @@
       "to": "dim_cli::@bin:dimcode::ui::composer",
       "references": [
         "mod composer"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui",
+      "to": "dim_cli::@bin:dimcode::ui::config",
+      "references": [
+        "mod config"
       ]
     },
     {
@@ -15233,6 +15291,14 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::theme_panel",
+      "to": "dim_cli::@bin:dimcode::ui::config",
+      "references": [
+        "path crate::ui::config::read",
+        "path crate::ui::config::write"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::theme_panel",
       "to": "dim_cli::@bin:dimcode::ui::list_panel",
       "references": [
         "path Event::Close",
@@ -15357,9 +15423,9 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::transcript",
-      "to": "dim_cli::@bin:dimcode::ui::transcript::tools",
+      "to": "dim_cli::@bin:dimcode::ui::transcript::tool_group",
       "references": [
-        "mod tools"
+        "mod tool_group"
       ]
     },
     {
@@ -15391,15 +15457,14 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::transcript::block",
-      "to": "dim_cli::@bin:dimcode::ui::transcript::tools",
+      "to": "dim_cli::@bin:dimcode::ui::transcript::tool_group",
       "references": [
-        "path ToolBlock",
-        "path ToolRow",
-        "path project_tool",
-        "use crate::ui::transcript::tools::ToolBlock",
-        "use crate::ui::transcript::tools::ToolRow",
-        "use crate::ui::transcript::tools::ToolState",
-        "use crate::ui::transcript::tools::project_tool"
+        "path Detail",
+        "path ToolGroup",
+        "path project_group",
+        "use crate::ui::transcript::tool_group::Detail",
+        "use crate::ui::transcript::tool_group::ToolGroup",
+        "use crate::ui::transcript::tool_group::project_group"
       ]
     },
     {
@@ -15418,9 +15483,40 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::transcript::block::tests",
+      "to": "dim_cli::@bin:dimcode::ui::theme",
+      "references": [
+        "path Theme::system",
+        "use crate::ui::theme::Theme"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::transcript::block::tests",
+      "to": "dim_cli::@bin:dimcode::ui::theme::palette",
+      "references": [
+        "path Appearance::Dark",
+        "path ColorMode::TrueColor",
+        "use crate::ui::theme::Appearance",
+        "use crate::ui::theme::ColorMode"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::transcript::block::tests",
       "to": "dim_cli::@bin:dimcode::ui::transcript::block",
       "references": [
+        "path Block::ToolGroup",
         "path project_row"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::transcript::block::tests",
+      "to": "dim_cli::@bin:dimcode::ui::transcript::tool_group",
+      "references": [
+        "path Detail",
+        "path Detail::Collapsed",
+        "path Detail::Expanded",
+        "path render_group",
+        "use crate::ui::transcript::tool_group::State",
+        "use crate::ui::transcript::tool_group::render_group"
       ]
     },
     {
@@ -15513,15 +15609,26 @@
       ]
     },
     {
-      "from": "dim_cli::@bin:dimcode::ui::transcript::tools",
-      "to": "dim_cli::@bin:dimcode::ui::theme::ansi",
+      "from": "dim_cli::@bin:dimcode::ui::transcript::tool_group",
+      "to": "dim_cli::@bin:dimcode::model::view",
       "references": [
-        "path fg",
-        "use crate::ui::theme::ansi::fg"
+        "path ViewRow",
+        "use crate::model::view::ViewRow"
       ]
     },
     {
-      "from": "dim_cli::@bin:dimcode::ui::transcript::tools",
+      "from": "dim_cli::@bin:dimcode::ui::transcript::tool_group",
+      "to": "dim_cli::@bin:dimcode::ui::theme::ansi",
+      "references": [
+        "path Paint",
+        "path Paint::default",
+        "path paint",
+        "use crate::ui::theme::ansi::Paint",
+        "use crate::ui::theme::ansi::paint"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::transcript::tool_group",
       "to": "dim_cli::@bin:dimcode::ui::theme::palette",
       "references": [
         "path Palette",
@@ -15529,50 +15636,11 @@
       ]
     },
     {
-      "from": "dim_cli::@bin:dimcode::ui::transcript::tools",
+      "from": "dim_cli::@bin:dimcode::ui::transcript::tool_group",
       "to": "dim_cli::@bin:dimcode::ui::transcript::blocks",
       "references": [
         "path display_width",
-        "path gutter_width",
-        "path truncate_cells",
-        "use crate::ui::transcript::blocks::display_width",
-        "use crate::ui::transcript::blocks::gutter_mark",
-        "use crate::ui::transcript::blocks::gutter_width",
-        "use crate::ui::transcript::blocks::truncate_cells"
-      ]
-    },
-    {
-      "from": "dim_cli::@bin:dimcode::ui::transcript::tools",
-      "to": "dim_cli::@bin:dimcode::ui::transcript::tools::tests",
-      "references": [
-        "mod tests"
-      ]
-    },
-    {
-      "from": "dim_cli::@bin:dimcode::ui::transcript::tools::tests",
-      "to": "dim_cli::@bin:dimcode::ui::theme",
-      "references": [
-        "path Theme::system",
-        "use crate::ui::theme::Theme"
-      ]
-    },
-    {
-      "from": "dim_cli::@bin:dimcode::ui::transcript::tools::tests",
-      "to": "dim_cli::@bin:dimcode::ui::theme::palette",
-      "references": [
-        "path Appearance::Dark",
-        "path ColorMode::TrueColor",
-        "use crate::ui::theme::Appearance",
-        "use crate::ui::theme::ColorMode"
-      ]
-    },
-    {
-      "from": "dim_cli::@bin:dimcode::ui::transcript::tools::tests",
-      "to": "dim_cli::@bin:dimcode::ui::transcript::tools",
-      "references": [
-        "path ToolRow",
-        "path project_tool",
-        "path render_tool"
+        "use crate::ui::transcript::blocks::display_width"
       ]
     },
     {
@@ -15687,6 +15755,14 @@
         "path history::append",
         "path history::load",
         "use crate::ui::composer::history"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::tui",
+      "to": "dim_cli::@bin:dimcode::ui::config",
+      "references": [
+        "path crate::ui::config::read",
+        "path crate::ui::config::write"
       ]
     },
     {
@@ -15873,18 +15949,20 @@
         "path Block::Note",
         "path Block::Status",
         "path Block::Thinking",
-        "path Block::Tool",
+        "path Block::ToolGroup",
         "path Block::User",
         "path Tone",
         "path Tone::Danger",
         "path Tone::Muted",
         "path Tone::Warning",
+        "path group_rows",
+        "path opens_group",
         "path project_row",
-        "path tool_block",
         "use crate::ui::transcript::block::Block",
         "use crate::ui::transcript::block::Tone",
-        "use crate::ui::transcript::block::project_row",
-        "use crate::ui::transcript::block::tool_block"
+        "use crate::ui::transcript::block::group_rows",
+        "use crate::ui::transcript::block::opens_group",
+        "use crate::ui::transcript::block::project_row"
       ]
     },
     {
@@ -15929,10 +16007,16 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::tui",
-      "to": "dim_cli::@bin:dimcode::ui::transcript::tools",
+      "to": "dim_cli::@bin:dimcode::ui::transcript::tool_group",
       "references": [
-        "path render_tool",
-        "use crate::ui::transcript::tools::render_tool"
+        "path Detail",
+        "path Detail::Collapsed",
+        "path Detail::Expanded",
+        "path project_group",
+        "path render_group",
+        "use crate::ui::transcript::tool_group::Detail",
+        "use crate::ui::transcript::tool_group::project_group",
+        "use crate::ui::transcript::tool_group::render_group"
       ]
     },
     {
@@ -15986,6 +16070,7 @@
         "path InputMessageData",
         "path ModelOutputEndData",
         "path TextData",
+        "path ThinkingData",
         "path ToolCompletedData",
         "path ToolResultData",
         "path ToolUseData",
@@ -16357,10 +16442,6 @@
     {
       "module": "dim_cli::@bin:dimcode::ui::transcript::stream::tests",
       "path": "Screen::new"
-    },
-    {
-      "module": "dim_cli::@bin:dimcode::ui::transcript::tools",
-      "path": "char::is_ascii_digit"
     },
     {
       "module": "dim_cli::@bin:dimcode::ui::tui",
