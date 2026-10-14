@@ -1290,10 +1290,10 @@ fn layout(
             if index > 0 {
                 sources.push(Vec::new());
             }
-            if !part.is_empty() {
-                sources
-                    .last_mut()
-                    .map(|line| line.push((part.to_owned(), s.tone)));
+            if !part.is_empty()
+                && let Some(line) = sources.last_mut()
+            {
+                line.push((part.to_owned(), s.tone));
             }
         }
     }

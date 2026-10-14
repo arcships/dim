@@ -358,11 +358,11 @@ mod tests {
         let mut planner = StreamPlanner::new();
         let mut live_text = String::new();
 
-        let mut step = |planner: &mut StreamPlanner,
-                        live: &[TextBlock],
-                        settled: &[TextBlock],
-                        emu: &mut Emu,
-                        screen: &mut Screen| {
+        let step = |planner: &mut StreamPlanner,
+                    live: &[TextBlock],
+                    settled: &[TextBlock],
+                    emu: &mut Emu,
+                    screen: &mut Screen| {
             let plan = planner.plan(1, live, settled, width, &render_marked);
             let mut commits: Vec<String> = Vec::new();
             for (_, batch) in plan.finalized {

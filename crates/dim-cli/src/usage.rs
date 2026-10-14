@@ -119,26 +119,26 @@ fn plan_rows(summary: &Value) -> Vec<(Row, Option<String>)> {
             window["expiresAt"].as_str().map(str::to_owned),
         ));
     }
-    if summary["unlimited"].as_bool() != Some(true) {
-        if let Some(total) = summary["totalUnits"].as_f64() {
-            let used = summary["usedUnits"].as_f64().unwrap_or_else(|| {
-                let remaining = summary["remainingUnits"].as_f64().unwrap_or(total);
-                (total - remaining).max(0.0)
-            });
-            rows.push((
-                usage_row("Credits", used, total),
-                summary["subscriptionExpiresAt"].as_str().map(str::to_owned),
-            ));
-        }
+    if summary["unlimited"].as_bool() != Some(true)
+        && let Some(total) = summary["totalUnits"].as_f64()
+    {
+        let used = summary["usedUnits"].as_f64().unwrap_or_else(|| {
+            let remaining = summary["remainingUnits"].as_f64().unwrap_or(total);
+            (total - remaining).max(0.0)
+        });
+        rows.push((
+            usage_row("Credits", used, total),
+            summary["subscriptionExpiresAt"].as_str().map(str::to_owned),
+        ));
     }
     rows
 }
 
 fn window_label(hours: f64) -> String {
     let whole = hours.fract() == 0.0;
-    if hours >= 168.0 && whole && (hours as u64) % 168 == 0 {
+    if hours >= 168.0 && whole && (hours as u64).is_multiple_of(168) {
         format!("{}w window", hours as u64 / 168)
-    } else if hours >= 24.0 && whole && (hours as u64) % 24 == 0 {
+    } else if hours >= 24.0 && whole && (hours as u64).is_multiple_of(24) {
         format!("{}d window", hours as u64 / 24)
     } else if whole {
         format!("{}h window", hours as u64)

@@ -226,16 +226,15 @@ pub fn coalesce_paste(events: Vec<InputEvent>, min_run: usize) -> Vec<InputEvent
     let mut out = Vec::with_capacity(events.len());
     let mut run = String::new();
     let mut run_events: Vec<InputEvent> = Vec::new();
-    let mut flush =
-        |out: &mut Vec<InputEvent>, run: &mut String, run_events: &mut Vec<InputEvent>| {
-            if run_events.len() >= min_run {
-                out.push(InputEvent::Paste(std::mem::take(run)));
-                run_events.clear();
-            } else {
-                out.append(run_events);
-                run.clear();
-            }
-        };
+    let flush = |out: &mut Vec<InputEvent>, run: &mut String, run_events: &mut Vec<InputEvent>| {
+        if run_events.len() >= min_run {
+            out.push(InputEvent::Paste(std::mem::take(run)));
+            run_events.clear();
+        } else {
+            out.append(run_events);
+            run.clear();
+        }
+    };
     for event in events {
         match plain(&event) {
             Some(c) => {
@@ -284,7 +283,7 @@ fn parse_one(buf: &[u8]) -> Parse {
             Parse::Consumed(1, key(KeyCode::Char(letter), Modifiers::CTRL))
         }
         byte @ 0x1c..=0x1f => {
-            let c = [b'\\', b']', b'^', b'_'][(byte - 0x1c) as usize] as char;
+            let c = b"\\]^_"[(byte - 0x1c) as usize] as char;
             Parse::Consumed(1, key(KeyCode::Char(c), Modifiers::CTRL))
         }
         _ => match decode_char(buf) {

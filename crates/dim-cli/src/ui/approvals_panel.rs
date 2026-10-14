@@ -163,10 +163,10 @@ impl ApprovalsPanel {
                 let width = inner.saturating_sub(2).max(1);
                 let wrapped = crate::ui::tui::wrap_words(description, width);
                 let mut lines: Vec<String> = wrapped.iter().take(detail_lines).cloned().collect();
-                if wrapped.len() > detail_lines {
-                    if let Some(last) = lines.last_mut() {
-                        *last = format!("{last} {}", wrapped[detail_lines]);
-                    }
+                if wrapped.len() > detail_lines
+                    && let Some(last) = lines.last_mut()
+                {
+                    *last = format!("{last} {}", wrapped[detail_lines]);
                 }
                 for line in lines {
                     content.push(format!(

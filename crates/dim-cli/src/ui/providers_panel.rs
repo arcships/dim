@@ -91,13 +91,13 @@ impl ProvidersPanel {
         if let Ok(providers) = providers {
             self.providers = providers;
             // A form of a provider that changed shows its new state.
-            if let Some(form) = &mut self.form {
-                if let Some(entry) = self.providers.iter().find(|p| p.id == form.provider_id) {
-                    form.connected = entry.status == "connected";
-                    form.enabled = entry.enabled;
-                    form.api_key_preview = entry.api_key_preview.clone();
-                    form.busy = false;
-                }
+            if let Some(form) = &mut self.form
+                && let Some(entry) = self.providers.iter().find(|p| p.id == form.provider_id)
+            {
+                form.connected = entry.status == "connected";
+                form.enabled = entry.enabled;
+                form.api_key_preview = entry.api_key_preview.clone();
+                form.busy = false;
             }
         }
         let preselect = None;

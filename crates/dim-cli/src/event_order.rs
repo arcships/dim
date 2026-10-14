@@ -140,8 +140,7 @@ fn data(kind: &str, name: &str, value: &J) -> J {
         ("collaboration", "request") => with_step(&["call_id", "prompt", "display", "target"]),
         _ => Vec::new(),
     };
-    let key_refs: Vec<&str> = keys.iter().copied().collect();
-    object(value, &key_refs, &|k, v| match (kind, name, k) {
+    object(value, &keys, &|k, v| match (kind, name, k) {
         ("exec", "ended", "result") => tool_result(v),
         ("approval", "request", "source") => branch_source(v),
         ("approval", "request", "call") => object(v, &["name", "input"], &plain),
@@ -175,7 +174,7 @@ fn data(kind: &str, name: &str, value: &J) -> J {
             ],
             &plain,
         ),
-        ("turn", "end", _) | ("step", "model-output-end", _) | _ => v.clone(),
+        _ => v.clone(),
     })
 }
 

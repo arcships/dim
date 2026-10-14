@@ -244,9 +244,7 @@ impl Screen {
         self.top = moved;
         self.note_scroll((before + written).saturating_sub(moved));
         if term.reset {
-            for row in &mut self.painted {
-                *row = None;
-            }
+            self.painted.fill(None);
         }
         // The vendored routine leaves the cursor at the new viewport top.
         self.cursor_at = Some((0, self.top));

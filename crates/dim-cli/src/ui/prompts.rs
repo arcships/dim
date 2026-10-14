@@ -823,7 +823,6 @@ impl AskUserPrompt {
         let mut head = vec![Line {
             text: "Review your answers and press Enter to submit.".to_owned(),
             tone: Tone::Detail,
-            ..Line::text(String::new())
         }];
         if roomy {
             head.push(Line::text(String::new()));
@@ -852,7 +851,6 @@ impl AskUserPrompt {
                             } else {
                                 Tone::Warning
                             },
-                            ..Line::text(String::new())
                         },
                     ]
                 } else {
@@ -863,7 +861,6 @@ impl AskUserPrompt {
                         } else {
                             Tone::Warning
                         },
-                        ..Line::text(String::new())
                     }]
                 };
                 Row {

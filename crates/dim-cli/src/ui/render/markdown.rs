@@ -472,16 +472,19 @@ fn wrap_cells_row(cells: &[Cell], width: usize, code: bool) -> Vec<Vec<Cell>> {
         }};
     }
 
-    for cell in cells {
-        if cell.0 == " " {
-            flush_word!();
-            gap.push(cell.clone());
-        } else {
-            word_width += cell.2;
-            word.push(cell.clone());
+    // `None` marks the end of the row and flushes the last word.
+    for cell in cells.iter().map(Some).chain([None]) {
+        match cell {
+            Some(cell) if cell.0 != " " => {
+                word_width += cell.2;
+                word.push(cell.clone());
+            }
+            _ => {
+                flush_word!();
+                gap.extend(cell.cloned());
+            }
         }
     }
-    flush_word!();
     rows.push(row);
 
     // Rows after the first carry the hanging indent.

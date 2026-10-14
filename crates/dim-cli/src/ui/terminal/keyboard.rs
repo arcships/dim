@@ -47,33 +47,35 @@ pub fn scan_probe(bytes: &[u8]) -> ProbeScan {
     let mut typeahead = Vec::new();
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'[') {
-            if let Some((len, kind)) = reply_at(&bytes[index..]) {
-                match kind {
-                    ReplyKind::KittyFlags => kitty = true,
-                    ReplyKind::Da1 => {
-                        return ProbeScan {
-                            kitty,
-                            complete: true,
-                            background_report,
-                            typeahead,
-                            rest: bytes[index + len..].to_vec(),
-                        };
-                    }
-                    ReplyKind::Other => {}
+        if bytes[index] == 0x1b
+            && bytes.get(index + 1) == Some(&b'[')
+            && let Some((len, kind)) = reply_at(&bytes[index..])
+        {
+            match kind {
+                ReplyKind::KittyFlags => kitty = true,
+                ReplyKind::Da1 => {
+                    return ProbeScan {
+                        kitty,
+                        complete: true,
+                        background_report,
+                        typeahead,
+                        rest: bytes[index + len..].to_vec(),
+                    };
                 }
-                index += len;
-                continue;
+                ReplyKind::Other => {}
             }
+            index += len;
+            continue;
         }
-        if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b']') {
-            if let Some((len, body)) = osc_at(&bytes[index..]) {
-                if let Some(report) = body.strip_prefix("11;") {
-                    background_report = Some(report.to_owned());
-                }
-                index += len;
-                continue;
+        if bytes[index] == 0x1b
+            && bytes.get(index + 1) == Some(&b']')
+            && let Some((len, body)) = osc_at(&bytes[index..])
+        {
+            if let Some(report) = body.strip_prefix("11;") {
+                background_report = Some(report.to_owned());
             }
+            index += len;
+            continue;
         }
         typeahead.push(bytes[index]);
         index += 1;

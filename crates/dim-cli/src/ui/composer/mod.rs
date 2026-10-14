@@ -151,10 +151,10 @@ impl Composer {
         let plain = key.mods.0 & !Modifiers::SHIFT.0 == 0;
         let ctrl_only = key.mods.contains(Modifiers::CTRL) && key.mods.0 == Modifiers::CTRL.0;
 
-        if self.palette_open() {
-            if let Some(outcome) = self.palette_key(key) {
-                return outcome;
-            }
+        if self.palette_open()
+            && let Some(outcome) = self.palette_key(key)
+        {
+            return outcome;
         }
         match key.code {
             KeyCode::Enter
@@ -168,10 +168,12 @@ impl Composer {
                 return Outcome::Handled;
             }
             KeyCode::Enter => return self.submit(),
-            KeyCode::Up | KeyCode::Down if plain && !key.mods.contains(Modifiers::SHIFT) => {
-                if self.browse_history(key.code == KeyCode::Up) {
-                    return Outcome::Handled;
-                }
+            KeyCode::Up | KeyCode::Down
+                if plain
+                    && !key.mods.contains(Modifiers::SHIFT)
+                    && self.browse_history(key.code == KeyCode::Up) =>
+            {
+                return Outcome::Handled;
             }
             _ => {}
         }

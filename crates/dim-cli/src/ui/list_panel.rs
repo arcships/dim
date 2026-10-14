@@ -156,15 +156,14 @@ impl ListPanel {
             }
             Err(error) => self.error = Some(error),
         }
-        if let Some(id) = preselect {
-            if let Some(at) = self
+        if let Some(id) = preselect
+            && let Some(at) = self
                 .shown()
                 .iter()
                 .filter(|i| !i.heading)
                 .position(|i| i.id == id)
-            {
-                self.selected = at;
-            }
+        {
+            self.selected = at;
         }
         let count = self.shown().iter().filter(|i| !i.heading).count();
         self.selected = self.selected.min(count.saturating_sub(1));

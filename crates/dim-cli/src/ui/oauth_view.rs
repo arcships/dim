@@ -473,6 +473,85 @@ impl OauthView {
     }
 }
 
+/// The callback must carry exactly the attempt's `state` and come from the
+/// listener's origin.
+fn state_matches(callback: &str, authorization_url: &str, origin: &str) -> bool {
+    fn query(url: &str) -> Vec<(String, String)> {
+        let Some((_, q)) = url.split_once('?') else {
+            return Vec::new();
+        };
+        let q = q.split('#').next().unwrap_or("");
+        q.split('&')
+            .filter(|pair| !pair.is_empty())
+            .map(|pair| {
+                let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+                (percent_decode(k), percent_decode(v))
+            })
+            .collect()
+    }
+    let want: Vec<String> = query(authorization_url)
+        .into_iter()
+        .filter(|(k, _)| k == "state")
+        .map(|(_, v)| v)
+        .collect();
+    let got: Vec<String> = query(callback)
+        .into_iter()
+        .filter(|(k, _)| k == "state")
+        .map(|(_, v)| v)
+        .collect();
+    callback.starts_with(&format!("{origin}/auth/callback?"))
+        && want.len() == 1
+        && !want[0].is_empty()
+        && got == want
+}
+
+/// Whether a pasted callback URL belongs to the attempt that issued
+/// `authorization_url`: same redirect origin and the attempt's `state`.
+pub fn callback_matches(callback: &str, authorization_url: &str) -> bool {
+    let redirect = authorization_url
+        .split_once('?')
+        .map(|(_, q)| q)
+        .into_iter()
+        .flat_map(|q| q.split('&'))
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(k, _)| *k == "redirect_uri")
+        .map(|(_, v)| percent_decode(v));
+    match redirect {
+        Some(uri) => state_matches(callback, authorization_url, origin_of(&uri)),
+        None => false,
+    }
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        i += 2;
+                    }
+                    Err(_) => out.push(b'%'),
+                }
+            }
+            byte => out.push(byte),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn origin_of(redirect_uri: &str) -> &str {
+    redirect_uri
+        .strip_suffix("/auth/callback")
+        .unwrap_or(redirect_uri)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,83 +634,4 @@ mod tests {
             Effect::OauthBack
         ));
     }
-}
-
-/// The callback must carry exactly the attempt's `state` and come from the
-/// listener's origin.
-fn state_matches(callback: &str, authorization_url: &str, origin: &str) -> bool {
-    fn query(url: &str) -> Vec<(String, String)> {
-        let Some((_, q)) = url.split_once('?') else {
-            return Vec::new();
-        };
-        let q = q.split('#').next().unwrap_or("");
-        q.split('&')
-            .filter(|pair| !pair.is_empty())
-            .map(|pair| {
-                let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-                (percent_decode(k), percent_decode(v))
-            })
-            .collect()
-    }
-    let want: Vec<String> = query(authorization_url)
-        .into_iter()
-        .filter(|(k, _)| k == "state")
-        .map(|(_, v)| v)
-        .collect();
-    let got: Vec<String> = query(callback)
-        .into_iter()
-        .filter(|(k, _)| k == "state")
-        .map(|(_, v)| v)
-        .collect();
-    callback.starts_with(&format!("{origin}/auth/callback?"))
-        && want.len() == 1
-        && !want[0].is_empty()
-        && got == want
-}
-
-/// Whether a pasted callback URL belongs to the attempt that issued
-/// `authorization_url`: same redirect origin and the attempt's `state`.
-pub fn callback_matches(callback: &str, authorization_url: &str) -> bool {
-    let redirect = authorization_url
-        .split_once('?')
-        .map(|(_, q)| q)
-        .into_iter()
-        .flat_map(|q| q.split('&'))
-        .filter_map(|pair| pair.split_once('='))
-        .find(|(k, _)| *k == "redirect_uri")
-        .map(|(_, v)| percent_decode(v));
-    match redirect {
-        Some(uri) => state_matches(callback, authorization_url, origin_of(&uri)),
-        None => false,
-    }
-}
-
-fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'+' => out.push(b' '),
-            b'%' if i + 2 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-                match u8::from_str_radix(hex, 16) {
-                    Ok(byte) => {
-                        out.push(byte);
-                        i += 2;
-                    }
-                    Err(_) => out.push(b'%'),
-                }
-            }
-            byte => out.push(byte),
-        }
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn origin_of(redirect_uri: &str) -> &str {
-    redirect_uri
-        .strip_suffix("/auth/callback")
-        .unwrap_or(redirect_uri)
 }

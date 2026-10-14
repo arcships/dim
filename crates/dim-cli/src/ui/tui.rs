@@ -325,7 +325,7 @@ struct Segment {
 enum Prompt {
     Sessions(SessionsPanel),
     Models(ModelsPanel),
-    Providers(ProvidersPanel),
+    Providers(Box<ProvidersPanel>),
     Approvals(ApprovalsPanel),
     Theme(ThemePanel),
     Exit(ExitConfirm),
@@ -495,11 +495,11 @@ impl App {
     fn tick(&mut self) -> bool {
         let now = Instant::now();
         let mut changed = false;
-        if let Some((_, until)) = &self.notice {
-            if now >= *until {
-                self.notice = None;
-                changed = true;
-            }
+        if let Some((_, until)) = &self.notice
+            && now >= *until
+        {
+            self.notice = None;
+            changed = true;
         }
         if self.exit_armed_until.is_some_and(|until| now >= until) {
             self.exit_armed_until = None;
@@ -890,7 +890,7 @@ impl App {
                 Outcome::Continue
             }
             "connect" => {
-                self.prompt = Some(Prompt::Providers(ProvidersPanel::new()));
+                self.prompt = Some(Prompt::Providers(Box::new(ProvidersPanel::new())));
                 self.host.send(Command::ListProviders);
                 Outcome::Continue
             }
@@ -946,25 +946,25 @@ impl App {
             self.record(&text, source);
             frame.commits.push(text);
         }
-        if !self.awaiting_window {
-            if let Some(kind) = self.pending_boundary.take() {
-                let label = match kind {
-                    SwitchKind::New => "new session".to_owned(),
-                    SwitchKind::Resumed => {
-                        let (count, hidden) = self.window_info;
-                        let sid = self.session_id.get(..8).unwrap_or(&self.session_id);
-                        let mut label = format!("resumed {sid} · {count} messages");
-                        if hidden > 0 {
-                            label.push_str(" · earlier history: /history");
-                        }
-                        label
+        if !self.awaiting_window
+            && let Some(kind) = self.pending_boundary.take()
+        {
+            let label = match kind {
+                SwitchKind::New => "new session".to_owned(),
+                SwitchKind::Resumed => {
+                    let (count, hidden) = self.window_info;
+                    let sid = self.session_id.get(..8).unwrap_or(&self.session_id);
+                    let mut label = format!("resumed {sid} · {count} messages");
+                    if hidden > 0 {
+                        label.push_str(" · earlier history: /history");
                     }
-                };
-                let line = boundary_line(&label, width);
-                let text = chunk(&[fg(&line, &self.palette.muted)]);
-                self.record(&text, Some(Block::Boundary(label)));
-                frame.commits.push(text);
-            }
+                    label
+                }
+            };
+            let line = boundary_line(&label, width);
+            let text = chunk(&[fg(&line, &self.palette.muted)]);
+            self.record(&text, Some(Block::Boundary(label)));
+            frame.commits.push(text);
         }
         for notice in std::mem::take(&mut self.notices) {
             let tone = if notice == INTERRUPT_REASON {
@@ -993,13 +993,13 @@ impl App {
             self.record(&chunk_text, Some(Block::Status { text, tone }));
             frame.commits.push(chunk_text);
         }
-        if let Some(message) = self.failure.clone() {
-            if !self.failure_committed {
-                self.failure_committed = true;
-                let text = pad_block(&[String::new(), format!("Error: {message}")]);
-                self.record(&text, Some(Block::Failure(message)));
-                frame.commits.push(text);
-            }
+        if let Some(message) = self.failure.clone()
+            && !self.failure_committed
+        {
+            self.failure_committed = true;
+            let text = pad_block(&[String::new(), format!("Error: {message}")]);
+            self.record(&text, Some(Block::Failure(message)));
+            frame.commits.push(text);
         }
 
         // While a prompt is open the live region is hidden: the prompt owns
@@ -1042,22 +1042,19 @@ impl App {
                 .is_some_and(|s| s.rows.iter().any(|r| r.kind == RowKind::UserMessage)),
         );
         let mut rows: Vec<String> = Vec::new();
-        let cursor_row;
-        let cursor_col;
         // While a panel or prompt owns the keyboard the composer's mark dims.
         let prompt_color = if self.prompt.is_some() {
             &p.faint
         } else {
             &p.accent
         };
-        if self.composer.is_empty() {
+        let (cursor_row, cursor_col) = if self.composer.is_empty() {
             rows.push(format!(
                 "{}{}",
                 fg(prompt, prompt_color),
                 fg(COMPOSER_PLACEHOLDER, &p.muted)
             ));
-            cursor_row = 0;
-            cursor_col = prompt_width;
+            (0, prompt_width)
         } else {
             let (input_rows, cursor) = self.composer.render_rows(text_width as u16, p);
             for (i, row) in input_rows.into_iter().enumerate() {
@@ -1068,9 +1065,8 @@ impl App {
                 };
                 rows.push(format!("{lead}{row}"));
             }
-            cursor_row = cursor.1 as usize;
-            cursor_col = prompt_width + cursor.0 as usize;
-        }
+            (cursor.1 as usize, prompt_width + cursor.0 as usize)
+        };
         let box_top = live.len();
         let muted = |label: &str| fg(label, &p.muted);
         live.extend(boxed(
@@ -1452,17 +1448,17 @@ impl App {
         };
         // The transient notice is the one thing on the row that just
         // happened: it takes the highlight colour, the rest stays muted.
-        if let Some((text, _)) = &self.notice {
-            if let Some(at) = line.find(text.as_str()) {
-                let (before, rest) = line.split_at(at);
-                let (notice, after) = rest.split_at(text.len().min(rest.len()));
-                return format!(
-                    "{}{}{}",
-                    fg(before, &self.palette.muted),
-                    fg(notice, &self.palette.highlight),
-                    fg(after, &self.palette.muted)
-                );
-            }
+        if let Some((text, _)) = &self.notice
+            && let Some(at) = line.find(text.as_str())
+        {
+            let (before, rest) = line.split_at(at);
+            let (notice, after) = rest.split_at(text.len().min(rest.len()));
+            return format!(
+                "{}{}{}",
+                fg(before, &self.palette.muted),
+                fg(notice, &self.palette.highlight),
+                fg(after, &self.palette.muted)
+            );
         }
         fg(&line, &self.palette.muted)
     }
@@ -1728,6 +1724,9 @@ fn raw_rows(text: &str) -> impl Iterator<Item = String> + '_ {
         .map(str::to_owned)
 }
 
+/// Paints plain text with a colour.
+type Painter<'a> = &'a dyn Fn(&str) -> String;
+
 /// Rounded box drawing around `rows`, sized to `cols` with the common
 /// margin. Rows that are too long are cut to the inner width. `edge` paints
 /// the border characters. `status`, plain text painted by `label`, is set
@@ -1735,9 +1734,9 @@ fn raw_rows(text: &str) -> impl Iterator<Item = String> + '_ {
 fn boxed(
     rows: &[String],
     cols: usize,
-    edge: &dyn Fn(&str) -> String,
+    edge: Painter,
     interior: &dyn Fn(usize, &str) -> String,
-    status: Option<(&str, &dyn Fn(&str) -> String)>,
+    status: Option<(&str, Painter)>,
 ) -> Vec<String> {
     // L's boxes end two columns short of the right edge, margin included.
     let outer = cols.saturating_sub(2 + MARGIN).max(4);
