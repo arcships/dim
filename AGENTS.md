@@ -44,7 +44,7 @@ Run at the workspace root:
 | `cargo run --locked -p xtask -- check` | After changing capabilities, assembly or crate dependencies |
 | `node --test scripts/*.test.mjs` | After changing development or release scripts |
 
-The full CI sequence, including the ignored CLI profile and Node provider bridge tests, is in `.github/workflows/ci.yml.disabled`.
+The full CI sequence, including the ignored CLI profile and Node provider bridge tests, is in `.github/workflows/ci.yml`. Release preparation and draft publication follow [.agents/skills/dim-release/SKILL.md](.agents/skills/dim-release/SKILL.md).
 
 ## Architecture graphs and boundary checks
 

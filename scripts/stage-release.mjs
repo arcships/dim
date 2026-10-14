@@ -13,8 +13,11 @@ assert(binaryDirectory && destination && version && sourceCommit && extra.length
 assert(mode === undefined || mode === '--with-plugin', 'Unknown staging mode');
 assert(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/.test(version), 'Invalid version');
 assert(/^[a-f0-9]{40}$/.test(sourceCommit), 'Invalid source commit');
-const platform = `${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}`;
-assert(['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'windows-x64'].includes(platform), 'Unsupported native platform');
+const hostPlatform = `${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}`;
+const platform = process.env.DIM_BUILD_PLATFORM || hostPlatform;
+assert(['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'windows-arm64', 'windows-x64'].includes(platform), 'Unsupported native platform');
+const [osName, cpu] = platform.split('-');
+assert.equal(osName, hostPlatform.split('-')[0], 'Cross builds require a runner with the target OS');
 const repo = path.resolve(import.meta.dirname, '..');
 const productVersion = readFileSync(path.join(repo, 'Cargo.toml'), 'utf8').match(/\[workspace.package\]\s+version = "([^"]+)"/)[1];
 assert.equal(version, productVersion, 'Version must match Cargo workspace');
@@ -25,14 +28,35 @@ const digest = (data) => createHash('sha256').update(data).digest('hex');
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, { encoding: 'utf8', ...options });
   assert.ifError(result.error);
-  assert.equal(result.status, 0, `${command} failed`);
+  assert.equal(result.status, 0, `${command} failed: ${result.stderr}`);
   return result.stdout;
 };
 const suffix = process.platform === 'win32' ? '.exe' : '';
 const cli = path.resolve(binaryDirectory, `dimcode${suffix}`);
 const server = path.resolve(binaryDirectory, `dim-app-server${suffix}`);
 assert(lstatSync(cli).isFile() && lstatSync(server).isFile(), 'Native executables must be regular files');
-assert.equal(run(cli, ['--version']).trim(), `dimcode ${version}`, 'Binary version mismatch');
+const checkArchitecture = (file) => {
+  const data = readFileSync(file);
+  if (osName === 'windows') {
+    assert.equal(data.readUInt16LE(0), 0x5a4d, 'Expected a PE executable');
+    const offset = data.readUInt32LE(0x3c);
+    assert.equal(data.readUInt32LE(offset), 0x00004550, 'Invalid PE signature');
+    assert.equal(data.readUInt16LE(offset + 4), cpu === 'arm64' ? 0xaa64 : 0x8664, 'PE architecture mismatch');
+  } else if (osName === 'darwin') {
+    assert.equal(data.readUInt32LE(0), 0xfeedfacf, 'Expected a 64-bit Mach-O executable');
+    assert.equal(data.readUInt32LE(4), cpu === 'arm64' ? 0x0100000c : 0x01000007, 'Mach-O architecture mismatch');
+  } else {
+    assert.equal(data.subarray(0, 6).toString('hex'), '7f454c460201', 'Expected a little-endian ELF64 executable');
+    assert.equal(data.readUInt16LE(18), cpu === 'arm64' ? 183 : 62, 'ELF architecture mismatch');
+  }
+};
+if (platform === hostPlatform) {
+  assert.equal(run(cli, ['--version']).trim(), `dimcode ${version}`, 'Binary version mismatch');
+} else {
+  // shortcut: Cross-built binaries are inspected; add target-machine smoke tests when runners exist.
+  checkArchitecture(cli);
+  checkArchitecture(server);
+}
 const scratch = mkdtempSync(path.join(os.tmpdir(), 'dimcode-stage-'));
 let plugin = null;
 try {
@@ -82,11 +106,33 @@ try {
   copyFileSync(path.join(repo, 'LICENSE'), path.join(output, 'LICENSE'));
   const versions = { rust: readFileSync(path.join(repo, 'rust-toolchain.toml'), 'utf8').match(/channel = "([^"]+)"/)[1] };
   if (plugin) {
-    assert.equal(process.versions.node, readFileSync(path.join(repo, '.node-version'), 'utf8').trim(), 'Node version mismatch');
+    const nodeVersion = readFileSync(path.join(repo, '.node-version'), 'utf8').trim();
+    assert.equal(process.versions.node, nodeVersion, 'Node version mismatch');
+    let nodeBinary = process.execPath;
+    let license = path.join(path.dirname(process.execPath), process.platform === 'win32' ? 'LICENSE' : '../LICENSE');
+    if (platform !== hostPlatform) {
+      const distribution = `node-v${nodeVersion}-${osName === 'windows' ? 'win' : osName}-${cpu}`;
+      const filename = `${distribution}.${osName === 'windows' ? 'zip' : 'tar.gz'}`;
+      const base = `https://nodejs.org/dist/v${nodeVersion}/`;
+      const checksums = await fetch(`${base}SHASUMS256.txt`, { redirect: 'error', signal: AbortSignal.timeout(60_000) });
+      assert(checksums.ok, 'Node checksum download failed');
+      const expected = (await checksums.text()).split('\n').map(line => line.trim().split(/\s+/)).find(([, name]) => name === filename)?.[0];
+      assert(/^[a-f0-9]{64}$/.test(expected ?? ''), 'Missing target Node checksum');
+      const response = await fetch(`${base}${filename}`, { redirect: 'error', signal: AbortSignal.timeout(120_000) });
+      assert(response.ok, 'Target Node download failed');
+      const archive = Buffer.from(await response.arrayBuffer());
+      assert.equal(digest(archive), expected, 'Target Node archive digest mismatch');
+      const nodeArchive = path.join(scratch, filename);
+      writeFileSync(nodeArchive, archive);
+      run('tar', ['-xf', nodeArchive, '-C', scratch]);
+      nodeBinary = path.join(scratch, distribution, osName === 'windows' ? 'node.exe' : 'bin/node');
+      license = path.join(scratch, distribution, 'LICENSE');
+    }
+    checkArchitecture(nodeBinary);
     const nodeDirectory = path.join(output, 'runtime/node');
     mkdirSync(path.join(nodeDirectory, process.platform === 'win32' ? '.' : 'bin'), { recursive: true });
-    copyFileSync(process.execPath, path.join(nodeDirectory, process.platform === 'win32' ? 'node.exe' : 'bin/node'));
-    const license = path.join(path.dirname(process.execPath), process.platform === 'win32' ? 'LICENSE' : '../LICENSE');
+    copyFileSync(nodeBinary, path.join(nodeDirectory, process.platform === 'win32' ? 'node.exe' : 'bin/node'));
+    chmodSync(path.join(nodeDirectory, process.platform === 'win32' ? 'node.exe' : 'bin/node'), 0o755);
     assert(lstatSync(license).isFile(), 'Node distribution LICENSE is required');
     copyFileSync(license, path.join(nodeDirectory, 'LICENSE'));
     const runtime = path.join(output, 'runtime/rutis');
@@ -95,7 +141,10 @@ try {
     copyFileSync(path.join(repo, 'runtime/package-lock.json'), path.join(runtime, 'package-lock.json'));
     const npmCli = path.join(path.dirname(process.execPath), process.platform === 'win32' ? 'node_modules/npm/bin/npm-cli.js' : '../lib/node_modules/npm/bin/npm-cli.js');
     assert(lstatSync(npmCli).isFile(), 'Node distribution npm CLI is required');
-    run(process.execPath, [npmCli, 'ci', '--prefix', runtime, '--omit=dev', '--ignore-scripts', '--registry=https://registry.npmjs.org']);
+    run(process.execPath, [npmCli, 'ci', '--omit=dev', '--ignore-scripts',
+      `--os=${osName === 'windows' ? 'win32' : osName}`, `--cpu=${cpu}`, '--registry=https://registry.npmjs.org'], { cwd: runtime });
+    assert(lstatSync(path.join(runtime, 'node_modules/@esbuild', `${osName === 'windows' ? 'win32' : osName}-${cpu}`,
+      osName === 'windows' ? 'esbuild.exe' : 'bin/esbuild')).isFile(), 'Missing target runtime executable');
     rmSync(path.join(runtime, 'node_modules/.bin'), { recursive: true, force: true });
     cpSync(path.join(scratch, 'plugin'), path.join(output, 'plugins/dim-oauth'), { recursive: true });
     writeFileSync(path.join(output, 'NOTICE'), 'Dim public source is licensed under MIT; see LICENSE.\nThe separately supplied plugins/dim-oauth runtime is excluded from that MIT grant.\nThird-party runtimes retain their original license notices.\n');

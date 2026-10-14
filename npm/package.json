@@ -13,6 +13,7 @@
     "dimcode-darwin-x64": "0.1.0",
     "dimcode-linux-arm64": "0.1.0",
     "dimcode-linux-x64": "0.1.0",
+    "dimcode-windows-arm64": "0.1.0",
     "dimcode-windows-x64": "0.1.0"
   }
 }

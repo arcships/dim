@@ -12,5 +12,5 @@ fi
 output=$1
 if [[ "$output" != /* ]]; then output="$PWD/$output"; fi
 git -C "$repository" archive --format=tar.gz --output="$output" HEAD \
-  .gitignore .env.example .node-version .github dev Cargo.toml Cargo.lock rust-toolchain.toml LICENSE README.md \
+  .gitignore .env.example .node-version .github .agents AGENTS.md CLAUDE.md dev Cargo.toml Cargo.lock rust-toolchain.toml LICENSE README.md \
   crates tests vendor xtask npm runtime scripts docs/INDEX.md docs/architecture docs/design docs/release

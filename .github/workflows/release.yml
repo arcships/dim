@@ -1,0 +1,248 @@
+name: Release
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (vX.Y.Z or vX.Y.Z-beta.1)
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  preflight:
+    if: ${{ github.repository == 'arcships/dim' }}
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      sha: ${{ steps.release.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Validate release tag and version
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
+          source_sha=$(git rev-parse HEAD)
+          [[ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" == "$source_sha" ]]
+          git merge-base --is-ancestor "$source_sha" origin/main
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const version = process.env.RELEASE_TAG.slice(1);
+          assert.equal(readFileSync('Cargo.toml', 'utf8').match(/\[workspace.package\]\s+version = "([^"]+)"/)[1], version);
+          const npm = JSON.parse(readFileSync('npm/package.json'));
+          assert.equal(npm.version, version);
+          assert(Object.values(npm.optionalDependencies).every(value => value === version));
+          assert.equal(JSON.parse(readFileSync('runtime/package.json')).version, version);
+          const runtimeLock = JSON.parse(readFileSync('runtime/package-lock.json'));
+          assert.equal(runtimeLock.version, version);
+          assert.equal(runtimeLock.packages[''].version, version);
+          NODE
+          {
+            echo "tag=$RELEASE_TAG"
+            echo "sha=$source_sha"
+            echo "version=${RELEASE_TAG#v}"
+          } >> "$GITHUB_OUTPUT"
+  build:
+    needs: preflight
+    environment: release-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            target: aarch64-apple-darwin
+            runner_os: macOS
+            runner_arch: ARM64
+            arch: arm64
+          - platform: darwin-x64
+            target: x86_64-apple-darwin
+            runner_os: macOS
+            runner_arch: ARM64
+            arch: x64
+          - platform: linux-arm64
+            target: aarch64-unknown-linux-gnu
+            runner_os: linux
+            runner_arch: x64
+            arch: arm64
+          - platform: linux-x64
+            target: x86_64-unknown-linux-gnu
+            runner_os: linux
+            runner_arch: x64
+            arch: x64
+          - platform: windows-arm64
+            target: aarch64-pc-windows-msvc
+            runner_os: windows
+            runner_arch: x64
+            arch: arm64
+          - platform: windows-x64
+            target: x86_64-pc-windows-msvc
+            runner_os: windows
+            runner_arch: x64
+            arch: x64
+    runs-on: [self-hosted, '${{ matrix.runner_os }}', '${{ matrix.runner_arch }}']
+    timeout-minutes: 90
+    env:
+      DIM_BUILD_PLATFORM: ${{ matrix.platform }}
+      DIM_BUILD_TARGET: ${{ matrix.target }}
+      DIM_BUILD_ARCH: ${{ matrix.arch }}
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Configure Windows C/C++ toolchain
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'amd64' }}
+      - name: Select Windows linker and ARM64 compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $linker = Join-Path $env:VCToolsInstallDir "bin/Hostx64/$env:DIM_BUILD_ARCH/link.exe"
+          if (!(Test-Path $linker)) { throw "Missing target linker: $linker" }
+          $key = 'CARGO_TARGET_' + $env:DIM_BUILD_TARGET.ToUpper().Replace('-', '_') + '_LINKER'
+          "$key=$linker" >> $env:GITHUB_ENV
+          if ($env:DIM_BUILD_ARCH -eq 'arm64') {
+            Get-Command clang-cl -ErrorAction Stop
+            'CC_aarch64_pc_windows_msvc=clang-cl' >> $env:GITHUB_ENV
+            'CXX_aarch64_pc_windows_msvc=clang-cl' >> $env:GITHUB_ENV
+          }
+      - name: Build native payload for target architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset RUSTC_WRAPPER
+          if [[ "$DIM_BUILD_PLATFORM" == linux-arm64 ]]; then
+            command -v aarch64-linux-gnu-gcc
+            command -v aarch64-linux-gnu-g++
+            export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+            export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
+            export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+          fi
+          rustup target add "$DIM_BUILD_TARGET"
+          cargo build --release --locked --target "$DIM_BUILD_TARGET" -p dim-cli -p dim-app-server
+      - name: Stage and pack release payload
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.sha }}
+          DIM_OAUTH_PACKAGE_URL: ${{ vars.DIM_OAUTH_PACKAGE_URL }}
+          DIM_OAUTH_PACKAGE_SHA256: ${{ vars.DIM_OAUTH_PACKAGE_SHA256 }}
+          DIM_OAUTH_DOWNLOAD_TOKEN: ${{ secrets.DIM_OAUTH_DOWNLOAD_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags=()
+          if [[ -n "$DIM_OAUTH_PACKAGE_URL" || -n "$DIM_OAUTH_PACKAGE_SHA256" ]]; then flags+=(--with-plugin); fi
+          node scripts/stage-release.mjs "target/$DIM_BUILD_TARGET/release" "staging/$DIM_BUILD_PLATFORM" "$RELEASE_VERSION" "$SOURCE_SHA" "${flags[@]}"
+          node scripts/pack-release.mjs "staging/$DIM_BUILD_PLATFORM" "release/$DIM_BUILD_PLATFORM"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.platform }}
+          path: release/${{ matrix.platform }}/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: true
+  draft:
+    needs: [preflight, build]
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: staging/platforms
+          digest-mismatch: error
+      - name: Verify provenance and collect packages
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/collect-release.mjs staging/platforms staging/complete
+          node scripts/check-native.mjs staging/complete/native "$RELEASE_VERSION" "$SOURCE_SHA"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-packages
+          path: staging/complete/npm/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: true
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-packages
+          path: staging/complete/native/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: true
+      - name: Create draft release and upload release packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)" == "$SOURCE_SHA" ]]
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            echo 'Release already exists; inspect it before retrying.' >&2
+            exit 1
+          fi
+          flags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" staging/complete/native/* staging/complete/npm/*.tgz --draft --verify-tag --generate-notes --title "Dim $RELEASE_TAG" --target "$SOURCE_SHA" "${flags[@]}"
+          gh release view "$RELEASE_TAG" --json isDraft,tagName,assets > staging/draft.json
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync, readdirSync, statSync } from 'node:fs';
+          const release = JSON.parse(readFileSync('staging/draft.json'));
+          assert.equal(release.isDraft, true);
+          assert.equal(release.tagName, process.env.RELEASE_TAG);
+          const directory = 'staging/complete/native';
+          const expected = new Map([
+            ...readdirSync(directory).map(name => [name, `${directory}/${name}`]),
+            ...readdirSync('staging/complete/npm').filter(name => name.endsWith('.tgz')).map(name => [name, `staging/complete/npm/${name}`]),
+          ]);
+          assert.deepEqual(release.assets.map(asset => asset.name).sort(), [...expected.keys()].sort());
+          for (const asset of release.assets) assert.equal(asset.size, statSync(expected.get(asset.name)).size);
+          NODE

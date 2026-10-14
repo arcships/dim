@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 
 const platform = `${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}`;
-if (!['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'windows-x64'].includes(platform)) {
+if (!['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'windows-arm64', 'windows-x64'].includes(platform)) {
   console.error(`dimcode does not support ${platform}.`);
   process.exit(1);
 }

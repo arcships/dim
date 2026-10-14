@@ -14,7 +14,7 @@ assert(!existsSync(output), 'Destination already exists');
 const manifest = JSON.parse(readFileSync(path.join(input, 'release-manifest.json')));
 assert.equal(manifest.schemaVersion, 1, 'Unknown release schema');
 const [osName, cpu] = manifest.platform.split('-');
-assert(['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'windows-x64'].includes(manifest.platform), 'Unknown platform');
+assert(['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'windows-arm64', 'windows-x64'].includes(manifest.platform), 'Unknown platform');
 assert(/^[a-f0-9]{40}$/.test(manifest.sourceCommit), 'Invalid source commit');
 assert(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/.test(manifest.version), 'Invalid version');
 const digest = (data) => createHash('sha256').update(data).digest('hex');

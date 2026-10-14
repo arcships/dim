@@ -1,5 +1,4 @@
-# Rename only when GitHub verification is explicitly enabled.
-name: Verify Rust CLI
+name: PR check
 on:
   workflow_dispatch:
   push:
@@ -7,10 +6,14 @@ on:
   pull_request:
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   verify:
-    # This runner must be ephemeral and have no private network or credentials.
-    runs-on: [self-hosted, dim-isolated-ci]
+    # PR runners must be isolated from release credentials and private networks.
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
         with:
@@ -25,6 +28,7 @@ jobs:
           set -euo pipefail
           unset RUSTC_WRAPPER
           export CARGO_INCREMENTAL=0
+          cargo build --workspace --locked
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo test --workspace --locked

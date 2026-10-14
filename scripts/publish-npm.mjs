@@ -4,10 +4,11 @@ import { spawnSync } from 'node:child_process';
 import { lstatSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-const [directory, version, sourceCommit, mode, ...extra] = process.argv.slice(2);
+const [directory, version, sourceCommit, mode, releasePath, ...extra] = process.argv.slice(2);
 assert(directory && version && sourceCommit && extra.length === 0,
-  'Usage: node scripts/publish-npm.mjs DIRECTORY VERSION SOURCE_COMMIT [--publish]');
+  'Usage: node scripts/publish-npm.mjs DIRECTORY VERSION SOURCE_COMMIT [--publish GITHUB_RELEASE_JSON]');
 assert(mode === undefined || mode === '--publish', 'Unknown publish mode');
+assert.equal(Boolean(releasePath), mode === '--publish', 'Publishing requires GitHub Release metadata');
 assert(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/.test(version),
   'Invalid release version');
 assert(/^[a-f0-9]{40}$/.test(sourceCommit), 'Invalid source commit');
@@ -24,12 +25,23 @@ const platforms = [
   ['darwin-x64', 'darwin', 'x64'],
   ['linux-arm64', 'linux', 'arm64'],
   ['linux-x64', 'linux', 'x64'],
+  ['windows-arm64', 'win32', 'arm64'],
   ['windows-x64', 'win32', 'x64'],
 ];
 const names = [...platforms.map(([platform]) => `dimcode-${platform}`), 'dimcode'];
 assert(Array.isArray(manifest.npmPackages), 'Missing npm package manifest');
 assert.deepEqual(manifest.npmPackages.map(({ name }) => name).sort(), [...names].sort(),
-  'Release must contain all five platform packages and one wrapper');
+  'Release must contain all six platform packages and one wrapper');
+
+if (mode === '--publish') {
+  const release = JSON.parse(readFileSync(releasePath, 'utf8'));
+  assert.equal(release.draft, false, 'Cannot publish npm packages from a draft Release');
+  assert(typeof release.published_at === 'string' && release.published_at.length > 0, 'GitHub Release must be published');
+  assert.equal(release.tag_name, `v${version}`, 'GitHub Release tag mismatch');
+  assert.deepEqual(release.assets.filter(({ name }) => name.endsWith('.tgz') || name === 'release-manifest.json')
+    .map(({ name }) => name).sort(), [...manifest.npmPackages.map(({ file }) => file), 'release-manifest.json'].sort(),
+    'GitHub Release must contain the exact npm packages and manifest');
+}
 
 const archives = [];
 for (const name of names) {

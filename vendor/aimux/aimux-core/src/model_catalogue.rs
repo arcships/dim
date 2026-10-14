@@ -45,7 +45,7 @@ pub struct RuntimeModel {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export)]
 pub enum CatalogueSource {
-    /// `models.anya2a.com` (DeepChat PublicProviderConf, aggregates models.dev).
+    /// `models.anya2a.com` (community provider catalogue, aggregates models.dev).
     #[default]
     Anya2a,
     /// `models.dev/api.json` (degraded fallback).

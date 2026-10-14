@@ -80,7 +80,7 @@ The default product home is `~/.dimcode`; first-time development and tests shoul
 | `xtask/` | Architecture boundaries, generated graphs and measurements |
 | `npm/` | `dimcode` wrapper with `dim` and `dimcode` command aliases |
 
-See [documentation](docs/INDEX.md), [architecture](docs/architecture/README.md), [build setup](docs/architecture/build.md) and [release packaging](docs/release/README.md). The npm package name is `dimcode`; public repository metadata targets `arcships/dim`. Publishing remains disabled.
+See [documentation](docs/INDEX.md), [architecture](docs/architecture/README.md), [build setup](docs/architecture/build.md) and [release packaging](docs/release/README.md). The npm package name is `dimcode`; the repository is `arcships/dim`. Self-hosted CI builds draft GitHub Releases; npm publishing remains disabled. Release preparation follows the [project release skill](.agents/skills/dim-release/SKILL.md).
 
 ## Verify
 

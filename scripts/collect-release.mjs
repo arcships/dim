@@ -10,7 +10,7 @@ assert(source && destination && extra.length === 0, 'Usage: node scripts/collect
 const output = path.resolve(destination);
 assert(!existsSync(output), 'Destination already exists');
 const repo = path.resolve(import.meta.dirname,'..');
-const platforms = ['darwin-arm64','darwin-x64','linux-arm64','linux-x64','windows-x64'];
+const platforms = ['darwin-arm64','darwin-x64','linux-arm64','linux-x64','windows-arm64','windows-x64'];
 const manifests = platforms.map((platform) => {
   const directory = path.resolve(source,`release-${platform}`);
   const manifest = JSON.parse(readFileSync(path.join(directory,'release-manifest.json')));
@@ -18,7 +18,7 @@ const manifests = platforms.map((platform) => {
   assert.equal(manifest.schemaVersion,1,'Unknown release schema');
   assert.equal(manifest.npmPackages.length,1,'Unexpected package count');
   assert.equal(manifest.nativeArchives.length,1,'Unexpected native archive count');
-  const extension = platform === 'windows-x64' ? 'zip' : 'tar.gz';
+  const extension = platform.startsWith('windows-') ? 'zip' : 'tar.gz';
   for (const [entry, filename] of [[manifest.npmPackages[0], `dimcode-${platform}-${manifest.version}.tgz`],
     [manifest.nativeArchives[0], `dimcode-${platform}-${manifest.version}.${extension}`]]) {
     assert.equal(entry.file,filename,'Unexpected artifact filename');

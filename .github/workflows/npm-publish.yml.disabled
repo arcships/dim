@@ -1,91 +1,81 @@
 # Rename to npm-publish.yml only when publishing is explicitly enabled.
 name: Publish npm packages
-
 on:
   workflow_dispatch:
     inputs:
-      build_run_id:
-        description: Successful release build run containing npm-packages
-        required: true
-        type: string
       release_tag:
-        description: Release tag used for both the build and this dispatch
+        description: Published GitHub Release tag (must not be a draft)
         required: true
         type: string
-
 permissions:
   contents: read
-  actions: read
-
 concurrency:
   group: npm-publish
   cancel-in-progress: false
-
 jobs:
   publish:
-    if: ${{ github.repository == 'arcships/dim' && startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ github.repository == 'arcships/dim' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: npm-release
     permissions:
       contents: read
-      actions: read
       id-token: write
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-
-      - name: Verify release build provenance
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Resolve published Release and download original npm packages
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$BUILD_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]]
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID" > "$RUNNER_TEMP/release-run.json"
-          jq -e --arg sha "$GITHUB_SHA" --arg repo "$GITHUB_REPOSITORY" '
-            .status == "completed" and .conclusion == "success"
-            and .head_sha == $sha and .head_repository.full_name == $repo
-            and (.event == "push" or .event == "workflow_dispatch")
-          ' "$RUNNER_TEMP/release-run.json" > /dev/null
-          workflow_id=$(jq -er '.workflow_id' "$RUNNER_TEMP/release-run.json")
-          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow_id" |
-            jq -e '.path == ".github/workflows/release.yml"' > /dev/null
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          package-manager-cache: false
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: npm-packages
-          path: staging/npm
-          run-id: ${{ inputs.build_run_id }}
-          github-token: ${{ github.token }}
-          digest-mismatch: error
-
-      - name: Validate and publish platform packages before the wrapper
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
+          mkdir -p staging
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > staging/github-release.json
+          jq -e --arg tag "$RELEASE_TAG" '.draft == false and .published_at != null and .tag_name == $tag' staging/github-release.json > /dev/null
+          source_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs%2Ftags%2F$RELEASE_TAG" --jq .sha)
+          [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
+          {
+            echo "sha=$source_sha"
+            echo "id=$(jq -er .id staging/github-release.json)"
+          } >> "$GITHUB_OUTPUT"
+          gh release download "$RELEASE_TAG" --dir staging/npm --pattern '*.tgz' --pattern release-manifest.json
+      - name: Validate published Release and publish platform packages before the wrapper
         env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.release.outputs.id }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ steps.release.outputs.sha }}
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org
         shell: bash
-        run: node scripts/publish-npm.mjs staging/npm "${RELEASE_TAG#v}" "$GITHUB_SHA" --publish
-
-      - name: Record published artifact provenance
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > staging/github-release.json
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/commits/refs%2Ftags%2F$RELEASE_TAG" --jq .sha)" == "$SOURCE_SHA" ]]
+          node scripts/publish-npm.mjs staging/npm "${RELEASE_TAG#v}" "$SOURCE_SHA" --publish staging/github-release.json
+      - name: Record published Release provenance
         env:
-          BUILD_RUN_ID: ${{ inputs.build_run_id }}
-        run: >-
-          node --input-type=module -e
-          'import{readFileSync,writeFileSync}from"node:fs";const manifest=JSON.parse(readFileSync("staging/npm/release-manifest.json"));manifest.buildRunId=process.env.BUILD_RUN_ID;writeFileSync("npm-publication.json",JSON.stringify(manifest));'
-
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const manifest = JSON.parse(readFileSync('staging/npm/release-manifest.json'));
+          const release = JSON.parse(readFileSync('staging/github-release.json'));
+          writeFileSync('npm-publication.json', JSON.stringify({ ...manifest, releaseId: release.id, releaseTag: process.env.RELEASE_TAG }));
+          NODE
       - uses: actions/upload-artifact@v7
         with:
           name: npm-publication
           path: npm-publication.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1

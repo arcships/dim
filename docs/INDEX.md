@@ -7,5 +7,5 @@
 - [App Server and public provider bridge](../crates/dim-app-server/README.md)
 - [Model host](../crates/dim-agent-aimux/README.md)
 - [Storage format](design/appserver/native-storage-format.md)
-- [Release packaging and disabled workflows](release/README.md)
+- [Release packaging and self-hosted workflows](release/README.md)
 - [Pinned aimux source](../vendor/aimux/SOURCE.md) and [patches](../vendor/aimux/PATCHES.md)

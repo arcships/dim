@@ -12,7 +12,7 @@ const sourceCommit = 'a'.repeat(40);
 const platforms = [
   ['darwin-arm64', 'darwin', 'arm64'], ['darwin-x64', 'darwin', 'x64'],
   ['linux-arm64', 'linux', 'arm64'], ['linux-x64', 'linux', 'x64'],
-  ['windows-x64', 'win32', 'x64'],
+  ['windows-arm64', 'win32', 'arm64'], ['windows-x64', 'win32', 'x64'],
 ];
 
 function fixture(t, version = '1.2.3') {
@@ -57,15 +57,36 @@ printf "%s\\n" "$*" >> "$PUBLISH_LOG"
 `, { mode: 0o755 });
   const log = path.join(root, 'published.log');
   writeFileSync(log, '');
+  const release = { tag_name: `v${version}`, draft: false, published_at: '2026-10-14T00:00:00Z',
+    assets: [...manifest.npmPackages.map(({ file }) => ({ name: file })), { name: 'release-manifest.json' }] };
+  const releasePath = path.join(root, 'github-release.json');
   function run({ publish = false, commit = sourceCommit, registry = 'missing' } = {}) {
     writeFileSync(path.join(root, 'release-manifest.json'), JSON.stringify(manifest));
-    return spawnSync(process.execPath, [script, root, version, commit, ...(publish ? ['--publish'] : [])], {
+    writeFileSync(releasePath, JSON.stringify(release));
+    return spawnSync(process.execPath, [script, root, version, commit, ...(publish ? ['--publish', releasePath] : [])], {
       encoding: 'utf8', env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, PUBLISH_LOG: log,
         REGISTRY_MODE: registry, EXISTING_INTEGRITY: 'sha512-' + createHash('sha512').update(readFileSync(path.join(root, manifest.npmPackages[0].file))).digest('base64') },
     });
   }
-  return { root, names, manifest, log, run };
+  return { root, names, manifest, release, log, run };
 }
+
+test('rejects draft, unpublished, mismatched and incomplete Releases before registry writes', (t) => {
+  const fixtureRelease = fixture(t);
+  const { release, log, run } = fixtureRelease;
+  release.draft = true;
+  assert.notEqual(run({ publish: true }).status, 0);
+  release.draft = false;
+  release.published_at = null;
+  assert.notEqual(run({ publish: true }).status, 0);
+  release.published_at = '2026-10-14T00:00:00Z';
+  release.tag_name = 'v1.2.4';
+  assert.notEqual(run({ publish: true }).status, 0);
+  release.tag_name = 'v1.2.3';
+  release.assets.pop();
+  assert.notEqual(run({ publish: true }).status, 0);
+  assert.equal(readFileSync(log, 'utf8'), '');
+});
 
 test('validates without publishing and publishes the wrapper after every platform', (t) => {
   const release = fixture(t);
@@ -74,7 +95,7 @@ test('validates without publishing and publishes the wrapper after every platfor
   const published = release.run({ publish: true });
   assert.equal(published.status, 0, published.stderr);
   const calls = readFileSync(release.log, 'utf8').trim().split('\n');
-  assert.equal(calls.length, 6);
+  assert.equal(calls.length, 7);
   for (const [index, name] of release.names.entries()) {
     assert.equal(calls[index], `publish ${path.join(release.root, `${name}-1.2.3.tgz`)} --access public --tag latest --ignore-scripts --registry https://registry.npmjs.org`);
   }
@@ -120,7 +141,7 @@ test('prerelease versions publish only to next', (t) => {
   const resumed = release.run({publish:true,registry:'existing'});
   assert.equal(resumed.status,0,resumed.stderr);
   const calls = readFileSync(release.log,'utf8').trim().split('\n');
-  assert.equal(calls.length,5);
+  assert.equal(calls.length,6);
   assert(calls[0].includes('dimcode-darwin-x64-1.2.3.tgz'));
   writeFileSync(release.log,'');
   assert.notEqual(release.run({publish:true,registry:'mismatch'}).status,0);

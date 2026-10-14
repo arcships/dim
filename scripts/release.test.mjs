@@ -72,9 +72,52 @@ test('private archive gate rejects hash, schema and link violations before creat
   assert.equal(existsSync(destination),false);
 });
 
+test('stages cross-built executables without running them and rejects the wrong architecture', (t)=>{
+  const temporary=fixture(t);
+  const osName=process.platform==='win32'?'windows':process.platform;
+  const cpu=process.arch==='arm64'?'x64':'arm64';
+  const platform=`${osName}-${cpu}`;
+  const bin=path.join(temporary,'bin');
+  mkdirSync(bin);
+  const header=Buffer.alloc(128);
+  if(osName==='windows') {
+    header.writeUInt16LE(0x5a4d,0);
+    header.writeUInt32LE(64,0x3c);
+    header.writeUInt32LE(0x00004550,64);
+    header.writeUInt16LE(cpu==='arm64'?0xaa64:0x8664,68);
+  } else if(osName==='darwin') {
+    header.writeUInt32LE(0xfeedfacf,0);
+    header.writeUInt32LE(cpu==='arm64'?0x0100000c:0x01000007,4);
+  } else {
+    Buffer.from('7f454c460201','hex').copy(header);
+    header.writeUInt16LE(cpu==='arm64'?183:62,18);
+  }
+  const suffix=osName==='windows'?'.exe':'';
+  const cli=path.join(bin,`dimcode${suffix}`);
+  const server=path.join(bin,`dim-app-server${suffix}`);
+  writeFileSync(cli,header,{mode:0o755});
+  writeFileSync(server,header,{mode:0o755});
+  const stage=path.join(temporary,'stage');
+  const result=run('stage-release.mjs',[bin,stage,version,commit],{DIM_BUILD_PLATFORM:platform});
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(JSON.parse(readFileSync(path.join(stage,'release-manifest.json'))).platform,platform);
+  const packed=run('pack-release.mjs',[stage,path.join(temporary,'packed')]);
+  assert.equal(packed.status,0,packed.stderr);
+  assert.equal(JSON.parse(readFileSync(path.join(temporary,'packed/release-manifest.json'))).nativeArchives[0].platform,platform);
+  const rejected=path.join(temporary,'rejected');
+  if(osName==='windows') header.writeUInt16LE(cpu==='arm64'?0x8664:0xaa64,68);
+  else if(osName==='darwin') header.writeUInt32LE(cpu==='arm64'?0x01000007:0x0100000c,4);
+  else header.writeUInt16LE(cpu==='arm64'?62:183,18);
+  writeFileSync(server,header);
+  const mismatch=run('stage-release.mjs',[bin,rejected,version,commit],{DIM_BUILD_PLATFORM:platform});
+  assert.notEqual(mismatch.status,0);
+  assert.match(mismatch.stderr,/architecture mismatch/);
+  assert.equal(existsSync(rejected),false);
+});
+
 test('collects exact platform packages, installs wrapper offline and rejects inconsistent plugin provenance', (t)=>{
   const temporary=fixture(t);
-  const platforms=['darwin-arm64','darwin-x64','linux-arm64','linux-x64','windows-x64'];
+  const platforms=['darwin-arm64','darwin-x64','linux-arm64','linux-x64','windows-arm64','windows-x64'];
   for(const platform of platforms) {
     const directory=path.join(temporary,`release-${platform}`);
     const packageRoot=path.join(directory,'scratch/package');
@@ -92,14 +135,6 @@ test('collects exact platform packages, installs wrapper offline and rejects inc
   const collected=run('collect-release.mjs',[temporary,complete]);
   assert.equal(collected.status,0,collected.stderr);
   assert.equal(run('check-native.mjs',[path.join(complete,'native'),version,commit]).status,0);
-  const receiptPath=path.join(temporary,'npm-publication.json');
-  const receipt={...JSON.parse(readFileSync(path.join(complete,'npm/release-manifest.json'))),buildRunId:'123'};
-  writeFileSync(receiptPath,JSON.stringify(receipt));
-  assert.equal(run('check-native.mjs',[path.join(complete,'native'),version,commit,receiptPath,'123']).status,0);
-  assert.notEqual(run('check-native.mjs',[path.join(complete,'native'),version,commit,receiptPath,'124']).status,0);
-  receipt.npmPackages[0].sha256='b'.repeat(64);
-  writeFileSync(receiptPath,JSON.stringify(receipt));
-  assert.notEqual(run('check-native.mjs',[path.join(complete,'native'),version,commit,receiptPath,'123']).status,0);
   if(process.platform!=='win32') {
     const current=`dimcode-${process.platform}-${process.arch}`;
     const installed=path.join(temporary,'installation');
