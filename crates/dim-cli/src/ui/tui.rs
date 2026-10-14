@@ -40,6 +40,8 @@ const RESIZE_DEBOUNCE: Duration = Duration::from_millis(100);
 const RESIZE_MAX_DELAY: Duration = Duration::from_millis(500);
 /// Rows of committed transcript kept with their source for a reflow.
 const REFLOW_SOURCE_ROWS: usize = 600;
+/// Raw rows of older history a resize rewrite restores at most.
+const ARCHIVED_RAW_MAX_ROWS: usize = 10_000;
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 /// How often the loop looks at session updates while input is idle.
 const SESSION_POLL: Duration = Duration::from_millis(40);
@@ -140,16 +142,21 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             now.duration_since(p.last) >= RESIZE_DEBOUNCE
                 || now.duration_since(p.first) >= RESIZE_MAX_DELAY
         });
-        if settled || app.take_reflow_request() {
+        let reflow = app.take_reflow_request();
+        if settled || reflow {
             resize = None;
             let size = terminal.size();
-            if let Some((row, _)) = terminal.cursor_position() {
-                let tail = app.reflow_tail(size.0 as usize);
+            // Termux resizes the height with every on-screen keyboard toggle;
+            // the ordinary frame path keeps the region valid without wiping
+            // the history each time.
+            let keyboard =
+                size.0 == screen.size().0 && std::env::var_os("TERMUX_VERSION").is_some();
+            if reflow || !keyboard {
+                let (prefix, tail) = app.reflow_history(size.0 as usize);
                 let frame = app.frame(size);
                 let wanted = screen.wanted_for(size, frame.live.len());
-                let bytes = screen.reflow(size, row, &tail, wanted);
+                let mut bytes = screen.rewrite(size, &prefix, &tail, wanted);
                 // The frame's own commits and live rows go out right behind.
-                let mut bytes = bytes;
                 bytes.extend(screen.render(&frame, size));
                 if terminal.write(&bytes).is_err() || terminal.write_failed() {
                     let code = terminal.lost();
@@ -158,6 +165,8 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
                 }
                 dirty = false;
                 last_frame = Some(Instant::now());
+            } else {
+                dirty = true;
             }
         }
         let due = last_frame.is_none_or(|at| now.duration_since(at) >= FRAME_INTERVAL);
@@ -267,6 +276,9 @@ struct App {
     /// The most recent committed chunks with what they were drawn from.
     segments: std::collections::VecDeque<Segment>,
     segment_rows: usize,
+    /// Raw rows of chunks that left `segments`, oldest first, for a resize
+    /// rewrite (at most `ARCHIVED_RAW_MAX_ROWS`).
+    archived: std::collections::VecDeque<String>,
     session_id: String,
     /// The default tool-approval mode (wire name).
     approvals: String,
@@ -299,6 +311,8 @@ const BOUNDARY_MAX_WIDTH: usize = 60;
 #[derive(Debug, Clone)]
 struct Segment {
     rows: usize,
+    /// The chunk as committed, for a rewrite that cannot lay it out again.
+    text: String,
     /// `None`: cannot be drawn again, which ends a reflow window.
     source: Option<Block>,
 }
@@ -347,6 +361,7 @@ impl App {
             last_pulse: 0,
             segments: Default::default(),
             segment_rows: 0,
+            archived: Default::default(),
             session_id: String::new(),
             approvals: "normal".to_owned(),
             approvals_toast: false,
@@ -1296,13 +1311,20 @@ impl App {
     /// Remembers a committed chunk with its source (bounded, newest last).
     fn record(&mut self, text: &str, source: Option<Block>) {
         let rows = text.matches('\n').count();
-        self.segments.push_back(Segment { rows, source });
+        self.segments.push_back(Segment {
+            rows,
+            text: text.to_owned(),
+            source,
+        });
         self.segment_rows += rows;
         while self.segments.len() > 1
             && self.segment_rows - self.segments.front().map_or(0, |s| s.rows) >= REFLOW_SOURCE_ROWS
         {
             if let Some(front) = self.segments.pop_front() {
                 self.segment_rows -= front.rows;
+                self.archived.extend(raw_rows(&front.text));
+                let excess = self.archived.len().saturating_sub(ARCHIVED_RAW_MAX_ROWS);
+                self.archived.drain(..excess);
             }
         }
     }
@@ -1316,14 +1338,19 @@ impl App {
         }
     }
 
-    /// The retained transcript laid out for `cols` columns: the contiguous
-    /// newest run of chunks that still have a source, one string per row.
-    fn reflow_tail(&mut self, cols: usize) -> Vec<String> {
+    /// The whole history for a resize rewrite, one string per row: raw rows
+    /// of what cannot be laid out again, then the contiguous newest run of
+    /// chunks that still have a source, laid out for `cols` columns.
+    fn reflow_history(&mut self, cols: usize) -> (Vec<String>, Vec<String>) {
         let first = self
             .segments
             .iter()
             .rposition(|s| s.source.is_none())
             .map_or(0, |i| i + 1);
+        let mut prefix: Vec<String> = self.archived.iter().cloned().collect();
+        for segment in self.segments.iter().take(first) {
+            prefix.extend(raw_rows(&segment.text));
+        }
         let mut rows = Vec::new();
         let mut counts = Vec::new();
         for segment in self.segments.iter().skip(first) {
@@ -1343,7 +1370,7 @@ impl App {
             self.segment_rows = self.segment_rows + count - segment.rows;
             segment.rows = count;
         }
-        rows
+        (prefix, rows)
     }
 
     fn status_line(&self, cols: usize) -> String {
@@ -1644,6 +1671,14 @@ fn git_branch() -> Option<String> {
     }
     let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     (!name.is_empty()).then_some(name)
+}
+
+/// The rows of a committed chunk (its closing newline ends the last row).
+fn raw_rows(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.strip_suffix('\n')
+        .unwrap_or(text)
+        .split('\n')
+        .map(str::to_owned)
 }
 
 /// Rounded box drawing around `rows`, sized to `cols` with the common

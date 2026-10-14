@@ -234,6 +234,7 @@ impl Screen {
         // A commit's closing newline terminates its last row; the emitter
         // would draw it as one more, blank, row.
         let text = text.strip_suffix('\n').unwrap_or(text);
+        let text = &scrub_keeping_newlines(text);
         // The writer is a Vec, so writes cannot fail.
         let written = text.split('\n').count() as u16;
         let before = self.top;
@@ -300,81 +301,61 @@ impl Screen {
         self.cursor_at = Some((0, top));
     }
 
-    /// Redraws the visible part of the transcript after a resize.
+    /// Repaints after a resize by rewriting the terminal's whole history.
     ///
-    /// `report_row` is where the terminal now says the cursor is; compared
-    /// with where this screen parked it, that tells how far the terminal
-    /// moved everything. `tail` is the retained transcript laid out at the
-    /// new width, one string per row. Visible rows from the first of ours
-    /// down are cleared one by one and rewritten; scrollback is not touched
-    /// (no `CSI 3J`), so whatever ran before this interface stays.
-    pub fn reflow(
+    /// Erasing cannot survive a resize: reflowing terminals (iTerm2, Ghostty,
+    /// Apple Terminal) split every row wider than the new width before the
+    /// app hears about it, pushing stale pieces of the old frame into native
+    /// scrollback where no escape sequence reaches them. So the screen and the
+    /// scrollback are cleared (`2J`, then `3J`; `2J` first so terminals that
+    /// archive the screen on it archive into what `3J` clears) and rewritten:
+    /// `prefix` raw, as committed, letting the terminal soft-wrap rows from a
+    /// wider measure; `tail`, laid out at the new width, from the top of a
+    /// clean screen. Output from before this interface started is lost.
+    pub fn rewrite(
         &mut self,
         size: (u16, u16),
-        report_row: u16,
+        prefix: &[String],
         tail: &[String],
         wanted: u16,
     ) -> Vec<u8> {
         let mut out = Vec::new();
         let rows = size.1.max(1);
         let wanted = wanted.clamp(1, rows);
-        let delta = report_row as i32 - self.anchor as i32;
         self.size = size;
-        let moved = self.content_start as i32 + delta;
-        if moved < 0 {
-            // The terminal pushed some of our rows out through the top.
-            self.scrolled = true;
-        }
-        // Once rows of ours are in scrollback, everything visible above the
-        // region is ours as well (history the terminal pulled back in is the
-        // old layout of the same rows): it is all rewritten from row 0.
-        let start = if self.scrolled {
-            0
-        } else {
-            (moved.max(0) as u16).min(rows - wanted)
-        };
-        let avail = (rows - wanted - start) as usize;
-        let draw: &[String] = if self.scrolled && tail.len() > avail {
-            &tail[tail.len() - avail..]
-        } else {
-            tail
-        };
-
         self.begin(&mut out);
         if self.cursor_visible {
             out.extend_from_slice(CURSOR_HIDE);
             self.cursor_visible = false;
         }
-        for row in start..rows {
-            push_move(&mut out, 0, row);
-            out.extend_from_slice(ERASE_LINE);
+        out.extend_from_slice(b"\x1b[2J\x1b[H\x1b[3J");
+        for row in prefix {
+            out.extend_from_slice(scrub(row).as_bytes());
+            out.extend_from_slice(b"\x1b[0m\r\n");
         }
-        push_move(&mut out, 0, start);
-        for (index, row) in draw.iter().enumerate() {
-            if index > 0 {
-                out.extend_from_slice(b"\r\n");
-            }
-            out.extend_from_slice(row.as_bytes());
-            out.extend_from_slice(b"\x1b[0m");
+        if !prefix.is_empty() {
+            // How many screen rows the raw prefix took depends on the
+            // terminal's wrapping: scroll all of it into scrollback so the
+            // tail starts on a clean screen at a known row.
+            push_move(&mut out, 0, rows - 1);
+            out.extend(std::iter::repeat_n(b"\n", rows as usize).flatten());
+            push_move(&mut out, 0, 0);
         }
-        let last = if draw.is_empty() {
-            start
-        } else {
-            (start as usize + draw.len() - 1).min(rows as usize - 1) as u16
-        };
-        let below = if draw.is_empty() { 0 } else { 1 };
-        // Room for the region under the last row; the terminal scrolls for
-        // whatever does not fit.
-        let needed = (last + below + wanted).saturating_sub(rows);
-        if needed > 0 {
-            out.extend(std::iter::repeat_n(b"\n", needed as usize).flatten());
+        for row in tail {
+            out.extend_from_slice(scrub(row).as_bytes());
+            out.extend_from_slice(b"\x1b[0m\r\n");
         }
-        let top = (last + below).min(rows - wanted);
-        let written = draw.len().min(u16::MAX as usize) as u16;
-        if written > top {
-            self.scrolled = true;
+        // The cursor is on the row after the tail; the region starts there,
+        // scrolling the screen up for whatever does not fit below it.
+        let after = tail.len().min((rows - 1) as usize) as u16;
+        let overflow = (after + wanted).saturating_sub(rows);
+        if overflow > 0 {
+            push_move(&mut out, 0, rows - 1);
+            out.extend(std::iter::repeat_n(b"\n", overflow as usize).flatten());
         }
-        self.content_start = top.saturating_sub(written);
+        let top = after - overflow;
+        self.scrolled = !prefix.is_empty() || tail.len() > top as usize;
+        self.content_start = 0;
         self.top = top;
         self.viewport_height = wanted;
         self.painted = vec![None; wanted as usize];
@@ -394,7 +375,7 @@ impl Screen {
             }
             push_move(out, 0, top + i as u16);
             out.extend_from_slice(ERASE_LINE);
-            out.extend_from_slice(row.as_bytes());
+            out.extend_from_slice(scrub(row).as_bytes());
             // Styling must not leak into the next row.
             out.extend_from_slice(b"\x1b[0m");
             if let Some(slot) = self.painted.get_mut(i) {
@@ -446,6 +427,33 @@ fn visible_rows(live: &[String], height: u16) -> Vec<String> {
         rows.push(String::new());
     }
     rows
+}
+
+/// C0 controls that move the cursor or otherwise act on the terminal; ESC
+/// and BEL stay, every escape sequence the interface emits is built from
+/// them. Model text reaches rows verbatim, and a lone `\r` in it sends the
+/// rest of a row back to column 0 over its own border and desynchronises the
+/// row count of everything painted after it.
+fn moves_cursor(c: char) -> bool {
+    matches!(c, '\x00'..='\x06' | '\x08'..='\x1a' | '\x1c'..='\x1f' | '\x7f')
+}
+
+/// One row as it may reach the terminal: nothing in it moves the cursor.
+fn scrub(row: &str) -> std::borrow::Cow<'_, str> {
+    if row.contains(moves_cursor) {
+        row.replace(moves_cursor, "").into()
+    } else {
+        row.into()
+    }
+}
+
+/// A commit: rows separated by `\n`, each scrubbed.
+fn scrub_keeping_newlines(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains(|c| c != '\n' && moves_cursor(c)) {
+        text.replace(|c| c != '\n' && moves_cursor(c), "").into()
+    } else {
+        text.into()
+    }
 }
 
 /// CUP with 0-based (column, row).
@@ -587,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn reflow_redraws_rows_without_touching_what_ran_before() {
+    fn rewrite_clears_scrollback_and_writes_the_history_once() {
         let (mut screen, mut emu) = setup(true);
         emu.feed(b"before-start\r\n");
         screen.set_origin(1);
@@ -597,24 +605,56 @@ mod tests {
             &mut emu,
             &frame(&["\nfirst\n", "\nsecond\n"], &live, Some((0, 0))),
         );
-        // The terminal keeps the cursor on its content line: same row.
-        let report = screen.anchor;
+        let prefix = vec!["archived".to_owned()];
         let tail: Vec<String> = ["", "first", "", "second"]
             .iter()
             .map(|s| s.to_string())
             .collect();
         let wanted = screen.wanted_for(SIZE, live.len());
-        let bytes = screen.reflow(SIZE, report, &tail, wanted);
+        let bytes = screen.rewrite(SIZE, &prefix, &tail, wanted);
         emu.feed(&bytes);
         drive(&mut screen, &mut emu, &frame(&[], &live, Some((0, 0))));
         let rows = emu.rows_text();
-        assert_eq!(rows[0], "before-start");
         assert_eq!(
-            rows[1..7],
+            rows[..6],
             ["", "first", "", "second", "composer", "status"],
             "{rows:?}"
         );
-        assert!(emu.transcript().iter().filter(|l| *l == "first").count() == 1);
+        let transcript = emu.transcript();
+        assert!(
+            !transcript.iter().any(|l| l == "before-start"),
+            "{transcript:?}"
+        );
+        assert_eq!(transcript.iter().filter(|l| *l == "archived").count(), 1);
+        assert_eq!(transcript.iter().filter(|l| *l == "first").count(), 1);
+    }
+
+    #[test]
+    fn row_text_never_moves_the_cursor() {
+        let (mut screen, mut emu) = setup(true);
+        drive(
+            &mut screen,
+            &mut emu,
+            &frame(
+                &["分位数（推荐\r）\n"],
+                &["│ 1 ( ) 分位数（推荐\r） │"],
+                None,
+            ),
+        );
+        // The emulator keeps a `\0` spacer after each wide character.
+        let transcript: Vec<String> = emu
+            .transcript()
+            .iter()
+            .map(|l| l.replace('\0', ""))
+            .collect();
+        assert!(
+            transcript.iter().any(|l| l == "分位数（推荐）"),
+            "{transcript:?}"
+        );
+        assert!(
+            transcript.iter().any(|l| l == "│ 1 ( ) 分位数（推荐） │"),
+            "{transcript:?}"
+        );
     }
 
     #[test]
