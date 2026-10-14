@@ -8,4 +8,4 @@ pub mod blocks;
 pub mod commit;
 pub mod split;
 pub mod stream;
-pub mod tools;
+pub mod tool_group;

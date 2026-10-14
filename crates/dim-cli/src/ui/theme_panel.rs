@@ -75,35 +75,15 @@ impl ThemePanel {
 
 /// The theme id saved in `config.json` (`themeId`), if any.
 pub fn saved_theme_id(home: &std::path::Path) -> Option<String> {
-    let text = std::fs::read_to_string(config_path(home)).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    value["themeId"].as_str().map(str::to_owned)
+    crate::ui::config::read(home, "themeId")?
+        .as_str()
+        .map(str::to_owned)
 }
 
-/// Writes `themeId` into `config.json`, keeping the other keys; the error
-/// text on failure.
+/// Writes `themeId` into `config.json`; the error text on failure.
 pub fn save_theme_id(home: &std::path::Path, id: &str) -> Option<String> {
-    let path = config_path(home);
-    let mut value: serde_json::Value = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .filter(serde_json::Value::is_object)
-        .unwrap_or_else(|| serde_json::json!({}));
-    value["themeId"] = id.into();
-    let text = match serde_json::to_string_pretty(&value) {
-        Ok(text) => text + "\n",
-        Err(error) => return Some(error.to_string()),
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    std::fs::write(&path, text)
-        .err()
+    crate::ui::config::write(home, "themeId", id.into())
         .map(|e| format!("Could not save the theme: {e}"))
-}
-
-fn config_path(home: &std::path::Path) -> std::path::PathBuf {
-    home.join("config.json")
 }
 
 #[cfg(test)]

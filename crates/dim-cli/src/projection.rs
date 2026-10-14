@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 
-use dim_agent_types::{ContentBlock, JsonObject, ModelOutputOutcome, TurnOutcome};
+use dim_agent_types::{
+    ContentBlock, JsonObject, ModelOutputOutcome, ToolContent, ToolResult, TurnOutcome,
+};
 use serde_json::Value;
 
 use crate::model::view::{ApprovalView, RowKind, RowTone, ViewRow, ViewSnapshot};
@@ -84,15 +86,16 @@ impl Projection {
                 let row = &mut self.rows[index];
                 row.tool_name = Some(data.call.name.clone());
                 row.tool_input = Some(Value::Object(data.call.input.clone()));
+                row.batch = Some(data.request_id.clone());
                 row.pending = true;
                 self.tool_rows.insert(data.call.id.clone(), index);
             }
             EventContent::ToolCompleted(data) => {
-                self.complete_tool(&data.call_id, data.result.is_error);
+                self.complete_tool(&data.call_id, &data.result);
             }
             EventContent::ToolResult(data) => {
                 for result in &data.results {
-                    self.complete_tool(&result.call_id, result.result.is_error);
+                    self.complete_tool(&result.call_id, &result.result);
                 }
             }
             EventContent::ModelEnd(data) => {
@@ -176,6 +179,7 @@ impl Projection {
             tone: None,
             tool_name: None,
             tool_input: None,
+            batch: None,
             pending: false,
             parked: false,
             result_text: None,
@@ -207,14 +211,25 @@ impl Projection {
         }
     }
 
-    fn complete_tool(&mut self, call_id: &str, is_error: Option<bool>) {
+    fn complete_tool(&mut self, call_id: &str, result: &ToolResult) {
         let Some(index) = self.tool_rows.remove(call_id) else {
             return;
         };
         let row = &mut self.rows[index];
         row.pending = false;
         row.parked = false;
-        row.result_is_error = is_error == Some(true);
+        row.result_is_error = result.is_error == Some(true);
+        row.result_text = Some(match &result.content {
+            ToolContent::Text(text) => text.clone(),
+            ToolContent::Blocks(blocks) => text_of(blocks),
+        });
+        // The edit tool reports the display diff of what it changed.
+        row.diff = result
+            .structured_content
+            .as_ref()
+            .and_then(|content| content.get("diff"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
     }
 }
 

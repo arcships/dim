@@ -51,6 +51,9 @@ pub struct ViewRow {
     pub tone: Option<RowTone>,
     pub tool_name: Option<String>,
     pub tool_input: Option<serde_json::Value>,
+    /// The model request a tool call came from: the calls of one request are
+    /// drawn as one group.
+    pub batch: Option<String>,
     /// A tool call that has not produced its result yet.
     pub pending: bool,
     /// A call that waits on the user (an approval names it, or it is the

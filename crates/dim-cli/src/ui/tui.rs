@@ -22,17 +22,19 @@ use crate::ui::terminal::{InputEvent, KeyCode, Modifiers, Terminal, TerminalErro
 use crate::ui::theme::ansi::{Paint, fg, paint};
 use crate::ui::theme::{Palette, Theme, detect};
 use crate::ui::theme_panel::ThemePanel;
-use crate::ui::transcript::block::{Block, Tone, project_row, tool_block};
+use crate::ui::transcript::block::{Block, Tone, group_rows, opens_group, project_row};
 use crate::ui::transcript::blocks::{
     ASSISTANT_MARK, UserStyle, apply_gutter_mark, gutter_width, render_user, truncate_cells,
 };
 use crate::ui::transcript::commit::CommitState;
 use crate::ui::transcript::stream::{StreamPlanner, TextBlock};
-use crate::ui::transcript::tools::render_tool;
+use crate::ui::transcript::tool_group::{Detail, project_group, render_group};
 
 /// The stop reason and the note committed when the user interrupts a run.
 pub const INTERRUPT_REASON: &str = "User interrupted the run.";
 const COMPOSER_PLACEHOLDER: &str = "Ask anything...";
+/// `config.json` key of the tool detail toggle, shared with the TS CLI.
+const TOOL_DETAILS_KEY: &str = "tuiToolDetailsExpanded";
 /// Frames are coalesced to roughly 60 Hz.
 /// A resize waits this long after the last size change before it is applied.
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(100);
@@ -251,6 +253,9 @@ struct App {
     composer: Composer,
     cwd_key: String,
     home: PathBuf,
+    /// How tool groups are drawn (`/tools`); groups already committed keep
+    /// the form they were written in.
+    tool_detail: Detail,
     notices: Vec<String>,
     /// Multi-line status blocks to commit (reports), with their tone.
     reports: Vec<(String, Tone)>,
@@ -337,10 +342,16 @@ impl App {
         cwd_key: String,
     ) -> Self {
         let past = history::load(&home, &cwd_key);
+        let expanded = crate::ui::config::read(&home, TOOL_DETAILS_KEY).and_then(|v| v.as_bool());
         Self {
             host,
             composer: Composer::new(past),
             cwd_key,
+            tool_detail: if expanded == Some(true) {
+                Detail::Expanded
+            } else {
+                Detail::Collapsed
+            },
             home,
             notices: Vec::new(),
             reports: Vec::new(),
@@ -892,6 +903,23 @@ impl App {
                 self.request_history();
                 Outcome::Continue
             }
+            "tools" => {
+                let (detail, label) = match self.tool_detail {
+                    Detail::Collapsed => (Detail::Expanded, "expanded"),
+                    Detail::Expanded => (Detail::Collapsed, "collapsed"),
+                };
+                self.tool_detail = detail;
+                let saved = crate::ui::config::write(
+                    &self.home,
+                    TOOL_DETAILS_KEY,
+                    (detail == Detail::Expanded).into(),
+                );
+                self.notices.push(match saved {
+                    None => format!("Tool details {label}"),
+                    Some(error) => format!("Tool details {label} (not saved: {error})"),
+                });
+                Outcome::Continue
+            }
             "reconnect" => {
                 self.host.send(Command::Reconnect);
                 Outcome::Continue
@@ -1146,9 +1174,15 @@ impl App {
                 RowKind::Thinking if row.streaming => {
                     live_items.push(LiveItem::Thinking(row.preview.clone().unwrap_or_default()));
                 }
-                // A call waiting on an approval is already part of the
-                // transcript: the prompt asks about it, it does not replace it.
-                RowKind::ToolCall if row.is_live_tool() => {
+                // The calls of one request are one group: it stays live until
+                // every call has its result (a call waiting on an approval
+                // included), then commits whole under its first call's id.
+                RowKind::ToolCall if !opens_group(&snapshot.rows, index) => {}
+                RowKind::ToolCall
+                    if group_rows(&snapshot.rows, index)
+                        .iter()
+                        .any(|call| call.pending) =>
+                {
                     live_items.push(LiveItem::Tool(index));
                 }
                 RowKind::AssistantMessage => {
@@ -1185,10 +1219,11 @@ impl App {
         );
         let mut commits: Vec<String> = Vec::new();
         let mut sources: Vec<Option<Block>> = Vec::new();
-        let draw = |row: &ViewRow,
+        let detail = self.tool_detail;
+        let draw = |index: usize,
                     finalized: Option<crate::ui::transcript::stream::Batch>|
          -> (Vec<String>, Option<Block>) {
-            match (row.kind, finalized) {
+            match (snapshot.rows[index].kind, finalized) {
                 // The planner has laid out this answer already.
                 (RowKind::AssistantMessage, Some(batch)) => (
                     batch.lines,
@@ -1198,7 +1233,7 @@ impl App {
                     }),
                 ),
                 _ => {
-                    let block = project_row(row);
+                    let block = project_row(&snapshot.rows, index, detail);
                     let lines = render_block(&block, width, p, markdown);
                     (lines, Some(block))
                 }
@@ -1207,16 +1242,24 @@ impl App {
         if let Some((start, end)) = self.history_request.take() {
             // An earlier page goes out first, under its own header.
             let len = snapshot.rows.len();
-            let rows = &snapshot.rows[start.min(len)..end.min(len)];
-            let count = rows.iter().filter(|r| is_message(r)).count();
+            let (start, end) = (start.min(len), end.min(len));
+            let count = snapshot.rows[start..end]
+                .iter()
+                .filter(|r| is_message(r))
+                .count();
             let header = format!(
                 "Earlier history · {} · {count} messages · /history for the previous page",
                 self.session_id.get(..8).unwrap_or(&self.session_id)
             );
             commits.push(chunk(&[fg(&truncate_cells(&header, width), &p.muted)]));
             sources.push(Some(Block::Note(header)));
-            for row in rows {
-                let (lines, source) = draw(row, None);
+            for index in start..end {
+                if snapshot.rows[index].kind == RowKind::ToolCall
+                    && !opens_group(&snapshot.rows, index)
+                {
+                    continue;
+                }
+                let (lines, source) = draw(index, None);
                 if !lines.is_empty() {
                     commits.push(chunk(&lines));
                     sources.push(source);
@@ -1225,10 +1268,10 @@ impl App {
         }
         let fresh = self.commits.plan(&settled_ids).fresh;
         for id in fresh {
-            let Some(row) = snapshot.rows.iter().find(|r| r.row_id == id) else {
+            let Some(index) = snapshot.rows.iter().position(|r| r.row_id == id) else {
                 continue;
             };
-            let (lines, source) = draw(row, plan.finalized.remove(&id));
+            let (lines, source) = draw(index, plan.finalized.remove(&id));
             if !lines.is_empty() {
                 commits.push(chunk(&lines));
                 sources.push(source);
@@ -1254,10 +1297,12 @@ impl App {
                     _ => Vec::new(),
                 },
                 LiveItem::Thinking(preview) => vec![thinking_line(preview, width, p)],
-                LiveItem::Tool(index) => match snapshot.rows.get(*index) {
-                    Some(row) => render_tool(&tool_block(row), width, p),
-                    None => Vec::new(),
-                },
+                LiveItem::Tool(index) => render_group(
+                    &project_group(&group_rows(&snapshot.rows, *index), detail),
+                    width,
+                    p,
+                    "·",
+                ),
             };
             if rows.is_empty() {
                 continue;
@@ -1571,7 +1616,7 @@ fn render_block(
             }
         }
         Block::Thinking(text) => vec![thinking_line(text, width, p)],
-        Block::Tool(block) => render_tool(block, width, p),
+        Block::ToolGroup(group) => render_group(group, width, p, "·"),
         Block::Error(text) => gutter_text("■", text, width, &p.danger),
         Block::Status { text, tone } => {
             let color = match tone {

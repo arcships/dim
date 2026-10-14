@@ -181,6 +181,12 @@ pub const COMMANDS: &[Command] = &[
         requires_session: false,
     },
     Command {
+        name: "tools",
+        description: "Toggle tool details (collapsed or expanded)",
+        aliases: &[],
+        requires_session: false,
+    },
+    Command {
         name: "history",
         description: "Append the previous page of full message history",
         aliases: &[],

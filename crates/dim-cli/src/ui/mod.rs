@@ -17,6 +17,7 @@ pub struct Env {
 pub mod approvals_panel;
 pub mod attachments;
 pub mod composer;
+pub mod config;
 pub mod list_panel;
 pub mod models_panel;
 pub mod oauth_view;

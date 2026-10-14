@@ -1,0 +1,1431 @@
+//! The tool calls of one model response drawn as one group (port of
+//! `blocks/tool-group.ts` and `tool-group-render.ts`).
+//!
+//! Collapsed, the default, is Amp's summary row alone
+//! (`✓ Ran 1 command, ran 1 search, read 1 file · 1 failed`). Expanded (the
+//! `/tools` toggle) adds a row per call with the bodies that matter: command
+//! output, edit diffs. The live region and the committed block both draw
+//! through [`render_group`], so a group that settles lands on exactly the rows
+//! it occupied while it ran.
+
+use serde_json::Value;
+use unicode_segmentation::UnicodeSegmentation;
+
+use crate::model::view::ViewRow;
+use crate::ui::theme::Palette;
+use crate::ui::theme::ansi::{Paint, paint};
+use crate::ui::transcript::blocks::display_width;
+
+/// Source lines of one edit's diff before the rest is counted, not shown.
+const DIFF_MAX_LINES: usize = 40;
+/// Line numbers take at least this many columns, as Amp pads them.
+const LINE_NUMBER_MIN_WIDTH: usize = 3;
+/// Rows one wrapped line may take before the rest is cut.
+const WRAP_MAX_ROWS: usize = 4;
+/// Screen rows of a command's output: its end, unmarked, as Amp shows it.
+const TAIL_MAX_ROWS: usize = 15;
+
+/// How much of a group is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Detail {
+    Collapsed,
+    Expanded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum State {
+    Running,
+    Done,
+    Failed,
+}
+
+/// Roles a span is painted in. Command roles follow a shell highlighter: the
+/// program bold, flags and quoted strings coloured, operators dimmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    Text,
+    Muted,
+    Success,
+    Danger,
+    Path,
+    Program,
+    Flag,
+    Quoted,
+    Operator,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Span {
+    text: String,
+    tone: Tone,
+}
+
+fn span(text: impl Into<String>, tone: Tone) -> Span {
+    Span {
+        text: text.into(),
+        tone,
+    }
+}
+
+/// What sits in front of a row; the `*Muted` outcomes are a child call's,
+/// recessive under its header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mark {
+    Running,
+    Done,
+    Failed,
+    DoneMuted,
+    FailedMuted,
+    Command,
+    CommandFailed,
+}
+
+/// `Truncate` keeps one row. `Wrap` continues under the text column and keeps
+/// the text's own line breaks, up to [`WRAP_MAX_ROWS`], ending the last in
+/// `…`; `WrapCounted` gives that last row to a `… +N lines` count, so a pasted
+/// script or heredoc cannot fill the history for good. `Tail` keeps the last
+/// [`TAIL_MAX_ROWS`] rows, as a command's output is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Overflow {
+    Truncate,
+    Wrap,
+    WrapCounted,
+    Tail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Line {
+    /// Columns before the mark (or before the text when there is none).
+    indent: usize,
+    mark: Option<Mark>,
+    spans: Vec<Span>,
+    overflow: Overflow,
+    /// Wrapped rows start this many columns further in than `indent`.
+    hang: usize,
+}
+
+fn header_line(indent: usize, mark: Mark, spans: Vec<Span>) -> Line {
+    Line {
+        indent,
+        mark: Some(mark),
+        spans,
+        overflow: Overflow::Truncate,
+        hang: 0,
+    }
+}
+
+fn body_line(indent: usize, text: impl Into<String>, tone: Tone, overflow: Overflow) -> Line {
+    Line {
+        indent,
+        mark: None,
+        spans: vec![span(text, tone)],
+        overflow,
+        hang: 0,
+    }
+}
+
+/// One batch of tool calls, projected for drawing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolGroup {
+    pub state: State,
+    lines: Vec<Line>,
+}
+
+/// The fields of a call row the group reads.
+struct Call<'a> {
+    name: String,
+    input: Option<&'a Value>,
+    state: State,
+    result: Option<&'a str>,
+    diff: Option<&'a str>,
+}
+
+impl<'a> Call<'a> {
+    fn of(row: &'a ViewRow) -> Self {
+        // A call parked on an approval is still running: the group waits for
+        // it. One with no result once it stopped never got one — the run
+        // ended on top of it — and reads as failed, not as done.
+        let state = if row.pending {
+            State::Running
+        } else if row.result_is_error || row.result_text.is_none() {
+            State::Failed
+        } else {
+            State::Done
+        };
+        Self {
+            name: row.tool_name.as_deref().unwrap_or("tool").to_lowercase(),
+            input: row.tool_input.as_ref(),
+            state,
+            result: row.result_text.as_deref(),
+            diff: row.diff.as_deref(),
+        }
+    }
+
+    fn string(&self, key: &str) -> Option<&'a str> {
+        self.input?.get(key)?.as_str().filter(|s| !s.is_empty())
+    }
+
+    fn path(&self) -> &'a str {
+        self.string("path")
+            .or_else(|| self.string("file_path"))
+            .unwrap_or("")
+    }
+
+    fn background(&self) -> bool {
+        self.input
+            .and_then(|i| i.get("runInBackground"))
+            .and_then(Value::as_bool)
+            == Some(true)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExploreKind {
+    File,
+    Page,
+    Skill,
+    Search,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Explore,
+    Command,
+    Edit,
+    Check,
+    Tool,
+}
+
+enum Item<'a> {
+    Explore {
+        call: Call<'a>,
+        kind: ExploreKind,
+        label: &'static str,
+        detail: String,
+    },
+    Command {
+        call: Call<'a>,
+        command: String,
+    },
+    Edit {
+        call: Call<'a>,
+        write: bool,
+    },
+    Check {
+        call: Call<'a>,
+    },
+    Tool {
+        call: Call<'a>,
+    },
+}
+
+impl<'a> Item<'a> {
+    fn call(&self) -> &Call<'a> {
+        match self {
+            Item::Explore { call, .. }
+            | Item::Command { call, .. }
+            | Item::Edit { call, .. }
+            | Item::Check { call }
+            | Item::Tool { call } => call,
+        }
+    }
+
+    fn section(&self) -> Section {
+        match self {
+            Item::Explore { .. } => Section::Explore,
+            Item::Command { .. } => Section::Command,
+            Item::Edit { .. } => Section::Edit,
+            Item::Check { .. } => Section::Check,
+            Item::Tool { .. } => Section::Tool,
+        }
+    }
+
+    fn explore_kind(&self) -> Option<ExploreKind> {
+        match self {
+            Item::Explore { kind, .. } => Some(*kind),
+            _ => None,
+        }
+    }
+}
+
+/// One batch of calls as a group.
+pub fn project_group(rows: &[&ViewRow], detail: Detail) -> ToolGroup {
+    let items: Vec<Item<'_>> = rows.iter().map(|row| classify(Call::of(row))).collect();
+    let states: Vec<State> = items.iter().map(|item| item.call().state).collect();
+    let state = group_state(&states);
+    let mark = state_mark(state);
+    let sections = ordered_sections(&items);
+    let mut header = header_spans(&items, &sections);
+    let mut lines = Vec::new();
+    match detail {
+        Detail::Collapsed => {
+            // With no rows under it nothing else would say some calls failed.
+            let failed = states.iter().filter(|s| **s == State::Failed).count();
+            if failed > 0 && failed < states.len() {
+                header.push(span(format!(" · {failed} failed"), Tone::Danger));
+            }
+            lines.push(header_line(0, mark, header));
+        }
+        Detail::Expanded => {
+            lines.push(header_line(0, mark, header));
+            if sections.len() == 1 {
+                let members: Vec<&Item<'_>> = items.iter().collect();
+                append_section(&mut lines, sections[0], &members, false);
+            } else {
+                // In call order: each run of same-kind calls is drawn where
+                // the batch made it.
+                for run in section_runs(&items) {
+                    append_section(&mut lines, run[0].section(), &run, true);
+                }
+            }
+        }
+    }
+    ToolGroup { state, lines }
+}
+
+fn classify(call: Call<'_>) -> Item<'_> {
+    let explore = |call, kind, label, detail| Item::Explore {
+        call,
+        kind,
+        label,
+        detail,
+    };
+    match call.name.as_str() {
+        "read" => {
+            let detail = base_name(call.path()).to_owned();
+            explore(call, ExploreKind::File, "Read", detail)
+        }
+        "glob" => {
+            let mut parts = vec![call.string("pattern").unwrap_or("").to_owned()];
+            if call.state == State::Done {
+                parts.extend(glob_files(call.result).map(str::to_owned));
+            }
+            explore(call, ExploreKind::Search, "List", parts.join(" "))
+        }
+        "grep" => {
+            let pattern = call
+                .string("pattern")
+                .or_else(|| call.string("query"))
+                .unwrap_or("");
+            let first_match = if call.state == State::Done {
+                grep_matches(call.result).next().unwrap_or("")
+            } else {
+                ""
+            };
+            let detail = [call.path(), &quote(pattern), first_match]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            explore(call, ExploreKind::Search, "Grep", detail)
+        }
+        "websearch" | "web_search" => {
+            let detail = format!("· {}", call.string("query").unwrap_or(""));
+            explore(call, ExploreKind::Search, "Search the web", detail)
+        }
+        "webfetch" | "web_fetch" => {
+            let detail = call.string("url").unwrap_or("").to_owned();
+            explore(call, ExploreKind::Page, "Read", detail)
+        }
+        "skill" => {
+            let detail = call.string("skill_name").unwrap_or("").to_owned();
+            explore(call, ExploreKind::Skill, "Read skill", detail)
+        }
+        "exec" | "bash" => {
+            let command = call.string("command").unwrap_or("").to_owned();
+            let read_only = if call.background() {
+                None
+            } else {
+                explore_command(&command, call.result)
+            };
+            match read_only {
+                Some((kind, label, detail)) => explore(call, kind, label, detail),
+                None => Item::Command { call, command },
+            }
+        }
+        "wait" => Item::Check { call },
+        "edit" => Item::Edit { call, write: false },
+        "write" => Item::Edit { call, write: true },
+        _ => Item::Tool { call },
+    }
+}
+
+/// A plain read-only command reads as the exploring it is, the way Amp counts
+/// `ls`, `wc` and `git log` among the files and searches. Anything with shell
+/// operators, redirection, substitution or a second line stays a command:
+/// what it does is no longer one program's.
+fn explore_command(
+    command: &str,
+    result: Option<&str>,
+) -> Option<(ExploreKind, &'static str, String)> {
+    if command.contains(['|', '&', ';', '<', '>', '`', '$', '(', ')', '{', '}', '\n']) {
+        return None;
+    }
+    let mut words = command.split_whitespace();
+    let program = words.next().unwrap_or("");
+    let args: Vec<&str> = words.filter(|word| !word.starts_with('-')).collect();
+    match program {
+        "ls" | "tree" | "find" | "fd" => {
+            // Amp lists the paths after the listing's own output.
+            let listed = output_lines(result);
+            let detail = args
+                .iter()
+                .copied()
+                .chain(listed.iter().map(String::as_str).filter(|l| !l.is_empty()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            Some((ExploreKind::Search, "List", detail))
+        }
+        "cat" | "head" | "tail" | "wc" | "stat" | "file" => {
+            let names = args.iter().map(|a| base_name(a)).collect::<Vec<_>>();
+            let detail = if names.is_empty() {
+                ".".to_owned()
+            } else {
+                names.join(" ")
+            };
+            Some((ExploreKind::File, "Read", detail))
+        }
+        "rg" | "grep" => Some((ExploreKind::Search, "Grep", args.join(" "))),
+        "git" if matches!(args.first(), Some(&("log" | "show" | "blame"))) => Some((
+            ExploreKind::Search,
+            "Search git history",
+            first_line(result),
+        )),
+        _ => None,
+    }
+}
+
+fn header_spans(items: &[Item<'_>], sections: &[Section]) -> Vec<Span> {
+    if let [section] = sections {
+        let members: Vec<&Item<'_>> = items.iter().collect();
+        return match section {
+            Section::Explore => explore_header(&members),
+            Section::Edit => edit_header(&members),
+            // Only Explored mutes its counts; Amp prints these headers whole.
+            _ => vec![span(
+                capitalize(&phrase(phrase_key(&items[0]), &members)),
+                Tone::Text,
+            )],
+        };
+    }
+    // Mixed: one phrase per kind of work, in the order the batch started it.
+    let mut keys: Vec<PhraseKey> = Vec::new();
+    for item in items {
+        let key = phrase_key(item);
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    let phrases: Vec<String> = keys
+        .iter()
+        .map(|key| {
+            let members: Vec<&Item<'_>> = items.iter().filter(|i| phrase_key(i) == *key).collect();
+            phrase(*key, &members)
+        })
+        .collect();
+    vec![span(capitalize(&phrases.join(", ")), Tone::Text)]
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PhraseKey {
+    Search,
+    Explore,
+    Skill,
+    Command,
+    Edit,
+    Check,
+    Tool,
+}
+
+fn phrase_key(item: &Item<'_>) -> PhraseKey {
+    match item {
+        Item::Explore { kind, .. } => match kind {
+            ExploreKind::Search => PhraseKey::Search,
+            ExploreKind::Skill => PhraseKey::Skill,
+            ExploreKind::File | ExploreKind::Page => PhraseKey::Explore,
+        },
+        Item::Command { .. } => PhraseKey::Command,
+        Item::Edit { .. } => PhraseKey::Edit,
+        Item::Check { .. } => PhraseKey::Check,
+        Item::Tool { .. } => PhraseKey::Tool,
+    }
+}
+
+fn running(members: &[&Item<'_>]) -> bool {
+    members
+        .iter()
+        .any(|item| item.call().state == State::Running)
+}
+
+/// `ran 2 commands`: the verb in the progressive while any member runs.
+fn phrase(key: PhraseKey, members: &[&Item<'_>]) -> String {
+    let verb = |past: &'static str, progressive: &'static str| {
+        if running(members) { progressive } else { past }
+    };
+    let n = members.len();
+    match key {
+        PhraseKey::Search => format!("{} {}", verb("ran", "running"), counted(n, "search")),
+        PhraseKey::Skill => format!("{} {}", verb("read", "reading"), counted(n, "skill")),
+        PhraseKey::Explore => {
+            let files = members
+                .iter()
+                .filter(|item| item.explore_kind() == Some(ExploreKind::File))
+                .count();
+            let pages = n - files;
+            let items = match (files, pages) {
+                (0, pages) => counted(pages, "web page"),
+                (files, 0) => counted(files, "file"),
+                (files, pages) => format!(
+                    "{} and {}",
+                    counted(files, "file"),
+                    counted(pages, "web page")
+                ),
+            };
+            // Amp reads files, and explores only once web pages are among them.
+            let verb = if pages == 0 {
+                verb("read", "reading")
+            } else {
+                verb("explored", "exploring")
+            };
+            format!("{verb} {items}")
+        }
+        PhraseKey::Command => format!("{} {}", verb("ran", "running"), counted(n, "command")),
+        PhraseKey::Edit => {
+            let verb = if all_edits(members) {
+                verb("edited", "editing")
+            } else {
+                verb("changed", "changing")
+            };
+            format!("{verb} {}", counted(edited_paths(members), "file"))
+        }
+        PhraseKey::Check => format!(
+            "{} {}",
+            verb("checked on", "checking on"),
+            counted(n, "task")
+        ),
+        PhraseKey::Tool => format!("{} {}", verb("ran", "running"), counted(n, "tool")),
+    }
+}
+
+/// `Explored 2 files, 2 searches`: the verb, then the counts muted.
+fn explore_header(members: &[&Item<'_>]) -> Vec<Span> {
+    let count = |kind| {
+        members
+            .iter()
+            .filter(|item| item.explore_kind() == Some(kind))
+            .count()
+    };
+    let parts: Vec<String> = [
+        (ExploreKind::File, "file"),
+        (ExploreKind::Page, "web page"),
+        (ExploreKind::Skill, "skill"),
+        (ExploreKind::Search, "search"),
+    ]
+    .into_iter()
+    .filter(|(kind, _)| count(*kind) > 0)
+    .map(|(kind, noun)| counted(count(kind), noun))
+    .collect();
+    let verb = if running(members) {
+        "Exploring"
+    } else {
+        "Explored"
+    };
+    vec![
+        span(verb, Tone::Text),
+        span(format!(" {}", parts.join(", ")), Tone::Muted),
+    ]
+}
+
+/// `Edited 1 file (+1 -1)`, or `Changed` once a write is among them.
+fn edit_header(members: &[&Item<'_>]) -> Vec<Span> {
+    let verb = match (all_edits(members), running(members)) {
+        (true, false) => "Edited",
+        (true, true) => "Editing",
+        (false, false) => "Changed",
+        (false, true) => "Changing",
+    };
+    let (mut added, mut removed) = (0, 0);
+    for item in members {
+        if let Item::Edit { call, write } = item
+            && call.state != State::Failed
+        {
+            let (a, r) = diff_counts(&edit_lines(call, *write));
+            added += a;
+            removed += r;
+        }
+    }
+    let mut spans = vec![span(
+        format!("{verb} {}", counted(edited_paths(members), "file")),
+        Tone::Text,
+    )];
+    let summary = format_counts(added, removed);
+    if !summary.is_empty() {
+        spans.push(span(" (", Tone::Muted));
+        spans.push(span(summary, Tone::Text));
+        spans.push(span(")", Tone::Muted));
+    }
+    spans
+}
+
+fn append_section(lines: &mut Vec<Line>, section: Section, items: &[&Item<'_>], nested: bool) {
+    let members: Vec<&Item<'_>> = items
+        .iter()
+        .copied()
+        .filter(|item| item.section() == section)
+        .collect();
+    match section {
+        Section::Explore => {
+            // Nested under a mixed header, the explore calls get a header of their own.
+            if nested {
+                let states: Vec<State> = members.iter().map(|i| i.call().state).collect();
+                lines.push(header_line(
+                    2,
+                    state_mark(group_state(&states)),
+                    explore_header(&members),
+                ));
+            }
+            for item in &members {
+                let Item::Explore {
+                    call,
+                    label,
+                    detail,
+                    ..
+                } = item
+                else {
+                    continue;
+                };
+                let text = [*label, detail.as_str()]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                lines.push(Line {
+                    indent: if nested { 3 } else { 1 },
+                    mark: Some(match call.state {
+                        State::Running => Mark::Running,
+                        State::Failed => Mark::FailedMuted,
+                        State::Done => Mark::DoneMuted,
+                    }),
+                    spans: vec![span(text, Tone::Muted)],
+                    overflow: Overflow::Truncate,
+                    hang: 0,
+                });
+            }
+        }
+        Section::Command => {
+            for item in &members {
+                if let Item::Command { call, command } = item {
+                    append_command(lines, call, command);
+                }
+            }
+        }
+        Section::Edit => {
+            let single = members.len() == 1;
+            for item in &members {
+                if let Item::Edit { call, write } = item {
+                    append_edit(lines, call, *write, single);
+                }
+            }
+        }
+        Section::Check => {
+            for item in &members {
+                append_check(lines, item.call());
+            }
+        }
+        Section::Tool => {
+            for item in &members {
+                append_tool(lines, item.call());
+            }
+        }
+    }
+}
+
+fn append_command(lines: &mut Vec<Line>, call: &Call<'_>, command: &str) {
+    let mut spans = highlight_command(command);
+    if call.background() {
+        spans.push(span(" (detached)", Tone::Muted));
+    }
+    lines.push(Line {
+        indent: 2,
+        mark: Some(match call.state {
+            State::Running => Mark::Running,
+            State::Failed => Mark::CommandFailed,
+            State::Done => Mark::Command,
+        }),
+        spans,
+        overflow: Overflow::WrapCounted,
+        hang: 0,
+    });
+    // A detached command's result only says it started; its output arrives
+    // through a later check, as in Amp.
+    if call.state == State::Running || (call.background() && call.state == State::Done) {
+        return;
+    }
+    let output = output_lines(call.result);
+    if !output.is_empty() {
+        let tone = if call.state == State::Failed {
+            Tone::Danger
+        } else {
+            Tone::Muted
+        };
+        lines.push(body_line(4, output.join("\n"), tone, Overflow::Tail));
+    }
+}
+
+fn append_edit(lines: &mut Vec<Line>, call: &Call<'_>, write: bool, single: bool) {
+    let label = if write {
+        "Write"
+    } else if single && call.state == State::Done {
+        "Edited"
+    } else {
+        "Edit"
+    };
+    let diff = if call.state == State::Failed {
+        Vec::new()
+    } else {
+        edit_lines(call, write)
+    };
+    let (added, removed) = diff_counts(&diff);
+    let mut spans = vec![
+        span(format!("{label} "), Tone::Text),
+        span(call.path(), Tone::Path),
+    ];
+    if added > 0 {
+        spans.push(span(format!(" +{added}"), Tone::Success));
+    }
+    if removed > 0 {
+        spans.push(span(format!(" -{removed}"), Tone::Danger));
+    }
+    lines.push(header_line(2, state_mark(call.state), spans));
+    match call.state {
+        State::Failed => append_error(lines, call, 4),
+        State::Running => {}
+        State::Done => append_diff(lines, &diff),
+    }
+}
+
+/// `Checked on background task` and how the wait ended.
+fn append_check(lines: &mut Vec<Line>, call: &Call<'_>) {
+    lines.push(header_line(
+        2,
+        state_mark(call.state),
+        vec![span("Checked on background task", Tone::Text)],
+    ));
+    let body = if call.state == State::Running {
+        "Waiting…".to_owned()
+    } else {
+        first_line(call.result)
+    };
+    if !body.is_empty() {
+        lines.push(body_line(4, body, Tone::Muted, Overflow::Truncate));
+    }
+}
+
+/// A tool without a phrase of its own: its label and first argument.
+fn append_tool(lines: &mut Vec<Line>, call: &Call<'_>) {
+    let detail = summarize_input(call.input);
+    let mut spans = vec![span(capitalize(&call.name), Tone::Text)];
+    if !detail.is_empty() {
+        spans.push(span(format!(" · {detail}"), Tone::Muted));
+    }
+    lines.push(header_line(2, state_mark(call.state), spans));
+    if call.state == State::Failed {
+        append_error(lines, call, 4);
+    }
+}
+
+/// The failure's first line under the call. A call the run ended on top of
+/// has no result to quote; its `✗` says enough.
+fn append_error(lines: &mut Vec<Line>, call: &Call<'_>, indent: usize) {
+    let text = first_line(call.result);
+    if !text.is_empty() {
+        lines.push(body_line(indent, text, Tone::Danger, Overflow::Truncate));
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DiffLine {
+    /// The unchanged stretch a hunk skips.
+    Gap,
+    Line {
+        marker: char,
+        /// Old file line for `-`, new file line for `+` and context; 0 when
+        /// the change was rebuilt from the input and has no real numbers.
+        line: usize,
+        text: String,
+    },
+}
+
+/// The diff as Amp prints it: `...` for each skipped stretch, then every hunk
+/// line behind its file line number, changes coloured whole, context plain.
+fn append_diff(lines: &mut Vec<Line>, diff: &[DiffLine]) {
+    let shown = if diff.len() <= DIFF_MAX_LINES + 1 {
+        diff
+    } else {
+        &diff[..DIFF_MAX_LINES]
+    };
+    let width = shown
+        .iter()
+        .filter_map(|line| match line {
+            DiffLine::Line { line, .. } if *line > 0 => Some(line.to_string().len()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+        .max(LINE_NUMBER_MIN_WIDTH);
+    for line in shown {
+        let DiffLine::Line { marker, line, text } = line else {
+            lines.push(body_line(4, "...", Tone::Muted, Overflow::Truncate));
+            continue;
+        };
+        let number = if *line > 0 {
+            format!("{line:>width$}")
+        } else {
+            " ".repeat(width)
+        };
+        let tone = match marker {
+            '+' => Tone::Success,
+            '-' => Tone::Danger,
+            _ => Tone::Text,
+        };
+        lines.push(Line {
+            indent: 4,
+            mark: None,
+            spans: vec![
+                span(format!("{number} "), Tone::Muted),
+                span(format!("{marker}  {text}"), tone),
+            ],
+            overflow: Overflow::Wrap,
+            hang: width + 4,
+        });
+    }
+    let hidden = diff.len() - shown.len();
+    if hidden > 0 {
+        lines.push(body_line(
+            4,
+            format!("… +{hidden} lines"),
+            Tone::Muted,
+            Overflow::Truncate,
+        ));
+    }
+}
+
+/// The real diff carries file line numbers and context. Without it — a call
+/// that has not finished — the change is rebuilt from the input with no
+/// numbers rather than numbers the file does not have.
+fn edit_lines(call: &Call<'_>, write: bool) -> Vec<DiffLine> {
+    if write {
+        let Some(content) = call.string("content") else {
+            return Vec::new();
+        };
+        let content = normalize(content);
+        let body = content.strip_suffix('\n').unwrap_or(&content);
+        return std::iter::once(DiffLine::Gap)
+            .chain(
+                body.split('\n')
+                    .enumerate()
+                    .map(|(index, text)| DiffLine::Line {
+                        marker: '+',
+                        line: index + 1,
+                        text: text.to_owned(),
+                    }),
+            )
+            .collect();
+    }
+    if let Some(diff) = call.diff.filter(|d| !d.is_empty()) {
+        return read_diff_lines(diff);
+    }
+    let changed: Vec<String> = prefix_lines(call.string("oldText"), '-')
+        .chain(prefix_lines(call.string("newText"), '+'))
+        .collect();
+    if changed.is_empty() {
+        return Vec::new();
+    }
+    let removed = changed.iter().filter(|l| l.starts_with('-')).count();
+    let added = changed.len() - removed;
+    let fallback = format!("@@ -1,{removed} +1,{added} @@\n{}", changed.join("\n"));
+    read_diff_lines(&fallback)
+        .into_iter()
+        .map(|line| match line {
+            DiffLine::Line { marker, text, .. } => DiffLine::Line {
+                marker,
+                line: 0,
+                text,
+            },
+            gap => gap,
+        })
+        .collect()
+}
+
+/// Every hunk line, context included, each behind its file line number; a gap
+/// opens every hunk. Only hunk bodies are read, so `---`/`+++` inside one are
+/// content.
+fn read_diff_lines(diff: &str) -> Vec<DiffLine> {
+    let mut lines = Vec::new();
+    let mut numbers: Option<(usize, usize)> = None;
+    for line in diff.split('\n') {
+        if let Some(header) = hunk_header(line) {
+            numbers = Some(header);
+            lines.push(DiffLine::Gap);
+            continue;
+        }
+        let Some((old, new)) = numbers.as_mut() else {
+            continue;
+        };
+        if line.is_empty() || line.starts_with('\\') {
+            continue;
+        }
+        let (marker, number) = match line.as_bytes()[0] {
+            b'+' => ('+', post_increment(new)),
+            b'-' => ('-', post_increment(old)),
+            _ => {
+                *old += 1;
+                (' ', post_increment(new))
+            }
+        };
+        lines.push(DiffLine::Line {
+            marker,
+            line: number,
+            text: line[1..].to_owned(),
+        });
+    }
+    lines
+}
+
+fn post_increment(value: &mut usize) -> usize {
+    *value += 1;
+    *value - 1
+}
+
+/// `@@ -a[,b] +c[,d] @@`: the old and new start lines.
+fn hunk_header(line: &str) -> Option<(usize, usize)> {
+    let rest = line.strip_prefix("@@ -")?;
+    let (old, rest) = rest.split_once(" +")?;
+    let (new, _) = rest.split_once(" @@")?;
+    let start = |range: &str| range.split(',').next()?.parse().ok();
+    Some((start(old)?, start(new)?))
+}
+
+fn diff_counts(lines: &[DiffLine]) -> (usize, usize) {
+    lines
+        .iter()
+        .fold((0, 0), |(added, removed), line| match line {
+            DiffLine::Line { marker: '+', .. } => (added + 1, removed),
+            DiffLine::Line { marker: '-', .. } => (added, removed + 1),
+            _ => (added, removed),
+        })
+}
+
+fn format_counts(added: usize, removed: usize) -> String {
+    [
+        (added > 0).then(|| format!("+{added}")),
+        (removed > 0).then(|| format!("-{removed}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+fn all_edits(members: &[&Item<'_>]) -> bool {
+    members
+        .iter()
+        .all(|item| matches!(item, Item::Edit { write: false, .. }))
+}
+
+fn edited_paths(members: &[&Item<'_>]) -> usize {
+    let mut paths: Vec<&str> = members.iter().map(|item| item.call().path()).collect();
+    paths.sort_unstable();
+    paths.dedup();
+    paths.len()
+}
+
+fn group_state(states: &[State]) -> State {
+    if states.contains(&State::Running) {
+        State::Running
+    } else if states.iter().all(|s| *s == State::Failed) {
+        // The header is a failure only when nothing in the group worked.
+        State::Failed
+    } else {
+        State::Done
+    }
+}
+
+fn state_mark(state: State) -> Mark {
+    match state {
+        State::Running => Mark::Running,
+        State::Done => Mark::Done,
+        State::Failed => Mark::Failed,
+    }
+}
+
+fn ordered_sections(items: &[Item<'_>]) -> Vec<Section> {
+    let mut sections = Vec::new();
+    for item in items {
+        if !sections.contains(&item.section()) {
+            sections.push(item.section());
+        }
+    }
+    sections
+}
+
+fn section_runs<'b, 'a>(items: &'b [Item<'a>]) -> Vec<Vec<&'b Item<'a>>> {
+    let mut runs: Vec<Vec<&Item<'_>>> = Vec::new();
+    for item in items {
+        match runs.last_mut() {
+            Some(run) if run[0].section() == item.section() => run.push(item),
+            _ => runs.push(vec![item]),
+        }
+    }
+    runs
+}
+
+fn counted(count: usize, noun: &str) -> String {
+    let plural = match noun {
+        "search" => "searches".to_owned(),
+        noun => format!("{noun}s"),
+    };
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {plural}")
+    }
+}
+
+/// Shell words in the roles a highlighter gives them: the program after every
+/// operator bold, flags and quoted strings coloured, operators recessive.
+/// Every character of the command lands in some span.
+fn highlight_command(command: &str) -> Vec<Span> {
+    let mut spans = Vec::new();
+    let mut expect_program = true;
+    let mut rest = command;
+    while let Some(c) = rest.chars().next() {
+        let take = |len: usize| (&rest[..len], &rest[len..]);
+        let (text, tone, next) = if c.is_whitespace() {
+            let len = rest
+                .find(|c: char| !c.is_whitespace())
+                .unwrap_or(rest.len());
+            let (text, next) = take(len);
+            (text, Tone::Text, next)
+        } else if c == '"' || c == '\'' {
+            // Up to the closing quote (a `"` string honours `\` escapes), or
+            // the end of an unterminated one.
+            let mut end = rest.len();
+            let mut escaped = false;
+            for (i, ch) in rest.char_indices().skip(1) {
+                if c == '"' && !escaped && ch == '\\' {
+                    escaped = true;
+                    continue;
+                }
+                if ch == c && !escaped {
+                    end = i + 1;
+                    break;
+                }
+                escaped = false;
+            }
+            let (text, next) = take(end);
+            expect_program = false;
+            (text, Tone::Quoted, next)
+        } else if let Some(len) = operator_len(rest) {
+            let (text, next) = take(len);
+            // A redirection's target is a file, not the next program.
+            expect_program = !text.contains(['<', '>']);
+            (text, Tone::Operator, next)
+        } else {
+            let len = rest
+                .find(|c: char| c.is_whitespace() || "\"'|;&<>".contains(c))
+                .unwrap_or(rest.len())
+                .max(c.len_utf8());
+            let (text, next) = take(len);
+            let tone = if expect_program && !text.contains('=') {
+                expect_program = false;
+                Tone::Program
+            } else if text.starts_with('-') {
+                Tone::Flag
+            } else {
+                Tone::Text
+            };
+            (text, tone, next)
+        };
+        spans.push(span(text, tone));
+        rest = next;
+    }
+    spans
+}
+
+/// Length of the shell operator `text` starts with: `2>&1`, `&&`, `||`, `|`,
+/// `;`, `&`, `>`, `>>`, `2>`, `<`.
+fn operator_len(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let digit = bytes[0].is_ascii_digit();
+    let at = usize::from(digit);
+    match (bytes.get(at), bytes.get(at + 1), bytes.get(at + 2)) {
+        (Some(b'>'), Some(b'&'), Some(d)) if d.is_ascii_digit() => Some(at + 3),
+        (Some(b'>'), Some(b'>'), _) => Some(at + 2),
+        (Some(b'>'), _, _) => Some(at + 1),
+        _ if digit => None,
+        (Some(b'&'), Some(b'&'), _) | (Some(b'|'), Some(b'|'), _) => Some(2),
+        (Some(b'|' | b';' | b'&' | b'<'), _, _) => Some(1),
+        _ => None,
+    }
+}
+
+fn normalize(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// The text's lines, trailing blanks trimmed and blank lines at either end
+/// dropped.
+fn output_lines(text: Option<&str>) -> Vec<String> {
+    let Some(text) = text else {
+        return Vec::new();
+    };
+    let mut lines: Vec<String> = normalize(text)
+        .split('\n')
+        .map(|line| line.trim_end().to_owned())
+        .collect();
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    let leading = lines.iter().take_while(|line| line.is_empty()).count();
+    lines.drain(..leading);
+    lines
+}
+
+fn first_line(text: Option<&str>) -> String {
+    output_lines(text).into_iter().next().unwrap_or_default()
+}
+
+fn glob_files(result: Option<&str>) -> impl Iterator<Item = &str> {
+    let text = result.unwrap_or("").trim();
+    let none = text.is_empty() || text == "No files matched the pattern.";
+    text.split('\n')
+        .map(str::trim)
+        .enumerate()
+        .filter(move |(i, line)| {
+            !none && !line.is_empty() && !(*i == 0 && line.starts_with("Matched "))
+        })
+        .map(|(_, line)| line)
+}
+
+fn grep_matches(result: Option<&str>) -> impl Iterator<Item = &str> {
+    result
+        .unwrap_or("")
+        .split('\n')
+        .filter(|line| line.starts_with("  ") && !line.trim().is_empty())
+        .map(str::trim)
+}
+
+fn prefix_lines(value: Option<&str>, prefix: char) -> impl Iterator<Item = String> {
+    let lines: Vec<String> = match value {
+        Some(value) => normalize(value)
+            .split('\n')
+            .map(|line| format!("{prefix}{line}"))
+            .collect(),
+        None => Vec::new(),
+    };
+    lines.into_iter()
+}
+
+/// First string among the well-known input keys, else the first string
+/// value, whitespace collapsed.
+fn summarize_input(input: Option<&Value>) -> String {
+    let Some(object) = input.and_then(Value::as_object) else {
+        return String::new();
+    };
+    let collapse = |value: &str| value.split_whitespace().collect::<Vec<_>>().join(" ");
+    [
+        "command",
+        "path",
+        "file_path",
+        "pattern",
+        "url",
+        "query",
+        "skill_name",
+        "action",
+    ]
+    .iter()
+    .find_map(|key| {
+        object
+            .get(*key)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+    })
+    .or_else(|| object.values().find_map(Value::as_str))
+    .map(collapse)
+    .unwrap_or_default()
+}
+
+fn base_name(path: &str) -> &str {
+    let trimmed = path.trim_end_matches('/');
+    trimmed.rsplit('/').next().unwrap_or(trimmed)
+}
+
+fn quote(value: &str) -> String {
+    if value.is_empty() {
+        String::new()
+    } else {
+        format!("\"{value}\"")
+    }
+}
+
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+// ---- Rendering ----
+
+/// The group's rows at `width`. `spinner` is the glyph of running marks.
+pub fn render_group(group: &ToolGroup, width: usize, p: &Palette, spinner: &str) -> Vec<String> {
+    let mut rows = Vec::new();
+    for line in &group.lines {
+        let mark = line.mark.map(|mark| mark_text(mark, spinner, p));
+        let lead = line.indent + if mark.is_some() { 2 } else { 0 };
+        let rest_indent = line.indent + line.hang;
+        let laid = layout(
+            &line.spans,
+            width.saturating_sub(lead).max(1),
+            width.saturating_sub(rest_indent).max(1),
+            line.overflow,
+        );
+        for (index, cells) in laid.iter().enumerate() {
+            let prefix = if index == 0 {
+                match &mark {
+                    Some(mark) => format!("{}{mark} ", " ".repeat(line.indent)),
+                    None => " ".repeat(line.indent),
+                }
+            } else {
+                " ".repeat(rest_indent)
+            };
+            rows.push(format!("{prefix}{}", paint_cells(cells, p)));
+        }
+    }
+    rows
+}
+
+fn mark_text(mark: Mark, spinner: &str, p: &Palette) -> String {
+    let (glyph, color, bold) = match mark {
+        Mark::Running => (spinner, &p.accent, false),
+        Mark::Done => ("✓", &p.success, false),
+        Mark::Failed => ("✗", &p.danger, false),
+        Mark::DoneMuted => ("✓", &p.muted, false),
+        Mark::FailedMuted => ("✗", &p.muted, false),
+        Mark::Command => ("$", &p.success, true),
+        Mark::CommandFailed => ("$", &p.danger, true),
+    };
+    paint(
+        glyph,
+        Paint {
+            fg: Some(color),
+            bold,
+            ..Paint::default()
+        },
+    )
+}
+
+/// One grapheme of a row with its tone and width.
+type Cell = (String, Tone, usize);
+
+fn paint_cells(cells: &[Cell], p: &Palette) -> String {
+    let mut out = String::new();
+    let mut index = 0;
+    while index < cells.len() {
+        let tone = cells[index].1;
+        let mut text = String::new();
+        while index < cells.len() && cells[index].1 == tone {
+            text.push_str(&cells[index].0);
+            index += 1;
+        }
+        let (color, bold, underline) = match tone {
+            Tone::Text => (&p.text, false, false),
+            Tone::Muted | Tone::Operator => (&p.muted, false, false),
+            Tone::Success | Tone::Quoted => (&p.success, false, false),
+            Tone::Danger => (&p.danger, false, false),
+            Tone::Path => (&p.accent, false, true),
+            Tone::Program => (&p.text, true, false),
+            Tone::Flag => (&p.warning, false, false),
+        };
+        out.push_str(&paint(
+            &text,
+            Paint {
+                fg: Some(color),
+                bold,
+                underline,
+                ..Paint::default()
+            },
+        ));
+    }
+    out
+}
+
+/// Spans cut into rows by cell width, laid out only as far as the rows that
+/// will be shown: a command's output can run to megabytes, and its budget is
+/// fifteen rows.
+fn layout(
+    spans: &[Span],
+    first_width: usize,
+    rest_width: usize,
+    overflow: Overflow,
+) -> Vec<Vec<Cell>> {
+    if overflow == Overflow::Truncate {
+        let cells: Vec<Cell> = spans
+            .iter()
+            .flat_map(|s| cells_of(&s.text.replace(['\r', '\n'], " "), s.tone))
+            .collect();
+        let total: usize = cells.iter().map(|c| c.2).sum();
+        return vec![if total <= first_width {
+            cells
+        } else {
+            ellipsize(&cells, first_width)
+        }];
+    }
+    // Source lines, each a run of spans; a row starts at every newline.
+    let mut sources: Vec<Vec<(String, Tone)>> = vec![Vec::new()];
+    for s in spans {
+        for (index, part) in normalize(&s.text).split('\n').enumerate() {
+            if index > 0 {
+                sources.push(Vec::new());
+            }
+            if !part.is_empty() {
+                sources
+                    .last_mut()
+                    .map(|line| line.push((part.to_owned(), s.tone)));
+            }
+        }
+    }
+    let widest = first_width.max(rest_width);
+    // Every grapheme takes at least one cell, so `rows` rows never need more
+    // graphemes than this from the kept end of a line.
+    let rows_of = |source: &[(String, Tone)], index: usize, tail: bool, max_rows: usize| {
+        let mut cells: Vec<Cell> = source
+            .iter()
+            .flat_map(|(t, tone)| cells_of(t, *tone))
+            .collect();
+        let budget = max_rows.saturating_mul(widest);
+        if cells.len() > budget {
+            if tail {
+                cells.drain(..cells.len() - budget);
+            } else {
+                cells.truncate(budget);
+            }
+        }
+        wrap(
+            &cells,
+            if index == 0 { first_width } else { rest_width },
+            rest_width,
+        )
+    };
+    if overflow == Overflow::Tail {
+        let mut rows: Vec<Vec<Cell>> = Vec::new();
+        for (index, source) in sources.iter().enumerate().rev() {
+            if rows.len() >= TAIL_MAX_ROWS {
+                break;
+            }
+            let mut wrapped = rows_of(source, index, true, TAIL_MAX_ROWS);
+            wrapped.append(&mut rows);
+            rows = wrapped;
+        }
+        let excess = rows.len().saturating_sub(TAIL_MAX_ROWS);
+        rows.drain(..excess);
+        return rows;
+    }
+    let cap = WRAP_MAX_ROWS;
+    let mut rows: Vec<Vec<Cell>> = Vec::new();
+    for (index, source) in sources.iter().enumerate() {
+        if rows.len() > cap {
+            break;
+        }
+        rows.extend(rows_of(source, index, false, cap + 1));
+    }
+    if rows.len() <= cap {
+        return rows;
+    }
+    if overflow == Overflow::WrapCounted {
+        // Counted, not laid out: each line takes its width over the row, at
+        // least one — the rows a hard wrap would take.
+        let total: usize = sources
+            .iter()
+            .map(|source| {
+                let width: usize = source.iter().map(|(t, _)| display_width(t)).sum();
+                width.div_ceil(rest_width).max(1)
+            })
+            .sum();
+        let hidden = total.saturating_sub(cap - 1).max(1);
+        rows.truncate(cap - 1);
+        rows.push(cells_of(&format!("… +{hidden} lines"), Tone::Muted));
+        return rows;
+    }
+    rows.truncate(cap);
+    if let Some(last) = rows.last_mut() {
+        *last = ellipsize(last, rest_width);
+    }
+    rows
+}
+
+fn cells_of(text: &str, tone: Tone) -> Vec<Cell> {
+    text.graphemes(true)
+        .map(|g| (g.to_owned(), tone, display_width(g)))
+        .collect()
+}
+
+/// The row cut to fit `width` with a closing `…`, on grapheme boundaries.
+fn ellipsize(cells: &[Cell], width: usize) -> Vec<Cell> {
+    let budget = width.saturating_sub(1);
+    let mut used = 0;
+    let mut row: Vec<Cell> = cells
+        .iter()
+        .take_while(|cell| {
+            used += cell.2;
+            used <= budget
+        })
+        .cloned()
+        .collect();
+    let tone = cells.last().map_or(Tone::Muted, |cell| cell.1);
+    row.push(("…".to_owned(), tone, 1));
+    row
+}
+
+/// Rows of one line: a row breaks at its last space when it has one — the
+/// space itself is dropped — and mid-word only when a word is wider than the
+/// row.
+fn wrap(cells: &[Cell], first_width: usize, rest_width: usize) -> Vec<Vec<Cell>> {
+    let mut rows = Vec::new();
+    let mut start = 0;
+    let mut limit = first_width;
+    while start < cells.len() {
+        let mut used = 0;
+        let mut end = start;
+        let mut last_space = None;
+        while end < cells.len() && used + cells[end].2 <= limit {
+            if cells[end].0 == " " {
+                last_space = Some(end);
+            }
+            used += cells[end].2;
+            end += 1;
+        }
+        if end == cells.len() {
+            rows.push(cells[start..].to_vec());
+            break;
+        }
+        if end == start {
+            end = start + 1;
+        } else if let Some(space) = last_space.filter(|space| *space > start) {
+            end = space;
+        }
+        rows.push(cells[start..end].to_vec());
+        start = if cells.get(end).is_some_and(|c| c.0 == " ") {
+            end + 1
+        } else {
+            end
+        };
+        limit = rest_width;
+    }
+    if rows.is_empty() {
+        rows.push(Vec::new());
+    }
+    rows
+}
