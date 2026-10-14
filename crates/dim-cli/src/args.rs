@@ -8,9 +8,7 @@ Commands:\n\
   account PROVIDER                 Show non-secret account status\n\
   logout PROVIDER                  Sign out of an account provider\n\
   models PROVIDER [--refresh]       List model IDs and availability\n\
-  mcp list                         List MCP status and approval fingerprints\n\
-  mcp approve ID TOKEN              Approve reviewed project MCP configuration\n\
-  mcp revoke ID                    Revoke project MCP execution and disconnect\n\
+  mcp list                         List MCP servers and enablement\n\
   daemon stop                      Gracefully stop an existing daemon\n\n\
 Options:\n\
   -p, --prompt TEXT                Run one prompt and exit\n\
@@ -37,8 +35,6 @@ pub enum Action {
     Logout(String),
     Models(String),
     McpList,
-    McpApprove { id: String, token: String },
-    McpRevoke(String),
     DaemonStop,
     Help,
     Version,
@@ -122,16 +118,7 @@ impl Options {
                 "mcp" if matches!(options.action, Action::Chat) => {
                     options.action = match value(&mut args)?.as_str() {
                         "list" => Action::McpList,
-                        "approve" => Action::McpApprove {
-                            id: value(&mut args)?,
-                            token: value(&mut args)?,
-                        },
-                        "revoke" => Action::McpRevoke(value(&mut args)?),
-                        _ => {
-                            return Err(
-                                "Use mcp list, mcp approve ID TOKEN, or mcp revoke ID".into()
-                            );
-                        }
+                        _ => return Err("Use mcp list".into()),
                     };
                 }
                 "daemon" if matches!(options.action, Action::Chat) => {

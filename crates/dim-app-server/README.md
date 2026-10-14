@@ -46,27 +46,15 @@ Project edits require an authorized workspace `cwd`; they write `.mcp.json`, not
 - `mcp.set_enabled` additionally takes `enabled` and preserves the rest of the selected entry.
 - `mcp.disconnect` takes `source`, `id` and optional `cwd`, without a revision; it does not edit
   persisted intent.
-- `mcp.approve` takes required `cwd`, `id` and `approvalToken` from the catalog. It grants only
-  the reviewed project's exact effective configuration, not future changes or another workspace.
-- `mcp.revoke` takes required `cwd` and `id`. It removes that project's grant and waits for
-  generation cancellation and transport cleanup; it does not undo earlier external effects.
 
-Project MCP requires explicit execution approval before discovery, for stdio, HTTP and SSE.
-Catalog entries expose `approval` (`notRequired`, `required`, `approved`) and `approvalToken`;
-the token is a digest, not a credential. `enabled` expresses configuration intent independently
-of approval. Sessions report `approval_required` for enabled but unapproved servers. FullAccess,
-file-root authorization, session restoration and same-name user entries never approve a project.
-Approval may immediately start discovery in active sessions. Only protected-local v3 management
-can grant or revoke; these operations are not model tools.
-
-Grants use the host's `mcp-approvals.json` (version 1, private file permissions on Unix), outside
-project configuration and Session history. Native and standalone Settings hosts share this format;
-the SQLite format is unchanged. Corrupt or inaccessible grant storage fails closed. Approval
-compares current configuration with the caller's digest before persistence; stale tokens return
-`mcp_settings_conflict`. Commands, arguments, environment overrides, resolved cwd, URLs, headers
-and authentication are bound by the digest, but changes to referenced scripts/binaries or inherited
-environment are not. This is configuration approval, not an OS sandbox; see the
-[trust contract](../../docs/adr/001-harness-foundation.md#trust-and-cross-language-calls).
+Project and user entries follow the same rule: an enabled entry connects when a Session discovers
+or calls it, and a disabled entry does not. `enabled` is plain configuration. Approval and
+permission govern model tool calls only; a stdio command or remote endpoint named in a user or
+project MCP source runs because that configuration enabled it, so it is the configuration's
+responsibility (see [Approval scope](../../docs/design/overview.md)). There is no execution
+approval for MCP sources: `mcp.approve` and `mcp.revoke` were removed and return `unknown_method`,
+and catalog entries no longer carry `approval` or `approvalToken`. A host home may still contain a
+`mcp-approvals.json` from earlier releases; it is no longer read and can be deleted.
 
 Successful configuration mutations return `{}` after persistence, not after connection/tool
 adoption. The catalog also returns `userApplication` and optional `projectApplication`, each with
@@ -83,10 +71,9 @@ stays inside its owning service and is excluded from catalog replies, notificati
 The host publishes source changes to the existing root loader, preserving the assembly layer.
 Catalog reads and connection operations also request refresh of external workspace-file edits;
 there is no background filesystem watcher. A catalog reply is not a refresh-completion barrier.
-Already bound user-source tools retain their connection generation during replacement. After the last old
-binding is released, the publisher removes that generation's row and the loader disposes it.
-Project generations instead close on configuration change, disablement or revoked approval,
-even when a model request retains their tools. Each project operation rechecks current authority.
+Already bound tools retain their connection generation during replacement or disablement. After
+the last old binding is released, the publisher removes that generation's row and the loader
+disposes it.
 Explicit disconnect drains all generations of the selected source/server, without changing its
 configuration; a later acquisition can reconnect. It reports cleanup failure rather than treating
 loader reconciliation as proof of successful cleanup.

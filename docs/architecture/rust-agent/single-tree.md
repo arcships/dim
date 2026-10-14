@@ -79,13 +79,13 @@ rutis root
 | `SqliteStoragePlugin` | 共享数据库连接、事务、原生 schema 门禁、文件维护锁与关停 | `SqliteStorage` | —；启动参数固定数据库路径 |
 | `SessionStorePlugin` | 原生会话目录、Timeline 落盘/恢复及写入任务 | `SessionStore`、`TimelineStore` 持久化端口 | `SqliteStorage` |
 | `FileWriteCoordinatorPlugin` | 跨 Session 的逐路径写入 FIFO 准入域；跨代共享 | `FileWriteCoordinator` | — |
-| `SettingsPlugin` | 按来源的配置写入：用户 MCP/Skill 文档（导入后以 SQLite `settings_documents` 为权威，带修订检查）、工作区 `.mcp.json`（文件权威与内容 CAS）、宿主本地项目 MCP 批准 `mcp-approvals.json`；不建立 MCP 连接或发现 Skill | `SettingsService`、`SkillSettingsHost` | `FileStorage`、`When<SqliteStorage>` |
+| `SettingsPlugin` | 按来源的配置写入：用户 MCP/Skill 文档（导入后以 SQLite `settings_documents` 为权威，带修订检查）、工作区 `.mcp.json`（文件权威与内容 CAS）；不建立 MCP 连接或发现 Skill | `SettingsService`、`SkillSettingsHost` | `FileStorage`、`When<SqliteStorage>` |
 | `OpenAICodexOAuthPlugin` / `GrokOAuthPlugin` | 各自账号字段、登录、刷新与终态 | `OpenAICodexOAuthService` / `GrokOAuthService` | `FileStorage` |
 | `ManagedProvidersPlugin` | 可选 managed provider 的当前绑定代次与在途操作；未绑定时请求明确失败 | `ManagedProviders` | —；`ManagedProviderBinding` 另注入 `ManagedProviders` 与 JS 宿主分发 |
 | `ProviderPlugin` | catalog、连接与选择管理、账号变更后的非秘密 binding | `ProviderService`、`ProviderConnectionResolver`、`ModelSelectionHost` | `SqliteStorage`、`ManagedProviders`、Codex/Grok 账号服务；可选秘密宿主 |
 | `AimuxPlugin`（进程级） | 共享 HTTP 资源、请求/流转换及取消桥接 | `ModelHost`：接收最终请求、已解析连接与取消信号的 request 对象 | 无业务服务依赖；不注入 Provider、ToolRegistry 或 Session |
 | `ConfiguredModelsPlugin` | `--model-config` 的开发模型目录与 resolver | 开发目录与 resolver | — |
-| `McpPublication`（宿主行） | 串行化来源发布、批准与代次变更的发布协调器；在 apply/dispose 之外向根 loader 写入 `McpServer` 行 | `Publication` | — |
+| `McpPublication`（宿主行） | 串行化来源发布与代次变更的发布协调器；在 apply/dispose 之外向根 loader 写入 `McpServer` 行 | `Publication` | — |
 | `McpPlugin` | MCP 目录、连接租约与准入复查；不拥有已配置行 | `McpService` | `SettingsService`、`Publication` |
 | `HostPlatformPlugin` | 平台与 exec shell 设置 | `HostPlatform` | `When<FileStorage>` |
 | `SkillsCatalogPlugin` | Skill 根发现与目录 | `SkillsCatalog` | `HostPlatform`、`SkillSettingsHost` |
@@ -111,8 +111,8 @@ rutis root
 | --- | --- |
 | 来源与写入 | 每个来源一个持久化权威与写入路径：管理操作指明目标来源并按修订 CAS，不回写合成视图。用户 MCP/Skill 首次读取时原子导入 SQLite，失败保留原文件并可重试；工作区 `.mcp.json` 保持文件权威 |
 | 发布 | 来源写入成功后，宿主发布协调器在插件 apply/dispose 之外把合成配置发布到根 loader（无可编辑层）；写入应答只证明持久化，不证明 loader 已采用或旧代已结算 |
-| MCP 代次 | 稳定行身份由规范化工作区（或用户作用域）与服务器 ID 哈希得到，代次后缀是瞬态的。用户来源的旧代行在最后一个绑定释放后退役；项目来源在配置变化、禁用或失去执行批准时退役，即使仍有保留绑定。显式断开移除该来源与服务器的全部代次并等待 loader 清理，清理错误单独报告 |
-| 项目 MCP 批准 | 宿主本地批准绑定规范工作区、服务器 ID 与有效配置指纹；未批准的项目条目不启动 stdio、不连接 HTTP/SSE，包括自动发现。每次连接操作复查当前来源与批准；撤销拒绝经保留绑定的新调用、取消并等待已受理的代次工作、关闭传输后才确认。文件根授权、FullAccess 工具权限与 Session 恢复都不授予批准（AGENTS 规则 11） |
+| MCP 代次 | 稳定行身份由规范化工作区（或用户作用域）与服务器 ID 哈希得到，代次后缀是瞬态的。用户与项目来源的旧代行都在最后一个绑定释放后退役。显式断开移除该来源与服务器的全部代次并等待 loader 清理，清理错误单独报告 |
+| 项目 MCP 执行 | 项目条目与用户条目相同：启用即连接，禁用不连接，没有宿主本地执行批准。Approval 与 Permission 只管模型的工具调用；按配置启动的 stdio 命令或远端由该配置负责（AGENTS 规则 11）。相对 stdio cwd 按工作区解析 |
 
 Session 与分支能力不向进程服务登记自己：RPC 经 `Session::service::<T>(branch)` 调用分支能力（如 [Approval](plugins/Approval.md)）。开发配置的 ModelProvider 已注入进程 resolver 与 `ModelHost`，每次请求解析当前连接，再调用 Aimux；Session 的 ConfiguredModelPlugin 只提供请求准备。产品 profile 的模型选择经 Provider 的 `ModelSelectionHost` 解析；managed provider 的凭据只以请求内租约交给模型请求。
 

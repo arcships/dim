@@ -44,8 +44,6 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 pub enum McpServerError {
     #[error("MCP server is closed")]
     Closed,
-    #[error("Project MCP execution requires approval of the current configuration")]
-    ApprovalRequired,
     #[error("MCP operation cancelled; remote effects may already have occurred")]
     Cancelled,
     #[error("MCP operation timed out; remote effects may already have occurred")]

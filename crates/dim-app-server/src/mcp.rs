@@ -30,8 +30,6 @@ pub enum McpError {
     UnknownServer,
     #[error("MCP server is disabled")]
     Disabled,
-    #[error("Project MCP execution requires approval of the current configuration")]
-    ApprovalRequired,
     #[error("MCP server Plugin could not be loaded")]
     Unavailable,
     #[error(transparent)]
@@ -45,27 +43,13 @@ pub enum McpError {
 }
 pub type Result<T> = std::result::Result<T, McpError>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum McpApproval {
-    NotRequired,
-    Required,
-    Approved,
-}
-
 /// Server-side configuration, including secrets. Not a wire or logging type.
 #[derive(Clone)]
 pub struct McpServerEntry {
     pub source: SettingsSource,
     pub configuration: McpServerSettings,
-    pub approval: McpApproval,
-    pub approval_token: Option<String>,
 }
 impl McpServerEntry {
-    pub fn executable(&self) -> bool {
-        self.enabled() && self.approval != McpApproval::Required
-    }
-
     pub fn enabled(&self) -> bool {
         match &self.configuration {
             McpServerSettings::Stdio { enabled, .. }
@@ -93,23 +77,8 @@ pub enum McpChange {
 pub struct McpConnection {
     service: Arc<McpServer>,
     released: tokio::sync::watch::Sender<()>,
-    authorization: Option<(Arc<publication::Publication>, String)>,
 }
 impl McpConnection {
-    async fn authorize(&self, cancel: &CancellationToken) -> server::Result<()> {
-        if let Some((publication, reference)) = &self.authorization {
-            publication
-                .check(reference.clone(), cancel)
-                .await
-                .map_err(|error| match error {
-                    McpError::Cancelled => McpServerError::Cancelled,
-                    McpError::Closed => McpServerError::Closed,
-                    _ => McpServerError::ApprovalRequired,
-                })?;
-        }
-        Ok(())
-    }
-
     pub fn state(&self) -> server::McpServerState {
         self.service.state()
     }
@@ -120,7 +89,6 @@ impl McpConnection {
         self.service.tool_changes()
     }
     pub async fn tools(&self, cancel: &CancellationToken) -> server::Result<Vec<server::McpTool>> {
-        self.authorize(cancel).await?;
         self.service.tools(cancel).await
     }
     pub async fn call(
@@ -129,7 +97,6 @@ impl McpConnection {
         arguments: dim_agent_types::JsonObject,
         cancel: &CancellationToken,
     ) -> server::Result<dim_agent_types::ToolResult> {
-        self.authorize(cancel).await?;
         self.service.call(name, arguments, cancel).await
     }
 }
@@ -186,46 +153,6 @@ impl McpService {
         self.publication.application(source)
     }
 
-    /// Only trusted host management may grant execution. The token identifies
-    /// the exact effective project configuration the caller reviewed.
-    pub async fn approve(
-        self: &Arc<Self>,
-        project: usize,
-        id: String,
-        token: String,
-        cancel: &CancellationToken,
-    ) -> Result<()> {
-        let owner = self.clone();
-        self.run(cancel, move |_, cancel| async move {
-            owner
-                .publication
-                .approval(
-                    SettingsSource::ProjectMcp(project),
-                    id,
-                    Some(token),
-                    &cancel,
-                )
-                .await
-        })
-        .await
-    }
-
-    pub async fn revoke(
-        self: &Arc<Self>,
-        project: usize,
-        id: String,
-        cancel: &CancellationToken,
-    ) -> Result<()> {
-        let owner = self.clone();
-        self.run(cancel, move |_, cancel| async move {
-            owner
-                .publication
-                .approval(SettingsSource::ProjectMcp(project), id, None, &cancel)
-                .await
-        })
-        .await
-    }
-
     /// Project ids are host-authorized FileStorage indices, never client paths.
     /// Project entries shadow user entries even when disabled.
     pub async fn catalog(
@@ -258,29 +185,11 @@ impl McpService {
                 };
                 for (id, configuration) in document.mcp_servers {
                     let configuration = settings.mcp_effective(source, configuration)?;
-                    let (approval, approval_token) =
-                        if matches!(source, SettingsSource::ProjectMcp(_)) {
-                            let token = settings.mcp_fingerprint(source, &id, &configuration)?;
-                            let approved =
-                                settings.mcp_approved(source, &id, &token, &cancel).await?;
-                            (
-                                if approved {
-                                    McpApproval::Approved
-                                } else {
-                                    McpApproval::Required
-                                },
-                                Some(token),
-                            )
-                        } else {
-                            (McpApproval::NotRequired, None)
-                        };
                     catalog.servers.insert(
                         id,
                         McpServerEntry {
                             source,
                             configuration,
-                            approval,
-                            approval_token,
                         },
                     );
                 }

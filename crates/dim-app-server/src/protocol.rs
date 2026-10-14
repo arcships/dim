@@ -174,8 +174,6 @@ pub enum Call {
     McpSave(SaveMcp),
     McpRemove(RemoveMcp),
     McpDisconnect(McpTarget),
-    McpApprove(ApproveMcp),
-    McpRevoke(RevokeMcp),
     SessionMcp(SessionId),
     McpRefresh(SessionId),
 }
@@ -225,8 +223,6 @@ impl Call {
                 | Self::McpSave(_)
                 | Self::McpRemove(_)
                 | Self::McpDisconnect(_)
-                | Self::McpApprove(_)
-                | Self::McpRevoke(_)
         )
     }
 
@@ -241,8 +237,6 @@ impl Call {
                 | Self::McpSave(_)
                 | Self::McpRemove(_)
                 | Self::McpDisconnect(_)
-                | Self::McpApprove(_)
-                | Self::McpRevoke(_)
         )
     }
 
@@ -273,14 +267,12 @@ pub const LOCAL_EXECUTION_METHODS: [&str; 9] = [
     "session.prompt.refresh",
 ];
 
-pub const MCP_METHODS: [&str; 9] = [
+pub const MCP_METHODS: [&str; 7] = [
     "mcp.catalog",
     "mcp.set_enabled",
     "mcp.save",
     "mcp.remove",
     "mcp.disconnect",
-    "mcp.approve",
-    "mcp.revoke",
     "session.mcp",
     "session.mcp.refresh",
 ];
@@ -433,20 +425,6 @@ pub enum McpScope {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ApproveMcp {
-    pub cwd: String,
-    pub id: String,
-    pub approval_token: String,
-}
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RevokeMcp {
-    pub cwd: String,
-    pub id: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct McpTarget {
     #[serde(default, deserialize_with = "optional_non_null")]
     pub cwd: Option<String>,
@@ -503,8 +481,6 @@ pub struct McpCatalogEntry {
     pub source: McpScope,
     pub enabled: bool,
     pub transport: &'static str,
-    pub approval: crate::mcp::McpApproval,
-    pub approval_token: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -987,8 +963,6 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
             "mcp.save" => Call::McpSave(params(raw_params)?),
             "mcp.remove" => Call::McpRemove(params(raw_params)?),
             "mcp.disconnect" => Call::McpDisconnect(params(raw_params)?),
-            "mcp.approve" => Call::McpApprove(params(raw_params)?),
-            "mcp.revoke" => Call::McpRevoke(params(raw_params)?),
             "session.mcp" => Call::SessionMcp(params(raw_params)?),
             "session.mcp.refresh" => Call::McpRefresh(params(raw_params)?),
             _ => return Err(RpcError::app(-32601, "unknown_method", "Unknown method")),

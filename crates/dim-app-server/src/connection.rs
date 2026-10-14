@@ -246,8 +246,6 @@ impl Connection {
                 | Call::McpSave(_)
                 | Call::McpRemove(_)
                 | Call::McpDisconnect(_)
-                | Call::McpApprove(_)
-                | Call::McpRevoke(_)
                 | Call::SessionMcp(_)
                 | Call::McpRefresh(_)
         ) && rpc.mcp.is_none()
@@ -405,8 +403,6 @@ impl Connection {
                     | Call::McpSave(_)
                     | Call::McpRemove(_)
                     | Call::McpDisconnect(_)
-                    | Call::McpApprove(_)
-                    | Call::McpRevoke(_)
             ) {
                 return Some(tokio::select! {
                     biased;
@@ -1005,8 +1001,6 @@ impl Connection {
                 | Call::McpSave(_)
                 | Call::McpRemove(_)
                 | Call::McpDisconnect(_)
-                | Call::McpApprove(_)
-                | Call::McpRevoke(_)
         ) {
             return mcp::management(rpc, call).await;
         }

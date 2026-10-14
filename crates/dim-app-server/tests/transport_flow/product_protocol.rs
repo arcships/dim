@@ -635,66 +635,26 @@ async fn local_product_operations_use_real_tools_and_survive_rpc_reload() {
         "mcp.catalog",
         "mcp.set_enabled",
         "mcp.disconnect",
-        "mcp.approve",
-        "mcp.revoke",
         "session.mcp",
         "session.mcp.refresh",
     ] {
         assert!(client.features.as_array().unwrap().contains(&json!(method)));
     }
+    // Project MCP execution approval was removed; old methods are unknown.
+    for method in ["mcp.approve", "mcp.revoke"] {
+        assert!(!client.features.as_array().unwrap().contains(&json!(method)));
+        assert_eq!(
+            client.rpc(method, json!({"cwd":work,"id":"docs"})).await["error"]["data"]["appError"],
+            "unknown_method"
+        );
+    }
     let catalog = client.rpc("mcp.catalog", json!({"cwd":work})).await;
     assert_ok(&catalog);
-    let token = catalog["result"]["servers"][0]["approvalToken"].clone();
-    assert_eq!(token.as_str().unwrap().len(), 64);
     assert_eq!(
         catalog["result"]["servers"],
-        json!([{"id":"docs","source":"project","enabled":false,"transport":"stdio","approval":"required","approvalToken":token}])
+        json!([{"id":"docs","source":"project","enabled":false,"transport":"stdio"}])
     );
     assert!(!catalog.to_string().contains("private-secret"));
-    assert_eq!(
-        client
-            .rpc(
-                "mcp.approve",
-                json!({"cwd":work,"id":"docs","approvalToken":"stale"})
-            )
-            .await["error"]["data"]["appError"],
-        "mcp_settings_conflict"
-    );
-    assert_eq!(
-        client
-            .rpc("mcp.approve", json!({"id":"docs","approvalToken":token}))
-            .await["error"]["data"]["appError"],
-        "invalid_params"
-    );
-    assert_ok(
-        &client
-            .rpc(
-                "mcp.approve",
-                json!({"cwd":work,"id":"docs","approvalToken":token}),
-            )
-            .await,
-    );
-    assert_eq!(
-        client.rpc("mcp.catalog", json!({"cwd":work})).await["result"]["servers"][0]["approval"],
-        "approved"
-    );
-    assert_ok(
-        &client
-            .rpc("mcp.revoke", json!({"cwd":work,"id":"docs"}))
-            .await,
-    );
-    assert_eq!(
-        client.rpc("mcp.catalog", json!({"cwd":work})).await["result"]["servers"][0]["approval"],
-        "required"
-    );
-    assert_ok(
-        &client
-            .rpc(
-                "mcp.approve",
-                json!({"cwd":work,"id":"docs","approvalToken":token}),
-            )
-            .await,
-    );
     let revision = catalog["result"]["projectRevision"].clone();
     assert_eq!(client.rpc("mcp.set_enabled", json!({"cwd":work,"id":"docs","source":"project","expectedVersion":"stale","enabled":true})).await["error"]["data"]["appError"], "mcp_settings_conflict");
     assert_eq!(
@@ -720,11 +680,6 @@ async fn local_product_operations_use_real_tools_and_survive_rpc_reload() {
         ("session.list", json!({})),
         ("skills.catalog", json!({})),
         ("mcp.catalog", json!({})),
-        (
-            "mcp.approve",
-            json!({"cwd":work,"id":"docs","approvalToken":token}),
-        ),
-        ("mcp.revoke", json!({"cwd":work,"id":"docs"})),
         ("session.mcp", json!({"sessionId":"remote"})),
         (
             "session.permission.get",

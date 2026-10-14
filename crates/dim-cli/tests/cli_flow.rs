@@ -748,7 +748,7 @@ impl Drop for OwnedDaemon {
 
 #[test]
 #[ignore = "requires DIM_TEST_APP_SERVER pointing to the built production App Server"]
-fn project_mcp_approval_commands_persist_and_reject_stale_configuration() {
+fn project_mcp_list_reports_enablement_without_secrets() {
     let binary = std::env::var("DIM_TEST_APP_SERVER").unwrap();
     let home = Home::new();
     let _daemon = OwnedDaemon(home.0.join("rust/daemon.sock"));
@@ -760,10 +760,10 @@ fn project_mcp_approval_commands_persist_and_reject_stale_configuration() {
     .unwrap();
     let project = home.0.join("work");
     fs::create_dir(&project).unwrap();
-    let write_config = |argument: &str| {
-        fs::write(project.join(".mcp.json"), json!({"mcpServers":{"docs":{"command":"missing-mcp-program","args":[argument],"env":{"SECRET":"must-not-print"}}}}).to_string()).unwrap();
+    let write_config = |enabled: bool| {
+        fs::write(project.join(".mcp.json"), json!({"mcpServers":{"docs":{"command":"missing-mcp-program","enabled":enabled,"env":{"SECRET":"must-not-print"}}}}).to_string()).unwrap();
     };
-    write_config("original");
+    write_config(true);
     let run = |args: &[&str]| {
         home.command()
             .arg("--server")
@@ -787,24 +787,12 @@ fn project_mcp_approval_commands_persist_and_reject_stale_configuration() {
         assert!(!output.contains("must-not-print"));
         output
     };
-    let original = list();
-    assert!(original.contains("\tproject\tstdio\tenabled\trequired\t"));
-    let token = original.trim_end().split('\t').next_back().unwrap();
-    assert_eq!(token.len(), 64);
-    assert!(run(&["mcp", "approve", "docs", token]).status.success());
-    assert!(list().contains("\tapproved\t"));
-    assert!(run(&["daemon", "stop"]).status.success());
-    assert!(list().contains("\tapproved\t"), "restart lost the grant");
-    write_config("changed");
-    assert!(list().contains("\trequired\t"));
-    let rejected = run(&["mcp", "approve", "docs", token]);
-    assert!(!rejected.status.success());
-    assert!(list().contains("\trequired\t"));
-    let current = list();
-    let token = current.trim_end().split('\t').next_back().unwrap();
-    assert!(run(&["mcp", "approve", "docs", token]).status.success());
-    assert!(run(&["mcp", "revoke", "docs"]).status.success());
-    assert!(list().contains("\trequired\t"));
+    assert_eq!(list(), "\"docs\"\tproject\tstdio\tenabled\n");
+    write_config(false);
+    assert_eq!(list(), "\"docs\"\tproject\tstdio\tdisabled\n");
+    // Execution approval was removed; the old command is not a CLI action.
+    let removed = run(&["mcp", "approve", "docs", "token"]);
+    assert_eq!(removed.status.code(), Some(1));
     let id = "untrusted\u{9b}2J\u{202e}\nname";
     fs::write(
         project.join(".mcp.json"),

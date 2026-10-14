@@ -859,33 +859,6 @@ async fn stdio_sdk_discovery_call_cancel_and_process_cleanup() {
         } else {
             None
         };
-        if let Some(project) = project {
-            assert!(
-                fixture
-                    .mcp
-                    .server(Some(project), "docs".into(), &cancel)
-                    .await
-                    .is_err()
-            );
-            assert!(
-                !fixture.home.join("pid").exists(),
-                "unapproved project must not spawn"
-            );
-            let token = fixture
-                .mcp
-                .catalog(Some(project), &cancel)
-                .await
-                .unwrap()
-                .servers["docs"]
-                .approval_token
-                .clone()
-                .unwrap();
-            fixture
-                .mcp
-                .approve(project, "docs".into(), token, &cancel)
-                .await
-                .unwrap();
-        }
         let connection = fixture
             .mcp
             .server(project, "docs".into(), &cancel)
@@ -929,7 +902,7 @@ async fn stdio_sdk_discovery_call_cancel_and_process_cleanup() {
         if let Some(project) = project {
             fixture
                 .mcp
-                .revoke(project, "docs".into(), &cancel)
+                .disconnect(SettingsSource::ProjectMcp(project), "docs".into(), &cancel)
                 .await
                 .unwrap();
             assert_eq!(connection.state(), McpServerState::Closed);

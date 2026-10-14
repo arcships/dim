@@ -35,7 +35,6 @@ pub fn install(builder: &mut AgentBuilder) {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum McpSourceState {
     Disabled,
-    ApprovalRequired,
     Connecting,
     Ready { version: String },
     Failed { message: String },
@@ -208,15 +207,13 @@ async fn reconcile(
                 active.retain(|id, (entry, cancel)| {
                     let keep = !force
                         && entries.get(id).is_some_and(|next| {
-                            next.source == entry.source
-                                && next.configuration == entry.configuration
-                                && next.approval == entry.approval
+                            next.source == entry.source && next.configuration == entry.configuration
                         });
                     if !keep {
                         cancel.cancel();
                         // Keep a complete old set until a replacement is ready or
                         // fails. A deletion/disable, unlike refresh, withdraws now.
-                        if !entries.get(id).is_some_and(McpServerEntry::executable) {
+                        if !entries.get(id).is_some_and(McpServerEntry::enabled) {
                             owner.remove(id);
                         }
                     }
@@ -227,7 +224,7 @@ async fn reconcile(
                         continue;
                     }
                     let cancel = owner.stopped.child_token();
-                    if entry.executable() {
+                    if entry.enabled() {
                         owner.state.update(|state| {
                             state.servers.insert(id.clone(), McpSourceState::Connecting);
                         });
@@ -239,12 +236,7 @@ async fn reconcile(
                             cancel.clone(),
                         ));
                     } else {
-                        let state = if entry.enabled() {
-                            McpSourceState::ApprovalRequired
-                        } else {
-                            McpSourceState::Disabled
-                        };
-                        owner.publish(&id, None, state, &cancel);
+                        owner.publish(&id, None, McpSourceState::Disabled, &cancel);
                     }
                     active.insert(id, (entry, cancel));
                 }
