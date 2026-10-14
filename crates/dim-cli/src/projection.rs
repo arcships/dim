@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use dim_agent_types::{ContentBlock, JsonObject, ModelOutputOutcome, TurnOutcome};
 use serde_json::Value;
 
-use crate::display::{Event, EventContent};
 use crate::view::{ApprovalView, RowKind, RowTone, ViewRow, ViewSnapshot};
+use crate::wire::{Event, EventContent};
 
 #[derive(Default)]
 pub struct Projection {

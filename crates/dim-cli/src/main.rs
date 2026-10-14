@@ -28,6 +28,7 @@ mod transcript;
 mod tui;
 mod usage;
 mod view;
+mod wire;
 
 use args::{Action, Options};
 use std::io::{IsTerminal, Read};

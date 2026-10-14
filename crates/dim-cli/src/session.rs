@@ -1,8 +1,9 @@
+use crate::wire::{Event, Progress};
 use crate::{
     Result,
     args::Options,
     client::{Client, Message},
-    display::{self, Display, Event, Progress},
+    display::{self, Display},
     input::Input,
 };
 use dim_agent_types::{ApprovalCallData, ModelId};

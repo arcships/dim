@@ -19,9 +19,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::args::Options;
 use crate::client::{self, Client, Message};
-use crate::display::Event;
 use crate::projection::Projection;
 use crate::view::{Answers, ViewSnapshot};
+use crate::wire::Event;
 
 const PUBLISH_INTERVAL: Duration = Duration::from_millis(16);
 const HISTORY_PAGE: u64 = 256;

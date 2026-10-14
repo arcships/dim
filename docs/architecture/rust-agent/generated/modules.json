@@ -2351,6 +2351,13 @@
       "unexpandedMacros": [
         "matches"
       ]
+    },
+    {
+      "id": "dim_cli::@bin:dimcode::wire",
+      "crate": "dim_cli::@bin:dimcode",
+      "parent": "dim_cli::@bin:dimcode",
+      "file": "crates/dim-cli/src/wire.rs",
+      "unexpandedMacros": []
     }
   ],
   "edges": [
@@ -13182,6 +13189,13 @@
       ]
     },
     {
+      "from": "dim_cli::@bin:dimcode",
+      "to": "dim_cli::@bin:dimcode::wire",
+      "references": [
+        "mod wire"
+      ]
+    },
+    {
       "from": "dim_cli::@bin:dimcode::approvals_panel",
       "to": "dim_cli::@bin:dimcode::composer::palette",
       "references": [
@@ -13563,31 +13577,16 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::display",
-      "to": "dim_agent_types",
-      "references": [
-        "path JS_MAX_SAFE_INTEGER"
-      ]
-    },
-    {
-      "from": "dim_cli::@bin:dimcode::display",
       "to": "dim_agent_types::content",
       "references": [
-        "path ContentBlock::Text",
-        "path content"
+        "path ContentBlock::Text"
       ]
     },
     {
       "from": "dim_cli::@bin:dimcode::display",
       "to": "dim_agent_types::events",
       "references": [
-        "path InputMessageData",
-        "path ModelOutputEndData",
         "path ModelOutputOutcome::Failed",
-        "path TextData",
-        "path ToolCompletedData",
-        "path ToolResultData",
-        "path ToolUseData",
-        "path TurnEndData",
         "path TurnOutcome::Cancelled",
         "path TurnOutcome::Failed"
       ]
@@ -13598,6 +13597,24 @@
       "references": [
         "path Result",
         "use crate::Result"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::display",
+      "to": "dim_cli::@bin:dimcode::wire",
+      "references": [
+        "path Event",
+        "path EventContent::Input",
+        "path EventContent::ModelEnd",
+        "path EventContent::Text",
+        "path EventContent::ToolCompleted",
+        "path EventContent::ToolResult",
+        "path EventContent::ToolUse",
+        "path EventContent::TurnEnd",
+        "path Progress",
+        "use crate::wire::Event",
+        "use crate::wire::EventContent",
+        "use crate::wire::Progress"
       ]
     },
     {
@@ -13979,23 +13996,6 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::projection",
-      "to": "dim_cli::@bin:dimcode::display",
-      "references": [
-        "path Event",
-        "path EventContent::Input",
-        "path EventContent::ModelEnd",
-        "path EventContent::Other",
-        "path EventContent::Text",
-        "path EventContent::ToolCompleted",
-        "path EventContent::ToolResult",
-        "path EventContent::ToolUse",
-        "path EventContent::TurnEnd",
-        "use crate::display::Event",
-        "use crate::display::EventContent"
-      ]
-    },
-    {
-      "from": "dim_cli::@bin:dimcode::projection",
       "to": "dim_cli::@bin:dimcode::view",
       "references": [
         "path ApprovalView",
@@ -14014,6 +14014,23 @@
         "use crate::view::RowTone",
         "use crate::view::ViewRow",
         "use crate::view::ViewSnapshot"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::projection",
+      "to": "dim_cli::@bin:dimcode::wire",
+      "references": [
+        "path Event",
+        "path EventContent::Input",
+        "path EventContent::ModelEnd",
+        "path EventContent::Other",
+        "path EventContent::Text",
+        "path EventContent::ToolCompleted",
+        "path EventContent::ToolResult",
+        "path EventContent::ToolUse",
+        "path EventContent::TurnEnd",
+        "use crate::wire::Event",
+        "use crate::wire::EventContent"
       ]
     },
     {
@@ -14583,13 +14600,9 @@
       "references": [
         "path Display",
         "path Display::new",
-        "path Event",
-        "path Progress",
         "path display",
         "use crate::display",
-        "use crate::display::Display",
-        "use crate::display::Event",
-        "use crate::display::Progress"
+        "use crate::display::Display"
       ]
     },
     {
@@ -14599,6 +14612,16 @@
         "path Input",
         "path Input::new",
         "use crate::input::Input"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::session",
+      "to": "dim_cli::@bin:dimcode::wire",
+      "references": [
+        "path Event",
+        "path Progress",
+        "use crate::wire::Event",
+        "use crate::wire::Progress"
       ]
     },
     {
@@ -14656,14 +14679,6 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::session_host",
-      "to": "dim_cli::@bin:dimcode::display",
-      "references": [
-        "path Event",
-        "use crate::display::Event"
-      ]
-    },
-    {
-      "from": "dim_cli::@bin:dimcode::session_host",
       "to": "dim_cli::@bin:dimcode::projection",
       "references": [
         "path Projection",
@@ -14679,6 +14694,14 @@
         "path ViewSnapshot",
         "use crate::view::Answers",
         "use crate::view::ViewSnapshot"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::session_host",
+      "to": "dim_cli::@bin:dimcode::wire",
+      "references": [
+        "path Event",
+        "use crate::wire::Event"
       ]
     },
     {
@@ -15849,6 +15872,33 @@
       "references": [
         "path format_report"
       ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::wire",
+      "to": "dim_agent_types",
+      "references": [
+        "path JS_MAX_SAFE_INTEGER"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::wire",
+      "to": "dim_agent_types::content",
+      "references": [
+        "path content"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::wire",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path InputMessageData",
+        "path ModelOutputEndData",
+        "path TextData",
+        "path ToolCompletedData",
+        "path ToolResultData",
+        "path ToolUseData",
+        "path TurnEndData"
+      ]
     }
   ],
   "unresolved": [
@@ -16185,14 +16235,6 @@
       "path": "char::is_whitespace"
     },
     {
-      "module": "dim_cli::@bin:dimcode::display",
-      "path": "D::Error"
-    },
-    {
-      "module": "dim_cli::@bin:dimcode::display",
-      "path": "Wire::deserialize"
-    },
-    {
       "module": "dim_cli::@bin:dimcode::input",
       "path": "INPUT_RECORD::default"
     },
@@ -16243,6 +16285,14 @@
     {
       "module": "dim_cli::@bin:dimcode::usage",
       "path": "char::is_ascii_digit"
+    },
+    {
+      "module": "dim_cli::@bin:dimcode::wire",
+      "path": "D::Error"
+    },
+    {
+      "module": "dim_cli::@bin:dimcode::wire",
+      "path": "Wire::deserialize"
     }
   ]
 }

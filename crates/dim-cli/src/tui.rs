@@ -75,7 +75,6 @@ pub fn run(options: Options) -> i32 {
     if let Some((row, column)) = terminal.cursor_position() {
         screen.set_origin(if column == 0 { row } else { row + 1 });
     }
-    let cwd = options.cwd.clone();
     // Capability and background are decided once, before the first line is
     // written: committed scrollback cannot be repainted.
     let background = terminal
