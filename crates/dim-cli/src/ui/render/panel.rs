@@ -45,7 +45,7 @@ pub fn visible_width(text: &str) -> usize {
 }
 
 /// Borders in `color`, one column of padding, rows padded with blanks to
-/// `height` when given. `title` sits in the top border (`┌─ Queue (1) ──┐`).
+/// `height` when given. `title` sits in the top border (`╭─ Queue (1) ──╮`).
 pub fn bordered(
     content: &[String],
     width: usize,
@@ -59,9 +59,9 @@ pub fn bordered(
     let top = match title {
         Some(title) if inner > display_width(title) + 3 => {
             let fill = inner - display_width(title) - 3;
-            format!("┌─ {title} {}┐", "─".repeat(fill))
+            format!("╭─ {title} {}╮", "─".repeat(fill))
         }
-        _ => format!("┌{}┐", "─".repeat(inner)),
+        _ => format!("╭{}╮", "─".repeat(inner)),
     };
     let mut out = vec![edge(&top)];
     let body_rows = height.map(|h| h.saturating_sub(2));
@@ -79,7 +79,7 @@ pub fn bordered(
             out.push(format!("{}{}{}", edge("│"), " ".repeat(inner), edge("│")));
         }
     }
-    out.push(edge(&format!("└{}┘", "─".repeat(inner))));
+    out.push(edge(&format!("╰{}╯", "─".repeat(inner))));
     out
 }
 
@@ -162,7 +162,7 @@ mod tests {
         let rows = bordered(&["a".into()], 30, Some(5), "#555555", Some("Queue (1)"));
         let text: Vec<String> = rows.iter().map(|r| plain(r)).collect();
         assert_eq!(text.len(), 5);
-        assert!(text[0].starts_with("┌─ Queue (1) ─"));
+        assert!(text[0].starts_with("╭─ Queue (1) ─"));
         assert_eq!(display_width(&text[0]), 30);
         assert!(text.iter().all(|r| display_width(r) == 30));
     }

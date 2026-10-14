@@ -972,27 +972,22 @@ impl App {
             if !queued.is_empty() {
                 live.extend(queue_strip(&queued, cols, &self.palette));
             }
-            if self.running() {
-                const FRAMES: [&str; 4] = ["·", "•", "●", "•"];
-                let started = self.run_started.unwrap_or_else(Instant::now);
-                let elapsed = started.elapsed();
-                let beat = (elapsed.as_millis() / PULSE.as_millis()) as usize;
-                live.push(fg(
-                    &format!(
-                        "{}{} working…  {}",
-                        " ".repeat(MARGIN),
-                        FRAMES[beat % FRAMES.len()],
-                        format_elapsed(elapsed)
-                    ),
-                    &self.palette.muted,
-                ));
-            }
         }
-        // An empty live region (idle, or hidden under a prompt) leaves one
-        // blank row between the transcript and the composer.
-        if live.is_empty() {
-            live.push(String::new());
-        }
+        // One blank row above the composer, always: the run status lives in
+        // the composer's top border rather than on a row of its own, so the
+        // composer does not hop when a run starts or ends.
+        live.push(String::new());
+        let status = (self.prompt.is_none() && self.running()).then(|| {
+            const FRAMES: [&str; 4] = ["·", "•", "●", "•"];
+            let started = self.run_started.unwrap_or_else(Instant::now);
+            let elapsed = started.elapsed();
+            let beat = (elapsed.as_millis() / PULSE.as_millis()) as usize;
+            format!(
+                "{} working…  {}",
+                FRAMES[beat % FRAMES.len()],
+                format_elapsed(elapsed)
+            )
+        });
         let inner = cols.saturating_sub(2 * MARGIN + 4).max(1);
         let prompt = "\u{203a} ";
         let prompt_width = 2;
@@ -1034,11 +1029,15 @@ impl App {
             cursor_col = prompt_width + cursor.0 as usize;
         }
         let box_top = live.len();
+        let muted = |label: &str| fg(label, &p.muted);
         live.extend(boxed(
             &rows,
             cols,
             &|edge| fg(edge, &p.faint),
             &|_, body| body.to_owned(),
+            status
+                .as_deref()
+                .map(|text| (text, &muted as &dyn Fn(&str) -> String)),
         ));
         // Panels sit under the composer: a runtime prompt, or the command
         // palette while a command is being typed.
@@ -1615,14 +1614,20 @@ fn banner(cols: usize, p: &Palette) -> String {
     }
     let rows: Vec<String> = header.iter().chain(info.iter()).cloned().collect();
     let header_rows = header.len();
-    let mut text = boxed(&rows, cols, &|edge| fg(edge, &p.accent), &|index, body| {
-        let color = if index < header_rows {
-            &p.accent
-        } else {
-            &p.text_soft
-        };
-        fg(body, color)
-    })
+    let mut text = boxed(
+        &rows,
+        cols,
+        &|edge| fg(edge, &p.accent),
+        &|index, body| {
+            let color = if index < header_rows {
+                &p.accent
+            } else {
+                &p.text_soft
+            };
+            fg(body, color)
+        },
+        None,
+    )
     .join("\n");
     text.push('\n');
     text
@@ -1641,24 +1646,36 @@ fn git_branch() -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-/// Box drawing around `rows`, sized to `cols` with the common margin. Rows
-/// that are too long are cut to the inner width. `edge` paints the border
-/// characters.
+/// Rounded box drawing around `rows`, sized to `cols` with the common
+/// margin. Rows that are too long are cut to the inner width. `edge` paints
+/// the border characters. `status`, plain text painted by `label`, is set
+/// into the top border (`╭─ status ───╮`), Amp-style.
 fn boxed(
     rows: &[String],
     cols: usize,
     edge: &dyn Fn(&str) -> String,
     interior: &dyn Fn(usize, &str) -> String,
+    status: Option<(&str, &dyn Fn(&str) -> String)>,
 ) -> Vec<String> {
     // L's boxes end two columns short of the right edge, margin included.
     let outer = cols.saturating_sub(2 + MARGIN).max(4);
     let inner = outer - 4;
     let margin = " ".repeat(MARGIN);
     let mut out = Vec::with_capacity(rows.len() + 2);
-    out.push(format!(
-        "{margin}{}",
-        edge(&format!("┌{}┐", "─".repeat(outer - 2)))
-    ));
+    let top = match status {
+        // `╭─ `, the label, then a space and at least one `─` before `╮`.
+        Some((text, label)) if outer >= 7 => {
+            let (text, width) = clip(text, outer - 6);
+            format!(
+                "{}{}{}",
+                edge("╭─ "),
+                label(&text),
+                edge(&format!(" {}╮", "─".repeat(outer - 5 - width)))
+            )
+        }
+        _ => edge(&format!("╭{}╮", "─".repeat(outer - 2))),
+    };
+    out.push(format!("{margin}{top}"));
     for (index, row) in rows.iter().enumerate() {
         let (text, width) = clip(row, inner);
         let body = format!(" {text}{} ", " ".repeat(inner.saturating_sub(width)));
@@ -1671,7 +1688,7 @@ fn boxed(
     }
     out.push(format!(
         "{margin}{}",
-        edge(&format!("└{}┘", "─".repeat(outer - 2)))
+        edge(&format!("╰{}╯", "─".repeat(outer - 2)))
     ));
     out
 }
@@ -1840,7 +1857,22 @@ mod tests {
             "中文 mixed".to_owned(),
             "\x1b[2mdim\x1b[22m".to_owned(),
         ];
-        let out = boxed(&rows, 40, &|e| e.to_owned(), &|_, b| b.to_owned());
+        let out = boxed(&rows, 40, &|e| e.to_owned(), &|_, b| b.to_owned(), None);
+        for line in &out {
+            assert_eq!(width_of(line), 38, "{line:?}");
+        }
+        let out = boxed(
+            &rows,
+            40,
+            &|e| e.to_owned(),
+            &|_, b| b.to_owned(),
+            Some(("● working…  3s", &|s| s.to_owned())),
+        );
+        assert!(
+            out[0].starts_with(&format!("{}╭─ ● working…  3s ─", " ".repeat(MARGIN))),
+            "{:?}",
+            out[0]
+        );
         for line in &out {
             assert_eq!(width_of(line), 38, "{line:?}");
         }
