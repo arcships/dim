@@ -27,13 +27,12 @@ impl Projection {
     pub fn apply(&mut self, event: &Event) {
         let sequence = event.sequence;
         match &event.content {
+            // Inputs without `user` only carry context blocks, not a message.
             EventContent::Input(data) => {
-                let text = data
-                    .user
-                    .as_ref()
-                    .map(|user| text_of(&user.content))
-                    .unwrap_or_default();
-                self.push(format!("user-{sequence}"), RowKind::UserMessage, text);
+                if let Some(user) = &data.user {
+                    let text = text_of(&user.content);
+                    self.push(format!("user-{sequence}"), RowKind::UserMessage, text);
+                }
             }
             EventContent::Text(data) => {
                 let index = match self.assistant_rows.get(&data.request_id) {
