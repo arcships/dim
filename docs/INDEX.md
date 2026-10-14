@@ -1,6 +1,7 @@
 # Documentation
 
 - [Architecture and ownership](architecture/README.md)
+- [Rust agent design documents](architecture/README.md#design-documents) and [per-capability pages](architecture/rust-agent/plugins/README.md)
 - [Build environment](architecture/build.md)
 - [Local development and managed provider boundary](architecture/development.md)
 - [Native CLI contract](../crates/dim-cli/README.md)

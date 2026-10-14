@@ -40,6 +40,61 @@ The CLI disables terminal echo before inviting callback input and restores it on
 
 Model adapters validate incoming HTTP/SSE data at their boundary. Event serialization is covered by frozen compatibility fixtures; the original TypeScript source generator is not needed at build time. `ProviderPresentation` transports generic nonempty source/reason/action strings and public diagnostics; private classification policies are not part of the Rust contract.
 
+## Crates
+
+| Crate | Contents | Dependency limits |
+| --- | --- | --- |
+| `dim-agent-types` | Events, messages, model requests, tool results, identities | No Tokio, rutis, HTTP or capabilities |
+| `dim-agent-runtime` | Agent/Session, Timeline, Dispatcher, TimelineContext, the `Branch` facade, capability registration and control ports | Does not reference default capabilities or the App Server |
+| `dim-agent-capabilities` | Default capabilities and their host ports | Does not depend on the App Server |
+| `dim-agent-aimux` | Model configuration, model table, rutis plugin, request and stream mapping | aimux types stay inside the crate; no App Server |
+| `dim-app-server` | RPC, connections, Session registry, approval host, transport, daemon | Composes runtime and capabilities; does not reference the CLI |
+| `dim-cli` | Terminal client and local RPC transport | Depends only on `dim-agent-types`; not an execution engine |
+| `xtask` | Graph generation, boundary checks, measurement | Development only |
+
+The runtime defines control interfaces and factory contracts; host ports for models, tools and context are defined by the owning capability crate. External capability crates depend on the runtime, never the reverse.
+
+## Objects
+
+| Object | State and resources | Boundary |
+| --- | --- | --- |
+| Agent | Configuration, Session registry, capability factories | Does not run the model loop; one configuration can create many Sessions |
+| Session | Workspace, approvals, TimelineTree, Session-scoped capabilities | Independent of connections; Sessions share no mutable business state |
+| Timeline | Hot window, publish watermark, ancestor chain; events live in the TimelineStore | The single historical fact; published events never change |
+| TimelineContext | Runtime owner of one loaded branch: its subtree, Timeline, Dispatcher and `BranchLifecycle` | A container only: business state belongs to capabilities and is rebuilt from the Timeline |
+| Branch | Facade for validated input, stop, idle, configuration, read-only history and capability state | Callers cannot write arbitrary events |
+| Capability | Own state, declared dependencies, subscriptions, resources and errors | Defined in any crate; the runtime does not enumerate them |
+| Connection | Pending requests, subscription cursors, I/O tasks, outbound queue | Disconnect releases only connection resources |
+
+Each process has one rutis root; Sessions and branches are scoped subtrees keyed by instance. The Timeline owns persistent state and the TimelineContext owns runtime memory state: only I/O resources (processes, connections, streams) cannot be rebuilt, and they settle to a terminal state on reload or restart.
+
+## Event conventions
+
+- Only Timeline commits assign sequence numbers; ordering is by sequence, never by completion time.
+- Each branch has one serial Dispatcher. Appends made inside a handler go to the tail and are dispatched later, not recursively.
+- Handlers register owned work and return; network and tool waits never occupy the Dispatcher. Business failures are written as events.
+- A branch is running while the Loop has an open turn (`turn/start` dispatched, `turn/end` not yet); stopping is running plus interrupted.
+- InputQueue decides when input is adopted (`input/applied`); Loop decides when it is consumed (`input/consumed`).
+- `stop/interrupt` is a signal: each capability cancels its in-flight work, releases resources and then writes its terminal outcome.
+
+## Design documents
+
+Detailed contracts live under [`rust-agent/`](rust-agent/) and are written in Chinese:
+
+| Document | Topic |
+| --- | --- |
+| [principles](rust-agent/principles.md) | Design rules: bounded, orthogonal capabilities and ownership |
+| [time-bus](rust-agent/time-bus.md) | Event and state-machine axioms (draft) |
+| [single-tree](rust-agent/single-tree.md) | rutis tree assembly, keys, visibility, startup, close and reload |
+| [lifecycle](rust-agent/lifecycle.md) | Scopes, cancellation, settlement and resource cleanup |
+| [interrupt](rust-agent/interrupt.md) | Stop and interrupt semantics |
+| [event-driven-flows](rust-agent/event-driven-flows.md) | Approval, detached work, branch creation, compaction, broadcast |
+| [timeline-storage](rust-agent/timeline-storage.md) | Timeline write, publish and read contract |
+| [tool-contributions](rust-agent/tool-contributions.md) | Tool contributions, registry and binding |
+| [prompt](rust-agent/prompt.md) | Prompt lifecycle and configuration adoption |
+| [trace](rust-agent/trace.md) | Diagnostics channel and trace archives |
+| [plugins](rust-agent/plugins/README.md) | Per-capability dependencies, events and state, checked by `xtask check` |
+
 ## Generated architecture
 
 ```sh
