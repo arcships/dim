@@ -253,8 +253,9 @@ impl Worker {
     }
 
     async fn list(&mut self) -> crate::Result<Vec<SessionSummary>> {
-        let listed: Listed = self.client.typed("session.list", json!({})).await?;
-        Ok(listed.sessions)
+        // Only the summaries carry the preview and update time the picker
+        // shows; the reply is the bare list.
+        self.client.typed("session.summaries", json!({})).await
     }
 
     async fn load_history(&mut self) -> crate::Result<()> {
@@ -354,7 +355,10 @@ impl Worker {
                 self.attach(session_id, SwitchKind::Resumed).await?;
             }
             Command::ListSessions => {
-                let sessions = self.list().await.map(|sessions| {
+                let sessions = self.list().await.map(|mut sessions| {
+                    // The daemon lists in no particular order; the picker
+                    // shows the most recent first.
+                    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
                     sessions
                         .into_iter()
                         .map(|session| SessionItem {
@@ -475,11 +479,6 @@ impl Worker {
     fn send(&self, update: Update) {
         let _ = self.updates.send(update);
     }
-}
-
-#[derive(Deserialize)]
-struct Listed {
-    sessions: Vec<SessionSummary>,
 }
 
 #[derive(Deserialize)]
