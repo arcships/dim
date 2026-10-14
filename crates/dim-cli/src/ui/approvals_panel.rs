@@ -1,13 +1,13 @@
 //! The `/approvals` panel: the default tool-approval mode, with a
 //! confirmation before full access (port of `renderApprovals`).
 
-use crate::composer::palette::{footer, title};
-use crate::prompts::Effect;
-use crate::render::panel::{IDLE_MARKER, SELECTED_MARKER, bordered, confirm_panel};
-use crate::terminal::{KeyCode, KeyEvent};
-use crate::theme::Palette;
-use crate::theme::ansi::{Paint, fg, paint};
-use crate::transcript::blocks::truncate_cells;
+use crate::ui::composer::palette::{footer, title};
+use crate::ui::prompts::Effect;
+use crate::ui::render::panel::{IDLE_MARKER, SELECTED_MARKER, bordered, confirm_panel};
+use crate::ui::terminal::{KeyCode, KeyEvent};
+use crate::ui::theme::Palette;
+use crate::ui::theme::ansi::{Paint, fg, paint};
+use crate::ui::transcript::blocks::truncate_cells;
 
 /// `(wire mode, title, status label, description)` in display order.
 pub const MODES: [(&str, &str, &str, &str); 3] = [
@@ -161,7 +161,7 @@ impl ApprovalsPanel {
                 content.push(format!("{marker}{label}{badge}"));
                 let color = if selected { &p.muted } else { &p.faint };
                 let width = inner.saturating_sub(2).max(1);
-                let wrapped = crate::tui::wrap_words(description, width);
+                let wrapped = crate::ui::tui::wrap_words(description, width);
                 let mut lines: Vec<String> = wrapped.iter().take(detail_lines).cloned().collect();
                 if wrapped.len() > detail_lines {
                     if let Some(last) = lines.last_mut() {

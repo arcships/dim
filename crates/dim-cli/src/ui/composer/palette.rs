@@ -3,10 +3,10 @@
 //! `createListPanelModel` and `ListPanel`).
 
 use super::commands::{COMMANDS, Command};
-use crate::render::panel::bordered;
-use crate::theme::Palette;
-use crate::theme::ansi::{Paint, fg, paint};
-use crate::transcript::blocks::{display_width, truncate_cells};
+use crate::ui::render::panel::bordered;
+use crate::ui::theme::Palette;
+use crate::ui::theme::ansi::{Paint, fg, paint};
+use crate::ui::transcript::blocks::{display_width, truncate_cells};
 
 const SELECTED_MARKER: &str = "› ";
 const IDLE_MARKER: &str = "  ";
@@ -428,7 +428,7 @@ pub(crate) fn footer(count: &str, hint: &str, inner: usize, p: &Palette) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{Appearance, ColorMode, Theme};
+    use crate::ui::theme::{Appearance, ColorMode, Theme};
 
     fn names(query: &str) -> Vec<&'static str> {
         filter_commands(query).into_iter().map(|c| c.name).collect()

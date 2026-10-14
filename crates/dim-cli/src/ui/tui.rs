@@ -4,30 +4,31 @@
 //! diff (2.3). The terminal layer (2.2) guarantees the exit contract.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::approvals_panel::{ApprovalsPanel, status_label};
-use crate::args::Options;
-use crate::composer::{Composer, Outcome as ComposerOutcome, history};
-use crate::models_panel::ModelsPanel;
-use crate::prompts::{AskUserPrompt, Effect, ExitConfirm, ExitReason, PermissionPrompt};
-use crate::providers_panel::ProvidersPanel;
-use crate::render::markdown::MarkdownRenderer;
-use crate::render::{Frame, Screen};
-use crate::session_host::{Command, SessionHost, SessionPort, SwitchKind, Update};
-use crate::sessions_panel::SessionsPanel;
-use crate::terminal::{InputEvent, KeyCode, Modifiers, Terminal, TerminalError, Wait};
-use crate::theme::ansi::{Paint, fg, paint};
-use crate::theme::{Palette, Theme, detect};
-use crate::theme_panel::ThemePanel;
-use crate::transcript::block::{Block, Tone, project_row, tool_block};
-use crate::transcript::blocks::{
+use crate::model::session::{Command, SessionPort, SwitchKind, Update};
+use crate::model::view::{RowKind, ViewRow, ViewSnapshot};
+use crate::ui::Env;
+use crate::ui::approvals_panel::{ApprovalsPanel, status_label};
+use crate::ui::composer::{Composer, Outcome as ComposerOutcome, history};
+use crate::ui::models_panel::ModelsPanel;
+use crate::ui::prompts::{AskUserPrompt, Effect, ExitConfirm, ExitReason, PermissionPrompt};
+use crate::ui::providers_panel::ProvidersPanel;
+use crate::ui::render::markdown::MarkdownRenderer;
+use crate::ui::render::{Frame, Screen};
+use crate::ui::sessions_panel::SessionsPanel;
+use crate::ui::terminal::{InputEvent, KeyCode, Modifiers, Terminal, TerminalError, Wait};
+use crate::ui::theme::ansi::{Paint, fg, paint};
+use crate::ui::theme::{Palette, Theme, detect};
+use crate::ui::theme_panel::ThemePanel;
+use crate::ui::transcript::block::{Block, Tone, project_row, tool_block};
+use crate::ui::transcript::blocks::{
     ASSISTANT_MARK, UserStyle, apply_gutter_mark, gutter_width, render_user, truncate_cells,
 };
-use crate::transcript::commit::CommitState;
-use crate::transcript::stream::{StreamPlanner, TextBlock};
-use crate::transcript::tools::render_tool;
-use crate::view::{RowKind, ViewRow, ViewSnapshot};
+use crate::ui::transcript::commit::CommitState;
+use crate::ui::transcript::stream::{StreamPlanner, TextBlock};
+use crate::ui::transcript::tools::render_tool;
 
 /// The stop reason and the note committed when the user interrupts a run.
 pub const INTERRUPT_REASON: &str = "User interrupted the run.";
@@ -58,7 +59,7 @@ pub fn is_interactive() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
-pub fn run(options: Options) -> i32 {
+pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
     let mut terminal = match Terminal::enter() {
         Ok(terminal) => terminal,
         Err(TerminalError::NotATerminal) => {
@@ -82,7 +83,7 @@ pub fn run(options: Options) -> i32 {
         .and_then(detect::parse_background_report);
     let env = detect::env_from_process();
     let detected = Theme::detect(&env, true, background.as_deref());
-    let saved = crate::theme_panel::saved_theme_id();
+    let saved = crate::ui::theme_panel::saved_theme_id(&surroundings.home);
     let theme = match &saved {
         Some(id) => Theme::named(
             id,
@@ -92,16 +93,19 @@ pub fn run(options: Options) -> i32 {
         ),
         None => detected.clone(),
     };
+    let cwd_key = surroundings.workspace.to_string_lossy().into_owned();
     let mut app = App::new(
-        Box::new(SessionHost::start(options)),
+        host,
         MarkdownRenderer::new(&theme),
         theme.palette.clone(),
+        surroundings.home.clone(),
+        cwd_key,
     );
     app.theme_context = Some(ThemeContext {
         mode: detected.mode,
         appearance: detected.appearance,
         background,
-        active: saved.unwrap_or_else(|| crate::theme_panel::SYSTEM.to_owned()),
+        active: saved.unwrap_or_else(|| crate::ui::theme_panel::SYSTEM.to_owned()),
     });
     let mut dirty = true;
     let mut last_frame: Option<Instant> = None;
@@ -214,8 +218,8 @@ pub fn run(options: Options) -> i32 {
 /// What a theme is built against: the terminal's capability, appearance and
 /// reported background, and the theme in effect.
 struct ThemeContext {
-    mode: crate::theme::ColorMode,
-    appearance: crate::theme::Appearance,
+    mode: crate::ui::theme::ColorMode,
+    appearance: crate::ui::theme::Appearance,
     background: Option<String>,
     active: String,
 }
@@ -237,6 +241,7 @@ struct App {
     host: Box<dyn SessionPort>,
     composer: Composer,
     cwd_key: String,
+    home: PathBuf,
     notices: Vec<String>,
     /// Multi-line status blocks to commit (reports), with their tone.
     reports: Vec<(String, Tone)>,
@@ -310,15 +315,19 @@ enum Prompt {
 }
 
 impl App {
-    fn new(host: Box<dyn SessionPort>, markdown: MarkdownRenderer, palette: Palette) -> Self {
-        let cwd_key = std::env::current_dir()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let past = history::load(&crate::args::default_home(), &cwd_key);
+    fn new(
+        host: Box<dyn SessionPort>,
+        markdown: MarkdownRenderer,
+        palette: Palette,
+        home: PathBuf,
+        cwd_key: String,
+    ) -> Self {
+        let past = history::load(&home, &cwd_key);
         Self {
             host,
             composer: Composer::new(past),
             cwd_key,
+            home,
             notices: Vec::new(),
             reports: Vec::new(),
             banner_committed: false,
@@ -358,7 +367,7 @@ impl App {
         let Some(context) = &mut self.theme_context else {
             return;
         };
-        let theme = crate::theme::Theme::named(
+        let theme = crate::ui::theme::Theme::named(
             id,
             context.mode,
             context.appearance,
@@ -530,7 +539,7 @@ impl App {
             Update::Approvals(mode) => match mode {
                 Ok(mode) => {
                     if std::mem::take(&mut self.approvals_toast) {
-                        let title = crate::approvals_panel::MODES
+                        let title = crate::ui::approvals_panel::MODES
                             .iter()
                             .find(|(m, ..)| *m == mode)
                             .map_or("", |(_, title, ..)| *title);
@@ -662,7 +671,7 @@ impl App {
                     self.host.send(Command::Reconnect);
                     return Outcome::Continue;
                 }
-                let _ = history::append(&crate::args::default_home(), &self.cwd_key, &text);
+                let _ = history::append(&self.home, &self.cwd_key, &text);
                 self.composer.push_history(&text);
                 if self.running() {
                     self.set_notice("Message queued");
@@ -778,7 +787,7 @@ impl App {
             Effect::ThemeApply(id) => {
                 self.prompt = None;
                 self.paint_theme(&id);
-                if let Some(error) = crate::theme_panel::save_theme_id(&id) {
+                if let Some(error) = crate::ui::theme_panel::save_theme_id(&self.home, &id) {
                     self.set_notice(error);
                 }
             }
@@ -814,7 +823,7 @@ impl App {
 
     fn run_command(&mut self, name: &str, _args: &str) -> Outcome {
         // Commands that act on a session say so instead of failing quietly.
-        if crate::composer::commands::COMMANDS
+        if crate::ui::composer::commands::COMMANDS
             .iter()
             .any(|c| c.name == name && c.requires_session)
             && !self.session_active()
@@ -1161,7 +1170,7 @@ impl App {
         let mut commits: Vec<String> = Vec::new();
         let mut sources: Vec<Option<Block>> = Vec::new();
         let draw = |row: &ViewRow,
-                    finalized: Option<crate::transcript::stream::Batch>|
+                    finalized: Option<crate::ui::transcript::stream::Batch>|
          -> (Vec<String>, Option<Block>) {
             match (row.kind, finalized) {
                 // The planner has laid out this answer already.
@@ -1401,8 +1410,8 @@ fn format_elapsed(elapsed: Duration) -> String {
 /// The queue, drawn in a titled border above the composer: the next message
 /// to run reads at the top.
 fn queue_strip(items: &[(String, String)], cols: usize, p: &Palette) -> Vec<String> {
-    use crate::render::panel::bordered;
-    use crate::transcript::blocks::truncate_cells;
+    use crate::ui::render::panel::bordered;
+    use crate::ui::transcript::blocks::truncate_cells;
     const MAX_ROWS: usize = 5;
     let outer = cols.saturating_sub(2 + MARGIN).max(4);
     let inner = outer.saturating_sub(4).max(1);
@@ -1432,12 +1441,12 @@ fn queue_strip(items: &[(String, String)], cols: usize, p: &Palette) -> Vec<Stri
 /// The collapsed reasoning row: an accent italic label, then the preview in
 /// muted italic, cut to the width.
 fn thinking_line(preview: &str, width: usize, p: &Palette) -> String {
-    use crate::transcript::blocks::truncate_cells;
+    use crate::ui::transcript::blocks::truncate_cells;
     const LABEL: &str = "Thinking: ";
     let label = truncate_cells(LABEL, width);
     let preview = truncate_cells(
         preview,
-        width.saturating_sub(crate::transcript::blocks::display_width(&label)),
+        width.saturating_sub(crate::ui::transcript::blocks::display_width(&label)),
     );
     format!(
         "{}{}",
@@ -1462,7 +1471,7 @@ fn thinking_line(preview: &str, width: usize, p: &Palette) -> String {
 
 /// A gutter mark and wrapped text in one tone (errors, status notes).
 fn gutter_text(mark: &str, text: &str, width: usize, color: &str) -> Vec<String> {
-    use crate::transcript::blocks::{gutter_mark, wrap_cells};
+    use crate::ui::transcript::blocks::{gutter_mark, wrap_cells};
     let gutter = gutter_width(width);
     let content = width.saturating_sub(gutter).max(1);
     wrap_cells(text, content)
@@ -1487,7 +1496,7 @@ fn gutter_text(mark: &str, text: &str, width: usize, color: &str) -> Vec<String>
 /// before, and every row carries the document pad.
 /// A rule centred on `label`, at most [`BOUNDARY_MAX_WIDTH`] wide.
 fn boundary_line(label: &str, width: usize) -> String {
-    use crate::transcript::blocks::truncate_cells;
+    use crate::ui::transcript::blocks::truncate_cells;
     let width = width.clamp(8, BOUNDARY_MAX_WIDTH);
     let text = format!(
         " {} ",
@@ -1712,7 +1721,7 @@ fn clip(text: &str, max: usize) -> (String, usize) {
         }
         let run_end = rest.find('\x1b').unwrap_or(rest.len());
         for cluster in rest[..run_end].graphemes(true) {
-            let w = crate::transcript::blocks::display_width(cluster);
+            let w = crate::ui::transcript::blocks::display_width(cluster);
             if width + w > max {
                 break 'outer;
             }
@@ -1807,7 +1816,7 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut rows = vec![String::new()];
     let mut used = 0;
     for cluster in text.graphemes(true) {
-        let w = crate::transcript::blocks::display_width(cluster);
+        let w = crate::ui::transcript::blocks::display_width(cluster);
         if used + w > width && used > 0 {
             rows.push(String::new());
             used = 0;
@@ -1859,6 +1868,6 @@ mod tests {
     fn committed_chunks_start_with_a_blank_row_and_are_padded() {
         let text = chunk(&["◆ hello".to_owned(), "  world".to_owned()]);
         assert_eq!(text, "\n ◆ hello\n   world\n");
-        assert_eq!(crate::transcript::blocks::display_width("◆ hello"), 7);
+        assert_eq!(crate::ui::transcript::blocks::display_width("◆ hello"), 7);
     }
 }

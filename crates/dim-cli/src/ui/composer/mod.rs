@@ -18,9 +18,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::StatefulWidgetRef;
 use xai_ratatui_textarea::{ElementId, ElementKind, TextArea, TextAreaState};
 
-use crate::render::markdown::{Cell, cells_to_ansi};
-use crate::terminal::{KeyCode, KeyEvent, Modifiers};
-use crate::theme::Palette;
+use crate::ui::render::markdown::{Cell, cells_to_ansi};
+use crate::ui::terminal::{KeyCode, KeyEvent, Modifiers};
+use crate::ui::theme::Palette;
 use palette::PaletteState;
 
 /// Most rows the input shows before it scrolls.
@@ -484,7 +484,7 @@ impl Composer {
 }
 
 fn parse_hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
-    let [r, g, b] = crate::theme::contrast::parse_hex(hex)?;
+    let [r, g, b] = crate::ui::theme::contrast::parse_hex(hex)?;
     Some((
         (r * 255.0).round() as u8,
         (g * 255.0).round() as u8,
@@ -559,7 +559,7 @@ fn to_crossterm(key: KeyEvent) -> Option<CtKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{Appearance, ColorMode, Theme};
+    use crate::ui::theme::{Appearance, ColorMode, Theme};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, Modifiers::NONE)

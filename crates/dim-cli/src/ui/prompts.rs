@@ -7,16 +7,16 @@
 
 use std::collections::BTreeMap;
 
-use crate::view::{Answer, Answers, Question, QuestionKind};
+use crate::model::view::{Answer, Answers, Question, QuestionKind};
 use serde_json::Value;
 
-use crate::render::panel::{
+use crate::ui::render::panel::{
     IDLE_MARKER, SELECTED_MARKER, bordered, choices, confirm_panel, visible_width,
 };
-use crate::terminal::{KeyCode, KeyEvent, Modifiers};
-use crate::theme::Palette;
-use crate::theme::ansi::{Paint, fg, paint};
-use crate::transcript::blocks::{display_width, truncate_cells, wrap_cells};
+use crate::ui::terminal::{KeyCode, KeyEvent, Modifiers};
+use crate::ui::theme::Palette;
+use crate::ui::theme::ansi::{Paint, fg, paint};
+use crate::ui::transcript::blocks::{display_width, truncate_cells, wrap_cells};
 
 /// What a key did to a prompt.
 #[derive(Debug, PartialEq)]
@@ -58,9 +58,9 @@ pub enum Effect {
     /// Leave the picker and paint with this theme again.
     ThemeRestore(String),
     /// Change a provider (`/connect`).
-    Provider(crate::session_host::ProviderAction),
+    Provider(crate::model::session::ProviderAction),
     /// Begin a sign-in on the worker.
-    OauthStart(crate::session_host::OauthStart),
+    OauthStart(crate::model::session::OauthStart),
     /// Abandon the sign-in in progress.
     OauthCancel,
     /// Leave the OAuth step for the provider list (panel-internal).
@@ -1034,8 +1034,8 @@ fn used(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{Appearance, ColorMode, Theme};
-    use crate::view::QuestionOption;
+    use crate::model::view::QuestionOption;
+    use crate::ui::theme::{Appearance, ColorMode, Theme};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, Modifiers::NONE)

@@ -3,12 +3,12 @@
 
 use std::cell::Cell;
 
-use crate::composer::palette::{Kind, Row, footer, panel_row, title};
-use crate::render::panel::bordered;
-use crate::terminal::{KeyCode, KeyEvent, Modifiers};
-use crate::theme::Palette;
-use crate::theme::ansi::fg;
-use crate::transcript::blocks::{display_width, truncate_cells};
+use crate::ui::composer::palette::{Kind, Row, footer, panel_row, title};
+use crate::ui::render::panel::bordered;
+use crate::ui::terminal::{KeyCode, KeyEvent, Modifiers};
+use crate::ui::theme::Palette;
+use crate::ui::theme::ansi::fg;
+use crate::ui::transcript::blocks::{display_width, truncate_cells};
 
 const DETAIL_GAP: usize = 2;
 

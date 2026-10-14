@@ -2,9 +2,9 @@
 //! the label, a one-line detail, and a small body for the tools whose result
 //! is worth reading in place (edit/write diffs, web search hits).
 
-use crate::theme::Palette;
-use crate::theme::ansi::fg;
-use crate::transcript::blocks::{display_width, gutter_mark, gutter_width, truncate_cells};
+use crate::ui::theme::Palette;
+use crate::ui::theme::ansi::fg;
+use crate::ui::transcript::blocks::{display_width, gutter_mark, gutter_width, truncate_cells};
 use serde_json::Value;
 
 pub const TOOL_DONE_MARK: &str = "●";
@@ -621,7 +621,7 @@ pub fn render_tool(block: &ToolBlock, width: usize, p: &Palette) -> Vec<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{Appearance, ColorMode, Theme};
+    use crate::ui::theme::{Appearance, ColorMode, Theme};
     use serde_json::json;
 
     fn row<'a>(name: &'a str, input: &'a Value) -> ToolRow<'a> {

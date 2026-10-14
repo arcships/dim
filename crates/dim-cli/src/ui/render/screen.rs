@@ -492,7 +492,7 @@ impl TerminalLike for OutTerm<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::testterm::Emu;
+    use crate::ui::render::testterm::Emu;
 
     const SIZE: (u16, u16) = (40, 12);
 
@@ -758,7 +758,7 @@ mod tests {
         let (mut screen, mut emu) = setup(true);
         let live = ["c", "s"];
         drive(&mut screen, &mut emu, &frame(&[], &live, None));
-        let link = crate::render::osc8::hyperlink("https://example.com/a", "docs link");
+        let link = crate::ui::render::osc8::hyperlink("https://example.com/a", "docs link");
         let text = format!("see {link} and then {}", "word ".repeat(12));
         let bytes = drive(&mut screen, &mut emu, &frame(&[&text], &live, None));
         let sent = String::from_utf8_lossy(&bytes).into_owned();

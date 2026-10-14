@@ -1,9 +1,9 @@
 //! Bordered panels shared by the palette, the queue strip and the prompts
 //! (ports of `renderBorderedBlock`, `panelChoices` and `ConfirmPanel`).
 
-use crate::theme::Palette;
-use crate::theme::ansi::{Paint, fg, paint};
-use crate::transcript::blocks::{display_width, truncate_cells};
+use crate::ui::theme::Palette;
+use crate::ui::theme::ansi::{Paint, fg, paint};
+use crate::ui::transcript::blocks::{display_width, truncate_cells};
 
 pub const SELECTED_MARKER: &str = "› ";
 pub const IDLE_MARKER: &str = "  ";
@@ -141,7 +141,7 @@ pub fn confirm_panel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{Appearance, ColorMode, Theme};
+    use crate::ui::theme::{Appearance, ColorMode, Theme};
 
     fn plain(s: &str) -> String {
         let mut out = String::new();

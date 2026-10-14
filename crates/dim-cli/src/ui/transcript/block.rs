@@ -7,8 +7,8 @@
 //! resize. Blocks carry semantic [`Tone`]s, never colours: the palette is
 //! applied at draw time.
 
-use crate::transcript::tools::{ToolBlock, ToolRow, ToolState, project_tool};
-use crate::view::{RowKind, RowTone, ViewRow};
+use crate::model::view::{RowKind, RowTone, ViewRow};
+use crate::ui::transcript::tools::{ToolBlock, ToolRow, ToolState, project_tool};
 
 /// How a status line is coloured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

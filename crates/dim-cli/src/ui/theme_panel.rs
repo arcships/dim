@@ -2,11 +2,11 @@
 //! family, previewed while moving and persisted on Enter (port of
 //! `openThemePanel` / `handleThemePanelKey`).
 
-use crate::list_panel::{Event, Item, ListPanel};
-use crate::prompts::Effect;
-use crate::terminal::KeyEvent;
-use crate::theme::themes::THEMES;
-use crate::theme::{Appearance, ColorMode, Palette};
+use crate::ui::list_panel::{Event, Item, ListPanel};
+use crate::ui::prompts::Effect;
+use crate::ui::terminal::KeyEvent;
+use crate::ui::theme::themes::THEMES;
+use crate::ui::theme::{Appearance, ColorMode, Palette};
 
 pub const SYSTEM: &str = "system";
 const HINT: &str = "↑↓ preview · enter apply · esc cancel";
@@ -74,16 +74,16 @@ impl ThemePanel {
 }
 
 /// The theme id saved in `config.json` (`themeId`), if any.
-pub fn saved_theme_id() -> Option<String> {
-    let text = std::fs::read_to_string(config_path()).ok()?;
+pub fn saved_theme_id(home: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(config_path(home)).ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
     value["themeId"].as_str().map(str::to_owned)
 }
 
 /// Writes `themeId` into `config.json`, keeping the other keys; the error
 /// text on failure.
-pub fn save_theme_id(id: &str) -> Option<String> {
-    let path = config_path();
+pub fn save_theme_id(home: &std::path::Path, id: &str) -> Option<String> {
+    let path = config_path(home);
     let mut value: serde_json::Value = std::fs::read_to_string(&path)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
@@ -102,14 +102,14 @@ pub fn save_theme_id(id: &str) -> Option<String> {
         .map(|e| format!("Could not save the theme: {e}"))
 }
 
-fn config_path() -> std::path::PathBuf {
-    crate::args::default_home().join("config.json")
+fn config_path(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("config.json")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::Theme;
+    use crate::ui::theme::Theme;
 
     #[test]
     fn a_terminal_gets_system_and_the_themes_of_its_background_family() {

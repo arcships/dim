@@ -1,15 +1,15 @@
 //! The OAuth step of the `/connect` panel: Dim / Codex / Grok sign-in by
 //! browser or device code (port of `oauthView` / `oauthRows`).
 
-use crate::composer::palette::title_plain;
-use crate::prompts::Effect;
-use crate::providers_panel::{action_row, input_row};
-use crate::render::panel::{IDLE_MARKER, bordered};
-use crate::session_host::{OauthEvent, OauthStart};
-use crate::terminal::{KeyCode, KeyEvent, Modifiers};
-use crate::theme::Palette;
-use crate::theme::ansi::fg;
-use crate::transcript::blocks::truncate_cells;
+use crate::model::session::{OauthEvent, OauthStart};
+use crate::ui::composer::palette::title_plain;
+use crate::ui::prompts::Effect;
+use crate::ui::providers_panel::{action_row, input_row};
+use crate::ui::render::panel::{IDLE_MARKER, bordered};
+use crate::ui::terminal::{KeyCode, KeyEvent, Modifiers};
+use crate::ui::theme::Palette;
+use crate::ui::theme::ansi::fg;
+use crate::ui::transcript::blocks::truncate_cells;
 
 const DIM_OAUTH_ID: &str = "dimcode-api-oauth";
 const CODEX_ID: &str = "openai-codex";
@@ -341,7 +341,7 @@ impl OauthView {
                     let valid = self
                         .auth_url
                         .as_deref()
-                        .is_some_and(|auth| crate::session_host::callback_matches(&url, auth));
+                        .is_some_and(|auth| crate::ui::oauth_view::callback_matches(&url, auth));
                     if url.is_empty() {
                         Effect::None
                     } else if !valid {
@@ -476,7 +476,7 @@ impl OauthView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::KeyEvent;
+    use crate::ui::terminal::KeyEvent;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, Modifiers::NONE)
@@ -555,4 +555,83 @@ mod tests {
             Effect::OauthBack
         ));
     }
+}
+
+/// The callback must carry exactly the attempt's `state` and come from the
+/// listener's origin.
+fn state_matches(callback: &str, authorization_url: &str, origin: &str) -> bool {
+    fn query(url: &str) -> Vec<(String, String)> {
+        let Some((_, q)) = url.split_once('?') else {
+            return Vec::new();
+        };
+        let q = q.split('#').next().unwrap_or("");
+        q.split('&')
+            .filter(|pair| !pair.is_empty())
+            .map(|pair| {
+                let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+                (percent_decode(k), percent_decode(v))
+            })
+            .collect()
+    }
+    let want: Vec<String> = query(authorization_url)
+        .into_iter()
+        .filter(|(k, _)| k == "state")
+        .map(|(_, v)| v)
+        .collect();
+    let got: Vec<String> = query(callback)
+        .into_iter()
+        .filter(|(k, _)| k == "state")
+        .map(|(_, v)| v)
+        .collect();
+    callback.starts_with(&format!("{origin}/auth/callback?"))
+        && want.len() == 1
+        && !want[0].is_empty()
+        && got == want
+}
+
+/// Whether a pasted callback URL belongs to the attempt that issued
+/// `authorization_url`: same redirect origin and the attempt's `state`.
+pub fn callback_matches(callback: &str, authorization_url: &str) -> bool {
+    let redirect = authorization_url
+        .split_once('?')
+        .map(|(_, q)| q)
+        .into_iter()
+        .flat_map(|q| q.split('&'))
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(k, _)| *k == "redirect_uri")
+        .map(|(_, v)| percent_decode(v));
+    match redirect {
+        Some(uri) => state_matches(callback, authorization_url, origin_of(&uri)),
+        None => false,
+    }
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        i += 2;
+                    }
+                    Err(_) => out.push(b'%'),
+                }
+            }
+            byte => out.push(byte),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn origin_of(redirect_uri: &str) -> &str {
+    redirect_uri
+        .strip_suffix("/auth/callback")
+        .unwrap_or(redirect_uri)
 }

@@ -122,7 +122,7 @@ pub struct UserStyle<'a> {
 /// A user message: mark on the first row, blank gutter after. With a surface
 /// tint every row is padded to the content width so it reads as a band.
 pub fn render_user(text: &str, width: usize, style: &UserStyle<'_>) -> Vec<String> {
-    use crate::theme::ansi::{Paint, paint};
+    use crate::ui::theme::ansi::{Paint, paint};
     let gutter = gutter_width(width);
     let content = width.saturating_sub(gutter).max(1);
     let mut rows = wrap_cells(text, content);

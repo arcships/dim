@@ -12,7 +12,7 @@ use xai_grok_markdown::{
     MarkdownBuffers, MarkdownStyle, Syntect, render_markdown_ratatui_with_buffers_width,
 };
 
-use crate::theme::{CodePalette, Palette, Theme, contrast::parse_hex};
+use crate::ui::theme::{CodePalette, Palette, Theme, contrast::parse_hex};
 
 /// Continuation indent of a wrapped code row.
 const CODE_CONTINUATION: &str = "  ";
@@ -540,7 +540,7 @@ pub fn cells_to_ansi(cells: &[Cell], urls: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{Appearance, ColorMode};
+    use crate::ui::theme::{Appearance, ColorMode};
 
     fn renderer() -> MarkdownRenderer {
         MarkdownRenderer::new(&Theme::system(ColorMode::TrueColor, Appearance::Dark, None))

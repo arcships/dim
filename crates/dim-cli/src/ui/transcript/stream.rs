@@ -234,7 +234,7 @@ fn plan_blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transcript::blocks::{ASSISTANT_MARK, apply_gutter_mark, render_plain};
+    use crate::ui::transcript::blocks::{ASSISTANT_MARK, apply_gutter_mark, render_plain};
 
     /// Test renderer: plain wrapped text with the unstyled answer mark.
     fn render_marked(source: &str, width: usize, gutter: usize, first: bool) -> Vec<String> {
@@ -347,8 +347,8 @@ mod tests {
     /// once, in order, and the unclosed tail only in the live region.
     #[test]
     fn character_stream_commits_each_block_once_through_the_screen() {
-        use crate::render::testterm::Emu;
-        use crate::render::{Frame, Screen};
+        use crate::ui::render::testterm::Emu;
+        use crate::ui::render::{Frame, Screen};
 
         let answer = "## Title\n\nFirst paragraph here.\n\n- one\n- two\n\n```ts\nlet x = 1;\n```\n\nLast line.";
         let (cols, rows) = (50u16, 14u16);

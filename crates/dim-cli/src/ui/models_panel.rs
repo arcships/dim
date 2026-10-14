@@ -2,11 +2,11 @@
 //! models a daemon offers; reasoning-effort levels and "Edit models" are not
 //! built yet).
 
-use crate::list_panel::{Event, Item, ListPanel};
-use crate::prompts::Effect;
-use crate::session_host::ModelList;
-use crate::terminal::KeyEvent;
-use crate::theme::Palette;
+use crate::model::session::ModelList;
+use crate::ui::list_panel::{Event, Item, ListPanel};
+use crate::ui::prompts::Effect;
+use crate::ui::terminal::KeyEvent;
+use crate::ui::theme::Palette;
 
 const HINT: &str = "type filter · enter select · esc clear/close";
 const EDIT_MODELS: &str = "__edit_models__";

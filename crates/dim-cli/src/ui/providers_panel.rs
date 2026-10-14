@@ -2,16 +2,16 @@
 //! built-in provider (port of the first two views of `ProviderPanel`; OAuth
 //! sign-in, custom providers and model editing are not built yet).
 
-use crate::composer::palette::{footer, title_plain};
-use crate::list_panel::{Event, Item, ListPanel};
-use crate::oauth_view::OauthView;
-use crate::prompts::Effect;
-use crate::render::panel::{IDLE_MARKER, SELECTED_MARKER, bordered};
-use crate::session_host::{OauthEvent, ProviderAction, ProviderEntry};
-use crate::terminal::{KeyCode, KeyEvent, Modifiers};
-use crate::theme::Palette;
-use crate::theme::ansi::{Paint, fg, paint};
-use crate::transcript::blocks::{display_width, truncate_cells};
+use crate::model::session::{OauthEvent, ProviderAction, ProviderEntry};
+use crate::ui::composer::palette::{footer, title_plain};
+use crate::ui::list_panel::{Event, Item, ListPanel};
+use crate::ui::oauth_view::OauthView;
+use crate::ui::prompts::Effect;
+use crate::ui::render::panel::{IDLE_MARKER, SELECTED_MARKER, bordered};
+use crate::ui::terminal::{KeyCode, KeyEvent, Modifiers};
+use crate::ui::theme::Palette;
+use crate::ui::theme::ansi::{Paint, fg, paint};
+use crate::ui::transcript::blocks::{display_width, truncate_cells};
 
 const DIM_OAUTH_ID: &str = "dimcode-api-oauth";
 const SUGGESTED_KEY: &str = "__suggested__";

@@ -1,11 +1,11 @@
 //! The `/resume` picker: a filterable list of stored sessions (port of
 //! `sessionsPanelItems` / `SessionsPanel`).
 
-use crate::list_panel::{Event, Item, ListPanel};
-use crate::prompts::Effect;
-use crate::session_host::SessionItem;
-use crate::terminal::KeyEvent;
-use crate::theme::Palette;
+use crate::model::session::SessionItem;
+use crate::ui::list_panel::{Event, Item, ListPanel};
+use crate::ui::prompts::Effect;
+use crate::ui::terminal::KeyEvent;
+use crate::ui::theme::Palette;
 
 const HINT: &str = "enter open · ^R refresh";
 
@@ -117,7 +117,7 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::{KeyCode, Modifiers};
+    use crate::ui::terminal::{KeyCode, Modifiers};
 
     fn item(id: &str, title: Option<&str>, preview: Option<&str>) -> SessionItem {
         SessionItem {
