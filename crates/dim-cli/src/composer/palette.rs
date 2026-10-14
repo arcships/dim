@@ -1,0 +1,576 @@
+//! The `/` command palette: filter, selection model and the bordered list
+//! panel it is drawn in (ports of `filterScrollbackCommands`,
+//! `createListPanelModel` and `ListPanel`).
+
+use super::commands::{COMMANDS, Command};
+use crate::render::panel::bordered;
+use crate::theme::Palette;
+use crate::theme::ansi::{Paint, fg, paint};
+use crate::transcript::blocks::{display_width, truncate_cells};
+
+const SELECTED_MARKER: &str = "› ";
+const IDLE_MARKER: &str = "  ";
+const ROW_INDENT: usize = 2;
+const DETAIL_GAP: usize = 2;
+/// Rows visible in the inline palette (headings included).
+pub const PAGE_SIZE: usize = 6;
+/// Chrome around the rows: top border, title, footer, bottom border.
+pub const CHROME_ROWS: usize = 4;
+const HINT: &str = "type filter · enter select · esc clear/close";
+const ESC_CLOSE: &str = "esc close";
+
+/// Commands matching `query`: name/alias prefixes first, then contains
+/// matches on names, aliases or the description.
+pub fn filter_commands(query: &str) -> Vec<&'static Command> {
+    let normalized = query.trim().to_lowercase();
+    let normalized = normalized
+        .strip_prefix('/')
+        .map(str::trim_start)
+        .unwrap_or(&normalized)
+        .to_owned();
+    if normalized.is_empty() {
+        return COMMANDS.iter().collect();
+    }
+    let mut prefix = Vec::new();
+    let mut contains = Vec::new();
+    for command in COMMANDS {
+        let names = std::iter::once(command.name).chain(command.aliases.iter().copied());
+        let mut starts = false;
+        let mut has = false;
+        for name in names {
+            if name.starts_with(&normalized) {
+                starts = true;
+            } else if name.contains(&normalized) {
+                has = true;
+            }
+        }
+        if starts {
+            prefix.push(command);
+        } else if has || command.description.to_lowercase().contains(&normalized) {
+            contains.push(command);
+        }
+    }
+    prefix.extend(contains);
+    prefix
+}
+
+/// A skill offered next to the commands (`$skill: name`).
+#[derive(Debug, Clone)]
+pub struct Skill {
+    pub name: String,
+    pub description: String,
+    pub display_name: Option<String>,
+    pub display_description: Option<String>,
+}
+
+impl Skill {
+    fn detail(&self) -> String {
+        let description = self
+            .display_description
+            .clone()
+            .unwrap_or_else(|| self.description.clone());
+        match &self.display_name {
+            None => description,
+            Some(name) if description.is_empty() => name.clone(),
+            Some(name) => format!("{name} · {description}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Kind {
+    Heading,
+    /// A row of a plain list panel (sessions): the id it stands for.
+    Item(String),
+    Command(&'static Command),
+    Skill(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct Row {
+    pub kind: Kind,
+    pub label: String,
+    pub detail: String,
+    pub disabled: bool,
+}
+
+impl Row {
+    pub fn selectable(&self) -> bool {
+        !matches!(self.kind, Kind::Heading)
+    }
+}
+
+fn filter_skills<'a>(skills: &'a [Skill], query: &str) -> Vec<&'a Skill> {
+    let normalized = query.trim().to_lowercase();
+    let normalized = normalized
+        .strip_prefix('$')
+        .map(str::trim_start)
+        .unwrap_or(&normalized)
+        .to_owned();
+    if normalized.is_empty() {
+        return skills.iter().collect();
+    }
+    let mut prefix = Vec::new();
+    let mut contains = Vec::new();
+    for skill in skills {
+        let name = skill.name.to_lowercase();
+        let display = skill.display_name.as_deref().unwrap_or("").to_lowercase();
+        let description = skill
+            .display_description
+            .as_deref()
+            .unwrap_or(&skill.description)
+            .to_lowercase();
+        if name.starts_with(&normalized) || display.starts_with(&normalized) {
+            prefix.push(skill);
+        } else if name.contains(&normalized)
+            || display.contains(&normalized)
+            || description.contains(&normalized)
+        {
+            contains.push(skill);
+        }
+    }
+    prefix.extend(contains);
+    prefix
+}
+
+/// Palette rows for `query`: commands and skills share the list; headings
+/// appear only when both kinds matched, skills lead when a skill name matches
+/// and no command name does.
+pub fn rows_for(query: &str, session_active: bool, skills: &[Skill]) -> Vec<Row> {
+    let commands = filter_commands(query);
+    let matched_skills = filter_skills(skills, query);
+    let command_rows: Vec<Row> = commands
+        .iter()
+        .map(|command| {
+            let disabled = command.requires_session && !session_active;
+            Row {
+                kind: Kind::Command(command),
+                label: format!("/{}", command.name),
+                detail: if disabled {
+                    format!("{} · needs a session", command.description)
+                } else {
+                    command.description.to_owned()
+                },
+                disabled,
+            }
+        })
+        .collect();
+    let skill_rows: Vec<Row> = matched_skills
+        .iter()
+        .map(|skill| Row {
+            kind: Kind::Skill(skill.name.clone()),
+            label: format!("$skill: {}", skill.name),
+            detail: skill.detail(),
+            disabled: false,
+        })
+        .collect();
+    if skill_rows.is_empty() {
+        return command_rows;
+    }
+    if command_rows.is_empty() {
+        return skill_rows;
+    }
+    let normalized = query
+        .trim()
+        .to_lowercase()
+        .trim_start_matches('$')
+        .trim_start_matches('/')
+        .to_owned();
+    let skills_first = !normalized.is_empty()
+        && matched_skills.iter().any(|s| {
+            s.name.to_lowercase().starts_with(&normalized)
+                || s.display_name
+                    .as_deref()
+                    .is_some_and(|d| d.to_lowercase().starts_with(&normalized))
+        })
+        && !commands.iter().any(|c| {
+            std::iter::once(c.name)
+                .chain(c.aliases.iter().copied())
+                .any(|n| n.to_lowercase().starts_with(&normalized))
+        });
+    let heading = |text: &str| Row {
+        kind: Kind::Heading,
+        label: text.to_owned(),
+        detail: String::new(),
+        disabled: false,
+    };
+    let mut out = Vec::new();
+    let (first, second) = if skills_first {
+        (("Skills", skill_rows), ("Commands", command_rows))
+    } else {
+        (("Commands", command_rows), ("Skills", skill_rows))
+    };
+    for (label, rows) in [first, second] {
+        out.push(heading(label));
+        out.extend(rows);
+    }
+    out
+}
+
+/// Selection and window over the rows of one query.
+#[derive(Debug, Clone, Default)]
+pub struct PaletteState {
+    pub query: String,
+    /// Index into the rows (never a heading).
+    pub selected: usize,
+}
+
+impl PaletteState {
+    pub fn set_query(&mut self, query: &str) {
+        if self.query != query {
+            self.query = query.to_owned();
+            self.selected = 0;
+        }
+    }
+
+    /// The nearest selectable row from `index`, searching `direction` first.
+    fn selectable(rows: &[Row], index: usize, direction: isize) -> usize {
+        if rows.is_empty() {
+            return 0;
+        }
+        let clamped = index.min(rows.len() - 1) as isize;
+        for dir in [direction, -direction] {
+            let mut at = clamped;
+            while at >= 0 && (at as usize) < rows.len() {
+                if rows[at as usize].selectable() {
+                    return at as usize;
+                }
+                at += dir;
+            }
+        }
+        clamped as usize
+    }
+
+    pub fn current(&self, rows: &[Row]) -> usize {
+        Self::selectable(rows, self.selected, 1)
+    }
+
+    pub fn step(&mut self, delta: isize, rows: &[Row]) {
+        if rows.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        let from = Self::selectable(rows, self.selected, 1) as isize;
+        let target = (from + delta).clamp(0, rows.len() as isize - 1) as usize;
+        self.selected = Self::selectable(rows, target, if delta < 0 { -1 } else { 1 });
+    }
+
+    pub fn visible_start(&self, rows: &[Row]) -> usize {
+        let current = self.current(rows);
+        current
+            .saturating_sub(PAGE_SIZE - 1)
+            .min(rows.len().saturating_sub(PAGE_SIZE))
+    }
+}
+
+/// The panel title: "Suggestions" only when both kinds are listed.
+fn panel_title(rows: &[Row]) -> &'static str {
+    let skills = rows.iter().any(|r| matches!(r.kind, Kind::Skill(_)));
+    let commands = rows.iter().any(|r| matches!(r.kind, Kind::Command(_)));
+    match (skills, commands) {
+        (true, true) => "Suggestions",
+        (true, false) => "Skills",
+        _ => "Commands",
+    }
+}
+
+/// The bordered panel for the current query, `width` columns wide including
+/// borders, fixed at `PAGE_SIZE + CHROME_ROWS` rows.
+pub fn render(state: &PaletteState, rows: &[Row], width: usize, p: &Palette) -> Vec<String> {
+    let inner = width.saturating_sub(4).max(1);
+    // The detail column is shared by every row, not just the visible window,
+    // so it does not shift while scrolling.
+    let widest = rows
+        .iter()
+        .filter(|r| r.selectable())
+        .map(|r| display_width(&r.label))
+        .max()
+        .unwrap_or(0);
+    let detail_column = (widest + DETAIL_GAP).min((inner.saturating_sub(ROW_INDENT) / 2).max(1));
+    let mut content: Vec<String> = Vec::new();
+    content.push(title(panel_title(rows), inner, p));
+    if rows.is_empty() {
+        content.push(fg(&truncate_cells("No matches", inner), &p.muted));
+    } else {
+        let start = state.visible_start(rows);
+        let current = state.current(rows);
+        for (offset, row) in rows.iter().skip(start).take(PAGE_SIZE).enumerate() {
+            content.push(panel_row(
+                row,
+                start + offset == current,
+                inner,
+                detail_column,
+                p,
+            ));
+        }
+    }
+    let selectable_total = rows.iter().filter(|r| r.selectable()).count();
+    let position = if selectable_total == 0 {
+        "0 / 0".to_owned()
+    } else {
+        let at = state.current(rows);
+        let place = rows[..=at.min(rows.len() - 1)]
+            .iter()
+            .filter(|r| r.selectable())
+            .count();
+        format!("{place} / {selectable_total}")
+    };
+    content.push(footer(&position, HINT, inner, p));
+    bordered(
+        &content,
+        width,
+        Some(PAGE_SIZE + CHROME_ROWS),
+        &p.border,
+        None,
+    )
+}
+
+/// A panel title without the `esc close` hint (forms say how to go back in
+/// their own hint row).
+pub(crate) fn title_plain(text: &str, inner: usize, p: &Palette) -> String {
+    paint(
+        &truncate_cells(text, inner),
+        Paint {
+            fg: Some(&p.accent),
+            bold: true,
+            ..Paint::default()
+        },
+    )
+}
+
+pub(crate) fn title(text: &str, inner: usize, p: &Palette) -> String {
+    let head = truncate_cells(text, inner.saturating_sub(ESC_CLOSE.len() + 2).max(1));
+    let styled = paint(
+        &head,
+        Paint {
+            fg: Some(&p.accent),
+            bold: true,
+            ..Paint::default()
+        },
+    );
+    let gap = inner.saturating_sub(display_width(&head) + ESC_CLOSE.len());
+    if gap < 2 {
+        return styled;
+    }
+    format!("{styled}{}{}", " ".repeat(gap), fg(ESC_CLOSE, &p.faint))
+}
+
+pub(crate) fn panel_row(
+    row: &Row,
+    selected: bool,
+    inner: usize,
+    detail_column: usize,
+    p: &Palette,
+) -> String {
+    if !row.selectable() {
+        // A group header sits left of the rows it introduces.
+        return paint(
+            &truncate_cells(&row.label, inner),
+            Paint {
+                fg: Some(&p.muted),
+                bold: true,
+                ..Paint::default()
+            },
+        );
+    }
+    let marker = if selected {
+        paint(
+            SELECTED_MARKER,
+            Paint {
+                fg: Some(&p.accent),
+                bold: true,
+                ..Paint::default()
+            },
+        )
+    } else {
+        IDLE_MARKER.to_owned()
+    };
+    let row_width = inner.saturating_sub(ROW_INDENT).max(1);
+    let label_available = row_width.min(detail_column.saturating_sub(DETAIL_GAP).max(1));
+    let label = truncate_cells(&row.label, label_available);
+    let label_color = if selected {
+        &p.accent
+    } else if row.disabled {
+        &p.muted
+    } else {
+        &p.text
+    };
+    let styled_label = paint(
+        &label,
+        Paint {
+            fg: Some(label_color),
+            bold: selected,
+            ..Paint::default()
+        },
+    );
+    let gap = " ".repeat(DETAIL_GAP.max(detail_column.saturating_sub(display_width(&label))));
+    let detail = truncate_cells(
+        &format!("{gap}{}", row.detail),
+        row_width.saturating_sub(display_width(&label)),
+    );
+    let detail_color = if selected { &p.muted } else { &p.faint };
+    format!("{marker}{styled_label}{}", fg(&detail, detail_color))
+}
+
+pub(crate) fn footer(count: &str, hint: &str, inner: usize, p: &Palette) -> String {
+    let count = truncate_cells(count, inner);
+    let rest = truncate_cells(
+        &format!(" · {hint}"),
+        inner.saturating_sub(display_width(&count)),
+    );
+    let mut out = fg(&count, &p.faint);
+    if !rest.is_empty() {
+        out.push_str(&fg(&rest, &p.muted));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::{Appearance, ColorMode, Theme};
+
+    fn names(query: &str) -> Vec<&'static str> {
+        filter_commands(query).into_iter().map(|c| c.name).collect()
+    }
+
+    #[test]
+    fn empty_query_lists_everything_in_registry_order() {
+        let all = names("/");
+        assert_eq!(all[0], "remote");
+        assert_eq!(all[1], "new");
+        assert_eq!(all.len(), COMMANDS.len());
+    }
+
+    #[test]
+    fn prefixes_come_before_contains_matches() {
+        let hits = names("/re");
+        // Registry order among the prefix matches.
+        assert_eq!(
+            &hits[..4],
+            ["remote", "resume", "reload-skills", "reload-plugins"]
+        );
+        // "ex" is a prefix of exit/export/external-agents; "sessions" (an
+        // alias of resume) only contains "ss".
+        let ss = names("/ss");
+        assert!(ss.contains(&"resume"));
+    }
+
+    #[test]
+    fn aliases_and_descriptions_match() {
+        assert!(names("/lang").contains(&"language"));
+        assert!(names("/phone").contains(&"remote"));
+        assert_eq!(names("/hist"), ["history"]);
+    }
+
+    #[test]
+    fn session_scoped_commands_are_marked_unavailable() {
+        let rows = rows_for("/hist", false, &[]);
+        assert!(rows[0].disabled);
+        assert!(rows[0].detail.ends_with("· needs a session"));
+        assert!(!rows_for("/hist", true, &[])[0].disabled);
+    }
+
+    #[test]
+    fn window_follows_the_selection() {
+        let rows = rows_for("/", true, &[]);
+        let len = rows.len();
+        let mut state = PaletteState::default();
+        assert_eq!(state.visible_start(&rows), 0);
+        state.selected = 5;
+        assert_eq!(state.visible_start(&rows), 0);
+        state.selected = 6;
+        assert_eq!(state.visible_start(&rows), 1);
+        state.selected = len - 1;
+        assert_eq!(state.visible_start(&rows), len - PAGE_SIZE);
+    }
+
+    #[test]
+    fn panel_has_a_fixed_height_and_a_position_footer() {
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let rows = rows_for("/", true, &[]);
+        let panel = render(&PaletteState::default(), &rows, 80, &theme.palette);
+        assert_eq!(panel.len(), PAGE_SIZE + CHROME_ROWS);
+        let plain: Vec<String> = panel.iter().map(|r| strip(r)).collect();
+        assert!(plain[1].contains("Commands") && plain[1].contains("esc close"));
+        assert!(plain[2].starts_with("│ › /remote"));
+        assert!(
+            plain[8].contains(&format!("1 / {}", rows.len())),
+            "{:?}",
+            plain[8]
+        );
+        assert!(plain.iter().all(|r| display_width(r) == 80), "{plain:#?}");
+    }
+
+    fn sample_skills() -> Vec<Skill> {
+        vec![
+            Skill {
+                name: "claude-code-import".into(),
+                description: "Import Claude Code session history".into(),
+                display_name: None,
+                display_description: None,
+            },
+            Skill {
+                name: "codex-import".into(),
+                description: "Import Codex history".into(),
+                display_name: None,
+                display_description: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn skills_share_the_list_with_headings_only_when_both_kinds_match() {
+        let skills = sample_skills();
+        // Both kinds: headings, commands first.
+        let rows = rows_for("hist", true, &skills);
+        let kinds: Vec<&str> = rows
+            .iter()
+            .map(|r| match r.kind {
+                Kind::Heading => "heading",
+                Kind::Item(_) => "item",
+                Kind::Command(_) => "command",
+                Kind::Skill(_) => "skill",
+            })
+            .collect();
+        assert_eq!(kinds, ["heading", "command", "heading", "skill", "skill"]);
+        assert_eq!(panel_title(&rows), "Suggestions");
+        // Only skills match: no headings, the title names them.
+        let only = rows_for("claude", true, &skills);
+        assert!(only.iter().all(|r| matches!(r.kind, Kind::Skill(_))));
+        assert_eq!(panel_title(&only), "Skills");
+        // A skill name prefix with no command name prefix leads.
+        let lead = rows_for("codex", true, &skills);
+        assert_eq!(lead.len(), 1);
+    }
+
+    #[test]
+    fn selection_steps_over_headings_and_counts_only_rows() {
+        let skills = sample_skills();
+        let rows = rows_for("hist", true, &skills);
+        let mut state = PaletteState::default();
+        assert_eq!(state.current(&rows), 1);
+        state.step(1, &rows);
+        assert_eq!(state.current(&rows), 3, "the Skills heading is skipped");
+        state.step(-1, &rows);
+        assert_eq!(state.current(&rows), 1);
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let panel = render(&state, &rows, 100, &theme.palette);
+        let text: Vec<String> = panel.iter().map(|r| strip(r)).collect();
+        assert!(text[7].contains("1 / 3"), "{:?}", text[7]);
+    }
+
+    fn strip(s: &str) -> String {
+        let mut out = String::new();
+        let mut skip = false;
+        for c in s.chars() {
+            match (skip, c) {
+                (false, '\x1b') => skip = true,
+                (true, 'm') => skip = false,
+                (false, c) => out.push(c),
+                _ => {}
+            }
+        }
+        out
+    }
+}

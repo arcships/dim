@@ -1,9 +1,33 @@
+#![allow(dead_code)] // TODO: remove once the TUI is wired to the App Server
+
+mod approvals_panel;
 mod args;
+mod attachments;
+mod browser;
 mod client;
+mod composer;
 mod display;
+mod event_order;
 mod input;
+mod json_ord;
+mod list_panel;
 mod login;
+mod models_panel;
+mod oauth_view;
+mod projection;
+mod prompts;
+mod providers_panel;
+mod render;
 mod session;
+mod session_host;
+mod sessions_panel;
+mod terminal;
+mod theme;
+mod theme_panel;
+mod transcript;
+mod tui;
+mod usage;
+mod view;
 
 use args::{Action, Options};
 use std::io::{IsTerminal, Read};
@@ -14,6 +38,13 @@ type Result<T> = std::result::Result<T, Error>;
 fn main() {
     let result = prepare().and_then(|options| {
         let Some(options) = options else { return Ok(0) };
+        if matches!(options.action, Action::Chat)
+            && options.prompt.is_none()
+            && !options.no_tui
+            && tui::is_interactive()
+        {
+            return Ok(tui::run(options));
+        }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;

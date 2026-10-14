@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/dim-agent-types", "crates/dim-agent-runtime", "crates/dim-agent-capabilities", "crates/dim-agent-aimux", "crates/dim-app-server", "crates/dim-cli", "xtask", "tests/extension-a", "tests/extension-b", "tests/integration"]
-exclude = ["vendor/aimux"]
+exclude = ["vendor/aimux", "vendor/grok-build"]
 
 [workspace.package]
 version = "0.1.0"

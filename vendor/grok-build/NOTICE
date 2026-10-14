@@ -1,0 +1,16 @@
+This directory contains code from xai-org/grok-build (SOURCE_REV
+559751fdcec02d413e4c57c8832ab275e4f44980), licensed under the Apache License,
+Version 2.0 (see LICENSE). Copyright 2023-2026 xAI.
+
+Per-crate notices are kept in xai-ratatui-inline/NOTICE and
+xai-ratatui-textarea/NOTICE. xai-ratatui-inline's forked Terminal is based on
+Ratatui (MIT OR Apache-2.0, Copyright (c) 2023-2024 The Ratatui Developers).
+
+Bundled assets in xai-grok-markdown/assets:
+  - tokyo-night.tmTheme: Tokyo Night, from folke/tokyonight.nvim (Apache-2.0).
+  - Swift.sublime-syntax: from bat v0.25.0 extra syntaxes
+    (quiqueg/Swift-Sublime-Package); license pending verification.
+
+Files modified by dim-agent are marked at the top and listed in PATCHES.md.
+Full third-party dependency licenses are in the upstream repository's
+THIRD-PARTY-NOTICES.

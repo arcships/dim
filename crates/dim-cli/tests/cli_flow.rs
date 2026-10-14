@@ -551,7 +551,11 @@ fn interactive_default_deny_discards_typeahead_and_ctrl_c_settles_before_next_in
         wire.reply(&idle,json!({"sequence":40}));
         wire.detach();
     });
-    let (mut terminal, child) = Terminal::launch(home.command());
+    let (mut terminal, child) = Terminal::launch({
+        let mut command = home.command();
+        command.arg("--no-tui");
+        command
+    });
     terminal.until("\n> ");
     terminal.write(b"first\n");
     terminal.until("working");

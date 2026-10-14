@@ -1,0 +1,1865 @@
+//! The interactive interface. The welcome banner is committed once into
+//! scrollback; the conversation streams in as whole Markdown blocks (2.4), the
+//! unclosed tail and the composer box live at the bottom and repaint by row
+//! diff (2.3). The terminal layer (2.2) guarantees the exit contract.
+
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
+
+use crate::approvals_panel::{ApprovalsPanel, status_label};
+use crate::args::Options;
+use crate::composer::{Composer, Outcome as ComposerOutcome, history};
+use crate::models_panel::ModelsPanel;
+use crate::prompts::{AskUserPrompt, Effect, ExitConfirm, ExitReason, PermissionPrompt};
+use crate::providers_panel::ProvidersPanel;
+use crate::render::markdown::MarkdownRenderer;
+use crate::render::{Frame, Screen};
+use crate::session_host::{Command, SessionHost, SessionPort, SwitchKind, Update};
+use crate::sessions_panel::SessionsPanel;
+use crate::terminal::{InputEvent, KeyCode, Modifiers, Terminal, TerminalError, Wait};
+use crate::theme::ansi::{Paint, fg, paint};
+use crate::theme::{Palette, Theme, detect};
+use crate::theme_panel::ThemePanel;
+use crate::transcript::block::{Block, Tone, project_row, tool_block};
+use crate::transcript::blocks::{
+    ASSISTANT_MARK, UserStyle, apply_gutter_mark, gutter_width, render_user, truncate_cells,
+};
+use crate::transcript::commit::CommitState;
+use crate::transcript::stream::{StreamPlanner, TextBlock};
+use crate::transcript::tools::render_tool;
+use crate::view::{RowKind, ViewRow, ViewSnapshot};
+
+/// The stop reason and the note committed when the user interrupts a run.
+pub const INTERRUPT_REASON: &str = "User interrupted the run.";
+const COMPOSER_PLACEHOLDER: &str = "Ask anything...";
+/// Frames are coalesced to roughly 60 Hz.
+/// A resize waits this long after the last size change before it is applied.
+const RESIZE_DEBOUNCE: Duration = Duration::from_millis(100);
+/// ...but never longer than this from the first change of a drag.
+const RESIZE_MAX_DELAY: Duration = Duration::from_millis(500);
+/// Rows of committed transcript kept with their source for a reflow.
+const REFLOW_SOURCE_ROWS: usize = 600;
+const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// How often the loop looks at session updates while input is idle.
+const SESSION_POLL: Duration = Duration::from_millis(40);
+/// One blank column of margin before every document row (L's content pad).
+const MARGIN: usize = 1;
+/// Revision of the transcript the planner is tracking; a session switch bumps it.
+const SESSION_REVISION: u64 = 1;
+/// How long a Ctrl+C keeps the exit window armed.
+const EXIT_ARM: Duration = Duration::from_millis(2500);
+/// How long a transient notice stays in the status row.
+const NOTICE_TTL: Duration = Duration::from_millis(2500);
+/// The live region's pulse: one beat per 250 ms.
+const PULSE: Duration = Duration::from_millis(250);
+
+pub fn is_interactive() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
+pub fn run(options: Options) -> i32 {
+    let mut terminal = match Terminal::enter() {
+        Ok(terminal) => terminal,
+        Err(TerminalError::NotATerminal) => {
+            eprintln!("dim needs an interactive terminal; use 'dim exec' for scripts");
+            return 2;
+        }
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return 1;
+        }
+    };
+    let synchronized = std::env::var_os("TMUX").is_none_or(|v| v.is_empty());
+    let mut screen = Screen::new(terminal.size(), synchronized);
+    if let Some((row, column)) = terminal.cursor_position() {
+        screen.set_origin(if column == 0 { row } else { row + 1 });
+    }
+    let cwd = options.cwd.clone();
+    // Capability and background are decided once, before the first line is
+    // written: committed scrollback cannot be repainted.
+    let background = terminal
+        .background_report()
+        .and_then(detect::parse_background_report);
+    let env = detect::env_from_process();
+    let detected = Theme::detect(&env, true, background.as_deref());
+    let saved = crate::theme_panel::saved_theme_id();
+    let theme = match &saved {
+        Some(id) => Theme::named(
+            id,
+            detected.mode,
+            detected.appearance,
+            background.as_deref(),
+        ),
+        None => detected.clone(),
+    };
+    let mut app = App::new(
+        Box::new(SessionHost::start(options)),
+        MarkdownRenderer::new(&theme),
+        theme.palette.clone(),
+    );
+    app.theme_context = Some(ThemeContext {
+        mode: detected.mode,
+        appearance: detected.appearance,
+        background,
+        active: saved.unwrap_or_else(|| crate::theme_panel::SYSTEM.to_owned()),
+    });
+    let mut dirty = true;
+    let mut last_frame: Option<Instant> = None;
+    let mut resize: Option<PendingResize> = None;
+    let code = loop {
+        for update in app.host.drain() {
+            app.apply(update);
+            dirty = true;
+        }
+        let now = Instant::now();
+        // A resize is acted on once it settles (design §6.4).
+        let current = terminal.size();
+        if current != screen.size() {
+            match &mut resize {
+                Some(pending) if pending.size == current => {}
+                Some(pending) => {
+                    pending.size = current;
+                    pending.last = now;
+                }
+                None => {
+                    resize = Some(PendingResize {
+                        size: current,
+                        first: now,
+                        last: now,
+                    })
+                }
+            }
+        } else {
+            resize = None;
+        }
+        let settled = resize.as_ref().is_some_and(|p| {
+            now.duration_since(p.last) >= RESIZE_DEBOUNCE
+                || now.duration_since(p.first) >= RESIZE_MAX_DELAY
+        });
+        if settled || app.take_reflow_request() {
+            resize = None;
+            let size = terminal.size();
+            if let Some((row, _)) = terminal.cursor_position() {
+                let tail = app.reflow_tail(size.0 as usize);
+                let frame = app.frame(size);
+                let wanted = screen.wanted_for(size, frame.live.len());
+                let bytes = screen.reflow(size, row, &tail, wanted);
+                // The frame's own commits and live rows go out right behind.
+                let mut bytes = bytes;
+                bytes.extend(screen.render(&frame, size));
+                if terminal.write(&bytes).is_err() || terminal.write_failed() {
+                    let code = terminal.lost();
+                    app.host.shutdown();
+                    return code;
+                }
+                dirty = false;
+                last_frame = Some(Instant::now());
+            }
+        }
+        let due = last_frame.is_none_or(|at| now.duration_since(at) >= FRAME_INTERVAL);
+        if dirty && due {
+            let size = terminal.size();
+            let frame = app.frame(size);
+            let bytes = screen.render(&frame, size);
+            if terminal.write(&bytes).is_err() || terminal.write_failed() {
+                let code = terminal.lost();
+                app.host.shutdown();
+                return code;
+            }
+            dirty = false;
+            last_frame = Some(Instant::now());
+        }
+        let wait = match (dirty, last_frame) {
+            (true, Some(at)) => FRAME_INTERVAL.saturating_sub(now.duration_since(at)),
+            _ => SESSION_POLL,
+        };
+        match terminal.next_event(wait) {
+            Wait::Lost => {
+                let code = terminal.lost();
+                app.host.shutdown();
+                return code;
+            }
+            Wait::Timeout => {
+                if terminal.write_failed() {
+                    let code = terminal.lost();
+                    app.host.shutdown();
+                    return code;
+                }
+                if app.tick() {
+                    dirty = true;
+                }
+            }
+            Wait::Event(event) => match app.handle(event) {
+                Outcome::Continue => dirty = true,
+                Outcome::Suspend => {
+                    if terminal.suspend().is_err() {
+                        let code = terminal.lost();
+                        app.host.shutdown();
+                        return code;
+                    }
+                    // The shell may have written over the screen while the
+                    // job was stopped: lay the whole transcript out again.
+                    app.request_reflow();
+                    dirty = true;
+                }
+                Outcome::Exit(code) => break code,
+            },
+        }
+    };
+    terminal.leave();
+    app.host.shutdown();
+    code
+}
+
+/// What a theme is built against: the terminal's capability, appearance and
+/// reported background, and the theme in effect.
+struct ThemeContext {
+    mode: crate::theme::ColorMode,
+    appearance: crate::theme::Appearance,
+    background: Option<String>,
+    active: String,
+}
+
+struct PendingResize {
+    size: (u16, u16),
+    first: Instant,
+    last: Instant,
+}
+
+enum Outcome {
+    Continue,
+    /// `/suspend`: give the terminal to the shell until the job continues.
+    Suspend,
+    Exit(i32),
+}
+
+struct App {
+    host: Box<dyn SessionPort>,
+    composer: Composer,
+    cwd_key: String,
+    notices: Vec<String>,
+    /// Multi-line status blocks to commit (reports), with their tone.
+    reports: Vec<(String, Tone)>,
+    banner_committed: bool,
+    snapshot: Option<ViewSnapshot>,
+    /// `provider / model` once the session exists.
+    label: Option<String>,
+    failure: Option<String>,
+    failure_committed: bool,
+    planner: StreamPlanner,
+    commits: CommitState,
+    markdown: MarkdownRenderer,
+    palette: Palette,
+    /// The modal prompt on top of the composer, if any.
+    prompt: Option<Prompt>,
+    /// Requests already answered here: the projection keeps listing them
+    /// until the daemon's confirmation arrives.
+    answered: HashSet<String>,
+    notice: Option<(String, Instant)>,
+    exit_armed_until: Option<Instant>,
+    run_started: Option<Instant>,
+    last_pulse: u64,
+    /// The most recent committed chunks with what they were drawn from.
+    segments: std::collections::VecDeque<Segment>,
+    segment_rows: usize,
+    session_id: String,
+    /// The default tool-approval mode (wire name).
+    approvals: String,
+    /// The next approvals reading is the answer to a change: say so.
+    approvals_toast: bool,
+    theme_context: Option<ThemeContext>,
+    /// The palette changed: the visible rows are laid out again.
+    reflow_requested: bool,
+    /// Rows of the snapshot before this index are earlier history: not
+    /// drawn until `/history` asks for them.
+    window_floor: usize,
+    /// How far `/history` has paged back; never above `window_floor`.
+    history_floor: usize,
+    /// A session was just switched; the next snapshot decides the window.
+    awaiting_window: bool,
+    /// What to write once the switched-to history is out.
+    pending_boundary: Option<SwitchKind>,
+    /// `(messages in the window, messages before it)` of the last switch.
+    window_info: (usize, usize),
+    /// Rows `[start, end)` queued to be drawn as an earlier-history page.
+    history_request: Option<(usize, usize)>,
+}
+
+/// Messages a resume shows at first, and per `/history` page.
+const HISTORY_WINDOW: usize = 100;
+/// Widest a session boundary rule is drawn.
+const BOUNDARY_MAX_WIDTH: usize = 60;
+
+/// What a committed chunk was drawn from, so it can be laid out again.
+#[derive(Debug, Clone)]
+struct Segment {
+    rows: usize,
+    /// `None`: cannot be drawn again, which ends a reflow window.
+    source: Option<Block>,
+}
+
+enum Prompt {
+    Sessions(SessionsPanel),
+    Models(ModelsPanel),
+    Providers(ProvidersPanel),
+    Approvals(ApprovalsPanel),
+    Theme(ThemePanel),
+    Exit(ExitConfirm),
+    Permission(PermissionPrompt),
+    Ask(AskUserPrompt),
+}
+
+impl App {
+    fn new(host: Box<dyn SessionPort>, markdown: MarkdownRenderer, palette: Palette) -> Self {
+        let cwd_key = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let past = history::load(&crate::args::default_home(), &cwd_key);
+        Self {
+            host,
+            composer: Composer::new(past),
+            cwd_key,
+            notices: Vec::new(),
+            reports: Vec::new(),
+            banner_committed: false,
+            snapshot: None,
+            label: None,
+            failure: None,
+            failure_committed: false,
+            planner: StreamPlanner::new(),
+            commits: CommitState::default(),
+            markdown,
+            palette,
+            prompt: None,
+            answered: HashSet::new(),
+            notice: None,
+            exit_armed_until: None,
+            run_started: None,
+            last_pulse: 0,
+            segments: Default::default(),
+            segment_rows: 0,
+            session_id: String::new(),
+            approvals: "normal".to_owned(),
+            approvals_toast: false,
+            theme_context: None,
+            reflow_requested: false,
+            window_floor: 0,
+            history_floor: 0,
+            awaiting_window: false,
+            pending_boundary: None,
+            window_info: (0, 0),
+            history_request: None,
+        }
+    }
+
+    /// Repaints with theme `id` (what `system` is for this terminal when it
+    /// is not a registry theme); the visible rows follow on the next frame.
+    fn paint_theme(&mut self, id: &str) {
+        let Some(context) = &mut self.theme_context else {
+            return;
+        };
+        let theme = crate::theme::Theme::named(
+            id,
+            context.mode,
+            context.appearance,
+            context.background.as_deref(),
+        );
+        context.active = id.to_owned();
+        self.markdown = MarkdownRenderer::new(&theme);
+        self.palette = theme.palette;
+        self.reflow_requested = true;
+    }
+
+    fn request_reflow(&mut self) {
+        self.reflow_requested = true;
+    }
+
+    fn take_reflow_request(&mut self) -> bool {
+        std::mem::take(&mut self.reflow_requested)
+    }
+
+    /// True once the session has a message (what "needs a session" means).
+    fn session_active(&self) -> bool {
+        self.snapshot
+            .as_ref()
+            .is_some_and(|s| s.rows.iter().any(|r| r.kind == RowKind::UserMessage))
+    }
+
+    fn running(&self) -> bool {
+        self.snapshot.as_ref().is_some_and(|s| s.running)
+    }
+
+    fn set_notice(&mut self, text: impl Into<String>) {
+        self.notice = Some((text.into(), Instant::now() + NOTICE_TTL));
+    }
+
+    fn arm_exit(&mut self) {
+        self.exit_armed_until = Some(Instant::now() + EXIT_ARM);
+    }
+
+    /// Why leaving now would cut something off, if it would.
+    fn busy_reason(&self) -> Option<ExitReason> {
+        let snapshot = self.snapshot.as_ref()?;
+        if !snapshot.questions.is_empty() {
+            return Some(ExitReason::AskUserPending);
+        }
+        if !snapshot.approvals.is_empty() {
+            return Some(ExitReason::PermissionPending);
+        }
+        snapshot.running.then_some(ExitReason::AgentRunning)
+    }
+
+    /// Opens the prompt for the first pending approval or question, and
+    /// closes one whose request is gone.
+    fn sync_prompt(&mut self) {
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let approval = snapshot
+            .approvals
+            .iter()
+            .find(|a| !self.answered.contains(&a.request_id));
+        let question = snapshot
+            .questions
+            .iter()
+            .find(|q| !self.answered.contains(&q.request_id));
+        match &self.prompt {
+            Some(Prompt::Exit(_))
+            | Some(Prompt::Sessions(_))
+            | Some(Prompt::Models(_))
+            | Some(Prompt::Providers(_))
+            | Some(Prompt::Approvals(_))
+            | Some(Prompt::Theme(_)) => {}
+            Some(Prompt::Permission(p))
+                if approval.is_some_and(|a| a.request_id == p.request_id) => {}
+            Some(Prompt::Ask(p)) if question.is_some_and(|q| q.request_id == p.request_id) => {}
+            _ => {
+                self.prompt = if let Some(a) = approval {
+                    Some(Prompt::Permission(PermissionPrompt::new(
+                        a.request_id.clone(),
+                        a.branch_id.clone(),
+                        a.reason.clone(),
+                        a.tool_name.clone(),
+                        a.tool_input.clone(),
+                    )))
+                } else {
+                    question.map(|q| {
+                        Prompt::Ask(AskUserPrompt::new(
+                            q.request_id.clone(),
+                            q.branch_id.clone(),
+                            q.questions.clone(),
+                        ))
+                    })
+                };
+            }
+        }
+    }
+
+    /// Time-driven changes: the pulse of a running turn, notice and arm
+    /// expiry. True when the screen needs a frame.
+    fn tick(&mut self) -> bool {
+        let now = Instant::now();
+        let mut changed = false;
+        if let Some((_, until)) = &self.notice {
+            if now >= *until {
+                self.notice = None;
+                changed = true;
+            }
+        }
+        if self.exit_armed_until.is_some_and(|until| now >= until) {
+            self.exit_armed_until = None;
+        }
+        if self.running() && self.prompt.is_none() {
+            let beat = (now
+                .duration_since(self.run_started.unwrap_or(now))
+                .as_millis()
+                / PULSE.as_millis()) as u64;
+            if beat != self.last_pulse {
+                self.last_pulse = beat;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Queued inputs, oldest first: submitted while a turn was already
+    /// running, not yet consumed.
+    fn queued(&self) -> Vec<(String, String)> {
+        self.snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot
+                    .queued
+                    .iter()
+                    .map(|input| (input.id.clone(), input.text.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn apply(&mut self, update: Update) {
+        match update {
+            Update::Ready { provider, model } => {
+                self.label = Some(format!("{provider} / {model}"));
+            }
+            Update::Snapshot(snapshot) => {
+                let was_running = self.running();
+                self.snapshot = Some(*snapshot);
+                if self.running() && !was_running {
+                    self.run_started = Some(Instant::now());
+                    self.last_pulse = 0;
+                }
+                if !self.running() {
+                    self.run_started = None;
+                }
+                self.sync_prompt();
+            }
+            Update::FilesChanged(count) => {
+                self.notices.push(format!("files changed  {count}"));
+            }
+            Update::Switched { session_id, kind } => self.switch_session(session_id, kind),
+            Update::Sessions(items) => {
+                if let Some(Prompt::Sessions(panel)) = &mut self.prompt {
+                    panel.set_items(items);
+                }
+            }
+            Update::Toast(text) => self.set_notice(text),
+            Update::Report { text, warning } => self
+                .reports
+                .push((text, if warning { Tone::Warning } else { Tone::Muted })),
+            Update::Approvals(mode) => match mode {
+                Ok(mode) => {
+                    if std::mem::take(&mut self.approvals_toast) {
+                        let title = crate::approvals_panel::MODES
+                            .iter()
+                            .find(|(m, ..)| *m == mode)
+                            .map_or("", |(_, title, ..)| *title);
+                        let target = if self.session_active() {
+                            "active session"
+                        } else {
+                            "new-session draft"
+                        };
+                        self.set_notice(format!("Tool approvals: {title} ({target})"));
+                    }
+                    self.approvals = mode;
+                }
+                Err(error) => self.notices.push(error),
+            },
+            Update::Providers(providers) => {
+                if let Some(Prompt::Providers(panel)) = &mut self.prompt {
+                    panel.set_providers(providers);
+                }
+            }
+            Update::Oauth { attempt, event } => {
+                let effect = match &mut self.prompt {
+                    Some(Prompt::Providers(panel)) => panel.oauth_event(attempt, event),
+                    _ => Effect::None,
+                };
+                self.apply_effect(effect);
+            }
+            Update::ProviderResult(result) => {
+                if let Some(Prompt::Providers(panel)) = &mut self.prompt {
+                    panel.set_result(result);
+                }
+            }
+            Update::Models(models) => {
+                if let Some(Prompt::Models(panel)) = &mut self.prompt {
+                    panel.set_models(models);
+                }
+            }
+            Update::Reconnecting { attempt } => {
+                self.set_notice(if attempt == 1 {
+                    "Connection lost; reconnecting...".to_owned()
+                } else {
+                    format!("Reconnecting... (attempt {attempt})")
+                });
+            }
+            Update::Reconnected => {
+                self.set_notice("Reconnected");
+                self.notices.push("reconnected".to_owned());
+            }
+            Update::Notice(text) => {
+                self.notices.push(text);
+            }
+            Update::Failed(message) => self.failure = Some(message),
+        }
+    }
+
+    fn handle(&mut self, event: InputEvent) -> Outcome {
+        let key = match event {
+            InputEvent::Paste(text) => {
+                // A prompt owns the keyboard; a paste only reaches the
+                // composer.
+                if self.prompt.is_none() {
+                    self.composer.paste(&text);
+                }
+                return Outcome::Continue;
+            }
+            InputEvent::Key(key) => key,
+        };
+        let ctrl = key.mods.contains(Modifiers::CTRL);
+        if ctrl && key.code == KeyCode::Char('c') {
+            return self.ctrl_c();
+        }
+        // Priority: exit confirm, runtime prompt, composer.
+        if let Some(prompt) = &mut self.prompt {
+            let effect = match prompt {
+                Prompt::Sessions(p) => p.handle_key(key),
+                Prompt::Models(p) => p.handle_key(key),
+                Prompt::Providers(p) => p.handle_key(key),
+                Prompt::Approvals(p) => p.handle_key(key),
+                Prompt::Theme(p) => p.handle_key(key),
+                Prompt::Exit(p) => p.handle_key(key),
+                Prompt::Permission(p) => p.handle_key(key),
+                Prompt::Ask(p) => p.handle_key(key),
+            };
+            return self.apply_effect(effect);
+        }
+        match key.code {
+            KeyCode::Char('d') if ctrl => {
+                if self.composer.is_empty() {
+                    return Outcome::Exit(0);
+                }
+            }
+            KeyCode::Char('s') if ctrl => {
+                if let Some((id, _)) = self.queued().into_iter().next() {
+                    self.host.send(Command::InputControl {
+                        input_id: id,
+                        action: "steer",
+                    });
+                }
+                return Outcome::Continue;
+            }
+            KeyCode::Esc if !self.composer.palette_open() => {
+                if self.running() {
+                    self.interrupt();
+                } else if !self.composer.is_empty() {
+                    self.composer.clear();
+                }
+                return Outcome::Continue;
+            }
+            KeyCode::Up
+                if key.mods.0 == 0 && self.composer.is_empty() && !self.queued().is_empty() =>
+            {
+                // Take the newest queued message back for editing.
+                if let Some((id, text)) = self.queued().pop() {
+                    self.host.send(Command::InputControl {
+                        input_id: id,
+                        action: "withdraw",
+                    });
+                    self.composer.set_draft(&text);
+                }
+                return Outcome::Continue;
+            }
+            _ => {}
+        }
+        match self.composer.handle_key(key) {
+            ComposerOutcome::Submit(text) => {
+                let text = text.trim().to_owned();
+                if text == "/reconnect" {
+                    // Not in the palette (the full scrollback has none): it
+                    // exists for the case where the link looks alive but is not.
+                    self.host.send(Command::Reconnect);
+                    return Outcome::Continue;
+                }
+                let _ = history::append(&crate::args::default_home(), &self.cwd_key, &text);
+                self.composer.push_history(&text);
+                if self.running() {
+                    self.set_notice("Message queued");
+                }
+                self.host.submit(text);
+            }
+            ComposerOutcome::Command { name, args } => return self.run_command(&name, &args),
+            ComposerOutcome::Handled | ComposerOutcome::Pass => {}
+        }
+        Outcome::Continue
+    }
+
+    /// Ctrl+C is staged: a busy session is interrupted first and asks for
+    /// confirmation the second time; an idle one clears the draft, then warns,
+    /// then exits.
+    fn ctrl_c(&mut self) -> Outcome {
+        let now = Instant::now();
+        let armed = self.exit_armed_until.is_some_and(|until| now < until);
+        if let Some(reason) = self.busy_reason() {
+            if armed {
+                self.prompt = Some(Prompt::Exit(ExitConfirm::new(reason)));
+            } else {
+                self.interrupt();
+                self.arm_exit();
+                self.set_notice("Interrupt requested; Ctrl+C again to exit");
+            }
+            return Outcome::Continue;
+        }
+        if !self.composer.is_empty() {
+            self.composer.clear();
+            self.arm_exit();
+            self.set_notice("Press Ctrl+C again to exit");
+            return Outcome::Continue;
+        }
+        if armed {
+            return Outcome::Exit(130);
+        }
+        self.arm_exit();
+        self.set_notice("Press Ctrl+C again to exit");
+        Outcome::Continue
+    }
+
+    /// Stops the run and records it at once: the note lands in the transcript
+    /// ahead of whatever the interrupted answer still commits.
+    fn interrupt(&mut self) {
+        self.host.stop();
+        self.notices.push(INTERRUPT_REASON.to_owned());
+    }
+
+    fn apply_effect(&mut self, effect: Effect) -> Outcome {
+        match effect {
+            Effect::None => {}
+            Effect::Close => self.prompt = None,
+            Effect::Exit => return Outcome::Exit(130),
+            Effect::Approval {
+                request_id,
+                branch_id,
+                allow,
+                remember,
+                audit,
+            } => {
+                self.answered.insert(request_id.clone());
+                self.host.send(Command::Approval {
+                    request_id,
+                    branch_id,
+                    allow,
+                    remember,
+                });
+                self.notices.push(audit);
+                self.prompt = None;
+                self.sync_prompt();
+            }
+            Effect::Answers {
+                request_id,
+                branch_id,
+                answers,
+            } => {
+                self.answered.insert(request_id.clone());
+                self.host.send(Command::AskAnswers {
+                    request_id,
+                    branch_id,
+                    answers,
+                });
+                self.prompt = None;
+                self.sync_prompt();
+            }
+            Effect::Cancel {
+                request_id,
+                branch_id,
+                reason,
+            } => {
+                self.answered.insert(request_id.clone());
+                self.host.send(Command::AskCancel {
+                    request_id,
+                    branch_id,
+                    reason,
+                });
+                self.prompt = None;
+                self.sync_prompt();
+            }
+            Effect::Notice(text) => self.set_notice(text),
+            Effect::Resume(id) => {
+                self.prompt = None;
+                self.composer.clear();
+                self.host.send(Command::Resume(id));
+            }
+            Effect::Refresh => self.host.send(Command::ListSessions),
+            Effect::ThemePreview(id) => self.paint_theme(&id),
+            Effect::ThemeRestore(id) => {
+                self.prompt = None;
+                self.paint_theme(&id);
+            }
+            Effect::ThemeApply(id) => {
+                self.prompt = None;
+                self.paint_theme(&id);
+                if let Some(error) = crate::theme_panel::save_theme_id(&id) {
+                    self.set_notice(error);
+                }
+            }
+            Effect::SetApprovals(mode) => {
+                self.prompt = None;
+                self.approvals_toast = true;
+                self.host.send(Command::SetApprovals(mode));
+            }
+            Effect::Provider(action) => self.host.send(Command::Provider(action)),
+            Effect::OauthStart(start) => self.host.send(Command::OauthStart(start)),
+            Effect::OauthCancel => self.host.send(Command::OauthCancel),
+            Effect::OauthBack => {}
+            Effect::OauthPaste(url) => self.host.send(Command::OauthPaste(url)),
+            Effect::Print(text) => self.reports.push((text, Tone::Muted)),
+            Effect::Connected(provider_id) => {
+                self.set_notice(format!("Connected {provider_id}"));
+                self.prompt = Some(Prompt::Models(ModelsPanel::new()));
+                self.host.send(Command::ListModels);
+            }
+            Effect::SelectModel {
+                provider_id,
+                model_id,
+            } => {
+                self.prompt = None;
+                self.host.send(Command::SelectModel {
+                    provider_id,
+                    model_id,
+                });
+            }
+        }
+        Outcome::Continue
+    }
+
+    fn run_command(&mut self, name: &str, _args: &str) -> Outcome {
+        // Commands that act on a session say so instead of failing quietly.
+        if crate::composer::commands::COMMANDS
+            .iter()
+            .any(|c| c.name == name && c.requires_session)
+            && !self.session_active()
+        {
+            self.set_notice(format!("/{name} needs a session — send a message first"));
+            return Outcome::Continue;
+        }
+        match name {
+            "usage" => {
+                self.host.send(Command::Usage);
+                Outcome::Continue
+            }
+            // Native only: Ctrl+Z is undo in the composer, so the shell hand-off
+            // is a command. It is not in the generated registry.
+            "suspend" => Outcome::Suspend,
+            "exit" => Outcome::Exit(0),
+            "new" => {
+                self.host.send(Command::NewSession);
+                Outcome::Continue
+            }
+            "resume" => {
+                self.prompt = Some(Prompt::Sessions(SessionsPanel::new()));
+                self.host.send(Command::ListSessions);
+                Outcome::Continue
+            }
+            "theme" => {
+                if let Some(context) = &self.theme_context {
+                    self.prompt = Some(Prompt::Theme(ThemePanel::new(
+                        context.mode,
+                        context.appearance,
+                        &context.active,
+                    )));
+                }
+                Outcome::Continue
+            }
+            "approvals" => {
+                self.prompt = Some(Prompt::Approvals(ApprovalsPanel::new(&self.approvals)));
+                Outcome::Continue
+            }
+            "connect" => {
+                self.prompt = Some(Prompt::Providers(ProvidersPanel::new()));
+                self.host.send(Command::ListProviders);
+                Outcome::Continue
+            }
+            "models" => {
+                self.prompt = Some(Prompt::Models(ModelsPanel::new()));
+                self.host.send(Command::ListModels);
+                Outcome::Continue
+            }
+            "history" => {
+                self.request_history();
+                Outcome::Continue
+            }
+            "reconnect" => {
+                self.host.send(Command::Reconnect);
+                Outcome::Continue
+            }
+            other => {
+                self.notices.push(format!("/{other} is not yet available"));
+                Outcome::Continue
+            }
+        }
+    }
+
+    fn frame(&mut self, size: (u16, u16)) -> Frame {
+        let cols = size.0 as usize;
+        let width = cols.saturating_sub(2 + MARGIN).max(1);
+        let mut frame = Frame::default();
+        if !self.banner_committed {
+            let text = banner(cols, &self.palette);
+            self.record(&text, Some(Block::Banner));
+            frame.commits.push(text);
+            self.banner_committed = true;
+        }
+        let (commits, sources, tail) = self.transcript(width);
+        for (text, source) in commits.into_iter().zip(sources) {
+            self.record(&text, source);
+            frame.commits.push(text);
+        }
+        if !self.awaiting_window {
+            if let Some(kind) = self.pending_boundary.take() {
+                let label = match kind {
+                    SwitchKind::New => "new session".to_owned(),
+                    SwitchKind::Resumed => {
+                        let (count, hidden) = self.window_info;
+                        let sid = self.session_id.get(..8).unwrap_or(&self.session_id);
+                        let mut label = format!("resumed {sid} · {count} messages");
+                        if hidden > 0 {
+                            label.push_str(" · earlier history: /history");
+                        }
+                        label
+                    }
+                };
+                let line = boundary_line(&label, width);
+                let text = chunk(&[fg(&line, &self.palette.muted)]);
+                self.record(&text, Some(Block::Boundary(label)));
+                frame.commits.push(text);
+            }
+        }
+        for notice in std::mem::take(&mut self.notices) {
+            let tone = if notice == INTERRUPT_REASON {
+                &self.palette.warning
+            } else {
+                &self.palette.muted
+            };
+            let rows = gutter_text("◦", &notice, width, tone);
+            let text = chunk(&rows);
+            let tone = if notice == INTERRUPT_REASON {
+                Tone::Warning
+            } else {
+                Tone::Muted
+            };
+            self.record(&text, Some(Block::Status { text: notice, tone }));
+            frame.commits.push(text);
+        }
+        for (text, tone) in std::mem::take(&mut self.reports) {
+            let color = match tone {
+                Tone::Muted => &self.palette.muted,
+                Tone::Warning => &self.palette.warning,
+                Tone::Danger => &self.palette.danger,
+            };
+            let rows = gutter_text("◦", &text, width, color);
+            let chunk_text = chunk(&rows);
+            self.record(&chunk_text, Some(Block::Status { text, tone }));
+            frame.commits.push(chunk_text);
+        }
+        if let Some(message) = self.failure.clone() {
+            if !self.failure_committed {
+                self.failure_committed = true;
+                let text = pad_block(&[String::new(), format!("Error: {message}")]);
+                self.record(&text, Some(Block::Failure(message)));
+                frame.commits.push(text);
+            }
+        }
+
+        // While a prompt is open the live region is hidden: the prompt owns
+        // the screen below the composer, and what it asks about is already
+        // in the transcript.
+        let mut live = if self.prompt.is_some() {
+            Vec::new()
+        } else {
+            tail
+        };
+        if self.prompt.is_none() {
+            let queued = self.queued();
+            if !queued.is_empty() {
+                live.extend(queue_strip(&queued, cols, &self.palette));
+            }
+            if self.running() {
+                const FRAMES: [&str; 4] = ["·", "•", "●", "•"];
+                let started = self.run_started.unwrap_or_else(Instant::now);
+                let elapsed = started.elapsed();
+                let beat = (elapsed.as_millis() / PULSE.as_millis()) as usize;
+                live.push(fg(
+                    &format!(
+                        "{}{} working…  {}",
+                        " ".repeat(MARGIN),
+                        FRAMES[beat % FRAMES.len()],
+                        format_elapsed(elapsed)
+                    ),
+                    &self.palette.muted,
+                ));
+            }
+        }
+        // An empty live region (idle, or hidden under a prompt) leaves one
+        // blank row between the transcript and the composer.
+        if live.is_empty() {
+            live.push(String::new());
+        }
+        let inner = cols.saturating_sub(2 * MARGIN + 4).max(1);
+        let prompt = "\u{203a} ";
+        let prompt_width = 2;
+        let text_width = inner.saturating_sub(prompt_width).max(1);
+        let p = &self.palette;
+        self.composer.set_session_active(
+            self.snapshot
+                .as_ref()
+                .is_some_and(|s| s.rows.iter().any(|r| r.kind == RowKind::UserMessage)),
+        );
+        let mut rows: Vec<String> = Vec::new();
+        let cursor_row;
+        let cursor_col;
+        // While a panel or prompt owns the keyboard the composer's mark dims.
+        let prompt_color = if self.prompt.is_some() {
+            &p.faint
+        } else {
+            &p.accent
+        };
+        if self.composer.is_empty() {
+            rows.push(format!(
+                "{}{}",
+                fg(prompt, prompt_color),
+                fg(COMPOSER_PLACEHOLDER, &p.muted)
+            ));
+            cursor_row = 0;
+            cursor_col = prompt_width;
+        } else {
+            let (input_rows, cursor) = self.composer.render_rows(text_width as u16, p);
+            for (i, row) in input_rows.into_iter().enumerate() {
+                let lead = if i == 0 {
+                    fg(prompt, prompt_color)
+                } else {
+                    "  ".to_owned()
+                };
+                rows.push(format!("{lead}{row}"));
+            }
+            cursor_row = cursor.1 as usize;
+            cursor_col = prompt_width + cursor.0 as usize;
+        }
+        let box_top = live.len();
+        live.extend(boxed(
+            &rows,
+            cols,
+            &|edge| fg(edge, &p.faint),
+            &|_, body| body.to_owned(),
+        ));
+        // Panels sit under the composer: a runtime prompt, or the command
+        // palette while a command is being typed.
+        let outer = cols.saturating_sub(2 + MARGIN).max(4);
+        let margin = " ".repeat(MARGIN);
+        let composer_rows = rows.len() + 2;
+        let panel_rows = (size.1 as usize)
+            .saturating_sub(composer_rows + 1 + 4 + 1)
+            .min(18);
+        let panel = match &self.prompt {
+            Some(Prompt::Sessions(prompt)) => Some(prompt.render(outer, panel_rows, p)),
+            Some(Prompt::Models(prompt)) => Some(prompt.render(outer, panel_rows, p)),
+            Some(Prompt::Providers(prompt)) => Some(prompt.render(outer, panel_rows, p)),
+            Some(Prompt::Approvals(prompt)) => Some(prompt.render(outer, panel_rows, p)),
+            Some(Prompt::Theme(prompt)) => Some(prompt.render(outer, panel_rows, p)),
+            Some(Prompt::Exit(prompt)) => Some(prompt.render(outer, p)),
+            Some(Prompt::Permission(prompt)) => Some(prompt.render(outer, p)),
+            Some(Prompt::Ask(prompt)) => Some(prompt.render(outer, panel_rows, p)),
+            None => self.composer.palette_panel(outer, p),
+        };
+        if let Some(panel) = panel {
+            live.extend(panel.into_iter().map(|row| format!("{margin}{row}")));
+        }
+        live.push(self.status_line(cols));
+        frame.cursor = Some((
+            (box_top + 1 + cursor_row) as u16,
+            (MARGIN + 2 + cursor_col).min(cols.saturating_sub(1)) as u16,
+        ));
+        frame.live = live;
+        frame
+    }
+
+    /// Commits owed this frame and the live rows (unclosed streaming tail,
+    /// the reasoning preview and running tools, in transcript order).
+    #[allow(clippy::type_complexity)]
+    fn transcript(&mut self, width: usize) -> (Vec<String>, Vec<Option<Block>>, Vec<String>) {
+        let Some(snapshot) = &self.snapshot else {
+            return (Vec::new(), Vec::new(), Vec::new());
+        };
+        let gutter = gutter_width(width);
+        let content = width.saturating_sub(gutter).max(1);
+        let p = &self.palette;
+
+        let is_message = |row: &ViewRow| row.kind.is_message();
+        if self.awaiting_window {
+            // The first snapshot of a switched-to session: only the newest
+            // messages are drawn, the rest wait for `/history`.
+            self.awaiting_window = false;
+            let messages: Vec<usize> = snapshot
+                .rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| is_message(row))
+                .map(|(i, _)| i)
+                .collect();
+            let hidden = messages.len().saturating_sub(HISTORY_WINDOW);
+            self.window_floor = if hidden > 0 { messages[hidden] } else { 0 };
+            self.history_floor = self.window_floor;
+            self.window_info = (messages.len() - hidden, hidden);
+        }
+        let floor = self.window_floor;
+
+        enum LiveItem {
+            Text(String),
+            Thinking(String),
+            Tool(usize),
+        }
+        let mut live_text: Vec<TextBlock> = Vec::new();
+        let mut live_items: Vec<LiveItem> = Vec::new();
+        let mut settled_assistant: Vec<TextBlock> = Vec::new();
+        let mut settled_ids: Vec<String> = Vec::new();
+        for (index, row) in snapshot.rows.iter().enumerate() {
+            if index < floor {
+                continue;
+            }
+            let text = row.text.clone();
+            match row.kind {
+                // The projection flips the same row to `assistant_message` when
+                // the model output ends.
+                RowKind::StreamingAssistant => {
+                    live_text.push(TextBlock {
+                        id: row.row_id.clone(),
+                        text,
+                    });
+                    live_items.push(LiveItem::Text(row.row_id.clone()));
+                }
+                // Reasoning rewrites one preview row while it runs and commits
+                // it as one row when it ends.
+                RowKind::Thinking if row.streaming => {
+                    live_items.push(LiveItem::Thinking(row.preview.clone().unwrap_or_default()));
+                }
+                // A call waiting on an approval is already part of the
+                // transcript: the prompt asks about it, it does not replace it.
+                RowKind::ToolCall if row.is_live_tool() => {
+                    live_items.push(LiveItem::Tool(index));
+                }
+                RowKind::AssistantMessage => {
+                    settled_assistant.push(TextBlock {
+                        id: row.row_id.clone(),
+                        text,
+                    });
+                    settled_ids.push(row.row_id.clone());
+                }
+                // The interrupt note is written when the key is pressed.
+                RowKind::Status if text == INTERRUPT_REASON => {}
+                _ => settled_ids.push(row.row_id.clone()),
+            }
+        }
+
+        let markdown = &self.markdown;
+        let text_color = p.text.clone();
+        let render = |source: &str, content_width: usize, gutter: usize, first: bool| {
+            let rows = markdown.render(source, content_width, gutter);
+            if first {
+                apply_gutter_mark(rows, ASSISTANT_MARK, gutter, &|mark: &str| {
+                    fg(mark, &text_color)
+                })
+            } else {
+                rows
+            }
+        };
+        let mut plan = self.planner.plan(
+            SESSION_REVISION,
+            &live_text,
+            &settled_assistant,
+            width,
+            &render,
+        );
+        let mut commits: Vec<String> = Vec::new();
+        let mut sources: Vec<Option<Block>> = Vec::new();
+        let draw = |row: &ViewRow,
+                    finalized: Option<crate::transcript::stream::Batch>|
+         -> (Vec<String>, Option<Block>) {
+            match (row.kind, finalized) {
+                // The planner has laid out this answer already.
+                (RowKind::AssistantMessage, Some(batch)) => (
+                    batch.lines,
+                    batch.source.map(|s| Block::Assistant {
+                        text: s.text,
+                        first: s.first,
+                    }),
+                ),
+                _ => {
+                    let block = project_row(row);
+                    let lines = render_block(&block, width, p, markdown);
+                    (lines, Some(block))
+                }
+            }
+        };
+        if let Some((start, end)) = self.history_request.take() {
+            // An earlier page goes out first, under its own header.
+            let len = snapshot.rows.len();
+            let rows = &snapshot.rows[start.min(len)..end.min(len)];
+            let count = rows.iter().filter(|r| is_message(r)).count();
+            let header = format!(
+                "Earlier history · {} · {count} messages · /history for the previous page",
+                self.session_id.get(..8).unwrap_or(&self.session_id)
+            );
+            commits.push(chunk(&[fg(&truncate_cells(&header, width), &p.muted)]));
+            sources.push(Some(Block::Note(header)));
+            for row in rows {
+                let (lines, source) = draw(row, None);
+                if !lines.is_empty() {
+                    commits.push(chunk(&lines));
+                    sources.push(source);
+                }
+            }
+        }
+        let fresh = self.commits.plan(&settled_ids).fresh;
+        for id in fresh {
+            let Some(row) = snapshot.rows.iter().find(|r| r.row_id == id) else {
+                continue;
+            };
+            let (lines, source) = draw(row, plan.finalized.remove(&id));
+            if !lines.is_empty() {
+                commits.push(chunk(&lines));
+                sources.push(source);
+            }
+        }
+        for batch in &plan.active {
+            commits.push(chunk(&batch.lines));
+            sources.push(batch.source.clone().map(|s| Block::Assistant {
+                text: s.text,
+                first: s.first,
+            }));
+        }
+
+        // Live rows, laid out exactly as they will commit.
+        let pad = " ".repeat(MARGIN);
+        let mut tail: Vec<String> = Vec::new();
+        for item in &live_items {
+            let rows: Vec<String> = match item {
+                LiveItem::Text(id) => match self.planner.pending(id) {
+                    Some((rest, first)) if !rest.trim().is_empty() => {
+                        render(rest, content, gutter, first)
+                    }
+                    _ => Vec::new(),
+                },
+                LiveItem::Thinking(preview) => vec![thinking_line(preview, width, p)],
+                LiveItem::Tool(index) => match snapshot.rows.get(*index) {
+                    Some(row) => render_tool(&tool_block(row), width, p),
+                    None => Vec::new(),
+                },
+            };
+            if rows.is_empty() {
+                continue;
+            }
+            tail.push(String::new());
+            tail.extend(rows.into_iter().map(|r| format!("{pad}{r}")));
+        }
+        (commits, sources, tail)
+    }
+
+    fn switch_session(&mut self, session_id: String, kind: SwitchKind) {
+        self.session_id = session_id;
+        self.planner.reset();
+        self.commits = CommitState::default();
+        self.answered.clear();
+        self.prompt = None;
+        self.snapshot = None;
+        self.window_floor = 0;
+        self.history_floor = 0;
+        self.window_info = (0, 0);
+        self.history_request = None;
+        self.awaiting_window = true;
+        self.pending_boundary = Some(kind);
+        self.composer.clear();
+    }
+
+    /// `/history`: queue the next older page of the loaded session.
+    fn request_history(&mut self) {
+        let Some(snapshot) = &self.snapshot else {
+            self.set_notice("No active session");
+            return;
+        };
+        let floor = self.history_floor.min(snapshot.rows.len());
+        let messages: Vec<usize> = snapshot.rows[..floor]
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.kind.is_message())
+            .map(|(i, _)| i)
+            .collect();
+        if messages.is_empty() {
+            self.set_notice("No earlier messages.");
+            return;
+        }
+        let start = if messages.len() > HISTORY_WINDOW {
+            messages[messages.len() - HISTORY_WINDOW]
+        } else {
+            0
+        };
+        self.history_request = Some((start, floor));
+        self.history_floor = start;
+    }
+
+    /// Remembers a committed chunk with its source (bounded, newest last).
+    fn record(&mut self, text: &str, source: Option<Block>) {
+        let rows = text.matches('\n').count();
+        self.segments.push_back(Segment { rows, source });
+        self.segment_rows += rows;
+        while self.segments.len() > 1
+            && self.segment_rows - self.segments.front().map_or(0, |s| s.rows) >= REFLOW_SOURCE_ROWS
+        {
+            if let Some(front) = self.segments.pop_front() {
+                self.segment_rows -= front.rows;
+            }
+        }
+    }
+
+    /// Lays one committed chunk out for `cols` columns.
+    fn render_source(&self, source: &Block, cols: usize) -> String {
+        let width = cols.saturating_sub(2 + MARGIN).max(1);
+        match source {
+            Block::Banner => banner(cols, &self.palette),
+            block => chunk(&render_block(block, width, &self.palette, &self.markdown)),
+        }
+    }
+
+    /// The retained transcript laid out for `cols` columns: the contiguous
+    /// newest run of chunks that still have a source, one string per row.
+    fn reflow_tail(&mut self, cols: usize) -> Vec<String> {
+        let first = self
+            .segments
+            .iter()
+            .rposition(|s| s.source.is_none())
+            .map_or(0, |i| i + 1);
+        let mut rows = Vec::new();
+        let mut counts = Vec::new();
+        for segment in self.segments.iter().skip(first) {
+            let Some(source) = &segment.source else {
+                continue;
+            };
+            let text = self.render_source(source, cols);
+            let lines: Vec<String> = text
+                .trim_end_matches('\n')
+                .split('\n')
+                .map(str::to_owned)
+                .collect();
+            counts.push(lines.len());
+            rows.extend(lines);
+        }
+        for (segment, count) in self.segments.iter_mut().skip(first).zip(counts) {
+            self.segment_rows = self.segment_rows + count - segment.rows;
+            segment.rows = count;
+        }
+        rows
+    }
+
+    fn status_line(&self, cols: usize) -> String {
+        // mode, approvals mode, then the one status slot: a transient notice,
+        // else what the session is waiting for.
+        let slot = match &self.notice {
+            Some((text, _)) => Some(text.clone()),
+            None => match &self.snapshot {
+                Some(s) if !s.questions.is_empty() => Some("answer required".to_owned()),
+                Some(s) if !s.approvals.is_empty() => Some("permission required".to_owned()),
+                Some(s) if s.running => Some("esc interrupt".to_owned()),
+                _ => None,
+            },
+        };
+        let mut left = format!(
+            "{}AGENT  \u{23f5}\u{23f5} {}",
+            " ".repeat(MARGIN),
+            status_label(&self.approvals)
+        );
+        if let Some(slot) = slot {
+            left.push_str("  ");
+            left.push_str(&slot);
+        }
+        let total = cols.saturating_sub(2);
+        // The model label goes first when the row is too narrow for both.
+        let line = match &self.label {
+            Some(label) if width_of(&left) + 2 + width_of(label) <= total => {
+                let gap = total - width_of(&left) - width_of(label);
+                format!("{left}{}{label}", " ".repeat(gap))
+            }
+            _ => clip(&left, total).0,
+        };
+        // The transient notice is the one thing on the row that just
+        // happened: it takes the highlight colour, the rest stays muted.
+        if let Some((text, _)) = &self.notice {
+            if let Some(at) = line.find(text.as_str()) {
+                let (before, rest) = line.split_at(at);
+                let (notice, after) = rest.split_at(text.len().min(rest.len()));
+                return format!(
+                    "{}{}{}",
+                    fg(before, &self.palette.muted),
+                    fg(notice, &self.palette.highlight),
+                    fg(after, &self.palette.muted)
+                );
+            }
+        }
+        fg(&line, &self.palette.muted)
+    }
+}
+
+/// `<1s`, `42s`, `3m07s`.
+fn format_elapsed(elapsed: Duration) -> String {
+    let ms = elapsed.as_millis();
+    if ms < 1000 {
+        return "<1s".to_owned();
+    }
+    if ms < 60_000 {
+        return format!("{}s", ms / 1000);
+    }
+    format!("{}m{:02}s", ms / 60_000, (ms % 60_000) / 1000)
+}
+
+/// The queue, drawn in a titled border above the composer: the next message
+/// to run reads at the top.
+fn queue_strip(items: &[(String, String)], cols: usize, p: &Palette) -> Vec<String> {
+    use crate::render::panel::bordered;
+    use crate::transcript::blocks::truncate_cells;
+    const MAX_ROWS: usize = 5;
+    let outer = cols.saturating_sub(2 + MARGIN).max(4);
+    let inner = outer.saturating_sub(4).max(1);
+    let shown = &items[..items.len().min(MAX_ROWS)];
+    let hidden = items.len() - shown.len();
+    let mut rows: Vec<String> = shown
+        .iter()
+        .map(|(_, text)| {
+            let preview = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            fg(&truncate_cells(&format!("› {preview}"), inner), &p.accent)
+        })
+        .collect();
+    let hint = if hidden == 0 {
+        "↑ edit · ctrl+s steer now · /queue".to_owned()
+    } else {
+        format!("+{hidden} more · ↑ edit · ctrl+s steer now · /queue")
+    };
+    rows.push(fg(&truncate_cells(&hint, inner), &p.muted));
+    let title = format!("Queue ({})", items.len());
+    let margin = " ".repeat(MARGIN);
+    bordered(&rows, outer, None, &p.border, Some(&title))
+        .into_iter()
+        .map(|row| format!("{margin}{row}"))
+        .collect()
+}
+
+/// The collapsed reasoning row: an accent italic label, then the preview in
+/// muted italic, cut to the width.
+fn thinking_line(preview: &str, width: usize, p: &Palette) -> String {
+    use crate::transcript::blocks::truncate_cells;
+    const LABEL: &str = "Thinking: ";
+    let label = truncate_cells(LABEL, width);
+    let preview = truncate_cells(
+        preview,
+        width.saturating_sub(crate::transcript::blocks::display_width(&label)),
+    );
+    format!(
+        "{}{}",
+        paint(
+            &label,
+            Paint {
+                fg: Some(&p.accent),
+                italic: true,
+                ..Paint::default()
+            }
+        ),
+        paint(
+            &preview,
+            Paint {
+                fg: Some(&p.muted),
+                italic: true,
+                ..Paint::default()
+            }
+        )
+    )
+}
+
+/// A gutter mark and wrapped text in one tone (errors, status notes).
+fn gutter_text(mark: &str, text: &str, width: usize, color: &str) -> Vec<String> {
+    use crate::transcript::blocks::{gutter_mark, wrap_cells};
+    let gutter = gutter_width(width);
+    let content = width.saturating_sub(gutter).max(1);
+    wrap_cells(text, content)
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let lead = if i == 0 {
+                gutter_mark(mark, gutter)
+            } else {
+                " ".repeat(gutter)
+            };
+            format!(
+                "{}{}",
+                fg(&lead, color),
+                fg(if row.is_empty() { " " } else { &row }, color)
+            )
+        })
+        .collect()
+}
+
+/// A committed chunk owns the blank row that separates it from what came
+/// before, and every row carries the document pad.
+/// A rule centred on `label`, at most [`BOUNDARY_MAX_WIDTH`] wide.
+fn boundary_line(label: &str, width: usize) -> String {
+    use crate::transcript::blocks::truncate_cells;
+    let width = width.clamp(8, BOUNDARY_MAX_WIDTH);
+    let text = format!(
+        " {} ",
+        truncate_cells(label.trim(), width.saturating_sub(4).max(1))
+    );
+    let remaining = width.saturating_sub(width_of(&text));
+    let left = remaining / 2;
+    let right = remaining - left;
+    truncate_cells(
+        &format!("{}{text}{}", "─".repeat(left), "─".repeat(right)),
+        width,
+    )
+}
+
+/// Draws one block as rows at `width` columns, without the spacing row and
+/// the document pad that a commit adds.
+fn render_block(
+    block: &Block,
+    width: usize,
+    p: &Palette,
+    markdown: &MarkdownRenderer,
+) -> Vec<String> {
+    let gutter = gutter_width(width);
+    let content = width.saturating_sub(gutter).max(1);
+    match block {
+        // The startup banner is drawn at the full width by `banner`.
+        Block::Banner => Vec::new(),
+        Block::User(text) => render_user(
+            text,
+            width,
+            &UserStyle {
+                accent: &p.accent,
+                text: &p.text,
+                surface: p.surface.as_deref(),
+            },
+        ),
+        Block::Assistant { text, first } => {
+            let rows = markdown.render(text, content, gutter);
+            if *first {
+                let color = p.text.clone();
+                apply_gutter_mark(rows, ASSISTANT_MARK, gutter, &|mark: &str| fg(mark, &color))
+            } else {
+                rows
+            }
+        }
+        Block::Thinking(text) => vec![thinking_line(text, width, p)],
+        Block::Tool(block) => render_tool(block, width, p),
+        Block::Error(text) => gutter_text("■", text, width, &p.danger),
+        Block::Status { text, tone } => {
+            let color = match tone {
+                Tone::Muted => &p.muted,
+                Tone::Warning => &p.warning,
+                Tone::Danger => &p.danger,
+            };
+            gutter_text("◦", text, width, color)
+        }
+        Block::Failure(message) => vec![format!("Error: {message}")],
+        Block::Boundary(label) => vec![fg(&boundary_line(label, width), &p.muted)],
+        Block::Note(text) => vec![fg(&truncate_cells(text, width), &p.muted)],
+    }
+}
+
+fn chunk(lines: &[String]) -> String {
+    let mut rows = vec![String::new()];
+    rows.extend(lines.iter().cloned());
+    pad_block(&rows)
+}
+
+fn pad_block(rows: &[String]) -> String {
+    let pad = " ".repeat(MARGIN);
+    rows.iter()
+        .map(|row| {
+            if row.is_empty() {
+                String::new()
+            } else {
+                format!("{pad}{row}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+fn banner(cols: usize, p: &Palette) -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "Not available".into());
+    let branch = git_branch().unwrap_or_else(|| "Not available".into());
+    // Port of `buildStartupPanel`: the logo beside the greeting when the box
+    // is wide enough, the greeting wrapped under it otherwise.
+    let body_width = cols.saturating_sub(2 + MARGIN).max(4) - 4;
+    let greeting = [
+        format!("Welcome to DIM {version}!"),
+        "Type / for commands · Ctrl+P for the palette".to_owned(),
+    ];
+    let header = startup_header(&greeting, body_width);
+    let inline = body_width >= 32;
+    let label_width = if inline {
+        (10 + 2).clamp(8, body_width.saturating_sub(12).max(8))
+    } else {
+        body_width
+    };
+    let value_width = body_width.saturating_sub(label_width).max(1);
+    let mut info = vec![String::new()];
+    for (label, value) in [("Workspace", &cwd), ("Git branch", &branch)] {
+        if !inline {
+            info.push(label.to_owned());
+            info.extend(wrap(value, body_width));
+            continue;
+        }
+        for (index, part) in wrap(value, value_width).into_iter().enumerate() {
+            let lead = if index == 0 { label } else { "" };
+            info.push(format!("{lead:<label_width$}{part}"));
+        }
+    }
+    let rows: Vec<String> = header.iter().chain(info.iter()).cloned().collect();
+    let header_rows = header.len();
+    let mut text = boxed(&rows, cols, &|edge| fg(edge, &p.accent), &|index, body| {
+        let color = if index < header_rows {
+            &p.accent
+        } else {
+            &p.text_soft
+        };
+        fg(body, color)
+    })
+    .join("\n");
+    text.push('\n');
+    text
+}
+
+fn git_branch() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Box drawing around `rows`, sized to `cols` with the common margin. Rows
+/// that are too long are cut to the inner width. `edge` paints the border
+/// characters.
+fn boxed(
+    rows: &[String],
+    cols: usize,
+    edge: &dyn Fn(&str) -> String,
+    interior: &dyn Fn(usize, &str) -> String,
+) -> Vec<String> {
+    // L's boxes end two columns short of the right edge, margin included.
+    let outer = cols.saturating_sub(2 + MARGIN).max(4);
+    let inner = outer - 4;
+    let margin = " ".repeat(MARGIN);
+    let mut out = Vec::with_capacity(rows.len() + 2);
+    out.push(format!(
+        "{margin}{}",
+        edge(&format!("┌{}┐", "─".repeat(outer - 2)))
+    ));
+    for (index, row) in rows.iter().enumerate() {
+        let (text, width) = clip(row, inner);
+        let body = format!(" {text}{} ", " ".repeat(inner.saturating_sub(width)));
+        out.push(format!(
+            "{margin}{}{}{}",
+            edge("│"),
+            interior(index, &body),
+            edge("│")
+        ));
+    }
+    out.push(format!(
+        "{margin}{}",
+        edge(&format!("└{}┘", "─".repeat(outer - 2)))
+    ));
+    out
+}
+
+/// Display width of `text`, ignoring CSI/OSC escape sequences.
+fn width_of(text: &str) -> usize {
+    clip(text, usize::MAX).1
+}
+
+/// The longest prefix of `text` that fits `max` columns (escapes kept and
+/// free), and the width it takes.
+fn clip(text: &str, max: usize) -> (String, usize) {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut out = String::new();
+    let mut width = 0;
+    let mut rest = text;
+    'outer: while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix('\x1b') {
+            // Escape sequences are free: copy CSI and OSC whole.
+            let len = if let Some(body) = after.strip_prefix('[') {
+                let end = body
+                    .char_indices()
+                    .find(|(_, n)| ('\u{40}'..='\u{7e}').contains(n))
+                    .map_or(body.len(), |(i, n)| i + n.len_utf8());
+                2 + end
+            } else if let Some(body) = after.strip_prefix(']') {
+                let mut end = body.len();
+                let mut indices = body.char_indices().peekable();
+                while let Some((i, n)) = indices.next() {
+                    if n == '\x07' {
+                        end = i + 1;
+                        break;
+                    }
+                    if n == '\x1b' && matches!(indices.peek(), Some((_, '\\'))) {
+                        end = i + 2;
+                        break;
+                    }
+                }
+                2 + end
+            } else {
+                1
+            };
+            let len = len.min(rest.len());
+            out.push_str(&rest[..len]);
+            rest = &rest[len..];
+            continue;
+        }
+        let run_end = rest.find('\x1b').unwrap_or(rest.len());
+        for cluster in rest[..run_end].graphemes(true) {
+            let w = crate::transcript::blocks::display_width(cluster);
+            if width + w > max {
+                break 'outer;
+            }
+            width += w;
+            out.push_str(cluster);
+        }
+        rest = &rest[run_end..];
+    }
+    (out, width)
+}
+
+/// Hard wrap by display width.
+const STARTUP_LOGO: [&str; 4] = ["  ▓▓▓▓  ", "▓▓    ▓▓", "░░    ░░", "  ░░░░  "];
+const STARTUP_LOGO_WIDTH: usize = 8;
+const STARTUP_LOGO_GAP: usize = 2;
+
+/// The greeting beside the logo, vertically centred against it (port of
+/// `startupHeaderLines`).
+fn startup_header(greeting: &[String], body_width: usize) -> Vec<String> {
+    if body_width < STARTUP_LOGO_WIDTH {
+        return greeting
+            .iter()
+            .flat_map(|line| wrap_words(line, body_width))
+            .collect();
+    }
+    let text_width = body_width - STARTUP_LOGO_WIDTH - STARTUP_LOGO_GAP;
+    if text_width < 16 {
+        return STARTUP_LOGO
+            .iter()
+            .map(|l| l.trim_end().to_owned())
+            .chain(
+                greeting
+                    .iter()
+                    .flat_map(|line| wrap_words(line, body_width)),
+            )
+            .collect();
+    }
+    let text: Vec<String> = greeting
+        .iter()
+        .flat_map(|line| wrap_words(line, text_width))
+        .collect();
+    let top = STARTUP_LOGO.len().saturating_sub(text.len()) / 2;
+    let height = STARTUP_LOGO.len().max(top + text.len());
+    (0..height)
+        .map(|index| {
+            let logo = STARTUP_LOGO.get(index).copied().unwrap_or("");
+            let text = index
+                .checked_sub(top)
+                .and_then(|i| text.get(i))
+                .map_or("", String::as_str);
+            format!(
+                "{logo:<width$}{text}",
+                width = STARTUP_LOGO_WIDTH + STARTUP_LOGO_GAP
+            )
+            .trim_end()
+            .to_owned()
+        })
+        .collect()
+}
+
+/// Greedy word wrap (port of `wrapWordsCells`): words longer than the row are
+/// cut by display width.
+pub(crate) fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+    let mut result = Vec::new();
+    let mut current = String::new();
+    for word in text.split(' ') {
+        let candidate = if current.is_empty() {
+            word.to_owned()
+        } else {
+            format!("{current} {word}")
+        };
+        if width_of(&candidate) <= width {
+            current = candidate;
+            continue;
+        }
+        if !current.is_empty() {
+            result.push(std::mem::take(&mut current));
+        }
+        let mut chunks = wrap(word, width);
+        current = chunks.pop().unwrap_or_default();
+        result.extend(chunks);
+    }
+    result.push(current);
+    result
+}
+
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut rows = vec![String::new()];
+    let mut used = 0;
+    for cluster in text.graphemes(true) {
+        let w = crate::transcript::blocks::display_width(cluster);
+        if used + w > width && used > 0 {
+            rows.push(String::new());
+            used = 0;
+        }
+        if let Some(row) = rows.last_mut() {
+            row.push_str(cluster);
+        }
+        used += w;
+    }
+    rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boxed_rows_have_equal_display_width() {
+        let rows = vec![
+            "plain".to_owned(),
+            "中文 mixed".to_owned(),
+            "\x1b[2mdim\x1b[22m".to_owned(),
+        ];
+        let out = boxed(&rows, 40, &|e| e.to_owned(), &|_, b| b.to_owned());
+        for line in &out {
+            assert_eq!(width_of(line), 38, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn emoji_sequences_count_as_one_wide_cluster() {
+        // A ZWJ family, a VS16 heart and a flag are two columns each, as
+        // Bun's `stringWidth` (the reference) counts them.
+        assert_eq!(width_of("👨‍👩‍👧"), 2);
+        assert_eq!(width_of("❤️"), 2);
+        assert_eq!(width_of("🇨🇳"), 2);
+        let (cut, used) = clip("ab👨‍👩‍👧cd", 3);
+        assert_eq!((cut.as_str(), used), ("ab", 2), "a cluster is never split");
+        assert_eq!(wrap("a👨‍👩‍👧b", 2), vec!["a", "👨‍👩‍👧", "b"]);
+    }
+
+    #[test]
+    fn wrap_respects_wide_characters() {
+        assert_eq!(wrap("中中中", 4), vec!["中中", "中"]);
+        assert_eq!(wrap("abcd", 2), vec!["ab", "cd"]);
+    }
+
+    #[test]
+    fn committed_chunks_start_with_a_blank_row_and_are_padded() {
+        let text = chunk(&["◆ hello".to_owned(), "  world".to_owned()]);
+        assert_eq!(text, "\n ◆ hello\n   world\n");
+        assert_eq!(crate::transcript::blocks::display_width("◆ hello"), 7);
+    }
+}
