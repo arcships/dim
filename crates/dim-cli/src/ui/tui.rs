@@ -221,6 +221,15 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             },
         }
     };
+    // A plain exit says how to come back: the session id is only known once
+    // a session exists.
+    let mut bytes = screen.leave();
+    if !app.session_id.is_empty() {
+        bytes.extend(
+            format!("\r\n{}\r\n", goodbye_panel(&app.session_id).join("\r\n")).into_bytes(),
+        );
+    }
+    let _ = terminal.write(&bytes);
     terminal.leave();
     app.host.shutdown();
     code
@@ -1714,6 +1723,25 @@ fn git_branch() -> Option<String> {
     }
     let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     (!name.is_empty()).then_some(name)
+}
+
+/// The box printed under the transcript on exit, with the command that
+/// reopens the session, ready to paste.
+fn goodbye_panel(session_id: &str) -> Vec<String> {
+    let body = [
+        "Bye!".to_owned(),
+        String::new(),
+        "To resume this session:".to_owned(),
+        format!("  dimcode --resume {session_id}"),
+    ];
+    let inner = body.iter().map(|line| width_of(line)).max().unwrap_or(0) + 4;
+    std::iter::once(format!("╭{}╮", "─".repeat(inner)))
+        .chain(
+            body.iter()
+                .map(|line| format!("│  {line}{}  │", " ".repeat(inner - 4 - width_of(line)))),
+        )
+        .chain(std::iter::once(format!("╰{}╯", "─".repeat(inner))))
+        .collect()
 }
 
 /// The rows of a committed chunk (its closing newline ends the last row).

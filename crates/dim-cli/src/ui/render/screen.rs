@@ -364,6 +364,20 @@ impl Screen {
         out
     }
 
+    /// Hands the screen back: the cursor goes to the start of the row below
+    /// the live region (scrolling when the region ends on the last row) and
+    /// shows, so whatever is written next lands under the composer.
+    pub fn leave(&mut self) -> Vec<u8> {
+        let mut out = Vec::new();
+        let last = (self.top + self.viewport_height.max(1) - 1).min(self.size.1.saturating_sub(1));
+        push_move(&mut out, 0, last);
+        out.extend_from_slice(b"\r\n");
+        out.extend_from_slice(CURSOR_SHOW);
+        self.cursor_visible = true;
+        self.cursor_at = None;
+        out
+    }
+
     fn paint(&mut self, frame: &Frame, out: &mut Vec<u8>) {
         let top = self.viewport_top();
         let rows = visible_rows(&frame.live, self.viewport_height);
@@ -653,6 +667,21 @@ mod tests {
             transcript.iter().any(|l| l == "│ 1 ( ) 分位数（推荐） │"),
             "{transcript:?}"
         );
+    }
+
+    #[test]
+    fn leaving_puts_the_cursor_under_the_live_region() {
+        let (mut screen, mut emu) = setup(true);
+        drive(
+            &mut screen,
+            &mut emu,
+            &frame(&["\nfirst\n"], &["composer", "status"], Some((0, 0))),
+        );
+        emu.feed(&screen.leave());
+        emu.feed(b"$ ");
+        let rows = emu.rows_text();
+        let status = rows.iter().position(|r| r == "status").unwrap();
+        assert_eq!(rows[status + 1], "$");
     }
 
     #[test]
