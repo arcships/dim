@@ -1141,6 +1141,8 @@ impl App {
                 }
                 // Reasoning rewrites one preview row while it runs and commits
                 // it as one row when it ends.
+                // A thought with no text yet (or only whitespace) draws nothing.
+                RowKind::Thinking if row.preview.as_deref().is_none_or(str::is_empty) => {}
                 RowKind::Thinking if row.streaming => {
                     live_items.push(LiveItem::Thinking(row.preview.clone().unwrap_or_default()));
                 }

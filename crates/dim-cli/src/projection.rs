@@ -17,6 +17,8 @@ pub struct Projection {
     rows: Vec<ViewRow>,
     /// The assistant row each model request streams into.
     assistant_rows: HashMap<String, usize>,
+    /// The reasoning row each model request streams into, while it is open.
+    thinking_rows: HashMap<String, usize>,
     /// The tool row each call id opened.
     tool_rows: HashMap<String, usize>,
     running: bool,
@@ -34,7 +36,32 @@ impl Projection {
                     self.push(format!("user-{sequence}"), RowKind::UserMessage, text);
                 }
             }
+            EventContent::Thinking(data) => {
+                let index = match self.thinking_rows.get(&data.request_id) {
+                    Some(index) => *index,
+                    None => {
+                        let index = self.push(
+                            format!("thinking-{}", data.request_id),
+                            RowKind::Thinking,
+                            String::new(),
+                        );
+                        self.rows[index].streaming = true;
+                        self.thinking_rows.insert(data.request_id.clone(), index);
+                        index
+                    }
+                };
+                let row = &mut self.rows[index];
+                row.text.push_str(&data.delta);
+                // While it streams the preview follows the newest line.
+                row.preview = row
+                    .text
+                    .lines()
+                    .rev()
+                    .find(|line| !line.trim().is_empty())
+                    .map(|line| line.trim().to_owned());
+            }
             EventContent::Text(data) => {
+                self.close_thinking(&data.request_id);
                 let index = match self.assistant_rows.get(&data.request_id) {
                     Some(index) => *index,
                     None => {
@@ -51,6 +78,7 @@ impl Projection {
                 self.rows[index].text.push_str(&data.delta);
             }
             EventContent::ToolUse(data) => {
+                self.close_thinking(&data.request_id);
                 self.close_assistant(&data.request_id);
                 let index = self.push(data.call.id.clone(), RowKind::ToolCall, String::new());
                 let row = &mut self.rows[index];
@@ -68,23 +96,35 @@ impl Projection {
                 }
             }
             EventContent::ModelEnd(data) => {
+                self.close_thinking(&data.request_id);
                 self.close_assistant(&data.request_id);
                 if let ModelOutputOutcome::Failed { error, .. } = &data.outcome {
                     self.push_error(format!("model failed: {error}"));
                 }
             }
-            EventContent::TurnEnd(data) => match &data.outcome {
-                TurnOutcome::Failed { error } => self.push_error(format!("turn failed: {error}")),
-                TurnOutcome::Cancelled { .. } => {
-                    self.push(
-                        format!("stopped-{sequence}"),
-                        RowKind::Status,
-                        "stopped".into(),
-                    );
+            EventContent::TurnEnd(data) => {
+                // A turn that ends mid-thought settles what it had.
+                let open: Vec<String> = self.thinking_rows.keys().cloned().collect();
+                for request_id in open {
+                    self.close_thinking(&request_id);
                 }
-                TurnOutcome::Completed { .. } => {}
-            },
+                self.turn_end(sequence, &data.outcome);
+            }
             EventContent::Other => {}
+        }
+    }
+
+    fn turn_end(&mut self, sequence: u64, outcome: &TurnOutcome) {
+        match outcome {
+            TurnOutcome::Failed { error } => self.push_error(format!("turn failed: {error}")),
+            TurnOutcome::Cancelled { .. } => {
+                self.push(
+                    format!("stopped-{sequence}"),
+                    RowKind::Status,
+                    "stopped".into(),
+                );
+            }
+            TurnOutcome::Completed { .. } => {}
         }
     }
 
@@ -150,6 +190,16 @@ impl Projection {
         self.rows[index].tone = Some(RowTone::Danger);
     }
 
+    /// A settled thought commits as one row: the whole text, whitespace
+    /// collapsed (the transcript truncates it to the width).
+    fn close_thinking(&mut self, request_id: &str) {
+        if let Some(index) = self.thinking_rows.remove(request_id) {
+            let row = &mut self.rows[index];
+            row.streaming = false;
+            row.preview = Some(row.text.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
+    }
+
     fn close_assistant(&mut self, request_id: &str) {
         if let Some(index) = self.assistant_rows.remove(request_id) {
             self.rows[index].streaming = false;
@@ -177,4 +227,50 @@ fn text_of(blocks: &[ContentBlock]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn apply(projection: &mut Projection, events: &[serde_json::Value]) {
+        for event in events {
+            let event: Event = serde_json::from_value(event.clone()).unwrap();
+            projection.apply(&event);
+        }
+    }
+
+    fn step(sequence: u64, name: &str, delta: &str) -> serde_json::Value {
+        serde_json::json!({
+            "sequence": sequence,
+            "type": "step",
+            "name": name,
+            "data": { "turn_id": "t1", "request_id": "r1", "delta": delta },
+        })
+    }
+
+    #[test]
+    fn reasoning_streams_as_one_row_and_settles_before_the_answer() {
+        let mut projection = Projection::default();
+        apply(
+            &mut projection,
+            &[
+                // Context-only input: not a user message.
+                serde_json::json!({ "sequence": 1, "type": "input", "name": "message", "data": {} }),
+                step(2, "thinking", "Look at the\n"),
+                step(3, "thinking", "parser first"),
+            ],
+        );
+        let rows = projection.snapshot().rows;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].kind, RowKind::Thinking);
+        assert!(rows[0].streaming);
+        assert_eq!(rows[0].preview.as_deref(), Some("parser first"));
+
+        apply(&mut projection, &[step(4, "text", "Done.")]);
+        let rows = projection.snapshot().rows;
+        assert!(!rows[0].streaming);
+        assert_eq!(rows[0].preview.as_deref(), Some("Look at the parser first"));
+        assert_eq!(rows[1].kind, RowKind::StreamingAssistant);
+    }
 }

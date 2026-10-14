@@ -13,6 +13,7 @@ pub struct Event {
 pub enum EventContent {
     Input(InputMessageData),
     TurnEnd(TurnEndData),
+    Thinking(ThinkingData),
     Text(TextData),
     ToolUse(ToolUseData),
     ToolCompleted(Box<ToolCompletedData>),
@@ -43,6 +44,9 @@ impl<'de> Deserialize<'de> for Event {
                 serde_json::from_value(wire.data).map_err(serde::de::Error::custom)?,
             ),
             ("turn", "end") => EventContent::TurnEnd(
+                serde_json::from_value(wire.data).map_err(serde::de::Error::custom)?,
+            ),
+            ("step", "thinking") => EventContent::Thinking(
                 serde_json::from_value(wire.data).map_err(serde::de::Error::custom)?,
             ),
             ("step", "text") => EventContent::Text(
