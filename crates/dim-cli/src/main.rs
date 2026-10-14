@@ -33,6 +33,9 @@ fn main() {
             let env = ui::Env {
                 home: options.home.clone(),
                 workspace: options.cwd.clone(),
+                fullscreen: options
+                    .fullscreen
+                    .unwrap_or_else(|| ui::config::saved_fullscreen(&options.home)),
             };
             let host = session_host::SessionHost::start(options);
             return Ok(ui::tui::run(Box::new(host), env));
@@ -59,6 +62,18 @@ fn prepare() -> Result<Option<Options>> {
     }
     if matches!(options.action, Action::Version) {
         println!("dimcode {}", env!("CARGO_PKG_VERSION"));
+        return Ok(None);
+    }
+    if let Action::DefaultTerminalMode { fullscreen } = options.action {
+        if let Some(error) = ui::config::save_fullscreen(&options.home, fullscreen) {
+            return Err(error.into());
+        }
+        let mode = if fullscreen {
+            "fullscreen"
+        } else {
+            "scrollback"
+        };
+        println!("Default terminal mode: {mode}");
         return Ok(None);
     }
     if matches!(options.action, Action::Chat)
@@ -224,6 +239,9 @@ async fn run(options: Options) -> Result<i32> {
             Ok(0)
         }
         Action::Chat => session::chat(&mut client, &options).await,
-        Action::Help | Action::Version | Action::DaemonStop => unreachable!(),
+        Action::Help
+        | Action::Version
+        | Action::DaemonStop
+        | Action::DefaultTerminalMode { .. } => unreachable!(),
     }
 }

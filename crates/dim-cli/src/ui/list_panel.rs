@@ -4,7 +4,7 @@
 use std::cell::Cell;
 
 use crate::ui::composer::palette::{Kind, Row, footer, panel_row, title};
-use crate::ui::render::panel::bordered;
+use crate::ui::render::panel::{bordered, follow_window};
 use crate::ui::terminal::{KeyCode, KeyEvent, Modifiers};
 use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::fg;
@@ -83,6 +83,8 @@ pub struct ListPanel {
     error: Option<String>,
     /// Rows the list may show; set from the screen height while rendering.
     page: Cell<usize>,
+    /// First row of the visible window, kept between frames.
+    window: Cell<usize>,
     refreshable: bool,
 }
 
@@ -111,6 +113,7 @@ impl ListPanel {
             loading: true,
             error: None,
             page: Cell::new(6),
+            window: Cell::new(0),
             refreshable,
         }
     }
@@ -315,9 +318,8 @@ impl ListPanel {
             content.push(fg(&truncate_cells(text, inner), &p.muted));
         } else {
             let current_at = selectable[self.selected.min(selectable.len() - 1)];
-            let start = current_at
-                .saturating_sub(page - 1)
-                .min(list.len().saturating_sub(page));
+            let start = follow_window(self.window.get(), current_at, page, list.len());
+            self.window.set(start);
             for (offset, row) in list.iter().skip(start).take(page).enumerate() {
                 if matches!(row.kind, Kind::Heading) {
                     // A section sits in the marker column's step, not left of it.

@@ -12,10 +12,13 @@ pub struct Env {
     pub home: PathBuf,
     /// The workspace the session works in.
     pub workspace: PathBuf,
+    /// Start in the fullscreen interface instead of scrollback.
+    pub fullscreen: bool,
 }
 
 pub mod approvals_panel;
 pub mod attachments;
+pub mod clipboard;
 pub mod composer;
 pub mod config;
 pub mod list_panel;

@@ -17,7 +17,8 @@ Options:\n\
   --resume SESSION_ID              Attach and continue a persisted session\n\
   --home PATH                      Product home (default: ~/.dimcode)\n\
   --cwd PATH                       Workspace (default: current directory)\n\
-  --no-tui                         Scrollback client instead of the full terminal UI\n\
+  --no-tui                         Line client instead of the terminal UI\n\
+  --fullscreen | --scrollback      Terminal UI mode; append 'default' to save it\n\
   --server PATH                    App Server binary (default: sibling binary)\n\
   --model-config PATH              Explicit API-key model configuration\n\
   --plugin-dir PATH                Managed account plugin package\n\
@@ -38,9 +39,17 @@ pub enum Action {
     Logout(String),
     Models(String),
     McpList,
-    McpApprove { id: String, token: String },
+    McpApprove {
+        id: String,
+        token: String,
+    },
     McpRevoke(String),
     DaemonStop,
+    /// `--fullscreen default` / `--scrollback default`: save the terminal
+    /// UI mode used when neither flag is given.
+    DefaultTerminalMode {
+        fullscreen: bool,
+    },
     Help,
     Version,
 }
@@ -62,6 +71,8 @@ pub struct Options {
     pub device: bool,
     /// Use the scrollback client instead of the full terminal UI.
     pub no_tui: bool,
+    /// Terminal UI mode for this run; `None` uses the saved default.
+    pub fullscreen: Option<bool>,
     pub refresh: bool,
     pub redirect_uri: String,
 }
@@ -90,10 +101,11 @@ impl Options {
             directory: None,
             device: false,
             no_tui: false,
+            fullscreen: None,
             refresh: false,
             redirect_uri: "http://localhost:1455/auth/callback".into(),
         };
-        let mut args = args;
+        let mut args = args.peekable();
         while let Some(arg) = args.next() {
             let value = |args: &mut dyn Iterator<Item = String>| -> Result<String> {
                 args.next()
@@ -123,6 +135,15 @@ impl Options {
                 "--redirect-uri" => options.redirect_uri = value(&mut args)?,
                 "--device" => options.device = true,
                 "--no-tui" => options.no_tui = true,
+                "--fullscreen" | "--scrollback" => {
+                    let fullscreen = arg == "--fullscreen";
+                    if args.peek().is_some_and(|next| next == "default") {
+                        args.next();
+                        options.action = Action::DefaultTerminalMode { fullscreen };
+                    } else {
+                        options.fullscreen = Some(fullscreen);
+                    }
+                }
                 "--refresh" => options.refresh = true,
                 "mcp" if matches!(options.action, Action::Chat) => {
                     options.action = match value(&mut args)?.as_str() {

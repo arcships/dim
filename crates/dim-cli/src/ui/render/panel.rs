@@ -8,8 +8,29 @@ use crate::ui::transcript::blocks::{display_width, truncate_cells};
 pub const SELECTED_MARKER: &str = "› ";
 pub const IDLE_MARKER: &str = "  ";
 
+/// The first row of a list window of `page` rows over `len` rows that
+/// shows `selected`: the window stays where it was (`start`) and moves only
+/// as far as the selection needs, so moving up inside it moves the
+/// highlight rather than the list.
+pub fn follow_window(start: usize, selected: usize, page: usize, len: usize) -> usize {
+    let page = page.max(1);
+    let start = start.min(len.saturating_sub(page));
+    if selected < start {
+        selected
+    } else if selected >= start + page {
+        selected + 1 - page
+    } else {
+        start
+    }
+}
+
 /// Display width ignoring SGR/OSC sequences.
 pub fn visible_width(text: &str) -> usize {
+    display_width(&strip_escapes(text))
+}
+
+/// The text of a row without its SGR/OSC sequences.
+pub fn strip_escapes(text: &str) -> String {
     let mut plain = String::new();
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -41,7 +62,59 @@ pub fn visible_width(text: &str) -> usize {
         }
         plain.push(c);
     }
-    display_width(&plain)
+    plain
+}
+
+/// The longest prefix of `text` that fits `max` columns (escapes kept and
+/// free), and the width it takes.
+pub fn clip(text: &str, max: usize) -> (String, usize) {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut out = String::new();
+    let mut width = 0;
+    let mut rest = text;
+    'outer: while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix('\x1b') {
+            // Escape sequences are free: copy CSI and OSC whole.
+            let len = if let Some(body) = after.strip_prefix('[') {
+                let end = body
+                    .char_indices()
+                    .find(|(_, n)| ('\u{40}'..='\u{7e}').contains(n))
+                    .map_or(body.len(), |(i, n)| i + n.len_utf8());
+                2 + end
+            } else if let Some(body) = after.strip_prefix(']') {
+                let mut end = body.len();
+                let mut indices = body.char_indices().peekable();
+                while let Some((i, n)) = indices.next() {
+                    if n == '\x07' {
+                        end = i + 1;
+                        break;
+                    }
+                    if n == '\x1b' && matches!(indices.peek(), Some((_, '\\'))) {
+                        end = i + 2;
+                        break;
+                    }
+                }
+                2 + end
+            } else {
+                1
+            };
+            let len = len.min(rest.len());
+            out.push_str(&rest[..len]);
+            rest = &rest[len..];
+            continue;
+        }
+        let run_end = rest.find('\x1b').unwrap_or(rest.len());
+        for cluster in rest[..run_end].graphemes(true) {
+            let w = crate::ui::transcript::blocks::display_width(cluster);
+            if width + w > max {
+                break 'outer;
+            }
+            width += w;
+            out.push_str(cluster);
+        }
+        rest = &rest[run_end..];
+    }
+    (out, width)
 }
 
 /// Borders in `color`, one column of padding, rows padded with blanks to

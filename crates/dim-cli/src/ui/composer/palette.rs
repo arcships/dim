@@ -3,7 +3,7 @@
 //! `createListPanelModel` and `ListPanel`).
 
 use super::commands::{COMMANDS, Command};
-use crate::ui::render::panel::bordered;
+use crate::ui::render::panel::{bordered, follow_window};
 use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::{Paint, fg, paint};
 use crate::ui::transcript::blocks::{display_width, truncate_cells};
@@ -213,6 +213,8 @@ pub struct PaletteState {
     pub query: String,
     /// Index into the rows (never a heading).
     pub selected: usize,
+    /// First row of the visible window, kept between frames.
+    window: std::cell::Cell<usize>,
 }
 
 impl PaletteState {
@@ -220,6 +222,7 @@ impl PaletteState {
         if self.query != query {
             self.query = query.to_owned();
             self.selected = 0;
+            self.window.set(0);
         }
     }
 
@@ -255,11 +258,12 @@ impl PaletteState {
         self.selected = Self::selectable(rows, target, if delta < 0 { -1 } else { 1 });
     }
 
-    pub fn visible_start(&self, rows: &[Row]) -> usize {
-        let current = self.current(rows);
-        current
-            .saturating_sub(PAGE_SIZE - 1)
-            .min(rows.len().saturating_sub(PAGE_SIZE))
+    /// The first visible row of a `page`-row window; it moves only as far
+    /// as the selection needs.
+    pub fn window_start(&self, rows: &[Row], page: usize) -> usize {
+        let start = follow_window(self.window.get(), self.current(rows), page, rows.len());
+        self.window.set(start);
+        start
     }
 }
 
@@ -278,6 +282,53 @@ fn panel_title(rows: &[Row]) -> &'static str {
 /// borders, fixed at `PAGE_SIZE + CHROME_ROWS` rows.
 pub fn render(state: &PaletteState, rows: &[Row], width: usize, p: &Palette) -> Vec<String> {
     let inner = width.saturating_sub(4).max(1);
+    let mut content: Vec<String> = Vec::new();
+    content.push(title(panel_title(rows), inner, p));
+    content.extend(list(state, rows, inner, PAGE_SIZE, p));
+    content.push(footer(&position(state, rows), HINT, inner, p));
+    bordered(
+        &content,
+        width,
+        Some(PAGE_SIZE + CHROME_ROWS),
+        &p.border,
+        None,
+    )
+}
+
+/// Rows above the list in the fullscreen palette: the query row and a gap.
+pub const OVERLAY_QUERY_ROWS: usize = 2;
+
+/// The fullscreen palette (Amp's command palette): a box titled
+/// `Command Palette` with its own `> query` row over `page` rows of
+/// commands. The query row is the box's second row.
+pub fn render_overlay(
+    state: &PaletteState,
+    rows: &[Row],
+    width: usize,
+    page: usize,
+    p: &Palette,
+) -> Vec<String> {
+    let inner = width.saturating_sub(4).max(1);
+    let mut content = vec![
+        format!(
+            "{}{}",
+            fg("> ", &p.accent),
+            truncate_cells(&state.query, inner.saturating_sub(2))
+        ),
+        String::new(),
+    ];
+    content.extend(list(state, rows, inner, page, p));
+    // The footer stays at the bottom however few commands match.
+    content.resize(OVERLAY_QUERY_ROWS + page, String::new());
+    content.push(footer(&position(state, rows), HINT, inner, p));
+    bordered(&content, width, None, &p.border, Some("Command Palette"))
+}
+
+/// The visible window of `rows`, `page` rows at most.
+fn list(state: &PaletteState, rows: &[Row], inner: usize, page: usize, p: &Palette) -> Vec<String> {
+    if rows.is_empty() {
+        return vec![fg(&truncate_cells("No matches", inner), &p.muted)];
+    }
     // The detail column is shared by every row, not just the visible window,
     // so it does not shift while scrolling.
     let widest = rows
@@ -287,42 +338,28 @@ pub fn render(state: &PaletteState, rows: &[Row], width: usize, p: &Palette) -> 
         .max()
         .unwrap_or(0);
     let detail_column = (widest + DETAIL_GAP).min((inner.saturating_sub(ROW_INDENT) / 2).max(1));
-    let mut content: Vec<String> = Vec::new();
-    content.push(title(panel_title(rows), inner, p));
-    if rows.is_empty() {
-        content.push(fg(&truncate_cells("No matches", inner), &p.muted));
-    } else {
-        let start = state.visible_start(rows);
-        let current = state.current(rows);
-        for (offset, row) in rows.iter().skip(start).take(PAGE_SIZE).enumerate() {
-            content.push(panel_row(
-                row,
-                start + offset == current,
-                inner,
-                detail_column,
-                p,
-            ));
-        }
-    }
+    let start = state.window_start(rows, page);
+    let current = state.current(rows);
+    rows.iter()
+        .skip(start)
+        .take(page)
+        .enumerate()
+        .map(|(offset, row)| panel_row(row, start + offset == current, inner, detail_column, p))
+        .collect()
+}
+
+/// `place / total` over the selectable rows.
+fn position(state: &PaletteState, rows: &[Row]) -> String {
     let selectable_total = rows.iter().filter(|r| r.selectable()).count();
-    let position = if selectable_total == 0 {
-        "0 / 0".to_owned()
-    } else {
-        let at = state.current(rows);
-        let place = rows[..=at.min(rows.len() - 1)]
-            .iter()
-            .filter(|r| r.selectable())
-            .count();
-        format!("{place} / {selectable_total}")
-    };
-    content.push(footer(&position, HINT, inner, p));
-    bordered(
-        &content,
-        width,
-        Some(PAGE_SIZE + CHROME_ROWS),
-        &p.border,
-        None,
-    )
+    if selectable_total == 0 {
+        return "0 / 0".to_owned();
+    }
+    let at = state.current(rows);
+    let place = rows[..=at.min(rows.len() - 1)]
+        .iter()
+        .filter(|r| r.selectable())
+        .count();
+    format!("{place} / {selectable_total}")
 }
 
 /// A panel title without the `esc close` hint (forms say how to go back in
@@ -476,13 +513,13 @@ mod tests {
         let rows = rows_for("/", true, &[]);
         let len = rows.len();
         let mut state = PaletteState::default();
-        assert_eq!(state.visible_start(&rows), 0);
+        assert_eq!(state.window_start(&rows, PAGE_SIZE), 0);
         state.selected = 5;
-        assert_eq!(state.visible_start(&rows), 0);
+        assert_eq!(state.window_start(&rows, PAGE_SIZE), 0);
         state.selected = 6;
-        assert_eq!(state.visible_start(&rows), 1);
+        assert_eq!(state.window_start(&rows, PAGE_SIZE), 1);
         state.selected = len - 1;
-        assert_eq!(state.visible_start(&rows), len - PAGE_SIZE);
+        assert_eq!(state.window_start(&rows, PAGE_SIZE), len - PAGE_SIZE);
     }
 
     #[test]

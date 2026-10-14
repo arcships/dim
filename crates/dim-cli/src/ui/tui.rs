@@ -15,8 +15,11 @@ use crate::ui::composer::{Composer, Outcome as ComposerOutcome, history};
 use crate::ui::models_panel::ModelsPanel;
 use crate::ui::prompts::{AskUserPrompt, Effect, ExitConfirm, ExitReason, PermissionPrompt};
 use crate::ui::providers_panel::ProvidersPanel;
+use crate::ui::render::fullscreen::Document;
+use crate::ui::render::fullscreen::MouseOutcome;
 use crate::ui::render::markdown::MarkdownRenderer;
-use crate::ui::render::{Frame, Screen};
+use crate::ui::render::panel::clip;
+use crate::ui::render::{Frame, FullScreen, Overlay, Screen};
 use crate::ui::sessions_panel::SessionsPanel;
 use crate::ui::terminal::{InputEvent, KeyCode, Modifiers, Terminal, TerminalError, Wait};
 use crate::ui::theme::ansi::{Paint, fg, paint};
@@ -40,10 +43,10 @@ const TOOL_DETAILS_KEY: &str = "tuiToolDetailsExpanded";
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(100);
 /// ...but never longer than this from the first change of a drag.
 const RESIZE_MAX_DELAY: Duration = Duration::from_millis(500);
-/// Rows of committed transcript kept with their source for a reflow.
-const REFLOW_SOURCE_ROWS: usize = 600;
-/// Raw rows of older history a resize rewrite restores at most.
-const ARCHIVED_RAW_MAX_ROWS: usize = 10_000;
+/// Committed blocks kept as sources; older ones are forgotten.
+const HISTORY_MAX_BLOCKS: usize = 5_000;
+/// Rows of history a scrollback rewrite lays out at most.
+const REWRITE_MAX_ROWS: usize = 10_000;
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 /// How often the loop looks at session updates while input is idle.
 const SESSION_POLL: Duration = Duration::from_millis(40);
@@ -77,7 +80,15 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
     };
     let synchronized = std::env::var_os("TMUX").is_none_or(|v| v.is_empty());
     let mut screen = Screen::new(terminal.size(), synchronized);
-    if let Some((row, column)) = terminal.cursor_position() {
+    // The fullscreen interface, while it is the one on screen; the
+    // scrollback `screen` waits underneath and is rewritten on the way back.
+    let mut full = None;
+    if surroundings.fullscreen {
+        if terminal.set_fullscreen(true).is_err() {
+            return terminal.lost();
+        }
+        full = Some(FullScreen::new(terminal.size(), synchronized));
+    } else if let Some((row, column)) = terminal.cursor_position() {
         screen.set_origin(if column == 0 { row } else { row + 1 });
     }
     // Capability and background are decided once, before the first line is
@@ -105,6 +116,7 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
         surroundings.home.clone(),
         cwd_key,
     );
+    app.fullscreen = full.is_some();
     app.theme_context = Some(ThemeContext {
         mode: detected.mode,
         appearance: detected.appearance,
@@ -145,7 +157,24 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
                 || now.duration_since(p.first) >= RESIZE_MAX_DELAY
         });
         let reflow = app.take_reflow_request();
-        if settled || reflow {
+        if let Some(full) = &mut full
+            && (settled || reflow)
+        {
+            // The alternate screen keeps no history to clean up: the
+            // transcript is measured again for the new width or palette.
+            resize = None;
+            let size = terminal.size();
+            full.relayout(size.0);
+            let frame = app.frame(size);
+            let bytes = full.render(&frame, size, &app.palette, &app);
+            if terminal.write(&bytes).is_err() || terminal.write_failed() {
+                let code = terminal.lost();
+                app.host.shutdown();
+                return code;
+            }
+            dirty = false;
+            last_frame = Some(Instant::now());
+        } else if settled || reflow {
             resize = None;
             let size = terminal.size();
             // Termux resizes the height with every on-screen keyboard toggle;
@@ -154,10 +183,10 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             let keyboard =
                 size.0 == screen.size().0 && std::env::var_os("TERMUX_VERSION").is_some();
             if reflow || !keyboard {
-                let (prefix, tail) = app.reflow_history(size.0 as usize);
+                let rows = app.reflow_history(size.0 as usize);
                 let frame = app.frame(size);
                 let wanted = screen.wanted_for(size, frame.live.len());
-                let mut bytes = screen.rewrite(size, &prefix, &tail, wanted);
+                let mut bytes = screen.rewrite(size, &rows, wanted);
                 // The frame's own commits and live rows go out right behind.
                 bytes.extend(screen.render(&frame, size));
                 if terminal.write(&bytes).is_err() || terminal.write_failed() {
@@ -175,7 +204,10 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
         if dirty && due {
             let size = terminal.size();
             let frame = app.frame(size);
-            let bytes = screen.render(&frame, size);
+            let bytes = match &mut full {
+                Some(full) => full.render(&frame, size, &app.palette, &app),
+                None => screen.render(&frame, size),
+            };
             if terminal.write(&bytes).is_err() || terminal.write_failed() {
                 let code = terminal.lost();
                 app.host.shutdown();
@@ -204,8 +236,106 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
                     dirty = true;
                 }
             }
+            Wait::Event(InputEvent::Mouse(event)) => {
+                let Some(full) = &mut full else { continue };
+                match full.mouse(event, &app) {
+                    MouseOutcome::Ignored => {}
+                    MouseOutcome::Redraw => dirty = true,
+                    MouseOutcome::Overlay(rows) => {
+                        app.scroll_overlay(rows * 3);
+                        dirty = true;
+                    }
+                    MouseOutcome::Copy(text) => {
+                        crate::ui::clipboard::copy_local(&text);
+                        if terminal.write(&crate::ui::clipboard::osc52(&text)).is_err() {
+                            let code = terminal.lost();
+                            app.host.shutdown();
+                            return code;
+                        }
+                        app.set_notice("Copied to clipboard");
+                        dirty = true;
+                    }
+                }
+            }
+            // Amp's message navigation: Tab (or Up while a message is
+            // picked) goes to older user messages, Shift+Tab or Down to newer
+            // ones and back to the composer past the newest; Esc ends it and
+            // `e` takes the message into the composer.
+            Wait::Event(InputEvent::Key(key))
+                if full.is_some()
+                    && app.keyboard_free()
+                    && (matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
+                        || full.as_ref().is_some_and(FullScreen::focused)) =>
+            {
+                let Some(full) = &mut full else { continue };
+                dirty = true;
+                match key.code {
+                    KeyCode::Tab | KeyCode::Up if key.mods.0 == 0 => full.focus_older(&app),
+                    KeyCode::BackTab | KeyCode::Down => full.focus_newer(&app),
+                    KeyCode::Tab => full.focus_newer(&app),
+                    KeyCode::Esc => full.clear_focus(),
+                    KeyCode::Char('e') if key.mods.0 == 0 => {
+                        if let Some(text) = full.focused_text(&app) {
+                            app.composer.set_draft(&text);
+                        }
+                        full.clear_focus();
+                        full.follow();
+                    }
+                    _ => {
+                        // Anything else is typing: the pick ends and the key
+                        // goes to the composer.
+                        full.clear_focus();
+                        if let Outcome::Exit(code) = app.handle(InputEvent::Key(key)) {
+                            break code;
+                        }
+                    }
+                }
+            }
+            Wait::Event(InputEvent::Key(key))
+                if full.is_some()
+                    && app.keyboard_free()
+                    && key.mods.0 == 0
+                    && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) =>
+            {
+                if let Some(full) = &mut full {
+                    full.page(key.code == KeyCode::PageDown);
+                }
+                dirty = true;
+            }
             Wait::Event(event) => match app.handle(event) {
-                Outcome::Continue => dirty = true,
+                Outcome::Continue => {
+                    if let Some(full) = &mut full
+                        && std::mem::take(&mut app.follow_requested)
+                    {
+                        full.follow();
+                    }
+                    dirty = true;
+                }
+                Outcome::SwitchMode => {
+                    // Both ways the history is laid out again by the reflow
+                    // above: the alternate screen starts empty, and the
+                    // shell's screen is rewritten whole.
+                    let leaving = full.take();
+                    let entering = leaving.is_none();
+                    if let Some(mut leaving) = leaving {
+                        let _ = terminal.write(&leaving.leave());
+                    } else {
+                        let _ = terminal.write(&screen.erase_live());
+                    }
+                    if terminal.set_fullscreen(entering).is_err() {
+                        let code = terminal.lost();
+                        app.host.shutdown();
+                        return code;
+                    }
+                    if entering {
+                        full = Some(FullScreen::new(terminal.size(), synchronized));
+                    } else {
+                        screen = Screen::new(terminal.size(), synchronized);
+                    }
+                    app.fullscreen = entering;
+                    app.request_reflow();
+                    dirty = true;
+                }
                 Outcome::Suspend => {
                     if terminal.suspend().is_err() {
                         let code = terminal.lost();
@@ -222,8 +352,16 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
         }
     };
     // A plain exit says how to come back: the session id is only known once
-    // a session exists.
-    let mut bytes = screen.leave();
+    // a session exists. The fullscreen interface hands the shell's screen
+    // back first, so the panel lands under what was there before.
+    let mut bytes = match &mut full {
+        Some(full) => {
+            let _ = terminal.write(&full.leave());
+            let _ = terminal.set_fullscreen(false);
+            Vec::new()
+        }
+        None => screen.leave(),
+    };
     if !app.session_id.is_empty() {
         bytes.extend(
             format!("\r\n{}\r\n", goodbye_panel(&app.session_id).join("\r\n")).into_bytes(),
@@ -252,6 +390,8 @@ struct PendingResize {
 
 enum Outcome {
     Continue,
+    /// `/tui`: switch between the scrollback and fullscreen interfaces.
+    SwitchMode,
     /// `/suspend`: give the terminal to the shell until the job continues.
     Suspend,
     Exit(i32),
@@ -287,12 +427,12 @@ struct App {
     exit_armed_until: Option<Instant>,
     run_started: Option<Instant>,
     last_pulse: u64,
-    /// The most recent committed chunks with what they were drawn from.
-    segments: std::collections::VecDeque<Segment>,
-    segment_rows: usize,
-    /// Raw rows of chunks that left `segments`, oldest first, for a resize
-    /// rewrite (at most `ARCHIVED_RAW_MAX_ROWS`).
-    archived: std::collections::VecDeque<String>,
+    /// Every committed block, oldest first, as its source: both interfaces
+    /// lay it out again from here (a scrollback rewrite, the fullscreen
+    /// virtual list). Bounded by `HISTORY_MAX_BLOCKS`.
+    history: std::collections::VecDeque<Block>,
+    /// Blocks dropped from the front of `history` so far.
+    dropped: usize,
     session_id: String,
     /// The default tool-approval mode (wire name).
     approvals: String,
@@ -314,22 +454,29 @@ struct App {
     window_info: (usize, usize),
     /// Rows `[start, end)` queued to be drawn as an earlier-history page.
     history_request: Option<(usize, usize)>,
+    /// The fullscreen interface is on screen.
+    fullscreen: bool,
+    /// A message was sent: the fullscreen transcript follows the bottom
+    /// again.
+    follow_requested: bool,
+    /// The draft set aside while Ctrl+O/Ctrl+P has the palette open; it
+    /// comes back when the palette closes.
+    palette_stash: Option<String>,
+    /// The workspace's git branch for the banner, read once.
+    branch: String,
 }
+
+/// Widest the fullscreen command palette is drawn (Amp's).
+const OVERLAY_PALETTE_WIDTH: usize = 80;
+/// Widest a fullscreen picker is drawn.
+const OVERLAY_LIST_WIDTH: usize = 100;
+/// Tallest a fullscreen overlay is drawn.
+const OVERLAY_MAX_ROWS: usize = 30;
 
 /// Messages a resume shows at first, and per `/history` page.
 const HISTORY_WINDOW: usize = 100;
 /// Widest a session boundary rule is drawn.
 const BOUNDARY_MAX_WIDTH: usize = 60;
-
-/// What a committed chunk was drawn from, so it can be laid out again.
-#[derive(Debug, Clone)]
-struct Segment {
-    rows: usize,
-    /// The chunk as committed, for a rewrite that cannot lay it out again.
-    text: String,
-    /// `None`: cannot be drawn again, which ends a reflow window.
-    source: Option<Block>,
-}
 
 enum Prompt {
     Sessions(SessionsPanel),
@@ -379,9 +526,8 @@ impl App {
             exit_armed_until: None,
             run_started: None,
             last_pulse: 0,
-            segments: Default::default(),
-            segment_rows: 0,
-            archived: Default::default(),
+            history: Default::default(),
+            dropped: 0,
             session_id: String::new(),
             approvals: "normal".to_owned(),
             approvals_toast: false,
@@ -393,6 +539,22 @@ impl App {
             pending_boundary: None,
             window_info: (0, 0),
             history_request: None,
+            fullscreen: false,
+            follow_requested: false,
+            palette_stash: None,
+            branch: git_branch().unwrap_or_else(|| "Not available".into()),
+        }
+    }
+
+    /// The wheel over an overlay: moves the picker's or the palette's
+    /// selection by `rows` (+ down).
+    fn scroll_overlay(&mut self, rows: isize) {
+        let code = if rows > 0 { KeyCode::Down } else { KeyCode::Up };
+        for _ in 0..rows.unsigned_abs() {
+            let _ = self.handle(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
+                code,
+                Modifiers::NONE,
+            )));
         }
     }
 
@@ -427,6 +589,11 @@ impl App {
         self.snapshot
             .as_ref()
             .is_some_and(|s| s.rows.iter().any(|r| r.kind == RowKind::UserMessage))
+    }
+
+    /// No prompt, panel or palette owns the keys.
+    fn keyboard_free(&self) -> bool {
+        self.prompt.is_none() && !self.composer.palette_open()
     }
 
     fn running(&self) -> bool {
@@ -630,6 +797,19 @@ impl App {
     }
 
     fn handle(&mut self, event: InputEvent) -> Outcome {
+        let outcome = self.handle_input(event);
+        // A palette opened over a draft gives the draft back when it closes
+        // without leaving text of its own (closed, or a command ran).
+        if !self.composer.palette_open()
+            && let Some(draft) = self.palette_stash.take()
+            && self.composer.is_empty()
+        {
+            self.composer.set_draft(&draft);
+        }
+        outcome
+    }
+
+    fn handle_input(&mut self, event: InputEvent) -> Outcome {
         let key = match event {
             InputEvent::Paste(text) => {
                 // A prompt owns the keyboard; a paste only reaches the
@@ -640,6 +820,8 @@ impl App {
                 return Outcome::Continue;
             }
             InputEvent::Key(key) => key,
+            // Only the fullscreen surface reads the mouse.
+            InputEvent::Mouse(_) => return Outcome::Continue,
         };
         let ctrl = key.mods.contains(Modifiers::CTRL);
         if ctrl && key.code == KeyCode::Char('c') {
@@ -660,6 +842,15 @@ impl App {
             return self.apply_effect(effect);
         }
         match key.code {
+            // The command palette, also over a draft (Amp's Ctrl+O; the
+            // banner's Ctrl+P).
+            KeyCode::Char('o' | 'p') if ctrl && !self.composer.palette_open() => {
+                if !self.composer.is_empty() {
+                    self.palette_stash = Some(self.composer.text().to_owned());
+                }
+                self.composer.set_draft("/");
+                return Outcome::Continue;
+            }
             KeyCode::Char('d') if ctrl => {
                 if self.composer.is_empty() {
                     return Outcome::Exit(0);
@@ -708,6 +899,7 @@ impl App {
                 }
                 let _ = history::append(&self.home, &self.cwd_key, &text);
                 self.composer.push_history(&text);
+                self.follow_requested = true;
                 if self.running() {
                     self.set_notice("Message queued");
                 }
@@ -719,13 +911,22 @@ impl App {
         Outcome::Continue
     }
 
-    /// Ctrl+C is staged: a busy session is interrupted first and asks for
-    /// confirmation the second time; an idle one clears the draft, then warns,
-    /// then exits.
+    /// Ctrl+C is staged: in scrollback a busy session is interrupted first
+    /// and asks for confirmation the second time; an idle one, and any
+    /// session in fullscreen (where Esc interrupts), clears the draft, then
+    /// warns, then exits — through the confirmation while busy.
     fn ctrl_c(&mut self) -> Outcome {
         let now = Instant::now();
         let armed = self.exit_armed_until.is_some_and(|until| now < until);
-        if let Some(reason) = self.busy_reason() {
+        if self.fullscreen
+            && let Some(reason) = self.busy_reason()
+            && self.composer.is_empty()
+            && armed
+        {
+            self.prompt = Some(Prompt::Exit(ExitConfirm::new(reason)));
+            return Outcome::Continue;
+        }
+        if let Some(reason) = self.busy_reason().filter(|_| !self.fullscreen) {
             if armed {
                 self.prompt = Some(Prompt::Exit(ExitConfirm::new(reason)));
             } else {
@@ -875,6 +1076,7 @@ impl App {
             // is a command. It is not in the generated registry.
             "suspend" => Outcome::Suspend,
             "exit" => Outcome::Exit(0),
+            "tui" => Outcome::SwitchMode,
             "new" => {
                 self.host.send(Command::NewSession);
                 Outcome::Continue
@@ -945,14 +1147,14 @@ impl App {
         let width = cols.saturating_sub(2 + MARGIN).max(1);
         let mut frame = Frame::default();
         if !self.banner_committed {
-            let text = banner(cols, &self.palette);
-            self.record(&text, Some(Block::Banner));
+            let text = banner(cols, &self.palette, &self.branch);
+            self.record(Block::Banner);
             frame.commits.push(text);
             self.banner_committed = true;
         }
         let (commits, sources, tail) = self.transcript(width);
         for (text, source) in commits.into_iter().zip(sources) {
-            self.record(&text, source);
+            self.record(source);
             frame.commits.push(text);
         }
         if !self.awaiting_window
@@ -972,7 +1174,7 @@ impl App {
             };
             let line = boundary_line(&label, width);
             let text = chunk(&[fg(&line, &self.palette.muted)]);
-            self.record(&text, Some(Block::Boundary(label)));
+            self.record(Block::Boundary(label));
             frame.commits.push(text);
         }
         for notice in std::mem::take(&mut self.notices) {
@@ -988,7 +1190,7 @@ impl App {
             } else {
                 Tone::Muted
             };
-            self.record(&text, Some(Block::Status { text: notice, tone }));
+            self.record(Block::Status { text: notice, tone });
             frame.commits.push(text);
         }
         for (text, tone) in std::mem::take(&mut self.reports) {
@@ -999,7 +1201,7 @@ impl App {
             };
             let rows = gutter_text("◦", &text, width, color);
             let chunk_text = chunk(&rows);
-            self.record(&chunk_text, Some(Block::Status { text, tone }));
+            self.record(Block::Status { text, tone });
             frame.commits.push(chunk_text);
         }
         if let Some(message) = self.failure.clone()
@@ -1007,7 +1209,7 @@ impl App {
         {
             self.failure_committed = true;
             let text = pad_block(&[String::new(), format!("Error: {message}")]);
-            self.record(&text, Some(Block::Failure(message)));
+            self.record(Block::Failure(message));
             frame.commits.push(text);
         }
 
@@ -1019,6 +1221,7 @@ impl App {
         } else {
             tail
         };
+        frame.dock = live.len();
         if self.prompt.is_none() {
             let queued = self.queued();
             if !queued.is_empty() {
@@ -1057,7 +1260,11 @@ impl App {
         } else {
             &p.accent
         };
-        let (cursor_row, cursor_col) = if self.composer.is_empty() {
+        // Fullscreen draws the palette as Amp does: a box of its own over
+        // the transcript, with the query in it and the composer empty below.
+        let palette_overlay =
+            self.fullscreen && self.prompt.is_none() && self.composer.palette_open();
+        let (cursor_row, cursor_col) = if self.composer.is_empty() || palette_overlay {
             rows.push(format!(
                 "{}{}",
                 fg(prompt, prompt_color),
@@ -1095,7 +1302,35 @@ impl App {
         let panel_rows = (size.1 as usize)
             .saturating_sub(composer_rows + 1 + 4 + 1)
             .min(18);
+        // Fullscreen centres the palette and the pickers over the
+        // transcript, as tall as the viewport allows.
+        if self.fullscreen {
+            let budget = (size.1 as usize)
+                .saturating_sub(composer_rows + 2 + 2)
+                .min(OVERLAY_MAX_ROWS);
+            let list_width = cols.saturating_sub(4).min(OVERLAY_LIST_WIDTH);
+            let list = |rows: Vec<String>| Some(Overlay { rows, cursor: None });
+            frame.overlay = match &self.prompt {
+                Some(Prompt::Sessions(prompt)) => list(prompt.render(list_width, budget, p)),
+                Some(Prompt::Models(prompt)) => list(prompt.render(list_width, budget, p)),
+                Some(Prompt::Providers(prompt)) => list(prompt.render(list_width, budget, p)),
+                Some(Prompt::Approvals(prompt)) => list(prompt.render(list_width, budget, p)),
+                Some(Prompt::Theme(prompt)) => list(prompt.render(list_width, budget, p)),
+                None if palette_overlay => {
+                    let width = cols.saturating_sub(4).min(OVERLAY_PALETTE_WIDTH);
+                    let page = budget.saturating_sub(6).clamp(3, 16);
+                    self.composer
+                        .palette_overlay(width, page, p)
+                        .map(|(rows, query)| Overlay {
+                            rows,
+                            cursor: Some((1, (4 + query) as u16)),
+                        })
+                }
+                _ => None,
+            };
+        }
         let panel = match &self.prompt {
+            _ if frame.overlay.is_some() => None,
             Some(Prompt::Sessions(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Models(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Providers(prompt)) => Some(prompt.render(outer, panel_rows, p)),
@@ -1121,7 +1356,7 @@ impl App {
     /// Commits owed this frame and the live rows (unclosed streaming tail,
     /// the reasoning preview and running tools, in transcript order).
     #[allow(clippy::type_complexity)]
-    fn transcript(&mut self, width: usize) -> (Vec<String>, Vec<Option<Block>>, Vec<String>) {
+    fn transcript(&mut self, width: usize) -> (Vec<String>, Vec<Block>, Vec<String>) {
         let Some(snapshot) = &self.snapshot else {
             return (Vec::new(), Vec::new(), Vec::new());
         };
@@ -1223,7 +1458,7 @@ impl App {
             &render,
         );
         let mut commits: Vec<String> = Vec::new();
-        let mut sources: Vec<Option<Block>> = Vec::new();
+        let mut sources: Vec<Block> = Vec::new();
         let detail = self.tool_detail;
         let draw = |index: usize,
                     finalized: Option<crate::ui::transcript::stream::Batch>|
@@ -1257,7 +1492,7 @@ impl App {
                 self.session_id.get(..8).unwrap_or(&self.session_id)
             );
             commits.push(chunk(&[fg(&truncate_cells(&header, width), &p.muted)]));
-            sources.push(Some(Block::Note(header)));
+            sources.push(Block::Note(header));
             for index in start..end {
                 if snapshot.rows[index].kind == RowKind::ToolCall
                     && !opens_group(&snapshot.rows, index)
@@ -1265,7 +1500,7 @@ impl App {
                     continue;
                 }
                 let (lines, source) = draw(index, None);
-                if !lines.is_empty() {
+                if let (false, Some(source)) = (lines.is_empty(), source) {
                     commits.push(chunk(&lines));
                     sources.push(source);
                 }
@@ -1277,17 +1512,20 @@ impl App {
                 continue;
             };
             let (lines, source) = draw(index, plan.finalized.remove(&id));
-            if !lines.is_empty() {
+            // A batch with lines always has its source.
+            if let (false, Some(source)) = (lines.is_empty(), source) {
                 commits.push(chunk(&lines));
                 sources.push(source);
             }
         }
         for batch in &plan.active {
-            commits.push(chunk(&batch.lines));
-            sources.push(batch.source.clone().map(|s| Block::Assistant {
-                text: s.text,
-                first: s.first,
-            }));
+            if let Some(source) = &batch.source {
+                commits.push(chunk(&batch.lines));
+                sources.push(Block::Assistant {
+                    text: source.text.clone(),
+                    first: source.first,
+                });
+            }
         }
 
         // Live rows, laid out exactly as they will commit.
@@ -1360,24 +1598,12 @@ impl App {
         self.history_floor = start;
     }
 
-    /// Remembers a committed chunk with its source (bounded, newest last).
-    fn record(&mut self, text: &str, source: Option<Block>) {
-        let rows = text.matches('\n').count();
-        self.segments.push_back(Segment {
-            rows,
-            text: text.to_owned(),
-            source,
-        });
-        self.segment_rows += rows;
-        while self.segments.len() > 1
-            && self.segment_rows - self.segments.front().map_or(0, |s| s.rows) >= REFLOW_SOURCE_ROWS
-        {
-            if let Some(front) = self.segments.pop_front() {
-                self.segment_rows -= front.rows;
-                self.archived.extend(raw_rows(&front.text));
-                let excess = self.archived.len().saturating_sub(ARCHIVED_RAW_MAX_ROWS);
-                self.archived.drain(..excess);
-            }
+    /// Remembers a committed block (bounded, newest last).
+    fn record(&mut self, source: Block) {
+        self.history.push_back(source);
+        if self.history.len() > HISTORY_MAX_BLOCKS {
+            self.history.pop_front();
+            self.dropped += 1;
         }
     }
 
@@ -1385,44 +1611,28 @@ impl App {
     fn render_source(&self, source: &Block, cols: usize) -> String {
         let width = cols.saturating_sub(2 + MARGIN).max(1);
         match source {
-            Block::Banner => banner(cols, &self.palette),
+            Block::Banner => banner(cols, &self.palette, &self.branch),
             block => chunk(&render_block(block, width, &self.palette, &self.markdown)),
         }
     }
 
-    /// The whole history for a resize rewrite, one string per row: raw rows
-    /// of what cannot be laid out again, then the contiguous newest run of
-    /// chunks that still have a source, laid out for `cols` columns.
-    fn reflow_history(&mut self, cols: usize) -> (Vec<String>, Vec<String>) {
-        let first = self
-            .segments
-            .iter()
-            .rposition(|s| s.source.is_none())
-            .map_or(0, |i| i + 1);
-        let mut prefix: Vec<String> = self.archived.iter().cloned().collect();
-        for segment in self.segments.iter().take(first) {
-            prefix.extend(raw_rows(&segment.text));
+    /// The history for a scrollback rewrite, laid out for `cols` columns,
+    /// one string per row: the newest `REWRITE_MAX_ROWS` rows at most.
+    fn reflow_history(&self, cols: usize) -> Vec<String> {
+        let mut chunks = Vec::new();
+        let mut rows = 0;
+        for source in self.history.iter().rev() {
+            let chunk: Vec<String> = raw_rows(&self.render_source(source, cols)).collect();
+            rows += chunk.len();
+            chunks.push(chunk);
+            if rows >= REWRITE_MAX_ROWS {
+                break;
+            }
         }
-        let mut rows = Vec::new();
-        let mut counts = Vec::new();
-        for segment in self.segments.iter().skip(first) {
-            let Some(source) = &segment.source else {
-                continue;
-            };
-            let text = self.render_source(source, cols);
-            let lines: Vec<String> = text
-                .trim_end_matches('\n')
-                .split('\n')
-                .map(str::to_owned)
-                .collect();
-            counts.push(lines.len());
-            rows.extend(lines);
-        }
-        for (segment, count) in self.segments.iter_mut().skip(first).zip(counts) {
-            self.segment_rows = self.segment_rows + count - segment.rows;
-            segment.rows = count;
-        }
-        (prefix, rows)
+        let mut out: Vec<String> = chunks.into_iter().rev().flatten().collect();
+        let excess = out.len().saturating_sub(REWRITE_MAX_ROWS);
+        out.drain(..excess);
+        out
     }
 
     fn status_line(&self, cols: usize) -> String {
@@ -1470,6 +1680,27 @@ impl App {
             );
         }
         fg(&line, &self.palette.muted)
+    }
+}
+
+impl Document for App {
+    fn dropped(&self) -> usize {
+        self.dropped
+    }
+
+    fn len(&self) -> usize {
+        self.history.len()
+    }
+
+    fn rows(&self, index: usize, cols: usize) -> Vec<String> {
+        raw_rows(&self.render_source(&self.history[index], cols)).collect()
+    }
+
+    fn message(&self, index: usize) -> Option<&str> {
+        match &self.history[index] {
+            Block::User(text) => Some(text),
+            _ => None,
+        }
     }
 }
 
@@ -1658,12 +1889,12 @@ fn pad_block(rows: &[String]) -> String {
         + "\n"
 }
 
-fn banner(cols: usize, p: &Palette) -> String {
+fn banner(cols: usize, p: &Palette, branch: &str) -> String {
     let version = env!("CARGO_PKG_VERSION");
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "Not available".into());
-    let branch = git_branch().unwrap_or_else(|| "Not available".into());
+    let branch = branch.to_owned();
     // Port of `buildStartupPanel`: the logo beside the greeting when the box
     // is wide enough, the greeting wrapped under it otherwise.
     let body_width = cols.saturating_sub(2 + MARGIN).max(4) - 4;
@@ -1805,58 +2036,6 @@ fn boxed(
 /// Display width of `text`, ignoring CSI/OSC escape sequences.
 fn width_of(text: &str) -> usize {
     clip(text, usize::MAX).1
-}
-
-/// The longest prefix of `text` that fits `max` columns (escapes kept and
-/// free), and the width it takes.
-fn clip(text: &str, max: usize) -> (String, usize) {
-    use unicode_segmentation::UnicodeSegmentation;
-    let mut out = String::new();
-    let mut width = 0;
-    let mut rest = text;
-    'outer: while !rest.is_empty() {
-        if let Some(after) = rest.strip_prefix('\x1b') {
-            // Escape sequences are free: copy CSI and OSC whole.
-            let len = if let Some(body) = after.strip_prefix('[') {
-                let end = body
-                    .char_indices()
-                    .find(|(_, n)| ('\u{40}'..='\u{7e}').contains(n))
-                    .map_or(body.len(), |(i, n)| i + n.len_utf8());
-                2 + end
-            } else if let Some(body) = after.strip_prefix(']') {
-                let mut end = body.len();
-                let mut indices = body.char_indices().peekable();
-                while let Some((i, n)) = indices.next() {
-                    if n == '\x07' {
-                        end = i + 1;
-                        break;
-                    }
-                    if n == '\x1b' && matches!(indices.peek(), Some((_, '\\'))) {
-                        end = i + 2;
-                        break;
-                    }
-                }
-                2 + end
-            } else {
-                1
-            };
-            let len = len.min(rest.len());
-            out.push_str(&rest[..len]);
-            rest = &rest[len..];
-            continue;
-        }
-        let run_end = rest.find('\x1b').unwrap_or(rest.len());
-        for cluster in rest[..run_end].graphemes(true) {
-            let w = crate::ui::transcript::blocks::display_width(cluster);
-            if width + w > max {
-                break 'outer;
-            }
-            width += w;
-            out.push_str(cluster);
-        }
-        rest = &rest[run_end..];
-    }
-    (out, width)
 }
 
 /// Hard wrap by display width.

@@ -9,8 +9,7 @@ pub struct Command {
     pub requires_session: bool,
 }
 
-/// Registry order is the palette order. `tui` is not listed: the native
-/// interface has no fullscreen form to switch to.
+/// Registry order is the palette order.
 pub const COMMANDS: &[Command] = &[
     Command {
         name: "remote",
@@ -191,6 +190,12 @@ pub const COMMANDS: &[Command] = &[
         description: "Append the previous page of full message history",
         aliases: &[],
         requires_session: true,
+    },
+    Command {
+        name: "tui",
+        description: "Switch between fullscreen and scrollback",
+        aliases: &[],
+        requires_session: false,
     },
     Command {
         name: "keys",

@@ -141,6 +141,49 @@ mod tests {
     }
 
     #[test]
+    fn moving_up_inside_the_window_moves_the_highlight_not_the_list() {
+        use crate::ui::theme::{Appearance, ColorMode, palette::palette_for};
+        let p = palette_for(ColorMode::TrueColor, Appearance::Dark);
+        let mut panel = SessionsPanel::new();
+        let items = (0..30)
+            .map(|i| item(&format!("s{i}"), Some(&format!("session {i:02}")), None))
+            .collect();
+        panel.set_items(Ok(items));
+        let key = |code| KeyEvent::new(code, Modifiers::NONE);
+        let shown = |panel: &SessionsPanel| -> Vec<String> {
+            panel
+                .render(60, 9, &p)
+                .iter()
+                .map(|r| crate::ui::render::panel::strip_escapes(r))
+                .filter(|r| r.contains("session "))
+                .collect()
+        };
+        // Page of 5 rows: going down past it scrolls the list...
+        shown(&panel);
+        for _ in 0..7 {
+            panel.handle_key(key(KeyCode::Down));
+        }
+        let rows = shown(&panel);
+        assert!(
+            rows[0].contains("session 03") && rows[4].contains("› session 07"),
+            "{rows:?}"
+        );
+        // ...going back up stays in that window until its top is passed.
+        panel.handle_key(key(KeyCode::Up));
+        panel.handle_key(key(KeyCode::Up));
+        let rows = shown(&panel);
+        assert!(
+            rows[0].contains("session 03") && rows[2].contains("› session 05"),
+            "{rows:?}"
+        );
+        for _ in 0..3 {
+            panel.handle_key(key(KeyCode::Up));
+        }
+        let rows = shown(&panel);
+        assert!(rows[0].contains("› session 02"), "{rows:?}");
+    }
+
+    #[test]
     fn relative_time_buckets() {
         assert_eq!(relative_time(1_000, 30_000), "now");
         assert_eq!(relative_time(0, 5 * 60_000), "5m ago");

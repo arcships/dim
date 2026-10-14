@@ -34,6 +34,23 @@ pub struct Frame {
     pub live: Vec<String>,
     /// Cursor position inside the live region (row, column), `None` hides it.
     pub cursor: Option<(u16, u16)>,
+    /// Index in `live` where the dock (queue, composer, panels, status)
+    /// starts; the rows before it are the transcript's live tail. The
+    /// fullscreen interface scrolls the tail with the transcript and pins
+    /// the dock to the bottom.
+    pub dock: usize,
+    /// A box the fullscreen interface centres over the transcript (the
+    /// command palette, pickers); the scrollback interface never gets one.
+    pub overlay: Option<Overlay>,
+}
+
+/// Rows drawn centred over the fullscreen transcript.
+#[derive(Debug, Default, Clone)]
+pub struct Overlay {
+    /// Rows of equal display width.
+    pub rows: Vec<String>,
+    /// Cursor inside the box (row, column); `None` keeps the composer's.
+    pub cursor: Option<(u16, u16)>,
 }
 
 pub struct Screen {
@@ -306,17 +323,10 @@ impl Screen {
     /// app hears about it, pushing stale pieces of the old frame into native
     /// scrollback where no escape sequence reaches them. So the screen and the
     /// scrollback are cleared (`2J`, then `3J`; `2J` first so terminals that
-    /// archive the screen on it archive into what `3J` clears) and rewritten:
-    /// `prefix` raw, as committed, letting the terminal soft-wrap rows from a
-    /// wider measure; `tail`, laid out at the new width, from the top of a
-    /// clean screen. Output from before this interface started is lost.
-    pub fn rewrite(
-        &mut self,
-        size: (u16, u16),
-        prefix: &[String],
-        tail: &[String],
-        wanted: u16,
-    ) -> Vec<u8> {
+    /// archive the screen on it archive into what `3J` clears) and `tail`,
+    /// laid out at the new width, is written from the top of a clean screen.
+    /// Output from before this interface started is lost.
+    pub fn rewrite(&mut self, size: (u16, u16), tail: &[String], wanted: u16) -> Vec<u8> {
         let mut out = Vec::new();
         let rows = size.1.max(1);
         let wanted = wanted.clamp(1, rows);
@@ -327,18 +337,6 @@ impl Screen {
             self.cursor_visible = false;
         }
         out.extend_from_slice(b"\x1b[2J\x1b[H\x1b[3J");
-        for row in prefix {
-            out.extend_from_slice(scrub(row).as_bytes());
-            out.extend_from_slice(b"\x1b[0m\r\n");
-        }
-        if !prefix.is_empty() {
-            // How many screen rows the raw prefix took depends on the
-            // terminal's wrapping: scroll all of it into scrollback so the
-            // tail starts on a clean screen at a known row.
-            push_move(&mut out, 0, rows - 1);
-            out.extend(std::iter::repeat_n(b"\n", rows as usize).flatten());
-            push_move(&mut out, 0, 0);
-        }
         for row in tail {
             out.extend_from_slice(scrub(row).as_bytes());
             out.extend_from_slice(b"\x1b[0m\r\n");
@@ -352,7 +350,7 @@ impl Screen {
             out.extend(std::iter::repeat_n(b"\n", overflow as usize).flatten());
         }
         let top = after - overflow;
-        self.scrolled = !prefix.is_empty() || tail.len() > top as usize;
+        self.scrolled = tail.len() > top as usize;
         self.content_start = 0;
         self.top = top;
         self.viewport_height = wanted;
@@ -372,6 +370,19 @@ impl Screen {
         let last = (self.top + self.viewport_height.max(1) - 1).min(self.size.1.saturating_sub(1));
         push_move(&mut out, 0, last);
         out.extend_from_slice(b"\r\n");
+        out.extend_from_slice(CURSOR_SHOW);
+        self.cursor_visible = true;
+        self.cursor_at = None;
+        out
+    }
+
+    /// Hands the screen over to the fullscreen interface: the live region
+    /// is erased, so what stays behind is the committed history, and the
+    /// cursor waits where the region started.
+    pub fn erase_live(&mut self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_move(&mut out, 0, self.viewport_top());
+        out.extend_from_slice(ERASE_DOWN);
         out.extend_from_slice(CURSOR_SHOW);
         self.cursor_visible = true;
         self.cursor_at = None;
@@ -451,7 +462,7 @@ fn moves_cursor(c: char) -> bool {
 }
 
 /// One row as it may reach the terminal: nothing in it moves the cursor.
-fn scrub(row: &str) -> std::borrow::Cow<'_, str> {
+pub(crate) fn scrub(row: &str) -> std::borrow::Cow<'_, str> {
     if row.contains(moves_cursor) {
         row.replace(moves_cursor, "").into()
     } else {
@@ -521,6 +532,8 @@ mod tests {
             commits: commits.iter().map(|s| s.to_string()).collect(),
             live: live.iter().map(|s| s.to_string()).collect(),
             cursor,
+            dock: 0,
+            overlay: None,
         }
     }
 
@@ -617,13 +630,12 @@ mod tests {
             &mut emu,
             &frame(&["\nfirst\n", "\nsecond\n"], &live, Some((0, 0))),
         );
-        let prefix = vec!["archived".to_owned()];
         let tail: Vec<String> = ["", "first", "", "second"]
             .iter()
             .map(|s| s.to_string())
             .collect();
         let wanted = screen.wanted_for(SIZE, live.len());
-        let bytes = screen.rewrite(SIZE, &prefix, &tail, wanted);
+        let bytes = screen.rewrite(SIZE, &tail, wanted);
         emu.feed(&bytes);
         drive(&mut screen, &mut emu, &frame(&[], &live, Some((0, 0))));
         let rows = emu.rows_text();
@@ -637,7 +649,6 @@ mod tests {
             !transcript.iter().any(|l| l == "before-start"),
             "{transcript:?}"
         );
-        assert_eq!(transcript.iter().filter(|l| *l == "archived").count(), 1);
         assert_eq!(transcript.iter().filter(|l| *l == "first").count(), 1);
     }
 

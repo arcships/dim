@@ -69,6 +69,27 @@ pub enum InputEvent {
     Key(KeyEvent),
     /// A bracketed paste, line endings normalized to `\n`.
     Paste(String),
+    /// A mouse report; only the fullscreen interface turns them on.
+    Mouse(MouseEvent),
+}
+
+/// What the mouse did. Only the left button selects; other buttons are
+/// dropped by the decoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseKind {
+    Press,
+    Drag,
+    Release,
+    WheelUp,
+    WheelDown,
+}
+
+/// A mouse report at a 0-based screen cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseEvent {
+    pub kind: MouseKind,
+    pub column: u16,
+    pub row: u16,
 }
 
 /// Upper bound for one unfinished escape sequence; garbage beyond it is
@@ -186,6 +207,7 @@ impl Decoder {
                     self.pending.drain(..len);
                     match outcome {
                         Outcome::Key(key) => events.push(InputEvent::Key(key)),
+                        Outcome::Mouse(mouse) => events.push(InputEvent::Mouse(mouse)),
                         Outcome::Ignored => {}
                         Outcome::PasteStart => {
                             let rest = std::mem::take(&mut self.pending);
@@ -262,6 +284,7 @@ enum Parse {
 
 enum Outcome {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Ignored,
     PasteStart,
 }
@@ -411,6 +434,9 @@ fn numbers(params: &str) -> Vec<Vec<u32>> {
 }
 
 fn csi_outcome(params: &str, final_byte: u8) -> Outcome {
+    if let Some(sgr) = params.strip_prefix('<') {
+        return mouse(sgr, final_byte);
+    }
     // Replies and reports: leading private markers belong to terminal answers.
     if params.starts_with('?') || params.starts_with('>') || params.starts_with('=') {
         return Outcome::Ignored;
@@ -448,6 +474,32 @@ fn csi_outcome(params: &str, final_byte: u8) -> Outcome {
         // Focus in/out, DA replies without markers, CPR, window reports.
         _ => Outcome::Ignored,
     }
+}
+
+/// SGR mouse report `CSI < button ; column ; row M|m` (1-based cells).
+fn mouse(params: &str, final_byte: u8) -> Outcome {
+    let mut fields = params.split(';').map(|n| n.parse::<u32>().ok());
+    let (Some(Some(button)), Some(Some(column)), Some(Some(row))) =
+        (fields.next(), fields.next(), fields.next())
+    else {
+        return Outcome::Ignored;
+    };
+    // Modifier bits (4 shift, 8 alt, 16 ctrl) do not change the meaning.
+    let code = button & !(4 | 8 | 16);
+    let kind = match (code, final_byte) {
+        (64, b'M') => MouseKind::WheelUp,
+        (65, b'M') => MouseKind::WheelDown,
+        (0, b'M') => MouseKind::Press,
+        (32, b'M') => MouseKind::Drag,
+        (0, b'm') => MouseKind::Release,
+        _ => return Outcome::Ignored,
+    };
+    let cell = |n: u32| n.saturating_sub(1).min(u16::MAX as u32) as u16;
+    Outcome::Mouse(MouseEvent {
+        kind,
+        column: cell(column),
+        row: cell(row),
+    })
 }
 
 fn tilde(first: u32, groups: &[Vec<u32>], mods: Modifiers) -> Outcome {
@@ -532,6 +584,28 @@ mod tests {
                 (KeyCode::Char('a'), 0),
                 (KeyCode::Char('c'), Modifiers::CTRL.0),
                 (KeyCode::Enter, 0)
+            ]
+        );
+    }
+
+    #[test]
+    fn sgr_mouse_reports_become_mouse_events() {
+        let mut d = Decoder::new();
+        let events = d.feed(b"\x1b[<64;3;5M\x1b[<0;10;2M\x1b[<32;11;2M\x1b[<0;12;2m\x1b[<2;1;1M");
+        let kinds: Vec<_> = events
+            .into_iter()
+            .map(|event| match event {
+                InputEvent::Mouse(m) => (m.kind, m.column, m.row),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (MouseKind::WheelUp, 2, 4),
+                (MouseKind::Press, 9, 1),
+                (MouseKind::Drag, 10, 1),
+                (MouseKind::Release, 11, 1),
             ]
         );
     }

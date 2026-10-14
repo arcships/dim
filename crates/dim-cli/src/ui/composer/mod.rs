@@ -477,6 +477,24 @@ impl Composer {
     }
 
     /// The palette panel when a command is being typed.
+    /// The fullscreen palette box with `page` command rows, and the width
+    /// of its query (the cursor goes after it).
+    pub fn palette_overlay(
+        &mut self,
+        width: usize,
+        page: usize,
+        p: &Palette,
+    ) -> Option<(Vec<String>, usize)> {
+        let query = self.command_query()?.to_owned();
+        self.palette.set_query(&query);
+        let rows = self.palette_rows();
+        let box_rows = palette::render_overlay(&self.palette, &rows, width, page, p);
+        Some((
+            box_rows,
+            crate::ui::transcript::blocks::display_width(&query),
+        ))
+    }
+
     pub fn palette_panel(&mut self, width: usize, p: &Palette) -> Option<Vec<String>> {
         let query = self.command_query()?.to_owned();
         self.palette.set_query(&query);

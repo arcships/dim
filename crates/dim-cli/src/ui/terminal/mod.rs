@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-pub use input::{InputEvent, KeyCode, KeyEvent, Modifiers};
+pub use input::{InputEvent, KeyCode, KeyEvent, Modifiers, MouseEvent, MouseKind};
 pub use keyboard::KeyboardProtocol;
 use modes::Mode;
 
@@ -173,6 +173,28 @@ impl Terminal {
         sys::write_all(sys::STDOUT, Mode::BracketedPaste.enable_sequence())?;
         modes::mark(Mode::BracketedPaste);
         Ok(terminal)
+    }
+
+    /// Switches to the fullscreen interface's alternate screen with mouse
+    /// reporting, or back to the shell's screen. Queued behind the frames
+    /// already written, so they land on the screen they were drawn for.
+    pub fn set_fullscreen(&mut self, on: bool) -> io::Result<()> {
+        if on == modes::is_live(Mode::AltScreen) {
+            return Ok(());
+        }
+        let mut bytes = Vec::new();
+        if on {
+            bytes.extend_from_slice(Mode::AltScreen.enable_sequence());
+            bytes.extend_from_slice(Mode::Mouse.enable_sequence());
+            modes::mark(Mode::AltScreen);
+            modes::mark(Mode::Mouse);
+        } else {
+            bytes.extend_from_slice(Mode::Mouse.restore_sequence());
+            bytes.extend_from_slice(Mode::AltScreen.restore_sequence());
+            modes::clear(Mode::Mouse);
+            modes::clear(Mode::AltScreen);
+        }
+        self.writer.send(bytes)
     }
 
     pub fn keyboard(&self) -> KeyboardProtocol {
@@ -363,6 +385,7 @@ impl Terminal {
         // writer is started again because the process keeps writing.
         self.writer.drain();
         self.writer = WriteThread::start();
+        let fullscreen = modes::is_live(Mode::AltScreen);
         self.release_modes();
         stop_process();
         sys::rearm_restore_guard();
@@ -372,6 +395,9 @@ impl Terminal {
         self.negotiate_keyboard()?;
         sys::write_all(sys::STDOUT, Mode::BracketedPaste.enable_sequence())?;
         modes::mark(Mode::BracketedPaste);
+        if fullscreen {
+            self.set_fullscreen(true)?;
+        }
         Ok(())
     }
 

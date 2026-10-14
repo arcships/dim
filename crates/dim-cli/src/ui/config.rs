@@ -31,6 +31,25 @@ pub fn write(home: &Path, key: &str, value: Value) -> Option<String> {
     std::fs::write(&path, text).err().map(|e| e.to_string())
 }
 
+/// `config.json` key of the default terminal UI mode.
+const TERMINAL_MODE_KEY: &str = "tuiMode";
+
+/// True when the saved default terminal UI mode is fullscreen; scrollback
+/// is the default when nothing was saved.
+pub fn saved_fullscreen(home: &Path) -> bool {
+    read(home, TERMINAL_MODE_KEY).is_some_and(|mode| mode == "fullscreen")
+}
+
+/// Saves the default terminal UI mode; the error text on failure.
+pub fn save_fullscreen(home: &Path, fullscreen: bool) -> Option<String> {
+    let mode = if fullscreen {
+        "fullscreen"
+    } else {
+        "scrollback"
+    };
+    write(home, TERMINAL_MODE_KEY, mode.into())
+}
+
 fn path(home: &Path) -> PathBuf {
     home.join("config.json")
 }

@@ -382,6 +382,7 @@ mod tests {
                 commits,
                 live: tail,
                 cursor: None,
+                ..Frame::default()
             };
             emu.feed(&screen.render(&frame, (cols, rows)));
         };
