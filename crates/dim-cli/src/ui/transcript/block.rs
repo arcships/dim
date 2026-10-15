@@ -29,7 +29,12 @@ pub enum Block {
         text: String,
         first: bool,
     },
-    Thinking(String),
+    /// A settled thought: one summary row, or the whole text when expanded.
+    Thinking {
+        text: String,
+        elapsed_ms: Option<u64>,
+        expanded: bool,
+    },
     /// The calls of one model request.
     ToolGroup(ToolGroup),
     Error(String),
@@ -57,9 +62,11 @@ pub fn project_row(rows: &[Arc<ViewRow>], index: usize, detail: Detail) -> Block
             text: row.text.clone(),
             first: true,
         },
-        RowKind::Thinking => {
-            Block::Thinking(row.preview.clone().unwrap_or_else(|| row.text.clone()))
-        }
+        RowKind::Thinking => Block::Thinking {
+            text: row.text.clone(),
+            elapsed_ms: row.elapsed_ms,
+            expanded: detail == Detail::Expanded,
+        },
         RowKind::ToolCall => Block::ToolGroup(project_group(&group_rows(rows, index), detail)),
         RowKind::Error => Block::Error(row.text.clone()),
         // A still-streaming answer met outside the live region (history
@@ -112,7 +119,7 @@ mod tests {
             kind,
             text: text.into(),
             streaming: false,
-            preview: None,
+            elapsed_ms: None,
             tone: None,
             tool_name: None,
             tool_input: None,
@@ -150,19 +157,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn thinking_prefers_the_preview() {
-        let mut thinking = row(RowKind::Thinking, "full");
-        thinking.preview = Some("short".into());
-        assert!(
-            matches!(project_row(&shared(std::slice::from_ref(&thinking)), 0, Detail::Collapsed), Block::Thinking(t) if t == "short")
-        );
-        thinking.preview = None;
-        assert!(
-            matches!(project_row(&shared(std::slice::from_ref(&thinking)), 0, Detail::Collapsed), Block::Thinking(t) if t == "full")
-        );
     }
 
     /// Rows as a snapshot publishes them.

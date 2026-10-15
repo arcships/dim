@@ -13,7 +13,15 @@ use dim_agent_types::{
 use serde_json::Value;
 
 use crate::model::view::{ApprovalView, RowKind, RowTone, ViewRow, ViewSnapshot};
-use crate::wire::{Event, EventContent};
+use crate::wire::{Event, EventContent, Progress};
+
+/// Reasoning that is still arriving: the row shows what the Timeline holds
+/// plus the progress not written yet.
+struct OpenThought {
+    index: usize,
+    /// The request's `step/thinking` deltas so far.
+    written: String,
+}
 
 #[derive(Default)]
 pub struct Projection {
@@ -23,8 +31,10 @@ pub struct Projection {
     rows: Vec<Arc<ViewRow>>,
     /// The assistant row each model request streams into.
     assistant_rows: HashMap<String, usize>,
-    /// The reasoning row each model request streams into, while it is open.
-    thinking_rows: HashMap<String, usize>,
+    /// When each running model request started, to time its reasoning.
+    request_starts: HashMap<String, u64>,
+    /// The reasoning row each model request streams into while it is open.
+    thinking_rows: HashMap<String, OpenThought>,
     /// The tool row each call id opened.
     tool_rows: HashMap<String, usize>,
     running: bool,
@@ -42,29 +52,26 @@ impl Projection {
                     self.push(format!("user-{sequence}"), RowKind::UserMessage, text);
                 }
             }
+            EventContent::ModelStart(data) => {
+                self.request_starts
+                    .insert(data.request_id.clone(), event.create_at);
+            }
             EventContent::Thinking(data) => {
-                let index = match self.thinking_rows.get(&data.request_id) {
-                    Some(index) => *index,
-                    None => {
-                        let index = self.push(
-                            format!("thinking-{}", data.request_id),
-                            RowKind::Thinking,
-                            String::new(),
-                        );
-                        self.row(index).streaming = true;
-                        self.thinking_rows.insert(data.request_id.clone(), index);
-                        index
-                    }
-                };
+                let index = self.open_thinking(&data.request_id);
+                let elapsed = self
+                    .request_starts
+                    .get(&data.request_id)
+                    .map(|start| event.create_at.saturating_sub(*start));
+                let thought = self
+                    .thinking_rows
+                    .get_mut(&data.request_id)
+                    .expect("opened above");
+                thought.written.push_str(&data.delta);
+                let text = thought.written.clone();
                 let row = self.row(index);
-                row.text.push_str(&data.delta);
-                // While it streams the preview follows the newest line.
-                row.preview = row
-                    .text
-                    .lines()
-                    .rev()
-                    .find(|line| !line.trim().is_empty())
-                    .map(|line| line.trim().to_owned());
+                row.text = text;
+                // A thought is written whole when it ends.
+                row.elapsed_ms = elapsed;
             }
             EventContent::Text(data) => {
                 self.close_thinking(&data.request_id);
@@ -86,6 +93,7 @@ impl Projection {
             EventContent::ToolUse(data) => {
                 self.close_thinking(&data.request_id);
                 self.close_assistant(&data.request_id);
+                self.request_starts.remove(&data.request_id);
                 let index = self.push(data.call.id.clone(), RowKind::ToolCall, String::new());
                 let row = self.row(index);
                 row.tool_name = Some(data.call.name.clone());
@@ -105,6 +113,7 @@ impl Projection {
             EventContent::ModelEnd(data) => {
                 self.close_thinking(&data.request_id);
                 self.close_assistant(&data.request_id);
+                self.request_starts.remove(&data.request_id);
                 if let ModelOutputOutcome::Failed { error, .. } = &data.outcome {
                     self.push_error(format!("model failed: {error}"));
                 }
@@ -115,6 +124,7 @@ impl Projection {
                 for request_id in open {
                     self.close_thinking(&request_id);
                 }
+                self.request_starts.clear();
                 self.turn_end(sequence, &data.outcome);
             }
             EventContent::Other => {}
@@ -183,7 +193,7 @@ impl Projection {
             kind,
             text,
             streaming: false,
-            preview: None,
+            elapsed_ms: None,
             tone: None,
             tool_name: None,
             tool_input: None,
@@ -202,13 +212,53 @@ impl Projection {
         self.row(index).tone = Some(RowTone::Danger);
     }
 
-    /// A settled thought commits as one row: the whole text, whitespace
-    /// collapsed (the transcript truncates it to the width).
+    /// Shows a model request's reasoning that is not written yet. Progress
+    /// that the written deltas overtook, or that runs ahead of them, waits
+    /// for the next notice.
+    pub fn progress(&mut self, progress: &Progress) {
+        let Some(request_id) = &progress.request_id else {
+            return;
+        };
+        if progress.thinking.is_empty() {
+            return;
+        }
+        let index = self.open_thinking(request_id);
+        let thought = &self.thinking_rows[request_id];
+        if thought.written.chars().count() as u64 != progress.thinking_offset {
+            return;
+        }
+        let text = format!("{}{}", thought.written, progress.thinking);
+        self.row(index).text = text;
+    }
+
+    /// The open reasoning row of a request, pushed on its first output.
+    fn open_thinking(&mut self, request_id: &str) -> usize {
+        if let Some(thought) = self.thinking_rows.get(request_id) {
+            return thought.index;
+        }
+        let index = self.push(
+            format!("thinking-{request_id}-{}", self.rows.len()),
+            RowKind::Thinking,
+            String::new(),
+        );
+        self.row(index).streaming = true;
+        self.thinking_rows.insert(
+            request_id.to_owned(),
+            OpenThought {
+                index,
+                written: String::new(),
+            },
+        );
+        index
+    }
+
+    /// A thought settles when the request moves on, as the Timeline holds
+    /// it: progress that was never written (an interrupted thought) goes.
     fn close_thinking(&mut self, request_id: &str) {
-        if let Some(index) = self.thinking_rows.remove(request_id) {
-            let row = self.row(index);
+        if let Some(thought) = self.thinking_rows.remove(request_id) {
+            let row = self.row(thought.index);
             row.streaming = false;
-            row.preview = Some(row.text.split_whitespace().collect::<Vec<_>>().join(" "));
+            row.text = thought.written;
         }
     }
 
@@ -266,35 +316,84 @@ mod tests {
     fn step(sequence: u64, name: &str, delta: &str) -> serde_json::Value {
         serde_json::json!({
             "sequence": sequence,
+            "create_at": sequence * 1000,
             "type": "step",
             "name": name,
             "data": { "turn_id": "t1", "request_id": "r1", "delta": delta },
         })
     }
 
+    fn model_start(sequence: u64) -> serde_json::Value {
+        serde_json::json!({
+            "sequence": sequence,
+            "create_at": sequence * 1000,
+            "type": "step",
+            "name": "model-start",
+            "data": { "turn_id": "t1", "request_id": "r1" },
+        })
+    }
+
+    fn progress(thinking: &str, offset: u64) -> Progress {
+        serde_json::from_value(serde_json::json!({
+            "sessionId": "s", "branchId": "main", "requestId": "r1",
+            "text": "", "textOffset": 0,
+            "thinking": thinking, "thinkingOffset": offset,
+        }))
+        .unwrap()
+    }
+
     #[test]
-    fn reasoning_streams_as_one_row_and_settles_before_the_answer() {
+    fn reasoning_streams_from_progress_and_settles_as_written() {
         let mut projection = Projection::default();
         apply(
             &mut projection,
             &[
                 // Context-only input: not a user message.
-                serde_json::json!({ "sequence": 1, "type": "input", "name": "message", "data": {} }),
-                step(2, "thinking", "Look at the\n"),
-                step(3, "thinking", "parser first"),
+                serde_json::json!({ "sequence": 1, "create_at": 1000, "type": "input", "name": "message", "data": {} }),
+                model_start(2),
             ],
         );
+        // Unwritten reasoning shows while it streams.
+        projection.progress(&progress("Look at the\nparser", 0));
         let rows = projection.snapshot().rows;
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].kind, RowKind::Thinking);
         assert!(rows[0].streaming);
-        assert_eq!(rows[0].preview.as_deref(), Some("parser first"));
+        assert_eq!(rows[0].text, "Look at the\nparser");
 
-        apply(&mut projection, &[step(4, "text", "Done.")]);
+        // The thought is written whole when it ends, timed from model start.
+        apply(
+            &mut projection,
+            &[step(5, "thinking", "Look at the\nparser first")],
+        );
+        // Progress the written deltas overtook changes nothing.
+        projection.progress(&progress("Look at the\nparser", 0));
+        let rows = projection.snapshot().rows;
+        assert_eq!(rows[0].text, "Look at the\nparser first");
+        assert_eq!(rows[0].elapsed_ms, Some(3000));
+
+        apply(&mut projection, &[step(6, "text", "Done.")]);
         let rows = projection.snapshot().rows;
         assert!(!rows[0].streaming);
-        assert_eq!(rows[0].preview.as_deref(), Some("Look at the parser first"));
         assert_eq!(rows[1].kind, RowKind::StreamingAssistant);
+    }
+
+    #[test]
+    fn an_interrupted_thought_keeps_only_what_was_written() {
+        let mut projection = Projection::default();
+        apply(&mut projection, &[model_start(1)]);
+        projection.progress(&progress("half a thought", 0));
+        apply(
+            &mut projection,
+            &[serde_json::json!({
+                "sequence": 2, "create_at": 2000, "type": "turn", "name": "end",
+                "data": { "turn_id": "t1", "status": "cancelled", "reason": "user" },
+            })],
+        );
+        let rows = projection.snapshot().rows;
+        assert!(!rows[0].streaming);
+        // Never written: the transcript draws nothing for it.
+        assert_eq!(rows[0].text, "");
     }
 
     #[test]

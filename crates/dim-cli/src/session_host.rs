@@ -22,7 +22,7 @@ use crate::args::Options;
 use crate::client::{self, Client, Message};
 use crate::model::session::{Command, OauthEvent, SessionItem, SessionPort, SwitchKind, Update};
 use crate::projection::Projection;
-use crate::wire::Event;
+use crate::wire::{Event, Progress};
 
 const PUBLISH_INTERVAL: Duration = Duration::from_millis(16);
 const HISTORY_PAGE: u64 = 256;
@@ -436,6 +436,13 @@ impl Worker {
                 let notice: EventNotice = serde_json::from_value(params)?;
                 if notice.session_id == self.session_id {
                     self.apply(notice.event);
+                }
+            }
+            "session.model.progress" => {
+                let notice: Progress = serde_json::from_value(params)?;
+                if notice.session_id == self.session_id {
+                    self.projection.progress(&notice);
+                    self.changed();
                 }
             }
             "session.state" => {

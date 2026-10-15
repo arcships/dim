@@ -1654,13 +1654,20 @@ impl App {
             let started = self.run_started.unwrap_or_else(Instant::now);
             let elapsed = started.elapsed();
             let beat = (elapsed.as_millis() / PULSE.as_millis()) as usize;
+            let thinking = self.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.rows.iter().any(|row| {
+                    row.kind == RowKind::Thinking && row.streaming && !row.text.trim().is_empty()
+                })
+            });
+            let label = if thinking {
+                "thinking…  {elapsed}"
+            } else {
+                "working…  {elapsed}"
+            };
             format!(
                 "{} {}",
                 FRAMES[beat % FRAMES.len()],
-                tf(
-                    "working…  {elapsed}",
-                    &[("elapsed", &format_elapsed(elapsed))]
-                )
+                tf(label, &[("elapsed", &format_elapsed(elapsed))])
             )
         });
         let inner = cols.saturating_sub(2 * MARGIN + 4).max(1);
@@ -1837,12 +1844,12 @@ impl App {
                     });
                     live_items.push(LiveItem::Text(row.row_id.clone()));
                 }
-                // Reasoning rewrites one preview row while it runs and commits
-                // it as one row when it ends.
+                // Reasoning shows its newest rows while it runs and commits as
+                // one block when it ends.
                 // A thought with no text yet (or only whitespace) draws nothing.
-                RowKind::Thinking if row.preview.as_deref().is_none_or(str::is_empty) => {}
+                RowKind::Thinking if row.text.trim().is_empty() => {}
                 RowKind::Thinking if row.streaming => {
-                    live_items.push(LiveItem::Thinking(row.preview.clone().unwrap_or_default()));
+                    live_items.push(LiveItem::Thinking(row.text.clone()));
                 }
                 // The calls of one request are one group: it stays live until
                 // every call has its result (a call waiting on an approval
@@ -2036,7 +2043,7 @@ impl App {
                     }
                     _ => Vec::new(),
                 },
-                LiveItem::Thinking(preview) => vec![thinking_line(preview, width, p)],
+                LiveItem::Thinking(text) => live_thinking(text, width, p),
                 LiveItem::Tool(index) => render_group(
                     &project_group(&group_rows(&snapshot.rows, *index), detail),
                     width,
@@ -2299,32 +2306,190 @@ fn queue_strip(items: &[(String, String)], cols: usize, p: &Palette) -> Vec<Stri
         .collect()
 }
 
-/// The collapsed reasoning row: an accent italic label, then the preview in
-/// muted italic, cut to the width.
-fn thinking_line(preview: &str, width: usize, p: &Palette) -> String {
-    use crate::ui::transcript::blocks::truncate_cells;
-    const LABEL: &str = "Thinking: ";
-    let label = truncate_cells(t(LABEL), width);
-    let preview = truncate_cells(preview, width.saturating_sub(display_width(&label)));
-    format!(
+/// Rows of running reasoning under its title and blank row: the newest
+/// text, with one `…` row standing for what scrolled away (as Grok draws it).
+const THINKING_ROWS: usize = 4;
+/// The bar in front of every row of a thought shown whole.
+const THINKING_BAR: &str = "\u{258e}"; // ▎
+
+/// Running reasoning: its title, then its newest rows, all behind the bar.
+/// The block keeps one height from its first token, so nothing around it
+/// moves while the text streams.
+fn live_thinking(text: &str, width: usize, p: &Palette) -> Vec<String> {
+    let body = thinking_body(text, width);
+    let mut rows = vec![
+        thinking_title(t("Thinking…"), width, p),
+        thinking_row("", width, p),
+    ];
+    if body.len() > THINKING_ROWS {
+        rows.push(thinking_row("…", width, p));
+        let newest = &body[body.len() - (THINKING_ROWS - 1)..];
+        rows.extend(newest.iter().map(|row| thinking_row(row, width, p)));
+    } else {
+        rows.extend(body.iter().map(|row| thinking_row(row, width, p)));
+    }
+    rows.resize_with(2 + THINKING_ROWS, || thinking_row("", width, p));
+    rows
+}
+
+/// A settled thought: one row with its duration and the start of its last
+/// paragraph (the conclusion), or the whole text behind the bar when
+/// expanded.
+fn settled_thinking(
+    text: &str,
+    elapsed_ms: Option<u64>,
+    expanded: bool,
+    width: usize,
+    p: &Palette,
+) -> Vec<String> {
+    use crate::ui::transcript::blocks::{gutter_mark, truncate_cells};
+    let label = match elapsed_ms {
+        Some(ms) => tf("Thought for {duration}", &[("duration", &duration(ms))]),
+        None => t("Thought").to_owned(),
+    };
+    if expanded {
+        let body = thinking_body(text, width);
+        return [thinking_title(&label, width, p), thinking_row("", width, p)]
+            .into_iter()
+            .chain(body.iter().map(|row| thinking_row(row, width, p)))
+            .collect();
+    }
+    let summary = text
+        .rsplit("\n\n")
+        .find(|paragraph| !paragraph.trim().is_empty())
+        .unwrap_or_default()
+        .replace("**", "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let gutter = gutter_width(width);
+    let content = width.saturating_sub(gutter).max(1);
+    let label = truncate_cells(&label, content);
+    let mut row = format!(
         "{}{}",
-        paint(
-            &label,
-            Paint {
-                fg: Some(&p.accent),
-                italic: true,
-                ..Paint::default()
-            }
-        ),
-        paint(
-            &preview,
-            Paint {
-                fg: Some(&p.muted),
-                italic: true,
-                ..Paint::default()
-            }
-        )
+        fg(&gutter_mark(ASSISTANT_MARK, gutter), &p.accent),
+        thinking_label(&label, p)
+    );
+    let room = content.saturating_sub(display_width(&label) + 3);
+    if !summary.is_empty() && room > 0 {
+        row.push_str(&fg(" · ", &p.faint));
+        row.push_str(&fg(&truncate_cells(&summary, room), &p.faint));
+    }
+    vec![row]
+}
+
+/// The title row of a thought shown whole: `◆ label` behind the bar.
+fn thinking_title(label: &str, width: usize, p: &Palette) -> String {
+    use crate::ui::transcript::blocks::{gutter_mark, truncate_cells};
+    let gutter = gutter_width(width);
+    let room = width.saturating_sub(gutter + 2).max(1);
+    format!(
+        "{}{}{}",
+        fg(&gutter_mark(THINKING_BAR, gutter), &p.border),
+        fg(&format!("{ASSISTANT_MARK} "), &p.accent),
+        thinking_label(&truncate_cells(label, room), p)
     )
+}
+
+fn thinking_label(label: &str, p: &Palette) -> String {
+    paint(
+        label,
+        Paint {
+            fg: Some(&p.muted),
+            italic: true,
+            ..Paint::default()
+        },
+    )
+}
+
+/// One row of reasoning text behind the bar.
+fn thinking_row(text: &str, width: usize, p: &Palette) -> String {
+    use crate::ui::transcript::blocks::gutter_mark;
+    let bar = gutter_mark(THINKING_BAR, gutter_width(width));
+    format!("{}{}", fg(&bar, &p.border), fg(text, &p.muted))
+}
+
+/// Reasoning text as plain prose wrapped to the content width, its
+/// paragraphs kept: runs of blank lines fold into one, the edges are trimmed
+/// and bold markers dropped.
+fn thinking_body(text: &str, width: usize) -> Vec<String> {
+    let content = width.saturating_sub(gutter_width(width)).max(1);
+    let mut rows: Vec<String> = Vec::new();
+    for line in text.trim().lines().map(str::trim_end) {
+        if line.is_empty() {
+            if rows.last().is_some_and(|last| !last.is_empty()) {
+                rows.push(String::new());
+            }
+        } else {
+            rows.extend(wrap_prose(&line.replace("**", ""), content));
+        }
+    }
+    rows
+}
+
+/// Punctuation that stays on the row of the text it closes.
+const CLOSING: &str = "。，、；：！？）」』】》〉…";
+
+/// Greedy wrap for prose in any script: rows break at spaces and between
+/// wide (CJK) characters, closing punctuation stays with what it closes, and
+/// a word longer than the row is cut.
+fn wrap_prose(line: &str, width: usize) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    // Unbreakable units, each with whether a space came before it.
+    let mut units: Vec<(String, bool)> = Vec::new();
+    let mut spaced = false;
+    for cluster in line.graphemes(true) {
+        if cluster.chars().all(char::is_whitespace) {
+            spaced = true;
+            continue;
+        }
+        let narrow = width_of(cluster) <= 1;
+        match units.last_mut() {
+            Some((unit, _))
+                if !spaced
+                    && (CLOSING.contains(cluster)
+                        || (narrow
+                            && unit
+                                .graphemes(true)
+                                .next_back()
+                                .is_some_and(|last| width_of(last) <= 1))) =>
+            {
+                unit.push_str(cluster)
+            }
+            _ => units.push((cluster.to_owned(), spaced)),
+        }
+        spaced = false;
+    }
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    for (unit, spaced) in units {
+        let used = width_of(&row);
+        let gap = usize::from(spaced && used > 0);
+        if used > 0 && used + gap + width_of(&unit) > width {
+            rows.push(std::mem::take(&mut row));
+        } else if gap > 0 {
+            row.push(' ');
+        }
+        if row.is_empty() && width_of(&unit) > width {
+            let mut chunks = wrap(&unit, width);
+            row = chunks.pop().unwrap_or_default();
+            rows.extend(chunks);
+        } else {
+            row.push_str(&unit);
+        }
+    }
+    rows.push(row);
+    rows
+}
+
+/// `31.9s`, or `2m 5s` from a minute on.
+fn duration(ms: u64) -> String {
+    if ms < 59_950 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        let seconds = (ms + 500) / 1000;
+        format!("{}m {}s", seconds / 60, seconds % 60)
+    }
 }
 
 /// A gutter mark and wrapped text in one tone (errors, status notes).
@@ -2399,7 +2564,11 @@ fn render_block(
                 rows
             }
         }
-        Block::Thinking(text) => vec![thinking_line(text, width, p)],
+        Block::Thinking {
+            text,
+            elapsed_ms,
+            expanded,
+        } => settled_thinking(text, *elapsed_ms, *expanded, width, p),
         Block::ToolGroup(group) => render_group(group, width, p, "·"),
         Block::Error(text) => gutter_text("■", text, width, &p.danger),
         Block::Status { text, tone } => {

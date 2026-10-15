@@ -269,11 +269,11 @@ fn headless_streams_unicode_once_and_waits_for_the_delivery_barrier() {
         wire.start(false);
         let submit = wire.read("session.submit");
         assert!(!submit["params"]["submissionId"].as_str().unwrap().is_empty());
-        wire.notice("session.model.progress",json!({"sessionId":"session","branchId":"main","requestId":"model-request","textOffset":0,"text":"你\u{1b}[2J好"}));
+        wire.notice("session.model.progress",json!({"sessionId":"session","branchId":"main","requestId":"model-request","textOffset":0,"text":"你\u{1b}[2J好","thinking":"","thinkingOffset":0}));
         wire.reply(&submit, json!({"event":{}}));
         let idle = wire.read("session.idle");
         wire.event(12,"text",json!({"turn_id":"turn","request_id":"model-request","delta":"你\u{1b}[2J好"}));
-        wire.notice("session.model.progress",json!({"sessionId":"session","branchId":"main","requestId":"model-request","textOffset":6,"text":"世界"}));
+        wire.notice("session.model.progress",json!({"sessionId":"session","branchId":"main","requestId":"model-request","textOffset":6,"text":"世界","thinking":"","thinkingOffset":0}));
         wire.event(20,"text",json!({"turn_id":"turn","request_id":"model-request","delta":"世界"}));
         wire.event(22,"model-output-end",json!({"turn_id":"turn","request_id":"model-request","status":"completed","finish_reason":"end_turn"}));
         wire.end(json!({"turn_id":"turn","status":"completed","reason":"done"}));
@@ -340,12 +340,12 @@ fn resume_advances_filtered_history_positions_and_does_not_reprint_old_output() 
         wire.reply(&hello,json!({"instanceId":"server","serverVersion":"0.1","protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","provider.list"]}));
         let attach = wire.read("session.attach"); wire.reply(&attach,json!({}));
         let first = wire.read("session.history"); assert_eq!(first["params"]["after"],0);
-        wire.reply(&first,json!({"events":[{"sequence":4,"type":"step","name":"text","data":{"turn_id":"old-turn","request_id":"old-request","delta":"old output"}}],"through":10,"nextAfter":7,"done":false}));
+        wire.reply(&first,json!({"events":[{"sequence":4,"create_at":1,"type":"step","name":"text","data":{"turn_id":"old-turn","request_id":"old-request","delta":"old output"}}],"through":10,"nextAfter":7,"done":false}));
         let next = wire.read("session.history");
         assert_eq!(next["params"]["after"],7); assert_eq!(next["params"]["through"],10);
-        wire.reply(&next,json!({"events":[{"sequence":8,"type":"step","name":"model-output-end","data":{"turn_id":"old-turn","request_id":"old-request","status":"completed","finish_reason":"end_turn"}}],"through":10,"nextAfter":10,"done":true}));
+        wire.reply(&next,json!({"events":[{"sequence":8,"create_at":2,"type":"step","name":"model-output-end","data":{"turn_id":"old-turn","request_id":"old-request","status":"completed","finish_reason":"end_turn"}}],"through":10,"nextAfter":10,"done":true}));
         // attach progress snapshots may predate the history response.
-        wire.notice("session.model.progress",json!({"sessionId":"session","branchId":"main","requestId":"old-request","textOffset":0,"text":"old output"}));
+        wire.notice("session.model.progress",json!({"sessionId":"session","branchId":"main","requestId":"old-request","textOffset":0,"text":"old output","thinking":"","thinkingOffset":0}));
         let idle = wire.read("session.idle"); wire.reply(&idle,json!({"sequence":10}));
         let submit = wire.read("session.submit"); wire.reply(&submit,json!({"event":{}}));
         let idle = wire.read("session.idle");
@@ -528,7 +528,7 @@ fn interactive_default_deny_discards_typeahead_and_ctrl_c_settles_before_next_in
         let submit = wire.read("session.submit");
         wire.reply(&submit,json!({"event":{}}));
         let idle = wire.read("session.idle");
-        wire.notice("session.model.progress",json!({"sessionId":"session","branchId":"main","requestId":"first-request","textOffset":0,"text":"working"}));
+        wire.notice("session.model.progress",json!({"sessionId":"session","branchId":"main","requestId":"first-request","textOffset":0,"text":"working","thinking":"","thinkingOffset":0}));
         thread::sleep(Duration::from_millis(150));
         wire.notice("approval.request",json!({"sessionId":"session","branchId":"main","requestId":"approval","call":{"name":"exec","input":{"description":"Inspect workspace","command":"printf workspace-inspected","cwd":"/tmp/approval-fixture","secret":"never print me"}},"reason":"shell command"}));
         let answer = wire.read("approval.respond");
@@ -539,8 +539,8 @@ fn interactive_default_deny_discards_typeahead_and_ctrl_c_settles_before_next_in
         let submit = wire.read("session.submit"); assert_eq!(submit["params"]["text"],"second");
         wire.reply(&submit,json!({"event":{}}));
         let idle = wire.read("session.idle");
-        wire.notice("session.model.progress",json!({"sessionId":"session","branchId":"main","requestId":"second-request","textOffset":0,"text":"partial"}));
-        let ended = json!({"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"session","branchId":"main","event":{"sequence":35,"type":"turn","name":"end","data":{"turn_id":"second-turn","status":"cancelled","reason":"interrupted"}}}}).to_string();
+        wire.notice("session.model.progress",json!({"sessionId":"session","branchId":"main","requestId":"second-request","textOffset":0,"text":"partial","thinking":"","thinkingOffset":0}));
+        let ended = json!({"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"session","branchId":"main","event":{"sequence":35,"create_at":1,"type":"turn","name":"end","data":{"turn_id":"second-turn","status":"cancelled","reason":"interrupted"}}}}).to_string();
         wire.0.get_mut().write_all(&ended.as_bytes()[..10]).unwrap();
         wire.0.get_mut().flush().unwrap();
         let stop = wire.read("session.stop");
@@ -681,7 +681,7 @@ fn unix_npm_wrapper_preserves_the_native_terminal_and_interrupt_flow() {
         wire.start(false);
         let submit = wire.read("session.submit"); wire.reply(&submit,json!({"event":{}}));
         let idle = wire.read("session.idle");
-        wire.notice("session.model.progress",json!({"sessionId":"session","branchId":"main","requestId":"request","textOffset":0,"text":"streaming"}));
+        wire.notice("session.model.progress",json!({"sessionId":"session","branchId":"main","requestId":"request","textOffset":0,"text":"streaming","thinking":"","thinkingOffset":0}));
         let stop = wire.read("session.stop");
         wire.end(json!({"turn_id":"turn","status":"cancelled","reason":"interrupted"}));
         thread::sleep(Duration::from_millis(100));

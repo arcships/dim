@@ -33,6 +33,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         " · earlier history: /history" => " · 更早历史：/history",
         "Error: {message}" => "错误：{message}",
         "working…  {elapsed}" => "处理中…  {elapsed}",
+        "thinking…  {elapsed}" => "思考中…  {elapsed}",
         "Ask anything..." => "输入任何内容...",
         "Earlier history · {id} · {count} messages · /history for the previous page" => {
             "更早历史 · {id} · {count} 条消息 · /history 查看上一页"
@@ -47,7 +48,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "还有 {count} 条 · ↑ 编辑 · ctrl+s 立即 steer · /queue"
         }
         "Queue ({count})" => "队列（{count}）",
-        "Thinking: " => "思考中：",
+        "Thinking…" => "思考中…",
+        "Thought" => "已思考",
+        "Thought for {duration}" => "已思考 {duration}",
         "Welcome to DIM {version}!" => "欢迎使用 DIM {version}！",
         "Type / for commands · Ctrl+P for the palette" => "输入 / 查看命令 · Ctrl+P 打开命令面板",
         "Workspace" => "工作区",
@@ -72,7 +75,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "scroll to the top" => "滚动到顶部",
         "scroll to the bottom" => "滚动到底部",
         "pick an earlier message to edit" => "选择较早的消息进行编辑",
-        "collapse or expand tool details" => "折叠或展开工具详情",
+        "collapse or expand tool details and thoughts" => "折叠或展开工具详情与思考",
         "switch between fullscreen and scrollback" => "在全屏和回滚界面之间切换",
         "switch theme" => "切换主题",
         "switch language" => "切换语言",

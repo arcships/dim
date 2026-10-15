@@ -47,7 +47,8 @@ pub struct ViewRow {
     pub kind: RowKind,
     pub text: String,
     pub streaming: bool,
-    pub preview: Option<String>,
+    /// A settled thought: how long it ran, in milliseconds.
+    pub elapsed_ms: Option<u64>,
     pub tone: Option<RowTone>,
     pub tool_name: Option<String>,
     pub tool_input: Option<serde_json::Value>,

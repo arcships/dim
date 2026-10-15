@@ -6,9 +6,12 @@
 //! dropped again once it moves away. Every frame paints the visible slice
 //! above the dock (queue, composer, panels, status) pinned to the bottom of
 //! the screen, with a scrollbar in the last column once the transcript is
-//! taller than its viewport. A shorter transcript sits on the dock and grows
-//! upwards, as in Amp. Rows are diffed against what was painted last,
-//! so a frame with nothing new writes nothing.
+//! taller than its viewport. A shorter transcript starts at the top and
+//! grows down towards the dock. While the view follows new output it never
+//! moves back up: when the live tail shrinks (a running thought folding into
+//! one row) the rows above stay where they are and blank rows below take the
+//! difference until new output fills them. Rows are diffed against what was
+//! painted last, so a frame with nothing new writes nothing.
 //!
 //! ```text
 //!  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓     █  Tab: the picked
@@ -204,6 +207,9 @@ pub struct FullScreen {
     /// The top of the view while the reader has scrolled away from the
     /// bottom; `None` follows new output.
     pinned: Option<Anchor>,
+    /// The lowest top the followed view has reached: it does not move back
+    /// up when the transcript gets shorter.
+    floor: usize,
     /// Transcript viewport height of the last frame.
     view_rows: usize,
     wheel: Wheel,
@@ -233,6 +239,7 @@ impl FullScreen {
             cache: HashMap::new(),
             tail: Vec::new(),
             pinned: None,
+            floor: 0,
             view_rows: 0,
             wheel: Wheel::default(),
             overlay_open: false,
@@ -304,13 +311,15 @@ impl FullScreen {
         self.pin(0);
     }
 
-    /// Follows new output again.
+    /// Follows new output again, from the bottom of the transcript.
     pub fn follow(&mut self) {
         self.pinned = None;
+        self.floor = 0;
     }
 
     /// Holds the view with row `top` first; the bottom row follows.
     fn pin(&mut self, top: usize) {
+        self.floor = 0;
         self.pinned = (top < self.max_top()).then(|| {
             let blocks = self.heights.len();
             if top >= self.starts[blocks] {
@@ -443,7 +452,7 @@ impl FullScreen {
                 } else if row + 1 >= self.view_rows {
                     self.scroll(1);
                 }
-                let row = row.min(self.view_rows.saturating_sub(1)).max(self.gap());
+                let row = row.min(self.view_rows.saturating_sub(1));
                 let Some(index) = self.at(row) else {
                     return MouseOutcome::Ignored;
                 };
@@ -498,10 +507,18 @@ impl FullScreen {
         self.view_rows = rows - dock_rows.min(rows);
         self.load(doc);
         let top = self.top();
+        if self.pinned.is_none() {
+            self.floor = top;
+        }
 
         let dim = frame.overlay.is_some();
         self.overlay_open = dim;
-        let bar = scrollbar(self.view_rows, self.content_rows(), top, palette);
+        let bar = scrollbar(
+            self.view_rows,
+            self.content_rows(),
+            top.min(self.max_top()),
+            palette,
+        );
         let focus = self.focus_rows();
         let mut screen: Vec<String> = Vec::with_capacity(rows);
         for y in 0..self.view_rows {
@@ -735,21 +752,16 @@ impl FullScreen {
         self.content_rows().saturating_sub(self.view_rows)
     }
 
-    /// Blank rows above a transcript shorter than its viewport: it sits on
-    /// the dock and grows upwards, as in Amp.
-    fn gap(&self) -> usize {
-        self.view_rows.saturating_sub(self.content_rows())
-    }
-
-    /// The transcript row shown on viewport row `y`, none in the gap.
+    /// The transcript row shown on viewport row `y`, none below its end.
     fn at(&self, y: usize) -> Option<usize> {
-        y.checked_sub(self.gap()).map(|row| self.top() + row)
+        Some(self.top() + y).filter(|&row| row < self.content_rows())
     }
 
     fn top(&self) -> usize {
         let max_top = self.max_top();
         let Some(anchor) = self.pinned else {
-            return max_top;
+            // The floor keeps at least the last row on screen.
+            return max_top.max(self.floor.min(self.content_rows().saturating_sub(1)));
         };
         let start = anchor
             .block
@@ -1165,17 +1177,43 @@ mod tests {
     const DOCK: [&str; 2] = ["> x", "status"];
 
     #[test]
-    fn a_short_transcript_sits_on_the_dock_and_grows_upwards() {
+    fn a_short_transcript_starts_at_the_top_and_a_shrinking_tail_moves_nothing() {
         let (mut screen, mut emu) = setup();
         let mut doc = Doc::new();
         doc.say(&["a", "b"]);
         draw(&mut screen, &mut emu, &frame(&["tail"], &DOCK), &doc);
         let rows = emu.rows_text();
-        assert_eq!(&rows[..6], &["", "", "", "a", "b", "tail"]);
+        assert_eq!(&rows[..6], &["", "a", "b", "tail", "", ""]);
         assert_eq!(&rows[6..], &DOCK);
         assert_eq!((emu.cy, emu.cx), (6, 2));
         // Nothing changed: nothing is written.
         assert!(draw(&mut screen, &mut emu, &frame(&["tail"], &DOCK), &doc).is_empty());
+
+        // Past the viewport, a tail that folds (a thought settling) leaves
+        // the rows above in place; new output fills the blank rows below.
+        doc.say(&["c", "d"]);
+        // The transcript rows, without the scrollbar column.
+        let view = |emu: &Emu| -> Vec<String> {
+            (0..6)
+                .map(|y| {
+                    emu.row(y)
+                        .chars()
+                        .take(20)
+                        .collect::<String>()
+                        .trim_end()
+                        .to_owned()
+                })
+                .collect()
+        };
+        let tall = ["t1", "t2", "t3", "t4"];
+        draw(&mut screen, &mut emu, &frame(&tall, &DOCK), &doc);
+        assert_eq!(view(&emu), ["c", "d", "t1", "t2", "t3", "t4"]);
+        draw(&mut screen, &mut emu, &frame(&["t1"], &DOCK), &doc);
+        assert_eq!(view(&emu), ["c", "d", "t1", "", "", ""]);
+        // Following the end again shows the bottom.
+        screen.follow();
+        draw(&mut screen, &mut emu, &frame(&["t1"], &DOCK), &doc);
+        assert_eq!(view(&emu)[5], "t1");
     }
 
     #[test]
@@ -1267,15 +1305,15 @@ mod tests {
         draw(&mut screen, &mut emu, &frame(&[], &["> x"]), &doc);
         let at = |kind, column, row| MouseEvent { kind, column, row };
         assert_eq!(
-            screen.mouse(at(MouseKind::Press, 6, 5), &doc),
+            screen.mouse(at(MouseKind::Press, 6, 1), &doc),
             MouseOutcome::Redraw
         );
         assert_eq!(
-            screen.mouse(at(MouseKind::Drag, 5, 6), &doc),
+            screen.mouse(at(MouseKind::Drag, 5, 2), &doc),
             MouseOutcome::Redraw
         );
         assert_eq!(
-            screen.mouse(at(MouseKind::Release, 5, 6), &doc),
+            screen.mouse(at(MouseKind::Release, 5, 2), &doc),
             MouseOutcome::Copy("world\nsecond".to_owned())
         );
     }
@@ -1316,7 +1354,7 @@ mod tests {
     fn an_overlay_is_centred_over_the_dimmed_transcript_and_owns_the_wheel() {
         let (mut screen, mut emu) = setup();
         let mut doc = Doc::new();
-        doc.say(&["behind the box"]);
+        doc.say(&["", "", "", "", "behind the box"]);
         let mut f = frame(&[], &DOCK);
         f.overlay = Some(Overlay {
             rows: vec!["┌──┐".into(), "│> │".into(), "└──┘".into()],
@@ -1376,14 +1414,14 @@ mod tests {
             screen.mouse(at(MouseKind::Press), &doc);
             screen.mouse(at(MouseKind::Release), &doc)
         };
-        // Rows 3 and 4 hold the block under its blank row.
+        // Rows 1 and 2 hold the block under its blank row.
         assert_eq!(
-            click(5, 4),
+            click(5, 1),
             MouseOutcome::Open("https://a.example/x".into())
         );
-        assert_eq!(click(1, 4), MouseOutcome::Redraw);
+        assert_eq!(click(1, 1), MouseOutcome::Redraw);
         assert_eq!(
-            click(8, 5),
+            click(8, 2),
             MouseOutcome::Open("https://b.example/y".into())
         );
     }

@@ -8,11 +8,14 @@ use serde::Deserialize;
 
 pub struct Event {
     pub sequence: u64,
+    /// Unix milliseconds the runtime wrote the event at.
+    pub create_at: u64,
     pub content: EventContent,
 }
 pub enum EventContent {
     Input(InputMessageData),
     TurnEnd(TurnEndData),
+    ModelStart(ModelStartData),
     Thinking(ThinkingData),
     Text(TextData),
     ToolUse(ToolUseData),
@@ -29,6 +32,7 @@ impl<'de> Deserialize<'de> for Event {
         #[derive(Deserialize)]
         struct Wire {
             sequence: u64,
+            create_at: u64,
             r#type: String,
             name: String,
             data: serde_json::Value,
@@ -44,6 +48,9 @@ impl<'de> Deserialize<'de> for Event {
                 serde_json::from_value(wire.data).map_err(serde::de::Error::custom)?,
             ),
             ("turn", "end") => EventContent::TurnEnd(
+                serde_json::from_value(wire.data).map_err(serde::de::Error::custom)?,
+            ),
+            ("step", "model-start") => EventContent::ModelStart(
                 serde_json::from_value(wire.data).map_err(serde::de::Error::custom)?,
             ),
             ("step", "thinking") => EventContent::Thinking(
@@ -68,6 +75,7 @@ impl<'de> Deserialize<'de> for Event {
         };
         Ok(Self {
             sequence: wire.sequence,
+            create_at: wire.create_at,
             content,
         })
     }
@@ -81,4 +89,8 @@ pub struct Progress {
     pub request_id: Option<String>,
     pub text: String,
     pub text_offset: u64,
+    /// Reasoning not written to the Timeline yet: it follows the first
+    /// `thinking_offset` characters of the request's `step/thinking` deltas.
+    pub thinking: String,
+    pub thinking_offset: u64,
 }
