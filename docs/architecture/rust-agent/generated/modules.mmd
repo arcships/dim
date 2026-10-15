@@ -168,73 +168,77 @@ flowchart LR
   m164["dim_cli::@bin:dimcode::ui::approvals_panel"]
   m165["dim_cli::@bin:dimcode::ui::attachments"]
   m166["dim_cli::@bin:dimcode::ui::attachments::tests"]
-  m167["dim_cli::@bin:dimcode::ui::composer"]
-  m168["dim_cli::@bin:dimcode::ui::composer::commands"]
-  m169["dim_cli::@bin:dimcode::ui::composer::history"]
-  m170["dim_cli::@bin:dimcode::ui::composer::history::tests"]
-  m171["dim_cli::@bin:dimcode::ui::composer::palette"]
-  m172["dim_cli::@bin:dimcode::ui::composer::palette::tests"]
-  m173["dim_cli::@bin:dimcode::ui::composer::tests"]
-  m174["dim_cli::@bin:dimcode::ui::config"]
-  m175["dim_cli::@bin:dimcode::ui::list_panel"]
-  m176["dim_cli::@bin:dimcode::ui::models_panel"]
-  m177["dim_cli::@bin:dimcode::ui::oauth_view"]
-  m178["dim_cli::@bin:dimcode::ui::oauth_view::tests"]
-  m179["dim_cli::@bin:dimcode::ui::prompts"]
-  m180["dim_cli::@bin:dimcode::ui::prompts::tests"]
-  m181["dim_cli::@bin:dimcode::ui::providers_panel"]
-  m182["dim_cli::@bin:dimcode::ui::providers_panel::tests"]
-  m183["dim_cli::@bin:dimcode::ui::render"]
-  m184["dim_cli::@bin:dimcode::ui::render::markdown"]
-  m185["dim_cli::@bin:dimcode::ui::render::markdown::tests"]
-  m186["dim_cli::@bin:dimcode::ui::render::osc8"]
-  m187["dim_cli::@bin:dimcode::ui::render::osc8::tests"]
-  m188["dim_cli::@bin:dimcode::ui::render::panel"]
-  m189["dim_cli::@bin:dimcode::ui::render::panel::tests"]
-  m190["dim_cli::@bin:dimcode::ui::render::screen"]
-  m191["dim_cli::@bin:dimcode::ui::render::screen::tests"]
-  m192["dim_cli::@bin:dimcode::ui::render::testterm"]
-  m193["dim_cli::@bin:dimcode::ui::sessions_panel"]
-  m194["dim_cli::@bin:dimcode::ui::sessions_panel::tests"]
-  m195["dim_cli::@bin:dimcode::ui::terminal"]
-  m196["dim_cli::@bin:dimcode::ui::terminal::input"]
-  m197["dim_cli::@bin:dimcode::ui::terminal::input::tests"]
-  m198["dim_cli::@bin:dimcode::ui::terminal::keyboard"]
-  m199["dim_cli::@bin:dimcode::ui::terminal::keyboard::tests"]
-  m200["dim_cli::@bin:dimcode::ui::terminal::modes"]
-  m201["dim_cli::@bin:dimcode::ui::terminal::modes::tests"]
-  m202["dim_cli::@bin:dimcode::ui::terminal::tests"]
-  m203["dim_cli::@bin:dimcode::ui::terminal::unix"]
-  m204["dim_cli::@bin:dimcode::ui::terminal::windows"]
-  m205["dim_cli::@bin:dimcode::ui::theme"]
-  m206["dim_cli::@bin:dimcode::ui::theme::ansi"]
-  m207["dim_cli::@bin:dimcode::ui::theme::ansi::tests"]
-  m208["dim_cli::@bin:dimcode::ui::theme::contrast"]
-  m209["dim_cli::@bin:dimcode::ui::theme::contrast::tests"]
-  m210["dim_cli::@bin:dimcode::ui::theme::detect"]
-  m211["dim_cli::@bin:dimcode::ui::theme::detect::tests"]
-  m212["dim_cli::@bin:dimcode::ui::theme::palette"]
-  m213["dim_cli::@bin:dimcode::ui::theme::tests"]
-  m214["dim_cli::@bin:dimcode::ui::theme::themes"]
-  m215["dim_cli::@bin:dimcode::ui::theme_panel"]
-  m216["dim_cli::@bin:dimcode::ui::theme_panel::tests"]
-  m217["dim_cli::@bin:dimcode::ui::transcript"]
-  m218["dim_cli::@bin:dimcode::ui::transcript::block"]
-  m219["dim_cli::@bin:dimcode::ui::transcript::block::tests"]
-  m220["dim_cli::@bin:dimcode::ui::transcript::blocks"]
-  m221["dim_cli::@bin:dimcode::ui::transcript::blocks::tests"]
-  m222["dim_cli::@bin:dimcode::ui::transcript::commit"]
-  m223["dim_cli::@bin:dimcode::ui::transcript::commit::tests"]
-  m224["dim_cli::@bin:dimcode::ui::transcript::split"]
-  m225["dim_cli::@bin:dimcode::ui::transcript::split::tests"]
-  m226["dim_cli::@bin:dimcode::ui::transcript::stream"]
-  m227["dim_cli::@bin:dimcode::ui::transcript::stream::tests"]
-  m228["dim_cli::@bin:dimcode::ui::transcript::tool_group"]
-  m229["dim_cli::@bin:dimcode::ui::tui"]
-  m230["dim_cli::@bin:dimcode::ui::tui::tests"]
-  m231["dim_cli::@bin:dimcode::usage"]
-  m232["dim_cli::@bin:dimcode::usage::tests"]
-  m233["dim_cli::@bin:dimcode::wire"]
+  m167["dim_cli::@bin:dimcode::ui::clipboard"]
+  m168["dim_cli::@bin:dimcode::ui::clipboard::tests"]
+  m169["dim_cli::@bin:dimcode::ui::composer"]
+  m170["dim_cli::@bin:dimcode::ui::composer::commands"]
+  m171["dim_cli::@bin:dimcode::ui::composer::history"]
+  m172["dim_cli::@bin:dimcode::ui::composer::history::tests"]
+  m173["dim_cli::@bin:dimcode::ui::composer::palette"]
+  m174["dim_cli::@bin:dimcode::ui::composer::palette::tests"]
+  m175["dim_cli::@bin:dimcode::ui::composer::tests"]
+  m176["dim_cli::@bin:dimcode::ui::config"]
+  m177["dim_cli::@bin:dimcode::ui::list_panel"]
+  m178["dim_cli::@bin:dimcode::ui::models_panel"]
+  m179["dim_cli::@bin:dimcode::ui::oauth_view"]
+  m180["dim_cli::@bin:dimcode::ui::oauth_view::tests"]
+  m181["dim_cli::@bin:dimcode::ui::prompts"]
+  m182["dim_cli::@bin:dimcode::ui::prompts::tests"]
+  m183["dim_cli::@bin:dimcode::ui::providers_panel"]
+  m184["dim_cli::@bin:dimcode::ui::providers_panel::tests"]
+  m185["dim_cli::@bin:dimcode::ui::render"]
+  m186["dim_cli::@bin:dimcode::ui::render::fullscreen"]
+  m187["dim_cli::@bin:dimcode::ui::render::fullscreen::tests"]
+  m188["dim_cli::@bin:dimcode::ui::render::markdown"]
+  m189["dim_cli::@bin:dimcode::ui::render::markdown::tests"]
+  m190["dim_cli::@bin:dimcode::ui::render::osc8"]
+  m191["dim_cli::@bin:dimcode::ui::render::osc8::tests"]
+  m192["dim_cli::@bin:dimcode::ui::render::panel"]
+  m193["dim_cli::@bin:dimcode::ui::render::panel::tests"]
+  m194["dim_cli::@bin:dimcode::ui::render::screen"]
+  m195["dim_cli::@bin:dimcode::ui::render::screen::tests"]
+  m196["dim_cli::@bin:dimcode::ui::render::testterm"]
+  m197["dim_cli::@bin:dimcode::ui::sessions_panel"]
+  m198["dim_cli::@bin:dimcode::ui::sessions_panel::tests"]
+  m199["dim_cli::@bin:dimcode::ui::terminal"]
+  m200["dim_cli::@bin:dimcode::ui::terminal::input"]
+  m201["dim_cli::@bin:dimcode::ui::terminal::input::tests"]
+  m202["dim_cli::@bin:dimcode::ui::terminal::keyboard"]
+  m203["dim_cli::@bin:dimcode::ui::terminal::keyboard::tests"]
+  m204["dim_cli::@bin:dimcode::ui::terminal::modes"]
+  m205["dim_cli::@bin:dimcode::ui::terminal::modes::tests"]
+  m206["dim_cli::@bin:dimcode::ui::terminal::tests"]
+  m207["dim_cli::@bin:dimcode::ui::terminal::unix"]
+  m208["dim_cli::@bin:dimcode::ui::terminal::windows"]
+  m209["dim_cli::@bin:dimcode::ui::theme"]
+  m210["dim_cli::@bin:dimcode::ui::theme::ansi"]
+  m211["dim_cli::@bin:dimcode::ui::theme::ansi::tests"]
+  m212["dim_cli::@bin:dimcode::ui::theme::contrast"]
+  m213["dim_cli::@bin:dimcode::ui::theme::contrast::tests"]
+  m214["dim_cli::@bin:dimcode::ui::theme::detect"]
+  m215["dim_cli::@bin:dimcode::ui::theme::detect::tests"]
+  m216["dim_cli::@bin:dimcode::ui::theme::palette"]
+  m217["dim_cli::@bin:dimcode::ui::theme::tests"]
+  m218["dim_cli::@bin:dimcode::ui::theme::themes"]
+  m219["dim_cli::@bin:dimcode::ui::theme_panel"]
+  m220["dim_cli::@bin:dimcode::ui::theme_panel::tests"]
+  m221["dim_cli::@bin:dimcode::ui::transcript"]
+  m222["dim_cli::@bin:dimcode::ui::transcript::block"]
+  m223["dim_cli::@bin:dimcode::ui::transcript::block::tests"]
+  m224["dim_cli::@bin:dimcode::ui::transcript::blocks"]
+  m225["dim_cli::@bin:dimcode::ui::transcript::blocks::tests"]
+  m226["dim_cli::@bin:dimcode::ui::transcript::commit"]
+  m227["dim_cli::@bin:dimcode::ui::transcript::commit::tests"]
+  m228["dim_cli::@bin:dimcode::ui::transcript::split"]
+  m229["dim_cli::@bin:dimcode::ui::transcript::split::tests"]
+  m230["dim_cli::@bin:dimcode::ui::transcript::stream"]
+  m231["dim_cli::@bin:dimcode::ui::transcript::stream::tests"]
+  m232["dim_cli::@bin:dimcode::ui::transcript::tool_group"]
+  m233["dim_cli::@bin:dimcode::ui::tui"]
+  m234["dim_cli::@bin:dimcode::ui::tui::tests"]
+  m235["dim_cli::@bin:dimcode::usage"]
+  m236["dim_cli::@bin:dimcode::usage::tests"]
+  m237["dim_cli::@bin:dimcode::wire"]
   m0 -.-> m1
   m0 -.-> m2
   m0 --> m3
@@ -1250,9 +1254,10 @@ flowchart LR
   m145 --> m161
   m145 --> m162
   m145 --> m163
-  m145 --> m229
-  m145 -.-> m231
-  m145 -.-> m233
+  m145 --> m176
+  m145 --> m233
+  m145 -.-> m235
+  m145 -.-> m237
   m146 --> m145
   m147 -.-> m148
   m149 --> m145
@@ -1260,7 +1265,7 @@ flowchart LR
   m150 --> m89
   m150 --> m91
   m150 --> m145
-  m150 --> m233
+  m150 --> m237
   m151 --> m153
   m152 --> m145
   m153 -.-> m154
@@ -1279,9 +1284,9 @@ flowchart LR
   m159 --> m99
   m159 --> m158
   m159 -.-> m160
-  m159 --> m233
+  m159 --> m237
   m160 --> m159
-  m160 --> m233
+  m160 --> m237
   m161 --> m91
   m161 --> m96
   m161 --> m145
@@ -1289,7 +1294,7 @@ flowchart LR
   m161 --> m149
   m161 --> m150
   m161 --> m152
-  m161 --> m233
+  m161 --> m237
   m162 --> m87
   m162 --> m91
   m162 --> m96
@@ -1298,241 +1303,265 @@ flowchart LR
   m162 --> m149
   m162 --> m157
   m162 --> m159
-  m162 --> m233
+  m162 --> m237
   m163 -.-> m164
   m163 -.-> m165
   m163 -.-> m167
-  m163 -.-> m174
-  m163 -.-> m175
+  m163 -.-> m169
   m163 -.-> m176
   m163 -.-> m177
+  m163 -.-> m178
   m163 -.-> m179
   m163 -.-> m181
   m163 -.-> m183
-  m163 -.-> m193
-  m163 -.-> m195
-  m163 -.-> m205
-  m163 -.-> m215
-  m163 -.-> m217
-  m163 -.-> m229
-  m164 --> m171
-  m164 --> m179
-  m164 --> m188
-  m164 --> m196
-  m164 --> m206
-  m164 --> m212
-  m164 --> m220
-  m164 --> m229
+  m163 -.-> m185
+  m163 -.-> m197
+  m163 -.-> m199
+  m163 -.-> m209
+  m163 -.-> m219
+  m163 -.-> m221
+  m163 -.-> m233
+  m164 --> m173
+  m164 --> m181
+  m164 --> m192
+  m164 --> m200
+  m164 --> m210
+  m164 --> m216
+  m164 --> m224
+  m164 --> m233
   m165 -.-> m166
   m166 --> m165
-  m167 --> m168
-  m167 --> m169
-  m167 --> m171
-  m167 -.-> m173
-  m167 --> m184
-  m167 --> m196
-  m167 --> m208
-  m167 --> m212
-  m169 -.-> m170
-  m170 --> m169
-  m171 --> m168
+  m167 -.-> m168
+  m169 --> m170
+  m169 --> m171
+  m169 --> m173
+  m169 -.-> m175
+  m169 --> m188
+  m169 --> m200
+  m169 --> m212
+  m169 --> m216
+  m169 --> m224
   m171 -.-> m172
-  m171 --> m188
-  m171 --> m206
-  m171 --> m212
-  m171 --> m220
   m172 --> m171
-  m172 --> m205
-  m172 --> m212
-  m173 --> m167
-  m173 --> m196
-  m173 --> m205
-  m173 --> m212
-  m175 --> m171
-  m175 --> m188
-  m175 --> m196
-  m175 --> m206
-  m175 --> m212
-  m175 --> m220
-  m176 --> m157
-  m176 --> m175
-  m176 --> m179
-  m176 --> m196
-  m176 --> m212
-  m177 --> m157
-  m177 --> m171
-  m177 -.-> m178
-  m177 --> m179
-  m177 --> m181
-  m177 --> m188
-  m177 --> m196
-  m177 --> m206
-  m177 --> m212
-  m177 --> m220
+  m173 --> m170
+  m173 -.-> m174
+  m173 --> m192
+  m173 --> m210
+  m173 --> m216
+  m173 --> m224
+  m174 --> m173
+  m174 --> m209
+  m174 --> m216
+  m175 --> m169
+  m175 --> m200
+  m175 --> m209
+  m175 --> m216
+  m177 --> m173
+  m177 --> m192
+  m177 --> m200
+  m177 --> m210
+  m177 --> m216
+  m177 --> m224
   m178 --> m157
   m178 --> m177
-  m178 --> m179
-  m178 --> m196
+  m178 --> m181
+  m178 --> m200
+  m178 --> m216
   m179 --> m157
-  m179 --> m158
+  m179 --> m173
   m179 -.-> m180
-  m179 --> m188
-  m179 --> m196
-  m179 --> m206
-  m179 --> m212
-  m179 --> m220
-  m180 --> m158
+  m179 --> m181
+  m179 --> m183
+  m179 --> m192
+  m179 --> m200
+  m179 --> m210
+  m179 --> m216
+  m179 --> m224
+  m180 --> m157
   m180 --> m179
-  m180 --> m196
-  m180 --> m205
-  m180 --> m212
+  m180 --> m181
+  m180 --> m200
   m181 --> m157
-  m181 --> m171
-  m181 --> m175
-  m181 --> m177
-  m181 --> m179
+  m181 --> m158
   m181 -.-> m182
-  m181 --> m188
-  m181 --> m196
-  m181 --> m206
-  m181 --> m212
-  m181 --> m220
-  m182 --> m157
+  m181 --> m192
+  m181 --> m200
+  m181 --> m210
+  m181 --> m216
+  m181 --> m224
+  m182 --> m158
   m182 --> m181
+  m182 --> m200
+  m182 --> m209
+  m182 --> m216
+  m183 --> m157
+  m183 --> m173
+  m183 --> m177
+  m183 --> m179
+  m183 --> m181
   m183 -.-> m184
-  m183 -.-> m186
-  m183 -.-> m188
-  m183 --> m190
-  m183 -.-> m192
-  m184 -.-> m185
-  m184 --> m205
-  m184 --> m208
-  m184 --> m212
-  m185 --> m184
-  m185 --> m205
-  m185 --> m208
-  m185 --> m212
+  m183 --> m192
+  m183 --> m200
+  m183 --> m210
+  m183 --> m216
+  m183 --> m224
+  m184 --> m157
+  m184 --> m183
+  m185 --> m186
+  m185 -.-> m188
+  m185 -.-> m190
+  m185 -.-> m192
+  m185 --> m194
+  m185 -.-> m196
   m186 -.-> m187
+  m186 --> m192
+  m186 --> m194
+  m186 --> m200
+  m186 --> m210
+  m186 --> m216
+  m186 --> m224
   m187 --> m186
+  m187 --> m190
+  m187 --> m192
+  m187 --> m194
+  m187 --> m196
+  m187 --> m200
+  m187 --> m216
   m188 -.-> m189
-  m188 --> m206
+  m188 --> m209
   m188 --> m212
-  m188 --> m220
+  m188 --> m216
   m189 --> m188
-  m189 --> m205
+  m189 --> m209
   m189 --> m212
+  m189 --> m216
   m190 -.-> m191
-  m191 --> m186
   m191 --> m190
-  m191 --> m192
-  m193 --> m157
-  m193 --> m175
-  m193 --> m179
-  m193 -.-> m194
-  m193 --> m196
-  m193 --> m212
-  m194 --> m157
-  m194 --> m179
-  m194 --> m193
-  m194 --> m196
+  m192 -.-> m193
+  m192 --> m210
+  m192 --> m216
+  m192 --> m224
+  m193 --> m192
+  m193 --> m209
+  m193 --> m216
+  m194 -.-> m195
+  m195 --> m190
+  m195 --> m194
   m195 --> m196
-  m195 --> m198
-  m195 --> m200
-  m195 -.-> m202
-  m195 --> m203
-  m195 --> m204
-  m196 -.-> m197
-  m197 --> m196
-  m198 -.-> m199
-  m199 --> m198
+  m197 --> m157
+  m197 --> m177
+  m197 --> m181
+  m197 -.-> m198
+  m197 --> m200
+  m197 --> m216
+  m198 --> m157
+  m198 --> m181
+  m198 --> m192
+  m198 --> m197
+  m198 --> m200
+  m199 --> m200
+  m199 --> m202
+  m199 --> m204
+  m199 -.-> m206
+  m199 --> m207
+  m199 --> m208
   m200 -.-> m201
   m201 --> m200
-  m203 --> m200
-  m204 --> m200
-  m205 -.-> m206
-  m205 --> m208
-  m205 --> m210
-  m205 --> m212
-  m205 -.-> m213
-  m205 --> m214
-  m206 -.-> m207
-  m208 -.-> m209
-  m209 --> m208
+  m202 -.-> m203
+  m203 --> m202
+  m204 -.-> m205
+  m205 --> m204
+  m207 --> m204
+  m208 --> m204
+  m209 -.-> m210
+  m209 --> m212
+  m209 --> m214
+  m209 --> m216
+  m209 -.-> m217
+  m209 --> m218
   m210 -.-> m211
-  m210 --> m212
-  m211 --> m210
-  m213 --> m205
-  m213 --> m208
+  m212 -.-> m213
   m213 --> m212
-  m215 --> m174
-  m215 --> m175
-  m215 --> m179
-  m215 --> m196
-  m215 --> m212
+  m214 -.-> m215
+  m214 --> m216
   m215 --> m214
-  m215 -.-> m216
-  m216 --> m205
-  m216 --> m212
-  m216 --> m215
-  m217 -.-> m218
-  m217 -.-> m220
-  m217 -.-> m222
-  m217 -.-> m224
-  m217 -.-> m226
-  m217 -.-> m228
-  m218 --> m158
-  m218 -.-> m219
-  m218 --> m228
-  m219 --> m158
-  m219 --> m205
-  m219 --> m212
+  m217 --> m209
+  m217 --> m212
+  m217 --> m216
+  m219 --> m176
+  m219 --> m177
+  m219 --> m181
+  m219 --> m200
+  m219 --> m216
   m219 --> m218
-  m219 --> m228
-  m220 -.-> m221
-  m221 --> m220
+  m219 -.-> m220
+  m220 --> m209
+  m220 --> m216
+  m220 --> m219
+  m221 -.-> m222
+  m221 -.-> m224
+  m221 -.-> m226
+  m221 -.-> m228
+  m221 -.-> m230
+  m221 -.-> m232
+  m222 --> m158
   m222 -.-> m223
+  m222 --> m232
+  m223 --> m158
+  m223 --> m209
+  m223 --> m216
   m223 --> m222
+  m223 --> m232
   m224 -.-> m225
   m225 --> m224
-  m226 --> m220
-  m226 --> m224
   m226 -.-> m227
-  m227 --> m220
   m227 --> m226
-  m228 --> m158
-  m228 --> m206
-  m228 --> m212
-  m228 --> m220
-  m229 --> m157
-  m229 --> m158
-  m229 --> m163
-  m229 --> m164
-  m229 --> m167
-  m229 --> m168
-  m229 --> m169
-  m229 --> m174
-  m229 --> m176
-  m229 --> m179
-  m229 --> m181
-  m229 --> m184
-  m229 --> m190
-  m229 --> m193
-  m229 --> m195
-  m229 --> m196
-  m229 --> m205
-  m229 --> m206
-  m229 --> m210
-  m229 --> m212
-  m229 --> m215
-  m229 --> m218
-  m229 --> m220
-  m229 --> m222
-  m229 --> m226
+  m228 -.-> m229
   m229 --> m228
-  m229 -.-> m230
-  m230 --> m229
-  m231 -.-> m232
-  m232 --> m231
-  m233 --> m87
-  m233 --> m89
-  m233 --> m91
+  m230 --> m224
+  m230 --> m228
+  m230 -.-> m231
+  m231 --> m224
+  m231 --> m230
+  m232 --> m158
+  m232 --> m210
+  m232 --> m216
+  m232 --> m224
+  m233 --> m147
+  m233 --> m157
+  m233 --> m158
+  m233 --> m163
+  m233 --> m164
+  m233 --> m167
+  m233 --> m169
+  m233 --> m170
+  m233 --> m171
+  m233 --> m176
+  m233 --> m178
+  m233 --> m181
+  m233 --> m183
+  m233 --> m186
+  m233 --> m188
+  m233 --> m192
+  m233 --> m194
+  m233 --> m197
+  m233 --> m199
+  m233 --> m200
+  m233 --> m209
+  m233 --> m210
+  m233 --> m214
+  m233 --> m216
+  m233 --> m219
+  m233 --> m222
+  m233 --> m224
+  m233 --> m226
+  m233 --> m230
+  m233 --> m232
+  m233 -.-> m234
+  m234 --> m192
+  m234 --> m233
+  m235 -.-> m236
+  m236 --> m235
+  m237 --> m87
+  m237 --> m89
+  m237 --> m91

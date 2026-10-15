@@ -1741,6 +1741,22 @@
       ]
     },
     {
+      "id": "dim_cli::@bin:dimcode::ui::clipboard",
+      "crate": "dim_cli::@bin:dimcode",
+      "parent": "dim_cli::@bin:dimcode::ui",
+      "file": "crates/dim-cli/src/ui/clipboard.rs",
+      "unexpandedMacros": []
+    },
+    {
+      "id": "dim_cli::@bin:dimcode::ui::clipboard::tests",
+      "crate": "dim_cli::@bin:dimcode",
+      "parent": "dim_cli::@bin:dimcode::ui::clipboard",
+      "file": "crates/dim-cli/src/ui/clipboard.rs",
+      "unexpandedMacros": [
+        "assert_eq"
+      ]
+    },
+    {
       "id": "dim_cli::@bin:dimcode::ui::composer",
       "crate": "dim_cli::@bin:dimcode",
       "parent": "dim_cli::@bin:dimcode::ui",
@@ -1783,7 +1799,8 @@
       "file": "crates/dim-cli/src/ui/composer/palette.rs",
       "unexpandedMacros": [
         "format",
-        "matches"
+        "matches",
+        "vec"
       ]
     },
     {
@@ -1914,6 +1931,29 @@
       "unexpandedMacros": []
     },
     {
+      "id": "dim_cli::@bin:dimcode::ui::render::fullscreen",
+      "crate": "dim_cli::@bin:dimcode",
+      "parent": "dim_cli::@bin:dimcode::ui::render",
+      "file": "crates/dim-cli/src/ui/render/fullscreen.rs",
+      "unexpandedMacros": [
+        "format",
+        "vec",
+        "write"
+      ]
+    },
+    {
+      "id": "dim_cli::@bin:dimcode::ui::render::fullscreen::tests",
+      "crate": "dim_cli::@bin:dimcode",
+      "parent": "dim_cli::@bin:dimcode::ui::render::fullscreen",
+      "file": "crates/dim-cli/src/ui/render/fullscreen.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "format",
+        "vec"
+      ]
+    },
+    {
       "id": "dim_cli::@bin:dimcode::ui::render::markdown",
       "crate": "dim_cli::@bin:dimcode",
       "parent": "dim_cli::@bin:dimcode::ui::render",
@@ -1963,6 +2003,7 @@
       "file": "crates/dim-cli/src/ui/render/panel.rs",
       "unexpandedMacros": [
         "format",
+        "matches",
         "vec"
       ]
     },
@@ -1995,8 +2036,7 @@
       "unexpandedMacros": [
         "assert",
         "assert_eq",
-        "format",
-        "vec"
+        "format"
       ]
     },
     {
@@ -2023,7 +2063,9 @@
       "parent": "dim_cli::@bin:dimcode::ui::sessions_panel",
       "file": "crates/dim-cli/src/ui/sessions_panel.rs",
       "unexpandedMacros": [
+        "assert",
         "assert_eq",
+        "format",
         "panic",
         "vec"
       ]
@@ -13014,6 +13056,7 @@
         "path Action::Account",
         "path Action::Chat",
         "path Action::DaemonStop",
+        "path Action::DefaultTerminalMode",
         "path Action::Help",
         "path Action::Login",
         "path Action::Logout",
@@ -13118,6 +13161,14 @@
       "references": [
         "mod ui",
         "path ui::Env"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode",
+      "to": "dim_cli::@bin:dimcode::ui::config",
+      "references": [
+        "path ui::config::save_fullscreen",
+        "path ui::config::saved_fullscreen"
       ]
     },
     {
@@ -13629,6 +13680,13 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui",
+      "to": "dim_cli::@bin:dimcode::ui::clipboard",
+      "references": [
+        "mod clipboard"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui",
       "to": "dim_cli::@bin:dimcode::ui::composer",
       "references": [
         "mod composer"
@@ -13828,6 +13886,13 @@
       ]
     },
     {
+      "from": "dim_cli::@bin:dimcode::ui::clipboard",
+      "to": "dim_cli::@bin:dimcode::ui::clipboard::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
       "from": "dim_cli::@bin:dimcode::ui::composer",
       "to": "dim_cli::@bin:dimcode::ui::composer::commands",
       "references": [
@@ -13857,6 +13922,7 @@
         "path palette::Row",
         "path palette::Skill",
         "path palette::render",
+        "path palette::render_overlay",
         "path palette::rows_for",
         "use palette::PaletteState"
       ]
@@ -13925,6 +13991,13 @@
       ]
     },
     {
+      "from": "dim_cli::@bin:dimcode::ui::composer",
+      "to": "dim_cli::@bin:dimcode::ui::transcript::blocks",
+      "references": [
+        "path crate::ui::transcript::blocks::display_width"
+      ]
+    },
+    {
       "from": "dim_cli::@bin:dimcode::ui::composer::history",
       "to": "dim_cli::@bin:dimcode::ui::composer::history::tests",
       "references": [
@@ -13962,7 +14035,9 @@
       "to": "dim_cli::@bin:dimcode::ui::render::panel",
       "references": [
         "path bordered",
-        "use crate::ui::render::panel::bordered"
+        "path follow_window",
+        "use crate::ui::render::panel::bordered",
+        "use crate::ui::render::panel::follow_window"
       ]
     },
     {
@@ -14095,7 +14170,9 @@
       "to": "dim_cli::@bin:dimcode::ui::render::panel",
       "references": [
         "path bordered",
-        "use crate::ui::render::panel::bordered"
+        "path follow_window",
+        "use crate::ui::render::panel::bordered",
+        "use crate::ui::render::panel::follow_window"
       ]
     },
     {
@@ -14654,6 +14731,14 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::render",
+      "to": "dim_cli::@bin:dimcode::ui::render::fullscreen",
+      "references": [
+        "mod fullscreen",
+        "use fullscreen::FullScreen"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::render",
       "to": "dim_cli::@bin:dimcode::ui::render::markdown",
       "references": [
         "mod markdown"
@@ -14679,6 +14764,7 @@
       "references": [
         "mod screen",
         "use screen::Frame",
+        "use screen::Overlay",
         "use screen::Screen"
       ]
     },
@@ -14687,6 +14773,143 @@
       "to": "dim_cli::@bin:dimcode::ui::render::testterm",
       "references": [
         "mod testterm"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::render::fullscreen",
+      "to": "dim_cli::@bin:dimcode::ui::render::fullscreen::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::render::fullscreen",
+      "to": "dim_cli::@bin:dimcode::ui::render::panel",
+      "references": [
+        "path clip",
+        "path strip_escapes",
+        "use crate::ui::render::panel::clip",
+        "use crate::ui::render::panel::strip_escapes"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::render::fullscreen",
+      "to": "dim_cli::@bin:dimcode::ui::render::screen",
+      "references": [
+        "path Frame",
+        "path crate::ui::render::Overlay",
+        "path scrub",
+        "use crate::ui::render::Frame",
+        "use crate::ui::render::screen::scrub"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::render::fullscreen",
+      "to": "dim_cli::@bin:dimcode::ui::terminal::input",
+      "references": [
+        "path MouseEvent",
+        "path MouseKind::Drag",
+        "path MouseKind::Press",
+        "path MouseKind::Release",
+        "path MouseKind::WheelDown",
+        "path MouseKind::WheelUp",
+        "use crate::ui::terminal::MouseEvent",
+        "use crate::ui::terminal::MouseKind"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::render::fullscreen",
+      "to": "dim_cli::@bin:dimcode::ui::theme::ansi",
+      "references": [
+        "path Paint",
+        "path Paint::default",
+        "path fg",
+        "path paint",
+        "use crate::ui::theme::ansi::Paint",
+        "use crate::ui::theme::ansi::fg",
+        "use crate::ui::theme::ansi::paint"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::render::fullscreen",
+      "to": "dim_cli::@bin:dimcode::ui::theme::palette",
+      "references": [
+        "path Palette",
+        "use crate::ui::theme::Palette"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::render::fullscreen",
+      "to": "dim_cli::@bin:dimcode::ui::transcript::blocks",
+      "references": [
+        "path display_width",
+        "use crate::ui::transcript::blocks::display_width"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::render::fullscreen::tests",
+      "to": "dim_cli::@bin:dimcode::ui::render::fullscreen",
+      "references": [
+        "path Document",
+        "path FullScreen",
+        "path FullScreen::new",
+        "path WHEEL_ROWS",
+        "path Wheel::default"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::render::fullscreen::tests",
+      "to": "dim_cli::@bin:dimcode::ui::render::osc8",
+      "references": [
+        "path crate::ui::render::osc8::hyperlink"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::render::fullscreen::tests",
+      "to": "dim_cli::@bin:dimcode::ui::render::panel",
+      "references": [
+        "path strip_escapes"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::render::fullscreen::tests",
+      "to": "dim_cli::@bin:dimcode::ui::render::screen",
+      "references": [
+        "path Frame",
+        "path Frame::default",
+        "path Overlay",
+        "use crate::ui::render::Overlay"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::render::fullscreen::tests",
+      "to": "dim_cli::@bin:dimcode::ui::render::testterm",
+      "references": [
+        "path Emu",
+        "path Emu::new",
+        "use crate::ui::render::testterm::Emu"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::render::fullscreen::tests",
+      "to": "dim_cli::@bin:dimcode::ui::terminal::input",
+      "references": [
+        "path MouseEvent",
+        "path MouseKind::Press",
+        "path MouseKind::Release",
+        "path MouseKind::WheelDown"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::render::fullscreen::tests",
+      "to": "dim_cli::@bin:dimcode::ui::theme::palette",
+      "references": [
+        "path Appearance::Dark",
+        "path ColorMode::TrueColor",
+        "path palette_for",
+        "use crate::ui::theme::Appearance",
+        "use crate::ui::theme::ColorMode",
+        "use crate::ui::theme::palette::palette_for"
       ]
     },
     {
@@ -14800,6 +15023,7 @@
       "from": "dim_cli::@bin:dimcode::ui::render::panel",
       "to": "dim_cli::@bin:dimcode::ui::transcript::blocks",
       "references": [
+        "path crate::ui::transcript::blocks::display_width",
         "path display_width",
         "path truncate_cells",
         "use crate::ui::transcript::blocks::display_width",
@@ -14939,8 +15163,16 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::sessions_panel::tests",
+      "to": "dim_cli::@bin:dimcode::ui::render::panel",
+      "references": [
+        "path crate::ui::render::panel::strip_escapes"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::sessions_panel::tests",
       "to": "dim_cli::@bin:dimcode::ui::sessions_panel",
       "references": [
+        "path SessionsPanel",
         "path SessionsPanel::new"
       ]
     },
@@ -14949,7 +15181,9 @@
       "to": "dim_cli::@bin:dimcode::ui::terminal::input",
       "references": [
         "path KeyCode::Char",
+        "path KeyCode::Down",
         "path KeyCode::Enter",
+        "path KeyCode::Up",
         "path KeyEvent::new",
         "path Modifiers::NONE",
         "use crate::ui::terminal::KeyCode",
@@ -14970,7 +15204,9 @@
         "use input::InputEvent",
         "use input::KeyCode",
         "use input::KeyEvent",
-        "use input::Modifiers"
+        "use input::Modifiers",
+        "use input::MouseEvent",
+        "use input::MouseKind"
       ]
     },
     {
@@ -14994,9 +15230,12 @@
       "to": "dim_cli::@bin:dimcode::ui::terminal::modes",
       "references": [
         "mod modes",
+        "path Mode::AltScreen",
         "path Mode::BracketedPaste",
         "path Mode::KittyKeyboard",
         "path Mode::ModifyOtherKeys",
+        "path Mode::Mouse",
+        "path Mode::Title",
         "path modes::clear",
         "path modes::clear_all",
         "path modes::is_live",
@@ -15072,6 +15311,7 @@
         "path Decoder::new",
         "path InputEvent",
         "path InputEvent::Key",
+        "path InputEvent::Mouse",
         "path KeyCode",
         "path coalesce_paste"
       ]
@@ -15103,11 +15343,14 @@
       "references": [
         "path MAX_RESTORE_LEN",
         "path Mode",
+        "path Mode::AltScreen",
         "path Mode::BracketedPaste",
         "path Mode::CursorHidden",
         "path Mode::KittyKeyboard",
         "path Mode::ModifyOtherKeys",
+        "path Mode::Mouse",
         "path Mode::Progress",
+        "path Mode::Title",
         "path live_bits_for",
         "path restore_into"
       ]
@@ -15645,6 +15888,13 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::tui",
+      "to": "dim_cli::@bin:dimcode::browser",
+      "references": [
+        "path crate::browser::open"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::tui",
       "to": "dim_cli::@bin:dimcode::model::session",
       "references": [
         "path Command::Approval",
@@ -15725,6 +15975,14 @@
         "path crate::ui::approvals_panel::MODES",
         "use crate::ui::approvals_panel::ApprovalsPanel",
         "use crate::ui::approvals_panel::status_label"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::tui",
+      "to": "dim_cli::@bin:dimcode::ui::clipboard",
+      "references": [
+        "path crate::ui::clipboard::copy_local",
+        "path crate::ui::clipboard::osc52"
       ]
     },
     {
@@ -15828,6 +16086,23 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::tui",
+      "to": "dim_cli::@bin:dimcode::ui::render::fullscreen",
+      "references": [
+        "path Document",
+        "path FullScreen::focused",
+        "path FullScreen::new",
+        "path MouseOutcome::Copy",
+        "path MouseOutcome::Ignored",
+        "path MouseOutcome::Open",
+        "path MouseOutcome::Overlay",
+        "path MouseOutcome::Redraw",
+        "use crate::ui::render::FullScreen",
+        "use crate::ui::render::fullscreen::Document",
+        "use crate::ui::render::fullscreen::MouseOutcome"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::tui",
       "to": "dim_cli::@bin:dimcode::ui::render::markdown",
       "references": [
         "path MarkdownRenderer",
@@ -15837,12 +16112,22 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::tui",
+      "to": "dim_cli::@bin:dimcode::ui::render::panel",
+      "references": [
+        "path clip",
+        "use crate::ui::render::panel::clip"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::tui",
       "to": "dim_cli::@bin:dimcode::ui::render::screen",
       "references": [
         "path Frame",
         "path Frame::default",
+        "path Overlay",
         "path Screen::new",
         "use crate::ui::render::Frame",
+        "use crate::ui::render::Overlay",
         "use crate::ui::render::Screen"
       ]
     },
@@ -15864,6 +16149,7 @@
         "path Wait::Event",
         "path Wait::Lost",
         "path Wait::Timeout",
+        "path crate::ui::terminal::in_tmux",
         "use crate::ui::terminal::Terminal",
         "use crate::ui::terminal::TerminalError",
         "use crate::ui::terminal::Wait"
@@ -15875,11 +16161,18 @@
       "references": [
         "path InputEvent",
         "path InputEvent::Key",
+        "path InputEvent::Mouse",
         "path InputEvent::Paste",
+        "path KeyCode::BackTab",
         "path KeyCode::Char",
+        "path KeyCode::Down",
         "path KeyCode::Esc",
+        "path KeyCode::PageDown",
+        "path KeyCode::Tab",
         "path KeyCode::Up",
         "path Modifiers::CTRL",
+        "path Modifiers::NONE",
+        "path crate::ui::terminal::KeyEvent::new",
         "use crate::ui::terminal::InputEvent",
         "use crate::ui::terminal::KeyCode",
         "use crate::ui::terminal::Modifiers"
@@ -15973,12 +16266,14 @@
         "path UserStyle",
         "path apply_gutter_mark",
         "path crate::ui::transcript::blocks::display_width",
+        "path display_width",
         "path gutter_width",
         "path render_user",
         "path truncate_cells",
         "use crate::ui::transcript::blocks::ASSISTANT_MARK",
         "use crate::ui::transcript::blocks::UserStyle",
         "use crate::ui::transcript::blocks::apply_gutter_mark",
+        "use crate::ui::transcript::blocks::display_width",
         "use crate::ui::transcript::blocks::gutter_width",
         "use crate::ui::transcript::blocks::render_user",
         "use crate::ui::transcript::blocks::truncate_cells"
@@ -16028,11 +16323,17 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::tui::tests",
+      "to": "dim_cli::@bin:dimcode::ui::render::panel",
+      "references": [
+        "path clip"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::tui::tests",
       "to": "dim_cli::@bin:dimcode::ui::tui",
       "references": [
         "path boxed",
-        "path chunk",
-        "path clip"
+        "path chunk"
       ]
     },
     {
@@ -16416,12 +16717,36 @@
       "path": "char::from_u32"
     },
     {
+      "module": "dim_cli::@bin:dimcode::ui::clipboard",
+      "path": "Command::new"
+    },
+    {
+      "module": "dim_cli::@bin:dimcode::ui::clipboard",
+      "path": "Stdio::null"
+    },
+    {
+      "module": "dim_cli::@bin:dimcode::ui::clipboard",
+      "path": "Stdio::piped"
+    },
+    {
       "module": "dim_cli::@bin:dimcode::ui::composer",
       "path": "char::is_whitespace"
     },
     {
       "module": "dim_cli::@bin:dimcode::ui::providers_panel",
       "path": "Clone::clone"
+    },
+    {
+      "module": "dim_cli::@bin:dimcode::ui::render::fullscreen",
+      "path": "char::len_utf8"
+    },
+    {
+      "module": "dim_cli::@bin:dimcode::ui::sessions_panel::tests",
+      "path": "Appearance::Dark"
+    },
+    {
+      "module": "dim_cli::@bin:dimcode::ui::sessions_panel::tests",
+      "path": "ColorMode::TrueColor"
     },
     {
       "module": "dim_cli::@bin:dimcode::ui::terminal::input",
@@ -16438,6 +16763,10 @@
     {
       "module": "dim_cli::@bin:dimcode::ui::transcript::stream::tests",
       "path": "Emu::new"
+    },
+    {
+      "module": "dim_cli::@bin:dimcode::ui::transcript::stream::tests",
+      "path": "Frame::default"
     },
     {
       "module": "dim_cli::@bin:dimcode::ui::transcript::stream::tests",
