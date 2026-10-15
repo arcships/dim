@@ -214,8 +214,8 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 | --- | --- |
 | 被什么挡住 | ADR 002 后果：可选的 Session 与分支部分只在启用时安装。 |
 | 考虑过的现有机制 | 全部安装、在部分内部检查：这是 ADR 不允许的占位。每个插件在宿主侧调用 `AgentBuilder`：不是语言中立的（D5）。 |
-| 需要的通用能力 | Agent 装配收集每个已安装插件在 `provides` 中声明的具名服务，只在插件启用时安装该部分，且不等可选部分进入激活状态：Session 先在没有它的情况下建好，只是该插件的功能不可用。是否接入在 Session 发布时（`SessionLifecycle::activated()` 时）决定；之后才起来的部件在下次 Session 重载时接入，因此一次装载内工具集合保持不变（ADR 002 D3，#34）。安装从不依赖 `interactive` 等 `SessionConfig` 字段，因此 fork 前后工具集合与提示词前缀保持一致（#30）。 |
-| 对序号、批次、中断、重载的影响 | 在 Session 发布时决定，Session 重载时重新决定；启用插件只影响之后装载的 Session。 |
+| 需要的通用能力 | Agent 装配收集每个已安装插件在 `provides` 中声明的具名服务，只在插件启用时安装该部分，且不等可选部分进入激活状态：Session 先在没有它的情况下建好，只是该插件的功能不可用。是否接入在 session-boundary A.5 所述的 Session 准备阶段、分支打开前决定；之后才起来的部件在下次 Session 重载时接入，因此一次装载内工具集合保持不变（ADR 002 D3，#34）。安装从不依赖 `interactive` 等 `SessionConfig` 字段，因此 fork 前后工具集合与提示词前缀保持一致（#30）。 |
+| 对序号、批次、中断、重载的影响 | 在分支打开前的 Session 准备阶段决定，Session 重载时重新决定；启用插件只影响之后装载的 Session。 |
 | 由谁实现、对应 issue | 运行时（Agent 装配）；issue 待开。 |
 
 离线相关行用到的 #5 在 [ExternalAgent §9](../plugins/ExternalAgent.md#9-向机制所有者提出的需求) 提出。`input/withdraw` 的可选 `reason` 和 `LaunchRequest.agent` 的缺省值是 InputQueue 与 Agents 的变更，列在[总览附录 B](../overview.md#附录-b-现有插件的补充)。

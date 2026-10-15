@@ -12,7 +12,7 @@
 
 **管理方法**是关于宿主而不是某个 Session 的客户端 RPC 方法：`account.*`、`provider.*`、`mcp.*`、`skills.*`，以及新进程插件的方法（设置方法是后续工作，Settings 目前不发布任何方法）。`daemon.shutdown` 仍是 Rpc 内建方法，同样从不提供给已配对设备。#14 之前，Rpc 直接注入这些服务（[connection.rs](../../../../crates/dim-app-server/src/connection.rs) 中的 `ProductServices` 与 `ExecutionServices`）；#14 删除了它们，Rpc 现在通过 `managementMethods` 按调用查找这些方法，不依赖其提供方。只有进程插件提供管理方法，已配对的远程设备从不获得它们。Session 方法没有级别；唯一的区分是 `sessionMethods`（经 Session 分发）与 `managementMethods`。
 
-提议（P3，随 RemoteGateway；未实现）：Rpc 依据连接的 `ConnectionEntry {name, deviceId}` 决定为它服务什么：本地连接获得 Session 方法和管理方法，带 `deviceId` 的连接（经 RemoteGateway 的已配对设备）从不获得管理方法，导出的 rutis 链接只在导出时获得管理方法。目前 Rpc 按现有的传输 profile 规则（A.3）为每个连接服务。没有注册表、没有端口，也没有 Management 插件。提供方是只在启用时安装的可选插件。Rpc 在每次调用时查找 `managementMethods` 提供方，不依赖它们，因此未启用、Pending、Failed 或正在重载的提供方只影响自己的命名空间（§3.2）。ToolRegistry 同样不依赖 `toolContribution` 提供方：接入哪些提供方在 Session 发布时（`SessionLifecycle::activated()` 时）决定，之后才激活的提供方在下次 Session 重载时接入（A.5）。
+提议（P3，随 RemoteGateway；未实现）：Rpc 依据连接的 `ConnectionEntry {name, deviceId}` 决定为它服务什么：本地连接获得 Session 方法和管理方法，带 `deviceId` 的连接（经 RemoteGateway 的已配对设备）从不获得管理方法，导出的 rutis 链接只在导出时获得管理方法。目前 Rpc 按现有的传输 profile 规则（A.3）为每个连接服务。没有注册表、没有端口，也没有 Management 插件。提供方是只在启用时安装的可选插件。Rpc 在每次调用时查找 `managementMethods` 提供方，不依赖它们，因此未启用、Pending、Failed 或正在重载的提供方只影响自己的命名空间（§3.2）。ToolRegistry 同样不依赖 `toolContribution` 提供方：接入哪些提供方在 Session 准备阶段、分支打开前决定，之后才激活的提供方在下次 Session 重载时接入（A.5）。
 
 在工具调用或输入提交前对其作出处理不是本合同的服务。Approval 和 Session 输入路径不变；InputQueue 的撤回是其所有者的变更（[总览附录 B](../overview.md#附录-b-现有插件的补充)）。
 
@@ -154,12 +154,12 @@ sequenceDiagram
 | §4 第 5 条（批次） | 不适用：本文没有依据 Timeline 事件做的决定；所有者依据自己的事实决定。 |
 | §4 第 6 条（模型上下文） | 方法对模型不可见，`toolContribution` 只通过其声明和 `ToolResult` 到达模型（§5）。 |
 | §4 第 7 条（公开事件与服务） | 提供方只通过分支的公开服务到达分支，Rpc 只经 Session 的 `sessionMethods` 分发。 |
-| §4 第 8 条（需求） | 按名称对 Session 服务做带 key 的读取在 §9.1 提出；卸载时等待 drain、列出已激活提供方已撤回（rutis 是外部依赖）。 |
+| §4 第 8 条（需求） | 按名称对 Session 服务做带 key 的读取在 §9.1 提出；C3 的启动准备需求见 [Session 启动就绪 §9](../../../design/contracts/session-readiness.md#9-requirements-raised-to-mechanism-owners)。卸载时等待 drain、列出已激活提供方已撤回（rutis 是外部依赖）。 |
 | §4 第 9 条（只有决定用的事实进 Timeline） | 方法表与入口服务范围是装配数据，从不是 Timeline 事实（§2）。 |
 | §1（Capability 与 App Server 边界） | Rpc 只收集和分发；每个方法的业务代码在其提供方插件中。 |
 | ADR 002 D1 | `sessionMethods` 与 `toolContribution` 是 Session 级，`managementMethods` 是进程级，与其所有者一致。 |
 | ADR 002 D2 | 没有注册表、端口或 Management 插件；Rpc 与 ToolRegistry 按名称收集。 |
-| ADR 002 D3 | 提供方只依赖自身或外层作用域。ToolRegistry 接入 Session 发布时已激活的 `toolContribution` 提供方，不依赖它们（A.5）；Rpc 既不依赖管理方法提供方（§3.2），也不依赖 Session 方法提供方（A.1），因此它们的重载只影响自己的命名空间。 |
+| ADR 002 D3 | 提供方只依赖自身或外层作用域。ToolRegistry 接入 Session 准备阶段已激活的 `toolContribution` 提供方，不依赖它们（A.5）；Rpc 既不依赖管理方法提供方（§3.2），也不依赖 Session 方法提供方（A.1），因此它们的重载只影响自己的命名空间。 |
 | ADR 002 D4 | 链接的管理方法导出是宿主本地的结构性配置；本文不定义业务配置。 |
 | ADR 002 D5 | 每个服务都有名称、作用域、key 和纯数据方法；Rust 类型只出现在附录 F。已实现的 `managementMethods` Rust 绑定是一个子集，尚未满足 D5（附录 F）。 |
 
@@ -294,7 +294,11 @@ sequenceDiagram
 
 ### A.5 工具贡献
 
-ToolRegistry 补充（C3，未实现）：除如今已注册的工具外，ToolRegistry 接受具名工具服务。ToolRegistry 接入哪些工具服务在 Session 发布时，即 `SessionLifecycle::activated()` 时决定：它接入此时提供方已激活的工具服务，不对它们形成硬依赖；之后才激活的提供方在下次 Session 重载时接入（ADR 002 D3，#34）。接入的工具沿动态工具源的现有路径进入分支已采纳的工具集：ToolRegistry 发出 `changed()`，各分支的 ToolBinding 把 registry 当前的工具集作为 `context/configured` 事实的工具部分采纳（`Prompt::adopt_tools`）。这一采纳在分支的后台任务中进行，因此在它之前准备的模型请求声明的是之前的工具集；所以 C3 要求接入在 Session 接受输入之前完成。`SessionConfig.tools` 中列出、但提供方缺失或未激活的工具被省略，不会使 Session 失败，省略会在诊断中报告。目前 ToolRegistry 注入 `Contributions<ToolContribution>`，属于硬依赖，并且已启用工具没有提供方时会使 Session 失败（[tool_registry.rs](../../../../crates/dim-agent-capabilities/src/tool_registry.rs)）；C3 修改这两点。在 #4 提供基于 `provides` 的注册之前，工具名来自宿主侧的 `AgentBuilder::session_tool`。名称唯一性、与宿主工具冲突以及通过 `SessionConfig.tools` 启用的其他规则不变（[工具贡献](../../../architecture/rust-agent/tool-contributions.md)）。
+ToolRegistry 补充（C3，未实现；[Session 启动就绪合同](../../../design/contracts/session-readiness.md) 为 Proposed）：除如今已注册的工具外，ToolRegistry 接受具名工具服务，不对其提供方形成硬依赖。创建或恢复 Session 时，ToolRegistry 在必需 Session 部件全部 Active 且审计完成后、分支打开前，通过 `SessionOpening` 准备完整固定表，取样接入此时 Active 的已登记提供方。`SessionConfig.tools` 中列出、但提供方缺失或未激活的工具被省略，并记录诊断，不使 Session 失败。取样后才 Active 的提供方在下次 Session 重载时接入（ADR 002 D3，#34），不自动热接入。
+
+分支随后通过已有的打开流程采用准备好的工具表：Prompt 与 ToolBinding 完成 `context/configured` 的工具部分（`Prompt::adopt_tools`），`BranchOpening` 等待完成回执及已提交事件的派发 fence。没有已采用的模型配置时，沿用 `PrepareModelHost` / `bind_current` 读取同一张准备好的表。分支打开完成后，Agent 才发布 Session 并触发 `SessionLifecycle::activated()`；创建或恢复返回后，第一个输入即可使用已接入工具。动态来源变化和单独的注册表重载保持现有 `changed()` / ToolBinding 采用与请求快照行为，不重开首次准备阶段。
+
+目前 ToolRegistry 注入 `Contributions<ToolContribution>`，属于硬依赖，并且已启用工具没有提供方时会使 Session 失败（[tool_registry.rs](../../../../crates/dim-agent-capabilities/src/tool_registry.rs)）；C3 修改这两点。在 #4 提供基于 `provides` 的注册之前，工具名来自宿主侧的 `AgentBuilder::session_tool`。名称唯一性、与宿主工具冲突以及通过 `SessionConfig.tools` 启用的其他规则不变（[工具贡献](../../../architecture/rust-agent/tool-contributions.md)）。
 
 | 方法 | 模式 | 请求 | 回复 |
 | --- | --- | --- | --- |
@@ -316,7 +320,7 @@ ToolRegistry 补充（C3，未实现）：除如今已注册的工具外，ToolR
   "structuredContent?": {}, "isError": false }
 ```
 
-取消：turn 中断时针对 `callId` 发送取消请求（或丢弃调用）；ToolExecutor 把该调用按中断结算。提供方错误以 `isError: true` 的 `ToolResult` 返回。声明可以取决于该 Session 的配置。ToolRegistry 在 `activated()` 接入提供方时读取一次；之后的提供方代次在下次 Session 重载时接入，届时读取其声明。
+取消：turn 中断时针对 `callId` 发送取消请求（或丢弃调用）；ToolExecutor 把该调用按中断结算。提供方错误以 `isError: true` 的 `ToolResult` 返回。声明可以取决于该 Session 的配置。ToolRegistry 为本次装载准备固定表时读取一次；之后的提供方代次在下次 Session 重载时接入，届时读取其声明。
 
 ## 附录 B. 完整冲突表
 
@@ -375,7 +379,7 @@ ToolRegistry 补充（C3，未实现）：除如今已注册的工具外，ToolR
 | --- | --- | --- | --- | --- |
 | `managementMethods[ns]` | `ManagementMethods`，进程作用域，key 为 `TypeKey::keyed_dynamic::<ManagementMethods>(ns)` | 在所有者的 `apply` 中调用 `ManagementMethods::provide(ctx, ns, Vec<MethodDecl>, Handler)`；装配把 `(ns, row)` 对加入 `Owners` | 按调用经 `Owners`：用 `Ctx::get_as` 按 key 读取，行状态来自 `loader.get(row)`；不在 Rpc 的 `Deps` 中 | 已实现（#14） |
 | `sessionMethods[ns]` | 用 dim-agent-types 中的共享类型构建的、`ManagementMethods` 的 Session 级对应物，key 为 `SessionScope::named_key::<T>(ns)` | `AgentBuilder::session_methods(ns)`，同时记录该 Session 的已知命名空间 | `Session::session_named_service::<T>(ns)`（§9.1） | 未实现（C1） |
-| `toolContribution[tool]` | `ToolContribution {definition, handler}`，`SessionScope::named_key::<ToolContribution>(tool)` | `AgentBuilder::session_tool(tool)`（已有） | 目前是 `Contributions<ToolContribution>`，属于硬依赖；已启用工具缺少提供方会使 Session 失败。C3：在 `SessionLifecycle::activated()` 时按 key 读取，缺失或未激活的提供方被省略并在诊断中报告 | 由 C3 修改 |
+| `toolContribution[tool]` | `ToolContribution {definition, handler}`，`SessionScope::named_key::<ToolContribution>(tool)` | `AgentBuilder::session_tool(tool)`（已有） | 目前是 `Contributions<ToolContribution>`，属于硬依赖；已启用工具缺少提供方会使 Session 失败。C3：在分支打开前的 `SessionOpening` 中按 key 读取，缺失或未激活的提供方被省略并在诊断中报告 | 由 C3 修改 |
 | `callChannel` | — | — | — | 未实现 |
 
 ```rust

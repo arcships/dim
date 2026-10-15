@@ -19,7 +19,7 @@ flowchart LR
     Exec["ToolBinding、ToolExecutor、Approval、Permission"]
   end
   Web -->|"使用时读取来源 web，解析 secretRef"| Settings
-  ToolRegistry -.->|"Session 发布时接入 toolContribution"| Web
+  ToolRegistry -.->|"Session 准备时接入 toolContribution"| Web
   Exec --> ToolRegistry
   Exec -->|"execute(ToolCall)、取消请求"| Web
   classDef new fill:#d3f9d8,stroke:#2b8a3e,color:#000
@@ -31,7 +31,7 @@ flowchart LR
 
 **依赖的契约：** `toolContribution`（附录 A.1）；Settings 业务来源与凭据引用解析器；由 Permission 读取的 `ToolDefinition.risk = "network"`（既有，[permission.rs](../../../../crates/dim-agent-capabilities/src/permission.rs)）。**本文定义的契约：** 工具名称、参数与结果格式；`web` 业务文档。诊断通道是既有的类型化服务。Settings 来源目前只通过 Rust 的 `BusinessDocument` 绑定存在；语言中立的 `settings` 服务和凭据引用解析器是尚未实现的 Settings 补充（S8b，[总体设计 §6.4](../overview.md#64-约定) 与[附录 B.2](../overview.md#b2-app-server-进程插件)）。将它们按名称暴露给 TypeScript 实现属于 issue [#4](https://github.com/arcships/dim/issues/4) 的工作，见 [session-access §9](../contracts/session-access.md#9-向机制所有者提出的需求)。
 
-**重载。** Web 只依赖外层作用域（Settings）。启用、禁用或升级 Web，或 Settings 重载，只重载 Web：ToolRegistry 在 Session 发布时接入 Web 的工具，不依赖 Web（session-boundary A.5，C3），因此 Session 照常运行，Web 的工具在下次重载前不可用；在途调用由 ToolExecutor 以 reloaded 结算。这是罕见结构性操作的可接受代价（[ADR 002 D3](../../adr/002-plugin-scope.md)）。配置编辑从不重载。
+**重载。** Web 只依赖外层作用域（Settings）。启用、禁用或升级 Web，或 Settings 重载，只重载 Web：ToolRegistry 在 Session 准备时接入 Web 的工具，不依赖 Web（session-boundary A.5，C3），因此 Session 照常运行，Web 的工具在下次重载前不可用；在途调用由 ToolExecutor 以 reloaded 结算。这是罕见结构性操作的可接受代价（[ADR 002 D3](../../adr/002-plugin-scope.md)）。配置编辑从不重载。
 
 **节点。** 请求从承载该 Session 的 App Server 进程发出，而非从 Session 的资源节点发出（A2）。
 

@@ -2,6 +2,8 @@
 
 状态：已实现（事件驱动中断与单树装配）。执行状态归各能力自己持有，不设统一后台任务层。对象与能力分工见[架构](../README.md)，框架接口依据见[单树装配](single-tree.md#rutis)。
 
+提案：[Session 启动就绪](../../design/contracts/session-readiness.md) 描述发布前、分支打开前的准备阶段；尚未实现，本文继续描述当前生命周期。
+
 ## 1. 作用域与拥有关系
 
 ```mermaid

@@ -19,7 +19,7 @@ flowchart LR
     Exec["ToolBinding, ToolExecutor, Approval, Permission"]
   end
   Web -->|"read source web at use, resolve secretRef"| Settings
-  ToolRegistry -.->|"attaches toolContribution at Session publication"| Web
+  ToolRegistry -.->|"attaches toolContribution during Session preparation"| Web
   Exec --> ToolRegistry
   Exec -->|"execute(ToolCall), cancel request"| Web
   classDef new fill:#d3f9d8,stroke:#2b8a3e,color:#000
@@ -31,7 +31,7 @@ flowchart LR
 
 **Contracts depended on:** `toolContribution` (Appendix A.1); Settings business source and credential-reference resolver; `ToolDefinition.risk = "network"` read by Permission (existing, [permission.rs](../../../crates/dim-agent-capabilities/src/permission.rs)). **Contracts defined here:** tool names, parameters and result formats; the `web` business document. The diagnostics channel is an existing typed service. Settings sources exist today only through the Rust `BusinessDocument` binding; the language-neutral `settings` service and the credential-reference resolver are Settings supplements that are not implemented yet (S8b, [overview §6.4](../overview.md#64-conventions) and [Appendix B.2](../overview.md#b2-app-server-process-plugins)). Exposing them by name to the TypeScript implementation is issue [#4](https://github.com/arcships/dim/issues/4)'s work, stated in [session-access §9](../contracts/session-access.md#9-requirements-raised-to-mechanism-owners).
 
-**Reload.** Web depends only on an enclosing scope (Settings). Enabling, disabling or upgrading Web, or a Settings reload, reloads Web only: ToolRegistry attaches Web's tools when the Session is published and does not depend on Web (session-boundary A.5, C3), so the Session keeps running and Web's tools are absent until its next reload; an in-flight call is settled by ToolExecutor as reloaded. This is the accepted cost of a rare structural operation ([ADR 002 D3](../../adr/002-plugin-scope.md#d3-dependencies-follow-scope-rare-restarts-are-accepted)). Configuration edits never reload.
+**Reload.** Web depends only on an enclosing scope (Settings). Enabling, disabling or upgrading Web, or a Settings reload, reloads Web only: ToolRegistry attaches Web's tools during Session preparation and does not depend on Web (session-boundary A.5, C3), so the Session keeps running and Web's tools are absent until its next reload; an in-flight call is settled by ToolExecutor as reloaded. This is the accepted cost of a rare structural operation ([ADR 002 D3](../../adr/002-plugin-scope.md#d3-dependencies-follow-scope-rare-restarts-are-accepted)). Configuration edits never reload.
 
 **Node.** Requests leave from the App Server process that hosts the Session, not from the Session's resource node (A2).
 

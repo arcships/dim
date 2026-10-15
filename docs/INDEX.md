@@ -4,6 +4,7 @@
 - [Overall design for undesigned features](design/overview.md)（[中文](zh/design/overview.md)）
 - [Plugin designs index](design/plugins/README.md)（[中文](zh/design/plugins/README.md)）
 - [Development plan and priorities](design/roadmap.md)（中文）
+- [Session startup readiness proposal](design/contracts/session-readiness.md)（中文；待确认）
 - [ADR 002 — Plugin scope](adr/002-plugin-scope.md)（[中文](zh/adr/002-plugin-scope.md)）
 - [ADR 003 — Approval scope](adr/003-approval-scope.md)（[中文](zh/adr/003-approval-scope.md)）
 - [ADR 004 — Session-owned MCP and business configuration](adr/004-loader-plugin-management.md)
