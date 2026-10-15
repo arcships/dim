@@ -19,8 +19,13 @@ pub const CHROME_ROWS: usize = 4;
 const HINT: &str = "type filter · enter select · esc clear/close";
 const ESC_CLOSE: &str = "esc close";
 
-/// Listed commands matching `query`: name/alias prefixes first, then
-/// contains matches on names, aliases or the description.
+/// Listed commands matching `query`, best first: the exact name, a name
+/// prefix, an alias prefix, a name part prefix (`reload-skills` for `sk`),
+/// a name containing it, a description word starting with it, then three
+/// or more of the query's letters in order through the name (`stg` for
+/// `settings`).
+/// Registry order breaks ties; a match inside a description word is noise
+/// and is left out.
 pub fn filter_commands(query: &str, context: Context) -> Vec<&'static Command> {
     let normalized = query.trim().to_lowercase();
     let normalized = normalized
@@ -32,30 +37,54 @@ pub fn filter_commands(query: &str, context: Context) -> Vec<&'static Command> {
     if normalized.is_empty() {
         return listed.collect();
     }
-    let mut prefix = Vec::new();
-    let mut contains = Vec::new();
-    for command in listed {
-        let names = std::iter::once(command.name).chain(command.aliases.iter().copied());
-        let mut starts = false;
-        let mut has = false;
-        for name in names {
-            if name.starts_with(&normalized) {
-                starts = true;
-            } else if name.contains(&normalized) {
-                has = true;
-            }
-        }
-        if starts {
-            prefix.push(command);
-        } else if has
-            || command.description.to_lowercase().contains(&normalized)
-            || t(command.description).to_lowercase().contains(&normalized)
-        {
-            contains.push(command);
-        }
-    }
-    prefix.extend(contains);
-    prefix
+    let mut ranked: Vec<(u8, &'static Command)> = listed
+        .filter_map(|command| rank(command, &normalized).map(|r| (r, command)))
+        .collect();
+    // A stable sort keeps registry order within a rank.
+    ranked.sort_by_key(|(rank, _)| *rank);
+    ranked.into_iter().map(|(_, command)| command).collect()
+}
+
+/// How well `command` matches the lowercase `query`; `None` for no match.
+fn rank(command: &Command, query: &str) -> Option<u8> {
+    let name = command.name;
+    let word_starts = |text: &str| {
+        text.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|word| word.starts_with(query))
+    };
+    // Text without spaces between words (Chinese) matches anywhere.
+    let translated = t(command.description).to_lowercase();
+    let described = word_starts(command.description)
+        || (!query.is_ascii() && translated.contains(query))
+        || word_starts(&translated);
+    // Letters in order are a loose match: only for three or more that
+    // start where the name does.
+    let mut letters = name.chars();
+    let in_order = query.chars().count() >= 3
+        && name.chars().next() == query.chars().next()
+        && query.chars().all(|q| letters.any(|c| c == q));
+    Some(if name == query {
+        0
+    } else if name.starts_with(query) {
+        1
+    } else if command.aliases.iter().any(|a| a.starts_with(query)) {
+        2
+    } else if name
+        .split(['-', ':'])
+        .skip(1)
+        .any(|part| part.starts_with(query))
+    {
+        3
+    } else if name.contains(query) || command.aliases.iter().any(|a| a.contains(query)) {
+        4
+    } else if described {
+        5
+    } else if in_order {
+        6
+    } else {
+        return None;
+    })
 }
 
 /// A skill offered next to the commands (`$skill: name`).
@@ -583,7 +612,15 @@ mod tests {
     }
 
     #[test]
-    fn prefixes_come_before_contains_matches() {
+    fn a_name_prefix_outranks_an_alias_and_descriptions() {
+        // `/settings` by name before `/resume` by its `sessions` alias, then
+        // description words (session, select, server); "collapse" is not a
+        // match for "se".
+        assert_eq!(
+            names("/se", SCROLLBACK),
+            ["settings", "resume", "new", "models", "reconnect"]
+        );
+        assert_eq!(names("/stg", SCROLLBACK), ["settings"]);
         assert_eq!(&names("/re", SCROLLBACK)[..2], ["resume", "reconnect"]);
         // "sessions" (an alias of resume) only contains "ss".
         assert!(names("/ss", SCROLLBACK).contains(&"resume"));
