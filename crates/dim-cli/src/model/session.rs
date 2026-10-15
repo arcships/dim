@@ -7,6 +7,8 @@ use crate::model::view::{Answers, ViewSnapshot};
 
 pub enum Command {
     Submit(String),
+    /// Context for the model's next request that does not start a turn.
+    Append(String),
     Stop,
     /// Answer an approval request.
     Approval {

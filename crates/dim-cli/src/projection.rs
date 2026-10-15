@@ -12,6 +12,7 @@ use dim_agent_types::{
 };
 use serde_json::Value;
 
+use crate::model::shell::ShellRun;
 use crate::model::view::{ApprovalView, RowKind, RowTone, ViewRow, ViewSnapshot};
 use crate::wire::{Event, EventContent, Progress};
 
@@ -49,7 +50,12 @@ impl Projection {
             EventContent::Input(data) => {
                 if let Some(user) = &data.user {
                     let text = text_of(&user.content);
-                    self.push(format!("user-{sequence}"), RowKind::UserMessage, text);
+                    let kind = if ShellRun::parse(&text).is_some() {
+                        RowKind::Shell
+                    } else {
+                        RowKind::UserMessage
+                    };
+                    self.push(format!("user-{sequence}"), kind, text);
                 }
             }
             EventContent::ModelStart(data) => {

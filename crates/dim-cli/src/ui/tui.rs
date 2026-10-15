@@ -8,11 +8,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::model::session::{Command, SessionPort, SwitchKind, Update};
+use crate::model::shell::{Outcome as ShellOutcome, ShellRun};
 use crate::model::view::{RowKind, ViewRow, ViewSnapshot};
 use crate::ui::Env;
 use crate::ui::approvals_panel::{ApprovalsPanel, status_label};
 use crate::ui::composer::commands::{COMMANDS, Context as CommandContext, Needs};
-use crate::ui::composer::{Composer, Outcome as ComposerOutcome, history};
+use crate::ui::composer::{Composer, Outcome as ComposerOutcome, Shell, history};
 use crate::ui::i18n::{self, t, tf};
 use crate::ui::language_panel::LanguagePanel;
 use crate::ui::models_panel::ModelsPanel;
@@ -42,6 +43,11 @@ use crate::ui::transcript::tool_group::{Detail, project_group, render_group};
 /// The stop reason and the note committed when the user interrupts a run.
 pub const INTERRUPT_REASON: &str = "User interrupted the run.";
 const COMPOSER_PLACEHOLDER: &str = "Ask anything...";
+const SHELL_PLACEHOLDER: &str = "Run a shell command · Esc to exit";
+/// Output rows a shell-mode block shows.
+const SHELL_PREVIEW_LINES: usize = 10;
+/// Command rows a shell-mode block shows.
+const SHELL_COMMAND_LINES: usize = 3;
 /// `config.json` key of the tool detail toggle, shared with the TS CLI.
 const TOOL_DETAILS_KEY: &str = "tuiToolDetailsExpanded";
 /// Frames are coalesced to roughly 60 Hz.
@@ -581,6 +587,10 @@ struct App {
     palette_stash: Option<String>,
     /// The workspace's git branch for the banner, read once.
     branch: String,
+    /// The shell-mode command running, at most one.
+    shell: Option<crate::ui::shell::Running>,
+    /// Finished `!!` runs owed to the transcript.
+    shell_runs: Vec<ShellRun>,
 }
 
 /// Widest the fullscreen command palette is drawn (Amp's).
@@ -675,6 +685,8 @@ impl App {
             notified_request: None,
             palette_stash: None,
             branch: git_branch().unwrap_or_else(|| t("Not available").into()),
+            shell: None,
+            shell_runs: Vec::new(),
         }
     }
 
@@ -833,6 +845,19 @@ impl App {
         }
         if self.exit_armed_until.is_some_and(|until| now >= until) {
             self.exit_armed_until = None;
+        }
+        // A running command's output streams in; a finished one is
+        // recorded (`!`) or committed here (`!!`).
+        if let Some(running) = &self.shell {
+            changed = true;
+            if let Some(run) = running.finished() {
+                self.shell = None;
+                if run.private {
+                    self.shell_runs.push(run);
+                } else {
+                    self.host.send(Command::Append(run.context_text()));
+                }
+            }
         }
         if self.running() && self.prompt.is_none() {
             let beat = (now
@@ -1027,11 +1052,19 @@ impl App {
                 return Outcome::Continue;
             }
             KeyCode::Esc if !self.composer.palette_open() => {
-                if self.running() {
+                if let Some(running) = &self.shell {
+                    running.interrupt();
+                } else if self.running() {
                     self.interrupt();
-                } else if !self.composer.is_empty() {
+                } else if !self.composer.is_empty() || self.composer.shell().is_some() {
                     self.composer.clear();
                 }
+                return Outcome::Continue;
+            }
+            KeyCode::Enter
+                if key.mods.0 == 0 && self.composer.shell().is_some() && self.shell.is_some() =>
+            {
+                self.set_notice(t("A shell command is already running"));
                 return Outcome::Continue;
             }
             KeyCode::Up
@@ -1060,6 +1093,17 @@ impl App {
                 }
                 self.host.submit(text);
             }
+            ComposerOutcome::Shell { command, shell } => {
+                let entry = format!("{}{command}", shell.prefix());
+                let _ = history::append(&self.home, &self.cwd_key, &entry);
+                self.composer.push_history(&entry);
+                self.jump = Some(Jump::Bottom);
+                self.shell = Some(crate::ui::shell::Running::start(
+                    command,
+                    shell == Shell::Private,
+                    std::path::Path::new(&self.cwd_key),
+                ));
+            }
             ComposerOutcome::Command { name, args } => return self.run_command(&name, &args),
             ComposerOutcome::Handled | ComposerOutcome::Pass => {}
         }
@@ -1071,6 +1115,15 @@ impl App {
     /// session in fullscreen (where Esc interrupts), clears the draft, then
     /// warns, then exits — through the confirmation while busy.
     fn ctrl_c(&mut self) -> Outcome {
+        // A running shell command is stopped first.
+        if let Some(running) = &self.shell {
+            running.interrupt();
+            return Outcome::Continue;
+        }
+        if self.composer.is_empty() && self.composer.shell().is_some() {
+            self.composer.clear();
+            return Outcome::Continue;
+        }
         let now = Instant::now();
         let armed = self.exit_armed_until.is_some_and(|until| now < until);
         if self.fullscreen
@@ -1618,6 +1671,12 @@ impl App {
             self.record(Block::Status { text, tone });
             frame.commits.push(chunk_text);
         }
+        for run in std::mem::take(&mut self.shell_runs) {
+            let block = Block::Shell(run);
+            let text = chunk(&render_block(&block, width, &self.palette, &self.markdown));
+            self.record(block);
+            frame.commits.push(text);
+        }
         if let Some(message) = self.failure.clone()
             && !self.failure_committed
         {
@@ -1638,6 +1697,27 @@ impl App {
         } else {
             tail
         };
+        if let Some(running) = self.shell.as_ref().filter(|_| self.prompt.is_none()) {
+            let (output, total) = running.tail(SHELL_PREVIEW_LINES);
+            let status = tf(
+                "Running… · Ctrl+C to interrupt · {seconds}s",
+                &[("seconds", &running.started.elapsed().as_secs().to_string())],
+            );
+            let rows = render_shell(
+                &running.command,
+                running.private,
+                &output,
+                total - output.len(),
+                Some((&status, &self.palette.muted)),
+                width,
+                &self.palette,
+            );
+            live.push(String::new());
+            live.extend(
+                rows.into_iter()
+                    .map(|r| format!("{}{r}", " ".repeat(MARGIN))),
+            );
+        }
         frame.dock = live.len();
         if self.prompt.is_none() {
             let queued = self.queued();
@@ -1671,15 +1751,26 @@ impl App {
             )
         });
         let inner = cols.saturating_sub(2 * MARGIN + 4).max(1);
-        let prompt = "\u{203a} ";
-        let prompt_width = 2;
+        let shell = self.composer.shell();
+        let prompt = match shell {
+            Some(shell) => format!("{} ", shell.prefix()),
+            None => "\u{203a} ".to_owned(),
+        };
+        let prompt = prompt.as_str();
+        let prompt_width = prompt.chars().count();
         let text_width = inner.saturating_sub(prompt_width).max(1);
         let p = &self.palette;
         self.composer.set_context(self.context());
         let mut rows: Vec<String> = Vec::new();
         // While a panel or prompt owns the keyboard the composer's mark dims.
+        let shell_color = match shell {
+            Some(Shell::Private) => &p.muted,
+            _ => &p.warning,
+        };
         let prompt_color = if self.prompt.is_some() {
             &p.faint
+        } else if shell.is_some() {
+            shell_color
         } else {
             &p.accent
         };
@@ -1691,7 +1782,14 @@ impl App {
             rows.push(format!(
                 "{}{}",
                 fg(prompt, prompt_color),
-                fg(t(COMPOSER_PLACEHOLDER), &p.muted)
+                fg(
+                    t(if shell.is_some() {
+                        SHELL_PLACEHOLDER
+                    } else {
+                        COMPOSER_PLACEHOLDER
+                    }),
+                    &p.muted
+                )
             ));
             (0, prompt_width)
         } else {
@@ -1700,7 +1798,7 @@ impl App {
                 let lead = if i == 0 {
                     fg(prompt, prompt_color)
                 } else {
-                    "  ".to_owned()
+                    " ".repeat(prompt_width)
                 };
                 rows.push(format!("{lead}{row}"));
             }
@@ -1712,14 +1810,29 @@ impl App {
         }
         let box_top = live.len();
         let muted = |label: &str| fg(label, &p.muted);
+        // Shell mode colours the box and names itself in the top border
+        // while no run status is there.
+        let shell_title = shell.map(|shell| match shell {
+            Shell::Recorded => t("! shell mode"),
+            Shell::Private => t("!! shell mode · not sent to the model"),
+        });
+        let tinted = |label: &str| fg(label, shell_color);
+        let title = match (status.as_deref(), shell_title) {
+            (Some(text), _) => Some((text, &muted as &dyn Fn(&str) -> String)),
+            (None, Some(title)) => Some((title, &tinted as &dyn Fn(&str) -> String)),
+            (None, None) => None,
+        };
+        let border = if shell.is_some() && self.prompt.is_none() {
+            shell_color
+        } else {
+            &p.border
+        };
         live.extend(boxed(
             &rows,
             cols,
-            &|edge| fg(edge, &p.border),
+            &|edge| fg(edge, border),
             &|_, body| body.to_owned(),
-            status
-                .as_deref()
-                .map(|text| (text, &muted as &dyn Fn(&str) -> String)),
+            title,
         ));
         // Panels sit under the composer: a runtime prompt, or the command
         // palette while a command is being typed.
@@ -2515,6 +2628,75 @@ fn gutter_text(mark: &str, text: &str, width: usize, color: &str) -> Vec<String>
         .collect()
 }
 
+/// A shell-mode run: `$ command`, then the newest output under a count of
+/// the rows above it, then a status line.
+///
+/// ```text
+/// $ cargo test
+///   … 120 earlier lines
+///   test result: ok. 42 passed
+///   exit code 1 · not sent to the model
+/// ```
+fn render_shell(
+    command: &str,
+    private: bool,
+    output: &[String],
+    earlier: usize,
+    status: Option<(&str, &str)>,
+    width: usize,
+    p: &Palette,
+) -> Vec<String> {
+    use crate::ui::transcript::blocks::gutter_mark;
+    let gutter = gutter_width(width);
+    let content = width.saturating_sub(gutter).max(1);
+    let indent = " ".repeat(gutter);
+    let mark = if private { &p.muted } else { &p.warning };
+    let lines: Vec<&str> = command.lines().collect();
+    let mut rows = Vec::new();
+    for (i, line) in lines.iter().take(SHELL_COMMAND_LINES).enumerate() {
+        let lead = if i == 0 {
+            fg(&gutter_mark("$", gutter), mark)
+        } else {
+            indent.clone()
+        };
+        rows.push(format!(
+            "{lead}{}",
+            fg(&truncate_cells(line, content), &p.text)
+        ));
+    }
+    let more = |count: usize, label: &'static str| {
+        format!(
+            "{indent}{}",
+            fg(
+                &truncate_cells(&tf(label, &[("count", &count.to_string())]), content),
+                &p.muted
+            )
+        )
+    };
+    if lines.len() > SHELL_COMMAND_LINES {
+        rows.push(more(
+            lines.len() - SHELL_COMMAND_LINES,
+            "… {count} more lines",
+        ));
+    }
+    if earlier > 0 {
+        rows.push(more(earlier, "… {count} earlier lines"));
+    }
+    for line in output {
+        rows.push(format!(
+            "{indent}{}",
+            fg(&truncate_cells(line, content), &p.muted)
+        ));
+    }
+    if let Some((text, color)) = status {
+        rows.push(format!(
+            "{indent}{}",
+            fg(&truncate_cells(text, content), color)
+        ));
+    }
+    rows
+}
+
 /// A committed chunk owns the blank row that separates it from what came
 /// before, and every row carries the document pad.
 /// A rule centred on `label`, at most [`BOUNDARY_MAX_WIDTH`] wide.
@@ -2570,6 +2752,42 @@ fn render_block(
             expanded,
         } => settled_thinking(text, *elapsed_ms, *expanded, width, p),
         Block::ToolGroup(group) => render_group(group, width, p, "·"),
+        Block::Shell(run) => {
+            let shown = run.output.len().saturating_sub(SHELL_PREVIEW_LINES);
+            let mut notes = Vec::new();
+            if !run.outcome.success() {
+                notes.push(match &run.outcome {
+                    ShellOutcome::Exited(code) => {
+                        tf("exit code {code}", &[("code", &code.to_string())])
+                    }
+                    ShellOutcome::Signaled(signal) => {
+                        tf("killed by {signal}", &[("signal", signal)])
+                    }
+                    ShellOutcome::Stopped => t("interrupted").to_owned(),
+                    ShellOutcome::Failed(reason) => {
+                        tf("failed to start: {reason}", &[("reason", reason)])
+                    }
+                });
+            }
+            if run.private {
+                notes.push(t("not sent to the model").to_owned());
+            }
+            let status = notes.join(" · ");
+            let color = if run.outcome.success() {
+                &p.muted
+            } else {
+                &p.warning
+            };
+            render_shell(
+                &run.command,
+                run.private,
+                &run.output[shown..],
+                run.total_lines - (run.output.len() - shown),
+                (!status.is_empty()).then_some((status.as_str(), color)),
+                width,
+                p,
+            )
+        }
         Block::Error(text) => gutter_text("■", text, width, &p.danger),
         Block::Status { text, tone } => {
             let color = match tone {

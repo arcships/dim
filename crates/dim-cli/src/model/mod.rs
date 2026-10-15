@@ -3,3 +3,4 @@
 pub mod view;
 
 pub mod session;
+pub mod shell;

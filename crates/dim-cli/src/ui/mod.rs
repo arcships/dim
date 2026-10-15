@@ -33,6 +33,7 @@ pub mod providers_panel;
 pub mod render;
 pub mod sessions_panel;
 pub mod settings_panel;
+pub mod shell;
 pub mod terminal;
 pub mod theme;
 pub mod theme_panel;

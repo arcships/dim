@@ -304,19 +304,22 @@ impl Worker {
         }
     }
 
+    async fn submit(&mut self, text: String, mode: &str) {
+        let params = json!({
+            "sessionId": self.session_id,
+            "branchId": "main",
+            "submissionId": uuid::Uuid::new_v4().to_string(),
+            "text": text,
+            "mode": mode,
+        });
+        let result = self.client.rpc("session.submit", params).await;
+        self.report_failure(result);
+    }
+
     async fn command(&mut self, command: Command) -> crate::Result<()> {
         match command {
-            Command::Submit(text) => {
-                let params = json!({
-                    "sessionId": self.session_id,
-                    "branchId": "main",
-                    "submissionId": uuid::Uuid::new_v4().to_string(),
-                    "text": text,
-                    "mode": "queue",
-                });
-                let result = self.client.rpc("session.submit", params).await;
-                self.report_failure(result);
-            }
+            Command::Submit(text) => self.submit(text, "queue").await,
+            Command::Append(text) => self.submit(text, "append").await,
             Command::Stop => {
                 let params = json!({
                     "sessionId": self.session_id,

@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use crate::model::shell::ShellRun;
 use crate::model::view::{RowKind, RowTone, ViewRow};
 use crate::ui::transcript::tool_group::{Detail, ToolGroup, project_group};
 
@@ -25,6 +26,9 @@ pub enum Block {
     /// The startup banner. Drawn at the terminal's full width, not from a row.
     Banner,
     User(String),
+    /// A shell-mode run: recorded (`!`) from the transcript, private (`!!`)
+    /// from the terminal alone.
+    Shell(ShellRun),
     Assistant {
         text: String,
         first: bool,
@@ -58,6 +62,10 @@ pub fn project_row(rows: &[Arc<ViewRow>], index: usize, detail: Detail) -> Block
     let row = &rows[index];
     match row.kind {
         RowKind::UserMessage => Block::User(row.text.clone()),
+        // The projection made it a shell row because it parses.
+        RowKind::Shell => {
+            ShellRun::parse(&row.text).map_or_else(|| Block::User(row.text.clone()), Block::Shell)
+        }
         RowKind::AssistantMessage => Block::Assistant {
             text: row.text.clone(),
             first: true,

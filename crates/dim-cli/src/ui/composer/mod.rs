@@ -4,7 +4,8 @@
 //! `xai-ratatui-textarea`; this layer adds the dim contract on top: Enter
 //! submits and Shift+Enter/Ctrl+J insert a newline, long pastes become atomic
 //! tokens, Up/Down move by drawn row and fall through to the input history,
-//! and a `/` draft opens the command palette.
+//! a `/` draft opens the command palette, and `!` / `!!` typed into an empty
+//! draft switch it to shell mode.
 
 pub mod commands;
 pub mod history;
@@ -38,6 +39,35 @@ struct Token {
     content: String,
 }
 
+/// Shell mode: the draft is a command to run, not a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shell {
+    /// `!`: the result is sent to the model as context.
+    Recorded,
+    /// `!!`: the result stays in the terminal.
+    Private,
+}
+
+impl Shell {
+    pub fn prefix(self) -> &'static str {
+        match self {
+            Self::Recorded => "!",
+            Self::Private => "!!",
+        }
+    }
+
+    /// The mode and command of a history entry such as `!!git status`.
+    pub fn split(entry: &str) -> (Option<Self>, &str) {
+        if let Some(rest) = entry.strip_prefix("!!") {
+            (Some(Self::Private), rest)
+        } else if let Some(rest) = entry.strip_prefix('!') {
+            (Some(Self::Recorded), rest)
+        } else {
+            (None, entry)
+        }
+    }
+}
+
 /// What a key did.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -45,6 +75,8 @@ pub enum Outcome {
     Handled,
     /// The draft was submitted; the string is the expanded content.
     Submit(String),
+    /// A shell-mode draft was submitted: the command to run.
+    Shell { command: String, shell: Shell },
     /// A palette row (or a typed `/name`) was chosen.
     Command { name: String, args: String },
     /// Not a composer key.
@@ -58,6 +90,8 @@ pub struct Composer {
     history: Vec<String>,
     history_index: Option<usize>,
     saved_draft: String,
+    shell: Option<Shell>,
+    saved_shell: Option<Shell>,
     palette: PaletteState,
     context: commands::Context,
     skills: Vec<palette::Skill>,
@@ -72,6 +106,8 @@ impl Composer {
             history,
             history_index: None,
             saved_draft: String::new(),
+            shell: None,
+            saved_shell: None,
             palette: PaletteState::default(),
             context: commands::Context::default(),
             skills: Vec::new(),
@@ -103,11 +139,17 @@ impl Composer {
         self.area.text().is_empty()
     }
 
+    pub fn shell(&self) -> Option<Shell> {
+        self.shell
+    }
+
     pub fn clear(&mut self) {
         self.area.set_text("");
         self.tokens.clear();
         self.history_index = None;
         self.saved_draft.clear();
+        self.shell = None;
+        self.saved_shell = None;
         self.palette = PaletteState::default();
         self.state = TextAreaState::default();
     }
@@ -130,6 +172,9 @@ impl Composer {
     /// The query after the leading `/` when the draft is a command being
     /// typed: one line, starting with `/`, no whitespace yet.
     fn command_query(&self) -> Option<&str> {
+        if self.shell.is_some() {
+            return None;
+        }
         let text = self.area.text();
         let rest = text.strip_prefix('/')?;
         (!rest.contains(char::is_whitespace)).then_some(rest)
@@ -157,6 +202,27 @@ impl Composer {
             && let Some(outcome) = self.palette_key(key)
         {
             return outcome;
+        }
+        // `!` into an empty draft enters shell mode, a second `!` the
+        // private one; Backspace on the empty draft steps back out.
+        if self.area.text().is_empty() {
+            match key.code {
+                KeyCode::Char('!') if plain && self.shell != Some(Shell::Private) => {
+                    self.shell = Some(match self.shell {
+                        None => Shell::Recorded,
+                        Some(_) => Shell::Private,
+                    });
+                    return Outcome::Handled;
+                }
+                KeyCode::Backspace if key.mods.0 == 0 && self.shell.is_some() => {
+                    self.shell = match self.shell {
+                        Some(Shell::Private) => Some(Shell::Recorded),
+                        _ => None,
+                    };
+                    return Outcome::Handled;
+                }
+                _ => {}
+            }
         }
         match key.code {
             KeyCode::Enter
@@ -253,6 +319,13 @@ impl Composer {
         if expanded.trim().is_empty() {
             return Outcome::Handled;
         }
+        if let Some(shell) = self.shell {
+            self.clear();
+            return Outcome::Shell {
+                command: expanded.trim().to_owned(),
+                shell,
+            };
+        }
         // A typed `/name args` is a command, not a message.
         if let Some(rest) = expanded.trim().strip_prefix('/') {
             let (name, args) = match rest.split_once(char::is_whitespace) {
@@ -320,6 +393,7 @@ impl Composer {
             }
             if !browsing {
                 self.saved_draft = self.area.text().to_owned();
+                self.saved_shell = self.shell;
                 self.history_index = Some(self.history.len() - 1);
             } else if let Some(index) = self.history_index.filter(|i| *i > 0) {
                 self.history_index = Some(index - 1);
@@ -338,6 +412,7 @@ impl Composer {
             _ => {
                 self.history_index = None;
                 let saved = std::mem::take(&mut self.saved_draft);
+                self.shell = self.saved_shell.take();
                 self.area.set_text(&saved);
                 self.area.set_cursor(saved.len());
                 self.tokens.clear();
@@ -352,7 +427,9 @@ impl Composer {
             .and_then(|i| self.history.get(i))
             .cloned()
         {
-            self.area.set_text(&entry);
+            let (shell, entry) = Shell::split(&entry);
+            self.shell = shell;
+            self.area.set_text(entry);
             self.area.set_cursor(cursor.min(entry.len()));
             self.tokens.clear();
         }
@@ -717,6 +794,42 @@ mod tests {
             c.handle_key(key(KeyCode::Enter)),
             Outcome::Submit("/etc/hosts is odd".into())
         );
+    }
+
+    #[test]
+    fn bangs_on_an_empty_draft_switch_to_shell_mode() {
+        let mut c = Composer::new(vec!["!!git log".into(), "plain".into()]);
+        typed(&mut c, "!!!");
+        assert_eq!(c.shell(), Some(Shell::Private));
+        assert_eq!(c.text(), "!", "a third bang is text");
+        c.handle_key(key(KeyCode::Backspace));
+        c.handle_key(key(KeyCode::Backspace));
+        assert_eq!(c.shell(), Some(Shell::Recorded));
+        typed(&mut c, "/ls -a");
+        assert!(!c.palette_open(), "shell mode has no palette");
+        assert_eq!(
+            c.handle_key(key(KeyCode::Enter)),
+            Outcome::Shell {
+                command: "/ls -a".into(),
+                shell: Shell::Recorded
+            }
+        );
+        assert_eq!(c.shell(), None, "a run leaves shell mode");
+
+        // A bang inside a message stays text.
+        typed(&mut c, "hi!");
+        assert_eq!((c.shell(), c.text()), (None, "hi!"));
+        c.clear();
+
+        // History brings its mode back, and the draft's mode on the way down.
+        typed(&mut c, "!");
+        c.handle_key(key(KeyCode::Up));
+        assert_eq!((c.shell(), c.text()), (None, "plain"));
+        c.handle_key(key(KeyCode::Up));
+        assert_eq!((c.shell(), c.text()), (Some(Shell::Private), "git log"));
+        c.handle_key(key(KeyCode::Down));
+        c.handle_key(key(KeyCode::Down));
+        assert_eq!((c.shell(), c.text()), (Some(Shell::Recorded), ""));
     }
 
     #[test]

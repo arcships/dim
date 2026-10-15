@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowKind {
     UserMessage,
+    /// A shell-mode run the user sent to the model (`!command`).
+    Shell,
     /// Assistant text that is still arriving.
     StreamingAssistant,
     AssistantMessage,
@@ -29,7 +31,7 @@ impl RowKind {
     pub fn is_message(self) -> bool {
         matches!(
             self,
-            Self::UserMessage | Self::AssistantMessage | Self::ToolCall
+            Self::UserMessage | Self::Shell | Self::AssistantMessage | Self::ToolCall
         )
     }
 }
