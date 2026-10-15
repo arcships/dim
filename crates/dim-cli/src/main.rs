@@ -238,10 +238,49 @@ async fn run(options: Options) -> Result<i32> {
             );
             Ok(0)
         }
+        Action::Web {
+            port,
+            open_browser,
+            close,
+        } => web(&mut client, *port, *open_browser, *close).await,
         Action::Chat => session::chat(&mut client, &options).await,
         Action::Help
         | Action::Version
         | Action::DaemonStop
         | Action::DefaultTerminalMode { .. } => unreachable!(),
     }
+}
+
+async fn web(
+    client: &mut client::Client,
+    port: Option<u16>,
+    open_browser: bool,
+    close: bool,
+) -> Result<i32> {
+    if close {
+        client.rpc("web.close", serde_json::json!({})).await?;
+        println!("Web workspace closed.");
+        return Ok(0);
+    }
+    #[derive(serde::Deserialize)]
+    struct Opened {
+        url: String,
+        address: String,
+    }
+    let params = match port {
+        Some(port) => serde_json::json!({ "port": port }),
+        None => serde_json::json!({}),
+    };
+    let opened: Opened = client.typed("web.open", params).await?;
+    println!("Web workspace  http://{}/", opened.address);
+    if open_browser && browser::open(&opened.url) {
+        println!("Opened in your browser.");
+    } else {
+        // The fragment carries the sign-in token; show it only to this user.
+        println!("Open this link to sign in: {}", opened.url);
+    }
+    println!(
+        "The workspace stays available until the daemon stops or you run `dimcode web --close`."
+    );
+    Ok(0)
 }

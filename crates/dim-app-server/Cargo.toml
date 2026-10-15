@@ -24,6 +24,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.10.9"
+getrandom = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 url = "2"
 base64 = "0.22"

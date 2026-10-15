@@ -10,7 +10,12 @@ const root=path.resolve(import.meta.dirname,'..');
 const commit='a'.repeat(40);
 const version='0.1.0';
 const digest=(file)=>createHash('sha256').update(readFileSync(file)).digest('hex');
-const run=(script,args,env={})=>spawnSync(process.execPath,[path.join(root,'scripts',script),...args],{encoding:'utf8',env:{...process.env,...env}});
+const webDist=mkdtempSync(path.join(os.tmpdir(),'dim web dist '));
+mkdirSync(path.join(webDist,'assets'));
+writeFileSync(path.join(webDist,'index.html'),'<!doctype html>');
+writeFileSync(path.join(webDist,'assets/app.js'),'export {}');
+process.on('exit',()=>rmSync(webDist,{recursive:true,force:true}));
+const run=(script,args,env={})=>spawnSync(process.execPath,[path.join(root,'scripts',script),...args],{encoding:'utf8',env:{...process.env,DIM_WEB_DIST:webDist,...env}});
 function fixture(t) {
   const temporary=mkdtempSync(path.join(os.tmpdir(),'dim release test '));
   t.after(()=>rmSync(temporary,{recursive:true,force:true}));
@@ -33,6 +38,8 @@ test('stages public native payload, packs it and rejects modified content', {ski
   const manifest=JSON.parse(readFileSync(path.join(stage,'release-manifest.json')));
   assert.equal(manifest.plugin,null);
   assert.equal(existsSync(path.join(stage,'runtime')),false);
+  assert.equal(manifest.files['web/index.html'],digest(path.join(webDist,'index.html')));
+  assert.notEqual(run('stage-release.mjs',[bin,path.join(temporary,'no-web'),version,commit],{DIM_WEB_DIST:temporary}).status,0);
   const packed=run('pack-release.mjs',[stage,path.join(temporary,'packed')]);
   assert.equal(packed.status,0,packed.stderr);
   const packedManifest=JSON.parse(readFileSync(path.join(temporary,'packed/release-manifest.json')));

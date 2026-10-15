@@ -102,6 +102,13 @@ pub const COMMANDS: &[Command] = &[
         Needs::Nothing,
     ),
     slash(
+        "web",
+        "session",
+        "open this session in the browser",
+        &[],
+        Needs::Nothing,
+    ),
+    slash(
         "history",
         "session",
         "load the previous page of messages",

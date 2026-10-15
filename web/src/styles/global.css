@@ -1,0 +1,772 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+}
+
+/* Type scale — the single font-size standard (compact terminal density).
+   Declared in @theme (not :root) so Tailwind utilities (text-xs, text-sm, …,
+   text-2xs, text-subtitle, text-title) resolve to the same values the CSS
+   rules reference via var(--text-*). The px values are the scale at the default
+   14px text size; --ui-scale (the reader's size ÷ 14, set from Appearance) stretches
+   every step together, so a rung keeps its place in the hierarchy. */
+@theme {
+  --text-2xs: calc(10px * var(--ui-scale));  /* counts, kbd and uppercase micro group labels only */
+  --text-xs: calc(11px * var(--ui-scale));   /* secondary meta: status bar, hints, captions, code meta lines */
+  --text-sm: calc(12px * var(--ui-scale));   /* UI controls, secondary text: buttons, chips, banners, row meta, field help */
+  --text-md: calc(13px * var(--ui-scale));   /* row and list titles: sessions, menu items, tabs, nav links, field labels */
+  --text-base: calc(14px * var(--ui-scale)); /* body text: chat markdown, composer, page copy */
+  --text-lg: calc(16px * var(--ui-scale));   /* dialog and panel headings, work summaries */
+  --text-subtitle: calc(20px * var(--ui-scale)); /* settings page heading (Desktop text-xl) */
+  --text-title: calc(24px * var(--ui-scale));    /* in-app hero heading, e.g. new-session (Desktop text-2xl) */
+  --text-display: calc(34px * var(--ui-scale)); /* route-page hero heading */
+}
+
+:root {
+  color-scheme: light;
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  /* Text size — the reader's choice in px (Appearance; the ui store overrides this on <html>) and the
+     ratio to the 14px the scale is drawn at. Desktop's UI font size steps are the same 12–18 rungs. */
+  --ui-font-size: 14;
+  --ui-scale: calc(var(--ui-font-size) / 14);
+  /* Motion */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --duration-press: 140ms;
+  --duration-hover: 160ms;
+  --duration-popover: 180ms;
+  --duration-slow: 300ms; /* grow/meter/progress fills */
+  /* Fonts */
+  /* Fonts — Geist and Geist Mono ship with the UI (main.ts) as variable woff2 split by
+     unicode-range, so a page only fetches the scripts it shows. Neither has CJK glyphs:
+     Chinese falls through to the shared CJK list, which mono repeats so code and paths
+     pick the same face as prose. Emoji come last in both. */
+  --font-cjk: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei";
+  --font-emoji: "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-sans: "Geist Variable", "Helvetica Neue", Arial, var(--font-cjk), -apple-system, system-ui, "Segoe UI", Roboto, Ubuntu, sans-serif, var(--font-emoji);
+  --font-mono: "Geist Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", var(--font-cjk), monospace, var(--font-emoji);
+  /* Font weights — the variable faces cover 100–900, so the scale can sit between the named steps
+     (as Kimi Code's does): 400 reading text · 450 list, menu and nav rows · 500 controls, headers, the
+     open row · 600 page titles, table headers and markdown emphasis only. Everything else that used
+     to be bold is 500; weight is not how a row says it matters, size and colour are.
+     font-synthesis: none keeps italics upright, since no italic face is loaded. */
+  --weight-regular: 400;
+  --weight-ui: 450;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  /* Line height — 4-step scale; --leading-mono is the fixed mono output block
+     metric (Desktop leading-5), not a ratio. */
+  --leading-tight: 1.15;   /* display and page headings */
+  --leading-snug: 1.45;    /* compact meta and helper copy */
+  --leading-normal: 1.55;  /* body copy, inputs, banners */
+  --leading-relaxed: 1.7;  /* long-form reading text (chat) */
+  --leading-mono: calc(20px * var(--ui-scale)); /* mono output blocks: tool panels, approval body, subagent/workflow output */
+  /* Spacing — 4px grid; 1px/2px hairlines stay literal.
+     Control heights are the --control-* ladder below (36 default on desktop);
+     --hit-target (44) is only the coarse-pointer touch target, never a drawn size.
+     Settings rows sit outside the control ladder as their own tiers: 52px
+     navigation-index rows (settings-grid a, settings-card label) and 56px list rows. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --space-9: 36px;
+  --space-11: 44px;
+  --space-12: 48px;
+  --space-16: 64px;
+  /* Radius */
+  --radius-lg: 12px;   /* containers: menus, cards, code panels */
+  --radius-xl: 16px;   /* dialogs, settings groups, large blended surfaces */
+  --radius-pill: 999px;
+  --radius-2xl: 20px;  /* composer surface */
+  /* Control ladder (spec v1) — pick a height; radius, icon size and font size follow it.
+     xs 24 → r6 · icon 12 · --text-xs;  sm 28 → r8 · icon 14 · --text-sm;
+     md 32 → r8 · icon 14 · --text-md;  lg 36 → r10 · icon 16 · --text-md.
+     Containers add their padding to the inner radius (menu 12 = row 8 + padding 4).
+     Controls take --control-*-radius by height; containers take --radius-lg/xl/2xl. */
+  --control-xs: 24px;
+  --control-sm: 28px;
+  --control-md: 32px;
+  --control-lg: 36px;
+  --control-xs-radius: 6px;
+  --control-sm-radius: 8px;
+  --control-md-radius: 8px;
+  --control-lg-radius: 10px;
+  /* Elevation — cards are bordered and flat; only these four shadows are allowed */
+  --shadow-xs: 0 1px 2px oklch(0 0 0 / 5%);                                          /* secondary buttons, inputs, selected segment */
+  --shadow-sm: 0 1px 3px oklch(0 0 0 / 8%), 0 1px 2px -1px oklch(0 0 0 / 6%);        /* composer, floating jump button */
+  --shadow-pop: 0 12px 32px -6px oklch(0 0 0 / 16%), 0 2px 6px oklch(0 0 0 / 5%);   /* menus, popovers, tooltips, toasts */
+  --shadow-dialog: 0 24px 64px -12px oklch(0 0 0 / 28%);                             /* dialogs, command palette, drawer */
+  --backdrop: oklch(0.08 0 0 / 55%); /* ::backdrop literals keep the value: older engines do not inherit custom properties there */
+  /* Layers */
+  --z-sticky: 10;
+  --z-popover: 40;
+  --z-tooltip: 50;
+  --z-dialog: 60;
+  --z-toast: 70;
+  /* Hit target — minimum interactive size (buttons, inputs, icon buttons, list rows) */
+  --hit-target: 44px; /* coarse pointers only (touch hit area); not a visual height */
+  /* Content columns — one width per context, shared by every layer of that page */
+  --content-page: 760px;  /* settings and generic route pages */
+  --content-chat: 760px;  /* chat stack: timeline, runtime stack, composer column */
+  /* Colors follow Desktop's opaque (non-vibrant) window palette, renderer styles/global.css. */
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.6 0.138 150);
+  --primary-foreground: oklch(1 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.52 0 0); /* small text passes AA on --muted */
+  --fg-2: oklch(0.38 0 0); /* secondary text: ghost/chip labels, descriptions, neutral banners */
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --border: oklch(0.922 0 0);
+  --ring: var(--primary);
+  --accent-strong: var(--primary);
+  --surface: transparent;
+  --sidebar: oklch(0.965 0.002 240);
+  --sidebar-foreground: oklch(0.145 0 0 / 92%);
+  --danger: oklch(0.577 0.245 27.325);
+  --danger-foreground: oklch(0.99 0 0);
+  --warning: oklch(0.577 0.179 58.318);
+  --success: oklch(0.596 0.145 163.225); /* Desktop --activity-success */
+  --info: oklch(0.55 0.17 255);
+  --accent-ultra: oklch(0.51 0.18 306); /* the one non-semantic hue: the smartness slider's Ultra tier (Desktop #8241b8) */
+  /* Primary fill — button background (white text ≥ 4.5:1); paint as
+     linear-gradient(180deg, var(--primary-fill-top), var(--primary-fill)).
+     --primary stays for rings, selection and progress. */
+  --primary-fill-top: oklch(0.56 0.135 150);
+  --primary-fill: oklch(0.51 0.125 150);
+  --primary-fill-hover-top: oklch(0.6 0.14 150); /* hover gradient pair */
+  --primary-fill-hover: oklch(0.55 0.132 150);
+  --primary-fill-press: oklch(0.48 0.12 150); /* solid while pressed */
+  --primary-ink: oklch(0.45 0.11 150); /* green text on --background */
+  --danger-hover: oklch(0.61 0.235 27.3); /* solid danger button states */
+  --danger-press: oklch(0.52 0.22 27.3);
+  --border-strong: oklch(0.86 0 0);   /* hovered fields, unchecked boxes, off switch track */
+  --hover: oklch(0.145 0 0 / 5%);     /* every transparent control on hover / keyboard highlight */
+  --press: oklch(0.145 0 0 / 9%);
+  --muted-press: oklch(0.94 0 0); /* pressed fill of bordered controls (secondary button) */
+  --control-bg: var(--background); /* fill of bordered controls: secondary buttons, fields, chips, checkboxes */
+  /* Tone tints — badge, banner and selected-card backgrounds; text keeps the solid tone.
+     Declared on :root = <html>, which also carries .dark, so they follow the theme. */
+  --primary-soft: color-mix(in oklab, var(--primary) 12%, transparent);
+  --danger-soft: color-mix(in oklab, var(--danger) 10%, transparent);
+  --warning-soft: color-mix(in oklab, var(--warning) 12%, transparent);
+  --success-soft: color-mix(in oklab, var(--success) 12%, transparent);
+  --info-soft: color-mix(in oklab, var(--info) 11%, transparent);
+  /* Focus rings for bordered/transparent controls; solid fills use a 2px gap + 2px ring instead. */
+  --focus-ring: 0 0 0 3px color-mix(in oklab, var(--primary) 22%, transparent);
+  --focus-ring-danger: 0 0 0 3px color-mix(in oklab, var(--danger) 20%, transparent);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: oklch(0.16 0 0);
+  --foreground: oklch(0.9431 0 0);
+  --card: oklch(0.21 0 0);
+  --card-foreground: oklch(0.9431 0 0);
+  --primary: oklch(0.76 0.15 149);
+  --primary-foreground: oklch(0.11 0.024 150);
+  --muted: oklch(0.27 0 0);
+  --muted-foreground: oklch(0.6334 0 0);
+  --fg-2: oklch(0.8 0 0);
+  --accent: oklch(0.27 0 0);
+  --accent-foreground: oklch(0.9431 0 0);
+  --border: oklch(1 0 0 / 14%);
+  --sidebar: oklch(0.14 0.008 240);
+  --sidebar-foreground: oklch(0.985 0 0 / 92%);
+  --danger: oklch(0.704 0.191 22.216);
+  --danger-foreground: oklch(0.11 0.02 22);
+  --warning: oklch(0.78 0.14 75);
+  --success: oklch(0.765 0.177 163.223);
+  --info: oklch(0.72 0.14 255);
+  --accent-ultra: oklch(0.72 0.15 306);
+  --primary-fill-top: oklch(0.79 0.15 149);
+  --primary-fill: oklch(0.73 0.15 149); /* paired with --primary-foreground (dark text) */
+  --primary-fill-hover-top: oklch(0.83 0.15 149);
+  --primary-fill-hover: oklch(0.77 0.15 149);
+  --primary-fill-press: oklch(0.69 0.14 149);
+  --danger-hover: oklch(0.74 0.18 22.2);
+  --danger-press: oklch(0.65 0.19 22.2);
+  --primary-ink: oklch(0.8 0.13 149);
+  --border-strong: oklch(1 0 0 / 22%);
+  --hover: oklch(1 0 0 / 7%);
+  --press: oklch(1 0 0 / 12%);
+  --muted-press: oklch(0.31 0 0);
+  --control-bg: oklch(1 0 0 / 4%); /* lifts off both --background and --card */
+  --shadow-xs: 0 1px 2px oklch(0 0 0 / 30%);
+  --shadow-sm: 0 1px 3px oklch(0 0 0 / 40%);
+  --shadow-pop: 0 12px 32px -6px oklch(0 0 0 / 50%), 0 0 0 1px oklch(1 0 0 / 6%);
+  --shadow-dialog: 0 24px 64px -12px oklch(0 0 0 / 60%);
+}
+
+* { box-sizing: border-box; }
+html, body, #app { width: 100%; min-width: 320px; min-height: 100%; margin: 0; }
+html, body { overflow: hidden; }
+/* iOS inflates text after a rotation unless told not to; the size setting is the only thing that scales it. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { background: var(--background); color: var(--foreground); font-size: var(--text-base); }
+button, input, textarea, select { color: inherit; font: inherit; }
+button, a { -webkit-tap-highlight-color: transparent; }
+a { color: inherit; text-decoration: none; }
+code { font-family: var(--font-mono); }
+:where(
+  .workspace-toggle,
+  .session-open, .settings-back,
+  .settings-nav nav a,
+  .image-remove
+) {
+  transition:
+    background-color var(--duration-hover) ease,
+    border-color var(--duration-hover) ease,
+    box-shadow var(--duration-hover) ease,
+    color var(--duration-hover) ease,
+    opacity var(--duration-hover) ease,
+    transform var(--duration-press) var(--ease-out);
+}
+:where(
+  .workspace-toggle,
+  .session-open, .settings-back,
+  .settings-nav nav a,
+  .image-remove
+):active:not(:disabled) {
+  transform: scale(.98);
+}
+:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+/* Route headings take focus only so screen readers announce the new page; they are not controls. */
+[data-route-heading]:focus-visible { outline: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+/* Control atoms — the single definition of each shared control. Surface rules
+   may alias their element selectors into these lists but must not restate the
+   spec; see docs/packages/cli-web/design-tokens.md. */
+
+
+
+/* Menu empty-state row (composer menus, workspace browser, command palette). */
+.menu-empty { margin: 0; padding: var(--space-4) var(--space-3); color: var(--muted-foreground); font-size: var(--text-sm); }
+/* Timestamps (turn/sent times): tabular figures on a shared line-height. */
+.timestamp { font-size: var(--text-sm); font-variant-numeric: tabular-nums; line-height: 1; }
+
+.skip-link { position: fixed; z-index: 100; top: var(--space-2); left: var(--space-2); transform: translateY(-160%); padding: var(--space-3) var(--space-4); border-radius: var(--control-lg-radius); background: var(--foreground); color: var(--background); transition: transform var(--duration-press) var(--ease-out); }
+.skip-link:focus { transform: none; }
+
+.app-shell { --sidebar-width: 280px; --detail-width: 360px; display: grid; width: 100%; height: 100dvh; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); overflow: hidden; background: var(--background); }
+.app-shell[data-detail-width="280"] { --detail-width: 280px; }
+.app-shell[data-detail-width="296"] { --detail-width: 296px; }
+.app-shell[data-detail-width="312"] { --detail-width: 312px; }
+.app-shell[data-detail-width="328"] { --detail-width: 328px; }
+.app-shell[data-detail-width="344"] { --detail-width: 344px; }
+.app-shell[data-detail-width="360"] { --detail-width: 360px; }
+.app-shell[data-detail-width="376"] { --detail-width: 376px; }
+.app-shell[data-detail-width="392"] { --detail-width: 392px; }
+.app-shell[data-detail-width="408"] { --detail-width: 408px; }
+.app-shell[data-detail-width="424"] { --detail-width: 424px; }
+.app-shell[data-detail-width="440"] { --detail-width: 440px; }
+.app-shell[data-detail-width="456"] { --detail-width: 456px; }
+.app-shell[data-detail-width="472"] { --detail-width: 472px; }
+.app-shell[data-detail-width="488"] { --detail-width: 488px; }
+.app-shell[data-detail-width="504"] { --detail-width: 504px; }
+.app-shell[data-detail-width="520"] { --detail-width: 520px; }
+/* A collapsed sidebar only gives its column back: the page keeps its own single header row. */
+.app-shell[data-sidebar-collapsed="true"] { grid-template-columns: minmax(0, 1fr); }
+.app-shell[data-sidebar-collapsed="true"] .content-region { grid-column: 1; }
+.sidebar-reopen { position: absolute; z-index: var(--z-sticky); top: var(--space-2); left: var(--space-3); }
+.app-shell[data-sidebar-collapsed="true"]:not([data-mode="compact"]) .main-header,
+.app-shell[data-sidebar-collapsed="true"]:not([data-mode="compact"]) .session-header { padding-left: 52px; }
+.compact-header { display: none; min-width: 0; align-items: center; gap: var(--space-3); padding: var(--space-1) var(--space-3); border-bottom: 1px solid var(--border); background: var(--background); }
+.compact-title { min-width: 0; overflow: hidden; font-weight: var(--weight-medium); text-overflow: ellipsis; white-space: nowrap; }
+
+.app-sidebar { position: relative; display: flex; min-width: 0; height: 100%; flex-direction: column; overflow: hidden; border-right: 1px solid var(--border); background: var(--sidebar); color: var(--sidebar-foreground); }
+.inline-sidebar { grid-column: 1; min-height: 0; }
+/* Brand row: a 36px (--control-lg) row under the sidebar's 12px top inset; the collapse button is ghost sm. */
+.brand-row { display: flex; height: calc(var(--space-3) + var(--control-lg)); flex: none; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4) 0; }
+/* Desktop's SidebarHeader: a 16px mark, then the wordmark. */
+.brand-logo { width: 16px; height: 16px; flex: none; color: var(--primary); }
+.brand-copy { min-width: 0; flex: 1; }
+.brand-row strong { font-size: var(--text-sm); font-weight: var(--weight-medium); letter-spacing: -.01em; }
+.primary-actions { display: grid; gap: 1px; padding: var(--space-3) var(--space-3) 0; }
+/* Footer Settings link: a sidebar nav row on the md rung (32 · r8). */
+.sidebar-footer > a { display: flex; height: var(--control-md); align-items: center; gap: var(--space-2); padding: 0 var(--space-3); border-radius: var(--control-md-radius); font-size: var(--text-md); font-weight: var(--weight-ui); transition: background-color var(--duration-hover) ease; }
+.sidebar-footer > a:hover { background: var(--hover); }
+.sidebar-footer > a:active { background: var(--press); }
+.sidebar-search { margin: var(--space-3) var(--space-3) var(--space-1); }
+/* Sidebar search: a .ui-field md (32 · r8) that rests borderless on the sidebar
+   tint; hover and focus take the kit's field states. */
+.sidebar-search > .ui-field:not(:hover, :focus) { border-color: transparent; background: var(--hover); box-shadow: none; }
+.workspace-scroll { min-height: 0; flex: 1; overflow-x: hidden; overflow-y: auto; padding: var(--space-1) var(--space-2) var(--space-3); }
+.section-label { margin: var(--space-2) var(--space-2) var(--space-1); color: var(--muted-foreground); font-size: var(--text-2xs); font-weight: var(--weight-medium); letter-spacing: .08em; text-transform: uppercase; }
+/* Desktop ProjectItem: a rule under the builtin workspace, above the project groups. */
+.builtin-workspace-separator { height: 1px; margin: var(--space-1) var(--space-2); border: 0; background: color-mix(in oklab, var(--muted-foreground) 30%, transparent); }
+.sidebar-empty, .session-empty { margin: var(--space-3) var(--space-2); color: var(--muted-foreground); font-size: var(--text-sm); line-height: var(--leading-snug); }
+.workspace-group { margin-bottom: var(--space-1); }
+.workspace-row { display: flex; align-items: center; }
+/* Workspace group row: a sidebar nav row on the md rung (32 · r8). */
+.workspace-toggle { display: flex; min-width: 0; height: var(--control-md); flex: 1; align-items: center; gap: var(--space-1); padding: 0 var(--space-1) 0 var(--space-2); border: 0; border-radius: var(--control-md-radius); background: transparent; text-align: left; cursor: pointer; }
+.workspace-toggle:hover { background: var(--hover); }
+.workspace-toggle:active { background: var(--press); }
+.workspace-toggle strong { min-width: 0; overflow: hidden; font-size: var(--text-md); font-weight: var(--weight-medium); text-overflow: ellipsis; white-space: nowrap; }
+.session-list { margin: 0; padding: 0 0 var(--space-1) var(--space-5); list-style: none; }
+/* Sidebar session rows (sm 28 · r8): the row surface lives on
+   SidebarSessionRow; the button inside is transparent. Title sans 12, time mono 11. */
+.session-list .session-open { display: grid; width: 100%; min-height: var(--control-sm); grid-template-columns: 7px minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); padding: 0 var(--space-2); border: 0; border-radius: var(--control-sm-radius); background: transparent; font: inherit; font-family: var(--font-mono); font-size: var(--text-xs); text-align: left; }
+.session-list strong, .session-list small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-list strong { font-family: var(--font-sans); font-size: var(--text-md); font-weight: var(--weight-ui); }
+.session-list .session-open[data-open="true"] strong { font-weight: var(--weight-medium); }
+.session-list small { color: var(--muted-foreground); font-size: var(--text-sm); }
+.status-dot { width: 6px; height: 6px; flex: 0 0 6px; border: 1px solid var(--muted-foreground); border-radius: 50%; }
+.status-dot[data-state="running"], .status-dot[data-state="stopping"] { border-color: var(--primary); background: var(--primary); animation: status-pulse 1.8s ease-in-out infinite; }
+.status-dot[data-state="waiting_permission"], .status-dot[data-state="waiting_user"] { border-color: var(--warning); background: var(--warning); }
+.status-dot[data-state="blocked"], .status-dot[data-state="failed"] { border-color: var(--danger); background: var(--danger); }
+.status-dot[data-state="working"] { border-color: var(--accent-strong); background: var(--accent-strong); }
+.status-dot[data-state="idle"], .status-dot[data-state="paused"] { border-color: var(--muted-foreground); }
+/* Show more / less: a full-width .ui-button ghost sm. */
+.ui-button.reveal-more { width: 100%; justify-content: flex-start; color: var(--muted-foreground); font-size: var(--text-sm); font-weight: var(--weight-regular); }
+/* Desktop's show-more chevron rotates from "more" (right) to "less" (down),
+   shared by the grouped and flat sidebars. */
+.reveal-more > svg { transition: transform var(--duration-press) var(--ease-out); }
+.reveal-more > svg[data-open="true"] { transform: rotate(90deg); }
+.sidebar-footer { padding: var(--space-2); border-top: 1px solid var(--border); }
+.connection-badge { display: flex; min-height: 32px; align-items: center; gap: var(--space-2); padding: 0 var(--space-3); color: var(--muted-foreground); }
+.connection-badge strong, .connection-badge small { display: block; }
+.connection-badge strong { color: var(--foreground); font-size: var(--text-xs); font-weight: var(--weight-medium); }
+.connection-badge small { display: none; }
+.connection-badge[data-state="connected"] svg { color: var(--primary); }
+
+.content-region { display: grid; min-width: 0; min-height: 0; grid-column: 2; overflow: hidden; }
+.main-region { position: relative; display: grid; min-width: 0; min-height: 0; grid-column: 1; grid-row: 1; grid-template-rows: 56px auto minmax(0, 1fr); overflow: hidden; }
+.main-header { display: flex; min-width: 0; align-items: center; gap: var(--space-3); padding: var(--space-1) clamp(var(--space-4), 3vw, var(--space-8)); border-bottom: 1px solid var(--border); background: color-mix(in oklab, var(--background) 96%, var(--primary)); }
+.main-header > div { min-width: 0; }
+.main-header p { margin: 0 0 var(--space-1); color: var(--muted-foreground); font-family: var(--font-mono); font-size: var(--text-xs); }
+.main-header strong { display: block; overflow: hidden; font-size: var(--text-base); font-weight: var(--weight-medium); text-overflow: ellipsis; white-space: nowrap; }
+.main-region > .route-page, .main-region > .base-placeholder { grid-row: 3; }
+.reconnect-banner { z-index: var(--z-sticky); min-height: var(--space-9); margin: 0; padding: var(--space-2) var(--space-4); border-bottom: 1px solid color-mix(in oklab, var(--warning) 45%, var(--border)); background: color-mix(in oklab, var(--warning) 13%, var(--background)); font-size: var(--text-sm); }
+.route-page { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: clamp(var(--space-8), 7vw, 84px) clamp(var(--space-5), 6vw, 76px); }
+.route-page > * { max-width: var(--content-page); }
+/* The workspace chooser is a centered column in the main region, like Desktop's new-thread view:
+   side padding grows so the content-page column sits in the middle. */
+.workspace-chooser-page { padding-inline: max(clamp(var(--space-5), 6vw, 76px), calc((100% - var(--content-page)) / 2)); }
+.route-page h1, .auth-page h1 { margin: var(--space-2) 0 var(--space-3); font-size: var(--text-display); font-weight: var(--weight-semibold); letter-spacing: -.03em; line-height: var(--leading-tight); }
+.eyebrow { margin: 0; color: var(--primary); font-size: var(--text-xs); font-weight: var(--weight-medium); letter-spacing: .12em; text-transform: uppercase; }
+.page-description, .auth-page > p:last-of-type { max-width: 620px; margin: 0; color: var(--muted-foreground); font-size: var(--text-base); line-height: var(--leading-relaxed); }
+.state-icon { margin-bottom: var(--space-6); color: var(--muted-foreground); }
+.workspace-chooser { display: grid; gap: 1px; margin-top: var(--space-8); border-block: 1px solid var(--border); }
+.workspace-chooser a { display: grid; min-width: 0; min-height: var(--space-16); grid-template-columns: var(--space-6) minmax(0, 1fr) var(--space-6); align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); }
+.workspace-chooser a:last-child { border-bottom: 0; }
+.workspace-chooser a:hover { background: var(--accent); }
+.workspace-chooser span { min-width: 0; }
+.workspace-chooser strong, .workspace-chooser small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-chooser strong { font-weight: var(--weight-medium); }
+.workspace-chooser small { margin-top: var(--space-1); color: var(--muted-foreground); font-family: var(--font-mono); font-size: var(--text-xs); }
+.empty-line { color: var(--muted-foreground); }
+/* Terminal-density layer: scan surfaces (sidebar) opt in via --font-mono. */
+
+.content-region[data-has-detail="true"] { grid-template-columns: minmax(0, 1fr) 8px minmax(280px, var(--detail-width)); }
+.detail-resizer { grid-column: 2; grid-row: 1; cursor: col-resize; background: transparent; }
+.detail-resizer:hover, .detail-resizer:focus { background: color-mix(in oklab, var(--primary) 25%, transparent); outline: none; }
+.detail-region { display: none; min-width: 0; min-height: 0; grid-column: 3; grid-row: 1; overflow: hidden; border-left: 1px solid var(--border); background: var(--card); }
+.detail-region[data-active="true"] { display: block; }
+.base-placeholder { overflow: hidden; }
+
+.auth-page { display: grid; width: min(680px, calc(100% - 40px)); min-height: 100dvh; margin: auto; align-content: center; justify-items: start; }
+.auth-signal { width: 28px; height: 3px; margin-bottom: var(--space-9); border-radius: var(--radius-pill); background: var(--muted); }
+.boot-page { position: fixed; inset: 0; display: grid; place-items: center; }
+.boot-mark { width: 56px; height: 56px; color: var(--primary); }
+.boot-issue { position: absolute; top: calc(50% + 52px); width: min(480px, calc(100% - 40px)); margin: 0; color: var(--muted-foreground); font-size: var(--text-sm); line-height: var(--leading-normal); text-align: center; }
+/* Auth/boot page action: a .ui-button (primary lg); only its spacing lives here. */
+.auth-page > .ui-button { margin-top: var(--space-6); }
+.auth-form { display: grid; width: min(420px, 100%); gap: var(--space-2); margin-top: var(--space-6); }
+.auth-form label { font-size: var(--text-sm); font-weight: var(--weight-medium); }
+.auth-form-row { display: flex; gap: var(--space-2); }
+.auth-form-row .ui-field { flex: 1; min-width: 0; }
+.auth-form-error { margin: 0; color: var(--danger); font-size: var(--text-sm); }
+
+.drawer-content { position: fixed; inset: 0 auto 0 0; width: min(88vw, 340px); max-width: none; height: 100dvh; max-height: none; margin: 0; padding: 0; border: 0; background: transparent; color: inherit; outline: none; opacity: 0; transform: translateX(-18px); transition: opacity var(--duration-popover) var(--ease-out), transform var(--duration-popover) var(--ease-out), display var(--duration-popover) allow-discrete; }
+.drawer-content[open] { opacity: 1; transform: none; }
+.drawer-content::backdrop { background: oklch(0.08 0 0 / 55%); opacity: 0; transition: opacity var(--duration-popover) var(--ease-out), display var(--duration-popover) allow-discrete; }
+.drawer-content[open]::backdrop { opacity: 1; }
+@starting-style {
+  .drawer-content[open] { opacity: 0; transform: translateX(-18px); }
+  .drawer-content[open]::backdrop { opacity: 0; }
+}
+/* Opened or closed from the keyboard (⌘B, Esc): no slide — keyboard actions never animate. */
+.drawer-content[data-instant], .drawer-content[data-instant]::backdrop { transition: none; }
+.drawer-content .app-sidebar { width: 100%; }
+/* Precedes the (positioned) sidebar in DOM order for focus order, so it needs a layer above it. */
+.drawer-close { position: absolute; z-index: var(--z-sticky); top: var(--space-2); right: var(--space-2); }
+.drawer-content .sidebar-collapse { display: none; }
+
+.app-scroll-viewport { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+.app-scroll-viewport:hover, .app-scroll-viewport:focus-within { scrollbar-color: var(--border) transparent; }
+
+.app-shell[data-mode="compact"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: 52px minmax(0, 1fr); }
+.app-shell[data-mode="compact"] .compact-header { display: flex; grid-column: 1; grid-row: 1; }
+.app-shell[data-mode="compact"] .content-region { grid-column: 1; grid-row: 2; }
+.app-shell[data-mode="compact"] .main-header { padding-inline: var(--space-4); }
+.app-shell[data-mode="compact"] .route-page { padding: var(--space-8) var(--space-5) var(--space-11); }
+
+@keyframes status-pulse { 50% { opacity: .35; transform: scale(.8); } }
+
+
+/* Single shared spinner definition; components reference it instead of declaring local copies. */
+@keyframes spin { to { transform: rotate(360deg); } }
+.is-spinning { animation: spin 1s linear infinite; }
+@keyframes spinner-pulse { 50% { opacity: .35; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 1ms !important; animation-iteration-count: 1 !important; }
+  /* Spinners signal ongoing work; a frozen frame loses that signal. Swap the
+     rotation for an opacity pulse (color/opacity survive reduced motion). */
+  .is-spinning { animation: spinner-pulse 1.8s ease-in-out infinite !important; }
+  /* The running status dot keeps signaling live work: swap its scale pulse for
+     the same slow opacity pulse the spinner uses. */
+  .status-dot[data-state="running"], .status-dot[data-state="stopping"] { animation: spinner-pulse 1.8s ease-in-out infinite !important; }
+  :where(
+    .workspace-toggle,
+    .session-open, .settings-back,
+    .settings-nav nav a,
+    .image-remove
+  ):active:not(:disabled) { transform: none; }
+  .drawer-content, .drawer-content[open] {
+    transform: none;
+    transition: opacity var(--duration-press) ease-out, display var(--duration-press) allow-discrete;
+  }
+  /* Popover entrances keep only the opacity fade. */
+  .composer-popover[open] > .composer-popover-content,
+  .goal-chip[open] > .goal-popover, .todo-chip[open] > .todo-popover { transition: opacity var(--duration-press) ease-out; }
+  /* Grow, meter and progress fills are movement: they snap to their end state
+     (colors may still fade). !important so the global rules also override the
+     scoped component styles that declare these transitions. */
+  .mode-trigger, .grow-trigger { transition: background-color var(--duration-press) ease !important; }
+  .workflow-progress-fill { transition: none !important; }
+  /* Switch thumbs and disclosure chevrons are movement too: the thumb snaps,
+     chevrons rotate instantly (background/color fades stay). !important so the
+     rule also overrides the scoped component styles that declare them. */
+  :is(.reveal-more > svg, .timeline-work-group-toggle svg, .timeline-work-item-toggle svg, .ask-toggle svg, .workspace-disclosure-chevron > svg, .workspace-chevron, .user-bubble-expand svg) { transition: none !important; }
+  /* The timeline chevrons also fade color; keep that, drop the rotation. */
+  .timeline-work-group-toggle svg, .timeline-work-item-toggle svg { transition: color var(--duration-press) ease !important; }
+  /* The skip link appears instantly instead of sliding in. */
+  .skip-link { transform: none; transition: none; }
+}
+
+/* Task 005 chat workspace */
+.main-region > .chat-page,
+.main-region > .new-session-page,
+.main-region > .chat-loading,
+.app-shell[data-chat-route="true"] .main-region { grid-template-rows: auto minmax(0, 1fr); }
+.app-shell[data-chat-route="true"] .main-header { display: none; }
+.app-shell[data-chat-route="true"] .main-region > :is(.chat-page, .new-session-page, .chat-loading, .removed-state) { grid-row: 2; }
+/* Explicit minmax(0, 1fr) column: the implicit auto track grows to the nowrap title's max-content and clips the page on narrow shells. */
+.chat-page { display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto auto; overflow: hidden; }
+/* Session header (spec v1): 48 tall, 0 16 0 24 padding, a hairline under it. */
+.session-header { display: flex; min-width: 0; min-height: 48px; align-items: center; justify-content: space-between; gap: var(--space-3); padding: 0 var(--space-4) 0 var(--space-6); border-bottom: 1px solid var(--border); background: var(--background); }
+.session-heading { display: flex; min-width: 0; flex: 1; align-items: center; gap: var(--space-2); }
+.session-header h1 { min-width: 0; overflow: hidden; margin: 0; color: var(--foreground); font-size: var(--text-md); font-weight: var(--weight-medium); text-overflow: ellipsis; white-space: nowrap; outline: none; }
+.workspace-crumb { max-width: 12rem; flex-shrink: 1; overflow: hidden; color: var(--muted-foreground); font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
+.workspace-crumb-separator { flex: none; color: color-mix(in oklab, var(--foreground) 30%, transparent); }
+.session-title-menu { flex: none; }
+/* Anchored dropdowns (sidebar row / list options / workspace group, session title,
+   panel add): <details class="session-menu"> with a .ui-icon-button summary and a
+   .ui-popover panel. These rules only place the panel under the trigger. */
+.session-menu { position: relative; }
+.session-menu > .ui-popover { position: absolute; top: calc(100% + var(--space-1)); right: 0; transform-origin: top right; }
+.session-title-menu > .ui-popover { right: auto; left: 0; transform-origin: top left; }
+/* Compact: the title menu sits near the right edge, so a left-anchored panel ran off-screen; pin it to the header's end. */
+.app-shell[data-mode="compact"] .session-title-menu { position: static; }
+.app-shell[data-mode="compact"] .session-title-menu > .ui-popover { right: var(--space-2); left: auto; transform-origin: top right; }
+/* Compact session page: one bar, not two. This header carries the drawer button, so the shell's
+   compact header (menu + the same session title) steps aside whenever this one is showing (not while the right panel replaces the chat),
+   and on every Settings route, where Settings owns the whole window (its own back bar is the header).
+   Two lines, title over workspace, so neither squeezes the other; the box grows with the text size (min-height, never height).
+   Columns: nav | title/crumb | running badge | more | panel. No gap at all: an empty auto track must take no width,
+   so spacing is margins on the items that exist. */
+.app-shell[data-mode="compact"]:has(.chat-page .session-header) { grid-template-rows: 0 minmax(0, 1fr); } /* the 52px row was the shell header's */
+.app-shell[data-mode="compact"]:has(.chat-page .session-header) .compact-header { display: none; }
+.app-shell[data-mode="compact"] .session-header {
+  position: relative; display: grid; min-height: 52px; align-items: center; gap: 0; padding: var(--space-2) var(--space-3) var(--space-2) var(--space-2);
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  grid-template-areas: "nav title title more panel" "nav crumb badge more panel";
+}
+.app-shell[data-mode="compact"] .session-heading { display: contents; }
+.app-shell[data-mode="compact"] :is(.session-header h1, .workspace-crumb) { line-height: var(--leading-snug); }
+.app-shell[data-mode="compact"] .session-nav { grid-area: nav; margin-right: var(--space-2); }
+.app-shell[data-mode="compact"] .session-header h1 { grid-area: title; }
+.app-shell[data-mode="compact"] .workspace-crumb { grid-area: crumb; max-width: none; }
+.app-shell[data-mode="compact"] .workspace-crumb-separator { display: none; }
+.app-shell[data-mode="compact"] .session-running { grid-area: badge; margin-left: var(--space-2); }
+/* 32px buttons 12px apart: their 44px touch areas meet without overlapping. */
+.app-shell[data-mode="compact"] .session-title-menu { grid-area: more; margin-left: var(--space-3); }
+/* Flipped above the trigger when the list below would clip it (menu-placement.ts). */
+.session-menu[data-placement="top"] > .ui-popover { top: auto; bottom: calc(100% + var(--space-1)); transform-origin: bottom right; --popover-enter-y: 4px; }
+/* No smooth scrolling: rows are measured while an animated scroll is still
+   running, so every correction retargets or cancels the last one and leaves the
+   reader stranded mid-history. */
+.timeline-shell { position: relative; display: flex; min-width: 0; min-height: 0; flex-direction: column; }
+/* isolation keeps sticky/stacked rows inside the timeline under the restore cover that follows it. */
+.timeline { position: relative; isolation: isolate; min-width: 0; min-height: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none; padding: var(--space-7) clamp(var(--space-3), 4vw, var(--space-12)) var(--space-4); }
+.timeline-restore-cover { position: absolute; background: var(--background); inset: 0; }
+/* :not(.sr-only): same specificity and later, so it overrode the live region's 1px
+   width; absolutely positioned from the left padding, it ran past the right edge. */
+.timeline > :not(.sr-only) { width: min(100%, var(--content-chat)); margin-inline: auto; }
+.virtual-timeline { min-height: 1px; }
+.virtual-spacer { display: block; max-width: 1px; margin: 0; pointer-events: none; }
+/* The one gap between timeline rows (chat-layout: 8px). Rows own no block
+   margins of their own, so the spacing is a single value here and it lands
+   inside the measured row box the virtualizer reads. */
+.virtual-timeline-row { min-width: 0; padding-bottom: var(--space-2); overflow-anchor: none; }
+.timeline-row { position: relative; overflow-wrap: anywhere; }
+/* One spec for both user bubble variants: the optimistic row (TimelineRowItem) and
+   the finalized bubble (TimelineUserMessage .user-bubble). */
+.timeline-row[data-role="user"], .user-bubble { width: fit-content; max-width: 85%; margin-left: auto; padding: 10px 14px; /* spec v1 bubble inset, off-grid by design */ border-radius: var(--radius-xl) var(--radius-xl) var(--control-xs-radius) var(--radius-xl); background: var(--muted); color: var(--foreground); font-size: var(--text-base); line-height: var(--leading-relaxed); }
+.timeline-row[data-role="assistant"] { padding-inline: 2px; }
+/* The turn footer (TimelineAssistantActions) reveals while its row is hovered, as in Desktop. */
+.timeline-row:hover .turn-actions, .timeline-row:focus-within .turn-actions { opacity: 1; }
+/* markstream's root defaults to content-visibility:auto with a 600px intrinsic placeholder.
+   The timeline already virtualizes, so overscan rows mounted just off-screen measured at 600px,
+   shrank once visible, moved the scroll, and swapped in other off-screen rows — the restore
+   cover never saw stable geometry and held for its full frame budget on every switch.
+   Desktop overrides the same rule in timeline-markdown.css. */
+.timeline .chat-markdown.markdown-renderer { content-visibility: visible; contain-intrinsic-size: auto; }
+/* markstream sets its own font stacks on its root; point them at ours. */
+.markstream-vue {
+  --ms-font-sans: var(--font-sans); --ms-font-mono: var(--font-mono); --markstream-pre-diff-header-font: var(--font-sans);
+  /* markstream sizes in rem (16px body, 24px h2, 36px h1), which ignores the type scale: prose came out two
+     steps above the 14px bubble and table, and never followed the text-size setting. Body is --text-base; the
+     headings are 20 / 18 / 16 at the default size, chat headings rather than page titles. */
+  --ms-text-body: var(--text-base); --ms-text-label: var(--text-sm); --ms-leading-body: 1.7;
+  --ms-text-h1: calc(var(--text-base) * 10 / 7); --ms-text-h2: calc(var(--text-base) * 9 / 7); --ms-text-h3: calc(var(--text-base) * 8 / 7);
+  --ms-text-h4: var(--text-base); --ms-text-h5: var(--text-base); --ms-text-h6: var(--text-base);
+}
+.chat-markdown { min-width: 0; color: var(--foreground); font-size: var(--text-base); line-height: var(--leading-relaxed); --markstream-code-font-family: var(--font-mono); }
+.chat-markdown :where(p, ul, ol, blockquote, pre, table) { margin-block: .55em; }
+/* A block's edge margin would stack on top of the row gap, so the first and
+   last block sit flush with the row box: the only space between rows is the
+   one gap on .virtual-timeline-row. */
+.chat-markdown :where(p, ul, ol, blockquote, pre, table):first-child { margin-top: 0; }
+.chat-markdown :where(p, ul, ol, blockquote, pre, table):last-child { margin-bottom: 0; }
+.chat-markdown :where(pre, table) { max-width: 100%; overflow: auto; }
+/* markstream's own rules: bold at 700 (a true bold on the variable face) and inline code at .8125em of the parent. */
+.chat-markdown .strong-node { font-weight: var(--weight-semibold); }
+.chat-markdown .inline-code { font-size: calc(13em / 14); }
+.chat-markdown a { color: var(--primary); text-decoration: underline; text-underline-offset: 3px; }
+.chat-markdown--pending { overflow-wrap: anywhere; white-space: pre-wrap; }
+.timeline-work-row { min-width: 0; color: var(--muted-foreground); }
+/* Tool rows (spec v1): sm 28 rows pulled 8px left so the 14px chevron sits on the
+   text edge; hover and the expanded row take the --hover fill. */
+.timeline-work-group-toggle, .timeline-work-item-toggle { display: flex; width: calc(100% + var(--space-2)); min-width: 0; height: var(--control-sm); align-items: center; justify-content: flex-start; gap: var(--space-2); margin-left: calc(-1 * var(--space-2)); padding: 0 var(--space-2); border: 0; border-radius: var(--control-sm-radius); background: transparent; color: var(--muted-foreground); font-size: var(--text-md); font-weight: var(--weight-regular); text-align: left; cursor: pointer; transition: background-color var(--duration-hover) ease, color var(--duration-hover) ease; }
+.timeline-work-group-toggle:is(:hover, [aria-expanded="true"]), .timeline-work-item-toggle:is(:hover, [aria-expanded="true"]):not(.is-static) { background: var(--hover); color: var(--foreground); }
+.timeline-work-group-toggle > span, .timeline-work-item-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timeline-work-item-summary { display: inline-flex; max-width: 100%; align-items: center; gap: var(--space-1); }
+.timeline-work-item-summary > span { flex: 0 0 auto; }
+.timeline-work-item-summary small { min-width: 0; overflow: hidden; font-family: var(--font-mono); font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
+.timeline-work-group-toggle svg, .timeline-work-item-toggle svg { flex: 0 0 auto; transition: transform var(--duration-press) var(--ease-out), color var(--duration-press) ease; }
+.timeline-work-group-toggle svg.is-expanded, .timeline-work-item-toggle svg.is-expanded { transform: rotate(90deg); }
+.timeline-work-item-toggle.is-static { cursor: default; }
+/* A row with nothing to open keeps the chevron's slot so labels stay aligned. */
+.timeline-work-item-toggle.is-static > svg { visibility: hidden; }
+.timeline-work-item-toggle.is-error .timeline-work-item-summary { color: var(--danger); }
+/* 6px + 1px rail puts the rail under the chevron's centre; 15px padding plus the
+   rows' -8px pull lands their chevrons under the group label (22px). */
+.timeline-work-group-content { display: flex; flex-direction: column; gap: 2px; margin-left: 6px; padding: 2px 0 0 15px; border-left: 1px solid color-mix(in oklab, var(--border) 60%, transparent); }
+.timeline-thinking-quote { max-height: 240px; overflow: auto; padding-left: var(--space-3); border-left: 2px solid color-mix(in oklab, var(--border) 70%, transparent); color: var(--muted-foreground); font-size: var(--text-base); line-height: var(--leading-relaxed); white-space: pre-wrap; overflow-wrap: anywhere; }
+.compaction-divider-line { display: flex; min-height: 28px; align-items: center; gap: var(--space-3); }
+.compaction-divider-line > span { height: 1px; flex: 1; background: var(--border); }
+.compaction-divider-label { display: flex; max-width: 72%; min-width: 0; flex: none; align-items: center; gap: var(--space-2); overflow: hidden; padding: 0 var(--space-2); border: 0; border-radius: var(--control-sm-radius); background: none; color: var(--muted-foreground); font: inherit; font-size: var(--text-base); font-weight: var(--weight-regular); white-space: nowrap; }
+.compaction-divider-label > span { overflow: hidden; text-overflow: ellipsis; }
+.compaction-divider-label > svg { flex: none; }
+.compaction-divider-label > svg.is-warning { color: var(--warning); }
+.compaction-divider-label > svg.is-open { transform: rotate(90deg); }
+button.compaction-divider-label { min-height: 28px; cursor: pointer; }
+button.compaction-divider-label:hover { color: var(--foreground); }
+.compaction-divider-label > span.is-running { background: linear-gradient(90deg, currentcolor 0%, currentcolor 40%, var(--foreground) 50%, currentcolor 60%, currentcolor 100%); background-size: 200% 100%; background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; animation: timeline-work-shimmer 2s linear infinite; }
+/* Desktop: bounded, selectable plain text; newlines kept, no Markdown. */
+.compaction-panel { max-height: min(45vh, 480px); overflow-y: auto; margin-top: var(--space-2); padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--muted); font-size: var(--text-md); }
+.compaction-panel-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.compaction-panel-code { margin-bottom: var(--space-2); color: var(--muted-foreground); font-family: var(--font-mono); font-size: var(--text-xs); }
+.compaction-panel-note { display: flex; align-items: center; gap: var(--space-2); margin: 0; color: var(--muted-foreground); }
+/* In-progress row (spec v1): primary 14px spinner, 13px label, mono 11 elapsed seconds. */
+.processing-row { display: flex; align-items: center; gap: var(--space-2); color: var(--muted-foreground); font-size: var(--text-md); }
+.processing-row > svg { flex: none; color: var(--primary); }
+.processing-elapsed { font-family: var(--font-mono); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+/* Details indent to the row's text edge (chevron 14 + gap 8). */
+.timeline-work-item-details { padding: 0 0 var(--space-1) 22px; }
+.timeline-work-row.is-turn-summary { display: grid; grid-template-columns: minmax(24px, 1fr) auto minmax(24px, 1fr); align-items: center; gap: var(--space-2); }
+.timeline-work-row.is-turn-summary .timeline-work-group-toggle { width: auto; max-width: min(70vw, 620px); margin-left: 0; }
+.timeline-work-divider { height: 1px; background: var(--border); }
+.timeline-work-group-toggle.is-running > span, .timeline-work-item-toggle.is-running .timeline-work-item-summary { background: linear-gradient(90deg, currentcolor 0%, currentcolor 40%, var(--foreground) 50%, currentcolor 60%, currentcolor 100%); background-size: 200% 100%; background-clip: text; color: var(--muted-foreground); -webkit-background-clip: text; -webkit-text-fill-color: transparent; animation: timeline-work-shimmer 2s linear infinite; }
+.event-row { display: grid; min-height: var(--control-lg); grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--space-3); padding: var(--space-1) var(--space-2); border-radius: var(--control-lg-radius); color: var(--muted-foreground); }
+.event-row:hover { background: var(--hover); }
+button.event-row { width: 100%; border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.event-row span:first-child { min-width: 0; }
+.event-row strong, .event-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.event-row strong { color: var(--foreground); font-size: var(--text-sm); font-weight: var(--weight-medium); }.event-row small, .event-row > span:not(:first-child) { color: var(--muted-foreground); font-size: var(--text-xs); }
+.optimistic-state { display: block; margin-bottom: var(--space-1); color: var(--muted-foreground); font-size: var(--text-xs); }
+/* Desktop's interleaved system notice: one muted line in the turn flow. */
+.timeline-notice { margin: 0; color: var(--muted-foreground); font-size: var(--text-base); white-space: pre-wrap; }
+.notice-row { padding: var(--space-2) 0; border-block: 1px dashed var(--border); color: var(--muted-foreground); font-size: var(--text-sm); text-align: center; }
+.message-media { margin: var(--space-2) 0; }.message-media figcaption { margin-top: var(--space-1); color: var(--muted-foreground); font-size: var(--text-xs); }.resource-placeholder { display: inline-flex; min-height: var(--control-lg); align-items: center; color: var(--muted-foreground); }
+.message-image { display: block; max-width: min(100%, 560px); max-height: 420px; margin-top: var(--space-2); border-radius: var(--radius-lg); object-fit: contain; }
+/* Floating secondary md icon button (control kit), made a pill that floats above the timeline;
+   [data-variant] outranks the variant's shadow-xs so it keeps shadow-sm. */
+.jump-latest { position: absolute; right: 0; bottom: var(--space-4); left: 0; z-index: var(--z-sticky); }
+.ui-icon-button.jump-latest[data-variant] { display: flex; margin: 0 auto; /* absolute with both insets, so auto margins centre its fixed width */ border-radius: var(--radius-pill); box-shadow: var(--shadow-sm); }
+.timeline-empty { padding-block: 16vh; color: var(--muted-foreground); text-align: center; }
+/* A danger .ui-banner pinned to the top of the timeline; opaque so rows scroll under it. */
+.protocol-error { position: sticky; top: 0; z-index: var(--z-sticky); margin-bottom: var(--space-3); }
+.protocol-error.ui-banner[data-tone] { background: color-mix(in oklab, var(--danger) 10%, var(--background)); }
+.error-row { display: grid; gap: var(--space-1); color: var(--danger); text-align: left; }.error-row span { overflow-wrap: anywhere; }.error-row strong { font-weight: var(--weight-medium); }
+.optimistic-row { opacity: .72; }
+.optimistic-attachment { margin: var(--space-1) var(--space-1) 0 0; }
+
+@keyframes timeline-work-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .timeline-work-group-toggle.is-running > span, .timeline-work-item-toggle.is-running .timeline-work-item-summary, .compaction-divider-label > span.is-running { animation: none; }
+}
+
+@media (pointer: coarse) {
+  .timeline-work-group-toggle, .timeline-work-item-toggle { min-height: var(--hit-target); }
+}
+
+.inline-prompt { padding-bottom: var(--space-2); }
+/* Permission card (spec v1): r12, p14, shadow-xs; a 20px warning icon square, 13/500 title and an Awaiting badge head it. */
+.prompt-card { padding: 14px; /* spec v1, off-grid by design */ border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); box-shadow: var(--shadow-xs); }
+.prompt-header { display: flex; min-width: 0; align-items: center; gap: var(--space-2); }
+.prompt-icon { display: inline-flex; width: 20px; height: 20px; flex: none; align-items: center; justify-content: center; border-radius: var(--control-xs-radius); background: var(--warning-soft); color: var(--warning); }
+.prompt-title { min-width: 0; flex: 1; margin: 0; font-size: var(--text-md); font-weight: var(--weight-medium); line-height: var(--leading-snug); }
+/* The command under approval: a muted r8 mono block, no section label. */
+.approval-command { max-height: 240px; margin-top: var(--space-3); overflow: auto; padding: var(--space-2) var(--space-3); border-radius: var(--control-md-radius); background: var(--muted); font: var(--text-sm)/var(--leading-mono) var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.approval-panel { max-height: 240px; margin-top: var(--space-3); overflow: auto; isolation: isolate; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); }
+.approval-panel-header { position: sticky; z-index: var(--z-sticky); top: 0; overflow: hidden; padding: var(--space-2) var(--space-3) var(--space-1); background: var(--card); color: var(--muted-foreground); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+.approval-panel-header.is-mono { font-family: var(--font-mono); }
+.approval-panel-body { margin: 0; padding: 0 var(--space-3) var(--space-2); font: var(--text-sm)/var(--leading-mono) var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.approval-muted { color: var(--muted-foreground); }
+.approval-diff-del { color: var(--danger); }
+.approval-diff-add { color: var(--primary); }
+.approval-line-number { display: inline-block; min-width: 2.5em; margin-right: var(--space-3); color: var(--muted-foreground); text-align: right; user-select: none; }
+.prompt-error { margin: var(--space-3) 0 0; color: var(--danger); font-size: var(--text-sm); }
+.prompt-subtitle { margin: var(--space-1) 0 0; color: var(--muted-foreground); font-size: var(--text-sm); }
+.prompt-resource { margin-top: var(--space-2); font-family: var(--font-mono); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.prompt-model { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-3); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--control-md-radius); background: var(--background); }
+.prompt-model-badge { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex-shrink: 0; border: 1px solid var(--border); border-radius: var(--control-sm-radius); background: var(--card); color: var(--muted-foreground); font-size: var(--text-xs); font-weight: var(--weight-medium); }
+.prompt-model-meta { display: flex; min-width: 0; flex: 1; flex-direction: column; }
+.prompt-model-name { overflow: hidden; font-size: var(--text-sm); font-weight: var(--weight-medium); text-overflow: ellipsis; white-space: nowrap; }
+.prompt-model-provider { color: var(--muted-foreground); font-size: var(--text-xs); }
+.prompt-model-flag { flex-shrink: 0; color: var(--warning); font-size: var(--text-xs); white-space: nowrap; }
+.prompt-plan { margin-top: var(--space-3); }
+.prompt-plan-name { font-size: var(--text-base); font-weight: var(--weight-medium); }
+.prompt-plan-warning { margin: var(--space-2) 0 0; color: var(--warning); font-size: var(--text-xs); }
+.prompt-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-3); }
+/* container-type makes this a stacking context at z 0; lift it to the sticky layer (later in
+   DOM, so it wins the tie) or the timeline's .jump-latest paints over composer popovers. */
+.composer-panel { position: relative; z-index: var(--z-sticky); container: composer / inline-size; padding: var(--space-2) clamp(var(--space-3), 3vw, var(--space-7)) 0; background: var(--background); }
+.composer-panel > * { width: min(100%, var(--content-chat)); margin-inline: auto; }
+/* Input surface (spec v1): r20, p12, shadow-sm; translucent so the timeline reads through. */
+.composer-surface { position: relative; display: flex; min-width: 0; flex-direction: column; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-2xl); background: color-mix(in oklab, var(--background) 70%, transparent); box-shadow: var(--shadow-sm); backdrop-filter: blur(24px); cursor: text; transition: border-color var(--duration-press) ease, box-shadow var(--duration-press) ease, background-color var(--duration-press) ease; }
+.composer-surface.is-drag-active { border-style: dashed; border-color: var(--primary); background: var(--primary-soft); box-shadow: var(--focus-ring); }
+.composer-toolbar { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: var(--space-1); }
+.composer-tool-group, .composer-run-group { display: flex; min-width: 0; align-items: center; gap: var(--space-1); }
+.composer-run-group { justify-content: flex-end; }
+.send-slot { position: relative; display: inline-flex; flex: none; }
+/* Follows the send button in DOM order, so it paints over it without a z-index. */
+.stop-keycap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: var(--radius-pill); background: color-mix(in oklab, var(--background) 75%, transparent); box-shadow: var(--shadow-xs); backdrop-filter: blur(4px); font-size: var(--text-sm); font-weight: var(--weight-medium); pointer-events: none; }
+.composer-statusbar { display: flex; width: min(100%, var(--content-chat)); height: 40px; align-items: center; justify-content: space-between; padding: 0 var(--space-4); font-size: var(--text-xs); }
+.composer-status-start { display: flex; min-width: 0; align-items: center; gap: var(--space-1); }
+.composer-status-end { display: flex; min-width: 0; align-items: center; gap: var(--space-1); margin-left: auto; }
+/* .ui-button is flex:none, so on narrow bars the triggers overflowed their shrunk
+   <details> and painted over each other. Only the branch name gives way (ellipsis). */
+.composer-status-start, .composer-statusbar .context-menu { flex: none; }
+.composer-statusbar .branch-menu { min-width: 0; }
+.composer-statusbar .branch-menu > summary { max-width: 100%; min-width: 0; flex-shrink: 1; }
+.composer-statusbar .branch-label { min-width: 0; flex-shrink: 1; }
+/* Inline error / diagnostic lines, one shared spec for every surface
+   (timeline, composer, panels, sidebar). */
+.inline-error { margin-block: var(--space-1); color: var(--danger); font-size: var(--text-xs); line-height: var(--leading-snug); }
+.chat-error { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--border); font-size: var(--text-sm); }
+.diagnostic-line, .reselect-line { margin-block: var(--space-1); color: var(--warning); font-size: var(--text-xs); }
+.composer-surface .reselect-line { padding-inline: 0; }
+/* Popovers opened from the composer: native <details>. The panel is a .ui-popover;
+   these rules only place it (upward by default, .is-end aligns right, the
+   new-thread workspace menu opens downward). */
+.composer-popover { position: relative; display: inline-flex; min-width: 0; }
+.composer-popover > summary { user-select: none; }
+.composer-popover.is-disabled { opacity: .5; pointer-events: none; }
+.composer-popover-content { position: absolute; bottom: calc(100% + var(--space-2)); left: 0; cursor: default; transform-origin: bottom left; --popover-enter-y: 4px; }
+.composer-popover-content.is-end { right: 0; left: auto; transform-origin: bottom right; }
+.composer-popover-content.workspace-menu-content { top: calc(100% + var(--space-2)); bottom: auto; transform-origin: top left; --popover-enter-y: -4px; }
+/* fitPopover flips it above the trigger when the page has no room below (phones). */
+.composer-popover-content.workspace-menu-content[data-placement="top"] { top: auto; bottom: calc(100% + var(--space-2)); transform-origin: bottom left; --popover-enter-y: 4px; }
+/* Narrow composer (phones): trigger-anchored panels ran off either edge (model
+   picker is 400 wide). Anchor them to the composer surface / status bar instead
+   and span its width. */
+@container composer (max-width: 480px) {
+  .composer-popover { position: static; }
+  .composer-statusbar { position: relative; }
+  /* Three classes: must outrank .ui-popover[data-width] and scoped per-menu widths. */
+  .composer-panel .composer-popover > .composer-popover-content { right: 0; left: 0; width: auto; max-width: none; transform-origin: bottom center; }
+}
+/* Grow triggers (mode/skills menus): a ghost .ui-button collapsed to its icon and
+   widened to the label while open. */
+:is(.mode-trigger, .grow-trigger).ui-button { max-width: var(--control-sm); justify-content: flex-start; gap: 0; padding: 0; overflow: hidden; transition: max-width var(--duration-popover) var(--ease-out), background-color var(--duration-hover) ease, color var(--duration-hover) ease, transform var(--duration-press) var(--ease-out); }
+.mode-menu[open] .mode-trigger, .grow-menu[open] .grow-trigger { max-width: 140px; }
+.mode-icon, .grow-icon { display: flex; width: var(--control-sm); height: var(--control-sm); flex: none; align-items: center; justify-content: center; }
+.mode-label, .grow-label { flex: none; padding-right: var(--space-3); white-space: nowrap; opacity: 0; transition: opacity var(--duration-popover) ease; }
+.mode-menu[open] .mode-label, .grow-menu[open] .grow-label { opacity: 1; }
+
+.new-session-page { display: flex; min-height: 0; flex-direction: column; align-items: center; gap: var(--space-8); overflow-y: auto; padding: var(--space-8) clamp(var(--space-3), 5vw, var(--space-16)); }
+.new-session-hero { display: flex; margin-top: auto; flex-direction: column; align-items: center; gap: var(--space-4); }
+.new-session-mark { width: 56px; height: 56px; color: var(--primary); }
+.new-session-page h1 { margin: 0; font-size: var(--text-title); font-weight: var(--weight-semibold); text-align: center; }
+/* Desktop NewThread: the controls row is a drawer tucked under the input, one continuous panel. */
+.new-session-page > .composer-panel { width: min(100%, 42rem); margin-bottom: auto; padding: 0; border-radius: var(--radius-2xl); background: transparent; box-shadow: var(--shadow-sm); }
+.composer-panel.is-new-thread > * { width: 100%; }
+/* z-index: the drawer below tucks under the surface; on narrow composers the
+   status bar is positioned (popover anchor) and would otherwise paint over it. */
+.composer-panel.is-new-thread .composer-surface { z-index: 1; background: var(--background); }
+.composer-panel.is-new-thread .composer-statusbar { height: auto; justify-content: flex-start; margin-top: calc(-1 * var(--space-3)); padding: var(--space-5) var(--space-2) var(--space-2); border: 1px solid var(--border); border-top: 0; border-radius: 0 0 var(--radius-2xl) var(--radius-2xl); background: color-mix(in oklab, var(--muted) 80%, transparent); }
+.chat-loading { display: grid; place-items: center; color: var(--muted-foreground); }
+.removed-state a { display: inline-flex; min-height: var(--control-lg); margin-top: var(--space-4); align-items: center; color: var(--primary); }
+
+
+@media (max-width: 800px) {
+  .main-header { display: none; }
+  .main-region { grid-template-rows: minmax(0, 1fr); }
+  .main-region > .route-page, .main-region > .chat-page, .main-region > .new-session-page, .main-region > .chat-loading { grid-row: 1; }
+  .app-shell[data-chat-route="true"] .main-region { grid-template-rows: auto minmax(0, 1fr); }
+  .app-shell[data-chat-route="true"] .main-region > :is(.chat-page, .new-session-page, .chat-loading, .removed-state) { grid-row: 2; }
+  .session-header { min-height: 52px; padding-inline: var(--space-3); }
+  .timeline { padding-inline: var(--space-4); }
+  .composer-panel { padding-inline: var(--space-3); }
+}
+
+@media (max-width: 520px) {
+  .timeline-row[data-role="user"], .user-bubble { width: 94%; max-width: 94%; }
+}
+
+
+@media (pointer: coarse) {
+  .session-list .session-open { min-height: var(--hit-target); }
+  /* No hover on touch: row actions must be permanently visible, not hover-revealed. */
+}

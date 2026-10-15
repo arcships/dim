@@ -1482,6 +1482,10 @@ impl App {
                 self.host.send(Command::NewSession);
                 Outcome::Continue
             }
+            "web" => {
+                self.host.send(Command::OpenWeb);
+                Outcome::Continue
+            }
             "resume" => {
                 self.prompt = Some(Prompt::Sessions(SessionsPanel::new()));
                 self.host.send(Command::ListSessions);

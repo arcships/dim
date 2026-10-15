@@ -19,6 +19,7 @@ pub mod storage;
 mod trace;
 mod transport;
 mod tree_protocol;
+mod web_entry;
 
 use agents::{AgentIndex, AgentsPlugin};
 use collaboration::CollaborationPlugin;
@@ -52,6 +53,8 @@ pub struct ServerConfig {
     pub hello_timeout: Duration,
     pub write_timeout: Duration,
     pub startup_timeout: Duration,
+    /// Built Web workspace assets served by the local web entry.
+    pub web_assets: Option<PathBuf>,
 }
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -72,6 +75,7 @@ impl Default for ServerConfig {
             hello_timeout: Duration::from_secs(5),
             write_timeout: Duration::from_secs(10),
             startup_timeout: Duration::from_secs(10),
+            web_assets: None,
         }
     }
 }

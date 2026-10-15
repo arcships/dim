@@ -1,6 +1,6 @@
 use crate::{
     ServerConfig, ServerError,
-    connection::{Connection, ConnectionHub},
+    connection::{Connection, ConnectionHub, Entry},
     control::ServerControl,
     outbound::MAX_FRAME_BYTES,
     protocol::*,
@@ -507,7 +507,7 @@ async fn upgrade(
         .on_upgrade(move |socket| async move {
             let tracker = hub.tasks.clone();
             let task = tracker.spawn(async move {
-                run_ws(hub, socket).await;
+                run_ws(hub, socket, Entry::Bare).await;
             });
             let _ = task.await;
         })
@@ -598,21 +598,22 @@ async fn run_local(hub: Arc<ConnectionHub>, stream: LocalStream) {
         hub,
         Reader::Local(BufReader::new(read), Vec::new()),
         Writer::Local(write),
-        true,
+        Entry::Local,
     )
     .await;
 }
-async fn run_ws(hub: Arc<ConnectionHub>, socket: WebSocket) {
+pub(crate) async fn run_ws(hub: Arc<ConnectionHub>, socket: WebSocket, entry: Entry) {
     let (write, read) = socket.split();
-    run_connection(hub, Reader::Ws(read), Writer::Ws(write), false).await;
+    run_connection(hub, Reader::Ws(read), Writer::Ws(write), entry).await;
 }
 async fn run_connection(
     hub: Arc<ConnectionHub>,
     mut reader: Reader,
     mut writer: Writer,
-    local: bool,
+    entry: Entry,
 ) {
-    let (connection, mut outbound) = Connection::new(hub.clone(), local);
+    let local = entry == Entry::Local;
+    let (connection, mut outbound) = Connection::new(hub.clone(), entry);
     let closed = connection.closed.clone();
     let timeout = hub.config().write_timeout;
     let writer_task = tokio::spawn(async move {
@@ -658,7 +659,8 @@ async fn run_connection(
         if !hello {
             match request.call {
                 Call::Hello(params)
-                    if (1..=PROTOCOL_VERSION).contains(&params.protocol_version) =>
+                    if (1..=PROTOCOL_VERSION).contains(&params.protocol_version)
+                        && (entry != Entry::Web || params.protocol_version == PROTOCOL_VERSION) =>
                 {
                     // Recording the instance under the handler lock orders this
                     // hello against a generation change, which closes stale ones.
@@ -692,14 +694,15 @@ async fn run_connection(
                                 protocol_version: params.protocol_version,
                                 daemon_profile: hub.config().daemon_profile.clone(),
                                 features: (params.protocol_version >= 3).then(|| {
-                                    let mut features = if local || !hub.config().protected_profile()
-                                    {
-                                        vec!["session.summaries", "daemon.shutdown.completed"]
-                                    } else {
-                                        vec![]
-                                    };
+                                    let trusted = entry != Entry::Bare;
+                                    let mut features =
+                                        if trusted || !hub.config().protected_profile() {
+                                            vec!["session.summaries", "daemon.shutdown.completed"]
+                                        } else {
+                                            vec![]
+                                        };
                                     if hub.config().session_execution
-                                        && (local || !hub.config().protected_profile())
+                                        && (trusted || !hub.config().protected_profile())
                                     {
                                         features.extend([
                                             "session.history",
@@ -714,6 +717,17 @@ async fn run_connection(
                                     if local && hub.config().local_execution() {
                                         features.extend(LOCAL_EXECUTION_METHODS);
                                         features.extend(MCP_METHODS);
+                                    }
+                                    if local {
+                                        features.extend(WEB_ENTRY_METHODS);
+                                    }
+                                    if entry == Entry::Web && hub.config().local_execution() {
+                                        features.extend(WEB_SESSION_METHODS.iter().filter(
+                                            |method| {
+                                                hub.config().product_home.is_some()
+                                                    || !method.starts_with("provider.")
+                                            },
+                                        ));
                                     }
                                     features
                                 }),

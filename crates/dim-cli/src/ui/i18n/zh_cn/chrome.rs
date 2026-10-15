@@ -80,6 +80,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // composer/commands.rs: descriptions
         "start a new session" => "开始新会话",
         "resume a previous session" => "恢复之前的会话",
+        "open this session in the browser" => "在浏览器中打开此会话",
         "load the previous page of messages" => "加载上一页消息",
         "show context and plan usage" => "显示上下文和套餐用量",
         "interrupt the run" => "中断运行",

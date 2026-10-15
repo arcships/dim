@@ -415,6 +415,35 @@ impl Worker {
                 self.send(Update::Notice(format!("Queue control is {UNAVAILABLE}")))
             }
             Command::Reconnect => self.send(Update::Notice(format!("Reconnect is {UNAVAILABLE}"))),
+            Command::OpenWeb => {
+                #[derive(serde::Deserialize)]
+                struct Opened {
+                    url: String,
+                    address: String,
+                }
+                let opened: crate::Result<Opened> = self.client.typed("web.open", json!({})).await;
+                let Ok(opened) = opened else {
+                    self.report_failure(opened);
+                    return Ok(());
+                };
+                let fragment = opened.url.split_once('#').map_or("", |(_, f)| f);
+                // Without a session yet, the workspace opens at its home page.
+                let path = if self.session_id.is_empty() {
+                    String::new()
+                } else {
+                    format!("chat/{}", self.session_id)
+                };
+                let url = format!("http://{}/{path}#{fragment}", opened.address);
+                let text = if crate::browser::open(&url) {
+                    format!("Opened the Web workspace at http://{}/", opened.address)
+                } else {
+                    format!("Open this link to sign in: {url}")
+                };
+                self.send(Update::Report {
+                    text,
+                    warning: false,
+                });
+            }
         }
         Ok(())
     }

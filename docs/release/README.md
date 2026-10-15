@@ -53,9 +53,12 @@ One product version is shared by `Cargo.toml`, workspace versions in `Cargo.lock
 
 ```sh
 cargo build --release --locked -p dim-cli -p dim-app-server
-node scripts/stage-release.mjs target/release staging/local 0.1.0 FULL_SOURCE_COMMIT
+npm ci --prefix web --ignore-scripts && npm run build --prefix web
+DIM_WEB_DIST=web/dist node scripts/stage-release.mjs target/release staging/local 0.1.0 FULL_SOURCE_COMMIT
 node scripts/pack-release.mjs staging/local release/local
 ```
+
+Staging requires `DIM_WEB_DIST`, the built [Web workspace](../design/web-workspace.md) (`web/dist`); it is platform independent and copied to `web/`.
 
 For a cross build, set `DIM_BUILD_PLATFORM` to the intended platform, build with the matching Rust `--target`, and stage from `target/TARGET/release`. The runner must use the same OS as the target. The six platform names are listed in the workflow matrix.
 
@@ -73,6 +76,7 @@ bin/dim-app-server[.exe]
 runtime/node/bin/node          # runtime/node/node.exe on Windows
 runtime/rutis/node_modules/@arcships/rutis-runtime/
 plugins/dim-oauth/{package.json,dim-plugin.json,dist/index.js}
+web/index.html, web/assets/   # Web workspace, served by the App Server
 LICENSE
 NOTICE                        # present when the private plugin is included
 release-manifest.json

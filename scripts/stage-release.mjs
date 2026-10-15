@@ -31,6 +31,9 @@ const run = (command, args, options = {}) => {
   assert.equal(result.status, 0, `${command} failed: ${result.stderr}`);
   return result.stdout;
 };
+// The Web workspace build is platform independent; CI builds it once before staging.
+const webDist = process.env.DIM_WEB_DIST;
+assert(webDist && lstatSync(path.join(webDist, 'index.html')).isFile(), 'DIM_WEB_DIST must name a built web/dist directory');
 const suffix = process.platform === 'win32' ? '.exe' : '';
 const cli = path.resolve(binaryDirectory, `dimcode${suffix}`);
 const server = path.resolve(binaryDirectory, `dim-app-server${suffix}`);
@@ -104,6 +107,7 @@ try {
   chmodSync(path.join(output, 'bin', `dimcode${suffix}`), 0o755);
   chmodSync(path.join(output, 'bin', `dim-app-server${suffix}`), 0o755);
   copyFileSync(path.join(repo, 'LICENSE'), path.join(output, 'LICENSE'));
+  cpSync(webDist, path.join(output, 'web'), { recursive: true, verbatimSymlinks: true });
   const versions = { rust: readFileSync(path.join(repo, 'rust-toolchain.toml'), 'utf8').match(/channel = "([^"]+)"/)[1] };
   if (plugin) {
     const nodeVersion = readFileSync(path.join(repo, '.node-version'), 'utf8').trim();

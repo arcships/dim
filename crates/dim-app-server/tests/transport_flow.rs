@@ -61,6 +61,9 @@ mod product_protocol;
 #[path = "transport_flow/summaries.rs"]
 mod summaries;
 
+#[path = "transport_flow/web_entry.rs"]
+mod web_entry;
+
 enum Transport {
     Unix(BufReader<UnixStream>),
     Ws(Box<WebSocketStream<MaybeTlsStream<TcpStream>>>),

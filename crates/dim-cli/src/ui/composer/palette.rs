@@ -618,7 +618,7 @@ mod tests {
         // match for "se".
         assert_eq!(
             names("/se", SCROLLBACK),
-            ["settings", "resume", "new", "models", "reconnect"]
+            ["settings", "resume", "new", "web", "models", "reconnect"]
         );
         assert_eq!(names("/stg", SCROLLBACK), ["settings"]);
         assert_eq!(&names("/re", SCROLLBACK)[..2], ["resume", "reconnect"]);

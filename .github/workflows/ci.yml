@@ -41,6 +41,12 @@ jobs:
           export DIM_TEST_APP_SERVER="$PWD/target/debug/dim-app-server"
           export DIM_TEST_NPM_WRAPPER="$PWD/npm/bin/dimcode.mjs"
           cargo test --locked -p dim-cli --test cli_flow -- --ignored
+      - name: Verify Web workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix web --ignore-scripts --registry=https://registry.npmjs.org
+          npm run build --prefix web
       - name: Verify public Node provider bridge
         shell: bash
         run: |

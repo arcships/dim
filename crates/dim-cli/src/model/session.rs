@@ -40,6 +40,8 @@ pub enum Command {
     ListSessions,
     /// Drop the connection and establish it again.
     Reconnect,
+    /// Open the daemon's web entry on the current session in the browser.
+    OpenWeb,
     /// List the models that can be chosen.
     ListModels,
     /// Produce the `/usage` report.

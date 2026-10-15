@@ -2,6 +2,8 @@
 
 The Rust CLI uses this server over a private Unix socket (NDJSON) or Windows named pipe. The server owns Agent v4 execution, approvals, model/provider selection and native storage. Product and configured profiles require protected local transports for execution and management; their WebSocket endpoint supports only `hello` and `ping`. The explicit mock profile permits WebSocket execution for protocol testing.
 
+The local web entry for the [Web workspace](../../docs/design/web-workspace.md) is opened at runtime with `web.open` from a local connection. It binds loopback only, serves `--web-assets PATH`, and admits browsers that exchanged the bootstrap token from `web.open`'s URL for a cookie. Its connections speak protocol v3 and get Session methods (including execution Session methods) plus read-only `provider.list`, `provider.catalog` and `provider.selection`; other management methods and `daemon.shutdown` are `unknown_method`. `web.close` revokes every token and detaches web connections.
+
 Commands below run from the repository root:
 
 ```sh

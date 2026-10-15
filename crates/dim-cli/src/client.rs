@@ -444,6 +444,13 @@ async fn connect_inner(options: &Options, start: bool) -> Result<Option<Client>>
             }
         }
     }
+    let web_assets = std::env::var_os("DIMCODE_WEB_ASSETS")
+        .map(std::path::PathBuf::from)
+        .or_else(|| Some(binary.parent()?.parent()?.join("web")))
+        .filter(|path| path.join("index.html").is_file());
+    if let Some(path) = web_assets {
+        command.arg("--web-assets").arg(path);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

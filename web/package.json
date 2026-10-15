@@ -1,0 +1,39 @@
+{
+  "name": "dim-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "5.3.0",
+    "@fontsource-variable/geist-mono": "5.3.0",
+    "@shikijs/core": "^3.23.0",
+    "@shikijs/engine-javascript": "^3.23.0",
+    "@shikijs/langs": "^3.23.0",
+    "@shikijs/themes": "^3.23.0",
+    "@tanstack/vue-virtual": "3.13.22",
+    "katex": "0.16.47",
+    "lucide-vue-next": "^0.577.0",
+    "markstream-vue": "2.0.19",
+    "mermaid": "11.15.0",
+    "pinia": "^2.3.1",
+    "shiki": "^3.23.0",
+    "stream-diffs": "0.0.2",
+    "vue": "3.5.35",
+    "vue-i18n": "^11.4.5",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.0",
+    "@types/node": "^24.12.4",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3",
+    "vue-tsc": "^2.2.12"
+  }
+}

@@ -178,6 +178,9 @@ pub enum Call {
     McpRevoke(RevokeMcp),
     SessionMcp(SessionId),
     McpRefresh(SessionId),
+    WebOpen(WebOpen),
+    WebStatus,
+    WebClose,
 }
 
 impl Call {
@@ -259,7 +262,35 @@ impl Call {
                 | Self::McpRefresh(_)
         )
     }
+    /// Methods that open and close the local web entry; local transport only.
+    pub(crate) fn is_web_entry(&self) -> bool {
+        matches!(self, Self::WebOpen(_) | Self::WebStatus | Self::WebClose)
+    }
+    /// Management reads served to web entry connections; replies carry no credentials.
+    pub(crate) fn is_web_readable(&self) -> bool {
+        matches!(
+            self,
+            Self::ProviderList | Self::ProviderCatalog(_) | Self::ProviderSelection(_)
+        )
+    }
 }
+
+pub const WEB_ENTRY_METHODS: [&str; 3] = ["web.open", "web.status", "web.close"];
+
+/// Methods a web entry connection may call beyond the Session built-ins.
+pub const WEB_SESSION_METHODS: [&str; 11] = [
+    "session.permission.get",
+    "session.permission.update",
+    "session.exec.stop",
+    "session.skills",
+    "session.model.update",
+    "session.prompt.refresh",
+    "session.mcp",
+    "session.mcp.refresh",
+    "provider.list",
+    "provider.catalog",
+    "provider.selection",
+];
 
 pub const LOCAL_EXECUTION_METHODS: [&str; 9] = [
     "session.permission.get",
@@ -991,6 +1022,15 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
             "mcp.revoke" => Call::McpRevoke(params(raw_params)?),
             "session.mcp" => Call::SessionMcp(params(raw_params)?),
             "session.mcp.refresh" => Call::McpRefresh(params(raw_params)?),
+            "web.open" => Call::WebOpen(params(raw_params)?),
+            "web.status" => {
+                let _: Empty = params(raw_params)?;
+                Call::WebStatus
+            }
+            "web.close" => {
+                let _: Empty = params(raw_params)?;
+                Call::WebClose
+            }
             _ => return Err(RpcError::app(-32601, "unknown_method", "Unknown method")),
         })
     })();
@@ -1005,6 +1045,28 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Empty {}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebOpen {
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub port: Option<u16>,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebOpened {
+    /// Carries the bootstrap token in its fragment; never logged.
+    pub url: String,
+    pub address: std::net::SocketAddr,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebStatus {
+    pub open: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<std::net::SocketAddr>,
+    pub connections: usize,
+}
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HelloResult {
@@ -1126,6 +1188,8 @@ pub enum Reply {
     Configuration(ConfigurationResult),
     McpCatalog(McpCatalogResult),
     McpState(McpStateResult),
+    WebOpened(WebOpened),
+    WebStatus(WebStatus),
     Empty(Empty),
 }
 impl Reply {

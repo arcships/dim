@@ -159,6 +159,9 @@ jobs:
           set -euo pipefail
           flags=()
           if [[ -n "$DIM_OAUTH_PACKAGE_URL" || -n "$DIM_OAUTH_PACKAGE_SHA256" ]]; then flags+=(--with-plugin); fi
+          npm ci --prefix web --ignore-scripts --registry=https://registry.npmjs.org
+          npm run build --prefix web
+          export DIM_WEB_DIST="$PWD/web/dist"
           node scripts/stage-release.mjs "target/$DIM_BUILD_TARGET/release" "staging/$DIM_BUILD_PLATFORM" "$RELEASE_VERSION" "$SOURCE_SHA" "${flags[@]}"
           node scripts/pack-release.mjs "staging/$DIM_BUILD_PLATFORM" "release/$DIM_BUILD_PLATFORM"
       - uses: actions/upload-artifact@v7
