@@ -415,9 +415,10 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             },
         }
     };
-    // A plain exit says how to come back: the session id is only known once
-    // a session exists. The fullscreen interface hands the shell's screen
-    // back first, so the panel lands under what was there before.
+    // A plain exit says how to come back, once the session has a message to
+    // come back to: an empty one is not worth resuming. The fullscreen
+    // interface hands the shell's screen back first, so the panel lands
+    // under what was there before.
     let mut bytes = match &mut full {
         Some(full) => {
             let _ = terminal.write(&full.leave());
@@ -426,11 +427,9 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
         }
         None => screen.leave(),
     };
-    if !app.session_id.is_empty() {
-        bytes.extend(
-            format!("\r\n{}\r\n", goodbye_panel(&app.session_id).join("\r\n")).into_bytes(),
-        );
-    }
+    let resume =
+        (app.session_active() && !app.session_id.is_empty()).then_some(app.session_id.as_str());
+    bytes.extend(format!("\r\n{}\r\n", goodbye_panel(resume).join("\r\n")).into_bytes());
     let _ = terminal.write(&bytes);
     terminal.leave();
     app.host.shutdown();
@@ -2246,14 +2245,16 @@ fn git_branch() -> Option<String> {
 }
 
 /// The box printed under the transcript on exit, with the command that
-/// reopens the session, ready to paste.
-fn goodbye_panel(session_id: &str) -> Vec<String> {
-    let body = [
-        t("Bye!").to_owned(),
-        String::new(),
-        t("To resume this session:").to_owned(),
-        format!("  dimcode --resume {session_id}"),
-    ];
+/// reopens the session, ready to paste, when there is one worth reopening.
+fn goodbye_panel(resume: Option<&str>) -> Vec<String> {
+    let mut body = vec![t("Bye!").to_owned()];
+    if let Some(session_id) = resume {
+        body.extend([
+            String::new(),
+            t("To resume this session:").to_owned(),
+            format!("  dimcode --resume {session_id}"),
+        ]);
+    }
     let inner = body.iter().map(|line| width_of(line)).max().unwrap_or(0) + 4;
     std::iter::once(format!("╭{}╮", "─".repeat(inner)))
         .chain(
