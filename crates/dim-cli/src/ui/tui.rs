@@ -2174,6 +2174,9 @@ impl App {
     }
 
     fn switch_session(&mut self, session_id: String, kind: SwitchKind) {
+        // The session the process starts in needs no "new session" line
+        // under the banner; only a later `/new` marks the switch.
+        let first = self.session_id.is_empty();
         self.session_id = session_id;
         self.planner.reset();
         self.commits = CommitState::default();
@@ -2185,7 +2188,10 @@ impl App {
         self.window_info = (0, 0);
         self.history_request = None;
         self.awaiting_window = true;
-        self.pending_boundary = Some(kind);
+        self.pending_boundary = match kind {
+            SwitchKind::New if first => None,
+            kind => Some(kind),
+        };
         self.composer.clear();
         // Fullscreen holds the transcript itself: another session starts on
         // a clean view under the banner. Scrollback keeps what the terminal
