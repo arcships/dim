@@ -262,7 +262,16 @@ fn plan_blocks(
     let gutter = gutter_width(width);
     let content_width = width.saturating_sub(gutter).max(1);
     let split = (!finalize).then(|| split_streaming_markdown(&stream.text));
-    stream.open_fence = split.as_ref().and_then(|s| s.open_fence.clone());
+    // A diagram is laid out from its whole source: it neither streams its
+    // lines out nor closes early, and its source shows until it closes.
+    stream.open_fence = split.as_ref().and_then(|s| {
+        let diagram = s
+            .open_fence_info
+            .as_deref()
+            .and_then(|info| info.split_whitespace().next())
+            .is_some_and(|lang| lang.eq_ignore_ascii_case("mermaid"));
+        s.open_fence.clone().filter(|_| !diagram)
+    });
     let end = split.as_ref().map_or(stream.text.len(), |s| s.settled_len);
     let first = stream.committed_rows == 0;
     let batch = |stream: &ActiveStream, source: &str, lines: Vec<String>| Batch {
@@ -386,6 +395,15 @@ mod tests {
         let batch = out.finalized.get("msg").expect("finalized");
         assert!(batch.continues);
         assert_eq!(text_of(std::slice::from_ref(batch)), vec!["```"]);
+    }
+
+    #[test]
+    fn a_diagram_fence_waits_for_its_whole_source() {
+        let mut p = StreamPlanner::new();
+        let open = "```mermaid\nflowchart LR\nA --> B\n";
+        assert!(plan(&mut p, &[block("a", open)], &[]).active.is_empty());
+        let pending = p.pending("a").expect("live");
+        assert_eq!((pending.written, pending.open_fence), (0, None));
     }
 
     #[test]
