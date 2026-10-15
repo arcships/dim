@@ -1,4 +1,4 @@
-//! Opening the system browser for sign-in links.
+//! Opening the system browser for sign-in links and transcript links.
 
 use std::process::{Command, Stdio};
 

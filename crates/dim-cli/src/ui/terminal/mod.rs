@@ -28,6 +28,37 @@ pub use input::{InputEvent, KeyCode, KeyEvent, Modifiers, MouseEvent, MouseKind}
 pub use keyboard::KeyboardProtocol;
 use modes::Mode;
 
+/// Running inside tmux, which needs passthrough for some sequences.
+pub fn in_tmux() -> bool {
+    std::env::var_os("TMUX").is_some_and(|v| !v.is_empty())
+}
+
+/// Running inside tmux or GNU screen: they answer the kitty keyboard query
+/// on the outer terminal's behalf yet keep sending legacy keys.
+fn in_multiplexer() -> bool {
+    let term = std::env::var("TERM").unwrap_or_default();
+    in_tmux()
+        || std::env::var_os("STY").is_some_and(|v| !v.is_empty())
+        || term.starts_with("screen")
+        || term.starts_with("tmux")
+}
+
+/// Names the window after the product. Apple Terminal keeps no title stack
+/// and is set with OSC 2; elsewhere the shell's title is pushed first.
+fn set_title() -> io::Result<()> {
+    let term = std::env::var("TERM").unwrap_or_default();
+    let apple = std::env::var("TERM_PROGRAM").is_ok_and(|v| v == "Apple_Terminal")
+        || term.starts_with("nsterm");
+    let bytes: &[u8] = if apple {
+        b"\x1b]2;DIM\x07"
+    } else {
+        b"\x1b[22;0t\x1b]0;DIM\x07"
+    };
+    sys::write_all(sys::STDOUT, bytes)?;
+    modes::mark(Mode::Title);
+    Ok(())
+}
+
 /// Exit status when the terminal disappears under the process (SIGHUP shape).
 pub const EXIT_TERMINAL_LOST: i32 = 129;
 
@@ -135,6 +166,9 @@ pub struct Terminal {
     keyboard: KeyboardProtocol,
     background_report: Option<String>,
     left: bool,
+    /// The last size the terminal reported: a zero-sized window (a pane
+    /// being re-laid out) keeps it.
+    last_size: std::cell::Cell<(u16, u16)>,
 }
 
 impl Terminal {
@@ -162,6 +196,7 @@ impl Terminal {
             keyboard: KeyboardProtocol::Legacy,
             background_report: None,
             left: false,
+            last_size: std::cell::Cell::new((80, 24)),
         };
         match terminal.negotiate_keyboard() {
             Ok(()) => {}
@@ -172,6 +207,7 @@ impl Terminal {
         }
         sys::write_all(sys::STDOUT, Mode::BracketedPaste.enable_sequence())?;
         modes::mark(Mode::BracketedPaste);
+        set_title()?;
         Ok(terminal)
     }
 
@@ -243,6 +279,12 @@ impl Terminal {
             sys::write_all(sys::STDOUT, Mode::KittyKeyboard.enable_sequence())?;
             modes::mark(Mode::KittyKeyboard);
             self.keyboard = KeyboardProtocol::Kitty;
+            if in_multiplexer() {
+                // The kitty answer may be the outer terminal's; ask for
+                // modifyOtherKeys too, which the multiplexer itself speaks.
+                sys::write_all(sys::STDOUT, Mode::ModifyOtherKeys.enable_sequence())?;
+                modes::mark(Mode::ModifyOtherKeys);
+            }
         } else if scan.complete {
             // Answered DA1 but not kitty: ask xterm-style terminals for
             // modifyOtherKeys; terminals that ignore it stay in legacy.
@@ -375,7 +417,13 @@ impl Terminal {
     }
 
     pub fn size(&self) -> (u16, u16) {
-        sys::window_size().unwrap_or((80, 24))
+        match sys::window_size() {
+            Some(size) => {
+                self.last_size.set(size);
+                size
+            }
+            None => self.last_size.get(),
+        }
     }
 
     /// Hands the terminal back to the shell and stops the process (Ctrl+Z).
@@ -395,6 +443,7 @@ impl Terminal {
         self.negotiate_keyboard()?;
         sys::write_all(sys::STDOUT, Mode::BracketedPaste.enable_sequence())?;
         modes::mark(Mode::BracketedPaste);
+        set_title()?;
         if fullscreen {
             self.set_fullscreen(true)?;
         }

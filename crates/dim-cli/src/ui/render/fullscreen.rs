@@ -6,7 +6,8 @@
 //! dropped again once it moves away. Every frame paints the visible slice
 //! above the dock (queue, composer, panels, status) pinned to the bottom of
 //! the screen, with a scrollbar in the last column once the transcript is
-//! taller than its viewport. Rows are diffed against what was painted last,
+//! taller than its viewport. A shorter transcript sits on the dock and grows
+//! upwards, as in Amp. Rows are diffed against what was painted last,
 //! so a frame with nothing new writes nothing.
 //!
 //! ```text
@@ -25,6 +26,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::time::{Duration, Instant};
 
 use crate::ui::render::Frame;
 use crate::ui::render::panel::{clip, strip_escapes};
@@ -43,9 +45,16 @@ const ERASE_LINE: &[u8] = b"\x1b[2K";
 const MIN_VIEW_ROWS: usize = 3;
 /// Rows one wheel notch scrolls.
 const WHEEL_ROWS: isize = 3;
-/// Blocks measured at the bottom also keep their rows: they are what the
-/// first frame after a relayout shows.
-const KEEP_MEASURED: usize = 32;
+/// Reports closer than this come from a trackpad's burst, not a notch.
+const WHEEL_BURST: Duration = Duration::from_millis(6);
+/// Burst gaps in a row that mark the device as a trackpad; a busy frame can
+/// deliver two notches back to back, never this many.
+const WHEEL_BURST_RUN: usize = 4;
+/// A pause this long starts a new wheel streak at the base speed.
+const WHEEL_STREAK_GAP: Duration = Duration::from_millis(150);
+/// Most a fast streak multiplies a mouse notch and a trackpad report by.
+const WHEEL_MAX_NOTCH: f64 = 3.0;
+const WHEEL_MAX_FINE: f64 = 6.0;
 /// Lower eighth blocks, index = eighths filled from the bottom.
 const EIGHTHS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 const EDIT_HINT: &str = "e to edit";
@@ -59,6 +68,9 @@ pub trait Document {
     fn len(&self) -> usize;
     /// Block `index` laid out for a screen `cols` wide, one string per row.
     fn rows(&self, index: usize, cols: usize) -> Vec<String>;
+    /// About how many rows block `index` takes at `cols`, without the costly
+    /// layout: the viewport lays out exactly only the blocks it reaches.
+    fn estimate(&self, index: usize, cols: usize) -> usize;
     /// The text of block `index` when it is a user message.
     fn message(&self, index: usize) -> Option<&str>;
 }
@@ -72,6 +84,70 @@ pub enum MouseOutcome {
     Copy(String),
     /// The wheel turned over an overlay: the list in it moves (+ down).
     Overlay(isize),
+    /// A click landed on a link: its target, to open.
+    Open(String),
+}
+
+/// Where a scrolled view's top row is: `offset` rows into block `block`
+/// (stable id; one past the newest block is the live tail). A block keeps
+/// the view in place while heights above it change from estimates to exact
+/// rows, and across a relayout.
+#[derive(Debug, Clone, Copy)]
+struct Anchor {
+    block: usize,
+    offset: usize,
+}
+
+/// Turns wheel reports into rows. A mouse wheel reports once per notch, three
+/// rows each; trackpads (iTerm2, Ghostty, kitty on macOS, libinput) send
+/// dense bursts and scroll a row per report once one is seen. A fast streak
+/// speeds up, as the TS interface does: the reports of one burst count as a
+/// single sample, and the multiplier grows with the rate of the last three.
+#[derive(Debug, Default)]
+struct Wheel {
+    last: Option<Instant>,
+    run: usize,
+    fine: bool,
+    /// The last sample of the streak, and the gaps before the last three.
+    sample: Option<Instant>,
+    gaps: std::collections::VecDeque<f64>,
+}
+
+impl Wheel {
+    fn rows(&mut self, now: Instant) -> isize {
+        let burst = self
+            .last
+            .is_some_and(|last| now.duration_since(last) < WHEEL_BURST);
+        self.run = if burst { self.run + 1 } else { 0 };
+        self.fine |= self.run >= WHEEL_BURST_RUN;
+        self.last = Some(now);
+        let (base, max) = if self.fine {
+            (1, WHEEL_MAX_FINE)
+        } else {
+            (WHEEL_ROWS, WHEEL_MAX_NOTCH)
+        };
+        if burst {
+            return base;
+        }
+        let gap = self.sample.map(|at| now.duration_since(at));
+        self.sample = Some(now);
+        match gap {
+            Some(gap) if gap <= WHEEL_STREAK_GAP => {
+                if self.gaps.len() == 3 {
+                    self.gaps.pop_front();
+                }
+                self.gaps.push_back(gap.as_secs_f64() * 1000.0);
+            }
+            _ => {
+                self.gaps.clear();
+                return base;
+            }
+        }
+        let average = self.gaps.iter().sum::<f64>() / self.gaps.len() as f64;
+        let rate = 100.0 / average.max(1.0);
+        let factor = (1.0 + 0.8 * ((rate / 3.0).exp() - 1.0)).min(max);
+        (base as f64 * factor).round() as isize
+    }
 }
 
 /// A text selection in transcript coordinates: `(row, column)`, absolute
@@ -110,19 +186,22 @@ pub struct FullScreen {
     layout_cols: usize,
     /// `Document::dropped` when the heights were last synced.
     base: usize,
-    /// Rows of each block at `layout_cols`.
+    /// Rows of each block at `layout_cols`: exact where `measured`, else
+    /// the document's estimate.
     heights: Vec<usize>,
+    measured: Vec<bool>,
     /// First row of each block; one more entry holds the total.
     starts: Vec<usize>,
     /// Rendered rows of the blocks near the viewport, by block id.
     cache: HashMap<usize, Vec<String>>,
     /// The live tail of the last frame (streaming answer, running tools).
     tail: Vec<String>,
-    /// Index of the first visible row while the reader has scrolled away
-    /// from the bottom; `None` follows new output.
-    pinned_top: Option<usize>,
+    /// The top of the view while the reader has scrolled away from the
+    /// bottom; `None` follows new output.
+    pinned: Option<Anchor>,
     /// Transcript viewport height of the last frame.
     view_rows: usize,
+    wheel: Wheel,
     /// The last frame had an overlay: the wheel belongs to it.
     overlay_open: bool,
     selection: Option<Selection>,
@@ -143,11 +222,13 @@ impl FullScreen {
             layout_cols: size.0 as usize,
             base: 0,
             heights: Vec::new(),
+            measured: Vec::new(),
             starts: vec![0],
             cache: HashMap::new(),
             tail: Vec::new(),
-            pinned_top: None,
+            pinned: None,
             view_rows: 0,
+            wheel: Wheel::default(),
             overlay_open: false,
             selection: None,
             focus: None,
@@ -158,14 +239,29 @@ impl FullScreen {
         }
     }
 
+    /// The terminal size of the last frame.
+    pub fn size(&self) -> (u16, u16) {
+        self.size
+    }
+
+    /// The width the transcript is laid out for.
+    pub fn layout_cols(&self) -> u16 {
+        self.layout_cols as u16
+    }
+
     /// Lays the transcript out again for `cols` columns (a settled resize,
-    /// a theme change) and repaints everything on the next frame.
+    /// a theme change) and repaints everything on the next frame. A scrolled
+    /// view keeps its top block; rows into it scale with the width.
     pub fn relayout(&mut self, cols: u16) {
-        self.layout_cols = cols as usize;
+        let cols = (cols as usize).max(1);
+        if let Some(anchor) = &mut self.pinned {
+            anchor.offset = anchor.offset * self.layout_cols / cols;
+        }
+        self.layout_cols = cols;
         self.heights.clear();
+        self.measured.clear();
         self.starts = vec![0];
         self.cache.clear();
-        self.pinned_top = None;
         self.selection = None;
         self.invalidate();
     }
@@ -187,9 +283,8 @@ impl FullScreen {
     /// Scrolls the transcript by `rows` (negative is up, towards older rows).
     pub fn scroll(&mut self, rows: isize) {
         let max_top = self.max_top();
-        let top = self.pinned_top.unwrap_or(max_top) as isize;
-        let next = (top + rows).clamp(0, max_top as isize) as usize;
-        self.pinned_top = (next < max_top).then_some(next);
+        let next = (self.top() as isize + rows).clamp(0, max_top as isize) as usize;
+        self.pin(next);
     }
 
     /// One page of the transcript, keeping two rows of context.
@@ -200,7 +295,25 @@ impl FullScreen {
 
     /// Follows new output again.
     pub fn follow(&mut self) {
-        self.pinned_top = None;
+        self.pinned = None;
+    }
+
+    /// Holds the view with row `top` first; the bottom row follows.
+    fn pin(&mut self, top: usize) {
+        self.pinned = (top < self.max_top()).then(|| {
+            let blocks = self.heights.len();
+            if top >= self.starts[blocks] {
+                return Anchor {
+                    block: self.base + blocks,
+                    offset: top - self.starts[blocks],
+                };
+            }
+            let index = self.starts.partition_point(|&s| s <= top) - 1;
+            Anchor {
+                block: self.base + index,
+                offset: top - self.starts[index],
+            }
+        });
     }
 
     /// True while a user message is picked.
@@ -268,9 +381,7 @@ impl FullScreen {
         };
         let top = self.top();
         if start < top || end >= top + self.view_rows {
-            let max_top = self.max_top();
-            let next = start.min(max_top);
-            self.pinned_top = (next < max_top).then_some(next);
+            self.pin(start.min(self.max_top()));
         }
     }
 
@@ -287,17 +398,19 @@ impl FullScreen {
         }
         match event.kind {
             MouseKind::WheelUp => {
-                self.scroll(-WHEEL_ROWS);
+                let rows = self.wheel.rows(Instant::now());
+                self.scroll(-rows);
                 MouseOutcome::Redraw
             }
             MouseKind::WheelDown => {
-                self.scroll(WHEEL_ROWS);
+                let rows = self.wheel.rows(Instant::now());
+                self.scroll(rows);
                 MouseOutcome::Redraw
             }
             MouseKind::Press => {
                 let had = self.selection.take().is_some();
-                if row < self.view_rows {
-                    let at = (self.top() + row, column);
+                if let Some(index) = (row < self.view_rows).then(|| self.at(row)).flatten() {
+                    let at = (index, column);
                     self.selection = Some(Selection {
                         anchor: at,
                         head: at,
@@ -319,8 +432,11 @@ impl FullScreen {
                 } else if row + 1 >= self.view_rows {
                     self.scroll(1);
                 }
-                let row = row.min(self.view_rows.saturating_sub(1));
-                let at = (self.top() + row, column);
+                let row = row.min(self.view_rows.saturating_sub(1)).max(self.gap());
+                let Some(index) = self.at(row) else {
+                    return MouseOutcome::Ignored;
+                };
+                let at = (index, column);
                 if let Some(selection) = &mut self.selection {
                     selection.head = at;
                 }
@@ -330,7 +446,15 @@ impl FullScreen {
                 Some(selection) if selection.anchor != selection.head => {
                     MouseOutcome::Copy(self.selected_text(&selection, doc))
                 }
-                Some(_) => MouseOutcome::Redraw,
+                // A click: the terminal cannot open links while it reports
+                // the mouse, so a click on one opens it here.
+                Some(Selection {
+                    anchor: (row, column),
+                    ..
+                }) => match self.row(row).and_then(|text| link_at(text, column)) {
+                    Some(url) => MouseOutcome::Open(url),
+                    None => MouseOutcome::Redraw,
+                },
                 None => MouseOutcome::Ignored,
             },
         }
@@ -361,8 +485,8 @@ impl FullScreen {
         let dock_rows = dock.len().min(rows.saturating_sub(MIN_VIEW_ROWS)).max(1);
         let dock_skip = dock.len().saturating_sub(dock_rows);
         self.view_rows = rows - dock_rows.min(rows);
+        self.load(doc);
         let top = self.top();
-        self.load(doc, top);
 
         let dim = frame.overlay.is_some();
         self.overlay_open = dim;
@@ -370,16 +494,20 @@ impl FullScreen {
         let focus = self.focus_rows();
         let mut screen: Vec<String> = Vec::with_capacity(rows);
         for y in 0..self.view_rows {
-            let index = top + y;
-            let row = self.row(index).unwrap_or("");
-            let body = match focus {
-                Some((start, end)) if (start..=end).contains(&index) => {
-                    focus_row(row, index - start, end - start, cols, palette)
+            let body = match self.at(y) {
+                None => String::new(),
+                Some(index) => {
+                    let row = self.row(index).unwrap_or("");
+                    match focus {
+                        Some((start, end)) if (start..=end).contains(&index) => {
+                            focus_row(row, index - start, end - start, cols, palette)
+                        }
+                        _ => match self.selection.and_then(|s| s.columns(index)) {
+                            Some(range) => highlight(row, range, width),
+                            None => clip(row, width).0,
+                        },
+                    }
                 }
-                _ => match self.selection.and_then(|s| s.columns(index)) {
-                    Some(range) => highlight(row, range, width),
-                    None => clip(row, width).0,
-                },
             };
             let body = if dim {
                 fg(&strip_escapes(&body), &palette.faint)
@@ -472,17 +600,25 @@ impl FullScreen {
     }
 
     /// Brings the heights in line with `doc`: blocks dropped at the front
-    /// leave, new blocks at the back are measured.
+    /// leave, new blocks at the back get estimates.
     fn sync(&mut self, doc: &dyn Document) {
         let dropped = doc.dropped();
         let gone = dropped.saturating_sub(self.base).min(self.heights.len());
         let mut changed = false;
         if gone > 0 {
-            let removed: usize = self.heights.drain(..gone).sum();
-            self.pinned_top = self.pinned_top.map(|top| top.saturating_sub(removed));
+            self.heights.drain(..gone);
+            self.measured.drain(..gone);
             self.selection = None;
             self.cache.retain(|id, _| *id >= dropped);
             changed = true;
+        }
+        if let Some(anchor) = &mut self.pinned
+            && anchor.block < dropped
+        {
+            *anchor = Anchor {
+                block: dropped,
+                offset: 0,
+            };
         }
         if self.focus.is_some_and(|id| id < dropped) {
             self.focus = None;
@@ -490,26 +626,28 @@ impl FullScreen {
         self.base = dropped;
         if self.heights.len() > doc.len() {
             self.heights.truncate(doc.len());
+            self.measured.truncate(doc.len());
             changed = true;
         }
-        let width = content_width(self.layout_cols);
         while self.heights.len() < doc.len() {
             let index = self.heights.len();
-            let rows = self.layout(doc, index, width);
-            self.heights.push(rows.len());
-            if doc.len() - index <= KEEP_MEASURED {
-                self.cache.insert(dropped + index, rows);
-            }
+            self.heights.push(doc.estimate(index, self.layout_cols));
+            self.measured.push(false);
             changed = true;
         }
         if changed {
-            self.starts.clear();
-            self.starts.push(0);
-            let mut total = 0;
-            for height in &self.heights {
-                total += height;
-                self.starts.push(total);
-            }
+            self.restart();
+        }
+    }
+
+    /// Recomputes the first row of each block from the heights.
+    fn restart(&mut self) {
+        self.starts.clear();
+        self.starts.push(0);
+        let mut total = 0;
+        for height in &self.heights {
+            total += height;
+            self.starts.push(total);
         }
     }
 
@@ -520,16 +658,34 @@ impl FullScreen {
             .collect()
     }
 
-    /// Renders the blocks the viewport at `top` shows and forgets the rows
-    /// of blocks more than a screen away from it.
-    fn load(&mut self, doc: &dyn Document, top: usize) {
+    /// Lays out the blocks within a screen of the viewport exactly, keeping
+    /// their rows, and forgets the rows of blocks further away. Exact heights
+    /// move the rows of an anchored view, so this repeats until the blocks
+    /// around the settled viewport are all measured.
+    fn load(&mut self, doc: &dyn Document) {
         let view = self.view_rows.max(1);
-        let keep = (top.saturating_sub(view), top + 2 * view);
-        let blocks = self.blocks_between(keep.0, keep.1);
+        let width = content_width(self.layout_cols);
+        let blocks = loop {
+            let top = self.top();
+            let blocks = self.blocks_between(top.saturating_sub(view), top + 2 * view);
+            let mut changed = false;
+            for index in blocks.clone() {
+                if !self.measured[index] {
+                    let rows = self.layout(doc, index, width);
+                    self.heights[index] = rows.len();
+                    self.measured[index] = true;
+                    self.cache.insert(self.base + index, rows);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break blocks;
+            }
+            self.restart();
+        };
         self.cache
             .retain(|id, _| blocks.contains(&id.wrapping_sub(self.base)));
-        let width = content_width(self.layout_cols);
-        for index in self.blocks_between(top, top + view) {
+        for index in blocks {
             let id = self.base + index;
             if !self.cache.contains_key(&id) {
                 let rows = self.layout(doc, index, width);
@@ -557,9 +713,29 @@ impl FullScreen {
         self.content_rows().saturating_sub(self.view_rows)
     }
 
+    /// Blank rows above a transcript shorter than its viewport: it sits on
+    /// the dock and grows upwards, as in Amp.
+    fn gap(&self) -> usize {
+        self.view_rows.saturating_sub(self.content_rows())
+    }
+
+    /// The transcript row shown on viewport row `y`, none in the gap.
+    fn at(&self, y: usize) -> Option<usize> {
+        y.checked_sub(self.gap()).map(|row| self.top() + row)
+    }
+
     fn top(&self) -> usize {
         let max_top = self.max_top();
-        self.pinned_top.map_or(max_top, |top| top.min(max_top))
+        let Some(anchor) = self.pinned else {
+            return max_top;
+        };
+        let start = anchor
+            .block
+            .checked_sub(self.base)
+            .and_then(|index| self.starts.get(index))
+            .copied()
+            .unwrap_or(0);
+        (start + anchor.offset).min(max_top)
     }
 
     /// Row `index` of the transcript, when its block is loaded.
@@ -610,6 +786,66 @@ impl FullScreen {
         }
         lines.join("\n")
     }
+}
+
+/// The link under display column `column` of `row`: the OSC 8 target there,
+/// else a bare `http(s)://` URL in the visible text.
+fn link_at(row: &str, column: usize) -> Option<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut target: Option<&str> = None;
+    let mut at = 0;
+    let mut rest = row;
+    while !rest.is_empty() {
+        if let Some(body) = rest.strip_prefix("\x1b]8;") {
+            // OSC 8: params `;` target, ended by BEL or ST.
+            let (end, skip) = match (body.find('\x07'), body.find("\x1b\\")) {
+                (Some(b), Some(s)) if s < b => (s, 2),
+                (Some(b), _) => (b, 1),
+                (None, Some(s)) => (s, 2),
+                (None, None) => break,
+            };
+            let url = body[..end].split_once(';').map_or("", |(_, url)| url);
+            target = (!url.is_empty()).then_some(url);
+            rest = &body[end + skip..];
+            continue;
+        }
+        if rest.starts_with('\x1b') {
+            let (piece, _) = clip(rest, 0);
+            rest = &rest[piece.len().max(1)..];
+            continue;
+        }
+        let next = rest.find('\x1b').unwrap_or(rest.len());
+        for cluster in rest[..next].graphemes(true) {
+            let width = display_width(cluster);
+            if column < at + width.max(1) {
+                if let Some(url) = target {
+                    return Some(url.to_owned());
+                }
+                return bare_url(&strip_escapes(row), column);
+            }
+            at += width;
+        }
+        rest = &rest[next..];
+    }
+    None
+}
+
+/// The `http(s)://` word under display column `column` of plain `text`,
+/// without the punctuation that usually follows a URL in prose.
+fn bare_url(text: &str, column: usize) -> Option<String> {
+    let mut at = 0;
+    for word in text.split(' ') {
+        let width = display_width(word);
+        if column < at + width {
+            let url = word.trim_end_matches(['.', ',', ';', ':', ')', ']', '>', '"', '\'']);
+            let url = url.trim_start_matches(['(', '[', '<', '"', '\'']);
+            let lower = url.to_ascii_lowercase();
+            return (lower.starts_with("https://") || lower.starts_with("http://"))
+                .then(|| url.to_owned());
+        }
+        at += width + 1;
+    }
+    None
 }
 
 /// Transcript rows are laid out one column short of the screen: the last
@@ -830,6 +1066,8 @@ mod tests {
     struct Doc {
         blocks: Vec<(bool, Vec<String>)>,
         dropped: usize,
+        /// Blocks laid out so far.
+        laid: std::cell::Cell<usize>,
     }
 
     impl Doc {
@@ -837,6 +1075,7 @@ mod tests {
             Self {
                 blocks: Vec::new(),
                 dropped: 0,
+                laid: std::cell::Cell::new(0),
             }
         }
 
@@ -858,9 +1097,14 @@ mod tests {
             self.blocks.len()
         }
         fn rows(&self, index: usize, _cols: usize) -> Vec<String> {
+            self.laid.set(self.laid.get() + 1);
             std::iter::once(String::new())
                 .chain(self.blocks[index].1.iter().cloned())
                 .collect()
+        }
+        /// A blank row and one more: short of every taller block.
+        fn estimate(&self, _index: usize, _cols: usize) -> usize {
+            2
         }
         fn message(&self, index: usize) -> Option<&str> {
             let (user, rows) = &self.blocks[index];
@@ -896,13 +1140,13 @@ mod tests {
     const DOCK: [&str; 2] = ["> x", "status"];
 
     #[test]
-    fn transcript_fills_the_top_and_the_dock_stays_at_the_bottom() {
+    fn a_short_transcript_sits_on_the_dock_and_grows_upwards() {
         let (mut screen, mut emu) = setup();
         let mut doc = Doc::new();
         doc.say(&["a", "b"]);
         draw(&mut screen, &mut emu, &frame(&["tail"], &DOCK), &doc);
         let rows = emu.rows_text();
-        assert_eq!(&rows[..4], &["", "a", "b", "tail"]);
+        assert_eq!(&rows[..6], &["", "", "", "a", "b", "tail"]);
         assert_eq!(&rows[6..], &DOCK);
         assert_eq!((emu.cy, emu.cx), (6, 2));
         // Nothing changed: nothing is written.
@@ -942,13 +1186,13 @@ mod tests {
             doc.say(&[&format!("row {i}")]);
         }
         draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
-        assert!(screen.cache.len() <= 8, "{}", screen.cache.len());
+        assert!(screen.cache.len() <= 12, "{}", screen.cache.len());
         // Scrolling to the top renders what is shown there, and lets the
         // bottom go.
         screen.scroll(-100_000);
         draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
         assert!(emu.row(1).starts_with("row 0"));
-        assert!(screen.cache.len() <= 8, "{}", screen.cache.len());
+        assert!(screen.cache.len() <= 12, "{}", screen.cache.len());
         // Blocks the App forgets leave without moving the view.
         screen.scroll(40);
         draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
@@ -960,6 +1204,37 @@ mod tests {
     }
 
     #[test]
+    fn a_long_transcript_is_laid_out_near_the_view_only_and_keeps_its_place() {
+        let (mut screen, mut emu) = setup();
+        let mut doc = Doc::new();
+        // Three rows each, estimated at two.
+        for i in 0..2_000 {
+            doc.say(&[&format!("row {i}"), "detail"]);
+        }
+        draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
+        assert!(emu.row(4).starts_with("row 1999"), "{:?}", emu.rows_text());
+        assert!(emu.row(5).starts_with("detail"));
+        assert!(doc.laid.get() < 20, "{}", doc.laid.get());
+        screen.scroll(-100_000);
+        draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
+        assert!(emu.row(1).starts_with("row 0"), "{:?}", emu.rows_text());
+        // Wheel steps stay inside the screen measured exactly beyond the
+        // view, so every block lands where its rows say.
+        for _ in 0..10 {
+            screen.scroll(WHEEL_ROWS);
+            draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
+        }
+        assert!(emu.row(1).starts_with("row 10"), "{:?}", emu.rows_text());
+        // A relayout keeps the view on its block and lays out its
+        // neighbourhood only.
+        doc.laid.set(0);
+        screen.relayout(SIZE.0);
+        draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
+        assert!(emu.row(1).starts_with("row 10"), "{:?}", emu.rows_text());
+        assert!(doc.laid.get() < 20, "{}", doc.laid.get());
+    }
+
+    #[test]
     fn a_drag_selects_plain_text_across_rows() {
         let (mut screen, mut emu) = setup();
         let mut doc = Doc::new();
@@ -967,15 +1242,15 @@ mod tests {
         draw(&mut screen, &mut emu, &frame(&[], &["> x"]), &doc);
         let at = |kind, column, row| MouseEvent { kind, column, row };
         assert_eq!(
-            screen.mouse(at(MouseKind::Press, 6, 1), &doc),
+            screen.mouse(at(MouseKind::Press, 6, 5), &doc),
             MouseOutcome::Redraw
         );
         assert_eq!(
-            screen.mouse(at(MouseKind::Drag, 5, 2), &doc),
+            screen.mouse(at(MouseKind::Drag, 5, 6), &doc),
             MouseOutcome::Redraw
         );
         assert_eq!(
-            screen.mouse(at(MouseKind::Release, 5, 2), &doc),
+            screen.mouse(at(MouseKind::Release, 5, 6), &doc),
             MouseOutcome::Copy("world\nsecond".to_owned())
         );
     }
@@ -1027,11 +1302,12 @@ mod tests {
         assert_eq!(
             &rows[1..4],
             &[
-                "behind the bo┌──┐",
+                "             ┌──┐",
                 "             │> │",
                 "             └──┘"
             ]
         );
+        assert_eq!(rows[5], "behind the box");
         assert_eq!((emu.cy, emu.cx), (2, 15));
         assert!(String::from_utf8_lossy(&bytes).contains("\x1b[2m"));
         let wheel = MouseEvent {
@@ -1040,6 +1316,51 @@ mod tests {
             row: 0,
         };
         assert_eq!(screen.mouse(wheel, &doc), MouseOutcome::Overlay(1));
+    }
+
+    #[test]
+    fn the_wheel_speeds_up_with_the_streak_and_a_trackpad_goes_fine() {
+        let mut wheel = Wheel::default();
+        let t = Instant::now();
+        let at = |ms: u64| t + Duration::from_millis(ms);
+        // Slow notches stay at the base, two delivered together by a busy
+        // frame included.
+        assert_eq!(wheel.rows(at(0)), WHEEL_ROWS);
+        assert_eq!(wheel.rows(at(1)), WHEEL_ROWS);
+        assert_eq!(wheel.rows(at(200)), WHEEL_ROWS);
+        // A fast spin speeds up to three times the base, no further.
+        let spin: Vec<isize> = (1..=4).map(|i| wheel.rows(at(200 + 20 * i))).collect();
+        assert_eq!(spin, [9, 9, 9, 9]);
+        // A pause starts over.
+        assert_eq!(wheel.rows(at(1_000)), WHEEL_ROWS);
+        // A trackpad burst: a row per report from then on.
+        let rows: Vec<isize> = (0..6).map(|i| wheel.rows(at(2_000 + 2 * i))).collect();
+        assert_eq!(rows, [3, 3, 3, 3, 1, 1]);
+        assert_eq!(wheel.rows(at(3_000)), 1);
+    }
+
+    #[test]
+    fn a_click_on_a_link_opens_its_target() {
+        let (mut screen, mut emu) = setup();
+        let mut doc = Doc::new();
+        let link = crate::ui::render::osc8::hyperlink("https://a.example/x", "docs");
+        doc.say(&[&format!("see {link} or"), "(https://b.example/y)."]);
+        draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
+        let mut click = |column, row| {
+            let at = |kind| MouseEvent { kind, column, row };
+            screen.mouse(at(MouseKind::Press), &doc);
+            screen.mouse(at(MouseKind::Release), &doc)
+        };
+        // Rows 3 and 4 hold the block under its blank row.
+        assert_eq!(
+            click(5, 4),
+            MouseOutcome::Open("https://a.example/x".into())
+        );
+        assert_eq!(click(1, 4), MouseOutcome::Redraw);
+        assert_eq!(
+            click(8, 5),
+            MouseOutcome::Open("https://b.example/y".into())
+        );
     }
 
     #[test]

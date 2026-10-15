@@ -5,11 +5,24 @@
 //! over SSH; terminals without it (Apple Terminal) are covered locally on
 //! macOS by `pbcopy`.
 
-/// The OSC 52 sequence that puts `text` on the terminal's clipboard.
-pub fn osc52(text: &str) -> Vec<u8> {
-    let mut out = b"\x1b]52;c;".to_vec();
-    out.extend_from_slice(base64(text.as_bytes()).as_bytes());
-    out.push(0x07);
+/// The OSC 52 sequence that puts `text` on the terminal's clipboard. Inside
+/// tmux it is wrapped for passthrough to the outer terminal (tmux needs
+/// `allow-passthrough on`), as tmux keeps a bare OSC 52 to itself.
+pub fn osc52(text: &str, tmux: bool) -> Vec<u8> {
+    let mut seq = b"\x1b]52;c;".to_vec();
+    seq.extend_from_slice(base64(text.as_bytes()).as_bytes());
+    seq.push(0x07);
+    if !tmux {
+        return seq;
+    }
+    let mut out = b"\x1bPtmux;".to_vec();
+    for byte in seq {
+        if byte == 0x1b {
+            out.push(0x1b);
+        }
+        out.push(byte);
+    }
+    out.extend_from_slice(b"\x1b\\");
     out
 }
 
@@ -70,6 +83,10 @@ mod tests {
         assert_eq!(base64(b"f"), "Zg==");
         assert_eq!(base64(b"fo"), "Zm8=");
         assert_eq!(base64(b"foo"), "Zm9v");
-        assert_eq!(osc52("hi"), b"\x1b]52;c;aGk=\x07".to_vec());
+        assert_eq!(osc52("hi", false), b"\x1b]52;c;aGk=\x07".to_vec());
+        assert_eq!(
+            osc52("hi", true),
+            b"\x1bPtmux;\x1b\x1b]52;c;aGk=\x07\x1b\\".to_vec()
+        );
     }
 }

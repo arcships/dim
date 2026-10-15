@@ -27,7 +27,8 @@ use crate::ui::theme::{Palette, Theme, detect};
 use crate::ui::theme_panel::ThemePanel;
 use crate::ui::transcript::block::{Block, Tone, group_rows, opens_group, project_row};
 use crate::ui::transcript::blocks::{
-    ASSISTANT_MARK, UserStyle, apply_gutter_mark, gutter_width, render_user, truncate_cells,
+    ASSISTANT_MARK, UserStyle, apply_gutter_mark, display_width, gutter_width, render_user,
+    truncate_cells,
 };
 use crate::ui::transcript::commit::CommitState;
 use crate::ui::transcript::stream::{StreamPlanner, TextBlock};
@@ -78,7 +79,7 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             return 1;
         }
     };
-    let synchronized = std::env::var_os("TMUX").is_none_or(|v| v.is_empty());
+    let synchronized = !crate::ui::terminal::in_tmux();
     let mut screen = Screen::new(terminal.size(), synchronized);
     // The fullscreen interface, while it is the one on screen; the
     // scrollback `screen` waits underneath and is rewritten on the way back.
@@ -134,7 +135,18 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
         let now = Instant::now();
         // A resize is acted on once it settles (design §6.4).
         let current = terminal.size();
-        if current != screen.size() {
+        let laid_out = match &full {
+            // Fullscreen lays the transcript out by width; a new height
+            // only repaints, at once.
+            Some(full) => {
+                if full.size() != current {
+                    dirty = true;
+                }
+                (full.layout_cols(), current.1)
+            }
+            None => screen.size(),
+        };
+        if current != laid_out {
             match &mut resize {
                 Some(pending) if pending.size == current => {}
                 Some(pending) => {
@@ -247,12 +259,30 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
                     }
                     MouseOutcome::Copy(text) => {
                         crate::ui::clipboard::copy_local(&text);
-                        if terminal.write(&crate::ui::clipboard::osc52(&text)).is_err() {
+                        if terminal
+                            .write(&crate::ui::clipboard::osc52(
+                                &text,
+                                crate::ui::terminal::in_tmux(),
+                            ))
+                            .is_err()
+                        {
                             let code = terminal.lost();
                             app.host.shutdown();
                             return code;
                         }
                         app.set_notice("Copied to clipboard");
+                        dirty = true;
+                    }
+                    MouseOutcome::Open(url) => {
+                        // Over SSH the opener would run on the remote host.
+                        let local = std::env::var_os("SSH_CONNECTION").is_none()
+                            && std::env::var_os("SSH_TTY").is_none();
+                        let opened = local && crate::browser::open(&url);
+                        app.set_notice(if opened {
+                            "Opened link".to_owned()
+                        } else {
+                            format!("Link: {url}")
+                        });
                         dirty = true;
                     }
                 }
@@ -1396,13 +1426,13 @@ impl App {
             if index < floor {
                 continue;
             }
-            let text = row.text.clone();
+            let text = row.text.as_str();
             match row.kind {
                 // The projection flips the same row to `assistant_message` when
                 // the model output ends.
                 RowKind::StreamingAssistant => {
                     live_text.push(TextBlock {
-                        id: row.row_id.clone(),
+                        id: &row.row_id,
                         text,
                     });
                     live_items.push(LiveItem::Text(row.row_id.clone()));
@@ -1427,7 +1457,7 @@ impl App {
                 }
                 RowKind::AssistantMessage => {
                     settled_assistant.push(TextBlock {
-                        id: row.row_id.clone(),
+                        id: &row.row_id,
                         text,
                     });
                     settled_ids.push(row.row_id.clone());
@@ -1696,6 +1726,22 @@ impl Document for App {
         raw_rows(&self.render_source(&self.history[index], cols)).collect()
     }
 
+    fn estimate(&self, index: usize, cols: usize) -> usize {
+        match &self.history[index] {
+            // Markdown is the costly layout: count the wrapped source lines
+            // under the blank row that opens the chunk.
+            Block::Assistant { text, .. } => {
+                let width = cols.saturating_sub(2 + MARGIN).max(1);
+                let content = width.saturating_sub(gutter_width(width)).max(1);
+                1 + text
+                    .lines()
+                    .map(|line| display_width(line).div_ceil(content).max(1))
+                    .sum::<usize>()
+            }
+            _ => self.rows(index, cols).len(),
+        }
+    }
+
     fn message(&self, index: usize) -> Option<&str> {
         match &self.history[index] {
             Block::User(text) => Some(text),
@@ -1753,10 +1799,7 @@ fn thinking_line(preview: &str, width: usize, p: &Palette) -> String {
     use crate::ui::transcript::blocks::truncate_cells;
     const LABEL: &str = "Thinking: ";
     let label = truncate_cells(LABEL, width);
-    let preview = truncate_cells(
-        preview,
-        width.saturating_sub(crate::ui::transcript::blocks::display_width(&label)),
-    );
+    let preview = truncate_cells(preview, width.saturating_sub(display_width(&label)));
     format!(
         "{}{}",
         paint(

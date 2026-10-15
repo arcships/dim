@@ -16,9 +16,9 @@ use std::collections::HashMap;
 
 /// An assistant text block as the projection sees it.
 #[derive(Debug, Clone)]
-pub struct TextBlock {
-    pub id: String,
-    pub text: String,
+pub struct TextBlock<'a> {
+    pub id: &'a str,
+    pub text: &'a str,
 }
 
 /// What a committed batch was rendered from, kept so it can be laid out again
@@ -87,7 +87,7 @@ impl StreamPlanner {
         self.transfer_reidentified(live);
 
         // Streams whose live row disappeared.
-        let live_ids: Vec<&str> = live.iter().map(|b| b.id.as_str()).collect();
+        let live_ids: Vec<&str> = live.iter().map(|b| b.id).collect();
         let (still, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut self.active)
             .into_iter()
             .partition(|s| live_ids.contains(&s.id.as_str()));
@@ -105,24 +105,27 @@ impl StreamPlanner {
             let prefix = &stream.text[..stream.committed_len];
             let twin = settled
                 .iter()
-                .find(|b| !used_settled.contains(&b.id.as_str()) && b.text.starts_with(prefix));
+                .find(|b| !used_settled.contains(&b.id) && b.text.starts_with(prefix));
             match twin {
                 None => self.parked.push(stream),
                 Some(block) => {
-                    used_settled.push(&block.id);
+                    used_settled.push(block.id);
                     // The persisted text is the authority on the remainder.
-                    stream.text = block.text.clone();
+                    stream.text = block.text.to_owned();
                     let batch = plan_blocks(&mut stream, width, true, render);
-                    plan.finalized.insert(block.id.clone(), batch);
+                    plan.finalized.insert(block.id.to_owned(), batch);
                 }
             }
         }
 
         for block in live {
-            let existing = self.take_active(&block.id).or_else(|| self.unpark(block));
+            let existing = self.take_active(block.id).or_else(|| self.unpark(block));
             let mut stream = match existing {
                 Some(mut stream) if block.text.starts_with(&stream.text) => {
-                    stream.text = block.text.clone();
+                    // An unchanged stream keeps its copy.
+                    if block.text.len() != stream.text.len() {
+                        stream.text = block.text.to_owned();
+                    }
                     stream
                 }
                 other => {
@@ -131,8 +134,8 @@ impl StreamPlanner {
                     drop(other);
                     self.parked.clear();
                     ActiveStream {
-                        id: block.id.clone(),
-                        text: block.text.clone(),
+                        id: block.id.to_owned(),
+                        text: block.text.to_owned(),
                         committed_len: 0,
                         committed_rows: 0,
                     }
@@ -176,7 +179,7 @@ impl StreamPlanner {
     /// A live block under a new id continues the stream that already wrote
     /// part of the same text: take over its watermark.
     fn transfer_reidentified(&mut self, live: &[TextBlock]) {
-        let live_ids: Vec<&str> = live.iter().map(|b| b.id.as_str()).collect();
+        let live_ids: Vec<&str> = live.iter().map(|b| b.id).collect();
         for block in live {
             if self.active.iter().any(|s| s.id == block.id) {
                 continue;
@@ -194,8 +197,8 @@ impl StreamPlanner {
                 .map(|(i, _)| i);
             if let Some(index) = candidate {
                 let stream = &mut self.active[index];
-                stream.id = block.id.clone();
-                stream.text = block.text.clone();
+                stream.id = block.id.to_owned();
+                stream.text = block.text.to_owned();
             }
         }
     }
@@ -248,11 +251,8 @@ mod tests {
 
     const W: usize = 40;
 
-    fn block(id: &str, text: &str) -> TextBlock {
-        TextBlock {
-            id: id.into(),
-            text: text.into(),
-        }
+    fn block<'a>(id: &'a str, text: &'a str) -> TextBlock<'a> {
+        TextBlock { id, text }
     }
 
     fn plan(planner: &mut StreamPlanner, live: &[TextBlock], settled: &[TextBlock]) -> Plan {
@@ -373,7 +373,7 @@ mod tests {
             }
             let mut tail = Vec::new();
             for block in live {
-                if let Some((rest, _)) = planner.pending(&block.id) {
+                if let Some((rest, _)) = planner.pending(block.id) {
                     tail.extend(rest.lines().map(|l| format!("~{l}")));
                 }
             }

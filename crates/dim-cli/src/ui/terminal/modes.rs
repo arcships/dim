@@ -24,6 +24,9 @@ pub enum Mode {
     AltScreen,
     /// Button, drag and wheel reports in SGR encoding (`?1002` + `?1006`).
     Mouse,
+    /// The window title is ours; the shell's was pushed (`CSI 22;0t`) where
+    /// the terminal keeps a title stack.
+    Title,
 }
 
 impl Mode {
@@ -36,6 +39,7 @@ impl Mode {
             Self::Progress => 16,
             Self::AltScreen => 32,
             Self::Mouse => 64,
+            Self::Title => 128,
         }
     }
 
@@ -50,6 +54,8 @@ impl Mode {
             Self::Progress => b"",
             Self::AltScreen => b"\x1b[?1049h",
             Self::Mouse => b"\x1b[?1002h\x1b[?1006h",
+            // Depends on the terminal: see `Terminal::set_title`.
+            Self::Title => b"",
         }
     }
 
@@ -63,6 +69,9 @@ impl Mode {
             Self::Progress => b"\x1b]9;4;0\x07",
             Self::AltScreen => b"\x1b[?1049l",
             Self::Mouse => b"\x1b[?1006l\x1b[?1002l",
+            // Clear, then pop: a terminal with a title stack gets the shell's
+            // title back, one without (Apple Terminal) shows its default.
+            Self::Title => b"\x1b]2;\x07\x1b[23;0t",
         }
     }
 }
@@ -113,6 +122,7 @@ pub fn restore_into(live: u8, out: &mut [u8; MAX_RESTORE_LEN]) -> usize {
         Mode::ModifyOtherKeys,
         Mode::Mouse,
         Mode::Progress,
+        Mode::Title,
         Mode::AltScreen,
     ] {
         if live & mode.bit() != 0 {
@@ -172,6 +182,7 @@ mod tests {
             Mode::Progress,
             Mode::AltScreen,
             Mode::Mouse,
+            Mode::Title,
         ];
         assert!(restore(&all).len() <= MAX_RESTORE_LEN);
     }
