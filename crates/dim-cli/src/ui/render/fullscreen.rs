@@ -510,7 +510,7 @@ impl FullScreen {
                 }
             };
             let body = if dim {
-                fg(&strip_escapes(&body), &palette.faint)
+                fg(&strip_escapes(&body), &palette.muted)
             } else {
                 body
             };
@@ -1010,8 +1010,8 @@ fn scrollbar(view: usize, content: usize, top: usize, palette: &Palette) -> Opti
     if content <= view || view == 0 {
         return None;
     }
-    let track = palette.surface.as_deref().unwrap_or(&palette.border);
-    let thumb = &palette.faint;
+    let track = &palette.scroll_track;
+    let thumb = &palette.scroll_thumb;
     let total = view * 8;
     let size = (total * view / content).max(8);
     let start = (total - size) * top / (content - view);
@@ -1058,7 +1058,7 @@ mod tests {
     use super::*;
     use crate::ui::render::Overlay;
     use crate::ui::render::testterm::Emu;
-    use crate::ui::theme::{Appearance, ColorMode, palette::palette_for};
+    use crate::ui::theme::{Appearance, palette::terminal_palette};
 
     const SIZE: (u16, u16) = (30, 8);
 
@@ -1124,7 +1124,7 @@ mod tests {
     }
 
     fn draw(screen: &mut FullScreen, emu: &mut Emu, f: &Frame, doc: &Doc) -> Vec<u8> {
-        let palette = palette_for(ColorMode::TrueColor, Appearance::Dark);
+        let palette = terminal_palette(Appearance::Dark);
         let bytes = screen.render(f, SIZE, &palette, doc);
         emu.feed(&bytes);
         bytes
@@ -1365,7 +1365,7 @@ mod tests {
 
     #[test]
     fn scrollbar_thumb_tracks_the_view_in_eighths() {
-        let palette = palette_for(ColorMode::TrueColor, Appearance::Dark);
+        let palette = terminal_palette(Appearance::Dark);
         let plain = |bar: Vec<String>| -> String { bar.iter().map(|c| strip_escapes(c)).collect() };
         assert!(scrollbar(4, 4, 0, &palette).is_none());
         // Half the content visible: a two-row thumb at the top...

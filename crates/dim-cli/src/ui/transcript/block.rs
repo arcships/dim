@@ -174,7 +174,7 @@ mod tests {
 
     /// The committed text of a transcript's first group, as the terminal shows it.
     fn drawn(rows: &[ViewRow], detail: Detail, width: usize) -> Vec<String> {
-        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark);
         let Block::ToolGroup(group) = project_row(rows, 0, detail) else {
             panic!("not a group");
         };

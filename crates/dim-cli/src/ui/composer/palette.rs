@@ -8,7 +8,6 @@ use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::{Paint, fg, paint};
 use crate::ui::transcript::blocks::{display_width, truncate_cells};
 
-const SELECTED_MARKER: &str = "› ";
 const IDLE_MARKER: &str = "  ";
 const ROW_INDENT: usize = 2;
 const DETAIL_GAP: usize = 2;
@@ -295,12 +294,13 @@ pub fn render(state: &PaletteState, rows: &[Row], width: usize, p: &Palette) -> 
     )
 }
 
-/// Rows above the list in the fullscreen palette: the query row and a gap.
-pub const OVERLAY_QUERY_ROWS: usize = 2;
+/// Rows above the list in the fullscreen palette: a gap, the query row and
+/// a gap, as Amp spaces it.
+pub const OVERLAY_QUERY_ROWS: usize = 3;
 
 /// The fullscreen palette (Amp's command palette): a box titled
 /// `Command Palette` with its own `> query` row over `page` rows of
-/// commands. The query row is the box's second row.
+/// commands. The query row is the box's third row.
 pub fn render_overlay(
     state: &PaletteState,
     rows: &[Row],
@@ -310,9 +310,9 @@ pub fn render_overlay(
 ) -> Vec<String> {
     let inner = width.saturating_sub(4).max(1);
     let mut content = vec![
+        String::new(),
         format!(
-            "{}{}",
-            fg("> ", &p.accent),
+            "> {}",
             truncate_cells(&state.query, inner.saturating_sub(2))
         ),
         String::new(),
@@ -321,7 +321,15 @@ pub fn render_overlay(
     // The footer stays at the bottom however few commands match.
     content.resize(OVERLAY_QUERY_ROWS + page, String::new());
     content.push(footer(&position(state, rows), HINT, inner, p));
-    bordered(&content, width, None, &p.border, Some("Command Palette"))
+    let title = paint(
+        "Command Palette",
+        Paint {
+            fg: Some(&p.accent),
+            bold: true,
+            ..Paint::default()
+        },
+    );
+    bordered(&content, width, None, &p.border, Some(&title))
 }
 
 /// The visible window of `rows`, `page` rows at most.
@@ -410,43 +418,47 @@ pub(crate) fn panel_row(
             },
         );
     }
-    let marker = if selected {
-        paint(
-            SELECTED_MARKER,
-            Paint {
-                fg: Some(&p.accent),
-                bold: true,
-                ..Paint::default()
-            },
-        )
-    } else {
-        IDLE_MARKER.to_owned()
-    };
     let row_width = inner.saturating_sub(ROW_INDENT).max(1);
     let label_available = row_width.min(detail_column.saturating_sub(DETAIL_GAP).max(1));
     let label = truncate_cells(&row.label, label_available);
-    let label_color = if selected {
-        &p.accent
-    } else if row.disabled {
-        &p.muted
-    } else {
-        &p.text
-    };
-    let styled_label = paint(
-        &label,
-        Paint {
-            fg: Some(label_color),
-            bold: selected,
-            ..Paint::default()
-        },
-    );
     let gap = " ".repeat(DETAIL_GAP.max(detail_column.saturating_sub(display_width(&label))));
     let detail = truncate_cells(
         &format!("{gap}{}", row.detail),
         row_width.saturating_sub(display_width(&label)),
     );
-    let detail_color = if selected { &p.muted } else { &p.faint };
-    format!("{marker}{styled_label}{}", fg(&detail, detail_color))
+    if selected {
+        // Amp's selection: the whole row on an accent bar.
+        let used = ROW_INDENT + display_width(&label) + display_width(&detail);
+        let bar = |text: &str, bold: bool| {
+            paint(
+                text,
+                Paint {
+                    fg: Some(&p.on_accent),
+                    bg: Some(&p.accent),
+                    bold,
+                    ..Paint::default()
+                },
+            )
+        };
+        return format!(
+            "{}{}{}",
+            bar(IDLE_MARKER, false),
+            bar(&label, true),
+            bar(
+                &format!("{detail}{}", " ".repeat(inner.saturating_sub(used))),
+                false
+            )
+        );
+    }
+    let styled_label = paint(
+        &label,
+        Paint {
+            fg: Some(if row.disabled { &p.muted } else { &p.text }),
+            bold: !row.disabled,
+            ..Paint::default()
+        },
+    );
+    format!("{IDLE_MARKER}{styled_label}{}", fg(&detail, &p.muted))
 }
 
 pub(crate) fn footer(count: &str, hint: &str, inner: usize, p: &Palette) -> String {
@@ -524,13 +536,15 @@ mod tests {
 
     #[test]
     fn panel_has_a_fixed_height_and_a_position_footer() {
-        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark);
         let rows = rows_for("/", true, &[]);
         let panel = render(&PaletteState::default(), &rows, 80, &theme.palette);
         assert_eq!(panel.len(), PAGE_SIZE + CHROME_ROWS);
         let plain: Vec<String> = panel.iter().map(|r| strip(r)).collect();
         assert!(plain[1].contains("Commands") && plain[1].contains("esc close"));
-        assert!(plain[2].starts_with("│ › /remote"));
+        // The selected row is Amp's accent bar.
+        assert!(plain[2].starts_with("│   /remote"));
+        assert!(panel[2].contains("\x1b[30;43m"), "{:?}", panel[2]);
         assert!(
             plain[8].contains(&format!("1 / {}", rows.len())),
             "{:?}",
@@ -591,7 +605,7 @@ mod tests {
         assert_eq!(state.current(&rows), 3, "the Skills heading is skipped");
         state.step(-1, &rows);
         assert_eq!(state.current(&rows), 1);
-        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark);
         let panel = render(&state, &rows, 100, &theme.palette);
         let text: Vec<String> = panel.iter().map(|r| strip(r)).collect();
         assert!(text[7].contains("1 / 3"), "{:?}", text[7]);

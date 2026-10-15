@@ -1973,8 +1973,7 @@
       "file": "crates/dim-cli/src/ui/render/markdown.rs",
       "unexpandedMacros": [
         "assert",
-        "assert_eq",
-        "format"
+        "assert_eq"
       ]
     },
     {
@@ -13977,9 +13976,9 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::composer",
-      "to": "dim_cli::@bin:dimcode::ui::theme::contrast",
+      "to": "dim_cli::@bin:dimcode::ui::theme::ansi",
       "references": [
-        "path crate::ui::theme::contrast::parse_hex"
+        "path crate::ui::theme::ansi::tui_color"
       ]
     },
     {
@@ -14905,11 +14904,9 @@
       "to": "dim_cli::@bin:dimcode::ui::theme::palette",
       "references": [
         "path Appearance::Dark",
-        "path ColorMode::TrueColor",
-        "path palette_for",
+        "path terminal_palette",
         "use crate::ui::theme::Appearance",
-        "use crate::ui::theme::ColorMode",
-        "use crate::ui::theme::palette::palette_for"
+        "use crate::ui::theme::palette::terminal_palette"
       ]
     },
     {
@@ -14929,10 +14926,17 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::render::markdown",
-      "to": "dim_cli::@bin:dimcode::ui::theme::contrast",
+      "to": "dim_cli::@bin:dimcode::ui::theme::ansi",
       "references": [
-        "path parse_hex",
-        "use crate::ui::theme::contrast::parse_hex"
+        "path Spec::Default",
+        "path Spec::Dim",
+        "path Spec::Rgb",
+        "path Spec::Slot",
+        "path spec",
+        "path tui_color",
+        "use crate::ui::theme::ansi::Spec",
+        "use crate::ui::theme::ansi::spec",
+        "use crate::ui::theme::ansi::tui_color"
       ]
     },
     {
@@ -14958,13 +14962,6 @@
       "to": "dim_cli::@bin:dimcode::ui::theme",
       "references": [
         "path Theme::system"
-      ]
-    },
-    {
-      "from": "dim_cli::@bin:dimcode::ui::render::markdown::tests",
-      "to": "dim_cli::@bin:dimcode::ui::theme::contrast",
-      "references": [
-        "path parse_hex"
       ]
     },
     {
@@ -15424,14 +15421,12 @@
       "references": [
         "mod palette",
         "path Appearance",
-        "path Appearance::Dark",
-        "path Appearance::Light",
         "path CodePalette",
         "path ColorMode",
         "path Palette",
         "path palette",
-        "path palette::code_palette_for",
-        "path palette::palette_for",
+        "path palette::terminal_code_palette",
+        "path palette::terminal_palette",
         "use palette::Appearance",
         "use palette::CodePalette",
         "use palette::ColorMode",
@@ -15458,6 +15453,14 @@
       "to": "dim_cli::@bin:dimcode::ui::theme::ansi::tests",
       "references": [
         "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::theme::ansi::tests",
+      "to": "dim_cli::@bin:dimcode::ui::theme::ansi",
+      "references": [
+        "path Paint",
+        "path Paint::default"
       ]
     },
     {
@@ -15513,6 +15516,7 @@
       "from": "dim_cli::@bin:dimcode::ui::theme::tests",
       "to": "dim_cli::@bin:dimcode::ui::theme",
       "references": [
+        "path Theme::named",
         "path Theme::system"
       ]
     },
@@ -15529,6 +15533,7 @@
       "references": [
         "path Appearance::Dark",
         "path ColorMode::Ansi16",
+        "path ColorMode::Ansi256",
         "path ColorMode::TrueColor"
       ]
     },
@@ -16192,7 +16197,10 @@
       "from": "dim_cli::@bin:dimcode::ui::tui",
       "to": "dim_cli::@bin:dimcode::ui::theme::ansi",
       "references": [
+        "path Paint",
+        "path Paint::default",
         "path fg",
+        "path paint",
         "use crate::ui::theme::ansi::Paint",
         "use crate::ui::theme::ansi::fg",
         "use crate::ui::theme::ansi::paint"
@@ -16745,12 +16753,20 @@
       "path": "Appearance::Dark"
     },
     {
-      "module": "dim_cli::@bin:dimcode::ui::sessions_panel::tests",
-      "path": "ColorMode::TrueColor"
-    },
-    {
       "module": "dim_cli::@bin:dimcode::ui::terminal::input",
       "path": "char::from_u32"
+    },
+    {
+      "module": "dim_cli::@bin:dimcode::ui::theme::ansi",
+      "path": "Color::Indexed"
+    },
+    {
+      "module": "dim_cli::@bin:dimcode::ui::theme::ansi",
+      "path": "Color::Reset"
+    },
+    {
+      "module": "dim_cli::@bin:dimcode::ui::theme::ansi",
+      "path": "Color::Rgb"
     },
     {
       "module": "dim_cli::@bin:dimcode::ui::transcript::split",

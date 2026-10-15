@@ -7,7 +7,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 pub const ASSISTANT_MARK: &str = "\u{25c6}"; // ◆
-pub const USER_MARK: &str = "\u{203a}"; // ›
+/// The bar in front of every row of a user message, as Amp draws it.
+pub const USER_MARK: &str = "\u{2503}"; // ┃
 
 /// Gutter columns for a terminal of `width` (narrow terminals get one).
 pub fn gutter_width(width: usize) -> usize {
@@ -111,30 +112,23 @@ pub fn render_plain(source: &str, content_width: usize, gutter: usize) -> Vec<St
         .collect()
 }
 
-/// How the user band is painted: the mark, the text, and the surface tint
-/// behind both (none on terminals with no subtle step).
+/// How a user message is painted: its colour (bar and italic text) and the
+/// surface tint behind both (none in Amp's structure).
 pub struct UserStyle<'a> {
-    pub accent: &'a str,
-    pub text: &'a str,
+    pub color: &'a str,
     pub surface: Option<&'a str>,
 }
 
-/// A user message: mark on the first row, blank gutter after. With a surface
+/// A user message: the bar on every row, the text italic. With a surface
 /// tint every row is padded to the content width so it reads as a band.
 pub fn render_user(text: &str, width: usize, style: &UserStyle<'_>) -> Vec<String> {
     use crate::ui::theme::ansi::{Paint, paint};
     let gutter = gutter_width(width);
     let content = width.saturating_sub(gutter).max(1);
-    let mut rows = wrap_cells(text, content);
-    rows.retain(|_| true);
-    rows.into_iter()
-        .enumerate()
-        .map(|(i, row)| {
-            let lead = if i == 0 {
-                gutter_mark(USER_MARK, gutter)
-            } else {
-                " ".repeat(gutter)
-            };
+    wrap_cells(text, content)
+        .into_iter()
+        .map(|row| {
+            let lead = gutter_mark(USER_MARK, gutter);
             let body = match style.surface {
                 Some(_) => {
                     let used = display_width(&row);
@@ -148,7 +142,7 @@ pub fn render_user(text: &str, width: usize, style: &UserStyle<'_>) -> Vec<Strin
                 paint(
                     &lead,
                     Paint {
-                        fg: Some(style.accent),
+                        fg: Some(style.color),
                         bg: style.surface,
                         ..Paint::default()
                     }
@@ -156,8 +150,9 @@ pub fn render_user(text: &str, width: usize, style: &UserStyle<'_>) -> Vec<Strin
                 paint(
                     &body,
                     Paint {
-                        fg: Some(style.text),
+                        fg: Some(style.color),
                         bg: style.surface,
+                        italic: true,
                         ..Paint::default()
                     }
                 ),
@@ -199,10 +194,9 @@ mod tests {
     }
 
     #[test]
-    fn user_rows_keep_the_gutter() {
+    fn user_rows_carry_the_bar_on_every_row() {
         let style = UserStyle {
-            accent: "#a9dc76",
-            text: "#e4e4e7",
+            color: "ansi:2",
             surface: None,
         };
         let strip = |s: &str| {
@@ -223,15 +217,15 @@ mod tests {
             .iter()
             .map(|r| strip(r))
             .collect();
-        assert!(rows[0].starts_with("› word"));
-        assert!(rows[1].starts_with("  "));
+        assert!(rows[0].starts_with("┃ word"));
+        assert!(rows[1].starts_with("┃ "));
         // Narrow terminal: one-column gutter.
         let narrow: Vec<String> = render_user("one two three", 12, &style)
             .iter()
             .map(|r| strip(r))
             .collect();
-        assert_eq!(narrow[0], "›one two thr");
-        assert_eq!(narrow[1], " ee");
+        assert_eq!(narrow[0], "┃one two thr");
+        assert_eq!(narrow[1], "┃ee");
         // A surface tint pads every row to the content width.
         let banded = UserStyle {
             surface: Some("#2a2a31"),

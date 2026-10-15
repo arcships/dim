@@ -157,14 +157,18 @@ Pickers (`/resume`, `/models`, `/connect`, `/approvals`, `/theme`) open as centr
 
 ```text
  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓    picked message: the box
- ┃ › Explain this project                                   ┃    takes the blank rows
+ ┃ ┃ Explain this project                                   ┃    takes the blank rows
  ┗━e to edit━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛    around it, nothing moves
  ◆ The project …      ╭─ Command Palette ─────────────────╮
-                      │ > th                               │    palette: own query row,
-                      │ › /theme    Switch theme           │    transcript dimmed behind
+                      │                                    │    palette: own query row,
+                      │ > th                               │    transcript dimmed behind,
+                      │                                    │    the selected row on an
+                      │▓▓ /theme    Switch theme ▓▓▓▓▓▓▓▓▓▓│    accent bar
                       │   /exit     Exit the app           │
                       ╰────────────────────────────────────╯
 ```
+
+The default theme (`System`) is Amp's: every colour is the terminal's own default foreground, a slot of its 16-colour palette (`ansi:N`) or the faint attribute, so it follows the terminal's colour scheme on dark and light backgrounds alike. Yellow is the accent (titles, the selected row, inline code), green the user's messages and successes, cyan headings, red errors; muted text is faint, table rules bright black, and code is highlighted in the terminal's base colours. `Dim Dark` and `Dim Light` take the same structure with Dim's green as the accent. A theme role is a colour spec: `#rrggbb`, `ansi:N`, `default` or `dim`.
 
 `e` cannot rewrite history: the App Server has no rewind or fork, so the edited text is sent as a new message.
 

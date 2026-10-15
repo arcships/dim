@@ -1123,7 +1123,7 @@ mod tests {
 
     #[test]
     fn permission_panel_matches_the_reference_layout() {
-        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark);
         let p = PermissionPrompt::new(
             "r1".into(),
             "main".into(),
@@ -1155,7 +1155,7 @@ mod tests {
         // Enter on a multi-select moves on to the review tab.
         ask.handle_key(key(KeyCode::Enter));
         assert!(ask.on_confirm_tab());
-        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark);
         let text: Vec<String> = ask
             .render(100, 20, &theme.palette)
             .iter()
@@ -1217,7 +1217,7 @@ mod tests {
 
     #[test]
     fn ask_user_panel_rows_match_the_reference() {
-        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark);
         let ask = dinner(QuestionKind::MultiSelect);
         let text: Vec<String> = ask
             .render(100, 20, &theme.palette)

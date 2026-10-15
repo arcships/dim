@@ -502,6 +502,8 @@ const OVERLAY_PALETTE_WIDTH: usize = 80;
 const OVERLAY_LIST_WIDTH: usize = 100;
 /// Tallest a fullscreen overlay is drawn.
 const OVERLAY_MAX_ROWS: usize = 30;
+/// Least rows inside the fullscreen composer box.
+const FULLSCREEN_COMPOSER_ROWS: usize = 2;
 
 /// Messages a resume shows at first, and per `/history` page.
 const HISTORY_WINDOW: usize = 100;
@@ -1313,12 +1315,16 @@ impl App {
             }
             (cursor.1 as usize, prompt_width + cursor.0 as usize)
         };
+        // Fullscreen keeps room for a second line, as Amp's input does.
+        if self.fullscreen && rows.len() < FULLSCREEN_COMPOSER_ROWS {
+            rows.resize(FULLSCREEN_COMPOSER_ROWS, String::new());
+        }
         let box_top = live.len();
         let muted = |label: &str| fg(label, &p.muted);
         live.extend(boxed(
             &rows,
             cols,
-            &|edge| fg(edge, &p.faint),
+            &|edge| fg(edge, &p.border),
             &|_, body| body.to_owned(),
             status
                 .as_deref()
@@ -1353,7 +1359,7 @@ impl App {
                         .palette_overlay(width, page, p)
                         .map(|(rows, query)| Overlay {
                             rows,
-                            cursor: Some((1, (4 + query) as u16)),
+                            cursor: Some((2, (4 + query) as u16)),
                         })
                 }
                 _ => None,
@@ -1785,7 +1791,14 @@ fn queue_strip(items: &[(String, String)], cols: usize, p: &Palette) -> Vec<Stri
         format!("+{hidden} more · ↑ edit · ctrl+s steer now · /queue")
     };
     rows.push(fg(&truncate_cells(&hint, inner), &p.muted));
-    let title = format!("Queue ({})", items.len());
+    let title = paint(
+        &format!("Queue ({})", items.len()),
+        Paint {
+            fg: Some(&p.accent),
+            bold: true,
+            ..Paint::default()
+        },
+    );
     let margin = " ".repeat(MARGIN);
     bordered(&rows, outer, None, &p.border, Some(&title))
         .into_iter()
@@ -1880,8 +1893,7 @@ fn render_block(
             text,
             width,
             &UserStyle {
-                accent: &p.accent,
-                text: &p.text,
+                color: &p.user,
                 surface: p.surface.as_deref(),
             },
         ),

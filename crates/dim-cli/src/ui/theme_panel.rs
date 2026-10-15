@@ -106,13 +106,13 @@ mod tests {
 
     #[test]
     fn a_theme_of_the_other_family_falls_back_to_system() {
-        let system = Theme::system(ColorMode::TrueColor, Appearance::Light, None);
+        let system = Theme::system(ColorMode::TrueColor, Appearance::Light);
         let named = Theme::named("dim-dark", ColorMode::TrueColor, Appearance::Light, None);
         assert_eq!(named.palette, system.palette);
         let own = Theme::named("dim-dark", ColorMode::TrueColor, Appearance::Dark, None);
         assert_ne!(
             own.palette,
-            Theme::system(ColorMode::TrueColor, Appearance::Dark, None).palette
+            Theme::system(ColorMode::TrueColor, Appearance::Dark).palette
         );
     }
 }

@@ -441,8 +441,8 @@ impl Composer {
             .cursor_pos_with_state(area, self.state)
             .unwrap_or((0, 0));
 
-        let text = parse_hex_rgb(&p.text);
-        let accent = parse_hex_rgb(&p.accent);
+        let text = crate::ui::theme::ansi::tui_color(&p.text);
+        let accent = crate::ui::theme::ansi::tui_color(&p.accent);
         let mut rows = Vec::with_capacity(height as usize);
         for y in 0..height {
             let mut cells: Vec<Cell> = Vec::new();
@@ -452,14 +452,14 @@ impl Composer {
                 let symbol = cell.symbol().to_owned();
                 let w = unicode_width::UnicodeWidthStr::width(symbol.as_str());
                 let mut style = Style::default();
-                if let Some(rgb) = text {
-                    style = style.fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2));
+                if let Some(color) = text {
+                    style = style.fg(color);
                 }
                 if cell.modifier.contains(Modifier::BOLD) {
                     // A token: accent and bold.
                     style = style.add_modifier(Modifier::BOLD);
-                    if let Some(rgb) = accent {
-                        style = style.fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2));
+                    if let Some(color) = accent {
+                        style = style.fg(color);
                     }
                 }
                 if w > 0 {
@@ -501,15 +501,6 @@ impl Composer {
         let rows = self.palette_rows();
         Some(palette::render(&self.palette, &rows, width, p))
     }
-}
-
-fn parse_hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
-    let [r, g, b] = crate::ui::theme::contrast::parse_hex(hex)?;
-    Some((
-        (r * 255.0).round() as u8,
-        (g * 255.0).round() as u8,
-        (b * 255.0).round() as u8,
-    ))
 }
 
 /// Control characters other than tab and newline are dropped; carriage
@@ -725,7 +716,7 @@ mod tests {
 
     #[test]
     fn rows_scroll_after_seven_and_the_cursor_stays_visible() {
-        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark);
         let mut c = Composer::new(Vec::new());
         for n in 0..10 {
             typed(&mut c, &format!("line {n}"));

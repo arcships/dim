@@ -129,14 +129,19 @@ pub fn bordered(
     let inner = width.saturating_sub(2);
     let content_width = inner.saturating_sub(2);
     let edge = |s: &str| fg(s, color);
+    // The title keeps its own styling (Amp's are accent and bold).
     let top = match title {
-        Some(title) if inner > display_width(title) + 3 => {
-            let fill = inner - display_width(title) - 3;
-            format!("╭─ {title} {}╮", "─".repeat(fill))
+        Some(title) if inner > visible_width(title) + 3 => {
+            let fill = inner - visible_width(title) - 3;
+            format!(
+                "{}{title}{}",
+                edge("╭─ "),
+                edge(&format!(" {}╮", "─".repeat(fill)))
+            )
         }
-        _ => format!("╭{}╮", "─".repeat(inner)),
+        _ => edge(&format!("╭{}╮", "─".repeat(inner))),
     };
-    let mut out = vec![edge(&top)];
+    let mut out = vec![top];
     let body_rows = height.map(|h| h.saturating_sub(2));
     for line in content.iter().take(body_rows.unwrap_or(usize::MAX)) {
         let used = visible_width(line);
@@ -242,7 +247,7 @@ mod tests {
 
     #[test]
     fn confirm_panel_layout() {
-        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark);
         let panel = confirm_panel(
             "Exit dimcode?",
             &["The agent is still running.".into()],

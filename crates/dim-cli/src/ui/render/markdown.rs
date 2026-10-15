@@ -12,7 +12,8 @@ use xai_grok_markdown::{
     MarkdownBuffers, MarkdownStyle, Syntect, render_markdown_ratatui_with_buffers_width,
 };
 
-use crate::ui::theme::{CodePalette, Palette, Theme, contrast::parse_hex};
+use crate::ui::theme::ansi::{Spec, spec, tui_color};
+use crate::ui::theme::{CodePalette, Palette, Theme};
 
 pub struct MarkdownRenderer {
     style: MarkdownStyle,
@@ -21,30 +22,27 @@ pub struct MarkdownRenderer {
     /// is lifted off those rows after rendering (the renderer applies one
     /// default colour to every text span).
     text_soft: TuiColor,
-    /// Colour of horizontal rules (the `border` role).
+    /// Colour of horizontal rules (the `faint` role).
     rule: TuiColor,
     /// Colour of the code block bracket (the `faint` role).
     faint: TuiColor,
 }
 
-fn rgb(hex: &str) -> Option<Color> {
-    let [r, g, b] = parse_hex(hex)?;
-    Some(Color::Rgb(RgbColor(
-        (r * 255.0).round() as u8,
-        (g * 255.0).round() as u8,
-        (b * 255.0).round() as u8,
-    )))
+/// `color` as a foreground style; `dim` is the faint attribute.
+fn fg(color: &str) -> Style {
+    match spec(color) {
+        Some(Spec::Rgb(r, g, b)) => Style::new().fg_color(Some(Color::Rgb(RgbColor(r, g, b)))),
+        Some(Spec::Slot(n)) => Style::new().fg_color(Some(Color::Ansi256(n.into()))),
+        Some(Spec::Dim) => Style::new().dimmed(),
+        Some(Spec::Default) | None => Style::new(),
+    }
 }
 
-fn fg(hex: &str) -> Style {
-    Style::new().fg_color(rgb(hex))
-}
-
-/// The scrollback role mapping onto the renderer's styles (the roles of the
-/// current `render.ts`: accent headings and bullets, muted markers, accent
-/// inline code, accent underlined links).
+/// The role mapping onto the renderer's styles, as Amp draws Markdown:
+/// highlighted headings, bold accent inline code, plain bullets, faint
+/// table rules, accent underlined links.
 fn markdown_style(p: &Palette) -> MarkdownStyle {
-    let heading_accent = fg(&p.accent).bold();
+    let heading_accent = fg(&p.highlight).bold();
     let heading_plain = fg(&p.text).bold();
     let hidden = Style::new().dimmed().hidden();
     // Levels 1-2 drop their `#` markers; deeper levels show them muted.
@@ -67,13 +65,13 @@ fn markdown_style(p: &Palette) -> MarkdownStyle {
         strikethrough_outer: hidden,
         // Foreground only: a background block on every identifier makes dense
         // prose read as a wall of highlights.
-        inline_code_inner: fg(&p.accent),
+        inline_code_inner: fg(&p.accent).bold(),
         inline_code_outer: hidden,
         blockquote_outer: fg(&p.muted),
         task_checked: fg(&p.success),
         task_unchecked: fg(&p.muted),
-        list_item: fg(&p.accent),
-        rule: fg(&p.border),
+        list_item: fg(&p.text),
+        rule: fg(&p.faint),
         link_outer: fg(&p.muted),
         link_text: fg(&p.accent).underline(),
         link_url: fg(&p.muted),
@@ -83,16 +81,35 @@ fn markdown_style(p: &Palette) -> MarkdownStyle {
         code_language: fg(&p.faint),
         code_untagged: fg(&p.text_soft),
         code_background: Style::new(),
-        table_outer: fg(&p.border),
+        table_outer: fg(&p.faint),
         text: fg(&p.text_soft),
         math: fg(&p.text_soft).italic(),
         table_compact: true,
     }
 }
 
+/// xterm's default colours for the 16 palette slots.
+const XTERM_SLOTS: [&str; 16] = [
+    "#000000", "#cd0000", "#00cd00", "#cdcd00", "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
+    "#7f7f7f", "#ff0000", "#00ff00", "#ffff00", "#5c5cff", "#ff00ff", "#00ffff", "#ffffff",
+];
+
+/// A syntax colour as the highlighter takes it. Palette slots go in as
+/// xterm's colour for the slot, which the terminal-native syntax mode maps
+/// back to the slot's hue (greys to the default foreground).
+fn syntax_hex(color: &str) -> String {
+    match spec(color) {
+        Some(Spec::Slot(n)) if n < 16 => XTERM_SLOTS[n as usize].to_owned(),
+        Some(Spec::Rgb(..)) => color.to_owned(),
+        _ => XTERM_SLOTS[7].to_owned(),
+    }
+}
+
 /// A minimal TextMate theme carrying the syntax roles of the code palette.
 fn tm_theme(code: &CodePalette, text: &str) -> String {
+    let text = &syntax_hex(text);
     let rule = |scope: &str, color: &str| {
+        let color = syntax_hex(color);
         format!(
             "<dict><key>scope</key><string>{scope}</string><key>settings</key>\
              <dict><key>foreground</key><string>{color}</string></dict></dict>"
@@ -132,20 +149,16 @@ fn tm_theme(code: &CodePalette, text: &str) -> String {
 
 impl MarkdownRenderer {
     pub fn new(theme: &Theme) -> Self {
-        let color = |hex: &str, fallback: [f64; 3]| {
-            let [r, g, b] = parse_hex(hex).unwrap_or(fallback);
-            TuiColor::Rgb(
-                (r * 255.0).round() as u8,
-                (g * 255.0).round() as u8,
-                (b * 255.0).round() as u8,
-            )
-        };
+        let color = |spec: &str| tui_color(spec).unwrap_or(TuiColor::Reset);
+        // Syntax colours given as palette slots follow the terminal's scheme:
+        // the highlighter maps them onto its base colours.
+        xai_grok_markdown::set_polarity_safe_syntax(theme.code.keyword.starts_with("ansi:"));
         Self {
             style: markdown_style(&theme.palette),
             syntect: Syntect::new(tm_theme(&theme.code, &theme.palette.text_soft).as_bytes()),
-            text_soft: color(&theme.palette.text_soft, [0.8, 0.8, 0.8]),
-            rule: color(&theme.palette.border, [0.4, 0.4, 0.4]),
-            faint: color(&theme.palette.faint, [0.45, 0.45, 0.45]),
+            text_soft: color(&theme.palette.text_soft),
+            rule: color(&theme.palette.faint),
+            faint: color(&theme.palette.faint),
         }
     }
 
@@ -507,6 +520,8 @@ fn color_code(color: TuiColor, background: bool) -> Option<String> {
     Some(match color {
         TuiColor::Reset => return None,
         TuiColor::Rgb(r, g, b) => format!("{};2;{r};{g};{b}", if background { 48 } else { 38 }),
+        TuiColor::Indexed(n @ 0..=7) => format!("{}", base + n as u32),
+        TuiColor::Indexed(n @ 8..=15) => format!("{}", base + 60 + n as u32 - 8),
         TuiColor::Indexed(n) => format!("{};5;{n}", if background { 48 } else { 38 }),
         TuiColor::Black => format!("{base}"),
         TuiColor::Red => format!("{}", base + 1),
@@ -600,7 +615,7 @@ mod tests {
     use crate::ui::theme::{Appearance, ColorMode};
 
     fn renderer() -> MarkdownRenderer {
-        MarkdownRenderer::new(&Theme::system(ColorMode::TrueColor, Appearance::Dark, None))
+        MarkdownRenderer::new(&Theme::system(ColorMode::TrueColor, Appearance::Dark))
     }
 
     /// The visible text of rows: CSI sequences and OSC strings (BEL- or
@@ -690,11 +705,9 @@ mod tests {
     fn quoted_text_keeps_the_body_colour_and_is_not_mistaken_for_a_table() {
         let rows = renderer().render("> quoted line\n> more", 40, 0);
         assert!(rows[0].contains("quoted line"));
-        assert!(
-            rows[0].contains("\x1b[38;2;212;212;216mquoted line"),
-            "{:?}",
-            rows[0]
-        );
+        // The default theme's body text is the terminal's own foreground.
+        assert!(rows[0].contains(" quoted line"), "{:?}", rows[0]);
+        assert!(!rows[0].contains("\x1b[2mquoted"), "{:?}", rows[0]);
     }
 
     #[test]
@@ -719,25 +732,21 @@ mod tests {
     #[test]
     fn styled_runs_are_closed_and_do_not_leak() {
         let rows = renderer().render("a **bold** word", 40, 0);
-        assert!(rows[0].contains("\x1b[1;"), "{:?}", rows[0]);
+        assert!(rows[0].contains("\x1b[1m"), "{:?}", rows[0]);
         assert!(rows[0].matches("\x1b[0m").count() >= 1);
-        assert!(rows[0].ends_with("\x1b[0m"), "{:?}", rows[0]);
+        // Nothing styled runs on past the last reset.
+        let tail = rows[0].rsplit("\x1b[0m").next().unwrap();
+        assert!(!tail.contains('\x1b'), "{:?}", rows[0]);
     }
 
     #[test]
-    fn headings_use_the_accent_and_deeper_levels_keep_a_muted_marker() {
-        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+    fn headings_use_the_highlight_and_deeper_levels_keep_a_muted_marker() {
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark);
         let r = MarkdownRenderer::new(&theme);
         let h2 = r.render("## Two", 40, 0);
         assert_eq!(plain(&h2), vec!["Two"]);
-        let [ar, ag, ab] = parse_hex(&theme.palette.accent).unwrap();
-        let accent = format!(
-            "38;2;{};{};{}",
-            (ar * 255.0).round() as u8,
-            (ag * 255.0).round() as u8,
-            (ab * 255.0).round() as u8
-        );
-        assert!(h2[0].contains(&accent), "{:?}", h2[0]);
+        // Amp's headings: the terminal's cyan, bold.
+        assert!(h2[0].contains("\x1b[1;36m"), "{:?}", h2[0]);
         assert_eq!(plain(&r.render("### Three", 40, 0)), vec!["### Three"]);
     }
 

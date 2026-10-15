@@ -1,5 +1,6 @@
-//! Colour roles of the scrollback interface: palettes per terminal capability
-//! and appearance, contrast floors against the real background, detection.
+//! Colour roles of the terminal interface: the default theme (Amp's,
+//! following the terminal's own colours), the named themes with contrast
+//! floors against the real background, detection.
 
 pub mod ansi;
 pub mod contrast;
@@ -13,15 +14,6 @@ use contrast::{
 };
 pub use palette::{Appearance, CodePalette, ColorMode, Palette};
 
-/// Background assumed when the terminal did not report one: a typical
-/// non-black dark profile and an off-white light one.
-fn assumed_background(appearance: Appearance) -> &'static str {
-    match appearance {
-        Appearance::Dark => "#282828",
-        Appearance::Light => "#f5f5f5",
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub mode: ColorMode,
@@ -31,24 +23,15 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// The `system` theme for a terminal of `mode` / `appearance` whose
-    /// background is `background` (`#rrggbb`, when the terminal reported it).
-    pub fn system(mode: ColorMode, appearance: Appearance, background: Option<&str>) -> Self {
-        let background = background.unwrap_or_else(|| assumed_background(appearance));
-        let mut palette = palette::palette_for(mode, appearance);
-        let mut code = palette::code_palette_for(mode, appearance);
-        // 16-colour palettes are fixed to their entries and left alone.
-        if matches!(mode, ColorMode::TrueColor | ColorMode::Ansi256)
-            && let Some(bg) = parse_hex(background)
-        {
-            palette = with_floors(palette, bg);
-            code = with_code_floor(code, bg);
-        }
+    /// The `system` theme: Amp's default, in the terminal's own colours.
+    /// It needs no contrast floors: the terminal's scheme already pairs its
+    /// palette with its background.
+    pub fn system(mode: ColorMode, appearance: Appearance) -> Self {
         Self {
             mode,
             appearance,
-            palette,
-            code,
+            palette: palette::terminal_palette(appearance),
+            code: palette::terminal_code_palette(),
         }
     }
 
@@ -62,19 +45,23 @@ impl Theme {
         background: Option<&str>,
     ) -> Self {
         let Some(entry) = themes::THEMES.iter().find(|t| t.id == id) else {
-            return Self::system(mode, appearance, background);
+            return Self::system(mode, appearance);
         };
         // A dark theme on a light terminal (or the reverse) would be
         // unreadable, and 16/8-colour terminals only get `system`.
         let usable = matches!(mode, ColorMode::TrueColor | ColorMode::Ansi256)
             && entry.dark == matches!(appearance, Appearance::Dark);
         if !usable {
-            return Self::system(mode, appearance, background);
+            return Self::system(mode, appearance);
         }
         let background = background.unwrap_or(entry.background);
         let own = |h: &str| h.to_owned();
+        // The roles Amp's structure adds come from the theme's own: users
+        // speak in its accent, and the accent bar carries its background.
         let mut palette = Palette {
             accent: own(entry.accent),
+            on_accent: own(entry.background),
+            user: own(entry.accent),
             text: own(entry.text),
             text_soft: own(entry.text_soft),
             muted: own(entry.muted),
@@ -84,7 +71,11 @@ impl Theme {
             danger: own(entry.danger),
             highlight: own(entry.highlight),
             border: own(entry.border),
-            surface: Some(own(entry.surface)),
+            surface: entry.surface.map(own),
+            scroll_thumb: own(entry.faint),
+            scroll_track: entry
+                .surface
+                .map_or_else(|| palette::terminal_palette(appearance).scroll_track, own),
         };
         let mut code = CodePalette {
             keyword: own(entry.keyword),
@@ -113,8 +104,8 @@ impl Theme {
     /// report, when the terminal answered one).
     pub fn detect(env: &detect::Env, is_tty: bool, osc11: Option<&str>) -> Self {
         let mode = detect::color_mode(env, is_tty);
-        let (appearance, background) = detect::resolve_appearance(env, osc11);
-        Self::system(mode, appearance, background.as_deref())
+        let (appearance, _) = detect::resolve_appearance(env, osc11);
+        Self::system(mode, appearance)
     }
 }
 
@@ -145,6 +136,8 @@ fn with_floors(palette: Palette, background: contrast::Rgb) -> Palette {
     let lift_bg = |hex: &str, floor| lift(hex, background, None, floor);
     Palette {
         accent: lift_text(&palette.accent, COLORED_TEXT),
+        on_accent: palette.on_accent,
+        user: lift_text(&palette.user, COLORED_TEXT),
         text: lift_text(&palette.text, TEXT),
         text_soft: lift_text(&palette.text_soft, TEXT),
         muted: lift_text(&palette.muted, TEXT),
@@ -154,7 +147,9 @@ fn with_floors(palette: Palette, background: contrast::Rgb) -> Palette {
         danger: lift_text(&palette.danger, COLORED_TEXT),
         highlight: lift_text(&palette.highlight, COLORED_TEXT),
         border: lift_bg(&palette.border, NON_TEXT),
-        surface: surface.map(to_hex),
+        surface: surface.map(to_hex).or(palette.surface),
+        scroll_thumb: lift_bg(&palette.scroll_thumb, NON_TEXT),
+        scroll_track: surface.map(to_hex).unwrap_or(palette.scroll_track),
     }
 }
 
@@ -178,33 +173,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dark_truecolor_palette_clears_its_floors_on_the_assumed_background() {
-        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
-        let bg = parse_hex("#282828").unwrap();
-        for hex in [
-            &theme.palette.text,
-            &theme.palette.muted,
-            &theme.palette.accent,
-        ] {
-            let color = parse_hex(hex).unwrap();
-            assert!(contrast::contrast_ratio(color, bg) >= 4.5, "{hex}");
+    fn the_default_theme_is_the_terminals_own_colours() {
+        for mode in [ColorMode::TrueColor, ColorMode::Ansi256, ColorMode::Ansi16] {
+            let theme = Theme::system(mode, Appearance::Dark);
+            assert_eq!(theme.palette.accent, "ansi:3");
+            assert_eq!(theme.palette.text, "default");
+            assert_eq!(theme.palette.muted, "dim");
+            assert_eq!(theme.palette.surface, None);
         }
     }
 
     #[test]
     fn dark_palette_on_a_white_background_is_lifted_to_stay_readable() {
-        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, Some("#ffffff"));
+        let theme = Theme::named(
+            "monokai-dark",
+            ColorMode::TrueColor,
+            Appearance::Dark,
+            Some("#ffffff"),
+        );
         let white = parse_hex("#ffffff").unwrap();
         let accent = parse_hex(&theme.palette.accent).unwrap();
         assert!(contrast::contrast_ratio(accent, white) >= 4.5);
-    }
-
-    #[test]
-    fn sixteen_colour_palettes_are_left_alone() {
-        let theme = Theme::system(ColorMode::Ansi16, Appearance::Dark, Some("#ffffff"));
-        assert_eq!(
-            theme.palette,
-            palette::palette_for(ColorMode::Ansi16, Appearance::Dark)
-        );
     }
 }
