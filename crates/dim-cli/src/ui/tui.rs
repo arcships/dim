@@ -11,7 +11,10 @@ use crate::model::session::{Command, SessionPort, SwitchKind, Update};
 use crate::model::view::{RowKind, ViewRow, ViewSnapshot};
 use crate::ui::Env;
 use crate::ui::approvals_panel::{ApprovalsPanel, status_label};
+use crate::ui::composer::commands::{COMMANDS, Context as CommandContext, Needs};
 use crate::ui::composer::{Composer, Outcome as ComposerOutcome, history};
+use crate::ui::i18n::{self, t, tf};
+use crate::ui::language_panel::LanguagePanel;
 use crate::ui::models_panel::ModelsPanel;
 use crate::ui::prompts::{AskUserPrompt, Effect, ExitConfirm, ExitReason, PermissionPrompt};
 use crate::ui::providers_panel::ProvidersPanel;
@@ -21,6 +24,7 @@ use crate::ui::render::markdown::MarkdownRenderer;
 use crate::ui::render::panel::clip;
 use crate::ui::render::{Frame, FullScreen, Overlay, Screen};
 use crate::ui::sessions_panel::SessionsPanel;
+use crate::ui::settings_panel::{Setting, SettingsPanel, Values as SettingValues};
 use crate::ui::terminal::{InputEvent, KeyCode, Modifiers, Terminal, TerminalError, Wait};
 use crate::ui::theme::ansi::{Paint, fg, paint};
 use crate::ui::theme::{Palette, Theme, detect};
@@ -57,6 +61,18 @@ const MARGIN: usize = 1;
 const SESSION_REVISION: u64 = 1;
 /// How long a Ctrl+C keeps the exit window armed.
 const EXIT_ARM: Duration = Duration::from_millis(2500);
+/// `config.json` key of the fullscreen mouse switch (`"on"` / `"off"`).
+const MOUSE_KEY: &str = "tuiMouseMode";
+
+/// Where a palette action or a sent message moves the fullscreen view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Jump {
+    Top,
+    Bottom,
+    /// Pick the newest user message, as Tab does.
+    Pick,
+}
+
 /// How long a transient notice stays in the status row.
 const NOTICE_TTL: Duration = Duration::from_millis(2500);
 /// The live region's pulse: one beat per 250 ms.
@@ -79,6 +95,7 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             return 1;
         }
     };
+    i18n::set(i18n::saved_locale(&surroundings.home).unwrap_or_else(i18n::system_locale));
     let synchronized = !crate::ui::terminal::in_tmux();
     let mut screen = Screen::new(terminal.size(), synchronized);
     // The fullscreen interface, while it is the one on screen; the
@@ -131,6 +148,13 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
         for update in app.host.drain() {
             app.apply(update);
             dirty = true;
+        }
+        // The `/settings` mouse switch applies to the screen at once.
+        if full.is_some() && terminal.mouse() != app.mouse && terminal.set_mouse(app.mouse).is_err()
+        {
+            let code = terminal.lost();
+            app.host.shutdown();
+            return code;
         }
         let now = Instant::now();
         // A resize is acted on once it settles (design §6.4).
@@ -270,7 +294,7 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
                             app.host.shutdown();
                             return code;
                         }
-                        app.set_notice("Copied to clipboard");
+                        app.set_notice(t("Copied to clipboard"));
                         dirty = true;
                     }
                     MouseOutcome::Open(url) => {
@@ -279,9 +303,9 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
                             && std::env::var_os("SSH_TTY").is_none();
                         let opened = local && crate::browser::open(&url);
                         app.set_notice(if opened {
-                            "Opened link".to_owned()
+                            t("Opened link").to_owned()
                         } else {
-                            format!("Link: {url}")
+                            tf("Link: {url}", &[("url", &url)])
                         });
                         dirty = true;
                     }
@@ -325,19 +349,29 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
                 if full.is_some()
                     && app.keyboard_free()
                     && key.mods.0 == 0
-                    && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) =>
+                    && (matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
+                        || (matches!(key.code, KeyCode::Home | KeyCode::End)
+                            && app.composer.is_empty())) =>
             {
+                // Home and End scroll while there is no draft to move in.
                 if let Some(full) = &mut full {
-                    full.page(key.code == KeyCode::PageDown);
+                    match key.code {
+                        KeyCode::Home => full.scroll_to_top(),
+                        KeyCode::End => full.follow(),
+                        code => full.page(code == KeyCode::PageDown),
+                    }
                 }
                 dirty = true;
             }
             Wait::Event(event) => match app.handle(event) {
                 Outcome::Continue => {
-                    if let Some(full) = &mut full
-                        && std::mem::take(&mut app.follow_requested)
-                    {
-                        full.follow();
+                    if let Some(full) = &mut full {
+                        match app.jump.take() {
+                            Some(Jump::Bottom) => full.follow(),
+                            Some(Jump::Top) => full.scroll_to_top(),
+                            Some(Jump::Pick) => full.focus_older(&app),
+                            None => {}
+                        }
                     }
                     dirty = true;
                 }
@@ -486,9 +520,15 @@ struct App {
     history_request: Option<(usize, usize)>,
     /// The fullscreen interface is on screen.
     fullscreen: bool,
-    /// A message was sent: the fullscreen transcript follows the bottom
-    /// again.
-    follow_requested: bool,
+    /// Where the fullscreen transcript goes next: the bottom once a message
+    /// is sent, or where a palette action asked.
+    jump: Option<Jump>,
+    /// The `/settings` row a picker was opened from: closing the picker
+    /// goes back to it.
+    settings_return: Option<Setting>,
+    /// Fullscreen reads the mouse (`tuiMouseMode`); off leaves selection
+    /// and the wheel to the terminal.
+    pub mouse: bool,
     /// The draft set aside while Ctrl+O/Ctrl+P has the palette open; it
     /// comes back when the palette closes.
     palette_stash: Option<String>,
@@ -516,6 +556,8 @@ enum Prompt {
     Providers(Box<ProvidersPanel>),
     Approvals(ApprovalsPanel),
     Theme(ThemePanel),
+    Language(LanguagePanel),
+    Settings(SettingsPanel),
     Exit(ExitConfirm),
     Permission(PermissionPrompt),
     Ask(AskUserPrompt),
@@ -531,6 +573,7 @@ impl App {
     ) -> Self {
         let past = history::load(&home, &cwd_key);
         let expanded = crate::ui::config::read(&home, TOOL_DETAILS_KEY).and_then(|v| v.as_bool());
+        let mouse = crate::ui::config::read(&home, MOUSE_KEY).is_none_or(|v| v != "off");
         Self {
             host,
             composer: Composer::new(past),
@@ -572,9 +615,11 @@ impl App {
             window_info: (0, 0),
             history_request: None,
             fullscreen: false,
-            follow_requested: false,
+            jump: None,
+            settings_return: None,
+            mouse,
             palette_stash: None,
-            branch: git_branch().unwrap_or_else(|| "Not available".into()),
+            branch: git_branch().unwrap_or_else(|| t("Not available").into()),
         }
     }
 
@@ -632,6 +677,26 @@ impl App {
         self.snapshot.as_ref().is_some_and(|s| s.running)
     }
 
+    /// What the command palette weighs availability against.
+    fn context(&self) -> CommandContext {
+        CommandContext {
+            session: self.session_active(),
+            running: self.running(),
+            queued: !self.queued().is_empty(),
+            fullscreen: self.fullscreen,
+        }
+    }
+
+    /// Sends the next queued message in as steering (Ctrl+S).
+    fn steer(&mut self) {
+        if let Some((id, _)) = self.queued().into_iter().next() {
+            self.host.send(Command::InputControl {
+                input_id: id,
+                action: "steer",
+            });
+        }
+    }
+
     fn set_notice(&mut self, text: impl Into<String>) {
         self.notice = Some((text.into(), Instant::now() + NOTICE_TTL));
     }
@@ -672,7 +737,9 @@ impl App {
             | Some(Prompt::Models(_))
             | Some(Prompt::Providers(_))
             | Some(Prompt::Approvals(_))
-            | Some(Prompt::Theme(_)) => {}
+            | Some(Prompt::Theme(_))
+            | Some(Prompt::Language(_))
+            | Some(Prompt::Settings(_)) => {}
             Some(Prompt::Permission(p))
                 if approval.is_some_and(|a| a.request_id == p.request_id) => {}
             Some(Prompt::Ask(p)) if question.is_some_and(|q| q.request_id == p.request_id) => {}
@@ -758,7 +825,10 @@ impl App {
                 self.sync_prompt();
             }
             Update::FilesChanged(count) => {
-                self.notices.push(format!("files changed  {count}"));
+                self.notices.push(tf(
+                    "files changed  {count}",
+                    &[("count", &count.to_string())],
+                ));
             }
             Update::Switched { session_id, kind } => self.switch_session(session_id, kind),
             Update::Sessions(items) => {
@@ -776,13 +846,16 @@ impl App {
                         let title = crate::ui::approvals_panel::MODES
                             .iter()
                             .find(|(m, ..)| *m == mode)
-                            .map_or("", |(_, title, ..)| *title);
+                            .map_or("", |(_, title, ..)| t(title));
                         let target = if self.session_active() {
-                            "active session"
+                            t("active session")
                         } else {
-                            "new-session draft"
+                            t("new-session draft")
                         };
-                        self.set_notice(format!("Tool approvals: {title} ({target})"));
+                        self.set_notice(tf(
+                            "Tool approvals: {title} ({target})",
+                            &[("title", title), ("target", target)],
+                        ));
                     }
                     self.approvals = mode;
                 }
@@ -812,14 +885,17 @@ impl App {
             }
             Update::Reconnecting { attempt } => {
                 self.set_notice(if attempt == 1 {
-                    "Connection lost; reconnecting...".to_owned()
+                    t("Connection lost; reconnecting...").to_owned()
                 } else {
-                    format!("Reconnecting... (attempt {attempt})")
+                    tf(
+                        "Reconnecting... (attempt {attempt})",
+                        &[("attempt", &attempt.to_string())],
+                    )
                 });
             }
             Update::Reconnected => {
-                self.set_notice("Reconnected");
-                self.notices.push("reconnected".to_owned());
+                self.set_notice(t("Reconnected"));
+                self.notices.push(t("reconnected").to_owned());
             }
             Update::Notice(text) => {
                 self.notices.push(text);
@@ -867,6 +943,8 @@ impl App {
                 Prompt::Providers(p) => p.handle_key(key),
                 Prompt::Approvals(p) => p.handle_key(key),
                 Prompt::Theme(p) => p.handle_key(key),
+                Prompt::Language(p) => p.handle_key(key),
+                Prompt::Settings(p) => p.handle_key(key),
                 Prompt::Exit(p) => p.handle_key(key),
                 Prompt::Permission(p) => p.handle_key(key),
                 Prompt::Ask(p) => p.handle_key(key),
@@ -889,12 +967,7 @@ impl App {
                 }
             }
             KeyCode::Char('s') if ctrl => {
-                if let Some((id, _)) = self.queued().into_iter().next() {
-                    self.host.send(Command::InputControl {
-                        input_id: id,
-                        action: "steer",
-                    });
-                }
+                self.steer();
                 return Outcome::Continue;
             }
             KeyCode::Esc if !self.composer.palette_open() => {
@@ -923,17 +996,11 @@ impl App {
         match self.composer.handle_key(key) {
             ComposerOutcome::Submit(text) => {
                 let text = text.trim().to_owned();
-                if text == "/reconnect" {
-                    // Not in the palette (the full scrollback has none): it
-                    // exists for the case where the link looks alive but is not.
-                    self.host.send(Command::Reconnect);
-                    return Outcome::Continue;
-                }
                 let _ = history::append(&self.home, &self.cwd_key, &text);
                 self.composer.push_history(&text);
-                self.follow_requested = true;
+                self.jump = Some(Jump::Bottom);
                 if self.running() {
-                    self.set_notice("Message queued");
+                    self.set_notice(t("Message queued"));
                 }
                 self.host.submit(text);
             }
@@ -964,21 +1031,21 @@ impl App {
             } else {
                 self.interrupt();
                 self.arm_exit();
-                self.set_notice("Interrupt requested; Ctrl+C again to exit");
+                self.set_notice(t("Interrupt requested; Ctrl+C again to exit"));
             }
             return Outcome::Continue;
         }
         if !self.composer.is_empty() {
             self.composer.clear();
             self.arm_exit();
-            self.set_notice("Press Ctrl+C again to exit");
+            self.set_notice(t("Press Ctrl+C again to exit"));
             return Outcome::Continue;
         }
         if armed {
             return Outcome::Exit(130);
         }
         self.arm_exit();
-        self.set_notice("Press Ctrl+C again to exit");
+        self.set_notice(t("Press Ctrl+C again to exit"));
         Outcome::Continue
     }
 
@@ -986,7 +1053,7 @@ impl App {
     /// ahead of whatever the interrupted answer still commits.
     fn interrupt(&mut self) {
         self.host.stop();
-        self.notices.push(INTERRUPT_REASON.to_owned());
+        self.notices.push(t(INTERRUPT_REASON).to_owned());
     }
 
     fn apply_effect(&mut self, effect: Effect) -> Outcome {
@@ -1047,6 +1114,33 @@ impl App {
                 self.host.send(Command::Resume(id));
             }
             Effect::Refresh => self.host.send(Command::ListSessions),
+            Effect::LanguagePreview(locale) => {
+                i18n::set(locale.unwrap_or_else(i18n::system_locale));
+            }
+            Effect::LanguageRestore(locale) => {
+                self.prompt = None;
+                i18n::set(locale.unwrap_or_else(i18n::system_locale));
+            }
+            Effect::LanguageApply(locale) => {
+                self.prompt = None;
+                i18n::set(locale.unwrap_or_else(i18n::system_locale));
+                let saved = match locale {
+                    Some(locale) => {
+                        crate::ui::config::write(&self.home, i18n::LOCALE_KEY, locale.code().into())
+                    }
+                    None => crate::ui::config::remove(&self.home, i18n::LOCALE_KEY),
+                };
+                self.set_notice(match (saved, locale) {
+                    (Some(error), _) => {
+                        tf("Could not save the language: {error}", &[("error", &error)])
+                    }
+                    (None, Some(locale)) => {
+                        tf("Language set to {locale}", &[("locale", locale.label())])
+                    }
+                    (None, None) => t("Language set to system default").to_owned(),
+                });
+            }
+            Effect::Setting(setting) => self.setting(setting),
             Effect::ThemePreview(id) => self.paint_theme(&id),
             Effect::ThemeRestore(id) => {
                 self.prompt = None;
@@ -1071,7 +1165,7 @@ impl App {
             Effect::OauthPaste(url) => self.host.send(Command::OauthPaste(url)),
             Effect::Print(text) => self.reports.push((text, Tone::Muted)),
             Effect::Connected(provider_id) => {
-                self.set_notice(format!("Connected {provider_id}"));
+                self.set_notice(tf("Connected {provider}", &[("provider", &provider_id)]));
                 self.prompt = Some(Prompt::Models(ModelsPanel::new()));
                 self.host.send(Command::ListModels);
             }
@@ -1086,26 +1180,151 @@ impl App {
                 });
             }
         }
+        // A picker opened from `/settings` goes back to its row once closed.
+        if self.prompt.is_none()
+            && let Some(setting) = self.settings_return.take()
+        {
+            self.open_settings(setting);
+        }
         Outcome::Continue
     }
 
+    /// Opens `/settings` with `select` picked, showing the current values.
+    fn open_settings(&mut self, select: Setting) {
+        let theme = self
+            .theme_context
+            .as_ref()
+            .map_or("system", |c| c.active.as_str());
+        let theme = crate::ui::theme_panel::label_of(theme);
+        let language = match i18n::saved_locale(&self.home) {
+            Some(locale) => locale.label().to_owned(),
+            None => tf(
+                "System default ({locale})",
+                &[("locale", i18n::system_locale().label())],
+            ),
+        };
+        let values = SettingValues {
+            theme: theme.to_owned(),
+            language,
+            fullscreen_default: crate::ui::config::saved_fullscreen(&self.home),
+            tools_expanded: self.tool_detail == Detail::Expanded,
+            mouse: self.mouse,
+            approvals: t(status_label(&self.approvals)).to_owned(),
+            model: self.label.clone(),
+        };
+        self.prompt = Some(Prompt::Settings(SettingsPanel::new(&values, select)));
+    }
+
+    /// Flips a `/settings` switch, or opens the picker behind a row.
+    fn setting(&mut self, setting: Setting) {
+        self.settings_return = Some(setting);
+        match setting {
+            Setting::Theme => {
+                self.settings_return = None;
+                self.run_command("theme", "");
+                self.settings_return = self.prompt.is_some().then_some(setting);
+            }
+            Setting::Language => {
+                self.prompt = Some(Prompt::Language(LanguagePanel::new(i18n::saved_locale(
+                    &self.home,
+                ))));
+            }
+            Setting::Approvals => {
+                self.prompt = Some(Prompt::Approvals(ApprovalsPanel::new(&self.approvals)));
+            }
+            Setting::Model => {
+                self.prompt = Some(Prompt::Models(ModelsPanel::new()));
+                self.host.send(Command::ListModels);
+            }
+            Setting::StartupForm => {
+                let fullscreen = !crate::ui::config::saved_fullscreen(&self.home);
+                if let Some(error) = crate::ui::config::save_fullscreen(&self.home, fullscreen) {
+                    self.set_notice(error);
+                }
+                self.settings_return = None;
+                self.open_settings(setting);
+            }
+            Setting::ToolDetails => {
+                self.toggle_tool_details();
+                self.settings_return = None;
+                self.open_settings(setting);
+            }
+            Setting::Mouse => {
+                self.mouse = !self.mouse;
+                let value = if self.mouse { "on" } else { "off" };
+                if let Some(error) = crate::ui::config::write(&self.home, MOUSE_KEY, value.into()) {
+                    self.set_notice(error);
+                }
+                self.settings_return = None;
+                self.open_settings(setting);
+            }
+        }
+    }
+
+    fn toggle_tool_details(&mut self) {
+        let (detail, label) = match self.tool_detail {
+            Detail::Collapsed => (Detail::Expanded, t("expanded")),
+            Detail::Expanded => (Detail::Collapsed, t("collapsed")),
+        };
+        self.tool_detail = detail;
+        let saved = crate::ui::config::write(
+            &self.home,
+            TOOL_DETAILS_KEY,
+            (detail == Detail::Expanded).into(),
+        );
+        self.notices.push(match saved {
+            None => tf("Tool details {state}", &[("state", label)]),
+            Some(error) => tf(
+                "Tool details {state} (not saved: {error})",
+                &[("state", label), ("error", &error)],
+            ),
+        });
+    }
+
     fn run_command(&mut self, name: &str, _args: &str) -> Outcome {
-        // Commands that act on a session say so instead of failing quietly.
-        if crate::ui::composer::commands::COMMANDS
-            .iter()
-            .any(|c| c.name == name && c.requires_session)
-            && !self.session_active()
+        // An action that cannot run now says why instead of failing quietly.
+        if let Some(command) = COMMANDS.iter().find(|c| c.name == name)
+            && !command.available(self.context())
         {
-            self.set_notice(format!("/{name} needs a session — send a message first"));
+            self.set_notice(match command.needs {
+                Needs::Session => tf(
+                    "/{name} needs a session — send a message first",
+                    &[("name", name)],
+                ),
+                Needs::Run => t("Nothing is running").to_owned(),
+                Needs::Queue => t("No queued message").to_owned(),
+                Needs::Fullscreen => t("Only in fullscreen (/tui)").to_owned(),
+                Needs::Nothing => String::new(),
+            });
             return Outcome::Continue;
         }
         match name {
+            "interrupt" => {
+                self.interrupt();
+                Outcome::Continue
+            }
+            "steer" => {
+                self.steer();
+                Outcome::Continue
+            }
+            "scroll-top" => {
+                self.jump = Some(Jump::Top);
+                Outcome::Continue
+            }
+            "scroll-bottom" => {
+                self.jump = Some(Jump::Bottom);
+                Outcome::Continue
+            }
+            "pick-message" => {
+                self.jump = Some(Jump::Pick);
+                Outcome::Continue
+            }
             "usage" => {
                 self.host.send(Command::Usage);
                 Outcome::Continue
             }
-            // Native only: Ctrl+Z is undo in the composer, so the shell hand-off
-            // is a command. It is not in the generated registry.
+            // Ctrl+Z is undo in the composer, so the shell hand-off is a
+            // command.
             "suspend" => Outcome::Suspend,
             "exit" => Outcome::Exit(0),
             "tui" => Outcome::SwitchMode,
@@ -1147,20 +1366,17 @@ impl App {
                 Outcome::Continue
             }
             "tools" => {
-                let (detail, label) = match self.tool_detail {
-                    Detail::Collapsed => (Detail::Expanded, "expanded"),
-                    Detail::Expanded => (Detail::Collapsed, "collapsed"),
-                };
-                self.tool_detail = detail;
-                let saved = crate::ui::config::write(
+                self.toggle_tool_details();
+                Outcome::Continue
+            }
+            "settings" => {
+                self.open_settings(Setting::Theme);
+                Outcome::Continue
+            }
+            "language" => {
+                self.prompt = Some(Prompt::Language(LanguagePanel::new(i18n::saved_locale(
                     &self.home,
-                    TOOL_DETAILS_KEY,
-                    (detail == Detail::Expanded).into(),
-                );
-                self.notices.push(match saved {
-                    None => format!("Tool details {label}"),
-                    Some(error) => format!("Tool details {label} (not saved: {error})"),
-                });
+                ))));
                 Outcome::Continue
             }
             "reconnect" => {
@@ -1168,7 +1384,8 @@ impl App {
                 Outcome::Continue
             }
             other => {
-                self.notices.push(format!("/{other} is not yet available"));
+                self.notices
+                    .push(tf("/{name} is not yet available", &[("name", other)]));
                 Outcome::Continue
             }
         }
@@ -1193,13 +1410,16 @@ impl App {
             && let Some(kind) = self.pending_boundary.take()
         {
             let label = match kind {
-                SwitchKind::New => "new session".to_owned(),
+                SwitchKind::New => t("new session").to_owned(),
                 SwitchKind::Resumed => {
                     let (count, hidden) = self.window_info;
                     let sid = self.session_id.get(..8).unwrap_or(&self.session_id);
-                    let mut label = format!("resumed {sid} · {count} messages");
+                    let mut label = tf(
+                        "resumed {id} · {count} messages",
+                        &[("id", sid), ("count", &count.to_string())],
+                    );
                     if hidden > 0 {
-                        label.push_str(" · earlier history: /history");
+                        label.push_str(t(" · earlier history: /history"));
                     }
                     label
                 }
@@ -1210,14 +1430,15 @@ impl App {
             frame.commits.push(text);
         }
         for notice in std::mem::take(&mut self.notices) {
-            let tone = if notice == INTERRUPT_REASON {
+            let interrupted = notice == t(INTERRUPT_REASON);
+            let tone = if interrupted {
                 &self.palette.warning
             } else {
                 &self.palette.muted
             };
             let rows = gutter_text("◦", &notice, width, tone);
             let text = chunk(&rows);
-            let tone = if notice == INTERRUPT_REASON {
+            let tone = if interrupted {
                 Tone::Warning
             } else {
                 Tone::Muted
@@ -1240,7 +1461,10 @@ impl App {
             && !self.failure_committed
         {
             self.failure_committed = true;
-            let text = pad_block(&[String::new(), format!("Error: {message}")]);
+            let text = pad_block(&[
+                String::new(),
+                tf("Error: {message}", &[("message", &message)]),
+            ]);
             self.record(Block::Failure(message));
             frame.commits.push(text);
         }
@@ -1270,9 +1494,12 @@ impl App {
             let elapsed = started.elapsed();
             let beat = (elapsed.as_millis() / PULSE.as_millis()) as usize;
             format!(
-                "{} working…  {}",
+                "{} {}",
                 FRAMES[beat % FRAMES.len()],
-                format_elapsed(elapsed)
+                tf(
+                    "working…  {elapsed}",
+                    &[("elapsed", &format_elapsed(elapsed))]
+                )
             )
         });
         let inner = cols.saturating_sub(2 * MARGIN + 4).max(1);
@@ -1280,11 +1507,7 @@ impl App {
         let prompt_width = 2;
         let text_width = inner.saturating_sub(prompt_width).max(1);
         let p = &self.palette;
-        self.composer.set_session_active(
-            self.snapshot
-                .as_ref()
-                .is_some_and(|s| s.rows.iter().any(|r| r.kind == RowKind::UserMessage)),
-        );
+        self.composer.set_context(self.context());
         let mut rows: Vec<String> = Vec::new();
         // While a panel or prompt owns the keyboard the composer's mark dims.
         let prompt_color = if self.prompt.is_some() {
@@ -1300,7 +1523,7 @@ impl App {
             rows.push(format!(
                 "{}{}",
                 fg(prompt, prompt_color),
-                fg(COMPOSER_PLACEHOLDER, &p.muted)
+                fg(t(COMPOSER_PLACEHOLDER), &p.muted)
             ));
             (0, prompt_width)
         } else {
@@ -1352,6 +1575,8 @@ impl App {
                 Some(Prompt::Providers(prompt)) => list(prompt.render(list_width, budget, p)),
                 Some(Prompt::Approvals(prompt)) => list(prompt.render(list_width, budget, p)),
                 Some(Prompt::Theme(prompt)) => list(prompt.render(list_width, budget, p)),
+                Some(Prompt::Language(prompt)) => list(prompt.render(list_width, budget, p)),
+                Some(Prompt::Settings(prompt)) => list(prompt.render(list_width, budget, p)),
                 None if palette_overlay => {
                     let width = cols.saturating_sub(4).min(OVERLAY_PALETTE_WIDTH);
                     let page = budget.saturating_sub(6).clamp(3, 16);
@@ -1372,6 +1597,8 @@ impl App {
             Some(Prompt::Providers(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Approvals(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Theme(prompt)) => Some(prompt.render(outer, panel_rows, p)),
+            Some(Prompt::Language(prompt)) => Some(prompt.render(outer, panel_rows, p)),
+            Some(Prompt::Settings(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Exit(prompt)) => Some(prompt.render(outer, p)),
             Some(Prompt::Permission(prompt)) => Some(prompt.render(outer, p)),
             Some(Prompt::Ask(prompt)) => Some(prompt.render(outer, panel_rows, p)),
@@ -1523,9 +1750,12 @@ impl App {
                 .iter()
                 .filter(|r| is_message(r))
                 .count();
-            let header = format!(
-                "Earlier history · {} · {count} messages · /history for the previous page",
-                self.session_id.get(..8).unwrap_or(&self.session_id)
+            let header = tf(
+                "Earlier history · {id} · {count} messages · /history for the previous page",
+                &[
+                    ("id", self.session_id.get(..8).unwrap_or(&self.session_id)),
+                    ("count", &count.to_string()),
+                ],
             );
             commits.push(chunk(&[fg(&truncate_cells(&header, width), &p.muted)]));
             sources.push(Block::Note(header));
@@ -1611,7 +1841,7 @@ impl App {
     /// `/history`: queue the next older page of the loaded session.
     fn request_history(&mut self) {
         let Some(snapshot) = &self.snapshot else {
-            self.set_notice("No active session");
+            self.set_notice(t("No active session"));
             return;
         };
         let floor = self.history_floor.min(snapshot.rows.len());
@@ -1622,7 +1852,7 @@ impl App {
             .map(|(i, _)| i)
             .collect();
         if messages.is_empty() {
-            self.set_notice("No earlier messages.");
+            self.set_notice(t("No earlier messages."));
             return;
         }
         let start = if messages.len() > HISTORY_WINDOW {
@@ -1677,16 +1907,16 @@ impl App {
         let slot = match &self.notice {
             Some((text, _)) => Some(text.clone()),
             None => match &self.snapshot {
-                Some(s) if !s.questions.is_empty() => Some("answer required".to_owned()),
-                Some(s) if !s.approvals.is_empty() => Some("permission required".to_owned()),
-                Some(s) if s.running => Some("esc interrupt".to_owned()),
+                Some(s) if !s.questions.is_empty() => Some(t("answer required").to_owned()),
+                Some(s) if !s.approvals.is_empty() => Some(t("permission required").to_owned()),
+                Some(s) if s.running => Some(t("esc interrupt").to_owned()),
                 _ => None,
             },
         };
         let mut left = format!(
             "{}AGENT  \u{23f5}\u{23f5} {}",
             " ".repeat(MARGIN),
-            status_label(&self.approvals)
+            t(status_label(&self.approvals))
         );
         if let Some(slot) = slot {
             left.push_str("  ");
@@ -1786,13 +2016,16 @@ fn queue_strip(items: &[(String, String)], cols: usize, p: &Palette) -> Vec<Stri
         })
         .collect();
     let hint = if hidden == 0 {
-        "↑ edit · ctrl+s steer now · /queue".to_owned()
+        t("↑ edit · ctrl+s steer now · /queue").to_owned()
     } else {
-        format!("+{hidden} more · ↑ edit · ctrl+s steer now · /queue")
+        tf(
+            "+{count} more · ↑ edit · ctrl+s steer now · /queue",
+            &[("count", &hidden.to_string())],
+        )
     };
     rows.push(fg(&truncate_cells(&hint, inner), &p.muted));
     let title = paint(
-        &format!("Queue ({})", items.len()),
+        &tf("Queue ({count})", &[("count", &items.len().to_string())]),
         Paint {
             fg: Some(&p.accent),
             bold: true,
@@ -1811,7 +2044,7 @@ fn queue_strip(items: &[(String, String)], cols: usize, p: &Palette) -> Vec<Stri
 fn thinking_line(preview: &str, width: usize, p: &Palette) -> String {
     use crate::ui::transcript::blocks::truncate_cells;
     const LABEL: &str = "Thinking: ";
-    let label = truncate_cells(LABEL, width);
+    let label = truncate_cells(t(LABEL), width);
     let preview = truncate_cells(preview, width.saturating_sub(display_width(&label)));
     format!(
         "{}{}",
@@ -1917,7 +2150,7 @@ fn render_block(
             };
             gutter_text("◦", text, width, color)
         }
-        Block::Failure(message) => vec![format!("Error: {message}")],
+        Block::Failure(message) => vec![tf("Error: {message}", &[("message", message)])],
         Block::Boundary(label) => vec![fg(&boundary_line(label, width), &p.muted)],
         Block::Note(text) => vec![fg(&truncate_cells(text, width), &p.muted)],
     }
@@ -1948,14 +2181,14 @@ fn banner(cols: usize, p: &Palette, branch: &str) -> String {
     let version = env!("CARGO_PKG_VERSION");
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "Not available".into());
+        .unwrap_or_else(|_| t("Not available").into());
     let branch = branch.to_owned();
     // Port of `buildStartupPanel`: the logo beside the greeting when the box
     // is wide enough, the greeting wrapped under it otherwise.
     let body_width = cols.saturating_sub(2 + MARGIN).max(4) - 4;
     let greeting = [
-        format!("Welcome to DIM {version}!"),
-        "Type / for commands · Ctrl+P for the palette".to_owned(),
+        tf("Welcome to DIM {version}!", &[("version", version)]),
+        t("Type / for commands · Ctrl+P for the palette").to_owned(),
     ];
     let header = startup_header(&greeting, body_width);
     let inline = body_width >= 32;
@@ -1966,7 +2199,7 @@ fn banner(cols: usize, p: &Palette, branch: &str) -> String {
     };
     let value_width = body_width.saturating_sub(label_width).max(1);
     let mut info = vec![String::new()];
-    for (label, value) in [("Workspace", &cwd), ("Git branch", &branch)] {
+    for (label, value) in [(t("Workspace"), &cwd), (t("Git branch"), &branch)] {
         if !inline {
             info.push(label.to_owned());
             info.extend(wrap(value, body_width));
@@ -1974,7 +2207,8 @@ fn banner(cols: usize, p: &Palette, branch: &str) -> String {
         }
         for (index, part) in wrap(value, value_width).into_iter().enumerate() {
             let lead = if index == 0 { label } else { "" };
-            info.push(format!("{lead:<label_width$}{part}"));
+            let pad = " ".repeat(label_width.saturating_sub(width_of(lead)));
+            info.push(format!("{lead}{pad}{part}"));
         }
     }
     let rows: Vec<String> = header.iter().chain(info.iter()).cloned().collect();
@@ -2015,9 +2249,9 @@ fn git_branch() -> Option<String> {
 /// reopens the session, ready to paste.
 fn goodbye_panel(session_id: &str) -> Vec<String> {
     let body = [
-        "Bye!".to_owned(),
+        t("Bye!").to_owned(),
         String::new(),
-        "To resume this session:".to_owned(),
+        t("To resume this session:").to_owned(),
         format!("  dimcode --resume {session_id}"),
     ];
     let inner = body.iter().map(|line| width_of(line)).max().unwrap_or(0) + 4;

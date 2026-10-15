@@ -2,6 +2,7 @@
 //! `sessionsPanelItems` / `SessionsPanel`).
 
 use crate::model::session::SessionItem;
+use crate::ui::i18n::{t, tf};
 use crate::ui::list_panel::{Event, Item, ListPanel};
 use crate::ui::prompts::Effect;
 use crate::ui::terminal::KeyEvent;
@@ -98,13 +99,16 @@ pub fn relative_time(updated_at: u64, now: u64) -> String {
     const HOUR: u64 = 60 * MINUTE;
     const DAY: u64 = 24 * HOUR;
     if elapsed < MINUTE {
-        "now".to_owned()
+        t("now").to_owned()
     } else if elapsed < HOUR {
-        format!("{}m ago", elapsed / MINUTE)
+        tf(
+            "{count}m ago",
+            &[("count", &(elapsed / MINUTE).to_string())],
+        )
     } else if elapsed < DAY {
-        format!("{}h ago", elapsed / HOUR)
+        tf("{count}h ago", &[("count", &(elapsed / HOUR).to_string())])
     } else {
-        format!("{}d ago", elapsed / DAY)
+        tf("{count}d ago", &[("count", &(elapsed / DAY).to_string())])
     }
 }
 

@@ -12,6 +12,7 @@ use serde_json::Value;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::model::view::ViewRow;
+use crate::ui::i18n::{t, tf};
 use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::{Paint, paint};
 use crate::ui::transcript::blocks::display_width;
@@ -262,7 +263,10 @@ pub fn project_group(rows: &[&ViewRow], detail: Detail) -> ToolGroup {
             // With no rows under it nothing else would say some calls failed.
             let failed = states.iter().filter(|s| **s == State::Failed).count();
             if failed > 0 && failed < states.len() {
-                header.push(span(format!(" · {failed} failed"), Tone::Danger));
+                header.push(span(
+                    tf(" · {count} failed", &[("count", &failed.to_string())]),
+                    Tone::Danger,
+                ));
             }
             lines.push(header_line(0, mark, header));
         }
@@ -423,7 +427,7 @@ fn header_spans(items: &[Item<'_>], sections: &[Section]) -> Vec<Span> {
             phrase(*key, &members)
         })
         .collect();
-    vec![span(capitalize(&phrases.join(", ")), Tone::Text)]
+    vec![span(capitalize(&phrases.join(t(", "))), Tone::Text)]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -460,12 +464,12 @@ fn running(members: &[&Item<'_>]) -> bool {
 /// `ran 2 commands`: the verb in the progressive while any member runs.
 fn phrase(key: PhraseKey, members: &[&Item<'_>]) -> String {
     let verb = |past: &'static str, progressive: &'static str| {
-        if running(members) { progressive } else { past }
+        t(if running(members) { progressive } else { past })
     };
     let n = members.len();
     match key {
-        PhraseKey::Search => format!("{} {}", verb("ran", "running"), counted(n, "search")),
-        PhraseKey::Skill => format!("{} {}", verb("read", "reading"), counted(n, "skill")),
+        PhraseKey::Search => format!("{} {}", verb("ran", "running"), counted(n, SEARCH)),
+        PhraseKey::Skill => format!("{} {}", verb("read", "reading"), counted(n, SKILL)),
         PhraseKey::Explore => {
             let files = members
                 .iter()
@@ -473,12 +477,14 @@ fn phrase(key: PhraseKey, members: &[&Item<'_>]) -> String {
                 .count();
             let pages = n - files;
             let items = match (files, pages) {
-                (0, pages) => counted(pages, "web page"),
-                (files, 0) => counted(files, "file"),
-                (files, pages) => format!(
-                    "{} and {}",
-                    counted(files, "file"),
-                    counted(pages, "web page")
+                (0, pages) => counted(pages, WEB_PAGE),
+                (files, 0) => counted(files, FILE),
+                (files, pages) => tf(
+                    "{files} and {pages}",
+                    &[
+                        ("files", &counted(files, FILE)),
+                        ("pages", &counted(pages, WEB_PAGE)),
+                    ],
                 ),
             };
             // Amp reads files, and explores only once web pages are among them.
@@ -489,21 +495,17 @@ fn phrase(key: PhraseKey, members: &[&Item<'_>]) -> String {
             };
             format!("{verb} {items}")
         }
-        PhraseKey::Command => format!("{} {}", verb("ran", "running"), counted(n, "command")),
+        PhraseKey::Command => format!("{} {}", verb("ran", "running"), counted(n, COMMAND)),
         PhraseKey::Edit => {
             let verb = if all_edits(members) {
                 verb("edited", "editing")
             } else {
                 verb("changed", "changing")
             };
-            format!("{verb} {}", counted(edited_paths(members), "file"))
+            format!("{verb} {}", counted(edited_paths(members), FILE))
         }
-        PhraseKey::Check => format!(
-            "{} {}",
-            verb("checked on", "checking on"),
-            counted(n, "task")
-        ),
-        PhraseKey::Tool => format!("{} {}", verb("ran", "running"), counted(n, "tool")),
+        PhraseKey::Check => format!("{} {}", verb("checked on", "checking on"), counted(n, TASK)),
+        PhraseKey::Tool => format!("{} {}", verb("ran", "running"), counted(n, TOOL)),
     }
 }
 
@@ -516,10 +518,10 @@ fn explore_header(members: &[&Item<'_>]) -> Vec<Span> {
             .count()
     };
     let parts: Vec<String> = [
-        (ExploreKind::File, "file"),
-        (ExploreKind::Page, "web page"),
-        (ExploreKind::Skill, "skill"),
-        (ExploreKind::Search, "search"),
+        (ExploreKind::File, FILE),
+        (ExploreKind::Page, WEB_PAGE),
+        (ExploreKind::Skill, SKILL),
+        (ExploreKind::Search, SEARCH),
     ]
     .into_iter()
     .filter(|(kind, _)| count(*kind) > 0)
@@ -531,8 +533,8 @@ fn explore_header(members: &[&Item<'_>]) -> Vec<Span> {
         "Explored"
     };
     vec![
-        span(verb, Tone::Text),
-        span(format!(" {}", parts.join(", ")), Tone::Muted),
+        span(t(verb), Tone::Text),
+        span(format!(" {}", parts.join(t(", "))), Tone::Muted),
     ]
 }
 
@@ -555,7 +557,7 @@ fn edit_header(members: &[&Item<'_>]) -> Vec<Span> {
         }
     }
     let mut spans = vec![span(
-        format!("{verb} {}", counted(edited_paths(members), "file")),
+        format!("{} {}", t(verb), counted(edited_paths(members), FILE)),
         Tone::Text,
     )];
     let summary = format_counts(added, removed);
@@ -594,7 +596,7 @@ fn append_section(lines: &mut Vec<Line>, section: Section, items: &[&Item<'_>], 
                 else {
                     continue;
                 };
-                let text = [*label, detail.as_str()]
+                let text = [t(label), detail.as_str()]
                     .into_iter()
                     .filter(|part| !part.is_empty())
                     .collect::<Vec<_>>()
@@ -643,7 +645,7 @@ fn append_section(lines: &mut Vec<Line>, section: Section, items: &[&Item<'_>], 
 fn append_command(lines: &mut Vec<Line>, call: &Call<'_>, command: &str) {
     let mut spans = highlight_command(command);
     if call.background() {
-        spans.push(span(" (detached)", Tone::Muted));
+        spans.push(span(t(" (detached)"), Tone::Muted));
     }
     lines.push(Line {
         indent: 2,
@@ -687,7 +689,7 @@ fn append_edit(lines: &mut Vec<Line>, call: &Call<'_>, write: bool, single: bool
     };
     let (added, removed) = diff_counts(&diff);
     let mut spans = vec![
-        span(format!("{label} "), Tone::Text),
+        span(format!("{} ", t(label)), Tone::Text),
         span(call.path(), Tone::Path),
     ];
     if added > 0 {
@@ -709,10 +711,10 @@ fn append_check(lines: &mut Vec<Line>, call: &Call<'_>) {
     lines.push(header_line(
         2,
         state_mark(call.state),
-        vec![span("Checked on background task", Tone::Text)],
+        vec![span(t("Checked on background task"), Tone::Text)],
     ));
     let body = if call.state == State::Running {
-        "Waiting…".to_owned()
+        t("Waiting…").to_owned()
     } else {
         first_line(call.result)
     };
@@ -803,7 +805,7 @@ fn append_diff(lines: &mut Vec<Line>, diff: &[DiffLine]) {
     if hidden > 0 {
         lines.push(body_line(
             4,
-            format!("… +{hidden} lines"),
+            tf("… +{count} lines", &[("count", &hidden.to_string())]),
             Tone::Muted,
             Overflow::Truncate,
         ));
@@ -980,15 +982,22 @@ fn section_runs<'b, 'a>(items: &'b [Item<'a>]) -> Vec<Vec<&'b Item<'a>>> {
     runs
 }
 
-fn counted(count: usize, noun: &str) -> String {
-    let plural = match noun {
-        "search" => "searches".to_owned(),
-        noun => format!("{noun}s"),
-    };
+/// A counted noun's `(one, other)` forms, English keys of [`t`].
+type Noun = (&'static str, &'static str);
+
+const FILE: Noun = ("1 file", "{count} files");
+const WEB_PAGE: Noun = ("1 web page", "{count} web pages");
+const SKILL: Noun = ("1 skill", "{count} skills");
+const SEARCH: Noun = ("1 search", "{count} searches");
+const COMMAND: Noun = ("1 command", "{count} commands");
+const TASK: Noun = ("1 task", "{count} tasks");
+const TOOL: Noun = ("1 tool", "{count} tools");
+
+fn counted(count: usize, (one, other): Noun) -> String {
     if count == 1 {
-        format!("1 {noun}")
+        t(one).to_owned()
     } else {
-        format!("{count} {plural}")
+        tf(other, &[("count", &count.to_string())])
     }
 }
 
@@ -1356,7 +1365,8 @@ fn layout(
             .sum();
         let hidden = total.saturating_sub(cap - 1).max(1);
         rows.truncate(cap - 1);
-        rows.push(cells_of(&format!("… +{hidden} lines"), Tone::Muted));
+        let more = tf("… +{count} lines", &[("count", &hidden.to_string())]);
+        rows.push(cells_of(&more, Tone::Muted));
         return rows;
     }
     rows.truncate(cap);

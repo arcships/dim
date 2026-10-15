@@ -2,7 +2,8 @@
 //! panel it is drawn in (ports of `filterScrollbackCommands`,
 //! `createListPanelModel` and `ListPanel`).
 
-use super::commands::{COMMANDS, Command};
+use super::commands::{COMMANDS, Command, Context};
+use crate::ui::i18n::t;
 use crate::ui::render::panel::{bordered, follow_window};
 use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::{Paint, fg, paint};
@@ -18,21 +19,22 @@ pub const CHROME_ROWS: usize = 4;
 const HINT: &str = "type filter · enter select · esc clear/close";
 const ESC_CLOSE: &str = "esc close";
 
-/// Commands matching `query`: name/alias prefixes first, then contains
-/// matches on names, aliases or the description.
-pub fn filter_commands(query: &str) -> Vec<&'static Command> {
+/// Listed commands matching `query`: name/alias prefixes first, then
+/// contains matches on names, aliases or the description.
+pub fn filter_commands(query: &str, context: Context) -> Vec<&'static Command> {
     let normalized = query.trim().to_lowercase();
     let normalized = normalized
         .strip_prefix('/')
         .map(str::trim_start)
         .unwrap_or(&normalized)
         .to_owned();
+    let listed = COMMANDS.iter().filter(|c| c.listed(context));
     if normalized.is_empty() {
-        return COMMANDS.iter().collect();
+        return listed.collect();
     }
     let mut prefix = Vec::new();
     let mut contains = Vec::new();
-    for command in COMMANDS {
+    for command in listed {
         let names = std::iter::once(command.name).chain(command.aliases.iter().copied());
         let mut starts = false;
         let mut has = false;
@@ -45,7 +47,10 @@ pub fn filter_commands(query: &str) -> Vec<&'static Command> {
         }
         if starts {
             prefix.push(command);
-        } else if has || command.description.to_lowercase().contains(&normalized) {
+        } else if has
+            || command.description.to_lowercase().contains(&normalized)
+            || t(command.description).to_lowercase().contains(&normalized)
+        {
             contains.push(command);
         }
     }
@@ -85,12 +90,19 @@ pub enum Kind {
     Skill(String),
 }
 
+/// One palette row as Amp lays it out: category, label (bold), detail,
+/// and the key that runs it at the right edge.
 #[derive(Debug, Clone)]
 pub struct Row {
     pub kind: Kind,
+    /// Right-aligned in a column of its own; empty in plain lists.
+    pub category: String,
     pub label: String,
     pub detail: String,
-    pub disabled: bool,
+    pub key: Option<String>,
+    /// Shown faint and marked `(unavailable)`; still runs, and the app says
+    /// why it cannot.
+    pub unavailable: bool,
 }
 
 impl Row {
@@ -132,25 +144,29 @@ fn filter_skills<'a>(skills: &'a [Skill], query: &str) -> Vec<&'a Skill> {
     prefix
 }
 
-/// Palette rows for `query`: commands and skills share the list; headings
-/// appear only when both kinds matched, skills lead when a skill name matches
-/// and no command name does.
-pub fn rows_for(query: &str, session_active: bool, skills: &[Skill]) -> Vec<Row> {
-    let commands = filter_commands(query);
+/// Palette rows for `query`: commands and skills share the list, told apart
+/// by their category; skills lead when a skill name matches and no command
+/// name does. A slash command reads `/name` and its description; an action
+/// reached by a key reads as its description.
+pub fn rows_for(query: &str, context: Context, skills: &[Skill]) -> Vec<Row> {
+    let commands = filter_commands(query, context);
     let matched_skills = filter_skills(skills, query);
     let command_rows: Vec<Row> = commands
         .iter()
         .map(|command| {
-            let disabled = command.requires_session && !session_active;
+            let description = t(command.description);
+            let (label, detail) = if command.slash {
+                (format!("/{}", command.name), description.to_owned())
+            } else {
+                (description.to_owned(), String::new())
+            };
             Row {
                 kind: Kind::Command(command),
-                label: format!("/{}", command.name),
-                detail: if disabled {
-                    format!("{} · needs a session", command.description)
-                } else {
-                    command.description.to_owned()
-                },
-                disabled,
+                category: t(command.category).to_owned(),
+                label,
+                detail,
+                key: command.key.map(str::to_owned),
+                unavailable: !command.available(context),
             }
         })
         .collect();
@@ -158,9 +174,11 @@ pub fn rows_for(query: &str, session_active: bool, skills: &[Skill]) -> Vec<Row>
         .iter()
         .map(|skill| Row {
             kind: Kind::Skill(skill.name.clone()),
-            label: format!("$skill: {}", skill.name),
+            category: t("skill").to_owned(),
+            label: format!("${}", skill.name),
             detail: skill.detail(),
-            disabled: false,
+            key: None,
+            unavailable: false,
         })
         .collect();
     if skill_rows.is_empty() {
@@ -187,23 +205,13 @@ pub fn rows_for(query: &str, session_active: bool, skills: &[Skill]) -> Vec<Row>
                 .chain(c.aliases.iter().copied())
                 .any(|n| n.to_lowercase().starts_with(&normalized))
         });
-    let heading = |text: &str| Row {
-        kind: Kind::Heading,
-        label: text.to_owned(),
-        detail: String::new(),
-        disabled: false,
-    };
-    let mut out = Vec::new();
-    let (first, second) = if skills_first {
-        (("Skills", skill_rows), ("Commands", command_rows))
+    let (mut first, second) = if skills_first {
+        (skill_rows, command_rows)
     } else {
-        (("Commands", command_rows), ("Skills", skill_rows))
+        (command_rows, skill_rows)
     };
-    for (label, rows) in [first, second] {
-        out.push(heading(label));
-        out.extend(rows);
-    }
-    out
+    first.extend(second);
+    first
 }
 
 /// Selection and window over the rows of one query.
@@ -282,9 +290,9 @@ fn panel_title(rows: &[Row]) -> &'static str {
 pub fn render(state: &PaletteState, rows: &[Row], width: usize, p: &Palette) -> Vec<String> {
     let inner = width.saturating_sub(4).max(1);
     let mut content: Vec<String> = Vec::new();
-    content.push(title(panel_title(rows), inner, p));
+    content.push(title(t(panel_title(rows)), inner, p));
     content.extend(list(state, rows, inner, PAGE_SIZE, p));
-    content.push(footer(&position(state, rows), HINT, inner, p));
+    content.push(footer(&position(state, rows), t(HINT), inner, p));
     bordered(
         &content,
         width,
@@ -320,9 +328,9 @@ pub fn render_overlay(
     content.extend(list(state, rows, inner, page, p));
     // The footer stays at the bottom however few commands match.
     content.resize(OVERLAY_QUERY_ROWS + page, String::new());
-    content.push(footer(&position(state, rows), HINT, inner, p));
+    content.push(footer(&position(state, rows), t(HINT), inner, p));
     let title = paint(
-        "Command Palette",
+        t("Command Palette"),
         Paint {
             fg: Some(&p.accent),
             bold: true,
@@ -335,24 +343,16 @@ pub fn render_overlay(
 /// The visible window of `rows`, `page` rows at most.
 fn list(state: &PaletteState, rows: &[Row], inner: usize, page: usize, p: &Palette) -> Vec<String> {
     if rows.is_empty() {
-        return vec![fg(&truncate_cells("No matches", inner), &p.muted)];
+        return vec![fg(&truncate_cells(t("No matches"), inner), &p.muted)];
     }
-    // The detail column is shared by every row, not just the visible window,
-    // so it does not shift while scrolling.
-    let widest = rows
-        .iter()
-        .filter(|r| r.selectable())
-        .map(|r| display_width(&r.label))
-        .max()
-        .unwrap_or(0);
-    let detail_column = (widest + DETAIL_GAP).min((inner.saturating_sub(ROW_INDENT) / 2).max(1));
+    let columns = Columns::of(rows, inner);
     let start = state.window_start(rows, page);
     let current = state.current(rows);
     rows.iter()
         .skip(start)
         .take(page)
         .enumerate()
-        .map(|(offset, row)| panel_row(row, start + offset == current, inner, detail_column, p))
+        .map(|(offset, row)| panel_row(row, start + offset == current, inner, columns, p))
         .collect()
 }
 
@@ -384,7 +384,8 @@ pub(crate) fn title_plain(text: &str, inner: usize, p: &Palette) -> String {
 }
 
 pub(crate) fn title(text: &str, inner: usize, p: &Palette) -> String {
-    let head = truncate_cells(text, inner.saturating_sub(ESC_CLOSE.len() + 2).max(1));
+    let close = t(ESC_CLOSE);
+    let head = truncate_cells(text, inner.saturating_sub(display_width(close) + 2).max(1));
     let styled = paint(
         &head,
         Paint {
@@ -393,18 +394,54 @@ pub(crate) fn title(text: &str, inner: usize, p: &Palette) -> String {
             ..Paint::default()
         },
     );
-    let gap = inner.saturating_sub(display_width(&head) + ESC_CLOSE.len());
+    let gap = inner.saturating_sub(display_width(&head) + display_width(close));
     if gap < 2 {
         return styled;
     }
-    format!("{styled}{}{}", " ".repeat(gap), fg(ESC_CLOSE, &p.faint))
+    format!("{styled}{}{}", " ".repeat(gap), fg(close, &p.faint))
 }
 
+/// Column widths shared by every row, not just the visible window, so
+/// nothing shifts while scrolling.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Columns {
+    /// The right-aligned category column; 0 in plain lists.
+    category: usize,
+    /// Where details start, counted from the label.
+    label: usize,
+}
+
+impl Columns {
+    pub(crate) fn of(rows: &[Row], inner: usize) -> Self {
+        let widest = |f: &dyn Fn(&Row) -> Option<usize>| {
+            rows.iter()
+                .filter(|r| r.selectable())
+                .filter_map(f)
+                .max()
+                .unwrap_or(0)
+        };
+        let category = widest(&|r| Some(display_width(&r.category)));
+        // Only labels with a detail after them set the detail column: an
+        // action named by its description runs on into the free space.
+        let label = widest(&|r| (!r.detail.is_empty()).then(|| display_width(&r.label)));
+        let room = inner.saturating_sub(ROW_INDENT + category + DETAIL_GAP);
+        Self {
+            category,
+            label: (label + DETAIL_GAP).min((room / 2).max(1)),
+        }
+    }
+}
+
+const UNAVAILABLE: &str = " (unavailable)";
+
+/// One row in Amp's columns: category (faint, right-aligned), label (bold),
+/// detail (faint), key (keybind colour, at the right edge). An unavailable
+/// row is faint throughout; the selected row sits on an accent bar.
 pub(crate) fn panel_row(
     row: &Row,
     selected: bool,
     inner: usize,
-    detail_column: usize,
+    columns: Columns,
     p: &Palette,
 ) -> String {
     if !row.selectable() {
@@ -418,47 +455,85 @@ pub(crate) fn panel_row(
             },
         );
     }
-    let row_width = inner.saturating_sub(ROW_INDENT).max(1);
-    let label_available = row_width.min(detail_column.saturating_sub(DETAIL_GAP).max(1));
-    let label = truncate_cells(&row.label, label_available);
-    let gap = " ".repeat(DETAIL_GAP.max(detail_column.saturating_sub(display_width(&label))));
-    let detail = truncate_cells(
-        &format!("{gap}{}", row.detail),
-        row_width.saturating_sub(display_width(&label)),
-    );
-    if selected {
-        // Amp's selection: the whole row on an accent bar.
-        let used = ROW_INDENT + display_width(&label) + display_width(&detail);
-        let bar = |text: &str, bold: bool| {
-            paint(
-                text,
-                Paint {
-                    fg: Some(&p.on_accent),
-                    bg: Some(&p.accent),
-                    bold,
-                    ..Paint::default()
-                },
-            )
-        };
-        return format!(
-            "{}{}{}",
-            bar(IDLE_MARKER, false),
-            bar(&label, true),
-            bar(
-                &format!("{detail}{}", " ".repeat(inner.saturating_sub(used))),
-                false
-            )
-        );
+    let category = if columns.category == 0 {
+        String::new()
+    } else {
+        let text = truncate_cells(&row.category, columns.category);
+        format!(
+            "{}{text}{}",
+            " ".repeat(columns.category - display_width(&text)),
+            " ".repeat(DETAIL_GAP)
+        )
+    };
+    let key = row
+        .key
+        .as_deref()
+        .map(|key| format!("{}{key}", " ".repeat(DETAIL_GAP)))
+        .unwrap_or_default();
+    let room = inner
+        .saturating_sub(ROW_INDENT + display_width(&category) + display_width(&key))
+        .max(1);
+    let mut label = row.label.clone();
+    let mut detail = row.detail.clone();
+    if row.unavailable {
+        if detail.is_empty() {
+            label.push_str(t(UNAVAILABLE));
+        } else {
+            detail.push_str(t(UNAVAILABLE));
+        }
     }
-    let styled_label = paint(
-        &label,
-        Paint {
-            fg: Some(if row.disabled { &p.muted } else { &p.text }),
-            bold: !row.disabled,
-            ..Paint::default()
-        },
-    );
-    format!("{IDLE_MARKER}{styled_label}{}", fg(&detail, &p.muted))
+    let label = if detail.is_empty() {
+        truncate_cells(&label, room)
+    } else {
+        truncate_cells(
+            &label,
+            room.min(columns.label.saturating_sub(DETAIL_GAP).max(1)),
+        )
+    };
+    let detail = if detail.is_empty() {
+        String::new()
+    } else {
+        let gap = columns
+            .label
+            .saturating_sub(display_width(&label))
+            .max(DETAIL_GAP);
+        truncate_cells(
+            &format!("{}{detail}", " ".repeat(gap)),
+            room.saturating_sub(display_width(&label)),
+        )
+    };
+    let used = ROW_INDENT
+        + display_width(&category)
+        + display_width(&label)
+        + display_width(&detail)
+        + display_width(&key);
+    let fill = " ".repeat(inner.saturating_sub(used));
+    let part = |text: &str, fg: &str, bold: bool| {
+        paint(
+            text,
+            Paint {
+                fg: Some(fg),
+                bg: selected.then_some(p.accent.as_str()),
+                bold,
+                ..Paint::default()
+            },
+        )
+    };
+    let (text, faint, keyed) = if selected {
+        (&p.on_accent, &p.on_accent, &p.keybind)
+    } else if row.unavailable {
+        (&p.muted, &p.muted, &p.muted)
+    } else {
+        (&p.text, &p.muted, &p.keybind)
+    };
+    format!(
+        "{}{}{}{}{}",
+        part(IDLE_MARKER, text, false),
+        part(&category, faint, false),
+        part(&label, text, true),
+        part(&format!("{detail}{fill}"), faint, false),
+        part(&key, keyed, true),
+    )
 }
 
 pub(crate) fn footer(count: &str, hint: &str, inner: usize, p: &Palette) -> String {
@@ -479,50 +554,93 @@ mod tests {
     use super::*;
     use crate::ui::theme::{Appearance, ColorMode, Theme};
 
-    fn names(query: &str) -> Vec<&'static str> {
-        filter_commands(query).into_iter().map(|c| c.name).collect()
+    const SCROLLBACK: Context = Context {
+        session: true,
+        running: false,
+        queued: false,
+        fullscreen: false,
+    };
+    const FULLSCREEN: Context = Context {
+        fullscreen: true,
+        ..SCROLLBACK
+    };
+
+    fn names(query: &str, context: Context) -> Vec<&'static str> {
+        filter_commands(query, context)
+            .into_iter()
+            .map(|c| c.name)
+            .collect()
     }
 
     #[test]
-    fn empty_query_lists_everything_in_registry_order() {
-        let all = names("/");
-        assert_eq!(all[0], "remote");
-        assert_eq!(all[1], "new");
+    fn the_registry_lists_by_category_and_hides_fullscreen_actions_elsewhere() {
+        let all = names("/", FULLSCREEN);
+        assert_eq!(&all[..2], ["new", "resume"]);
         assert_eq!(all.len(), COMMANDS.len());
+        let scrollback = names("/", SCROLLBACK);
+        assert!(!scrollback.contains(&"scroll-top"));
+        assert!(scrollback.contains(&"interrupt"));
     }
 
     #[test]
     fn prefixes_come_before_contains_matches() {
-        let hits = names("/re");
-        // Registry order among the prefix matches.
-        assert_eq!(
-            &hits[..4],
-            ["remote", "resume", "reload-skills", "reload-plugins"]
+        assert_eq!(&names("/re", SCROLLBACK)[..2], ["resume", "reconnect"]);
+        // "sessions" (an alias of resume) only contains "ss".
+        assert!(names("/ss", SCROLLBACK).contains(&"resume"));
+        assert!(names("/quit", SCROLLBACK).contains(&"exit"));
+        assert_eq!(names("/hist", SCROLLBACK), ["history"]);
+    }
+
+    #[test]
+    fn rows_that_cannot_run_now_are_marked_unavailable() {
+        let none = Context::default();
+        assert!(rows_for("/hist", none, &[])[0].unavailable);
+        assert!(!rows_for("/hist", SCROLLBACK, &[])[0].unavailable);
+        let interrupt = &rows_for("/interrupt", SCROLLBACK, &[])[0];
+        assert!(interrupt.unavailable);
+        assert_eq!(interrupt.key.as_deref(), Some("Esc"));
+    }
+
+    #[test]
+    fn rows_read_as_amps_category_label_and_key() {
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark);
+        let rows = rows_for("/", FULLSCREEN, &[]);
+        let mut state = PaletteState::default();
+        state.set_query("");
+        let panel = render_overlay(&state, &rows, 72, rows.len(), &theme.palette);
+        let plain: Vec<String> = panel.iter().map(|r| strip(r)).collect();
+        // Selected first row: the accent bar across the row.
+        assert!(plain[4].starts_with("│   session  /new "), "{:?}", plain[4]);
+        assert!(panel[4].contains("\x1b[30;43m"), "{:?}", panel[4]);
+        let top = plain
+            .iter()
+            .position(|r| r.contains("scroll to the top"))
+            .unwrap();
+        assert!(
+            plain[top].contains("   view  scroll to the top"),
+            "{:?}",
+            plain[top]
         );
-        // "ex" is a prefix of exit/export/external-agents; "sessions" (an
-        // alias of resume) only contains "ss".
-        let ss = names("/ss");
-        assert!(ss.contains(&"resume"));
-    }
-
-    #[test]
-    fn aliases_and_descriptions_match() {
-        assert!(names("/lang").contains(&"language"));
-        assert!(names("/phone").contains(&"remote"));
-        assert_eq!(names("/hist"), ["history"]);
-    }
-
-    #[test]
-    fn session_scoped_commands_are_marked_unavailable() {
-        let rows = rows_for("/hist", false, &[]);
-        assert!(rows[0].disabled);
-        assert!(rows[0].detail.ends_with("· needs a session"));
-        assert!(!rows_for("/hist", true, &[])[0].disabled);
+        assert!(plain[top].trim_end_matches(['│', ' ']).ends_with("Home"));
+        // Keys take the keybind colour, bold.
+        assert!(panel[top].contains("\x1b[1;34m  Home"), "{:?}", panel[top]);
+        // An action that cannot run now says so, faint.
+        let interrupt = plain
+            .iter()
+            .position(|r| r.contains("interrupt the run"))
+            .unwrap();
+        assert!(plain[interrupt].contains("interrupt the run (unavailable)"));
+        assert!(
+            panel[interrupt].contains("\x1b[1;2m"),
+            "{:?}",
+            panel[interrupt]
+        );
+        assert!(plain.iter().all(|r| display_width(r) == 72), "{plain:#?}");
     }
 
     #[test]
     fn window_follows_the_selection() {
-        let rows = rows_for("/", true, &[]);
+        let rows = rows_for("/", SCROLLBACK, &[]);
         let len = rows.len();
         let mut state = PaletteState::default();
         assert_eq!(state.window_start(&rows, PAGE_SIZE), 0);
@@ -537,14 +655,12 @@ mod tests {
     #[test]
     fn panel_has_a_fixed_height_and_a_position_footer() {
         let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark);
-        let rows = rows_for("/", true, &[]);
+        let rows = rows_for("/", SCROLLBACK, &[]);
         let panel = render(&PaletteState::default(), &rows, 80, &theme.palette);
         assert_eq!(panel.len(), PAGE_SIZE + CHROME_ROWS);
         let plain: Vec<String> = panel.iter().map(|r| strip(r)).collect();
         assert!(plain[1].contains("Commands") && plain[1].contains("esc close"));
-        // The selected row is Amp's accent bar.
-        assert!(plain[2].starts_with("│   /remote"));
-        assert!(panel[2].contains("\x1b[30;43m"), "{:?}", panel[2]);
+        assert!(plain[2].starts_with("│   session  /new"), "{:?}", plain[2]);
         assert!(
             plain[8].contains(&format!("1 / {}", rows.len())),
             "{:?}",
@@ -571,44 +687,25 @@ mod tests {
     }
 
     #[test]
-    fn skills_share_the_list_with_headings_only_when_both_kinds_match() {
+    fn skills_share_the_list_under_their_own_category() {
         let skills = sample_skills();
-        // Both kinds: headings, commands first.
-        let rows = rows_for("hist", true, &skills);
-        let kinds: Vec<&str> = rows
-            .iter()
-            .map(|r| match r.kind {
-                Kind::Heading => "heading",
-                Kind::Item(_) => "item",
-                Kind::Command(_) => "command",
-                Kind::Skill(_) => "skill",
-            })
-            .collect();
-        assert_eq!(kinds, ["heading", "command", "heading", "skill", "skill"]);
+        // Both kinds: commands first, told apart by category.
+        let rows = rows_for("hist", SCROLLBACK, &skills);
+        let categories: Vec<&str> = rows.iter().map(|r| r.category.as_str()).collect();
+        assert_eq!(categories, ["session", "skill", "skill"]);
         assert_eq!(panel_title(&rows), "Suggestions");
-        // Only skills match: no headings, the title names them.
-        let only = rows_for("claude", true, &skills);
+        let only = rows_for("claude", SCROLLBACK, &skills);
         assert!(only.iter().all(|r| matches!(r.kind, Kind::Skill(_))));
         assert_eq!(panel_title(&only), "Skills");
         // A skill name prefix with no command name prefix leads.
-        let lead = rows_for("codex", true, &skills);
+        let lead = rows_for("codex", SCROLLBACK, &skills);
         assert_eq!(lead.len(), 1);
-    }
-
-    #[test]
-    fn selection_steps_over_headings_and_counts_only_rows() {
-        let skills = sample_skills();
-        let rows = rows_for("hist", true, &skills);
         let mut state = PaletteState::default();
-        assert_eq!(state.current(&rows), 1);
         state.step(1, &rows);
-        assert_eq!(state.current(&rows), 3, "the Skills heading is skipped");
-        state.step(-1, &rows);
-        assert_eq!(state.current(&rows), 1);
         let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark);
         let panel = render(&state, &rows, 100, &theme.palette);
         let text: Vec<String> = panel.iter().map(|r| strip(r)).collect();
-        assert!(text[7].contains("1 / 3"), "{:?}", text[7]);
+        assert!(text.iter().any(|r| r.contains("2 / 3")), "{text:#?}");
     }
 
     fn strip(s: &str) -> String {

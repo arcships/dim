@@ -3,14 +3,13 @@
 
 use std::cell::Cell;
 
-use crate::ui::composer::palette::{Kind, Row, footer, panel_row, title};
+use crate::ui::composer::palette::{Columns, Kind, Row, footer, panel_row, title};
+use crate::ui::i18n::{t, tf};
 use crate::ui::render::panel::{bordered, follow_window};
 use crate::ui::terminal::{KeyCode, KeyEvent, Modifiers};
 use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::fg;
-use crate::ui::transcript::blocks::{display_width, truncate_cells};
-
-const DETAIL_GAP: usize = 2;
+use crate::ui::transcript::blocks::truncate_cells;
 
 #[derive(Debug, Clone)]
 pub struct Item {
@@ -62,6 +61,8 @@ pub enum Event {
 }
 
 pub struct ListPanel {
+    /// The fixed texts are English, translated as they are drawn so a
+    /// language preview shows at once.
     title: &'static str,
     hint: &'static str,
     loading_text: &'static str,
@@ -282,20 +283,16 @@ impl ListPanel {
                 } else {
                     item.detail.clone()
                 },
-                disabled: false,
+                category: String::new(),
+                key: None,
+                unavailable: false,
             })
             .collect();
-        let widest = list
-            .iter()
-            .filter(|r| r.selectable())
-            .map(|r| display_width(&r.label))
-            .max()
-            .unwrap_or(0);
-        let detail_column = (widest + DETAIL_GAP).min((inner.saturating_sub(2) / 2).max(1));
-        let mut content = vec![title(self.title, inner, p)];
+        let columns = Columns::of(&list, inner);
+        let mut content = vec![title(t(self.title), inner, p)];
         if filter_row == 1 {
             content.push(fg(
-                &truncate_cells(&format!("filter: {}", self.filter), inner),
+                &truncate_cells(&tf("filter: {value}", &[("value", &self.filter)]), inner),
                 &p.muted,
             ));
         }
@@ -307,13 +304,13 @@ impl ListPanel {
             .collect();
         if selectable.is_empty() {
             let text = if self.loading {
-                self.loading_text
+                t(self.loading_text)
             } else if let Some(error) = &self.error {
                 error.as_str()
             } else if self.filter.is_empty() {
-                self.empty_text
+                t(self.empty_text)
             } else {
-                self.no_match_text
+                t(self.no_match_text)
             };
             content.push(fg(&truncate_cells(text, inner), &p.muted));
         } else {
@@ -332,7 +329,7 @@ impl ListPanel {
                         row,
                         start + offset == current_at,
                         inner,
-                        detail_column,
+                        columns,
                         p,
                     ));
                 }
@@ -346,7 +343,7 @@ impl ListPanel {
             )
         } else if self.total_count {
             let counted = shown.iter().filter(|i| !i.heading && i.counted).count();
-            format!("Total: {counted}")
+            tf("Total: {count}", &[("count", &counted.to_string())])
         } else if selectable.is_empty() {
             "0 / 0".to_owned()
         } else {
@@ -356,7 +353,7 @@ impl ListPanel {
                 selectable.len()
             )
         };
-        content.push(footer(&position, self.hint, inner, p));
+        content.push(footer(&position, t(self.hint), inner, p));
         bordered(&content, width, None, &p.border, None)
     }
 }

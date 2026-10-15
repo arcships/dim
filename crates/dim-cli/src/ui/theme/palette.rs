@@ -24,6 +24,8 @@ pub struct Palette {
     pub on_accent: String,
     /// The user's messages.
     pub user: String,
+    /// Keys named in menus and hints.
+    pub keybind: String,
     pub text: String,
     pub text_soft: String,
     pub muted: String,
@@ -66,6 +68,7 @@ pub fn terminal_palette(appearance: Appearance) -> Palette {
         accent: own("ansi:3"),
         on_accent: own("ansi:0"),
         user: own("ansi:2"),
+        keybind: own("ansi:4"),
         text: own("default"),
         text_soft: own("default"),
         muted: own("dim"),

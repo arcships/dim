@@ -1,206 +1,203 @@
-//! The scrollback command registry (generated from the reference build's
-//! `listScrollbackCommands()`; edit deliberately).
+//! The command palette registry: the actions the native interface runs,
+//! grouped by category, in palette order. A slash command is also typed as
+//! `/name`; the other entries are actions a key reaches (named in `key`),
+//! listed so the palette teaches the key, as Amp's does.
 
 #[derive(Debug)]
 pub struct Command {
+    /// The id `run_command` dispatches on; the typed name of a slash command.
     pub name: &'static str,
+    pub category: &'static str,
     pub description: &'static str,
     pub aliases: &'static [&'static str],
-    pub requires_session: bool,
+    /// Typed as `/name`; otherwise reached by its key or the palette only.
+    pub slash: bool,
+    /// The key that runs it, as the palette shows it.
+    pub key: Option<&'static str>,
+    pub needs: Needs,
 }
 
-/// Registry order is the palette order.
+/// When an action can run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Needs {
+    Nothing,
+    Session,
+    /// A run in progress.
+    Run,
+    /// A queued message.
+    Queue,
+    /// The fullscreen interface; elsewhere the action is not listed.
+    Fullscreen,
+}
+
+/// What the interface is doing, as the palette weighs availability.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Context {
+    pub session: bool,
+    pub running: bool,
+    pub queued: bool,
+    pub fullscreen: bool,
+}
+
+impl Command {
+    /// Listed at all: fullscreen-only actions are left out elsewhere.
+    pub fn listed(&self, context: Context) -> bool {
+        self.needs != Needs::Fullscreen || context.fullscreen
+    }
+
+    pub fn available(&self, context: Context) -> bool {
+        match self.needs {
+            Needs::Nothing => true,
+            Needs::Session => context.session,
+            Needs::Run => context.running,
+            Needs::Queue => context.queued,
+            Needs::Fullscreen => context.fullscreen,
+        }
+    }
+}
+
+const fn slash(
+    name: &'static str,
+    category: &'static str,
+    description: &'static str,
+    aliases: &'static [&'static str],
+    needs: Needs,
+) -> Command {
+    Command {
+        name,
+        category,
+        description,
+        aliases,
+        slash: true,
+        key: None,
+        needs,
+    }
+}
+
+const fn action(
+    name: &'static str,
+    category: &'static str,
+    description: &'static str,
+    key: &'static str,
+    needs: Needs,
+) -> Command {
+    Command {
+        name,
+        category,
+        description,
+        aliases: &[],
+        slash: false,
+        key: Some(key),
+        needs,
+    }
+}
+
 pub const COMMANDS: &[Command] = &[
+    slash("new", "session", "start a new session", &[], Needs::Nothing),
+    slash(
+        "resume",
+        "session",
+        "resume a previous session",
+        &["sessions"],
+        Needs::Nothing,
+    ),
+    slash(
+        "history",
+        "session",
+        "load the previous page of messages",
+        &[],
+        Needs::Session,
+    ),
+    slash(
+        "usage",
+        "session",
+        "show context and plan usage",
+        &[],
+        Needs::Session,
+    ),
+    action("interrupt", "run", "interrupt the run", "Esc", Needs::Run),
+    action(
+        "steer",
+        "run",
+        "steer with the next queued message",
+        "Ctrl+S",
+        Needs::Queue,
+    ),
+    action(
+        "scroll-top",
+        "view",
+        "scroll to the top",
+        "Home",
+        Needs::Fullscreen,
+    ),
+    action(
+        "scroll-bottom",
+        "view",
+        "scroll to the bottom",
+        "End",
+        Needs::Fullscreen,
+    ),
+    action(
+        "pick-message",
+        "view",
+        "pick an earlier message to edit",
+        "Tab",
+        Needs::Fullscreen,
+    ),
+    slash(
+        "tools",
+        "view",
+        "collapse or expand tool details",
+        &[],
+        Needs::Nothing,
+    ),
+    slash(
+        "tui",
+        "view",
+        "switch between fullscreen and scrollback",
+        &[],
+        Needs::Nothing,
+    ),
+    slash("theme", "view", "switch theme", &[], Needs::Nothing),
+    slash(
+        "language",
+        "view",
+        "switch language",
+        &["lang", "locale"],
+        Needs::Nothing,
+    ),
+    slash("models", "model", "select a model", &[], Needs::Nothing),
+    slash(
+        "connect",
+        "model",
+        "connect a provider",
+        &["provider"],
+        Needs::Nothing,
+    ),
+    slash(
+        "approvals",
+        "model",
+        "configure tool approvals",
+        &[],
+        Needs::Nothing,
+    ),
+    slash("settings", "app", "open settings", &[], Needs::Nothing),
+    slash(
+        "reconnect",
+        "app",
+        "reconnect to the App Server",
+        &[],
+        Needs::Nothing,
+    ),
+    slash(
+        "suspend",
+        "app",
+        "suspend to the shell",
+        &[],
+        Needs::Nothing,
+    ),
     Command {
-        name: "remote",
-        description: "Share this workspace with your phone",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "new",
-        description: "Start a new session",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "resume",
-        description: "Resume a previous session",
-        aliases: &["sessions"],
-        requires_session: false,
-    },
-    Command {
-        name: "skills",
-        description: "List loaded skills",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "reload-skills",
-        description: "Rescan skills from disk",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "reload-plugins",
-        description: "Rescan installed plugins",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "connect",
-        description: "Connect a provider",
-        aliases: &["provider"],
-        requires_session: false,
-    },
-    Command {
-        name: "models",
-        description: "Select a model",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "fast",
-        description: "Toggle fast mode",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "debug",
-        description: "Debug diagnostics",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "settings",
-        description: "Open settings",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "approvals",
-        description: "Configure approvals",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "mcp",
-        description: "MCP server status",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "agent",
-        description: "Switch to agent mode",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "external-agents",
-        description: "Manage external agents",
-        aliases: &["agents"],
-        requires_session: false,
-    },
-    Command {
-        name: "plugins",
-        description: "Plugin settings",
-        aliases: &["plugin"],
-        requires_session: false,
-    },
-    Command {
-        name: "theme",
-        description: "Switch theme",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "language",
-        description: "Switch language",
-        aliases: &["lang", "locale"],
-        requires_session: false,
-    },
-    Command {
-        name: "queue",
-        description: "Manage queued messages",
-        aliases: &[],
-        requires_session: true,
-    },
-    Command {
-        name: "timeline",
-        description: "Jump to a message",
-        aliases: &[],
-        requires_session: true,
-    },
-    Command {
-        name: "usage",
-        description: "Show context and plan usage",
-        aliases: &[],
-        requires_session: true,
-    },
-    Command {
-        name: "stats",
-        description: "Show session stats and activity",
-        aliases: &["state"],
-        requires_session: false,
-    },
-    Command {
-        name: "export",
-        description: "Export the provider request JSON",
-        aliases: &[],
-        requires_session: true,
-    },
-    Command {
-        name: "compact",
-        description: "Trigger context compaction",
-        aliases: &[],
-        requires_session: true,
-    },
-    Command {
-        name: "goal",
-        description: "Switch to goal mode",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "workflow",
-        description: "Run or inspect workflows",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "workflow:save",
-        description: "Save an inline workflow",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "exit",
-        description: "Exit the app",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "tools",
-        description: "Toggle tool details (collapsed or expanded)",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "history",
-        description: "Append the previous page of full message history",
-        aliases: &[],
-        requires_session: true,
-    },
-    Command {
-        name: "tui",
-        description: "Switch between fullscreen and scrollback",
-        aliases: &[],
-        requires_session: false,
-    },
-    Command {
-        name: "keys",
-        description: "Show application and terminal key bindings",
-        aliases: &[],
-        requires_session: false,
+        key: Some("Ctrl+C Ctrl+C"),
+        ..slash("exit", "app", "exit", &["quit"], Needs::Nothing)
     },
 ];

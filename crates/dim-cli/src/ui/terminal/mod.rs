@@ -233,6 +233,26 @@ impl Terminal {
         self.writer.send(bytes)
     }
 
+    /// Mouse reporting is on.
+    pub fn mouse(&self) -> bool {
+        modes::is_live(Mode::Mouse)
+    }
+
+    /// Turns mouse reporting on or off on the alternate screen; off hands
+    /// selection and the wheel back to the terminal.
+    pub fn set_mouse(&mut self, on: bool) -> io::Result<()> {
+        if on == self.mouse() || !modes::is_live(Mode::AltScreen) {
+            return Ok(());
+        }
+        if on {
+            modes::mark(Mode::Mouse);
+            self.writer.send(Mode::Mouse.enable_sequence().to_vec())
+        } else {
+            modes::clear(Mode::Mouse);
+            self.writer.send(Mode::Mouse.restore_sequence().to_vec())
+        }
+    }
+
     pub fn keyboard(&self) -> KeyboardProtocol {
         self.keyboard
     }

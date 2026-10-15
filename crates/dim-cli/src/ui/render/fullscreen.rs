@@ -293,6 +293,11 @@ impl FullScreen {
         self.scroll(if down { step } else { -step });
     }
 
+    /// Holds the view at the top of the transcript.
+    pub fn scroll_to_top(&mut self) {
+        self.pin(0);
+    }
+
     /// Follows new output again.
     pub fn follow(&mut self) {
         self.pinned = None;

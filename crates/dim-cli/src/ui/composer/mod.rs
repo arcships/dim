@@ -18,6 +18,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::StatefulWidgetRef;
 use xai_ratatui_textarea::{ElementId, ElementKind, TextArea, TextAreaState};
 
+use crate::ui::i18n::{t, tf};
 use crate::ui::render::markdown::{Cell, cells_to_ansi};
 use crate::ui::terminal::{KeyCode, KeyEvent, Modifiers};
 use crate::ui::theme::Palette;
@@ -58,7 +59,7 @@ pub struct Composer {
     history_index: Option<usize>,
     saved_draft: String,
     palette: PaletteState,
-    session_active: bool,
+    context: commands::Context,
     skills: Vec<palette::Skill>,
 }
 
@@ -72,13 +73,14 @@ impl Composer {
             history_index: None,
             saved_draft: String::new(),
             palette: PaletteState::default(),
-            session_active: false,
+            context: commands::Context::default(),
             skills: Vec::new(),
         }
     }
 
-    pub fn set_session_active(&mut self, active: bool) {
-        self.session_active = active;
+    /// What the palette weighs availability against.
+    pub fn set_context(&mut self, context: commands::Context) {
+        self.context = context;
     }
 
     /// Replaces the draft (for example with a message taken back from the
@@ -140,7 +142,7 @@ impl Composer {
     fn palette_rows(&self) -> Vec<palette::Row> {
         palette::rows_for(
             self.command_query().unwrap_or(""),
-            self.session_active,
+            self.context,
             &self.skills,
         )
     }
@@ -257,13 +259,10 @@ impl Composer {
                 Some((name, args)) => (name, args.trim()),
                 None => (rest, ""),
             };
-            // `suspend` is native: it is not in the generated registry.
-            let native = name == "suspend";
             if let Some(command) = commands::COMMANDS
                 .iter()
-                .find(|c| c.name == name || c.aliases.contains(&name))
+                .find(|c| c.slash && (c.name == name || c.aliases.contains(&name)))
                 .map(|c| c.name)
-                .or(native.then_some("suspend"))
             {
                 let outcome = Outcome::Command {
                     name: command.to_owned(),
@@ -374,11 +373,17 @@ impl Composer {
             .count();
         let (label, content) = if chars > LONG_TEXT_PASTE_MIN_CHARS {
             (
-                format!("[Text: {} ({chars} chars)]", preview(&text)),
+                tf(
+                    "[Text: {preview} ({count} chars)]",
+                    &[("preview", &preview(&text)), ("count", &chars.to_string())],
+                ),
                 text.clone(),
             )
         } else if chars >= MULTILINE_PASTE_MIN_CHARS || lines >= MULTILINE_PASTE_MIN_LINES {
-            (format!("[... {lines} lines]"), text.clone())
+            (
+                tf("[... {count} lines]", &[("count", &lines.to_string())]),
+                text.clone(),
+            )
         } else {
             self.area
                 .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
@@ -522,7 +527,7 @@ fn preview(text: &str) -> String {
     let cleaned = cleaned.trim().to_owned();
     let head: String = cleaned.chars().take(32).collect();
     if head.is_empty() {
-        return "pasted text".to_owned();
+        return t("pasted text").to_owned();
     }
     if collapsed.trim().chars().count() > head.chars().count() {
         format!("{head}...")
@@ -697,13 +702,13 @@ mod tests {
     #[test]
     fn typed_commands_with_arguments_are_commands() {
         let mut c = Composer::new(Vec::new());
-        typed(&mut c, "/goal ship it");
+        typed(&mut c, "/resume abc123");
         assert!(!c.palette_open(), "a space ends the command name");
         assert_eq!(
             c.handle_key(key(KeyCode::Enter)),
             Outcome::Command {
-                name: "goal".into(),
-                args: "ship it".into()
+                name: "resume".into(),
+                args: "abc123".into()
             }
         );
         // Unknown slash text goes to the model.

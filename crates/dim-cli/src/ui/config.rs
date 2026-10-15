@@ -31,6 +31,21 @@ pub fn write(home: &Path, key: &str, value: Value) -> Option<String> {
     std::fs::write(&path, text).err().map(|e| e.to_string())
 }
 
+/// Removes `key`; the error text on failure.
+pub fn remove(home: &Path, key: &str) -> Option<String> {
+    let path = path(home);
+    let mut config = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .filter(Value::is_object)?;
+    config.as_object_mut()?.remove(key);
+    let text = match serde_json::to_string_pretty(&config) {
+        Ok(text) => text + "\n",
+        Err(error) => return Some(error.to_string()),
+    };
+    std::fs::write(&path, text).err().map(|e| e.to_string())
+}
+
 /// `config.json` key of the default terminal UI mode.
 const TERMINAL_MODE_KEY: &str = "tuiMode";
 

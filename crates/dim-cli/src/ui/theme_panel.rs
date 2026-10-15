@@ -2,6 +2,7 @@
 //! family, previewed while moving and persisted on Enter (port of
 //! `openThemePanel` / `handleThemePanelKey`).
 
+use crate::ui::i18n::{t, tf};
 use crate::ui::list_panel::{Event, Item, ListPanel};
 use crate::ui::prompts::Effect;
 use crate::ui::terminal::KeyEvent;
@@ -39,7 +40,7 @@ impl ThemePanel {
         list.set_items(
             Ok(entries
                 .iter()
-                .map(|(id, label)| Item::new(*id, *label, ""))
+                .map(|(id, label)| Item::new(*id, t(label), ""))
                 .collect()),
             Some(active),
         );
@@ -73,6 +74,14 @@ impl ThemePanel {
     }
 }
 
+/// The label of theme `id` (`System` for the default).
+pub fn label_of(id: &str) -> &'static str {
+    THEMES
+        .iter()
+        .find(|theme| theme.id == id)
+        .map_or(t("System"), |theme| theme.label)
+}
+
 /// The theme id saved in `config.json` (`themeId`), if any.
 pub fn saved_theme_id(home: &std::path::Path) -> Option<String> {
     crate::ui::config::read(home, "themeId")?
@@ -83,7 +92,7 @@ pub fn saved_theme_id(home: &std::path::Path) -> Option<String> {
 /// Writes `themeId` into `config.json`; the error text on failure.
 pub fn save_theme_id(home: &std::path::Path, id: &str) -> Option<String> {
     crate::ui::config::write(home, "themeId", id.into())
-        .map(|e| format!("Could not save the theme: {e}"))
+        .map(|e| tf("Could not save the theme: {error}", &[("error", &e)]))
 }
 
 #[cfg(test)]

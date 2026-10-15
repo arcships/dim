@@ -4,6 +4,7 @@
 
 use crate::model::session::{OauthEvent, ProviderAction, ProviderEntry};
 use crate::ui::composer::palette::{footer, title_plain};
+use crate::ui::i18n::{t, tf};
 use crate::ui::list_panel::{Event, Item, ListPanel};
 use crate::ui::oauth_view::OauthView;
 use crate::ui::prompts::Effect;
@@ -46,7 +47,8 @@ struct Form {
     api_key: String,
     api_key_preview: Option<String>,
     active: usize,
-    message: Option<String>,
+    /// The last outcome: a notice, or an error shown in the danger colour.
+    message: Option<Result<String, String>>,
     busy: bool,
 }
 
@@ -68,11 +70,11 @@ impl ProvidersPanel {
     pub fn new() -> Self {
         Self {
             list: ListPanel::new(
-                "Providers",
-                LIST_HINT,
-                "Loading providers...",
-                "No matching providers.",
-                "No matching providers.",
+                t("Providers"),
+                t(LIST_HINT),
+                t("Loading providers..."),
+                t("No matching providers."),
+                t("No matching providers."),
                 false,
             )
             .with_inline_rows(),
@@ -109,10 +111,7 @@ impl ProvidersPanel {
         if let Some(form) = &mut self.form {
             form.busy = false;
             let failed = result.is_err();
-            form.message = Some(match result {
-                Ok(message) => message,
-                Err(error) => format!("Error: {error}"),
-            });
+            form.message = Some(result);
             // The key is kept on a failure (retry) and cleared once stored.
             if !failed {
                 form.api_key.clear();
@@ -155,7 +154,9 @@ impl ProvidersPanel {
     fn open(&mut self, id: &str) -> Effect {
         match id {
             DIM_OAUTH_KEY => self.open_oauth(DIM_OAUTH_ID, "DimAgent"),
-            ADD_CUSTOM_KEY => Effect::Notice("Custom providers are not available yet".to_owned()),
+            ADD_CUSTOM_KEY => {
+                Effect::Notice(t("Custom providers are not available yet").to_owned())
+            }
             provider_id => {
                 let Some(entry) = self.providers.iter().find(|p| p.id == provider_id) else {
                     return Effect::None;
@@ -244,7 +245,7 @@ impl ProvidersPanel {
                     }
                     Field::Apply => {
                         form.busy = true;
-                        form.message = Some("Testing connection...".to_owned());
+                        form.message = Some(Ok(t("Testing connection...").to_owned()));
                         Effect::Provider(ProviderAction::Configure {
                             provider_id: form.provider_id.clone(),
                             api_key: Some(form.api_key.trim().to_owned()),
@@ -282,7 +283,11 @@ impl ProvidersPanel {
         let inner = width.saturating_sub(4).max(1);
         let fields = form.rows();
         let mut content = vec![
-            title_plain(&format!("Connect {}", form.provider_id), inner, p),
+            title_plain(
+                &tf("Connect {providerId}", &[("providerId", &form.provider_id)]),
+                inner,
+                p,
+            ),
             String::new(),
         ];
         let last_input = fields
@@ -295,7 +300,7 @@ impl ProvidersPanel {
                 Field::BaseUrl => input_row(
                     "Base URL",
                     &form.base_url,
-                    "(default)",
+                    t("(default)"),
                     focused,
                     false,
                     inner,
@@ -307,16 +312,16 @@ impl ProvidersPanel {
                     } else {
                         mask(&form.api_key)
                     };
-                    input_row("API Key", &shown, "(required)", focused, true, inner, p)
+                    input_row("API Key", &shown, t("(required)"), focused, true, inner, p)
                 }
-                Field::Apply => action_row("Apply + test", focused, inner, p),
-                Field::Disconnect => action_row("Disconnect", focused, inner, p),
+                Field::Apply => action_row(t("Apply + test"), focused, inner, p),
+                Field::Disconnect => action_row(t("Disconnect"), focused, inner, p),
                 Field::ToggleEnabled => action_row(
-                    if form.enabled {
+                    t(if form.enabled {
                         "Disable provider"
                     } else {
                         "Enable provider"
-                    },
+                    }),
                     focused,
                     inner,
                     p,
@@ -328,18 +333,17 @@ impl ProvidersPanel {
         }
         if let Some(message) = &form.message {
             // An error is one more row under the actions, in the danger colour.
-            let color = if message.starts_with("Error:") {
-                &p.danger
-            } else {
-                &p.muted
+            let (text, color) = match message {
+                Ok(notice) => (notice.clone(), &p.muted),
+                Err(error) => (tf("Error: {error}", &[("error", error)]), &p.danger),
             };
             content.push(format!(
                 "{IDLE_MARKER}{}",
-                fg(&truncate_cells(message, inner.saturating_sub(2)), color)
+                fg(&truncate_cells(&text, inner.saturating_sub(2)), color)
             ));
         }
         content.push(String::new());
-        content.push(fg(&truncate_cells(FORM_HINT, inner), &p.muted));
+        content.push(fg(&truncate_cells(t(FORM_HINT), inner), &p.muted));
         let _ = (footer, display_width);
         bordered(&content, width, None, &p.border, None)
     }
@@ -348,24 +352,24 @@ impl ProvidersPanel {
 fn build_rows(providers: &[ProviderEntry]) -> Vec<Item> {
     let mut rows = Vec::new();
     let dim = providers.iter().find(|p| p.id == DIM_OAUTH_ID);
-    let mut suggested = Item::heading("Suggested");
+    let mut suggested = Item::heading(t("Suggested"));
     suggested.id = SUGGESTED_KEY.into();
     suggested.sticky = true;
     rows.push(suggested);
     let detail = match dim {
         Some(entry) if entry.status == "connected" => {
             if entry.enabled {
-                "Connected"
+                t("Connected")
             } else {
-                "disabled"
+                t("disabled")
             }
         }
-        _ => "Browser sign-in · no API key",
+        _ => t("Browser sign-in · no API key"),
     };
-    let mut oauth = Item::new(DIM_OAUTH_KEY, "Connect with DimAgent (OAuth)", detail);
+    let mut oauth = Item::new(DIM_OAUTH_KEY, t("Connect with DimAgent (OAuth)"), detail);
     oauth.search = "dim dimagent oauth connect".into();
     rows.push(oauth);
-    let mut heading = Item::heading("Providers");
+    let mut heading = Item::heading(t("Providers"));
     heading.id = PROVIDERS_KEY.into();
     heading.sticky = true;
     rows.push(heading);
@@ -380,7 +384,7 @@ fn build_rows(providers: &[ProviderEntry]) -> Vec<Item> {
         } else {
             provider.name.clone()
         };
-        let detail = if provider.is_current {
+        let detail = t(if provider.is_current {
             "current"
         } else if matches!(provider.id.as_str(), "openai-codex" | "xai-grok-build")
             && provider.status == "disconnected"
@@ -391,14 +395,14 @@ fn build_rows(providers: &[ProviderEntry]) -> Vec<Item> {
                 "connected" => "ready",
                 "disabled" => "disabled",
                 "error" => "error",
-                _ => "off",
+                _ => "not connected",
             }
-        };
+        });
         let mut row = Item::new(provider.id.clone(), label, detail);
         row.search = format!("{} {}", provider.id, provider.driver);
         rows.push(row);
     }
-    let mut custom = Item::new(ADD_CUSTOM_KEY, "Add custom provider", "");
+    let mut custom = Item::new(ADD_CUSTOM_KEY, t("Add custom provider"), "");
     custom.sticky = true;
     rows.push(custom);
     rows

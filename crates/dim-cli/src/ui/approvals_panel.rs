@@ -2,6 +2,7 @@
 //! confirmation before full access (port of `renderApprovals`).
 
 use crate::ui::composer::palette::{footer, title};
+use crate::ui::i18n::t;
 use crate::ui::prompts::Effect;
 use crate::ui::render::panel::{IDLE_MARKER, SELECTED_MARKER, bordered, confirm_panel};
 use crate::ui::terminal::{KeyCode, KeyEvent};
@@ -9,7 +10,8 @@ use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::{Paint, fg, paint};
 use crate::ui::transcript::blocks::truncate_cells;
 
-/// `(wire mode, title, status label, description)` in display order.
+/// `(wire mode, title, status label, description)` in display order. The
+/// texts are English keys: draw them through [`t`].
 pub const MODES: [(&str, &str, &str, &str); 3] = [
     (
         "auto",
@@ -40,7 +42,7 @@ pub fn status_label(mode: &str) -> &'static str {
     MODES
         .iter()
         .find(|(m, ..)| *m == mode)
-        .map_or("default", |(_, _, status, _)| status)
+        .map_or(t("default"), |(_, _, status, _)| t(status))
 }
 
 pub struct ApprovalsPanel {
@@ -116,18 +118,18 @@ impl ApprovalsPanel {
     pub fn render(&self, width: usize, max_rows: usize, p: &Palette) -> Vec<String> {
         if let Some(focus) = self.confirming {
             return confirm_panel(
-                "Confirm Full Access",
-                &[CONFIRM_BODY.to_owned()],
-                &["Confirm".to_owned(), "Cancel".to_owned()],
+                t("Confirm Full Access"),
+                &[t(CONFIRM_BODY).to_owned()],
+                &[t("Confirm").to_owned(), t("Cancel").to_owned()],
                 focus,
-                CONFIRM_HINT,
+                t(CONFIRM_HINT),
                 width,
                 p,
             );
         }
         let inner = width.saturating_sub(4).max(1);
         let build = |roomy: bool, detail_lines: usize| -> Vec<String> {
-            let mut content = vec![title("Tool Approvals", inner, p)];
+            let mut content = vec![title(t("Tool Approvals"), inner, p)];
             if roomy {
                 content.push(String::new());
             }
@@ -146,7 +148,7 @@ impl ApprovalsPanel {
                     IDLE_MARKER.to_owned()
                 };
                 let label = paint(
-                    &truncate_cells(name, inner.saturating_sub(2 + 9)),
+                    &truncate_cells(t(name), inner.saturating_sub(2 + 9)),
                     Paint {
                         fg: Some(if selected { &p.accent } else { &p.text }),
                         bold: selected,
@@ -154,14 +156,14 @@ impl ApprovalsPanel {
                     },
                 );
                 let badge = if *mode == self.current {
-                    format!("  {}", fg("current", &p.success))
+                    format!("  {}", fg(t("current"), &p.success))
                 } else {
                     String::new()
                 };
                 content.push(format!("{marker}{label}{badge}"));
                 let color = if selected { &p.muted } else { &p.faint };
                 let width = inner.saturating_sub(2).max(1);
-                let wrapped = crate::ui::tui::wrap_words(description, width);
+                let wrapped = crate::ui::tui::wrap_words(t(description), width);
                 let mut lines: Vec<String> = wrapped.iter().take(detail_lines).cloned().collect();
                 if wrapped.len() > detail_lines
                     && let Some(last) = lines.last_mut()
@@ -180,7 +182,7 @@ impl ApprovalsPanel {
             }
             content.push(footer(
                 &format!("{} / {}", self.selected + 1, MODES.len()),
-                HINT,
+                t(HINT),
                 inner,
                 p,
             ));

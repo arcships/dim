@@ -3,6 +3,7 @@
 //! built yet).
 
 use crate::model::session::ModelList;
+use crate::ui::i18n::t;
 use crate::ui::list_panel::{Event, Item, ListPanel};
 use crate::ui::prompts::Effect;
 use crate::ui::terminal::KeyEvent;
@@ -44,7 +45,7 @@ impl ModelsPanel {
         let items = models.map(|list| {
             let mut items: Vec<Item> = Vec::new();
             if !list.models.is_empty() {
-                items.push(Item::heading(SECTION));
+                items.push(Item::heading(t(SECTION)));
             }
             for model in &list.models {
                 let provider = if model.provider_name.is_empty() {
@@ -54,7 +55,7 @@ impl ModelsPanel {
                 };
                 let id = key(&model.provider_id, &model.model_id);
                 let detail = if Some(&id) == current.as_ref() {
-                    "current"
+                    t("current")
                 } else {
                     ""
                 };
@@ -62,7 +63,7 @@ impl ModelsPanel {
                 row.search = model.display_name.clone();
                 items.push(row);
             }
-            let mut edit = Item::new(EDIT_MODELS, "Edit models", "");
+            let mut edit = Item::new(EDIT_MODELS, t("Edit models"), "");
             edit.counted = false;
             items.push(edit);
             items
@@ -75,7 +76,7 @@ impl ModelsPanel {
             Event::None | Event::Refresh => Effect::None,
             Event::Close => Effect::Close,
             Event::Pick(id) if id == EDIT_MODELS => {
-                Effect::Notice("Editing models is not available yet".to_owned())
+                Effect::Notice(t("Editing models is not available yet").to_owned())
             }
             Event::Pick(id) => match id.split_once("::") {
                 Some((provider, model)) => Effect::SelectModel {

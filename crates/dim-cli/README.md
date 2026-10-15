@@ -150,10 +150,11 @@ The interactive terminal UI has two modes over the same session. Scrollback (the
 | Click a link | Opens it in the system browser (OSC 8 links, or a bare `http(s)://` URL); over SSH the status row shows the URL instead |
 | `Tab` / `Shift+Tab` | Pick older / newer user messages (`Up` / `Down` while one is picked); past the newest the pick ends. `Esc` ends it, `e` puts the message in the composer to edit and send again |
 | `/`, `Ctrl+O`, `Ctrl+P` | Open the command palette centred over the dimmed transcript, with its own query row; a draft set aside by `Ctrl+O`/`Ctrl+P` returns when the palette closes |
+| `Home` / `End` | With an empty composer: scroll to the top / bottom of the transcript |
 | `Esc` | Interrupt the run |
 | `Ctrl+C` | Clear the draft, then exit on a second press; a busy session asks for confirmation instead of being interrupted |
 
-Pickers (`/resume`, `/models`, `/connect`, `/approvals`, `/theme`) open as centred boxes too; the mouse wheel moves their selection. Approval and question prompts stay under the composer.
+Pickers (`/resume`, `/models`, `/connect`, `/approvals`, `/theme`, `/language`, `/settings`) open as centred boxes too; the mouse wheel moves their selection. Approval and question prompts stay under the composer.
 
 ```text
  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓    picked message: the box
@@ -163,10 +164,16 @@ Pickers (`/resume`, `/models`, `/connect`, `/approvals`, `/theme`) open as centr
                       │                                    │    palette: own query row,
                       │ > th                               │    transcript dimmed behind,
                       │                                    │    the selected row on an
-                      │▓▓ /theme    Switch theme ▓▓▓▓▓▓▓▓▓▓│    accent bar
-                      │   /exit     Exit the app           │
+                      │▓ view  /theme  switch theme ▓▓▓▓▓▓▓│    accent bar
+                      │   app  /exit   exit   Ctrl+C Ctrl+C│
                       ╰────────────────────────────────────╯
 ```
+
+The palette lists what the interface runs, as Amp's does: each row reads category, the action (a `/command` and its description, or an action a key reaches), and at the right edge the key that runs it (`Esc` interrupt, `Ctrl+S` steer, `Home` / `End` scroll, `Tab` pick a message, `Ctrl+C Ctrl+C` exit). An action that cannot run now (no session yet, nothing running, no queued message) is faint and marked `(unavailable)`; fullscreen-only actions are left out of the scrollback palette.
+
+`/settings` gathers the interface settings: theme and language (each opens its picker and comes back), the startup form (`tuiMode`), tool details, the fullscreen mouse (`tuiMouseMode`: off hands selection and the wheel to the terminal), tool approvals and the model. Switches flip with `Enter`, `←`/`→` or `Space` and are saved to `config.json` at once.
+
+`/language` (`/lang`, `/locale`) picks the interface language: the system default (`LC_ALL`, `LC_MESSAGES`, `LANG`) or one of English, 简体中文, 日本語, 한국어, 繁體中文, Bahasa Indonesia, Deutsch, Français, Español, Português (Brasil) and Português (Portugal). Moving previews, `Enter` saves it as `locale` in `config.json`, `Esc` restores. As in the TS build, English and Simplified Chinese are translated; the other languages read as English for now. Rows already in the transcript keep their language.
 
 The default theme (`System`) is Amp's: every colour is the terminal's own default foreground, a slot of its 16-colour palette (`ansi:N`) or the faint attribute, so it follows the terminal's colour scheme on dark and light backgrounds alike. Yellow is the accent (titles, the selected row, inline code), green the user's messages and successes, cyan headings, red errors; muted text is faint, table rules bright black, and code is highlighted in the terminal's base colours. `Dim Dark` and `Dim Light` take the same structure with Dim's green as the accent. A theme role is a colour spec: `#rrggbb`, `ansi:N`, `default` or `dim`.
 

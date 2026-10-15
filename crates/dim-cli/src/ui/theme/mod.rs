@@ -57,11 +57,13 @@ impl Theme {
         let background = background.unwrap_or(entry.background);
         let own = |h: &str| h.to_owned();
         // The roles Amp's structure adds come from the theme's own: users
-        // speak in its accent, and the accent bar carries its background.
+        // speak in its accent, keys take its function colour, and the
+        // accent bar carries its background.
         let mut palette = Palette {
             accent: own(entry.accent),
             on_accent: own(entry.background),
             user: own(entry.accent),
+            keybind: own(entry.func),
             text: own(entry.text),
             text_soft: own(entry.text_soft),
             muted: own(entry.muted),
@@ -138,6 +140,7 @@ fn with_floors(palette: Palette, background: contrast::Rgb) -> Palette {
         accent: lift_text(&palette.accent, COLORED_TEXT),
         on_accent: palette.on_accent,
         user: lift_text(&palette.user, COLORED_TEXT),
+        keybind: lift_text(&palette.keybind, COLORED_TEXT),
         text: lift_text(&palette.text, TEXT),
         text_soft: lift_text(&palette.text_soft, TEXT),
         muted: lift_text(&palette.muted, TEXT),

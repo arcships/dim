@@ -3,6 +3,7 @@
 
 use crate::model::session::{OauthEvent, OauthStart};
 use crate::ui::composer::palette::title_plain;
+use crate::ui::i18n::{t, tf};
 use crate::ui::prompts::Effect;
 use crate::ui::providers_panel::{action_row, input_row};
 use crate::ui::render::panel::{IDLE_MARKER, bordered};
@@ -138,29 +139,37 @@ impl OauthView {
         let mut rows: Vec<(Row, String)> = Vec::new();
         let dim = self.provider_id == DIM_OAUTH_ID;
         if dim && self.phase == Phase::Idle {
-            rows.push((Row::Action(Focus::Submit), "Login with DimAgent".into()));
-            rows.push((Row::Action(Focus::Enterprise), "Enterprise login".into()));
-            rows.push((Row::Action(Focus::DeviceTab), "Device login".into()));
+            rows.push((Row::Action(Focus::Submit), t("Login with DimAgent").into()));
+            rows.push((Row::Action(Focus::Enterprise), t("Enterprise login").into()));
+            rows.push((Row::Action(Focus::DeviceTab), t("Device login").into()));
             return rows;
         }
         if dim && self.phase == Phase::Email {
-            rows.push((Row::Action(Focus::Email), "Email".into()));
-            rows.push((Row::Action(Focus::Submit), "Continue".into()));
+            rows.push((Row::Action(Focus::Email), t("Email").into()));
+            rows.push((Row::Action(Focus::Submit), t("Continue").into()));
             return rows;
         }
         if self.modes.0 && self.modes.1 {
             rows.push((
                 Row::Action(Focus::BrowserTab),
-                format!("{} Browser mode", if self.device { "[ ]" } else { "[x]" }),
+                format!(
+                    "{} {}",
+                    if self.device { "[ ]" } else { "[x]" },
+                    t("Browser mode")
+                ),
             ));
             rows.push((
                 Row::Action(Focus::DeviceTab),
-                format!("{} Device mode", if self.device { "[x]" } else { "[ ]" }),
+                format!(
+                    "{} {}",
+                    if self.device { "[x]" } else { "[ ]" },
+                    t("Device mode")
+                ),
             ));
         } else if self.device {
-            rows.push((Row::Action(Focus::DeviceTab), "Device login".into()));
+            rows.push((Row::Action(Focus::DeviceTab), t("Device login").into()));
         } else {
-            rows.push((Row::Action(Focus::BrowserTab), "Browser login".into()));
+            rows.push((Row::Action(Focus::BrowserTab), t("Browser login").into()));
         }
         if self.device {
             if let Some(text) = &self.device_text {
@@ -168,16 +177,16 @@ impl OauthView {
             }
             rows.push((
                 Row::Action(Focus::Copy),
-                "Print verification URL + pairing code again".into(),
+                t("Print verification URL + pairing code again").into(),
             ));
             rows.push((
                 Row::Action(Focus::RestartDevice),
-                "Restart device login".into(),
+                t("Restart device login").into(),
             ));
         } else if self.phase == Phase::AwaitingCallback {
-            rows.push((Row::Action(Focus::Copy), "Print OAuth URL again".into()));
-            rows.push((Row::Action(Focus::Input), "Callback URL".into()));
-            rows.push((Row::Action(Focus::Submit), "Submit callback".into()));
+            rows.push((Row::Action(Focus::Copy), t("Print OAuth URL again").into()));
+            rows.push((Row::Action(Focus::Input), t("Callback URL").into()));
+            rows.push((Row::Action(Focus::Submit), t("Submit callback").into()));
         }
         rows
     }
@@ -213,7 +222,7 @@ impl OauthView {
                 self.focus = Focus::Copy;
                 if !opened {
                     self.message = Some(
-                        "The browser could not be opened. Open the link manually, then return here."
+                        t("The browser could not be opened. Open the link manually, then return here.")
                             .to_owned(),
                     );
                 }
@@ -221,8 +230,8 @@ impl OauthView {
                 // browser could not open it.
                 if !opened {
                     return Effect::Print(format!(
-                        "{} OAuth URL\n{}",
-                        self.name,
+                        "{}\n{}",
+                        tf("{name} OAuth URL", &[("name", &self.name)]),
                         self.auth_url.clone().unwrap_or_default()
                     ));
                 }
@@ -238,12 +247,17 @@ impl OauthView {
                 let target = verification_uri_complete
                     .clone()
                     .unwrap_or_else(|| verification_uri.clone());
-                self.device_text = Some(format!("Enter code {user_code} at {target}"));
+                self.device_text = Some(tf(
+                    "Enter code {code} at {url}",
+                    &[("code", &user_code), ("url", &target)],
+                ));
                 self.auth_url = Some(target);
-                self.message = Some("Waiting for authorization".to_owned());
+                self.message = Some(t("Waiting for authorization").to_owned());
                 Effect::Print(format!(
-                    "{} device login\nOpen this URL: {verification_uri}\nEnter code:    {user_code}",
-                    self.name
+                    "{}\n{}\n{}",
+                    tf("{name} device login", &[("name", &self.name)]),
+                    tf("Open this URL: {url}", &[("url", &verification_uri)]),
+                    tf("Enter code:    {code}", &[("code", &user_code)]),
                 ))
             }
             OauthEvent::Exchanging => {
@@ -252,13 +266,13 @@ impl OauthView {
                 Effect::None
             }
             OauthEvent::SlowDown(_) => {
-                self.message = Some("Waiting after server slow-down".to_owned());
+                self.message = Some(t("Waiting after server slow-down").to_owned());
                 Effect::None
             }
             OauthEvent::Done(Ok(_)) => Effect::Connected(self.provider_id.clone()),
             OauthEvent::Done(Err(None)) => {
                 self.phase = Phase::Cancelled;
-                self.error = Some("OAuth login cancelled".to_owned());
+                self.error = Some(t("OAuth login cancelled").to_owned());
                 self.focus = Focus::Submit;
                 Effect::None
             }
@@ -330,7 +344,7 @@ impl OauthView {
                 Phase::Email => {
                     let email = self.email.trim().to_owned();
                     if email.is_empty() {
-                        self.error = Some("Enter your work email".to_owned());
+                        self.error = Some(t("Enter your work email").to_owned());
                         Effect::None
                     } else {
                         self.start(false, Some(email))
@@ -345,7 +359,8 @@ impl OauthView {
                     if url.is_empty() {
                         Effect::None
                     } else if !valid {
-                        self.error = Some("Invalid OAuth state - possible CSRF attempt".to_owned());
+                        self.error =
+                            Some(t("Invalid OAuth state - possible CSRF attempt").to_owned());
                         Effect::None
                     } else {
                         self.callback.clear();
@@ -390,7 +405,10 @@ impl OauthView {
             }
             Focus::RestartDevice => self.start(true, None),
             Focus::Copy => match &self.auth_url {
-                Some(url) => Effect::Print(format!("{} OAuth URL\n{url}", self.name)),
+                Some(url) => Effect::Print(format!(
+                    "{}\n{url}",
+                    tf("{name} OAuth URL", &[("name", &self.name)])
+                )),
                 None => Effect::None,
             },
             Focus::Input => {
@@ -401,7 +419,7 @@ impl OauthView {
     }
 
     fn hint(&self) -> &'static str {
-        match self.phase {
+        t(match self.phase {
             Phase::Starting => "Preparing login... · esc cancel",
             Phase::Exchanging => "Completing login... · esc cancel",
             Phase::Error | Phase::Cancelled => "enter restart · esc back",
@@ -409,13 +427,13 @@ impl OauthView {
                 "type value · ↑↓/tab move · enter submit · esc cancel"
             }
             _ => "↑↓ move · enter activate · esc back",
-        }
+        })
     }
 
     pub fn render(&self, width: usize, p: &Palette) -> Vec<String> {
         let inner = width.saturating_sub(4).max(1);
         let mut content = vec![
-            title_plain(&format!("{} OAuth", self.name), inner, p),
+            title_plain(&tf("{name} OAuth", &[("name", &self.name)]), inner, p),
             String::new(),
         ];
         let restart = matches!(self.phase, Phase::Error | Phase::Cancelled);
@@ -441,7 +459,7 @@ impl OauthView {
                         Focus::Input => input_row(
                             label,
                             &self.callback,
-                            "(paste here)",
+                            t("(paste here)"),
                             focused,
                             false,
                             inner,
@@ -462,7 +480,10 @@ impl OauthView {
             content.push(format!(
                 "{IDLE_MARKER}{}",
                 fg(
-                    &truncate_cells(&format!("Error: {error}"), inner.saturating_sub(2)),
+                    &truncate_cells(
+                        &tf("Error: {error}", &[("error", error)]),
+                        inner.saturating_sub(2)
+                    ),
                     &p.danger
                 )
             ));

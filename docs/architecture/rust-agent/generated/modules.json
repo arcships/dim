@@ -1837,6 +1837,62 @@
       ]
     },
     {
+      "id": "dim_cli::@bin:dimcode::ui::i18n",
+      "crate": "dim_cli::@bin:dimcode",
+      "parent": "dim_cli::@bin:dimcode::ui",
+      "file": "crates/dim-cli/src/ui/i18n/mod.rs",
+      "unexpandedMacros": [
+        "format",
+        "thread_local"
+      ]
+    },
+    {
+      "id": "dim_cli::@bin:dimcode::ui::i18n::tests",
+      "crate": "dim_cli::@bin:dimcode",
+      "parent": "dim_cli::@bin:dimcode::ui::i18n",
+      "file": "crates/dim-cli/src/ui/i18n/mod.rs",
+      "unexpandedMacros": [
+        "assert_eq"
+      ]
+    },
+    {
+      "id": "dim_cli::@bin:dimcode::ui::i18n::zh_cn",
+      "crate": "dim_cli::@bin:dimcode",
+      "parent": "dim_cli::@bin:dimcode::ui::i18n",
+      "file": "crates/dim-cli/src/ui/i18n/zh_cn/mod.rs",
+      "unexpandedMacros": []
+    },
+    {
+      "id": "dim_cli::@bin:dimcode::ui::i18n::zh_cn::chrome",
+      "crate": "dim_cli::@bin:dimcode",
+      "parent": "dim_cli::@bin:dimcode::ui::i18n::zh_cn",
+      "file": "crates/dim-cli/src/ui/i18n/zh_cn/chrome.rs",
+      "unexpandedMacros": []
+    },
+    {
+      "id": "dim_cli::@bin:dimcode::ui::i18n::zh_cn::prompts",
+      "crate": "dim_cli::@bin:dimcode",
+      "parent": "dim_cli::@bin:dimcode::ui::i18n::zh_cn",
+      "file": "crates/dim-cli/src/ui/i18n/zh_cn/prompts.rs",
+      "unexpandedMacros": []
+    },
+    {
+      "id": "dim_cli::@bin:dimcode::ui::i18n::zh_cn::providers",
+      "crate": "dim_cli::@bin:dimcode",
+      "parent": "dim_cli::@bin:dimcode::ui::i18n::zh_cn",
+      "file": "crates/dim-cli/src/ui/i18n/zh_cn/providers.rs",
+      "unexpandedMacros": []
+    },
+    {
+      "id": "dim_cli::@bin:dimcode::ui::language_panel",
+      "crate": "dim_cli::@bin:dimcode",
+      "parent": "dim_cli::@bin:dimcode::ui",
+      "file": "crates/dim-cli/src/ui/language_panel.rs",
+      "unexpandedMacros": [
+        "vec"
+      ]
+    },
+    {
       "id": "dim_cli::@bin:dimcode::ui::list_panel",
       "crate": "dim_cli::@bin:dimcode",
       "parent": "dim_cli::@bin:dimcode::ui",
@@ -2052,9 +2108,7 @@
       "crate": "dim_cli::@bin:dimcode",
       "parent": "dim_cli::@bin:dimcode::ui",
       "file": "crates/dim-cli/src/ui/sessions_panel.rs",
-      "unexpandedMacros": [
-        "format"
-      ]
+      "unexpandedMacros": []
     },
     {
       "id": "dim_cli::@bin:dimcode::ui::sessions_panel::tests",
@@ -2066,6 +2120,17 @@
         "assert_eq",
         "format",
         "panic",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_cli::@bin:dimcode::ui::settings_panel",
+      "crate": "dim_cli::@bin:dimcode",
+      "parent": "dim_cli::@bin:dimcode::ui",
+      "file": "crates/dim-cli/src/ui/settings_panel.rs",
+      "unexpandedMacros": [
+        "format",
+        "matches",
         "vec"
       ]
     },
@@ -2254,7 +2319,6 @@
       "parent": "dim_cli::@bin:dimcode::ui",
       "file": "crates/dim-cli/src/ui/theme_panel.rs",
       "unexpandedMacros": [
-        "format",
         "matches",
         "vec"
       ]
@@ -13700,6 +13764,20 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "mod i18n"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui",
+      "to": "dim_cli::@bin:dimcode::ui::language_panel",
+      "references": [
+        "mod language_panel"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui",
       "to": "dim_cli::@bin:dimcode::ui::list_panel",
       "references": [
         "mod list_panel"
@@ -13749,6 +13827,13 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui",
+      "to": "dim_cli::@bin:dimcode::ui::settings_panel",
+      "references": [
+        "mod settings_panel"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui",
       "to": "dim_cli::@bin:dimcode::ui::terminal",
       "references": [
         "mod terminal"
@@ -13789,6 +13874,14 @@
         "path footer",
         "use crate::ui::composer::palette::footer",
         "use crate::ui::composer::palette::title"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::approvals_panel",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "path t",
+        "use crate::ui::i18n::t"
       ]
     },
     {
@@ -13896,7 +13989,9 @@
       "to": "dim_cli::@bin:dimcode::ui::composer::commands",
       "references": [
         "mod commands",
-        "path commands::COMMANDS"
+        "path commands::COMMANDS",
+        "path commands::Context",
+        "path commands::Context::default"
       ]
     },
     {
@@ -13931,6 +14026,16 @@
       "to": "dim_cli::@bin:dimcode::ui::composer::tests",
       "references": [
         "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::composer",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "path t",
+        "path tf",
+        "use crate::ui::i18n::t",
+        "use crate::ui::i18n::tf"
       ]
     },
     {
@@ -14018,8 +14123,10 @@
       "references": [
         "path COMMANDS",
         "path Command",
+        "path Context",
         "use super::commands::COMMANDS",
-        "use super::commands::Command"
+        "use super::commands::Command",
+        "use super::commands::Context"
       ]
     },
     {
@@ -14027,6 +14134,14 @@
       "to": "dim_cli::@bin:dimcode::ui::composer::palette::tests",
       "references": [
         "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::composer::palette",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "path t",
+        "use crate::ui::i18n::t"
       ]
     },
     {
@@ -14072,16 +14187,21 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::composer::palette::tests",
+      "to": "dim_cli::@bin:dimcode::ui::composer::commands",
+      "references": [
+        "path Context",
+        "path Context::default"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::composer::palette::tests",
       "to": "dim_cli::@bin:dimcode::ui::composer::palette",
       "references": [
-        "path Kind::Command",
-        "path Kind::Heading",
-        "path Kind::Item",
-        "path Kind::Skill",
         "path PaletteState::default",
         "path Skill",
         "path filter_commands",
         "path render",
+        "path render_overlay",
         "path rows_for"
       ]
     },
@@ -14148,20 +14268,145 @@
       ]
     },
     {
+      "from": "dim_cli::@bin:dimcode::ui::i18n",
+      "to": "dim_cli::@bin:dimcode::ui::config",
+      "references": [
+        "path crate::ui::config::read"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::i18n",
+      "to": "dim_cli::@bin:dimcode::ui::i18n::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::i18n",
+      "to": "dim_cli::@bin:dimcode::ui::i18n::zh_cn",
+      "references": [
+        "mod zh_cn",
+        "path zh_cn::lookup"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::i18n::tests",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "path Locale::from_env_value"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::i18n::zh_cn",
+      "to": "dim_cli::@bin:dimcode::ui::i18n::zh_cn::chrome",
+      "references": [
+        "mod chrome",
+        "path chrome::lookup"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::i18n::zh_cn",
+      "to": "dim_cli::@bin:dimcode::ui::i18n::zh_cn::prompts",
+      "references": [
+        "mod prompts",
+        "path prompts::lookup"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::i18n::zh_cn",
+      "to": "dim_cli::@bin:dimcode::ui::i18n::zh_cn::providers",
+      "references": [
+        "mod providers",
+        "path providers::lookup"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::language_panel",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "path LOCALES",
+        "path Locale",
+        "path Locale::code",
+        "path Locale::from_code",
+        "path i18n::system_locale",
+        "path tf",
+        "use crate::ui::i18n",
+        "use crate::ui::i18n::LOCALES",
+        "use crate::ui::i18n::Locale",
+        "use crate::ui::i18n::tf"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::language_panel",
+      "to": "dim_cli::@bin:dimcode::ui::list_panel",
+      "references": [
+        "path Event::Close",
+        "path Event::None",
+        "path Event::Pick",
+        "path Event::Refresh",
+        "path Item::new",
+        "path ListPanel",
+        "path ListPanel::new",
+        "use crate::ui::list_panel::Event",
+        "use crate::ui::list_panel::Item",
+        "use crate::ui::list_panel::ListPanel"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::language_panel",
+      "to": "dim_cli::@bin:dimcode::ui::prompts",
+      "references": [
+        "path Effect",
+        "path Effect::LanguageApply",
+        "path Effect::LanguagePreview",
+        "path Effect::LanguageRestore",
+        "path Effect::None",
+        "use crate::ui::prompts::Effect"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::language_panel",
+      "to": "dim_cli::@bin:dimcode::ui::terminal::input",
+      "references": [
+        "path KeyEvent",
+        "use crate::ui::terminal::KeyEvent"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::language_panel",
+      "to": "dim_cli::@bin:dimcode::ui::theme::palette",
+      "references": [
+        "path Palette",
+        "use crate::ui::theme::Palette"
+      ]
+    },
+    {
       "from": "dim_cli::@bin:dimcode::ui::list_panel",
       "to": "dim_cli::@bin:dimcode::ui::composer::palette",
       "references": [
+        "path Columns::of",
         "path Kind::Heading",
         "path Kind::Item",
         "path Row",
         "path footer",
         "path panel_row",
         "path title",
+        "use crate::ui::composer::palette::Columns",
         "use crate::ui::composer::palette::Kind",
         "use crate::ui::composer::palette::Row",
         "use crate::ui::composer::palette::footer",
         "use crate::ui::composer::palette::panel_row",
         "use crate::ui::composer::palette::title"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::list_panel",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "path t",
+        "path tf",
+        "use crate::ui::i18n::t",
+        "use crate::ui::i18n::tf"
       ]
     },
     {
@@ -14216,9 +14461,7 @@
       "from": "dim_cli::@bin:dimcode::ui::list_panel",
       "to": "dim_cli::@bin:dimcode::ui::transcript::blocks",
       "references": [
-        "path display_width",
         "path truncate_cells",
-        "use crate::ui::transcript::blocks::display_width",
         "use crate::ui::transcript::blocks::truncate_cells"
       ]
     },
@@ -14228,6 +14471,14 @@
       "references": [
         "path ModelList",
         "use crate::model::session::ModelList"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::models_panel",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "path t",
+        "use crate::ui::i18n::t"
       ]
     },
     {
@@ -14296,6 +14547,16 @@
       "to": "dim_cli::@bin:dimcode::ui::composer::palette",
       "references": [
         "use crate::ui::composer::palette::title_plain"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::oauth_view",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "path t",
+        "path tf",
+        "use crate::ui::i18n::t",
+        "use crate::ui::i18n::tf"
       ]
     },
     {
@@ -14449,6 +14710,17 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::prompts",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "path crate::ui::i18n::Locale",
+        "path t",
+        "path tf",
+        "use crate::ui::i18n::t",
+        "use crate::ui::i18n::tf"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::prompts",
       "to": "dim_cli::@bin:dimcode::ui::prompts::tests",
       "references": [
         "mod tests"
@@ -14468,6 +14740,13 @@
         "use crate::ui::render::panel::choices",
         "use crate::ui::render::panel::confirm_panel",
         "use crate::ui::render::panel::visible_width"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::prompts",
+      "to": "dim_cli::@bin:dimcode::ui::settings_panel",
+      "references": [
+        "path crate::ui::settings_panel::Setting"
       ]
     },
     {
@@ -14600,6 +14879,16 @@
         "path footer",
         "use crate::ui::composer::palette::footer",
         "use crate::ui::composer::palette::title_plain"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::providers_panel",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "path t",
+        "path tf",
+        "use crate::ui::i18n::t",
+        "use crate::ui::i18n::tf"
       ]
     },
     {
@@ -15095,6 +15384,16 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::sessions_panel",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "path t",
+        "path tf",
+        "use crate::ui::i18n::t",
+        "use crate::ui::i18n::tf"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::sessions_panel",
       "to": "dim_cli::@bin:dimcode::ui::list_panel",
       "references": [
         "path Event::Close",
@@ -15185,6 +15484,58 @@
         "path Modifiers::NONE",
         "use crate::ui::terminal::KeyCode",
         "use crate::ui::terminal::Modifiers"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::settings_panel",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "path t",
+        "use crate::ui::i18n::t"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::settings_panel",
+      "to": "dim_cli::@bin:dimcode::ui::list_panel",
+      "references": [
+        "path Event::Close",
+        "path Event::None",
+        "path Event::Pick",
+        "path Event::Refresh",
+        "path Item::new",
+        "path ListPanel",
+        "path ListPanel::new",
+        "use crate::ui::list_panel::Event",
+        "use crate::ui::list_panel::Item",
+        "use crate::ui::list_panel::ListPanel"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::settings_panel",
+      "to": "dim_cli::@bin:dimcode::ui::prompts",
+      "references": [
+        "path Effect",
+        "path Effect::Close",
+        "path Effect::None",
+        "path Effect::Setting",
+        "use crate::ui::prompts::Effect"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::settings_panel",
+      "to": "dim_cli::@bin:dimcode::ui::terminal::input",
+      "references": [
+        "path KeyEvent",
+        "use crate::ui::terminal::KeyCode",
+        "use crate::ui::terminal::KeyEvent"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::settings_panel",
+      "to": "dim_cli::@bin:dimcode::ui::theme::palette",
+      "references": [
+        "path Palette",
+        "use crate::ui::theme::Palette"
       ]
     },
     {
@@ -15547,6 +15898,16 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::theme_panel",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "path t",
+        "path tf",
+        "use crate::ui::i18n::t",
+        "use crate::ui::i18n::tf"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::theme_panel",
       "to": "dim_cli::@bin:dimcode::ui::list_panel",
       "references": [
         "path Event::Close",
@@ -15866,6 +16227,16 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::transcript::tool_group",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "path t",
+        "path tf",
+        "use crate::ui::i18n::t",
+        "use crate::ui::i18n::tf"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::transcript::tool_group",
       "to": "dim_cli::@bin:dimcode::ui::theme::ansi",
       "references": [
         "path Paint",
@@ -15978,6 +16349,7 @@
         "path ApprovalsPanel",
         "path ApprovalsPanel::new",
         "path crate::ui::approvals_panel::MODES",
+        "path status_label",
         "use crate::ui::approvals_panel::ApprovalsPanel",
         "use crate::ui::approvals_panel::status_label"
       ]
@@ -16008,7 +16380,16 @@
       "from": "dim_cli::@bin:dimcode::ui::tui",
       "to": "dim_cli::@bin:dimcode::ui::composer::commands",
       "references": [
-        "path crate::ui::composer::commands::COMMANDS"
+        "path COMMANDS",
+        "path CommandContext",
+        "path Needs::Fullscreen",
+        "path Needs::Nothing",
+        "path Needs::Queue",
+        "path Needs::Run",
+        "path Needs::Session",
+        "use crate::ui::composer::commands::COMMANDS",
+        "use crate::ui::composer::commands::Context",
+        "use crate::ui::composer::commands::Needs"
       ]
     },
     {
@@ -16025,7 +16406,34 @@
       "to": "dim_cli::@bin:dimcode::ui::config",
       "references": [
         "path crate::ui::config::read",
+        "path crate::ui::config::remove",
+        "path crate::ui::config::save_fullscreen",
+        "path crate::ui::config::saved_fullscreen",
         "path crate::ui::config::write"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::tui",
+      "to": "dim_cli::@bin:dimcode::ui::i18n",
+      "references": [
+        "path i18n::LOCALE_KEY",
+        "path i18n::saved_locale",
+        "path i18n::set",
+        "path i18n::system_locale",
+        "path t",
+        "path tf",
+        "use crate::ui::i18n",
+        "use crate::ui::i18n::t",
+        "use crate::ui::i18n::tf"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::tui",
+      "to": "dim_cli::@bin:dimcode::ui::language_panel",
+      "references": [
+        "path LanguagePanel",
+        "path LanguagePanel::new",
+        "use crate::ui::language_panel::LanguagePanel"
       ]
     },
     {
@@ -16050,6 +16458,9 @@
         "path Effect::Close",
         "path Effect::Connected",
         "path Effect::Exit",
+        "path Effect::LanguageApply",
+        "path Effect::LanguagePreview",
+        "path Effect::LanguageRestore",
         "path Effect::None",
         "path Effect::Notice",
         "path Effect::OauthBack",
@@ -16062,6 +16473,7 @@
         "path Effect::Resume",
         "path Effect::SelectModel",
         "path Effect::SetApprovals",
+        "path Effect::Setting",
         "path Effect::ThemeApply",
         "path Effect::ThemePreview",
         "path Effect::ThemeRestore",
@@ -16147,6 +16559,26 @@
     },
     {
       "from": "dim_cli::@bin:dimcode::ui::tui",
+      "to": "dim_cli::@bin:dimcode::ui::settings_panel",
+      "references": [
+        "path Setting",
+        "path Setting::Approvals",
+        "path Setting::Language",
+        "path Setting::Model",
+        "path Setting::Mouse",
+        "path Setting::StartupForm",
+        "path Setting::Theme",
+        "path Setting::ToolDetails",
+        "path SettingValues",
+        "path SettingsPanel",
+        "path SettingsPanel::new",
+        "use crate::ui::settings_panel::Setting",
+        "use crate::ui::settings_panel::SettingsPanel",
+        "use crate::ui::settings_panel::Values"
+      ]
+    },
+    {
+      "from": "dim_cli::@bin:dimcode::ui::tui",
       "to": "dim_cli::@bin:dimcode::ui::terminal",
       "references": [
         "path Terminal::enter",
@@ -16171,7 +16603,9 @@
         "path KeyCode::BackTab",
         "path KeyCode::Char",
         "path KeyCode::Down",
+        "path KeyCode::End",
         "path KeyCode::Esc",
+        "path KeyCode::Home",
         "path KeyCode::PageDown",
         "path KeyCode::Tab",
         "path KeyCode::Up",
@@ -16232,6 +16666,7 @@
         "path ThemePanel",
         "path ThemePanel::new",
         "path crate::ui::theme_panel::SYSTEM",
+        "path crate::ui::theme_panel::label_of",
         "path crate::ui::theme_panel::save_theme_id",
         "path crate::ui::theme_panel::saved_theme_id",
         "use crate::ui::theme_panel::ThemePanel"

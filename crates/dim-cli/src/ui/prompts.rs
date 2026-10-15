@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use crate::model::view::{Answer, Answers, Question, QuestionKind};
 use serde_json::Value;
 
+use crate::ui::i18n::{t, tf};
 use crate::ui::render::panel::{
     IDLE_MARKER, SELECTED_MARKER, bordered, choices, confirm_panel, visible_width,
 };
@@ -57,6 +58,14 @@ pub enum Effect {
     ThemeApply(String),
     /// Leave the picker and paint with this theme again.
     ThemeRestore(String),
+    /// Show the interface in this language (`None`: the system's) unsaved.
+    LanguagePreview(Option<crate::ui::i18n::Locale>),
+    /// Keep this language and save it.
+    LanguageApply(Option<crate::ui::i18n::Locale>),
+    /// Leave the picker and go back to this language.
+    LanguageRestore(Option<crate::ui::i18n::Locale>),
+    /// Flip or open a `/settings` row.
+    Setting(crate::ui::settings_panel::Setting),
     /// Change a provider (`/connect`).
     Provider(crate::model::session::ProviderAction),
     /// Begin a sign-in on the worker.
@@ -117,10 +126,10 @@ pub enum ExitReason {
 impl ExitReason {
     fn text(self) -> &'static str {
         match self {
-            Self::AgentRunning => "The agent is still running.",
-            Self::AskUserPending => "AskUser is waiting for an answer.",
-            Self::PermissionPending => "A permission request is waiting.",
-            Self::Background => "Background work may still be active.",
+            Self::AgentRunning => t("The agent is still running."),
+            Self::AskUserPending => t("AskUser is waiting for an answer."),
+            Self::PermissionPending => t("A permission request is waiting."),
+            Self::Background => t("Background work may still be active."),
         }
     }
 }
@@ -158,11 +167,11 @@ impl ExitConfirm {
 
     pub fn render(&self, width: usize, p: &Palette) -> Vec<String> {
         confirm_panel(
-            "Exit dimcode?",
+            t("Exit dimcode?"),
             &[self.reason.text().to_owned()],
-            &["Exit".to_owned(), "Stay".to_owned()],
+            &[t("Exit").to_owned(), t("Stay").to_owned()],
             self.focused,
-            "y exit · n stay · ←→ move · enter confirm",
+            t("y exit · n stay · ←→ move · enter confirm"),
             width,
             p,
         )
@@ -183,11 +192,11 @@ pub enum PermissionAction {
 impl PermissionAction {
     fn label(self) -> &'static str {
         match self {
-            Self::AllowOnce => "Allow once",
-            Self::AllowAlways => "Allow always",
-            Self::Reject => "Reject",
-            Self::ApproveForMe => "Approve for me",
-            Self::FullAccess => "Full access",
+            Self::AllowOnce => t("Allow once"),
+            Self::AllowAlways => t("Allow always"),
+            Self::Reject => t("Reject"),
+            Self::ApproveForMe => t("Approve for me"),
+            Self::FullAccess => t("Full access"),
         }
     }
 }
@@ -258,7 +267,7 @@ impl PermissionPrompt {
 
     fn lines(&self) -> Vec<String> {
         let description = if self.reason.trim().is_empty() {
-            format!("Run {}", self.tool_name)
+            tf("Run {tool}", &[("tool", &self.tool_name)])
         } else {
             collapse(&self.reason)
         };
@@ -269,11 +278,12 @@ impl PermissionPrompt {
     }
 
     fn decide(&self, allow: bool, remember: bool) -> Effect {
-        let audit = match (allow, remember) {
-            (true, false) => format!("approved once: {}", self.subject()),
-            (true, true) => format!("approved always: {}", self.subject()),
-            _ => format!("rejected: {}", self.subject()),
+        let template = match (allow, remember) {
+            (true, false) => "approved once: {subject}",
+            (true, true) => "approved always: {subject}",
+            _ => "rejected: {subject}",
         };
+        let audit = tf(template, &[("subject", &self.subject())]);
         Effect::Approval {
             request_id: self.request_id.clone(),
             branch_id: self.branch_id.clone(),
@@ -300,7 +310,7 @@ impl PermissionPrompt {
                 PermissionAction::AllowAlways => self.decide(true, true),
                 PermissionAction::Reject => self.decide(false, false),
                 PermissionAction::ApproveForMe | PermissionAction::FullAccess => Effect::Notice(
-                    "Changing the approvals mode from here is not yet available".to_owned(),
+                    t("Changing the approvals mode from here is not yet available").to_owned(),
                 ),
             },
             _ => Effect::None,
@@ -310,7 +320,7 @@ impl PermissionPrompt {
     pub fn render(&self, width: usize, p: &Palette) -> Vec<String> {
         let inner = width.saturating_sub(4).max(1);
         let mut content = vec![paint(
-            &truncate_cells("Permission required", inner),
+            &truncate_cells(t("Permission required"), inner),
             Paint {
                 fg: Some(&p.warning),
                 bold: true,
@@ -337,7 +347,7 @@ impl PermissionPrompt {
         content.push(choices(&labels, self.selected, p));
         content.push(String::new());
         content.push(fg(
-            &truncate_cells("y allow · n reject · ←→/tab move · enter confirm", inner),
+            &truncate_cells(t("y allow · n reject · ←→/tab move · enter confirm"), inner),
             &p.muted,
         ));
         bordered(&content, width, None, &p.border, None)
@@ -678,7 +688,7 @@ impl AskUserPrompt {
                 format!("{tick} {}", q.header)
             })
             .collect();
-        labels.push("Confirm".to_owned());
+        labels.push(t("Confirm").to_owned());
         let tabs = choices(&labels, self.active_tab, p);
         let counter = format!("{}/{}", self.active_tab + 1, labels.len());
         let used = visible_width(&tabs) + counter.len();
@@ -713,16 +723,16 @@ impl AskUserPrompt {
 
     fn hint(&self) -> String {
         if self.typing {
-            return "type answer · enter save · esc back".to_owned();
+            return t("type answer · enter save · esc back").to_owned();
         }
         if self.on_confirm_tab() {
-            return "enter submit · number edit · tab/←→ back · esc cancel".to_owned();
+            return t("enter submit · number edit · tab/←→ back · esc cancel").to_owned();
         }
         match self.question() {
             Some(q) if Self::multi(q) => {
-                "↑↓ move · space toggle · enter next · tab/←→ switch · esc cancel".to_owned()
+                t("↑↓ move · space toggle · enter next · tab/←→ switch · esc cancel").to_owned()
             }
-            _ => "↑↓ move · number select · enter next · tab/←→ switch · esc cancel".to_owned(),
+            _ => t("↑↓ move · number select · enter next · tab/←→ switch · esc cancel").to_owned(),
         }
     }
 
@@ -732,7 +742,9 @@ impl AskUserPrompt {
         }
         let Some(question) = self.question() else {
             return Body {
-                head: vec![Line::warn("AskUserQuestion received an invalid payload.")],
+                head: vec![Line::warn(t(
+                    "AskUserQuestion received an invalid payload.",
+                ))],
                 rows: Vec::new(),
             };
         };
@@ -741,9 +753,9 @@ impl AskUserPrompt {
             .map(Line::text)
             .collect();
         if self.missing_tab == Some(self.active_tab) {
-            head.push(Line::warn(format!(
-                "Missing answer for Q{}",
-                self.active_tab + 1
+            head.push(Line::warn(tf(
+                "Missing answer for Q{index}",
+                &[("index", &(self.active_tab + 1).to_string())],
             )));
         }
         if roomy {
@@ -801,7 +813,7 @@ impl AskUserPrompt {
             index_width,
             mark(multi, !stored.is_empty()),
         );
-        let label = format!("{prefix}Type your own answer");
+        let label = format!("{prefix}{}", t("Type your own answer"));
         let lines = if !self.typing && draft.is_empty() {
             vec![Line::choice(label, selected)]
         } else {
@@ -821,7 +833,7 @@ impl AskUserPrompt {
 
     fn review(&self, roomy: bool) -> Body {
         let mut head = vec![Line {
-            text: "Review your answers and press Enter to submit.".to_owned(),
+            text: t("Review your answers and press Enter to submit.").to_owned(),
             tone: Tone::Detail,
         }];
         if roomy {
@@ -840,7 +852,9 @@ impl AskUserPrompt {
                     index + 1,
                     question.header
                 );
-                let shown = answer.clone().unwrap_or_else(|| "Not answered".to_owned());
+                let shown = answer
+                    .clone()
+                    .unwrap_or_else(|| t("Not answered").to_owned());
                 let lines = if roomy {
                     vec![
                         Line::text(label),
