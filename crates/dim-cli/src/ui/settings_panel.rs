@@ -13,6 +13,7 @@
 //! │   Startup UI form        fullscreen          │
 //! │   Tool details           collapsed           │
 //! │   Mouse                  on                  │
+//! │   Notify when agent ...  on                  │
 //! │   Permissions                                │
 //! │   Tool approvals         default ›           │
 //! │ 1 / 7 · ↑↓ move · enter select · ←→/space change · esc close │
@@ -32,6 +33,7 @@ pub struct Values {
     pub fullscreen_default: bool,
     pub tools_expanded: bool,
     pub mouse: bool,
+    pub notify: bool,
     pub approvals: String,
     pub model: Option<String>,
 }
@@ -44,16 +46,18 @@ pub enum Setting {
     StartupForm,
     ToolDetails,
     Mouse,
+    Notify,
     Approvals,
     Model,
 }
 
-const ROWS: [(Setting, &str); 7] = [
+const ROWS: [(Setting, &str); 8] = [
     (Setting::Theme, "theme"),
     (Setting::Language, "language"),
     (Setting::StartupForm, "startup-form"),
     (Setting::ToolDetails, "tool-details"),
     (Setting::Mouse, "mouse"),
+    (Setting::Notify, "notify"),
     (Setting::Approvals, "approvals"),
     (Setting::Model, "model"),
 ];
@@ -71,7 +75,10 @@ impl Setting {
 
     /// Flips in place rather than opening a picker.
     fn switch(self) -> bool {
-        matches!(self, Self::StartupForm | Self::ToolDetails | Self::Mouse)
+        matches!(
+            self,
+            Self::StartupForm | Self::ToolDetails | Self::Mouse | Self::Notify
+        )
     }
 }
 
@@ -114,6 +121,11 @@ impl SettingsPanel {
                 Setting::Mouse,
                 "Mouse (fullscreen)",
                 on_off(values.mouse).to_owned(),
+            ),
+            row(
+                Setting::Notify,
+                "Notify when agent needs you",
+                on_off(values.notify).to_owned(),
             ),
             Item::heading(t("Permissions")),
             row(

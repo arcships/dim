@@ -97,6 +97,7 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
     };
     i18n::set(i18n::saved_locale(&surroundings.home).unwrap_or_else(i18n::system_locale));
     let synchronized = !crate::ui::terminal::in_tmux();
+    let notify_terminal = crate::ui::notify::Terminal::from_env();
     let mut screen = Screen::new(terminal.size(), synchronized);
     // The fullscreen interface, while it is the one on screen; the
     // scrollback `screen` waits underneath and is rewritten on the way back.
@@ -148,6 +149,16 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
         for update in app.host.drain() {
             app.apply(update);
             dirty = true;
+        }
+        for event in std::mem::take(&mut app.notifications) {
+            if terminal
+                .write(&crate::ui::notify::sequence(&notify_terminal, &event))
+                .is_err()
+            {
+                let code = terminal.lost();
+                app.host.shutdown();
+                return code;
+            }
         }
         // The `/settings` mouse switch applies to the screen at once.
         if full.is_some() && terminal.mouse() != app.mouse && terminal.set_mouse(app.mouse).is_err()
@@ -528,6 +539,14 @@ struct App {
     /// Fullscreen reads the mouse (`tuiMouseMode`); off leaves selection
     /// and the wheel to the terminal.
     pub mouse: bool,
+    /// Ask the terminal to notify when the run needs the user
+    /// (`tuiNotifyOnComplete`).
+    notify: bool,
+    /// Notifications owed to the terminal, written by the main loop.
+    pub notifications: Vec<crate::ui::notify::Event>,
+    /// The permission or question request last notified: a prompt that
+    /// stays open notifies once.
+    notified_request: Option<String>,
     /// The draft set aside while Ctrl+O/Ctrl+P has the palette open; it
     /// comes back when the palette closes.
     palette_stash: Option<String>,
@@ -573,6 +592,8 @@ impl App {
         let past = history::load(&home, &cwd_key);
         let expanded = crate::ui::config::read(&home, TOOL_DETAILS_KEY).and_then(|v| v.as_bool());
         let mouse = crate::ui::config::read(&home, MOUSE_KEY).is_none_or(|v| v != "off");
+        let notify = crate::ui::config::read(&home, crate::ui::notify::NOTIFY_KEY)
+            .is_none_or(|v| v != false);
         Self {
             host,
             composer: Composer::new(past),
@@ -617,6 +638,9 @@ impl App {
             jump: None,
             settings_return: None,
             mouse,
+            notify,
+            notifications: Vec::new(),
+            notified_request: None,
             palette_stash: None,
             branch: git_branch().unwrap_or_else(|| t("Not available").into()),
         }
@@ -822,6 +846,7 @@ impl App {
                     self.run_started = None;
                 }
                 self.sync_prompt();
+                self.queue_notification(was_running);
             }
             Update::FilesChanged(count) => {
                 self.notices.push(tf(
@@ -1188,6 +1213,37 @@ impl App {
         Outcome::Continue
     }
 
+    /// The run needs the user: it just finished, or a permission or question
+    /// request appeared (each request once).
+    fn queue_notification(&mut self, was_running: bool) {
+        use crate::ui::notify::Event;
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let pending = snapshot
+            .approvals
+            .iter()
+            .find(|a| !self.answered.contains(&a.request_id))
+            .map(|a| (a.request_id.clone(), Event::Permission(a.tool_name.clone())))
+            .or_else(|| {
+                snapshot
+                    .questions
+                    .iter()
+                    .find(|q| !self.answered.contains(&q.request_id))
+                    .map(|q| (q.request_id.clone(), Event::Question))
+            });
+        let raised = pending
+            .as_ref()
+            .filter(|(id, _)| self.notified_request.as_ref() != Some(id))
+            .map(|(_, event)| event.clone());
+        self.notified_request = pending.map(|(id, _)| id);
+        let finished = was_running && !self.running();
+        let event = raised.or(finished.then_some(Event::Complete));
+        if let (true, Some(event)) = (self.notify, event) {
+            self.notifications.push(event);
+        }
+    }
+
     /// Opens `/settings` with `select` picked, showing the current values.
     fn open_settings(&mut self, select: Setting) {
         let theme = self
@@ -1208,6 +1264,7 @@ impl App {
             fullscreen_default: crate::ui::config::saved_fullscreen(&self.home),
             tools_expanded: self.tool_detail == Detail::Expanded,
             mouse: self.mouse,
+            notify: self.notify,
             approvals: t(status_label(&self.approvals)).to_owned(),
             model: self.label.clone(),
         };
@@ -1238,6 +1295,15 @@ impl App {
             Setting::StartupForm => {
                 let fullscreen = !crate::ui::config::saved_fullscreen(&self.home);
                 if let Some(error) = crate::ui::config::save_fullscreen(&self.home, fullscreen) {
+                    self.set_notice(error);
+                }
+                self.settings_return = None;
+                self.open_settings(setting);
+            }
+            Setting::Notify => {
+                self.notify = !self.notify;
+                let key = crate::ui::notify::NOTIFY_KEY;
+                if let Some(error) = crate::ui::config::write(&self.home, key, self.notify.into()) {
                     self.set_notice(error);
                 }
                 self.settings_return = None;
@@ -1366,6 +1432,11 @@ impl App {
             }
             "tools" => {
                 self.toggle_tool_details();
+                Outcome::Continue
+            }
+            "keys" => {
+                let rows = crate::ui::keys::report(self.fullscreen, self.mouse);
+                self.reports.push((rows.join("\n"), Tone::Muted));
                 Outcome::Continue
             }
             "settings" => {

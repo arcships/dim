@@ -182,6 +182,7 @@ pub const COMMANDS: &[Command] = &[
         Needs::Nothing,
     ),
     slash("settings", "app", "open settings", &[], Needs::Nothing),
+    slash("keys", "app", "show the key bindings", &[], Needs::Nothing),
     slash(
         "reconnect",
         "app",

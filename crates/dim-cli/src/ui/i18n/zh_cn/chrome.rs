@@ -154,6 +154,42 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "current" => "当前",
         "Edit models" => "编辑模型",
         "Editing models is not available yet" => "暂不支持编辑模型",
+        // notify.rs
+        "Task complete" => "任务已完成",
+        "Permission needed: {tool}" => "需要授权：{tool}",
+        "Question waiting for your answer" => "有问题等你回答",
+        "Notify when agent needs you" => "需要你时通知",
+        // keys.rs
+        "show the key bindings" => "显示快捷键",
+        "Application keys" => "应用快捷键",
+        "Enter submit · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
+            "Enter 提交 · Shift+Enter 或 Ctrl+J 换行 · ↑↓ 历史"
+        }
+        "Ctrl+O or Ctrl+P commands · Esc interrupt or clear · Ctrl+S steer queued · ↑ edit queued" => {
+            "Ctrl+O 或 Ctrl+P 命令 · Esc 中断或清空 · Ctrl+S 立即 steer · ↑ 编辑队列消息"
+        }
+        "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
+            "Ctrl+C 清空，连按两次退出 · 草稿为空时 Ctrl+D 退出"
+        }
+        "Fullscreen" => "全屏",
+        "PageUp/PageDown scroll · Home/End top or bottom · Tab pick a message, e edit it" => {
+            "PageUp/PageDown 滚动 · Home/End 到顶部或底部 · Tab 选择消息，e 编辑"
+        }
+        "wheel scroll · drag select and copy · click a link to open it" => {
+            "滚轮滚动 · 拖动选择并复制 · 点击链接打开"
+        }
+        "mouse off (/settings): the terminal selects and copies" => {
+            "鼠标已关闭（/settings）：由终端选择和复制"
+        }
+        "Terminal-owned history" => "终端管理的历史记录",
+        "scroll: {value}" => "滚动：{value}",
+        "search: {value}" => "搜索：{value}",
+        "copy: {value}" => "复制：{value}",
+        "terminal search" => "终端搜索",
+        "terminal scrollback" => "终端回滚",
+        "terminal copy" => "终端复制",
+        "drag to select" => "拖动选择",
+        "drag or {shortcut}" => "拖动或 {shortcut}",
         _ => return None,
     })
 }
