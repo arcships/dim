@@ -6,6 +6,7 @@
 pub mod block;
 pub mod blocks;
 pub mod commit;
+pub mod reveal;
 pub mod split;
 pub mod stream;
 pub mod tool_group;

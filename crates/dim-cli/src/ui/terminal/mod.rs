@@ -108,6 +108,8 @@ struct WriteThread {
     sender: Option<mpsc::Sender<Vec<u8>>>,
     handle: Option<std::thread::JoinHandle<()>>,
     lost: Arc<AtomicBool>,
+    /// Writes queued and not yet through to the terminal.
+    pending: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl WriteThread {
@@ -115,16 +117,17 @@ impl WriteThread {
         let (sender, receiver) = mpsc::channel::<Vec<u8>>();
         let lost = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&lost);
+        let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let done = Arc::clone(&pending);
         let handle = std::thread::Builder::new()
             .name("dim-terminal-writer".into())
             .spawn(move || {
                 for chunk in receiver {
-                    if flag.load(Ordering::SeqCst) {
-                        continue;
-                    }
-                    if sys::write_all(sys::STDOUT, &chunk).is_err() {
+                    if !flag.load(Ordering::SeqCst) && sys::write_all(sys::STDOUT, &chunk).is_err()
+                    {
                         flag.store(true, Ordering::SeqCst);
                     }
+                    done.fetch_sub(1, Ordering::SeqCst);
                 }
             })
             .expect("spawn terminal writer");
@@ -132,6 +135,7 @@ impl WriteThread {
             sender: Some(sender),
             handle: Some(handle),
             lost,
+            pending,
         }
     }
 
@@ -139,12 +143,14 @@ impl WriteThread {
         if self.lost.load(Ordering::SeqCst) {
             return Err(io::Error::from(io::ErrorKind::BrokenPipe));
         }
-        match &self.sender {
-            Some(sender) => sender
-                .send(bytes)
-                .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe)),
-            None => Err(io::Error::from(io::ErrorKind::BrokenPipe)),
-        }
+        let Some(sender) = &self.sender else {
+            return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+        };
+        self.pending.fetch_add(1, Ordering::SeqCst);
+        sender.send(bytes).map_err(|_| {
+            self.pending.fetch_sub(1, Ordering::SeqCst);
+            io::Error::from(io::ErrorKind::BrokenPipe)
+        })
     }
 
     /// Closes the queue and waits until everything queued was written.
@@ -323,6 +329,13 @@ impl Terminal {
             return Ok(());
         }
         self.writer.send(bytes.to_vec())
+    }
+
+    /// Earlier output is still on its way to the terminal: a slow terminal
+    /// (ssh, a busy multiplexer) is behind, and the next frame waits rather
+    /// than queue behind it.
+    pub fn writing(&self) -> bool {
+        self.writer.pending.load(Ordering::SeqCst) > 0
     }
 
     /// True once a background write failed (terminal gone).

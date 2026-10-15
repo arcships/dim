@@ -154,6 +154,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "current" => "当前",
         "Edit models" => "编辑模型",
         "Editing models is not available yet" => "暂不支持编辑模型",
+        "drawing diagram… {count} lines" => "正在绘制图表…已收到 {count} 行",
         // notify.rs
         "Task complete" => "任务已完成",
         "Permission needed: {tool}" => "需要授权：{tool}",

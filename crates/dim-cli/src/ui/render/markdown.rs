@@ -167,6 +167,9 @@ impl MarkdownRenderer {
     /// dropped (a committed chunk brings its own spacing).
     pub fn render(&self, source: &str, content_width: usize, gutter: usize) -> Vec<String> {
         let width = content_width.max(1);
+        // Tabs become spaces to CommonMark's tab stops, which keeps both the
+        // block structure and a code block's indentation.
+        let source = crate::ui::transcript::blocks::expand_tabs(source);
         let text = source.trim_end_matches('\n');
         let source_lines: Vec<&str> = text.split('\n').collect();
         let mut buffers = MarkdownBuffers::new();
@@ -719,6 +722,17 @@ mod tests {
         ));
         assert!(rows[0].starts_with("• alpha"));
         assert!(rows[1].starts_with("  "), "{rows:?}");
+    }
+
+    #[test]
+    fn tab_indented_code_keeps_its_indentation() {
+        let rows = plain(&renderer().render(
+            "```go\nfunc fib(n int) int {\n\ta, b := 0, 1\n\tfor i := 0; i < n; i++ {\n\t\ta, b = b, a+b\n\t}\n}\n```",
+            60,
+            0,
+        ));
+        assert_eq!(rows[2], "│     a, b := 0, 1", "{rows:?}");
+        assert_eq!(rows[4], "│         a, b = b, a+b", "{rows:?}");
     }
 
     #[test]

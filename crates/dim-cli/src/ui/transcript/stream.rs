@@ -59,6 +59,8 @@ struct ActiveStream {
     open_rows: usize,
     /// The marker run of the fence open at the end of the text.
     open_fence: Option<String>,
+    /// The fence open at the end of the text is a diagram (mermaid).
+    open_diagram: bool,
 }
 
 impl ActiveStream {
@@ -77,6 +79,8 @@ pub struct Pending<'a> {
     pub written: usize,
     /// The marker run of a fence still open at the end of `text`.
     pub open_fence: Option<&'a str>,
+    /// `text` is an open diagram fence: it is drawn only once it closes.
+    pub diagram: bool,
 }
 
 /// Lays out `text` whose last fence is still open as the code block it will
@@ -184,6 +188,7 @@ impl StreamPlanner {
                         committed_rows: 0,
                         open_rows: 0,
                         open_fence: None,
+                        open_diagram: false,
                     }
                 }
             };
@@ -208,6 +213,7 @@ impl StreamPlanner {
             first: stream.committed_rows == 0,
             written: stream.open_rows,
             open_fence: stream.open_fence.as_deref(),
+            diagram: stream.open_diagram,
         })
     }
 
@@ -253,6 +259,13 @@ impl StreamPlanner {
     }
 }
 
+/// A fence the renderer draws from its whole source (a mermaid diagram)
+/// rather than line by line.
+fn is_diagram(info: Option<&str>) -> bool {
+    info.and_then(|info| info.split_whitespace().next())
+        .is_some_and(|lang| lang.eq_ignore_ascii_case("mermaid"))
+}
+
 fn plan_blocks(
     stream: &mut ActiveStream,
     width: usize,
@@ -264,14 +277,13 @@ fn plan_blocks(
     let split = (!finalize).then(|| split_streaming_markdown(&stream.text));
     // A diagram is laid out from its whole source: it neither streams its
     // lines out nor closes early, and its source shows until it closes.
-    stream.open_fence = split.as_ref().and_then(|s| {
-        let diagram = s
-            .open_fence_info
-            .as_deref()
-            .and_then(|info| info.split_whitespace().next())
-            .is_some_and(|lang| lang.eq_ignore_ascii_case("mermaid"));
-        s.open_fence.clone().filter(|_| !diagram)
-    });
+    stream.open_diagram = split
+        .as_ref()
+        .is_some_and(|s| is_diagram(s.open_fence_info.as_deref()));
+    stream.open_fence = split
+        .as_ref()
+        .and_then(|s| s.open_fence.clone())
+        .filter(|_| !stream.open_diagram);
     let end = split.as_ref().map_or(stream.text.len(), |s| s.settled_len);
     let first = stream.committed_rows == 0;
     let batch = |stream: &ActiveStream, source: &str, lines: Vec<String>| Batch {
@@ -288,7 +300,13 @@ fn plan_blocks(
         // already written.
         let closed;
         let mut source = &stream.text[stream.committed_len..end];
-        if finalize && let Some(run) = split_streaming_markdown(&stream.text).open_fence {
+        // A diagram cut off half way is left as its source: drawing half of it
+        // would show a diagram that never was.
+        let cut = finalize.then(|| split_streaming_markdown(&stream.text));
+        if let Some(cut) = cut
+            && !is_diagram(cut.open_fence_info.as_deref())
+            && let Some(run) = cut.open_fence
+        {
             let newline = if source.ends_with('\n') { "" } else { "\n" };
             closed = format!("{source}{newline}{run}");
             source = &closed;
@@ -404,6 +422,7 @@ mod tests {
         assert!(plan(&mut p, &[block("a", open)], &[]).active.is_empty());
         let pending = p.pending("a").expect("live");
         assert_eq!((pending.written, pending.open_fence), (0, None));
+        assert!(pending.diagram);
     }
 
     #[test]

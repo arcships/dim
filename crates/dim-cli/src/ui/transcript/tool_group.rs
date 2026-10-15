@@ -62,8 +62,12 @@ struct Span {
 }
 
 fn span(text: impl Into<String>, tone: Tone) -> Span {
+    let text = text.into();
     Span {
-        text: text.into(),
+        text: match crate::ui::transcript::blocks::expand_tabs(&text) {
+            std::borrow::Cow::Borrowed(_) => text,
+            std::borrow::Cow::Owned(expanded) => expanded,
+        },
         tone,
     }
 }

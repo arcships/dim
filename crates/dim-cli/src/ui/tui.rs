@@ -35,6 +35,7 @@ use crate::ui::transcript::blocks::{
     truncate_cells,
 };
 use crate::ui::transcript::commit::CommitState;
+use crate::ui::transcript::reveal::Reveal;
 use crate::ui::transcript::stream::{StreamPlanner, TextBlock, render_open};
 use crate::ui::transcript::tool_group::{Detail, project_group, render_group};
 
@@ -260,7 +261,11 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
                 dirty = true;
             }
         }
-        let due = last_frame.is_none_or(|at| now.duration_since(at) >= FRAME_INTERVAL);
+        // A frame waits while the last one is still being written, as
+        // grok-build's presenter does: a slow terminal gets fewer, current
+        // frames instead of a queue of stale ones.
+        let due = last_frame.is_none_or(|at| now.duration_since(at) >= FRAME_INTERVAL)
+            && !terminal.writing();
         if dirty && due {
             let size = terminal.size();
             let frame = app.frame(size);
@@ -563,8 +568,9 @@ struct App {
     /// Ask the terminal to notify when the run needs the user
     /// (`tuiNotifyOnComplete`).
     notify: bool,
-    /// Bytes of each streaming answer the screen shows so far, by row id.
-    revealed: std::collections::HashMap<String, usize>,
+    /// The pace of each streaming answer and the bytes of it shown, by row
+    /// id.
+    revealed: std::collections::HashMap<String, (Reveal, usize)>,
     /// Notifications owed to the terminal, written by the main loop.
     pub notifications: Vec<crate::ui::notify::Event>,
     /// The permission or question request last notified: a prompt that
@@ -1490,11 +1496,15 @@ impl App {
     /// Streaming answers still have text the screen has not shown.
     fn revealing(&self) -> bool {
         self.snapshot.as_ref().is_some_and(|s| {
-            s.rows.iter().any(|row| {
-                self.revealing_row(row)
-                    && self.revealed.get(&row.row_id).copied().unwrap_or(0) < row.text.len()
-            })
+            s.rows
+                .iter()
+                .any(|row| self.revealing_row(row) && self.shown(&row.row_id) < row.text.len())
         })
+    }
+
+    /// Bytes of the answer `row_id` shown so far.
+    fn shown(&self, row_id: &str) -> usize {
+        self.revealed.get(row_id).map_or(0, |(_, shown)| *shown)
     }
 
     /// A streaming answer, or one that settled while its reveal was behind.
@@ -1503,34 +1513,32 @@ impl App {
             || (row.kind == RowKind::AssistantMessage && self.revealed.contains_key(&row.row_id))
     }
 
-    /// Moves each streaming answer's reveal on by one frame's worth. Models
-    /// send text in uneven bursts; showing an eighth of what is waiting each
-    /// frame (a character at least) turns a burst into a steady flow that
-    /// catches up within about eight frames, whatever the speed.
+    /// Moves each streaming answer's reveal on to now, at the steady pace
+    /// of its stream (see [`Reveal`]); an answer that settled drains what is
+    /// left. The pace works in bytes, the rate it follows is measured in
+    /// them too, and the shown end is moved up to a character boundary.
     fn advance_reveal(&mut self) {
         let Some(snapshot) = &self.snapshot else {
             self.revealed.clear();
             return;
         };
+        let now = Instant::now();
         let mut next = std::collections::HashMap::new();
         for row in &snapshot.rows {
             if !self.revealing_row(row) {
                 continue;
             }
             let text = row.text.as_str();
-            let shown = self
+            let (mut pace, _) = self
                 .revealed
-                .get(&row.row_id)
-                .copied()
-                .unwrap_or(0)
-                .min(text.len());
-            let waiting = text[shown..].chars().count();
-            let step = (waiting / 8).max(1).min(waiting);
-            let end = text[shown..]
-                .char_indices()
-                .nth(step)
-                .map_or(text.len(), |(at, _)| shown + at);
-            next.insert(row.row_id.clone(), end);
+                .remove(&row.row_id)
+                .unwrap_or_else(|| (Reveal::new(now), 0));
+            let ended = row.kind == RowKind::AssistantMessage;
+            let mut end = pace.advance(now, text.len(), ended).min(text.len());
+            while !text.is_char_boundary(end) {
+                end += 1;
+            }
+            next.insert(row.row_id.clone(), (pace, end));
         }
         // Answers that settled leave: the stream planner has their text.
         self.revealed = next;
@@ -1822,7 +1830,7 @@ impl App {
                 // the model output ends.
                 RowKind::StreamingAssistant => {
                     // Only what the reveal reached: the rest follows evenly.
-                    let shown = self.revealed.get(&row.row_id).copied().unwrap_or(0);
+                    let shown = self.shown(&row.row_id);
                     live_text.push(TextBlock {
                         id: &row.row_id,
                         text: &text[..shown.min(text.len())],
@@ -1848,7 +1856,7 @@ impl App {
                     live_items.push(LiveItem::Tool(index));
                 }
                 RowKind::AssistantMessage => match self.revealed.get(&row.row_id) {
-                    Some(&shown) if shown < text.len() => {
+                    Some(&(_, shown)) if shown < text.len() => {
                         live_text.push(TextBlock {
                             id: &row.row_id,
                             text: &text[..shown],
@@ -1983,6 +1991,34 @@ impl App {
         for item in &live_items {
             let rows: Vec<String> = match item {
                 LiveItem::Text(id) => match self.planner.pending(id) {
+                    // An open diagram is drawn once its source is whole; the
+                    // live region holds two rows for it meanwhile, so it
+                    // neither grows nor shows half a diagram.
+                    Some(pending) if pending.diagram => {
+                        let lines = pending.text.lines().count().saturating_sub(1);
+                        let lead = " ".repeat(gutter);
+                        let rows = vec![
+                            format!("{lead}{}", fg("┌─ mermaid", &p.faint)),
+                            format!(
+                                "{lead}{} {}",
+                                fg("│", &p.faint),
+                                fg(
+                                    &tf(
+                                        "drawing diagram… {count} lines",
+                                        &[("count", &lines.to_string())]
+                                    ),
+                                    &p.muted
+                                )
+                            ),
+                        ];
+                        if pending.first {
+                            apply_gutter_mark(rows, ASSISTANT_MARK, gutter, &|mark: &str| {
+                                fg(mark, &p.text)
+                            })
+                        } else {
+                            rows
+                        }
+                    }
                     Some(pending) if !pending.text.trim().is_empty() => {
                         let (first, written) = (pending.first, pending.written);
                         let rows = render_open(pending.text, pending.open_fence, &|text| {

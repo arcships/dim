@@ -76,9 +76,6 @@ pub struct Screen {
     anchor: u16,
     /// Rows as last painted; `None` entries are unknown (repaint).
     painted: Vec<Option<String>>,
-    /// The last paint showed the live rows from the first: rows committed
-    /// from the top of the live tail can stay where they are drawn.
-    whole: bool,
     cursor_visible: bool,
     /// Where the terminal's cursor is after our last write, when known.
     cursor_at: Option<(u16, u16)>,
@@ -97,7 +94,6 @@ impl Screen {
             scrolled: false,
             anchor: 0,
             painted: Vec::new(),
-            whole: false,
             cursor_visible: true,
             cursor_at: None,
             synchronized,
@@ -277,40 +273,52 @@ impl Screen {
         self.cursor_at = Some((0, self.top));
     }
 
-    /// Commits rows that fit in the live region by turning its top rows into
-    /// history: they are written over the rows painted there (a row that
-    /// already reads the same is left alone) and the region now starts below
-    /// them. A streamed answer commits exactly the rows its live tail showed,
-    /// so nothing is erased and the region does not move; the next paint
-    /// fills the region from its new top. Rows wider than the screen (the
-    /// terminal would wrap them) and a region showing only its last rows go
-    /// the erasing way.
+    /// Commits rows by turning the live region's top rows into history:
+    /// they are written over the rows painted there (a row that already
+    /// reads the same is left alone) and the region now starts below them.
+    /// Rows beyond the region are written on below it, scrolling the screen a
+    /// row at a time once they reach the bottom. A streamed answer commits
+    /// the rows its live tail showed, so mostly nothing is written at all;
+    /// nothing is ever erased ahead of being drawn, and the next paint fills
+    /// the region from its new top. Rows wider than the screen (the terminal
+    /// would wrap them) go the erasing way.
     fn commit_in_place(&mut self, text: &str, out: &mut Vec<u8>) -> bool {
         let text = text.strip_suffix('\n').unwrap_or(text);
         let text = scrub_keeping_newlines(text);
         let rows: Vec<&str> = text.split('\n').collect();
-        let fits = rows.len() <= self.viewport_height as usize
-            && rows
-                .iter()
-                .all(|row| crate::ui::render::panel::visible_width(row) <= self.size.0 as usize);
-        if !self.whole || !fits {
+        let width = self.size.0 as usize;
+        if rows
+            .iter()
+            .any(|row| crate::ui::render::panel::visible_width(row) > width)
+        {
             return false;
         }
+        let bottom = self.size.1.saturating_sub(1);
         for (i, row) in rows.iter().enumerate() {
-            let painted = self.painted[i].as_deref().map(scrub);
+            let painted = self.painted.get(i).and_then(|p| p.as_deref()).map(scrub);
             if painted.as_deref() == Some(*row) {
                 continue;
             }
-            push_move(out, 0, self.top + i as u16);
+            let mut at = self.top + i as u16;
+            if at > bottom {
+                // Past the bottom: scroll one row, the written rows move up.
+                push_move(out, 0, bottom);
+                out.push(b'\n');
+                self.top -= 1;
+                self.note_scroll(1);
+                at = bottom;
+            }
+            push_move(out, 0, at);
             out.extend_from_slice(row.as_bytes());
             out.extend_from_slice(b"\x1b[0m");
             out.extend_from_slice(ERASE_LINE_END);
             self.cursor_at = None;
         }
-        let n = rows.len();
-        self.top += n as u16;
-        self.viewport_height -= n as u16;
-        self.painted.drain(..n);
+        let n = rows.len().min(u16::MAX as usize) as u16;
+        let kept = (self.viewport_height as usize).saturating_sub(rows.len());
+        self.top += n;
+        self.viewport_height = kept as u16;
+        self.painted.drain(..self.painted.len().min(rows.len()));
         true
     }
 
@@ -444,7 +452,6 @@ impl Screen {
 
     fn paint(&mut self, frame: &Frame, out: &mut Vec<u8>) {
         let top = self.viewport_top();
-        self.whole = frame.live.len() <= self.viewport_height as usize;
         let rows = visible_rows(&frame.live, self.viewport_height);
         for (i, row) in rows.iter().enumerate() {
             if self.painted.get(i).and_then(|p| p.as_deref()) == Some(row.as_str()) {

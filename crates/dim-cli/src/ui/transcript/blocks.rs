@@ -56,13 +56,46 @@ pub fn truncate_cells(text: &str, max_width: usize) -> String {
     out
 }
 
+/// Columns between tab stops, CommonMark's.
+const TAB_STOP: usize = 4;
+
+/// `text` with each tab turned into the spaces up to the next tab stop of
+/// its line. A tab never reaches the terminal (it would move the cursor
+/// over cells the row does not paint, and rows are scrubbed of it), so
+/// indentation made of tabs (Go, Makefiles) is kept this way.
+pub fn expand_tabs(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains('\t') {
+        return text.into();
+    }
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut column = 0;
+    for cluster in text.graphemes(true) {
+        match cluster {
+            "\t" => {
+                let spaces = TAB_STOP - column % TAB_STOP;
+                out.extend(std::iter::repeat_n(' ', spaces));
+                column += spaces;
+            }
+            "\n" | "\r\n" | "\r" => {
+                out.push_str(cluster);
+                column = 0;
+            }
+            _ => {
+                out.push_str(cluster);
+                column += display_width(cluster);
+            }
+        }
+    }
+    out.into()
+}
+
 /// Wraps `text` into rows of at most `width` cells, breaking only between
 /// grapheme clusters. A cluster wider than the row stays alone on its row.
 pub fn wrap_cells(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![String::new()];
     }
-    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized = expand_tabs(text).replace("\r\n", "\n").replace('\r', "\n");
     let mut rows = Vec::new();
     for line in normalized.split('\n') {
         if line.is_empty() {
@@ -171,6 +204,18 @@ mod tests {
         assert_eq!(gutter_width(40), 2);
         assert_eq!(gutter_mark("◆", 1), "◆");
         assert_eq!(gutter_mark("◆", 2), "◆ ");
+    }
+
+    #[test]
+    fn tabs_expand_to_the_next_stop_of_their_line() {
+        assert_eq!(expand_tabs("\tx"), "    x");
+        assert_eq!(expand_tabs("ab\tc\n\td"), "ab  c\n    d");
+        // Wide characters count their cells.
+        assert_eq!(expand_tabs("中\tx"), "中  x");
+        assert!(matches!(
+            expand_tabs("plain"),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     #[test]
