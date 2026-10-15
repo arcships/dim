@@ -589,6 +589,38 @@ fn interactive_default_deny_discards_typeahead_and_ctrl_c_settles_before_next_in
 }
 
 #[test]
+fn explicit_model_selection_uses_protocol_field_names_from_tui_and_line_client() {
+    for tui in [true, false] {
+        let home = Home::new();
+        let daemon = home.daemon(|wire| {
+            let hello = wire.read("hello");
+            wire.reply(&hello,json!({"instanceId":"server","serverVersion":"0.1","protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","provider.list"]}));
+            let create = wire.read("session.create");
+            assert_eq!(create["params"]["model"], json!({"provider":"fixture","modelId":"fixture-model"}));
+            wire.send(json!({"jsonrpc":"2.0","id":create["id"],"error":{"code":-32602,"message":"fixture stops here"}}));
+        });
+        let mut command = home.command();
+        command.args(["--provider", "fixture", "--model", "fixture-model"]);
+        if tui {
+            // A pty without --no-tui selects the TUI session host.
+            let (_terminal, mut child) = Terminal::launch(command);
+            let joined = daemon.join();
+            child.kill().unwrap();
+            child.wait().unwrap();
+            joined.unwrap();
+        } else {
+            command
+                .args(["--prompt", "hello"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let output = wait(command.spawn().unwrap());
+            daemon.join().unwrap();
+            assert!(!output.status.success());
+        }
+    }
+}
+
+#[test]
 fn browser_login_hides_callback_and_uses_only_generic_account_rpc() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {

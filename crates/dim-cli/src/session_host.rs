@@ -220,7 +220,7 @@ impl Worker {
         }
         let mut params = json!({"cwd": self.options.cwd});
         if let (Some(provider), Some(model)) = (&self.options.provider, &self.options.model) {
-            params["model"] = json!({"providerId": provider, "modelId": model});
+            params["model"] = json!({"provider": provider, "modelId": model});
         }
         let created: Created = self.client.typed("session.create", params).await?;
         self.enter(created.session_id, created.model, SwitchKind::New)
