@@ -12,6 +12,8 @@ pub struct StreamingSplit {
     pub settled_len: usize,
     /// Info string of a fence that is still open at the end of the buffer.
     pub open_fence_info: Option<String>,
+    /// That fence's marker run (```` ``` ````, `~~~~`): it closes the fence.
+    pub open_fence: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -138,6 +140,7 @@ pub fn split_streaming_markdown(text: &str) -> StreamingSplit {
     StreamingSplit {
         settled_len: last_start.min(text.len()),
         open_fence_info: fence_info,
+        open_fence: fence,
     }
 }
 

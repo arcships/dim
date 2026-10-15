@@ -73,6 +73,9 @@ pub trait Document {
     fn estimate(&self, index: usize, cols: usize) -> usize;
     /// The text of block `index` when it is a user message.
     fn message(&self, index: usize) -> Option<&str>;
+    /// How many times a block was rewritten in place (a streamed code block
+    /// grows line by line) and the stable id of the newest.
+    fn rewritten(&self) -> (u64, usize);
 }
 
 /// What a mouse report did.
@@ -186,6 +189,8 @@ pub struct FullScreen {
     layout_cols: usize,
     /// `Document::dropped` when the heights were last synced.
     base: usize,
+    /// `Document::rewritten` when the heights were last synced.
+    rewrites: u64,
     /// Rows of each block at `layout_cols`: exact where `measured`, else
     /// the document's estimate.
     heights: Vec<usize>,
@@ -221,6 +226,7 @@ impl FullScreen {
             size,
             layout_cols: size.0 as usize,
             base: 0,
+            rewrites: 0,
             heights: Vec::new(),
             measured: Vec::new(),
             starts: vec![0],
@@ -633,6 +639,17 @@ impl FullScreen {
             self.heights.truncate(doc.len());
             self.measured.truncate(doc.len());
             changed = true;
+        }
+        // A block rewritten in place is measured again.
+        let (rewrites, id) = doc.rewritten();
+        if rewrites != self.rewrites {
+            self.rewrites = rewrites;
+            if let Some(index) = id.checked_sub(dropped).filter(|i| *i < self.heights.len()) {
+                self.heights[index] = doc.estimate(index, self.layout_cols);
+                self.measured[index] = false;
+                self.cache.remove(&id);
+                changed = true;
+            }
         }
         while self.heights.len() < doc.len() {
             let index = self.heights.len();
@@ -1110,6 +1127,9 @@ mod tests {
         /// A blank row and one more: short of every taller block.
         fn estimate(&self, _index: usize, _cols: usize) -> usize {
             2
+        }
+        fn rewritten(&self) -> (u64, usize) {
+            (0, 0)
         }
         fn message(&self, index: usize) -> Option<&str> {
             let (user, rows) = &self.blocks[index];

@@ -130,7 +130,8 @@ pub struct QueuedInput {
 /// The session as the screen draws it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ViewSnapshot {
-    pub rows: Vec<ViewRow>,
+    /// Shared with the worker's projection: publishing copies pointers.
+    pub rows: Vec<std::sync::Arc<ViewRow>>,
     pub running: bool,
     pub approvals: Vec<ApprovalView>,
     pub questions: Vec<QuestionRequestView>,

@@ -35,7 +35,7 @@ use crate::ui::transcript::blocks::{
     truncate_cells,
 };
 use crate::ui::transcript::commit::CommitState;
-use crate::ui::transcript::stream::{StreamPlanner, TextBlock};
+use crate::ui::transcript::stream::{StreamPlanner, TextBlock, render_open};
 use crate::ui::transcript::tool_group::{Detail, project_group, render_group};
 
 /// The stop reason and the note committed when the user interrupts a run.
@@ -61,6 +61,15 @@ const MARGIN: usize = 1;
 const SESSION_REVISION: u64 = 1;
 /// How long a Ctrl+C keeps the exit window armed.
 const EXIT_ARM: Duration = Duration::from_millis(2500);
+/// Where a committed transcript batch goes in the history.
+enum Placement {
+    New,
+    /// The first batch of a streamed block.
+    Stream,
+    /// More of the streamed block the last `Stream` began.
+    Continue,
+}
+
 /// `config.json` key of the fullscreen mouse switch (`"on"` / `"off"`).
 const MOUSE_KEY: &str = "tuiMouseMode";
 
@@ -148,6 +157,10 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
     let code = loop {
         for update in app.host.drain() {
             app.apply(update);
+            dirty = true;
+        }
+        // Text still being revealed draws a frame each interval.
+        if app.revealing() {
             dirty = true;
         }
         for event in std::mem::take(&mut app.notifications) {
@@ -263,8 +276,11 @@ pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             dirty = false;
             last_frame = Some(Instant::now());
         }
+        // A run publishes every frame interval: look as often, so the
+        // stream reaches the screen as evenly as it is published.
         let wait = match (dirty, last_frame) {
             (true, Some(at)) => FRAME_INTERVAL.saturating_sub(now.duration_since(at)),
+            _ if app.running() => FRAME_INTERVAL,
             _ => SESSION_POLL,
         };
         match terminal.next_event(wait) {
@@ -507,6 +523,11 @@ struct App {
     history: std::collections::VecDeque<Block>,
     /// Blocks dropped from the front of `history` so far.
     dropped: usize,
+    /// The history id of the block the newest stream batch began; its next
+    /// batches rewrite it.
+    stream_block: Option<usize>,
+    /// How many times a history block was rewritten, and the newest one.
+    rewritten: (u64, usize),
     session_id: String,
     /// The default tool-approval mode (wire name).
     approvals: String,
@@ -542,6 +563,8 @@ struct App {
     /// Ask the terminal to notify when the run needs the user
     /// (`tuiNotifyOnComplete`).
     notify: bool,
+    /// Bytes of each streaming answer the screen shows so far, by row id.
+    revealed: std::collections::HashMap<String, usize>,
     /// Notifications owed to the terminal, written by the main loop.
     pub notifications: Vec<crate::ui::notify::Event>,
     /// The permission or question request last notified: a prompt that
@@ -623,6 +646,8 @@ impl App {
             last_pulse: 0,
             history: Default::default(),
             dropped: 0,
+            stream_block: None,
+            rewritten: (0, 0),
             session_id: String::new(),
             approvals: "normal".to_owned(),
             approvals_toast: false,
@@ -640,6 +665,7 @@ impl App {
             mouse,
             notify,
             notifications: Vec::new(),
+            revealed: std::collections::HashMap::new(),
             notified_request: None,
             palette_stash: None,
             branch: git_branch().unwrap_or_else(|| t("Not available").into()),
@@ -1461,7 +1487,57 @@ impl App {
         }
     }
 
+    /// Streaming answers still have text the screen has not shown.
+    fn revealing(&self) -> bool {
+        self.snapshot.as_ref().is_some_and(|s| {
+            s.rows.iter().any(|row| {
+                self.revealing_row(row)
+                    && self.revealed.get(&row.row_id).copied().unwrap_or(0) < row.text.len()
+            })
+        })
+    }
+
+    /// A streaming answer, or one that settled while its reveal was behind.
+    fn revealing_row(&self, row: &ViewRow) -> bool {
+        row.kind == RowKind::StreamingAssistant
+            || (row.kind == RowKind::AssistantMessage && self.revealed.contains_key(&row.row_id))
+    }
+
+    /// Moves each streaming answer's reveal on by one frame's worth. Models
+    /// send text in uneven bursts; showing an eighth of what is waiting each
+    /// frame (a character at least) turns a burst into a steady flow that
+    /// catches up within about eight frames, whatever the speed.
+    fn advance_reveal(&mut self) {
+        let Some(snapshot) = &self.snapshot else {
+            self.revealed.clear();
+            return;
+        };
+        let mut next = std::collections::HashMap::new();
+        for row in &snapshot.rows {
+            if !self.revealing_row(row) {
+                continue;
+            }
+            let text = row.text.as_str();
+            let shown = self
+                .revealed
+                .get(&row.row_id)
+                .copied()
+                .unwrap_or(0)
+                .min(text.len());
+            let waiting = text[shown..].chars().count();
+            let step = (waiting / 8).max(1).min(waiting);
+            let end = text[shown..]
+                .char_indices()
+                .nth(step)
+                .map_or(text.len(), |(at, _)| shown + at);
+            next.insert(row.row_id.clone(), end);
+        }
+        // Answers that settled leave: the stream planner has their text.
+        self.revealed = next;
+    }
+
     fn frame(&mut self, size: (u16, u16)) -> Frame {
+        self.advance_reveal();
         let cols = size.0 as usize;
         let width = cols.saturating_sub(2 + MARGIN).max(1);
         let mut frame = Frame::default();
@@ -1472,8 +1548,15 @@ impl App {
             self.banner_committed = true;
         }
         let (commits, sources, tail) = self.transcript(width);
-        for (text, source) in commits.into_iter().zip(sources) {
-            self.record(source);
+        for (text, (source, placement)) in commits.into_iter().zip(sources) {
+            match placement {
+                Placement::New => self.record(source),
+                Placement::Stream => {
+                    self.record(source);
+                    self.stream_block = Some(self.dropped + self.history.len() - 1);
+                }
+                Placement::Continue => self.rewrite_stream_block(source),
+            }
             frame.commits.push(text);
         }
         if !self.awaiting_window
@@ -1689,7 +1772,7 @@ impl App {
     /// Commits owed this frame and the live rows (unclosed streaming tail,
     /// the reasoning preview and running tools, in transcript order).
     #[allow(clippy::type_complexity)]
-    fn transcript(&mut self, width: usize) -> (Vec<String>, Vec<Block>, Vec<String>) {
+    fn transcript(&mut self, width: usize) -> (Vec<String>, Vec<(Block, Placement)>, Vec<String>) {
         let Some(snapshot) = &self.snapshot else {
             return (Vec::new(), Vec::new(), Vec::new());
         };
@@ -1725,8 +1808,12 @@ impl App {
         let mut live_items: Vec<LiveItem> = Vec::new();
         let mut settled_assistant: Vec<TextBlock> = Vec::new();
         let mut settled_ids: Vec<String> = Vec::new();
+        // An answer that settled before the reveal reached its end keeps
+        // streaming until it does; rows after it wait, so the history keeps
+        // its order.
+        let mut held = false;
         for (index, row) in snapshot.rows.iter().enumerate() {
-            if index < floor {
+            if index < floor || held {
                 continue;
             }
             let text = row.text.as_str();
@@ -1734,9 +1821,11 @@ impl App {
                 // The projection flips the same row to `assistant_message` when
                 // the model output ends.
                 RowKind::StreamingAssistant => {
+                    // Only what the reveal reached: the rest follows evenly.
+                    let shown = self.revealed.get(&row.row_id).copied().unwrap_or(0);
                     live_text.push(TextBlock {
                         id: &row.row_id,
-                        text,
+                        text: &text[..shown.min(text.len())],
                     });
                     live_items.push(LiveItem::Text(row.row_id.clone()));
                 }
@@ -1758,13 +1847,23 @@ impl App {
                 {
                     live_items.push(LiveItem::Tool(index));
                 }
-                RowKind::AssistantMessage => {
-                    settled_assistant.push(TextBlock {
-                        id: &row.row_id,
-                        text,
-                    });
-                    settled_ids.push(row.row_id.clone());
-                }
+                RowKind::AssistantMessage => match self.revealed.get(&row.row_id) {
+                    Some(&shown) if shown < text.len() => {
+                        live_text.push(TextBlock {
+                            id: &row.row_id,
+                            text: &text[..shown],
+                        });
+                        live_items.push(LiveItem::Text(row.row_id.clone()));
+                        held = true;
+                    }
+                    _ => {
+                        settled_assistant.push(TextBlock {
+                            id: &row.row_id,
+                            text,
+                        });
+                        settled_ids.push(row.row_id.clone());
+                    }
+                },
                 // The interrupt note is written when the key is pressed.
                 RowKind::Status if text == INTERRUPT_REASON => {}
                 _ => settled_ids.push(row.row_id.clone()),
@@ -1791,24 +1890,43 @@ impl App {
             &render,
         );
         let mut commits: Vec<String> = Vec::new();
-        let mut sources: Vec<Block> = Vec::new();
+        let mut sources: Vec<(Block, Placement)> = Vec::new();
         let detail = self.tool_detail;
+        // A streamed batch: a block of its own, or more rows of the open
+        // block it began (no blank row between them).
+        let streamed = |batch: crate::ui::transcript::stream::Batch| {
+            let placement = if batch.continues {
+                Placement::Continue
+            } else {
+                Placement::Stream
+            };
+            let text = if batch.continues {
+                pad_block(&batch.lines)
+            } else {
+                chunk(&batch.lines)
+            };
+            let source = batch.source.map(|s| Block::Assistant {
+                text: s.text,
+                first: s.first,
+            });
+            (text, source.map(|source| (source, placement)))
+        };
         let draw = |index: usize,
                     finalized: Option<crate::ui::transcript::stream::Batch>|
-         -> (Vec<String>, Option<Block>) {
+         -> (String, Option<(Block, Placement)>) {
             match (snapshot.rows[index].kind, finalized) {
                 // The planner has laid out this answer already.
-                (RowKind::AssistantMessage, Some(batch)) => (
-                    batch.lines,
-                    batch.source.map(|s| Block::Assistant {
-                        text: s.text,
-                        first: s.first,
-                    }),
-                ),
+                (RowKind::AssistantMessage, Some(batch)) if batch.lines.is_empty() => {
+                    (String::new(), None)
+                }
+                (RowKind::AssistantMessage, Some(batch)) => streamed(batch),
                 _ => {
                     let block = project_row(&snapshot.rows, index, detail);
                     let lines = render_block(&block, width, p, markdown);
-                    (lines, Some(block))
+                    if lines.is_empty() {
+                        return (String::new(), None);
+                    }
+                    (chunk(&lines), Some((block, Placement::New)))
                 }
             }
         };
@@ -1828,16 +1946,15 @@ impl App {
                 ],
             );
             commits.push(chunk(&[fg(&truncate_cells(&header, width), &p.muted)]));
-            sources.push(Block::Note(header));
+            sources.push((Block::Note(header), Placement::New));
             for index in start..end {
                 if snapshot.rows[index].kind == RowKind::ToolCall
                     && !opens_group(&snapshot.rows, index)
                 {
                     continue;
                 }
-                let (lines, source) = draw(index, None);
-                if let (false, Some(source)) = (lines.is_empty(), source) {
-                    commits.push(chunk(&lines));
+                if let (text, Some(source)) = draw(index, None) {
+                    commits.push(text);
                     sources.push(source);
                 }
             }
@@ -1847,20 +1964,16 @@ impl App {
             let Some(index) = snapshot.rows.iter().position(|r| r.row_id == id) else {
                 continue;
             };
-            let (lines, source) = draw(index, plan.finalized.remove(&id));
             // A batch with lines always has its source.
-            if let (false, Some(source)) = (lines.is_empty(), source) {
-                commits.push(chunk(&lines));
+            if let (text, Some(source)) = draw(index, plan.finalized.remove(&id)) {
+                commits.push(text);
                 sources.push(source);
             }
         }
-        for batch in &plan.active {
-            if let Some(source) = &batch.source {
-                commits.push(chunk(&batch.lines));
-                sources.push(Block::Assistant {
-                    text: source.text.clone(),
-                    first: source.first,
-                });
+        for batch in plan.active {
+            if let (text, Some(source)) = streamed(batch) {
+                commits.push(text);
+                sources.push(source);
             }
         }
 
@@ -1870,8 +1983,20 @@ impl App {
         for item in &live_items {
             let rows: Vec<String> = match item {
                 LiveItem::Text(id) => match self.planner.pending(id) {
-                    Some((rest, first)) if !rest.trim().is_empty() => {
-                        render(rest, content, gutter, first)
+                    Some(pending) if !pending.text.trim().is_empty() => {
+                        let (first, written) = (pending.first, pending.written);
+                        let rows = render_open(pending.text, pending.open_fence, &|text| {
+                            render(text, content, gutter, first)
+                        });
+                        if written > 0 {
+                            // The block's first rows are committed already:
+                            // the rest follows them without a blank row.
+                            tail.extend(
+                                rows.into_iter().skip(written).map(|r| format!("{pad}{r}")),
+                            );
+                            continue;
+                        }
+                        rows
                     }
                     _ => Vec::new(),
                 },
@@ -1906,6 +2031,16 @@ impl App {
         self.awaiting_window = true;
         self.pending_boundary = Some(kind);
         self.composer.clear();
+        // Fullscreen holds the transcript itself: another session starts on
+        // a clean view under the banner. Scrollback keeps what the terminal
+        // already shows.
+        if self.fullscreen {
+            self.dropped += self.history.len();
+            self.history.clear();
+            self.stream_block = None;
+            self.record(Block::Banner);
+            self.jump = Some(Jump::Bottom);
+        }
     }
 
     /// `/history`: queue the next older page of the loaded session.
@@ -1940,6 +2075,21 @@ impl App {
         if self.history.len() > HISTORY_MAX_BLOCKS {
             self.history.pop_front();
             self.dropped += 1;
+        }
+    }
+
+    /// Puts the whole text of the open streamed block in place of what it
+    /// had: the block keeps one history entry however many batches wrote it.
+    fn rewrite_stream_block(&mut self, source: Block) {
+        let index = self
+            .stream_block
+            .and_then(|id| id.checked_sub(self.dropped));
+        match index.and_then(|index| self.history.get_mut(index)) {
+            Some(block) => {
+                *block = source;
+                self.rewritten = (self.rewritten.0 + 1, self.stream_block.unwrap_or(0));
+            }
+            None => self.record(source),
         }
     }
 
@@ -2020,6 +2170,10 @@ impl App {
 }
 
 impl Document for App {
+    fn rewritten(&self) -> (u64, usize) {
+        self.rewritten
+    }
+
     fn dropped(&self) -> usize {
         self.dropped
     }

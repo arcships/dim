@@ -2,8 +2,9 @@
 //!
 //! The terminal loop is synchronous; the client is async. The worker owns the
 //! connection and the projection, receives commands, and publishes view
-//! snapshots (at most one per frame interval, so a fast stream does not clone
-//! the transcript per event).
+//! snapshots: one a frame interval after the first change, however fast the
+//! stream runs, so text arrives steadily and a burst of events costs one
+//! snapshot. Snapshot rows are shared with the projection, not copied.
 //!
 //! Features the protocol v3 App Server does not offer yet (model and provider
 //! management, sign-in, usage, approval preferences) answer with an explicit
@@ -98,7 +99,8 @@ struct Worker {
     projection: Projection,
     /// Highest event sequence applied; replayed or duplicate events are skipped.
     cursor: u64,
-    dirty: bool,
+    /// When the next snapshot goes out; set by the first unpublished change.
+    publish_at: Option<tokio::time::Instant>,
 }
 
 async fn run(
@@ -122,7 +124,7 @@ async fn run(
         session_id: String::new(),
         projection: Projection::default(),
         cursor: 0,
-        dirty: false,
+        publish_at: None,
     };
     if let Err(error) = worker.open().await {
         let _ = updates.send(Update::Failed(error.to_string()));
@@ -150,7 +152,11 @@ async fn run(
                     break;
                 }
             }
-            _ = tokio::time::sleep(PUBLISH_INTERVAL), if worker.dirty => worker.publish(),
+            // The deadline is set by the first change and kept: a sleep made
+            // afresh on every pass would restart with each event and hold the
+            // snapshot back until the stream paused.
+            _ = tokio::time::sleep_until(worker.publish_at.unwrap_or_else(tokio::time::Instant::now)),
+                if worker.publish_at.is_some() => worker.publish(),
         }
     }
 }
@@ -340,7 +346,7 @@ impl Worker {
                 let result = self.client.rpc("approval.respond", params).await;
                 if self.report_failure(result) {
                     self.projection.remove_approval(&request_id);
-                    self.dirty = true;
+                    self.changed();
                 }
             }
             Command::NewSession => {
@@ -436,7 +442,7 @@ impl Worker {
                 let notice: StateNotice = serde_json::from_value(params)?;
                 if notice.session_id == self.session_id {
                     self.projection.set_running(notice.running);
-                    self.dirty = true;
+                    self.changed();
                 }
             }
             "approval.request" => {
@@ -448,13 +454,13 @@ impl Worker {
                         notice.call.input,
                         notice.reason,
                     );
-                    self.dirty = true;
+                    self.changed();
                 }
             }
             "approval.cancelled" => {
                 let notice: CancelNotice = serde_json::from_value(params)?;
                 self.projection.remove_approval(&notice.request_id);
-                self.dirty = true;
+                self.changed();
             }
             "session.closed" => return Err("Session closed while attached".into()),
             _ => {}
@@ -468,11 +474,17 @@ impl Worker {
         }
         self.cursor = event.sequence;
         self.projection.apply(&event);
-        self.dirty = true;
+        self.changed();
+    }
+
+    /// Schedules a snapshot a frame interval after the first change.
+    fn changed(&mut self) {
+        self.publish_at
+            .get_or_insert_with(|| tokio::time::Instant::now() + PUBLISH_INTERVAL);
     }
 
     fn publish(&mut self) {
-        self.dirty = false;
+        self.publish_at = None;
         self.send(Update::Snapshot(Box::new(self.projection.snapshot())));
     }
 

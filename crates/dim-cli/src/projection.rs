@@ -5,6 +5,7 @@
 //! durable history stays with the App Server.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use dim_agent_types::{
     ContentBlock, JsonObject, ModelOutputOutcome, ToolContent, ToolResult, TurnOutcome,
@@ -16,7 +17,10 @@ use crate::wire::{Event, EventContent};
 
 #[derive(Default)]
 pub struct Projection {
-    rows: Vec<ViewRow>,
+    /// Shared with the published snapshots: a snapshot copies pointers, and
+    /// a row is copied only when it changes while a snapshot still holds it
+    /// (in practice the one that is streaming).
+    rows: Vec<Arc<ViewRow>>,
     /// The assistant row each model request streams into.
     assistant_rows: HashMap<String, usize>,
     /// The reasoning row each model request streams into, while it is open.
@@ -47,12 +51,12 @@ impl Projection {
                             RowKind::Thinking,
                             String::new(),
                         );
-                        self.rows[index].streaming = true;
+                        self.row(index).streaming = true;
                         self.thinking_rows.insert(data.request_id.clone(), index);
                         index
                     }
                 };
-                let row = &mut self.rows[index];
+                let row = self.row(index);
                 row.text.push_str(&data.delta);
                 // While it streams the preview follows the newest line.
                 row.preview = row
@@ -72,18 +76,18 @@ impl Projection {
                             RowKind::StreamingAssistant,
                             String::new(),
                         );
-                        self.rows[index].streaming = true;
+                        self.row(index).streaming = true;
                         self.assistant_rows.insert(data.request_id.clone(), index);
                         index
                     }
                 };
-                self.rows[index].text.push_str(&data.delta);
+                self.row(index).text.push_str(&data.delta);
             }
             EventContent::ToolUse(data) => {
                 self.close_thinking(&data.request_id);
                 self.close_assistant(&data.request_id);
                 let index = self.push(data.call.id.clone(), RowKind::ToolCall, String::new());
-                let row = &mut self.rows[index];
+                let row = self.row(index);
                 row.tool_name = Some(data.call.name.clone());
                 row.tool_input = Some(Value::Object(data.call.input.clone()));
                 row.batch = Some(data.request_id.clone());
@@ -143,7 +147,7 @@ impl Projection {
         reason: String,
     ) {
         if let Some(index) = self.tool_rows.get(&request_id).copied() {
-            self.rows[index].parked = true;
+            self.row(index).parked = true;
         }
         self.approvals.push(ApprovalView {
             request_id,
@@ -169,8 +173,12 @@ impl Projection {
         }
     }
 
+    fn row(&mut self, index: usize) -> &mut ViewRow {
+        Arc::make_mut(&mut self.rows[index])
+    }
+
     fn push(&mut self, row_id: String, kind: RowKind, text: String) -> usize {
-        self.rows.push(ViewRow {
+        self.rows.push(Arc::new(ViewRow {
             row_id,
             kind,
             text,
@@ -185,20 +193,20 @@ impl Projection {
             result_text: None,
             result_is_error: false,
             diff: None,
-        });
+        }));
         self.rows.len() - 1
     }
 
     fn push_error(&mut self, text: String) {
         let index = self.push(format!("error-{}", self.rows.len()), RowKind::Error, text);
-        self.rows[index].tone = Some(RowTone::Danger);
+        self.row(index).tone = Some(RowTone::Danger);
     }
 
     /// A settled thought commits as one row: the whole text, whitespace
     /// collapsed (the transcript truncates it to the width).
     fn close_thinking(&mut self, request_id: &str) {
         if let Some(index) = self.thinking_rows.remove(request_id) {
-            let row = &mut self.rows[index];
+            let row = self.row(index);
             row.streaming = false;
             row.preview = Some(row.text.split_whitespace().collect::<Vec<_>>().join(" "));
         }
@@ -206,8 +214,8 @@ impl Projection {
 
     fn close_assistant(&mut self, request_id: &str) {
         if let Some(index) = self.assistant_rows.remove(request_id) {
-            self.rows[index].streaming = false;
-            self.rows[index].kind = RowKind::AssistantMessage;
+            self.row(index).streaming = false;
+            self.row(index).kind = RowKind::AssistantMessage;
         }
     }
 
@@ -215,7 +223,7 @@ impl Projection {
         let Some(index) = self.tool_rows.remove(call_id) else {
             return;
         };
-        let row = &mut self.rows[index];
+        let row = self.row(index);
         row.pending = false;
         row.parked = false;
         row.result_is_error = result.is_error == Some(true);
@@ -287,5 +295,25 @@ mod tests {
         assert!(!rows[0].streaming);
         assert_eq!(rows[0].preview.as_deref(), Some("Look at the parser first"));
         assert_eq!(rows[1].kind, RowKind::StreamingAssistant);
+    }
+
+    #[test]
+    fn snapshots_share_rows_and_a_delta_copies_only_its_own() {
+        let mut projection = Projection::default();
+        apply(
+            &mut projection,
+            &[step(1, "thinking", "plan"), step(2, "text", "Hel")],
+        );
+        let before = projection.snapshot().rows;
+        apply(&mut projection, &[step(3, "text", "lo")]);
+        let after = projection.snapshot().rows;
+        // The settled thought is the same allocation in both snapshots; the
+        // streaming answer was copied once, and the old snapshot kept its text.
+        assert!(Arc::ptr_eq(&before[0], &after[0]));
+        assert!(!Arc::ptr_eq(&before[1], &after[1]));
+        assert_eq!(
+            (before[1].text.as_str(), after[1].text.as_str()),
+            ("Hel", "Hello")
+        );
     }
 }

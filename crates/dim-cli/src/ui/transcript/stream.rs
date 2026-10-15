@@ -34,6 +34,10 @@ pub struct BatchSource {
 pub struct Batch {
     pub lines: Vec<String>,
     pub source: Option<BatchSource>,
+    /// The rows extend the block the previous batch began (an open code
+    /// fence commits line by line): no blank row before them, and `source`
+    /// is the whole block so far, replacing the earlier one.
+    pub continues: bool,
 }
 
 #[derive(Debug, Default)]
@@ -50,6 +54,46 @@ struct ActiveStream {
     text: String,
     committed_len: usize,
     committed_rows: usize,
+    /// Rows of the block at `committed_len` already written (an open fence's
+    /// finished lines).
+    open_rows: usize,
+    /// The marker run of the fence open at the end of the text.
+    open_fence: Option<String>,
+}
+
+impl ActiveStream {
+    /// Some of the stream is in scrollback: whole blocks, or the finished
+    /// lines of an open fence.
+    fn wrote(&self) -> bool {
+        self.committed_len > 0 || self.open_rows > 0
+    }
+}
+
+/// The live part of a stream (see [`StreamPlanner::pending`]).
+pub struct Pending<'a> {
+    pub text: &'a str,
+    pub first: bool,
+    /// Rendered rows of `text` already committed: the live region skips them.
+    pub written: usize,
+    /// The marker run of a fence still open at the end of `text`.
+    pub open_fence: Option<&'a str>,
+}
+
+/// Lays out `text` whose last fence is still open as the code block it will
+/// be: the fence is closed for the renderer (an unclosed fence would read as
+/// plain text) and the closing row dropped again.
+pub fn render_open(
+    text: &str,
+    open_fence: Option<&str>,
+    render: &dyn Fn(&str) -> Vec<String>,
+) -> Vec<String> {
+    let Some(run) = open_fence else {
+        return render(text);
+    };
+    let newline = if text.ends_with('\n') { "" } else { "\n" };
+    let mut rows = render(&format!("{text}{newline}{run}"));
+    rows.pop();
+    rows
 }
 
 #[derive(Default)]
@@ -94,7 +138,7 @@ impl StreamPlanner {
         self.active = still;
         for stream in gone {
             // Nothing went out: the settled twin takes the normal path.
-            if stream.committed_len > 0 {
+            if stream.wrote() {
                 self.parked.push(stream);
             }
         }
@@ -138,6 +182,8 @@ impl StreamPlanner {
                         text: block.text.to_owned(),
                         committed_len: 0,
                         committed_rows: 0,
+                        open_rows: 0,
+                        open_fence: None,
                     }
                 }
             };
@@ -150,16 +196,19 @@ impl StreamPlanner {
         plan
     }
 
-    /// The part of a live stream's text that has not been committed yet and
-    /// whether it opens the message. The live region renders this through the
-    /// same renderer the commit uses, so a row never changes shape when it
-    /// moves from the live region into scrollback.
-    pub fn pending(&self, id: &str) -> Option<(&str, bool)> {
+    /// The part of a live stream's text whose block is not committed yet,
+    /// whether it opens the message, and how many of its rendered rows are
+    /// already written (they are skipped). The live region renders this
+    /// through the same renderer the commit uses, so a row never changes
+    /// shape when it moves from the live region into scrollback.
+    pub fn pending(&self, id: &str) -> Option<Pending<'_>> {
         let stream = self.active.iter().find(|s| s.id == id)?;
-        Some((
-            &stream.text[stream.committed_len..],
-            stream.committed_rows == 0,
-        ))
+        Some(Pending {
+            text: &stream.text[stream.committed_len..],
+            first: stream.committed_rows == 0,
+            written: stream.open_rows,
+            open_fence: stream.open_fence.as_deref(),
+        })
     }
 
     fn take_active(&mut self, id: &str) -> Option<ActiveStream> {
@@ -190,7 +239,7 @@ impl StreamPlanner {
                 .enumerate()
                 .filter(|(_, s)| {
                     !live_ids.contains(&s.id.as_str())
-                        && s.committed_len > 0
+                        && s.wrote()
                         && block.text.starts_with(&s.text[..s.committed_len])
                 })
                 .max_by_key(|(_, s)| s.committed_len)
@@ -212,26 +261,54 @@ fn plan_blocks(
 ) -> Batch {
     let gutter = gutter_width(width);
     let content_width = width.saturating_sub(gutter).max(1);
-    let end = if finalize {
-        stream.text.len()
-    } else {
-        split_streaming_markdown(&stream.text).settled_len
-    };
-    if end <= stream.committed_len {
-        return Batch::default();
-    }
-    let source = stream.text[stream.committed_len..end].to_owned();
+    let split = (!finalize).then(|| split_streaming_markdown(&stream.text));
+    stream.open_fence = split.as_ref().and_then(|s| s.open_fence.clone());
+    let end = split.as_ref().map_or(stream.text.len(), |s| s.settled_len);
     let first = stream.committed_rows == 0;
-    let lines = render(&source, content_width, gutter, first);
-    stream.committed_len = end;
-    stream.committed_rows += lines.len();
-    Batch {
-        lines,
+    let batch = |stream: &ActiveStream, source: &str, lines: Vec<String>| Batch {
+        lines: lines[stream.open_rows.min(lines.len())..].to_vec(),
         source: Some(BatchSource {
-            text: source,
+            text: source.to_owned(),
             first,
         }),
+        continues: stream.open_rows > 0,
+    };
+    if end > stream.committed_len {
+        // An answer that ended inside a fence (cut off at max_tokens, say)
+        // closes it, so the block reads as code to the end, like its rows
+        // already written.
+        let closed;
+        let mut source = &stream.text[stream.committed_len..end];
+        if finalize && let Some(run) = split_streaming_markdown(&stream.text).open_fence {
+            let newline = if source.ends_with('\n') { "" } else { "\n" };
+            closed = format!("{source}{newline}{run}");
+            source = &closed;
+        }
+        let lines = render(source, content_width, gutter, first);
+        let out = batch(stream, source, lines.clone());
+        stream.committed_len = end;
+        stream.committed_rows += lines.len();
+        stream.open_rows = 0;
+        return out;
     }
+    // An open fence writes its finished lines as they come, so a long code
+    // block never piles up in the live region: highlighting only looks back,
+    // so a finished line's rows never change.
+    if let Some(run) = stream.open_fence.clone() {
+        let stable = stream.text.rfind('\n').map_or(0, |at| at + 1);
+        if stable > stream.committed_len {
+            let source = &stream.text[stream.committed_len..stable];
+            let lines = render_open(source, Some(&run), &|text| {
+                render(text, content_width, gutter, first)
+            });
+            if lines.len() > stream.open_rows {
+                let out = batch(stream, source, lines.clone());
+                stream.open_rows = lines.len();
+                return out;
+            }
+        }
+    }
+    Batch::default()
 }
 
 #[cfg(test)]
@@ -282,6 +359,47 @@ mod tests {
         // The next block closes: only it is new, without the answer mark.
         let out = plan(&mut p, &[block("a", "First para\n\nSecond\n\nThird")], &[]);
         assert_eq!(text_of(&out.active), vec!["Second"]);
+    }
+
+    #[test]
+    fn an_open_fence_writes_its_finished_lines_as_they_come() {
+        let mut p = StreamPlanner::new();
+        let fence = "Intro\n\n```rust\nfn a() {}\nfn b";
+        // The intro closes; the fence's finished lines follow next frame.
+        let out = plan(&mut p, &[block("a", fence)], &[]);
+        assert_eq!(text_of(&out.active), vec!["◆ Intro"]);
+        let out = plan(&mut p, &[block("a", fence)], &[]);
+        assert_eq!(text_of(&out.active), vec!["```rust", "fn a() {}"]);
+        assert!(!out.active[0].continues);
+        // The unfinished line stays live, skipping the rows already out.
+        assert_eq!(p.pending("a").map(|pending| pending.written), Some(2));
+        let more = "Intro\n\n```rust\nfn a() {}\nfn b() {}\n";
+        let out = plan(&mut p, &[block("a", more)], &[]);
+        assert_eq!(text_of(&out.active), vec!["fn b() {}"]);
+        assert!(out.active[0].continues);
+        // The whole fence so far is the history source.
+        let source = out.active[0].source.as_ref().unwrap();
+        assert_eq!(source.text, "```rust\nfn a() {}\nfn b() {}\n");
+        // Settling writes the closing fence only.
+        let done = "Intro\n\n```rust\nfn a() {}\nfn b() {}\n```";
+        let out = plan(&mut p, &[], &[block("msg", done)]);
+        let batch = out.finalized.get("msg").expect("finalized");
+        assert!(batch.continues);
+        assert_eq!(text_of(std::slice::from_ref(batch)), vec!["```"]);
+    }
+
+    #[test]
+    fn an_answer_cut_off_inside_a_fence_closes_it() {
+        let mut p = StreamPlanner::new();
+        let cut = "```prolog\nfib(0, 0).\nfib(N, F) :- N >";
+        plan(&mut p, &[block("a", cut)], &[]);
+        let out = plan(&mut p, &[], &[block("msg", cut)]);
+        let batch = out.finalized.get("msg").expect("finalized");
+        assert_eq!(
+            text_of(std::slice::from_ref(batch)),
+            vec!["fib(N, F) :- N >", "```"]
+        );
+        assert!(batch.source.as_ref().unwrap().text.ends_with("N >\n```"));
     }
 
     #[test]
@@ -373,7 +491,7 @@ mod tests {
             }
             let mut tail = Vec::new();
             for block in live {
-                if let Some((rest, _)) = planner.pending(block.id) {
+                if let Some(Pending { text: rest, .. }) = planner.pending(block.id) {
                     tail.extend(rest.lines().map(|l| format!("~{l}")));
                 }
             }

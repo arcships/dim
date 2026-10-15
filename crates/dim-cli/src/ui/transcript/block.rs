@@ -7,6 +7,8 @@
 //! resize. Blocks carry semantic [`Tone`]s, never colours: the palette is
 //! applied at draw time.
 
+use std::sync::Arc;
+
 use crate::model::view::{RowKind, RowTone, ViewRow};
 use crate::ui::transcript::tool_group::{Detail, ToolGroup, project_group};
 
@@ -47,7 +49,7 @@ pub enum Block {
 ///
 /// Assistant text is not projected here: a finished answer may already be
 /// laid out by the stream planner, which the caller decides.
-pub fn project_row(rows: &[ViewRow], index: usize, detail: Detail) -> Block {
+pub fn project_row(rows: &[Arc<ViewRow>], index: usize, detail: Detail) -> Block {
     let row = &rows[index];
     match row.kind {
         RowKind::UserMessage => Block::User(row.text.clone()),
@@ -75,7 +77,7 @@ pub fn project_row(rows: &[ViewRow], index: usize, detail: Detail) -> Block {
 
 /// Whether the call at `index` opens a group: the calls of one model
 /// request are consecutive rows, and only the first stands for the group.
-pub fn opens_group(rows: &[ViewRow], index: usize) -> bool {
+pub fn opens_group(rows: &[Arc<ViewRow>], index: usize) -> bool {
     let row = &rows[index];
     row.kind == RowKind::ToolCall
         && (index == 0 || {
@@ -85,12 +87,13 @@ pub fn opens_group(rows: &[ViewRow], index: usize) -> bool {
 }
 
 /// The calls of the group that opens at `index`.
-pub fn group_rows(rows: &[ViewRow], index: usize) -> Vec<&ViewRow> {
+pub fn group_rows(rows: &[Arc<ViewRow>], index: usize) -> Vec<&ViewRow> {
     let batch = &rows[index].batch;
-    std::iter::once(&rows[index])
+    std::iter::once(&*rows[index])
         .chain(
             rows[index + 1..]
                 .iter()
+                .map(|row| &**row)
                 .take_while(|row| row.kind == RowKind::ToolCall && &row.batch == batch),
         )
         .collect()
@@ -125,7 +128,7 @@ mod tests {
     #[test]
     fn unknown_and_streaming_rows_draw_as_muted_status() {
         for kind in [RowKind::Other, RowKind::StreamingAssistant, RowKind::Status] {
-            let block = project_row(&[row(kind, "x")], 0, Detail::Collapsed);
+            let block = project_row(&shared(&[row(kind, "x")]), 0, Detail::Collapsed);
             assert!(matches!(
                 block,
                 Block::Status {
@@ -141,7 +144,7 @@ mod tests {
         let mut warn = row(RowKind::Status, "x");
         warn.tone = Some(RowTone::Warning);
         assert!(matches!(
-            project_row(&[warn], 0, Detail::Collapsed),
+            project_row(&shared(&[warn]), 0, Detail::Collapsed),
             Block::Status {
                 tone: Tone::Warning,
                 ..
@@ -154,12 +157,17 @@ mod tests {
         let mut thinking = row(RowKind::Thinking, "full");
         thinking.preview = Some("short".into());
         assert!(
-            matches!(project_row(std::slice::from_ref(&thinking), 0, Detail::Collapsed), Block::Thinking(t) if t == "short")
+            matches!(project_row(&shared(std::slice::from_ref(&thinking)), 0, Detail::Collapsed), Block::Thinking(t) if t == "short")
         );
         thinking.preview = None;
         assert!(
-            matches!(project_row(std::slice::from_ref(&thinking), 0, Detail::Collapsed), Block::Thinking(t) if t == "full")
+            matches!(project_row(&shared(std::slice::from_ref(&thinking)), 0, Detail::Collapsed), Block::Thinking(t) if t == "full")
         );
+    }
+
+    /// Rows as a snapshot publishes them.
+    fn shared(rows: &[ViewRow]) -> Vec<Arc<ViewRow>> {
+        rows.iter().cloned().map(Arc::new).collect()
     }
 
     fn call(name: &str, input: serde_json::Value, result: Option<&str>) -> ViewRow {
@@ -175,7 +183,7 @@ mod tests {
     /// The committed text of a transcript's first group, as the terminal shows it.
     fn drawn(rows: &[ViewRow], detail: Detail, width: usize) -> Vec<String> {
         let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark);
-        let Block::ToolGroup(group) = project_row(rows, 0, detail) else {
+        let Block::ToolGroup(group) = project_row(&shared(rows), 0, detail) else {
             panic!("not a group");
         };
         render_group(&group, width, &theme.palette, "·")
@@ -207,10 +215,14 @@ mod tests {
         let mut other = call("read", json!({ "path": "b.ts" }), Some("ok"));
         other.batch = Some("r2".into());
         rows.push(other);
-        assert!(opens_group(&rows, 0));
-        assert!(!opens_group(&rows, 1) && !opens_group(&rows, 2));
-        assert!(opens_group(&rows, 3), "another request opens its own group");
-        assert_eq!(group_rows(&rows, 0).len(), 3);
+        let published = shared(&rows);
+        assert!(opens_group(&published, 0));
+        assert!(!opens_group(&published, 1) && !opens_group(&published, 2));
+        assert!(
+            opens_group(&published, 3),
+            "another request opens its own group"
+        );
+        assert_eq!(group_rows(&published, 0).len(), 3);
         assert_eq!(
             drawn(&rows, Detail::Collapsed, 80),
             ["✓ Ran 1 command, ran 1 search, read 1 file · 1 failed"]
@@ -222,7 +234,7 @@ mod tests {
         let mut parked = call("bash", json!({ "command": "rm x" }), None);
         parked.pending = true;
         parked.parked = true;
-        let Block::ToolGroup(group) = project_row(&[parked], 0, Detail::Collapsed) else {
+        let Block::ToolGroup(group) = project_row(&shared(&[parked]), 0, Detail::Collapsed) else {
             panic!("not a group");
         };
         assert_eq!(group.state, State::Running);

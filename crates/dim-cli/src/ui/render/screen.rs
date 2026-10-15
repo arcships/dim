@@ -21,6 +21,9 @@ const END_SYNC: &[u8] = b"\x1b[?2026l";
 const CURSOR_SHOW: &[u8] = b"\x1b[?25h";
 const CURSOR_HIDE: &[u8] = b"\x1b[?25l";
 const ERASE_LINE: &[u8] = b"\x1b[2K";
+/// Erases from the cursor to the end of the row: written after a row's text,
+/// so the row is never blank between two frames.
+const ERASE_LINE_END: &[u8] = b"\x1b[K";
 const ERASE_DOWN: &[u8] = b"\x1b[J";
 
 /// What one frame wants on screen.
@@ -73,6 +76,9 @@ pub struct Screen {
     anchor: u16,
     /// Rows as last painted; `None` entries are unknown (repaint).
     painted: Vec<Option<String>>,
+    /// The last paint showed the live rows from the first: rows committed
+    /// from the top of the live tail can stay where they are drawn.
+    whole: bool,
     cursor_visible: bool,
     /// Where the terminal's cursor is after our last write, when known.
     cursor_at: Option<(u16, u16)>,
@@ -91,6 +97,7 @@ impl Screen {
             scrolled: false,
             anchor: 0,
             painted: Vec::new(),
+            whole: false,
             cursor_visible: true,
             cursor_at: None,
             synchronized,
@@ -242,6 +249,9 @@ impl Screen {
     }
 
     fn commit(&mut self, text: &str, out: &mut Vec<u8>) {
+        if self.commit_in_place(text, out) {
+            return;
+        }
         let mut term = OutTerm {
             out,
             size: self.size,
@@ -265,6 +275,43 @@ impl Screen {
         }
         // The vendored routine leaves the cursor at the new viewport top.
         self.cursor_at = Some((0, self.top));
+    }
+
+    /// Commits rows that fit in the live region by turning its top rows into
+    /// history: they are written over the rows painted there (a row that
+    /// already reads the same is left alone) and the region now starts below
+    /// them. A streamed answer commits exactly the rows its live tail showed,
+    /// so nothing is erased and the region does not move; the next paint
+    /// fills the region from its new top. Rows wider than the screen (the
+    /// terminal would wrap them) and a region showing only its last rows go
+    /// the erasing way.
+    fn commit_in_place(&mut self, text: &str, out: &mut Vec<u8>) -> bool {
+        let text = text.strip_suffix('\n').unwrap_or(text);
+        let text = scrub_keeping_newlines(text);
+        let rows: Vec<&str> = text.split('\n').collect();
+        let fits = rows.len() <= self.viewport_height as usize
+            && rows
+                .iter()
+                .all(|row| crate::ui::render::panel::visible_width(row) <= self.size.0 as usize);
+        if !self.whole || !fits {
+            return false;
+        }
+        for (i, row) in rows.iter().enumerate() {
+            let painted = self.painted[i].as_deref().map(scrub);
+            if painted.as_deref() == Some(*row) {
+                continue;
+            }
+            push_move(out, 0, self.top + i as u16);
+            out.extend_from_slice(row.as_bytes());
+            out.extend_from_slice(b"\x1b[0m");
+            out.extend_from_slice(ERASE_LINE_END);
+            self.cursor_at = None;
+        }
+        let n = rows.len();
+        self.top += n as u16;
+        self.viewport_height -= n as u16;
+        self.painted.drain(..n);
+        true
     }
 
     /// `rows` rows of the screen left through the top.
@@ -291,6 +338,12 @@ impl Screen {
                 self.top -= overflow;
                 self.note_scroll(overflow);
             }
+            // The painted rows scrolled with the screen and still read the
+            // same; only the rows the region gained are unknown.
+            self.painted.resize(wanted as usize, None);
+            self.viewport_height = wanted;
+            self.cursor_at = None;
+            return;
         } else {
             // Rows that left the region stay where they are, blank, below it.
             for i in wanted..old {
@@ -391,16 +444,18 @@ impl Screen {
 
     fn paint(&mut self, frame: &Frame, out: &mut Vec<u8>) {
         let top = self.viewport_top();
+        self.whole = frame.live.len() <= self.viewport_height as usize;
         let rows = visible_rows(&frame.live, self.viewport_height);
         for (i, row) in rows.iter().enumerate() {
             if self.painted.get(i).and_then(|p| p.as_deref()) == Some(row.as_str()) {
                 continue;
             }
             push_move(out, 0, top + i as u16);
-            out.extend_from_slice(ERASE_LINE);
             out.extend_from_slice(scrub(row).as_bytes());
-            // Styling must not leak into the next row.
+            // Styling must not leak into the next row; the old text past the
+            // new is erased after the row is written, never before.
             out.extend_from_slice(b"\x1b[0m");
+            out.extend_from_slice(ERASE_LINE_END);
             if let Some(slot) = self.painted.get_mut(i) {
                 *slot = Some(row.clone());
             }
