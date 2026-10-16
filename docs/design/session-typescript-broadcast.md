@@ -2,7 +2,9 @@
 
 Status: **Proposed; not approved or implemented.** Refs [C4 #63](https://github.com/arcships/dim/issues/63).
 
-This proposal defines one-way reception of a TypeScript part's own Session Event facts.
+This author-proposed candidate defines one-way reception of a TypeScript part's own Session Event
+facts. C4 requires a reception path; this particular Config/transport construction is optional
+and is not a prerequisite for reviewing or merging the tool/method subset in #150.
 The original-module Config convention, activation behavior and native transport ownership require
 maintainer confirmation before implementation. Full C4 acceptance remains pending.
 
@@ -147,9 +149,12 @@ real Session activation, Config realization or dynamic identities. Those are pro
    register the typed Session listener before apply returns. Another optional row stays independent.
 4. The source callback uses its captured row context/token and synchronously checks Session phase
    Active before emitting. Loading/closing/cancelled callbacks return without delivery. It does
-   not await activated() inside the Session chain. Failed Sessions never activate; facts before
-   subscription or activation are not buffered or replayed. This startup-delivery behavior requires
-   confirmation; autonomous startup work is outside this binding.
+   not await activated() inside the Session chain. Active is checked at callback execution, not
+   at source emission: a fact emitted while Loading may be queued by rutis and forwarded when
+   its captured listener executes after activation. Facts without a registered listener are not
+   replayed. This candidate makes no emission-time cutoff promise and adds no buffer or lifecycle
+   gate to obtain one. Failed Sessions never activate. This delivery boundary requires confirmation;
+   autonomous startup work is outside this binding.
 
 The wrapper retains the original inject keys and declares every external SDK dependency; its
 own named identity uses existing self access. Peer/readiness waits observe row cancellation and
@@ -181,7 +186,8 @@ Confirm the Config convention, current immutable-entry limitation, startup-deliv
 transport/ownership integration before implementation. The complete Event payload retains the
 existing source contract. Product verification then uses protected serve/Rpc, the original module
 schema, two receiving rows in one Session and another Session in the same Node process. It must
-cover activation/failed initialization, absent/disabled opt-in, one copy per delivered emission,
+cover activation/failed initialization, a source emitted before activation whose listener is
+delayed until after activation, absent/disabled opt-in, one copy per delivered emission,
 ordering, dynamic identities, in-flight unload, same-row reload, stale peers, and continued native
 tool/C1 execution. Synthetic transport success does not fulfill this acceptance.
 
@@ -211,10 +217,10 @@ to this design-only change.
 
 ## Ablation
 
-The explicit Config slot is necessary to distinguish a requesting module and admit the host's
+Within this candidate, the explicit Config slot distinguishes a requesting module and admit the host's
 runtime inputs through its original schema. Link.id already supplies the unique event name;
 a second event-name field or generation counter adds no requirement. The existing SDK NodeEvent
-handoff is necessary to keep I/O waits off the canonical Session channel while retaining
+handoff keeps I/O waits off the canonical Session channel while retaining
 per-key order. Identity, registration, connection close and effects remain with existing SDK and
 row owners. No additional abstraction, forwarding capability, manager, lock or cursor is needed.
 
