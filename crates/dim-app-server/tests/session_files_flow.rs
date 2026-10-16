@@ -87,6 +87,15 @@ impl Capability for Consumer {
     }
 }
 
+/// Waits until a fiber the mount depends on is Active.
+async fn wait_active(node: &rutis::FiberView) {
+    let mut status = node.watch();
+    while status.borrow().state != FiberState::Active {
+        assert_ne!(status.borrow().state, FiberState::Failed);
+        status.changed().await.unwrap();
+    }
+}
+
 struct Store {
     root: Ctx,
     consumer: rutis::FiberView,
@@ -98,19 +107,21 @@ impl Store {
     /// root 0, or without FileStorage.
     async fn mount(home: &Home, file_storage: bool) -> Self {
         let root = Ctx::root().unwrap();
-        if file_storage {
+        // FileStorage activates on its own fiber; the consumer's Active state
+        // does not cover it, and a put that lands before it does reports
+        // NodeUnavailable. Keep the fiber and wait for it like the consumer.
+        let files_node = file_storage.then(|| {
             root.plugin(capability_plugin(FileStoragePlugin::new(vec![
                 home.0.clone(),
-            ])));
-        }
+            ])))
+        });
         root.plugin(capability_plugin(SqliteStoragePlugin::new(home.database())));
         root.plugin(capability_plugin(SessionStorePlugin::new(0)));
         let captured = Arc::new(OnceLock::new());
         let consumer = root.plugin(capability_plugin(Consumer(captured.clone())));
-        let mut status = consumer.watch();
-        while status.borrow().state != FiberState::Active {
-            assert_ne!(status.borrow().state, FiberState::Failed);
-            status.changed().await.unwrap();
+        wait_active(&consumer).await;
+        if let Some(node) = &files_node {
+            wait_active(node).await;
         }
         let (files, sessions) = captured.get().unwrap().clone();
         Self {
@@ -331,7 +342,14 @@ async fn sweeps_remove_only_what_no_row_of_this_database_owns() {
         .rollback_session("s1")
         .await
         .unwrap();
-    eventually(|| home.entries().is_empty()).await;
+    // The sweep removes a file's entry first and its row a moment later, so
+    // waiting for the entries alone runs ahead of the sweep's last write
+    // under load and races it on macOS CI (#139). Wait for both.
+    eventually(|| {
+        home.entries().is_empty()
+            && home.rows("SELECT file_id FROM session_files").is_empty()
+    })
+    .await;
     assert!(home.rows("SELECT file_id FROM session_files").is_empty());
     assert!(other.join("paste.txt").exists());
     store.root.shutdown().await.unwrap();
