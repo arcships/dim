@@ -166,6 +166,12 @@ impl Display {
         }
         Ok(())
     }
+    pub fn shell_progress(&mut self, text: &str) -> Result<()> {
+        print!("{}", safe(text));
+        self.text_open = !text.ends_with('\n');
+        io::stdout().flush()?;
+        Ok(())
+    }
     pub fn finish_text(&mut self) -> Result<()> {
         if self.text_open {
             println!();

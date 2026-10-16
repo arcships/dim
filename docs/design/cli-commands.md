@@ -7,6 +7,9 @@ client of the existing daemon. This document defines the CLI interface for
 the implementation; the [native CLI contract](../../crates/dim-cli/README.md)
 describes the current executable.
 
+The proposed [attachment input contract](cli-attachment-input.md) defines the idle draft editor,
+local image sources, paste handling and exec image arguments.
+
 ## Commands
 
 | Entry | Behavior |
@@ -17,6 +20,7 @@ describes the current executable.
 | `dimcode session export SESSION_ID --format markdown\|json [--output PATH]` | Export the main branch; write to stdout when no output path is supplied. |
 | `/export markdown PATH` or `/export json PATH` | Export the current main branch to a file while the interactive client is idle. |
 | `/exit` | Detach and exit from the idle interactive prompt. |
+| `!command` / `!!command` | Call the Session's existing `shell.run` in record/private mode, including during a model turn. |
 
 Global home, workspace, server and model-profile options retain their current
 meanings and work before or after the command. Existing login/account/logout,
@@ -32,6 +36,55 @@ quote expansion. Missing paths and unsupported formats print usage and return
 to the prompt without submitting input. `/exit` takes no arguments. Only these
 exact command names are intercepted; other text follows the normal input path.
 Subcommands do not create a plugin command registry.
+
+P1 shell prefixes apply only to interactive input. Their execution, recording,
+progress, cancellation and lifetime follow [ShellInput](plugins/ShellInput.md).
+The CLI generates `runId` before sending the request and never retries a run.
+The command after the prefix is passed verbatim; an empty command prints usage.
+While a command is pending, a second shell line reports that the caller already
+has a run. Another client's run can still cause the server's `shell_busy` error.
+Neither case submits model input. Ordinary text typed during execution retains
+the native client's discard behavior, with a message to wait for the next prompt;
+there is no input queue. A pending approval owns its answer line, including `!`.
+
+The first Ctrl+C during a shell run sends `shell.stop` for its client-generated
+identity, including before admission. A second interrupt uses the existing model
+turn stop and waits for settlement; it never skips pending replies. EOF stops
+the caller's shell run and model turn before detaching. With no run, the existing
+interrupt behavior applies. Progress is labelled as incomplete; the final reply
+prints the authoritative bounded output again, its status, truncation, and the
+recorded sequence or recording error. Output is filtered at the terminal boundary.
+RPC errors remain command errors, never model text. A disconnected caller does
+not imply that a run stopped or that its recorded input was lost.
+
+```text
+> Explain the failing build
+Assistant: Inspecting the build...
+!cargo check
+[shell started] record
+[shell progress] (incomplete)
+    Checking project
+^C
+[shell stopping] Waiting for command settlement
+^C
+[stopping] Waiting for resource settlement
+[shell output] (final)
+    Checking project
+[shell stopped] ...
+[shell recorded] sequence: 42
+
+> !!printf private
+[shell started] private
+[shell output] (final)
+private
+[shell completed] exit: 0
+
+> _
+```
+
+These records use terminal scrollback and wrap at the terminal's width; there
+is no second prompt, overlay or client-side process. Best-effort progress may
+be dropped. Final output is shown in full rather than inferred from progress.
 
 For both export entries, relative output paths use the CLI process's current
 directory, including after resume; neither the Session's cwd nor `--home` changes

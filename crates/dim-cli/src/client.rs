@@ -39,10 +39,20 @@ enum DaemonProfile {
 pub struct RpcError {
     pub code: i32,
     pub message: String,
+    pub data: Option<Value>,
 }
 impl std::fmt::Display for RpcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} (RPC {})", self.message, self.code)
+        write!(f, "{} (RPC {}", self.message, self.code)?;
+        if let Some(code) = self
+            .data
+            .as_ref()
+            .and_then(|data| data.get("appError"))
+            .and_then(Value::as_str)
+        {
+            write!(f, ", {code}")?;
+        }
+        write!(f, ")")
     }
 }
 impl std::error::Error for RpcError {}
@@ -158,6 +168,9 @@ impl Client {
         let mut bytes = serde_json::to_vec(
             &json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}),
         )?;
+        if bytes.len() > FRAME_LIMIT {
+            return Err("App Server request exceeds 16 MiB after JSON encoding".into());
+        }
         bytes.push(b'\n');
         self.write.write_all(&bytes).await?;
         self.write.flush().await?;
