@@ -76,6 +76,16 @@ async fn command_rules_written_by_the_client_apply_to_the_next_call() {
     let entry =
         json!({"modelId":"alpha","displayName":"alpha","status":"active","capabilities":caps});
     assert_ok(&client.rpc("provider.save",json!({"provider":{"providerId":"public-fixture","displayName":"Fixture","driverKind":"openai-compatible","baseUrl":"https://model.example/v1","auth":{"type":"bearer"},"credential":{"action":"set","value":"fixture-access"},"models":[entry],"enabled":true}})).await);
+    // Select the model as a user would; the no-selection fallback costs
+    // seconds in a debug build and is covered by provider_flow.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"providerId":"public-fixture","modelId":"alpha"}),
+            )
+            .await,
+    );
     let created = client.rpc("session.create", json!({"cwd":work})).await;
     assert_ok(&created);
     let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();

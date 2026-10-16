@@ -636,6 +636,14 @@ impl Daemon {
             ..Default::default()
         };
         client.ok("provider.save", json!({"provider":{"providerId":"public-fixture","displayName":"Fixture","driverKind":"openai-compatible","baseUrl":"http://127.0.0.1:9/v1","auth":{"type":"bearer"},"credential":{"action":"set","value":"fixture-access"},"models":[{"modelId":"alpha","displayName":"alpha","status":"active","capabilities":caps}],"enabled":true}})).await;
+        // Select it as a user would; the no-selection fallback costs seconds
+        // in a debug build and is covered by provider_flow.
+        client
+            .ok(
+                "provider.select",
+                json!({"providerId":"public-fixture","modelId":"alpha"}),
+            )
+            .await;
         client
     }
     async fn session(&self, client: &mut Client) -> String {

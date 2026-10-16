@@ -824,6 +824,16 @@ async fn local_product_operations_use_real_tools_and_survive_rpc_reload() {
         json!({"modelId":id,"displayName":id,"status":"active","capabilities":caps})
     };
     assert_ok(&client.rpc("provider.save",json!({"provider":{"providerId":"public-fixture","displayName":"Fixture","driverKind":"openai-compatible","baseUrl":"https://model.example/v1","auth":{"type":"bearer"},"credential":{"action":"set","value":"fixture-access"},"models":[entry("alpha",2048),entry("beta",4096)],"enabled":true}})).await);
+    // Select the model as a user would; the no-selection fallback costs
+    // seconds in a debug build and is covered by provider_flow.
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"providerId":"public-fixture","modelId":"alpha"}),
+            )
+            .await,
+    );
     let created = client.rpc("session.create", json!({"cwd":work})).await;
     assert_ok(&created);
     assert_eq!(created["result"]["model"]["modelId"], "alpha");

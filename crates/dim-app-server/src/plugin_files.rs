@@ -223,18 +223,16 @@ fn lease_value(lease: Arc<tokio::sync::Mutex<Option<FileLease>>>, tasks: TaskTra
                             let cancel = CancellationToken::new();
                             let result = match method {
                                 "read" => match lease.read(&cancel).await {
-                                    Ok(bytes) => serde_json::from_slice::<StoredFile>(&bytes)
-                                        .map_err(|_| {
-                                            FileStorageError::Io(io::ErrorKind::InvalidData.into())
-                                        })
-                                        .and_then(|record| {
-                                            if record.version != FORMAT_VERSION {
-                                                return Err(FileStorageError::Io(
-                                                    io::ErrorKind::InvalidData.into(),
-                                                ));
-                                            }
-                                            Ok(json!(record.text).into())
-                                        }),
+                                    Ok(bytes) => match serde_json::from_slice::<StoredFile>(&bytes)
+                                    {
+                                        Ok(StoredFile {
+                                            version: FORMAT_VERSION,
+                                            text,
+                                        }) => Ok(json!(text).into()),
+                                        _ => Err(FileStorageError::Io(
+                                            io::ErrorKind::InvalidData.into(),
+                                        )),
+                                    },
                                     Err(FileStorageError::Io(error))
                                         if error.kind() == io::ErrorKind::NotFound =>
                                     {

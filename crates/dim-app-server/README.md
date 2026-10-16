@@ -286,9 +286,11 @@ An unversioned file, malformed record, unknown version or invalid UTF-8 returns
 the existing fixed `invalid_data` error, without file contents or parser details.
 Read failure never rewrites or deletes the original. There is no automatic
 migration, fallback to empty state or interpretation of an unknown format.
-Existing unversioned plugin files therefore require an explicit owner-approved
-migration before the affected plugin can read them with this format. This is
-separate from native SQLite storage and changes no database format.
+No distributed Rust App Server build used the unversioned PluginFiles format.
+Files from before v1 are development data: the owning plugin and data owner must
+explicitly decide whether to recreate that state or preserve it for manual
+recovery. The host never resets, converts or deletes these files on read. This
+baseline is separate from native SQLite storage and changes no database format.
 
 `backup(suffix)` remains a byte-for-byte copy of the stored file, including its
 envelope or any rejected legacy bytes. A backup must not decode, re-encode or
@@ -310,7 +312,7 @@ the existing language-neutral service and error data unchanged.
 None (§4 rule 8). Existing atomic
 replacement and backup primitives cover the format. Acceptance uses disposable
 plugin roots to verify round-trip text, stored version, reopen, version rejection
-with byte preservation, and unchanged transaction/backup/lifecycle behavior.
+with byte preservation and unchanged transaction/backup/lifecycle behavior.
 
 ## Service contract
 
