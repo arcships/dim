@@ -1804,7 +1804,8 @@ fn interrupted_shell_reply_retains_its_run_for_explicit_stop_and_settlement_feed
 #[test]
 fn approval_interrupt_stops_the_turn_instead_of_a_deferred_completed_shell() {
     let home = Home::new();
-    let daemon = home.daemon(|wire| {
+    let (release, finish) = std::sync::mpsc::channel();
+    let daemon = home.daemon(move |wire| {
         wire.start(false);
         let submit = wire.read("session.submit"); wire.reply(&submit,json!({"event":{}}));
         let idle = wire.read("session.idle");
@@ -1813,8 +1814,14 @@ fn approval_interrupt_stops_the_turn_instead_of_a_deferred_completed_shell() {
         wire.notice("approval.request",json!({"sessionId":"session","branchId":"main","requestId":"approval","call":{"name":"exec","input":{"command":"inspect"}},"reason":"review"}));
         wire.reply(&run,json!({"runId":run["params"]["runId"],"status":"completed","exitCode":0,"output":"deferred output","truncated":false}));
         let stop=wire.read("session.stop");
+        finish.recv_timeout(Duration::from_secs(10)).unwrap();
         wire.notice("approval.cancelled",json!({"sessionId":"session","requestId":"approval"}));
         wire.reply(&idle,json!({"sequence":40})); wire.reply(&stop,json!({"sequence":40}));
+        let next = wire.read("session.submit");
+        assert_eq!(next["params"]["text"], "after interrupts");
+        wire.reply(&next,json!({"event":{}}));
+        let idle = wire.read("session.idle");
+        wire.reply(&idle,json!({"sequence":40}));
         wire.detach();
     });
     let (mut terminal, child) = Terminal::launch(home.command());
@@ -1826,6 +1833,11 @@ fn approval_interrupt_stops_the_turn_instead_of_a_deferred_completed_shell() {
     assert!(!terminal.transcript.contains("deferred output"));
     assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
     terminal.until("[stopping] Waiting for resource settlement");
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
+    terminal.until("[stopping] Still waiting for resource settlement");
+    release.send(()).unwrap();
+    terminal.until("\n> ");
+    terminal.write(b"after interrupts\n");
     terminal.until("\n> ");
     terminal.write(b"/exit\n");
     assert!(wait(child).status.success());

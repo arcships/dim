@@ -402,7 +402,11 @@ async fn wait_turn(
             event
         } else {
             tokio::select! {
-                _ = interrupts.recv(), if (stop.is_none() && settled.is_none()) || shell.is_some() => {
+                _ = interrupts.recv() => {
+                    if (stop.is_some() || settled.is_some()) && shell.is_none() {
+                        display.record("[stopping] Still waiting for resource settlement")?;
+                        continue;
+                    }
                     if !display.json { println!(); }
                     if let Some(run) = shell.as_mut().filter(|run| !prompted && !run.stopping) {
                         run.stop = Some(client.send("shell.stop", json!({"sessionId":session_id,"runId":run.run_id})).await?);
