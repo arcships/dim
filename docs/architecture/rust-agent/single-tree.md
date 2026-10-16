@@ -86,6 +86,112 @@ isolated loader key under the host; both create an `AgentAnchor` instance.
 
 首次 loader 装配也属于 Agent 已登记的创建操作；调用方取消等待不取消装配拥有权，`Agent::close()` 等待在途创建及其回滚后才释放 loader。请求的 Session 扩展由 `SessionExtension` 行装载，该行显式注入 `SessionIdentity`，不等待普通 Session 能力全部就绪。扩展与普通能力一起受候选 Session 的启动期限、Active 检查和分组回滚约束；作用域及扩展装配入口只初始化一次，不作为可独立重启的业务能力。嵌套实例归 Session 分组所有，不归创建它的行所有。
 
+### 就绪成员选择（#132，提案）
+
+Status: Proposed; shared-contract confirmation is required before implementation.
+This section does not change the implemented all-rows wait described above.
+Owner: runtime assembly, [#132](https://github.com/arcships/dim/issues/132).
+
+#### 装配边界与成员
+
+[ADR 002 D3](../../adr/002-plugin-scope.md#d3-dependencies-follow-scope-and-point-from-extensions-to-the-core)
+与 [Session access §9.4](../../design/contracts/session-access.md#94-optional-parts-per-enabled-plugin)
+要求可选插件不可用只影响自身功能。装配不能把“安装在同一作用域”当成“发布该作用域必需”。
+
+每条 Session/branch 部件注册在同一注册位置标明是否属于就绪成员；这是装配元数据，不是服务依赖：
+
+| 注册 | 发布时的要求 |
+| --- | --- |
+| 现有 `session_plugin`、`timeline_plugin`、registry 注册 | 保持 required，兼容现有宿主；不按插件名字推断 |
+| 新的显式 optional 部件注册，包括非 Rust 部件 | 安装但不加入就绪成员；未启用的部件不安装 |
+| `SessionScope`、`BranchScope`、请求指定的 Session extension 及其 launcher | required；显式请求的扩展失败仍拒绝本次创建 |
+
+成员身份随安装时生成的真实 row ID 记录，包含名称避让结果；不按展示名、语言或当前 `FiberState` 分类。
+Rust 可选注册与 C4 的中立部件注册使用同一元数据；不向 rutis 行添加它不识别的字段，也不增加一个运行时注册服务。
+Session/branch 根和已有必需注册不能被可选部件声明降级。
+
+所有部件的 `Deps` 均保持硬依赖；optional 不改变它们的解析、Pending、audit、换代或失效传播。
+必需部件若依赖可选部件提供的服务，仍须等该服务并按原期限失败；不会因 optional 标记而忽略依赖。
+核心不得新增这种对可选插件的硬依赖。依赖图检查继续由现有装配/loader 机制负责。
+
+#### 创建与发布
+
+rutis 0.10.0 的 `Loader::create_instance` 返回逐行 `InstanceResult`，但它先调用 `settle`：
+Pending 已算 settled，Loading 则仍等待。因此仅过滤现有 `wait_active` 不满足本合同。
+
+装配继续启动同一个 loader 创建操作，并由现有 Session/branch 装配所有者持有它。
+在该操作结束前，利用已有 `LoaderChanged::InstanceCreated`、`Loader::entries` 和 `FiberView::watch`
+发现候选实例并观察其必需行；订阅先于创建，读取现态补齐已发生的变化。不轮询、不增加新的就绪事件或生命周期阶段。
+候选必须满足下列条件才可进入原有初始化流程：
+
+1. 实例根与所有 required 行已存在且 Active；预期行没有 fiber 时，读取其 loader 状态，不能把它视为已就绪。
+2. required 行的解析、校验或 apply 失败立即拒绝；Pending/Loading 沿用同一个启动期限和取消路径。
+3. optional 行的 Pending、Loading、Failed 或运行时缺失只留在 loader 状态和诊断中，不成为创建失败。
+   不把可选失败改写成成功，也不删除失败行。
+
+创建操作已经返回时，仍按 row ID 分类处理报告，不能先聚合所有 `Failed` 再过滤 fiber。
+实例分组本身无效、关闭、创建失败或装配取消仍拒绝整个候选；optional 不能屏蔽分组错误或破坏共享契约的非法装配。
+
+成员满足后，Session 仍经 TimelineTree 创建/恢复分支；分支仍经原有 BranchOpening 完成初始化，
+然后才发布和接收输入。不增加 SessionOpening、发布后补就绪或工具专用检查点。
+C3 仍在 ToolBinding 初始化首次读取时固定完整工具表；此时 Active 的可选提供者参加取样，
+之后 Active 的提供者留到下次 registry/Session 装载，哪怕它在发布之前已经 Active。
+方法服务继续按调用查找；本提案不规定插件业务入口的可用性或重试策略。
+
+#### 所有权、失败与关闭
+
+提前满足成员条件不会取消仍在进行的 loader 创建操作，也不会把它留给无人持有的后台任务。
+现有作用域装配所有者保留创建任务并回收结果；发布后该任务返回的可选行失败仍归对应行，
+不关闭已发布的 Session。根创建错误走现有 fault 路径。
+
+关闭、取消、超时或回滚先阻止新工作，再关闭整个 loader 作用域并等待创建任务退出。
+关闭前从 loader 读取当前子树，包含发布后出现的可选行；不能只使用发布时的 `children` 快照来统计清理错误。
+由原有分组关闭负责卸载全部后代，由各部件原有 effect 结算已接受的工作和必需终态；随后释放作用域。
+清理失败仍单独报告，不因 optional 而吞掉。重载仍按现有真实依赖传播，不增加 supervisor 或恢复循环。
+
+#### 影响面与验证
+
+改动限于 runtime 装配注册、候选创建/等待及其关闭路径；公开增量只有注册时的成员选择。
+工具、方法、Timeline 事件/序号/批次、输入协议、持久化格式及 rutis 均不变。
+以下行为加入现有装配与 Session 流程测试，复用同一 fixture，不逐个私有 helper 建测试：
+
+| 流程 | 必需证据 |
+| --- | --- |
+| create 与 restore | optional Pending、Failed、运行时缺失时均可发布；原生首条输入完成 |
+| optional apply 挂起 | required 就绪后可发布；关闭释放挂起的 apply，并等待创建任务回收 |
+| required 不可用 | 缺失、Pending、Failed 与没有 fiber 的解析失败均不能发布；错误与清理分开 |
+| 首条工具请求 | 保持 C3 首次取样与 BranchOpening；迟到的工具不在同代自动接入 |
+| 取消、关闭与重载 | 包含迟到行和从未 Active 的行；已接受工作结算、资源释放、无遗留创建任务 |
+
+消融检查：只过滤 `wait_active` 无法处理 Loading 和无 fiber 的失败报告；只按根服务是否存在发布会丢失既有必需能力保障；
+全量继续等待违反 D3。保留静态成员元数据与原创建任务所有权，其余流程复用现有机制。
+
+#### 规则检查
+
+| 规则 | 适用情况 |
+| --- | --- |
+| §4 rules 1–3 | 不新增业务状态写入、交接事件或 before 回调；原输入交接不变 |
+| §4 rule 4 | 成员仅表达作用域发布条件，没有插件业务含义 |
+| §4 rules 5–6 | 不修改 Timeline 原子提交、分发或模型上下文入口 |
+| §4 rule 7 | 读取 loader 的公开行状态与 fiber watch，不读取插件私有状态 |
+| §4 rule 8 | 要求来自装配自身错误的全员就绪条件，实现与验证在 runtime 内闭环 |
+| §4 rule 9 | 就绪成员和装载结果不进入 Timeline |
+| §1 | 所有行、创建任务与清理仍归原有 loader/作用域；没有第二套生命周期管理器 |
+| ADR 002 D1–D2 | 不改变部件作用域，不增加接线插件 |
+| ADR 002 D3 | 可选性属于装配成员；服务依赖仍全是硬依赖 |
+| ADR 002 D4 | 成员属于结构配置；业务配置不进入 loader |
+| ADR 002 D5 | 成员语义按 scope/row 定义，Rust 与非 Rust 部件相同 |
+
+#### 向机制所有者提出的需求
+
+| 项 | 内容 |
+| --- | --- |
+| 被挡住的合同 | 装配全员等待违反 ADR 002 D3 / Session access §9.4；见 #132 引用的 C3/C4 评审 |
+| 已有机制 | loader 正确区分 Pending/Failed 并给出逐行报告；`wait_active` 只会等所有传入行；都没有表达作用域的必需成员 |
+| 通用能力 | 在同一次注册中区分安装成员与发布必需成员，并让候选创建和回收遵守该区分 |
+| 序号、批次、中断、重载 | 不改序号/批次；取消与关闭仍等待所有已接受工作；真实依赖失效传播不变 |
+| 实现与验证 | dim runtime 装配线，#132；不向 rutis 提需求 |
+
 ### 产品装配约束（目标）
 
 **所有运行能力进入 Plugin 树。** App Server 的进程 root 承载跨 Session 的存储、账号和管理能力；`SessionScopePlugin` 是一次会话的业务根，`BranchScopePlugin` 是一条 Timeline 的业务根。Timeline、Dispatcher 当前由 BranchScope 提供并随其清理，已经处于 Plugin 管理内；不是每个结构体都另建可重启实例。Session/Timeline 下不得自建另一棵 rutis root。纯函数和数据类型可放在内部模块；任何被其他 Plugin 消费的运行服务必须有提供者和明确依赖键，不能从构造参数、静态变量或全局单例偷渡。
