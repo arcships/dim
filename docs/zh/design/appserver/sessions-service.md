@@ -1,17 +1,17 @@
 # Agents `sessions` 服务
 
-状态：已确认 Ready（[#98](https://github.com/arcships/dim/pull/98)），S2 已实现，`sessions.delete`（§8.7）除外，它紧随 S5c 加入。依据 spike 结论（§2）；实现过程中的设计变更见 §17。路线图工作项 S2（[#62](https://github.com/arcships/dim/issues/62)），在 C2（[#48](https://github.com/arcships/dim/issues/48)，已合入）与 S1（[#58](https://github.com/arcships/dim/issues/58)，已在 [#94](https://github.com/arcships/dim/pull/94) 合入）之后。合同：[Session 访问 A.1](../contracts/session-access.md#a1-sessions-服务)。总览：[附录 B.2](../overview.md#b2-app-server-进程插件) Agents 行。作用域：[ADR 002](../../adr/002-plugin-scope.md) 的进程作用域，放在现有的 Agents 插件内。使用方：[Scheduler](../plugins/Scheduler.md)（P6）与 [Workflow](../plugins/Workflow.md)（P7），都用 TypeScript。
+状态：已在 S2 实现（[#98](https://github.com/arcships/dim/pull/98)）；`sessions.delete`（§6.8）在 S5c（[#97](https://github.com/arcships/dim/pull/97)）合入后加入。依据 spike 结论（§2）；实现过程中的设计变更见 §17。路线图工作项 S2（[#62](https://github.com/arcships/dim/issues/62)），在 C2（[#48](https://github.com/arcships/dim/issues/48)，已合入）与 S1（[#58](https://github.com/arcships/dim/issues/58)，已在 [#94](https://github.com/arcships/dim/pull/94) 合入）之后。合同：[Session 访问 A.1](../contracts/session-access.md#a1-sessions-服务)。总览：[附录 B.2](../overview.md#b2-app-server-进程插件) Agents 行。作用域：[ADR 002](../../adr/002-plugin-scope.md) 的进程作用域，放在现有的 Agents 插件内。使用方：[Scheduler](../plugins/Scheduler.md)（P6）与 [Workflow](../plugins/Workflow.md)（P7），都用 TypeScript。
 
 ## 1. 概要
 
-Agents 提供进程服务 `sessions`，让任何语言的进程插件都能像 Collaboration 那样启动和驱动 Session。方法为 `launch`、`input`、`lookup`、`history`、`withdraw`、`stop` 和 `idle`，每个都映射到 Agents 现有的 Session 创建与准入（`AgentIndex`）和公共 Session 门面。`withdraw` 转交给 S1 已加入的 InputQueue 撤回服务。
+Agents 提供进程服务 `sessions`，让任何语言的进程插件都能像 Collaboration 那样启动和驱动 Session。方法为 `launch`、`input`、`lookup`、`history`、`withdraw`、`stop`、`idle` 和 `delete`，每个都映射到 Agents 现有的 Session 创建与准入（`AgentIndex`）和公共 Session 门面。`withdraw` 转交给 S1 已加入的 InputQueue 撤回服务，`delete` 转交给 S5c 的 `AgentIndex::delete`。
 
 - **形态。** 一个具名进程服务 `sessions`，没有实例 key。它是 `host_key("sessions")` 上的 `dyn HostDispatch`，像 `pluginFiles` 一样经服务目录跨语言共享。由 Agents 中从不重载的目录部分提供，每次调用时查找 Agents 索引，因此使用方从不随索引重载（#35）。
 - **启动。** `launch` 创建非交互 Session。它的权限策略是请求的策略，以启动方分支的当前策略为上限；当前策略即由 `permission/changed` 事实折叠出的 `PermissionState`。没有启动方时，上限是宿主的 Session 默认值。Agents 在创建前经 `SessionConfig.permission_policy` 施加上限。
 - **输入。** `input` 经 `Session::input` 写入 `input/message`，事件发布后才回复。写入不去重；结果不确定的写入用 `submissionId` 经 `lookup` 解决。
 - **空闲。** `idle` 就是门面的 `Session::idle`：Loop 没有未结束的 turn，没有等待发布的事件，分发已追到尾部。待处理的审批或提问会让 turn 保持未结束，因此调用方用 `stop` 给等待设上限。
 - **撤回。** `withdraw` 转交给 S1 的分支撤回服务，语义归 S1；删除成功时，与 `input` 一样等 `input/deleted` 发布后才回复。
-- **生命周期。** Agents 像拥有其他 Session 一样拥有启动的 Session；`sessions` 既不关闭也不卸载它们。已装载的 Session 会累积（§2 第 6 条），因此把空闲卸载作为后续项提出（[#126](https://github.com/arcships/dim/issues/126)），排在 Scheduler 的 create 模式任务上线之前（§8.6）。存储中的 Session 同样会累积，因此使用方在删掉一次运行的记录时删除该次运行的 Session，经由 `sessions.delete`；它在 S5c 的删除落地后转交给该删除（§8.7）。
+- **生命周期。** Agents 像拥有其他 Session 一样拥有启动的 Session；`sessions` 既不关闭也不卸载它们。已装载的 Session 会累积（§2 第 6 条），因此把空闲卸载作为后续项提出（[#126](https://github.com/arcships/dim/issues/126)），排在 Scheduler 的 create 模式任务上线之前（§8.6）。存储中的 Session 同样会累积，因此使用方在删掉一次运行的记录时删除该次运行的 Session，经由转交给 S5c 删除的 `sessions.delete`（§6.8、§8.7）。
 
 不新增插件、Timeline 事件，不改存储格式、运行时或门面，不向 rutis 提需求。
 
@@ -69,6 +69,7 @@ spike 改变了三处设计：服务由谁提供（第 5 条）、生命周期�
                         v                               v
  +-----------------------------------------------------------------+
  | AgentIndex：launch -> host(agent)、上限来源、取上限、create_session |
+ |             delete -> delete(sessionId)：S5c 的闸门与关闭         |
  |             其他方法 -> acquire(sessionId)：本次调用的租约        |
  +----------------------------+------------------------------------+
                               v
@@ -79,7 +80,7 @@ spike 改变了三处设计：服务由谁提供（第 5 条）、生命周期�
 | 部分 | 作用域 | 变更 |
 | --- | --- | --- |
 | `AgentDirectoryPlugin`（[agents.rs](../../../../crates/dim-app-server/src/agents.rs)） | 进程；没有依赖，从不重载 | 提供 `sessions` |
-| `AgentIndex`（[agents/sessions.rs](../../../../crates/dim-app-server/src/agents/sessions.rs)） | 进程；随 SessionStore、Settings 与存储重载 | 实现七个方法（附录 A），以及与 Rpc 共用的输入查找 |
+| `AgentIndex`（[agents/sessions.rs](../../../../crates/dim-app-server/src/agents/sessions.rs)） | 进程；随 SessionStore、Settings 与存储重载 | 实现各方法（附录 A），其中 `delete` 即 S5c 的 `AgentIndex::delete`，以及与 Rpc 共用的输入查找 |
 | 服务目录（App Server [lib.rs](../../../../crates/dim-app-server/src/lib.rs)） | 进程 | 在 `pluginFiles` 旁加 `register_shared("sessions")`；装配负责线中的一行 |
 | Rpc（[connection.rs](../../../../crates/dim-app-server/src/connection.rs)、[connection/tree.rs](../../../../crates/dim-app-server/src/connection/tree.rs)） | 进程 | `session.create` 与 `launch` 共用 cwd 规则；`session.input_lookup` 调用 Agents 的查找 |
 | Session 门面、Permission、Loop | Session、分支 | 不变；经公共调用读取 |
@@ -100,7 +101,7 @@ spike 改变了三处设计：服务由谁提供（第 5 条）、生命周期�
 
 ## 6. 方法
 
-除 `launch` 外，每个方法都 acquire 它的 Session（必要时恢复），并持有租约直到回复。结构沿用合同（[A.1](../contracts/session-access.md#a1-sessions-服务)），按 §12 细化。
+除 `launch` 与 `delete` 外，每个方法都 acquire 它的 Session（必要时恢复），并持有租约直到回复。结构沿用合同（[A.1](../contracts/session-access.md#a1-sessions-服务)），按 §12 细化。
 
 ### 6.1 launch
 
@@ -176,7 +177,7 @@ Agents 取得该分支的发布观察器，调用 `Session::input`；它像对�
 
 `{sessionId, branchId, submissionId}` → `{status: "accepted", inputId, sequence}` 或 `{status: "unknown"}`；错误 `ambiguous`。
 
-Agents 先等到该分支没有已提交但未发布的事件（`Publication::has_pending` 为 false），或分支关闭。每个批次之后发布都会追上，因此等待很短；Timeline 失败时以 `failed` 结束等待。然后在已发布的本地页中扫描带该 `submission_id` 的 `input/message`。因此，对于查找开始前已经返回的写入，`unknown` 是最终结果。重启后同样正确：未发布的尾部随进程丢失了。Rpc 的 `session.input_lookup` 调用同一份代码，其边界仍自行解析参数。扫描为 O(分支上的事件数)；调用方只在结果不确定后使用它。
+Agents 先等到该分支没有已提交但未发布的事件（`Publication::has_pending` 为 false），或分支关闭；Timeline 失败时以 `failed` 结束等待。每个批次之后发布都会追上，因此在安静的分支上等待很短。不过它等的是某一时刻没有任何待发布事件，而不只是调用前已提交的部分：在不断提交的分支上（例如一个长 turn 接连向较慢的存储写入批次），它会持续到提交暂停。只等待调用时已提交的序号，需要 `Publication` 提供该序号，这是门面的新增；目前不提出，因为调用方只在结果不确定后才查找。然后在已发布的本地页中扫描带该 `submission_id` 的 `input/message`。因此，对于查找开始前已经返回的写入，`unknown` 是最终结果。重启后同样正确：未发布的尾部随进程丢失了。Rpc 的 `session.input_lookup` 调用同一份代码，其边界仍自行解析参数。扫描为 O(分支上的事件数)；调用方只在结果不确定后使用它。
 
 ### 6.4 idle
 
@@ -219,7 +220,7 @@ Agents 先等到该分支没有已提交但未发布的事件（`Publication::ha
 
 Agents 在该分支上用 `Session::service::<InputQueue>` 取得 S1 的 InputQueue，调用 `withdraw(InputWithdrawData { input_id, reason }, None)`，并返回它的决定。S1 在写入 `input/deleted` 后就回复，此时该事件已提交但不一定已发布，因此对 `deleted`，Agents 与 `input` 一样等它发布后才回复（D8）；分支先关闭或失败时回复 `publication_unknown`。S2 不增加语义：不检查归属，因为调用方凭写入时拿到的 `input_id` 撤回（合同 §9.3）；不重试，也不写自己的事件。指令、决定、结果事实与格式决定都归 S1（[A.4](../contracts/session-access.md#a4-撤回)）；§14.1 记录了 S1 交付的内容。
 
-错误：`rejected`（S1 的校验：`inputId` 为空、`reason` 超过 2048 字节）、`session_closed`、`branch_missing`、`reloading`、`publication_unknown`。指令写入后才收到的 `reloading`，结果交给 InputQueue 的后继实例决定。分发越过该指令之后（之后任何 `idle` 截止点都已越过），历史中对调用方写入的输入恰好有 `input/applied` 与 `input/deleted` 之一。
+错误：`rejected`（S1 的校验：`inputId` 为空、`reason` 超过 2048 字节）、`session_closed`、`branch_missing`、`reloading`、`publication_unknown`。指令写入后才收到的 `reloading`，结果交给 InputQueue 的后继实例决定。指令写入后才开始的关闭同样回复 `reloading`，而不是 `session_closed`：InputQueue 在作出决定前随关闭结束，S1 将其报告为 `Reloading`。这是准确的错误码，因为 `session_closed` 表示什么都没写入，而这条指令已提交，Session 下次装载时按历史决定。之后重试会以 `session_closed` 失败。分发越过该指令之后（之后任何 `idle` 截止点都已越过），历史中对调用方写入的输入恰好有 `input/applied` 与 `input/deleted` 之一。
 
 ### 6.7 history
 
@@ -228,10 +229,18 @@ Agents 在该分支上用 `Session::service::<InputQueue>` 取得 S1 的 InputQu
 | 项 | 规则 |
 | --- | --- |
 | `through` | 带 `atLeast` 时：已发布 head（`Session::sequence`）；低于 `atLeast` 时为 `future_sequence`。否则为请求的 `through`（不能超过 head，否则 `future_sequence`），或 head |
-| `events` | 该分支自己在 `(after, through]` 内的事件，用 `Session::local_page` 读取。`after`（缺省为 0）必须是某批次的结尾。剩余事件足够时，一页先取 `limit` 条（缺省 256），再读到该批次结尾，因此可能超过 `limit`；它从不越过 `through`。以已发布 head 或 `idle` 截止点作为 `through` 时，每个批次都完整。调用方把 `after` 设为上一页最后的序号继续读，直到 `through` |
+| `events` | 该分支自己在 `(after, through]` 内的事件，用 `Session::local_page` 读取。`after`（缺省为 0）必须是某批次的结尾。剩余事件足够时，一页先取 `limit` 条（1 到 256，缺省 256），再读到该批次结尾，因此可能超过 `limit`；它从不越过 `through`。以已发布 head 或 `idle` 截止点作为 `through` 时，每个批次都完整。调用方把 `after` 设为上一页最后的序号继续读，直到 `through` |
 | 形式 | 分支的每个事件都作为 `AgentEvent` 记录返回，序列化形式与 `session.history` 展示事件时相同。不做过滤，因此一页最后的序号总是某个批次的结尾 |
 | 祖先 | 不包含。启动的 Session 在 `main` 上读取，`main` 没有祖先。等有使用方需要时，再增加读取子分支前缀的方式 |
-| 错误 | `rejected`（`after` > `through`、`after` 位于批次中间、`limit` 为 0、同时给出 `atLeast` 与 `through`）、`future_sequence`、`session_closed`、`branch_missing`、`reloading` |
+| 错误 | `rejected`（`after` > `through`、`after` 位于批次中间、`limit` 不在 1 到 256 之间、同时给出 `atLeast` 与 `through`）、`future_sequence`、`session_closed`、`branch_missing`、`reloading` |
+
+### 6.8 delete
+
+`{sessionId}` → `{}`。Agents 执行 S5c 的 `AgentIndex::delete`（[S5c §3.2](session-deletion-and-fork.md#32-顺序)）：检查 id，取得该 Session 的准入闸门，Session 已装载时关闭它，由 SessionStore 删除它的命令输出，再在一个事务中删除它的全部行，最后遗忘它。该 Session 上进行中的调用（包括 `idle`，§6.4）以 `session_closed` 结束，之后的调用也一样。不存在或已删除的 Session 回复 `{}`。和每个 `sessions` 方法一样，调用不携带调用方身份，因此不检查调用方是否启动过该 Session（§11）。
+
+删除一旦开始就执行到它自己的结果，与 Rpc 的 `session.delete` 相同：索引重载不会截断它，因为各 Session 及其存储比索引活得更久（D1），而中途停下的删除会让 Session 保持关闭、行仍保留，直到重试。放弃调用的 Rust 调用方可能让删除只执行了一部分，与 Rpc 回复丢失相同（S5c §3.5）；再次删除即可完成。
+
+错误：`rejected`（id 不是单个路径分量，S5c D3）、`reloading`（没有激活的 Agents 索引；什么都没做）与 `failed`（命令输出或行无法删除，[S5c §3.5](session-deletion-and-fork.md#35-幂等与错误)）。`failed` 之后，被这次删除关闭的 Session 在本进程中保持关闭，行仍保留（S5c D5）：对它的调用以 `session_closed` 失败，直到某次删除成功。删除是幂等的，因此调用方在任何错误或回复丢失后都再次删除（§8.7）。
 
 ## 7. 时序
 
@@ -267,7 +276,7 @@ Agents 像拥有其他 Session 一样拥有启动的 Session 的实例与记录�
 
 ### 8.3 Agents 索引重载
 
-AgentScope 与各 Session 继续运行，`sessions` 服务也保留。旧索引取消其停止令牌时，进行中的调用以 `reloading` 结束；新调用以 `reloading` 失败，直到下一个索引激活。使用方不重载。回复为 `reloading` 的 `input` 或 `withdraw`，用 `lookup` 或 `history` 解决。已开始创建 Session 的 `launch` 不会被截断：它回复该创建的结果，因为 `reloading` 回复会在第一个 Session 仍被创建时招致重试（§6.1）。
+AgentScope 与各 Session 继续运行，`sessions` 服务也保留。旧索引取消其停止令牌时，进行中的调用以 `reloading` 结束；新调用以 `reloading` 失败，直到下一个索引激活。使用方不重载。回复为 `reloading` 的 `input` 或 `withdraw`，用 `lookup` 或 `history` 解决。已开始创建 Session 的 `launch` 不会被截断：它回复该创建的结果，因为 `reloading` 回复会在第一个 Session 仍被创建时招致重试（§6.1）。`delete` 也不会被截断：它回复自己的结果（§6.8）。
 
 ### 8.4 调用期间使用方重载
 
@@ -275,7 +284,7 @@ AgentScope 与各 Session 继续运行，`sessions` 服务也保留。旧索引�
 
 ### 8.5 删除（S5c）
 
-删除（[#97](https://github.com/arcships/dim/pull/97)）取得该 Session 的准入闸门并关闭它。该 Session 上进行中的调用（包括 `idle`）以 `session_closed` 结束，之后的调用也一样。启动方已被删除的启动以 `session_closed` 失败。启动方被删除后，已启动的 Session 继续运行。
+删除（[#97](https://github.com/arcships/dim/pull/97)，客户端经 `session.delete`，进程插件经 `sessions.delete`，§6.8）取得该 Session 的准入闸门并关闭它。该 Session 上进行中的调用（包括 `idle`）以 `session_closed` 结束，之后的调用也一样。启动方已被删除的启动以 `session_closed` 失败。启动方被删除后，已启动的 Session 继续运行。
 
 ### 8.6 目标：空闲卸载（后续项）
 
@@ -288,17 +297,17 @@ AgentScope 与各 Session 继续运行，`sessions` 服务也保留。旧索引�
 
 S2 不需要为此改动。每次调用都持有租约，`sessions` 不在已装载的 Session 中保存状态，`idle` 等待在第一个空闲点结束，因此过期的等待不会让 Session 在那之后仍被占用。
 
-### 8.7 目标：删除运行用的 Session（后续项）
+### 8.7 删除运行用的 Session
 
-空闲卸载约束的是内存，但每个启动的 Session 还留在存储里，也出现在每个客户端的 Session 列表中。每五分钟一个任务，一天就多约 288 个。目标（D14）：
+空闲卸载约束的是内存，但每个启动的 Session 还留在存储里，也出现在每个客户端的 Session 列表中。每五分钟一个任务，一天就多约 288 个。因此由使用方删除它们（D14）：
 
 - **谁删、何时删。** 启动 Session 的使用方在删掉最后一条指向它的记录时删除它。Scheduler 在一次运行移出其运行历史（A8，每个任务保留最近 100 次）或任务被删除时删除；`reuse` Session 由任务指向，随任务一起删除。Workflow 在一条运行记录移出其保留范围（A9，保留最近 100 次）时删除；这条记录指向该次运行的所有阶段 Session。
 - **只删已结束的运行。** 删除会关闭 Session，从而停止它的 turn。使用方只在运行到达终态后才删除其 Session；任务被删除后仍在进行的运行（Scheduler A14），在它结束时删除其 Session。
 - **顺序。** 使用方先删除 Session，再删掉记录。删除失败时记录保留，下一轮重试；删除一个已经不存在的 Session 也会成功，因此在两步之间崩溃不会造成损害。
 - **保留某次运行。** 想保留某次运行对话的用户可以 fork 它（S5c 的 `session.fork`）。没有记录指向 fork 出的 Session，它会一直保留到用户删除。
 - **留给用户的部分。** `launch` 回复丢失时留下的 Session（§6.1）没有记录指向。用户用 CLI 按时间或数量的清理删除它，该清理由 `session.summaries` 与 `session.delete` 组合而成（S5c §5.1；F6，[#77](https://github.com/arcships/dim/issues/77)）。
-- **方法。** `sessions.delete {sessionId}` → `{}`，转交给 S5c 的 `AgentIndex::delete`（[#97](https://github.com/arcships/dim/pull/97)）：准入闸门、关闭，然后删除该 Session 的行与文件。S5c 的 `session.delete` 是 Rpc 内建方法，进程插件调用不到。它和每个 `sessions` 方法一样不携带调用方身份，因此不检查调用方是否启动过该 Session（§11）。
-- **依赖顺序。** 先有 S5c 的 `AgentIndex::delete`，再由 Agents 负责线加入 `sessions.delete`：如果 S2 实现时 S5c 已合入，就随 S2 实现一起加入，否则紧随 S5c 之后加入，并在那时把该方法加入 A.1（不打桩，路线图 §3.6）。然后才是使用方的删除（P6 [#70](https://github.com/arcships/dim/issues/70)、P7 [#71](https://github.com/arcships/dim/issues/71)）。
+- **方法。** `sessions.delete {sessionId}` → `{}`，转交给 S5c 的 `AgentIndex::delete`（[#97](https://github.com/arcships/dim/pull/97)）：准入闸门、关闭，然后删除该 Session 的行与文件（§6.8）。S5c 的 `session.delete` 是 Rpc 内建方法，进程插件调用不到。它和每个 `sessions` 方法一样不携带调用方身份，因此不检查调用方是否启动过该 Session（§11）。
+- **依赖顺序。** 先有 S5c 的 `AgentIndex::delete`，再由 Agents 负责线加入 `sessions.delete`（§6.8）：S5c 与 S2 都合入后，连同其 A.1 行一起加入（没有打桩，路线图 §3.6）。接下来是使用方的删除（P6 [#70](https://github.com/arcships/dim/issues/70)、P7 [#71](https://github.com/arcships/dim/issues/71)）。
 
 ## 9. 错误
 
@@ -306,13 +315,13 @@ S2 不需要为此改动。每次调用都持有租约，`sessions` 不在已装
 | --- | --- | --- | --- |
 | `rejected` | 全部 | 请求结构或边界规则不符；未写入 | false |
 | `agent_unknown` | `launch` | 没有已装载的 Agent 使用该 id | false |
-| `session_closed` | 全部（对 `launch` 指启动方） | Session 已关闭、已删除或未知；未写入 | false |
-| `branch_missing` | 全部（对 `launch` 指启动方） | 没有该分支；未写入 | false |
-| `reloading` | 全部 | Agents 索引、模型选择宿主、启动方的 Permission 或 S1 的撤回服务未激活，或调用期间索引卸载。对 `input` 与 `withdraw` 结果不确定：先 `lookup` 或 `history` | true |
+| `session_closed` | 除 `delete` 外全部（对 `launch` 指启动方） | Session 已关闭、已删除或未知；未写入 | false |
+| `branch_missing` | 除 `delete` 外全部（对 `launch` 指启动方） | 没有该分支；未写入 | false |
+| `reloading` | 全部 | Agents 索引、模型选择宿主、启动方的 Permission 或 S1 的撤回服务未激活（`withdraw` 写入指令后 Session 关闭时也是，§6.6），或调用期间索引卸载。对 `input` 与 `withdraw` 结果不确定：先 `lookup` 或 `history`。`delete` 只在开始前以 `reloading` 失败（§6.8） | true |
 | `future_sequence` | `history` | `atLeast` 或 `through` 超过已发布 head | false |
 | `ambiguous` | `lookup` | 不止一条输入使用该 `submissionId` | false |
 | `publication_unknown` | `input`、`withdraw` | 已提交，发布未确认；恢复后 `lookup` 或 `history` | true |
-| `failed` | 全部 | Session 故障、存储、模型解析、项目授权、Session 构建 | false |
+| `failed` | 全部 | Session 故障、存储、模型解析、项目授权、Session 构建；对 `delete` 指 Session 的命令输出或行无法删除（§6.8） | false |
 
 ## 10. 时序与冲突
 
@@ -326,7 +335,7 @@ S2 不需要为此改动。每次调用都持有租约，`sessions` 不在已装
 | 审批待处理 | turn 未结束 | `idle` 等待；`stop` 结束它 | Approval、Loop |
 | 先 `withdraw` 再 `idle` | 撤回 < 截止点 | 历史中该输入有 `input/deleted` 或 `input/applied` | InputQueue |
 | Loop 在某输入的 `input/applied` 与 `stop/interrupt` 之间重载 | applied < interrupt，没有 `turn/start` | 排在后面的 Queue 输入到 `idle` 截止点仍被持有，直到之后某个 turn 结束；调用方撤回或重新写入 | InputQueue、Loop |
-| 调用期间 Agents 索引重载 | — | `reloading`；使用方保持装载 | Agents |
+| 调用期间 Agents 索引重载 | — | `reloading`，已受理的 `launch` 与 `delete` 除外，它们回复自己的结果；使用方保持装载 | Agents |
 | `idle` 期间使用方重载 | — | 旧等待持续到结束，其回复被丢弃；新一代重新读取 | Agents、使用方 |
 | 调用期间 Session 被关闭或删除 | — | `session_closed` | Agents |
 | 两个调用方写同一个 Session | Timeline 顺序 | 按序号顺序、按模式采纳 | InputQueue |
@@ -363,7 +372,7 @@ S2 不需要为此改动。每次调用都持有租约，`sessions` 不在已装
 - [总览](../overview.md)（中英文）：B.2 Agents 行链接本页；§5.5 的 `launch` 箭头去掉 `source`。
 - [文档索引](../../../INDEX.md)链接本页。
 
-实现过程中（§17）：A.1 的 `withdraw` 增加 `publication_unknown`，`history` 拒绝同时给出 `atLeast` 与 `through`，A.6 的 `publication_unknown` 覆盖 `withdraw`，附录 E 的 `withdraw` 行按 S1 合入的形态改写。
+实现过程中（§17）：A.1 的 `withdraw` 增加 `publication_unknown`，`history` 拒绝同时给出 `atLeast` 与 `through`，A.6 的 `publication_unknown` 覆盖 `withdraw`，附录 E 的 `withdraw` 行按 S1 合入的形态改写。加入 `sessions.delete` 时，引言、§6 与 A.1 列出 `delete`，附录 E 给出它的映射；§4 与附录 B 的 Agents 重载行写明已受理的 `launch` 与 `delete` 回复自己的结果；总览 B.2 的 `sessions` 行也列出 `delete`。
 
 S1 的撤回合同（A.4）、输入约定（A.2）与 `interactive`（A.3）不变，因此不需要单独的合同提案。
 
@@ -377,7 +386,7 @@ S1 的撤回合同（A.4）、输入约定（A.2）与 `interactive`（A.3）不
 | §4 第 4 条（核心不带业务含义） | Agents 从不解释标记、`submissionId` 或 `reason`；上限是通用规则 |
 | §4 第 5 条（批次） | 每次 `input` 是一个事件；`sessions` 不写自己的批次 |
 | §4 第 6 条（模型上下文） | 没有新的上下文路径；只有已消费的输入进入模型 |
-| §4 第 7 条（公开事件与服务） | 只使用 Session 门面（包括 `Session::get::<PermissionState>`，即 Permission 公开的只读状态）和 S1 的公开服务 |
+| §4 第 7 条（公开事件与服务） | 只使用 Session 门面（包括 `Session::get::<PermissionState>`，即 Permission 公开的只读状态）、S1 的公开服务，以及 `delete` 所用的 Agents 自己的 `AgentIndex::delete`（S5c） |
 | §4 第 8 条（基础设施不变） | 不改 Timeline、Dispatcher、事件格式、rutis、装配或 Session 门面。所需能力在 §14 提给 S1（一个能力）与 C4（#4 桥接）；不向 rutis 提需求 |
 | §4 第 9 条（Timeline 只放决定用的事实） | 没有新事件。租约、调用方进度与启动来源都不进 Timeline |
 | §1（App Server 边界） | Agents 只提供访问；调度与工作流逻辑留在各自的插件中 |
@@ -433,22 +442,22 @@ S1 的撤回合同（A.4）、输入约定（A.2）与 `interactive`（A.3）不
 - **启动方。** 只有在运行由某个 Session 发起时都传 `starter` 的使用方，上限才成立（§11）：创建 Scheduler 任务的 Session（A15），或 Workflow 运行的启动方分支。
 - **策略读取。** `sessions` 没有读取策略的方法。启动会取上限并回复生效策略（D6）。保存时记录的上限（Scheduler A15）或 Workflow 启动时的检查，需要从调用方 Session 自己的部分取得启动方策略，或在它们的评审中提出一个读取方法。Scheduler 的 reuse 检查也一样。
 - **历史。** `sessions.history` 用 `after` 与 `limit` 分页。
-- **重载。** `inject: ['sessions']` 不随 Agents 索引重载（D1），因此 Agents 重载时运行不必以 `interrupted` 结束；进行中的调用以 `reloading` 失败。
+- **重载。** `inject: ['sessions']` 不随 Agents 索引重载（D1），因此 Agents 重载时运行不必以 `interrupted` 结束；进行中的调用以 `reloading` 失败，已受理的 `launch` 与 `delete` 除外，它们回复自己的结果（§8.3）。
 - **已装载的 Session。** 运行用的 Session 在空闲卸载落地前一直保持装载（§8.6，[#126](https://github.com/arcships/dim/issues/126)），空闲卸载排在 `create` 模式任务上线之前。`launch` 不是幂等的（§6.1）。
 - **删除运行用的 Session。** 这是对两份设计的需求（§8.7）：Scheduler 与 Workflow 在删掉最后一条指向某个自己启动的 Session 的记录时删除它（Scheduler：一次运行移出该任务最近 100 次，或任务被删除；Workflow：一次运行移出最近 100 次），且只在运行到达终态后，先删 Session 再删记录，经由 `sessions.delete`。用户通过 fork 保留某次运行，并用 CLI 的清理删除 `launch` 回复丢失时留下的 Session。
 - **再次等待。** “尚未消费，再等一次”不能在 `idle` 上循环：分支空闲时它立即返回。截止点时两种结果都没有的输入处于被持有状态（§6.4 第 2 项）。
 
 ## 16. 实现与验收
 
-S1 合入后在 [#98](https://github.com/arcships/dim/pull/98) 上实现；没有打桩（路线图 §3.6）。
+S1 合入后在 [#98](https://github.com/arcships/dim/pull/98) 上实现，`sessions.delete` 在 S5c 之后加入；没有打桩（路线图 §3.6）。
 
 1. 完成。在 Agents 负责线中实现类型与七个 `AgentIndex` 方法（附录 A）。
 2. 完成。目录部分提供 `sessions`；App Server `lib.rs` 注册 `register_shared("sessions")`（装配负责线中的一行）。
 3. 完成。查找移入 Agents（`agents::find_input`）；Rpc 的 `session.input_lookup` 调用它，因此也会先等待尚未发布的事件。
 4. 完成。`xtask graph` 记录了新模块与 `sessions` 绑定；`xtask check` 通过。
-5. 未完成。S5c 的 `AgentIndex::delete`（[#97](https://github.com/arcships/dim/pull/97)）尚未合入，因此 `sessions.delete` 及其 A.1 行紧随其后（§8.7）。
+5. 完成。`sessions.delete` 转交给 S5c 的 `AgentIndex::delete`（[#97](https://github.com/arcships/dim/pull/97)），A.1 中有它的行（§6.8）。
 
-流程测试在 [transport_flow/sessions.rs](../../../../crates/dim-app-server/tests/transport_flow/sessions.rs)。`serve` 不接受额外的进程行，因此由一个测试 Session 部分按名称注入 `sessions`（`Keyed<dyn HostDispatch>`，与 `plugin_files_flow` 相同），测试再调用它，从而走语言中立路径。计划中的用例对应如下（第 7 条等 S5c）：
+流程测试在 [transport_flow/sessions.rs](../../../../crates/dim-app-server/tests/transport_flow/sessions.rs)。`serve` 不接受额外的进程行，因此由一个测试 Session 部分按名称注入 `sessions`（`Keyed<dyn HostDispatch>`，与 `plugin_files_flow` 相同），测试再调用它，从而走语言中立路径。计划中的用例对应如下：
 
 1. **Issue #62 的完成标准**（`a_consumer_launches_writes_waits_and_withdraws_by_input_id`）。该插件启动一个 Session，写入输入，等待空闲，并按 `input_id` 撤回一条被持有的输入（`deleted`）；`input/applied` 之后的撤回回复 `notHeld`。
 2. **启动**（`launch_caps_the_policy_by_the_starters_current_policy_or_the_host_defaults`）。启动方被 `permission/changed` 收窄后，启动的 Session 为非交互，其 `PermissionState` 等于上限，回复中也返回该上限。没有启动方时：full-access 请求被宿主默认值限制，不带策略即为 read-only。未知 Agent 以 `agent_unknown` 失败，错误的 `cwd` 以 `rejected` 失败，已关闭的启动方以 `session_closed` 失败。
@@ -456,7 +465,12 @@ S1 合入后在 [#98](https://github.com/arcships/dim/pull/98) 上实现；没�
 4. **空闲**（`idle_covers_written_turns_and_waits_on_a_pending_approval_until_stop`）。截止点覆盖每条输入的消费及其 `turn/end`。审批待处理时，`idle` 一直等待，直到 `stop`。
 5. **重载与关闭**（`idle_ends_reloading_on_an_index_reload_and_session_closed_on_close`）。`idle` 期间 Agents 索引重载，以 `reloading` 结束它；测试部分保持装载，下一次调用成功。`idle` 期间关闭 Session，以 `session_closed` 结束它。`launch` 等待被锁住的原生存储时重载（`launch_admitted_before_an_index_reload_replies_the_created_session`），回复已创建的 Session。
 6. **历史**（`history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries`）。`limit` 为 1 的各页连起来到达固定的 head，与分支事件一致；一页会读完两个事件的批次；批次中间的游标、`future_sequence` 及其他边界错误都有检查。
-7. **删除（随 S5c）。** `idle` 期间的删除以 `session_closed` 结束它。有 `sessions.delete` 时：插件在运行结束后删除启动的 Session，之后对它的调用以 `session_closed` 失败，再删除一次也成功。
+7. **删除**（`a_consumer_deletes_its_launched_session_and_retries_a_failed_delete`，使用一次性原生存储）。`idle` 正等待某个已装载的启动 Session 上待处理的审批时，插件删除该 Session：等待以 `session_closed` 结束，Session 及其行都已删除，之后对它的调用（包括以它为启动方的启动）以 `session_closed` 失败。再删除一次，或删除从未创建的 id，都回复 `{}`；不是单个路径分量的 id 和带多余字段的请求为 `rejected`。原生写入方被占住时，删除期间的 Agents 索引重载不会结束它：写入方释放后它回复 `{}`，行已删除。无法删除该 Session 命令输出的删除回复 `failed`；Session 保持关闭，行仍保留，重试后删除成功。
+8. **#98 评审的后续项。**
+   - `a_launch_fails_reloading_while_the_starters_permission_reloads`（D5）：测试经一个随 Agents 索引重载的 Session 部分绑定 Permission 的命令规则，并让它的重载停住。启动方的 `PermissionState` 缺失期间，以它为启动方的启动以 `reloading` 失败，而不是使用宿主上限；Permission 恢复后，同样的启动成功。
+   - `a_launch_resolves_its_model_through_the_model_selection_host`（§6.1，`model`）：使用配置的模型时，请求的模型（否则为目录默认模型）经宿主解析，并带上目录中该模型的默认配置；宿主无法解析的模型以 `failed` 失败，不创建任何东西。宿主的 `reloading` 情况无法从流程测试触发：`serve` 不会重启任何一个模型选择提供方。
+   - `a_dropped_launch_still_registers_its_session`（§17 第 6 条）：在创建等待被占住的原生写入方时放弃的启动，仍会创建 Session，Rpc 也能 attach 它，而这需要它的协议版本已登记。
+   - `input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_write`（§17 第 1 条）：原生存储让一条输入的写入失败，再让一次撤回的 `input/deleted` 写入失败。两者都回复 `publication_unknown`，因此都不会在其事件发布前回复。
 
 ## 17. 实现过程中的设计变更
 
@@ -472,6 +486,7 @@ S1 合入后在 [#98](https://github.com/arcships/dim/pull/98) 上实现；没�
 | 6 | `launch` 在一个比调用活得更久的任务中创建并登记 Session；该任务开始后，回复等待它而不是索引重载 | 被放弃的调用不能留下一个已装载、客户端却看不到的 Session；`reloading` 回复不能招致重复启动 |
 | 7 | 代码放在子模块 [agents/sessions.rs](../../../../crates/dim-app-server/src/agents/sessions.rs) | `agents.rs` 只保留目录与索引 |
 | 8 | 流程测试从一个 Session 部分取得 `sessions` | `serve` 不接受额外的进程行；该部分像进程插件一样按名称注入服务 |
+| 9 | `history` 拒绝超过 256（即缺省值）的 `limit` | #98 的评审：D11 分页是为了限制跨桥接的回复大小，而不设上限的 `limit` 会一页返回整个分支。Collaboration 的 `agent` 读取同样拒绝超过其缺省值的 `limit` |
 
 ## 附录 A. Rust 绑定
 
@@ -518,7 +533,9 @@ impl AgentIndex {
     pub async fn withdraw(&self, request: WithdrawRequest) -> Result<Withdrawal, SessionsError>; // Withdrawal 来自 S1
     pub async fn stop(&self, request: StopRequest) -> Result<u64, SessionsError>;
     pub async fn idle(&self, at: SessionRef) -> Result<u64, SessionsError>;
+    /// S5c 的删除，作为 `sessions.delete {sessionId}` 提供（§6.8）。
+    pub(crate) async fn delete(&self, id: &str) -> dim_agent_runtime::Result<()>;
 }
 ```
 
-请求类型以 camelCase 字段与 `deny_unknown_fields` 派生 `Deserialize`，回复类型派生 `Serialize`。具名服务把每个请求对象（A.1）解码成对应的请求类型，调用方法并编码信封；`withdraw`、`stop` 与 `idle` 的回复在那里编码为 `{status, sequence?}` 与 `{sequence}`。上限是 `launch` 旁边一个作用于两个 `PermissionPolicy` 值的函数。每个方法的租约是 `acquire` 得到的私有 `SessionUse`。与 Rpc 共用的查找是 `agents::find_input`。
+请求类型以 camelCase 字段与 `deny_unknown_fields` 派生 `Deserialize`，回复类型派生 `Serialize`。具名服务把每个请求对象（A.1）解码成对应的请求类型，调用方法并编码信封；`withdraw`、`stop` 与 `idle` 的回复在那里编码为 `{status, sequence?}` 与 `{sequence}`。对 `delete`，它把 `{sessionId}` 解码为 Rpc 的 `protocol::SessionId`，按 `From<AgentError>` 映射 `AgentError`（§9），并回复 `{}`。上限是 `launch` 旁边一个作用于两个 `PermissionPolicy` 值的函数。每个方法的租约是 `acquire` 得到的私有 `SessionUse`。与 Rpc 共用的查找是 `agents::find_input`。

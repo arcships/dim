@@ -4,7 +4,7 @@
 
 > **离线资源节点。** 关于资源节点离线的各行描述的是 P3 多节点行为。#5 已撤回（rutis 是外部依赖，链接断开时会撤掉导入的服务），这些行在 P3 按总览 §6.3 重新设计：节点服务在每次调用时按 Session 的资源节点查找，该字段在 P3 加入 `SessionConfig`（[A.3](#a3-sessionconfig-字段)）。P1/P2 中每个 Session 都使用控制节点。
 
-进程插件以 Collaboration 已有的方式访问 Session：通过 Agents 和公共的 Session 接口。本文把这种访问定义为语言中立的进程服务 `sessions`（ADR 002 D5），由 Agents 提供，因此 TypeScript 或 Python 进程插件（Scheduler、Workflow）可以按名称使用它。其方法为 `launch`、`input`、`lookup`、`history`、`withdraw`、`stop` 和 `idle`，请求与回复均为数据（[A.1](#a1-sessions-服务)）。在 Rust 中，它是 `AgentIndex` 加上 `Session` 门面（[附录 E](#附录-e-rust-绑定)）。本文不增加任何宿主或门面插件。Agents 从不会重载的目录部分提供它，因此 Agents 重载只让进行中的调用失败，从不让调用方重载（D3，#35）；绑定、生命周期及其依据的 spike 见 [sessions 服务](../appserver/sessions-service.md)设计。
+进程插件以 Collaboration 已有的方式访问 Session：通过 Agents 和公共的 Session 接口。本文把这种访问定义为语言中立的进程服务 `sessions`（ADR 002 D5），由 Agents 提供，因此 TypeScript 或 Python 进程插件（Scheduler、Workflow）可以按名称使用它。其方法为 `launch`、`input`、`lookup`、`history`、`withdraw`、`stop`、`idle` 和 `delete`，请求与回复均为数据（[A.1](#a1-sessions-服务)）。在 Rust 中，它是 `AgentIndex` 加上 `Session` 门面（[附录 E](#附录-e-rust-绑定)）。本文不增加任何宿主或门面插件。Agents 从不会重载的目录部分提供它，因此 Agents 重载只让进行中的调用失败，从不让调用方重载（D3，#35）；绑定、生命周期及其依据的 spike 见 [sessions 服务](../appserver/sessions-service.md)设计。
 
 | 补充 | 所有者 | 使用方 |
 | --- | --- | --- |
@@ -124,7 +124,7 @@ sequenceDiagram
 | 输入在 `stop/interrupt` 之后 | interrupt < input | Queue/Steer 启动 turn，Append 等待 | InputQueue、Loop |
 | 输入被持有时撤回 | input < `input/withdraw`，无 `input/applied` | `input/deleted`；永不被应用或消费；不处于待处理 | InputQueue |
 | 输入被应用后撤回 | `input/applied` < `input/withdraw` | 无效果，不写入任何内容；回复 `notHeld`；该输入照常被消费 | InputQueue |
-| `sessions` 调用期间 Agents 重载 | — | 该调用以 `reloading` 失败；调用方不重载（#35）；已提交的输入保留；调用方重写前先调用 `lookup` | Agents、调用方 |
+| `sessions` 调用期间 Agents 重载 | — | 该调用以 `reloading` 失败；调用方不重载（#35）；已提交的输入保留；调用方重写前先调用 `lookup`。已受理的 `launch` 与 `delete` 则回复自己的结果（[sessions 服务 §8.3](../appserver/sessions-service.md#83-agents-索引重载)） | Agents、调用方 |
 | Session 的资源节点离线 | — | 输入已提交；该节点上的工具调用以 `node_unavailable` 失败；没有任何部分进入 Pending | rutis 链接（#5） |
 | 以比启动方更宽的策略启动 | — | 限制为启动方的当前策略 | Agents |
 
@@ -155,6 +155,7 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 | `sessions.withdraw(WithdrawRequest) -> WithdrawReply` | async | 按 `input_id` 为调用方写入的输入写入 `input/withdraw`，并返回 InputQueue 的决定 |
 | `sessions.stop({sessionId, branchId, reason?}) -> {sequence}` | async | 中断该分支的 turn |
 | `sessions.idle({sessionId, branchId}) -> {sequence}` | async | 等待分支空闲；返回的序号是最后提交的序号，位于整批次边界 |
+| `sessions.delete({sessionId}) -> {}` | async | 删除一个 Session：Agents 关闭它，并删除它的行与文件（[Session 删除](../appserver/session-deletion-and-fork.md#3-删除)） |
 | `SessionConfig.interactive` | 数据 | 创建时配置 |
 | `session.create {interactive}` | RPC | 非交互创建 |
 
@@ -218,7 +219,7 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 
 ### A.1 sessions 服务
 
-`sessions` 是由 Agents 提供的进程服务，没有实例 key。结构为 camelCase 字段的 JSON；字段名后的 `?` 表示可选，`|` 分隔备选项。每次调用都会 acquire 该 Session（必要时恢复），并在回复前保持其已装载。调用不携带调用方身份。各方法的步骤、策略上限与生命周期见 [sessions 服务](../appserver/sessions-service.md)设计。
+`sessions` 是由 Agents 提供的进程服务，没有实例 key。结构为 camelCase 字段的 JSON；字段名后的 `?` 表示可选，`|` 分隔备选项。除 `launch` 与 `delete` 外，每次调用都会 acquire 该 Session（必要时恢复），并在回复前保持其已装载。调用不携带调用方身份。各方法的步骤、策略上限与生命周期见 [sessions 服务](../appserver/sessions-service.md)设计。
 
 | 方法 | 模式 | 请求 | 回复 | 错误 |
 | --- | --- | --- | --- | --- |
@@ -229,6 +230,7 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 | `withdraw` | async | `WithdrawRequest` | `WithdrawReply` | `rejected`、`session_closed`、`branch_missing`、`reloading`、`publication_unknown` |
 | `stop` | async | `{sessionId, branchId, reason?}` | `{sequence}` | `session_closed`、`branch_missing`、`reloading` |
 | `idle` | async | `{sessionId, branchId}` | `{sequence}` | `session_closed`、`branch_missing`、`reloading` |
+| `delete` | async | `{sessionId}` | `{}` | `rejected`、`reloading`、`failed` |
 
 ```text
 // LaunchRequest
@@ -252,7 +254,7 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
   "after?": 0,                        // 不含的下界；缺省：从分支开头
   "through?": 0,                      // 读取到此序号
   "atLeast?": 0,                      // 固定前缀读取（A.5）；不与 through 同时使用
-  "limit?": 256 }                     // 每页条数；缺省：256
+  "limit?": 256 }                     // 每页条数，1 到 256；缺省：256
 // HistoryPage：该分支自己在 (after, through] 内的事件，止于批次边界，
 // 为 AgentEvent 记录，形式与 session.history 返回的相同
 { "through": 0, "events": [ { "id": "string", "sequence": 0, "type": "turn/end", "data": {} } ] }
@@ -270,7 +272,9 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 
 `launch` 创建一个 `interactive = false` 的 Session。生效策略是请求的策略，并以启动方的当前策略为上限；该策略是启动时读取的 Timeline 事实。没有启动方时，由管理方法启动的运行除非请求声明了策略，否则默认只读，并始终受宿主配置约束。
 
-已实现（S2，[#98](https://github.com/arcships/dim/pull/98)）：上表全部方法，由 Agents 的目录部分提供。`input` 和删除成功的 `withdraw` 都在其事件发布后才回复。`sessions.delete` 在 S5c 之后加入（[sessions 服务 §8.7](../appserver/sessions-service.md#87-目标删除运行用的-session后续项)）。
+`delete` 即 Agents 的 Session 删除（S5c）：Session 已装载时先关闭它，再删除它的行与文件。不存在或已删除的 Session 回复 `{}`，因此调用方在任何错误后都可再次删除（[sessions 服务 §6.8](../appserver/sessions-service.md#68-delete)）。启动 Session 的调用方在删掉最后一条指向它的记录时删除它（[§8.7](../appserver/sessions-service.md#87-删除运行用的-session)）。
+
+已实现：上表全部方法，由 Agents 的目录部分提供（S2，[#98](https://github.com/arcships/dim/pull/98)；`delete` 在 S5c 之后加入，[#97](https://github.com/arcships/dim/pull/97)）。`input` 和删除成功的 `withdraw` 都在其事件发布后才回复。
 
 ### A.2 来源输入约定
 
@@ -356,7 +360,7 @@ fork 复制源 Session 的整个 `SessionConfig`；权限预设随复制过来�
 | 写入与消费之间切出子分支 | input < cut < consumed | 子分支不采纳它 | InputQueue（子分支） |
 | 两个写入方，同一 key | Timeline 顺序 | 后者取代前者；所有者前缀按约定避免冲突 | 历史投影 |
 | 读取决策依据、出现更新的事实、然后写入 | through < fact < write | 写入排在该事实之后 | 输入所有者 |
-| Agents 重载 | — | 进行中的调用以 `reloading` 失败；调用方不重载（#35）；已提交的输入保留 | Agents |
+| Agents 重载 | — | 进行中的调用以 `reloading` 失败，已受理的 `launch` 与 `delete` 除外，它们回复自己的结果；调用方不重载（#35）；已提交的输入保留 | Agents |
 | 提交后重启，回复丢失 | — | `lookup` 返回 `accepted`；无重复 | 调用方 |
 | Session 未装载 | — | Agents 在调用前恢复它 | Agents |
 | 资源节点离线 | — | 输入已提交；turn 运行，该节点上的调用以 `node_unavailable` 失败；没有依赖方重载或进入 Pending（对 #5 的要求） | rutis 链接 |
@@ -391,6 +395,7 @@ fork 复制源 Session 的整个 `SessionConfig`；权限预设随复制过来�
 | `history` | `Session::sequence(branch)`，低于 `at_least` 时以 `future_sequence` 失败，然后 `Session::local_page(branch, after, limit, through)` |
 | `withdraw` | `Session::service::<InputQueue>(branch)`，然后 `InputQueue::withdraw(InputWithdrawData { input_id, reason }, None) -> Result<(Withdrawal, Option<Arc<AgentEvent>>), AgentError>`（S1）：追加 `input/withdraw`，在 InputQueue 写下决定后回复；`Withdrawal::Deleted { sequence }` 或 `Withdrawal::NotHeld`。Agents 等该 `input/deleted` 发布后才回复 `deleted` |
 | `stop`、`idle` | `Session::stop`、`Session::idle`（已有） |
+| `delete` | `AgentIndex::delete(id)`（S5c，crate 内部使用）：准入闸门、关闭、`SessionStore::delete_session`、遗忘 |
 | `SessionConfig` | 下方的 Rust 结构体 |
 | 错误 | 带 A.6 错误码的 `SessionsError`，由 `AgentError` 映射：`Closed` → `session_closed`，`UnknownBranch` → `branch_missing`，`Reloading` → `reloading`，`InvalidInput` → `rejected`，其余 → `failed` |
 

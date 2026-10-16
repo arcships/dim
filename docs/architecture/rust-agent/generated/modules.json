@@ -10545,8 +10545,10 @@
       "to": "dim_app_server::protocol",
       "references": [
         "path PROTOCOL_VERSION",
+        "path SessionId",
         "path session_cwd",
         "use crate::protocol::PROTOCOL_VERSION",
+        "use crate::protocol::SessionId",
         "use crate::protocol::session_cwd"
       ]
     },

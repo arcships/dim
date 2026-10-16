@@ -4,7 +4,7 @@ Status: Draft. Overall design: [overview §3 integration](../overview.md#3-integ
 
 > **Offline resource nodes.** Rows about an offline resource node describe P3 multi-node behaviour. #5 is withdrawn (rutis is an external dependency, and it withdraws imported services when a link drops), so these rows are redesigned in P3 following overview §6.3: node services are looked up on each call by the Session's resource node, which P3 adds to `SessionConfig` ([A.3](#a3-sessionconfig-fields)). In P1/P2 every Session uses the control node.
 
-Process plugins reach Sessions the way Collaboration already does: through Agents and the public Session interface. This document defines that access as the language-neutral process service `sessions` (ADR 002 D5), provided by Agents, so a TypeScript or Python process plugin (Scheduler, Workflow) uses it by name. Its methods are `launch`, `input`, `lookup`, `history`, `withdraw`, `stop` and `idle`, with request and reply as data ([A.1](#a1-the-sessions-service)). In Rust it is `AgentIndex` plus the `Session` facade ([Appendix E](#appendix-e-rust-binding)). It adds no host or facade plugin. Agents provides it from its directory part, which does not reload, so an Agents reload fails only the calls in flight and never reloads a caller (D3, #35); the binding, the lifecycle and the spike behind them are in the [sessions service](../appserver/sessions-service.md) design.
+Process plugins reach Sessions the way Collaboration already does: through Agents and the public Session interface. This document defines that access as the language-neutral process service `sessions` (ADR 002 D5), provided by Agents, so a TypeScript or Python process plugin (Scheduler, Workflow) uses it by name. Its methods are `launch`, `input`, `lookup`, `history`, `withdraw`, `stop`, `idle` and `delete`, with request and reply as data ([A.1](#a1-the-sessions-service)). In Rust it is `AgentIndex` plus the `Session` facade ([Appendix E](#appendix-e-rust-binding)). It adds no host or facade plugin. Agents provides it from its directory part, which does not reload, so an Agents reload fails only the calls in flight and never reloads a caller (D3, #35); the binding, the lifecycle and the spike behind them are in the [sessions service](../appserver/sessions-service.md) design.
 
 | Supplement | Owner | Used by |
 | --- | --- | --- |
@@ -124,7 +124,7 @@ sequenceDiagram
 | Input after `stop/interrupt` | interrupt < input | Queue/Steer start a turn, Append waits | InputQueue, Loop |
 | Withdraw while the input is held | input < `input/withdraw`, no `input/applied` | `input/deleted`; never applied or consumed; not pending | InputQueue |
 | Withdraw after the input is applied | `input/applied` < `input/withdraw` | No effect, nothing written; reply `notHeld`; the input is consumed normally | InputQueue |
-| Agents reload during a `sessions` call | — | The call fails `reloading`; the caller does not reload (#35); committed inputs stay; the caller calls `lookup` before rewriting | Agents, caller |
+| Agents reload during a `sessions` call | — | The call fails `reloading`; the caller does not reload (#35); committed inputs stay; the caller calls `lookup` before rewriting. An admitted `launch` and a `delete` instead reply their own outcome ([sessions service §8.3](../appserver/sessions-service.md#83-agents-index-reload)) | Agents, caller |
 | Session's resource node offline | — | Input committed; tool calls on that node fail `node_unavailable`; nothing goes Pending | rutis link (#5) |
 | Launch with a policy wider than the starter's | — | Capped to the starter's current policy | Agents |
 
@@ -155,6 +155,7 @@ Queue inputs are consumed when Loop starts the turn they drive. Steer inputs are
 | `sessions.withdraw(WithdrawRequest) -> WithdrawReply` | async | Write `input/withdraw` for an input the caller wrote, by its `input_id`, and return InputQueue's decision |
 | `sessions.stop({sessionId, branchId, reason?}) -> {sequence}` | async | Interrupt the branch's turn |
 | `sessions.idle({sessionId, branchId}) -> {sequence}` | async | Wait until the branch is idle; the returned sequence is the last committed one, a whole-batch boundary |
+| `sessions.delete({sessionId}) -> {}` | async | Delete a Session: Agents closes it and removes its rows and files ([session deletion](../appserver/session-deletion-and-fork.md#3-deletion)) |
 | `SessionConfig.interactive` | data | Creation-time configuration |
 | `session.create {interactive}` | RPC | Non-interactive creation |
 
@@ -218,7 +219,7 @@ Withdrawn ([#24](https://github.com/arcships/dim/issues/24)): a caller withdraws
 
 ### A.1 The sessions service
 
-`sessions` is a process service provided by Agents, without an instance key. Shapes are JSON with camelCase fields; a `?` after a field name marks it optional and `|` separates alternatives. Each call acquires the Session (restoring it if needed) and holds it loaded until the reply. The calls carry no caller identity. The [sessions service](../appserver/sessions-service.md) design gives each method's steps, the policy cap and the lifecycle.
+`sessions` is a process service provided by Agents, without an instance key. Shapes are JSON with camelCase fields; a `?` after a field name marks it optional and `|` separates alternatives. Each call except `launch` and `delete` acquires the Session (restoring it if needed) and holds it loaded until the reply. The calls carry no caller identity. The [sessions service](../appserver/sessions-service.md) design gives each method's steps, the policy cap and the lifecycle.
 
 | Method | Mode | Request | Reply | Errors |
 | --- | --- | --- | --- | --- |
@@ -229,6 +230,7 @@ Withdrawn ([#24](https://github.com/arcships/dim/issues/24)): a caller withdraws
 | `withdraw` | async | `WithdrawRequest` | `WithdrawReply` | `rejected`, `session_closed`, `branch_missing`, `reloading`, `publication_unknown` |
 | `stop` | async | `{sessionId, branchId, reason?}` | `{sequence}` | `session_closed`, `branch_missing`, `reloading` |
 | `idle` | async | `{sessionId, branchId}` | `{sequence}` | `session_closed`, `branch_missing`, `reloading` |
+| `delete` | async | `{sessionId}` | `{}` | `rejected`, `reloading`, `failed` |
 
 ```text
 // LaunchRequest
@@ -252,7 +254,7 @@ Withdrawn ([#24](https://github.com/arcships/dim/issues/24)): a caller withdraws
   "after?": 0,                        // exclusive lower bound; absent: from the start of the branch
   "through?": 0,                      // read up to this sequence
   "atLeast?": 0,                      // fixed-prefix read (A.5); not together with through
-  "limit?": 256 }                     // page size; absent: 256
+  "limit?": 256 }                     // page size, 1 to 256; absent: 256
 // HistoryPage: the branch's own events in (after, through], ending on a batch boundary,
 // as AgentEvent records in the form session.history returns them
 { "through": 0, "events": [ { "id": "string", "sequence": 0, "type": "turn/end", "data": {} } ] }
@@ -270,7 +272,9 @@ Every method can also fail `failed` (A.6). Cancellation: the caller dropping an 
 
 `launch` creates a Session with `interactive = false`. The effective policy is the requested policy capped by the starter's current policy, which is a Timeline fact read at launch. Without a starter, a run started by a management method defaults to read-only unless the request declares a policy, and it is always capped by host configuration.
 
-Implemented (S2, [#98](https://github.com/arcships/dim/pull/98)): every method above, served by Agents' directory part. `input` and a `withdraw` that deletes reply once their event is published. `sessions.delete` is added after S5c ([sessions service §8.7](../appserver/sessions-service.md#87-target-deleting-run-sessions-follow-up)).
+`delete` is Agents' Session delete (S5c): it closes the Session if it is loaded, then removes its rows and files. An absent or already deleted Session replies `{}`, so a caller deletes again after any error ([sessions service §6.8](../appserver/sessions-service.md#68-delete)). The caller that launched a Session deletes it when it drops the last record that names it ([§8.7](../appserver/sessions-service.md#87-deleting-run-sessions)).
+
+Implemented: every method above, served by Agents' directory part (S2, [#98](https://github.com/arcships/dim/pull/98); `delete` after S5c, [#97](https://github.com/arcships/dim/pull/97)). `input` and a `withdraw` that deletes reply once their event is published.
 
 ### A.2 Source input conventions
 
@@ -356,7 +360,7 @@ Not in this contract: `createdBy` (the Session's origin) and the `client` parame
 | Child branch cut between write and consumption | input < cut < consumed | Child does not adopt it | InputQueue (child) |
 | Two writers, same key | Timeline order | Later supersedes; owner prefixes avoid collisions by convention | History projection |
 | Decision read, newer fact, then write | through < fact < write | Write ordered after the fact | Input owners |
-| Agents reload | — | Calls in flight fail `reloading`; callers do not reload (#35); committed inputs stay | Agents |
+| Agents reload | — | Calls in flight fail `reloading`, except an admitted `launch` and a `delete`, which reply their own outcome; callers do not reload (#35); committed inputs stay | Agents |
 | Restart after commit, reply lost | — | `lookup` returns `accepted`; no duplicate | Caller |
 | Session not loaded | — | Agents restores it before the call | Agents |
 | Resource node offline | — | Input committed; the turn runs and calls on that node fail `node_unavailable`; no dependent reloads or goes Pending (requirement on #5) | rutis link |
@@ -391,6 +395,7 @@ Not in this contract: `createdBy` (the Session's origin) and the `client` parame
 | `history` | `Session::sequence(branch)`, failing `future_sequence` below `at_least`, then `Session::local_page(branch, after, limit, through)` |
 | `withdraw` | `Session::service::<InputQueue>(branch)` then `InputQueue::withdraw(InputWithdrawData { input_id, reason }, None) -> Result<(Withdrawal, Option<Arc<AgentEvent>>), AgentError>` (S1): appends `input/withdraw` and replies with InputQueue's decision once it is written; `Withdrawal::Deleted { sequence }` or `Withdrawal::NotHeld`. Agents replies `deleted` once that `input/deleted` is published |
 | `stop`, `idle` | `Session::stop`, `Session::idle` (existing) |
+| `delete` | `AgentIndex::delete(id)` (S5c, crate-internal): admission gate, close, `SessionStore::delete_session`, forget |
 | `SessionConfig` | Rust struct below |
 | Errors | `SessionsError` with the codes of A.6, mapped from `AgentError`: `Closed` → `session_closed`, `UnknownBranch` → `branch_missing`, `Reloading` → `reloading`, `InvalidInput` → `rejected`, others → `failed` |
 

@@ -1,8 +1,10 @@
 //! The Agents `sessions` service (sessions service design §16), called by
 //! name through `Keyed<dyn HostDispatch>` as a process plugin calls it.
 use super::*;
-use dim_agent_capabilities::permission::{Permission, PermissionState};
-use dim_agent_runtime::{Agent, Session};
+use dim_agent_capabilities::permission::{
+    CommandRulesHost, NoCommandRules, Permission, PermissionState,
+};
+use dim_agent_runtime::{Agent, Session, SessionScope};
 use dim_agent_types::{InputBlock, InputMessageData, PermissionPolicy, UserInput};
 use rutis::{DepKey, Keyed};
 use rutis_bridge::session::HostDispatch;
@@ -86,14 +88,73 @@ struct Served {
     /// Executions of the `confirm` tool, which asks for approval.
     calls: Arc<AtomicUsize>,
 }
-/// Without Collaboration, whose Session parts reload with the Agents index,
-/// so a pending approval outlives an index reload.
+/// Permission's command rules from a Session part that reloads with the
+/// Agents index, as it injects Collaboration, which injects the index. While
+/// held, a reload waits in `apply`, so every branch's Permission, and with it
+/// `PermissionState`, stays unloaded.
+#[derive(Clone)]
+struct HeldRules {
+    hold: Arc<tokio::sync::watch::Sender<bool>>,
+    /// Notified when a held reload waits.
+    held: Arc<tokio::sync::Notify>,
+}
+struct HeldRulesPart(HeldRules, SessionScope);
+impl TypedPlugin for HeldRulesPart {
+    type Deps = (Arc<dim_app_server::collaboration::Collaboration>,);
+    fn name(&self) -> &str {
+        "held-rules"
+    }
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a rutis::Ctx,
+        _: Self::Deps,
+    ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
+        Box::pin(async move {
+            let mut hold = self.0.hold.subscribe();
+            if *hold.borrow_and_update() {
+                self.0.held.notify_one();
+                let _ = hold.wait_for(|held| !held).await;
+            }
+            ctx.provide_as(
+                self.1.key::<CommandRulesHost>(),
+                Arc::new(CommandRulesHost(Arc::new(NoCommandRules))),
+            )?;
+            Ok(rutis::Effect::Done)
+        })
+    }
+}
+impl Capability for HeldRulesPart {
+    fn keys(&self) -> KeysOf<Self> {
+        scoped::<Self::Deps, _>(&self.1)
+    }
+}
+
+/// How a test's daemon differs from the default one.
+#[derive(Default)]
+struct Setup {
+    database: Option<std::path::PathBuf>,
+    /// Binds Permission's command rules through `HeldRules`.
+    rules: Option<HeldRules>,
+    /// Configured models: launches resolve through a model-selection host.
+    models: Option<Arc<dim_agent_aimux::AimuxModels>>,
+}
 async fn serve_sessions(database: Option<std::path::PathBuf>) -> Served {
+    serve_with(Setup {
+        database,
+        ..Default::default()
+    })
+    .await
+}
+/// Without Collaboration, whose Session parts reload with the Agents index,
+/// so a pending approval outlives an index reload; only `Setup::rules` adds
+/// a part that reloads with it.
+async fn serve_with(setup: Setup) -> Served {
     let sessions = Sessions::default();
     let consumer = sessions.clone();
     let calls = Arc::new(AtomicUsize::new(0));
     let mut config = ServerConfig {
-        database_path: database,
+        database_path: setup.database,
+        model_catalog: setup.models,
         unix_path: Some(
             std::path::PathBuf::from("/tmp")
                 .join(format!("dim-sessions-{}/server.sock", uuid::Uuid::new_v4())),
@@ -104,7 +165,21 @@ async fn serve_sessions(database: Option<std::path::PathBuf>) -> Served {
     config.session_defaults.permission_policy = serde_json::from_value(host_policy()).unwrap();
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder.timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()));
-    defaults::install(&mut builder);
+    match setup.rules {
+        None => defaults::install(&mut builder),
+        Some(rules) => {
+            use dim_agent_capabilities::{
+                host::{EmptyPromptHost, PromptHost},
+                model_provider::ModelProviderPlugin,
+                prompt::InitialPromptConfiguration,
+            };
+            builder
+                .session_value(Arc::new(PromptHost(Arc::new(EmptyPromptHost))))
+                .session_value(Arc::new(InitialPromptConfiguration(None)))
+                .session_plugin(move |scope| HeldRulesPart(rules.clone(), *scope));
+            defaults::install_with_prompt_capability(&mut builder, ModelProviderPlugin::new);
+        }
+    }
     defaults::mock_model_hosts(&mut builder);
     dim_agent_capabilities::defaults::tool_host(
         &mut builder,
@@ -847,6 +922,7 @@ async fn history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries()
         (at(json!({"after":inside})), "rejected"),
         (at(json!({"after":first,"through":first - 1})), "rejected"),
         (at(json!({"limit":0})), "rejected"),
+        (at(json!({"limit":257})), "rejected"),
         (at(json!({"atLeast":first,"through":first})), "rejected"),
         (at(json!({"atLeast":head + 1})), "future_sequence"),
         (at(json!({"through":head + 1})), "future_sequence"),
@@ -863,4 +939,388 @@ async fn history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries()
     }
     server.shutdown();
     server.join().await.unwrap();
+}
+
+/// Sessions §6.8 and §8.7: a consumer deletes a Session it launched through
+/// S5c's delete. A wait on the run ends `session_closed`, so do later calls,
+/// and deleting an absent Session succeeds. An index reload does not cut a
+/// started delete short. A delete that fails after its close replies
+/// `failed` and leaves the Session closed with its rows; the consumer's retry
+/// deletes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_consumer_deletes_its_launched_session_and_retries_a_failed_delete() {
+    use std::os::unix::fs::PermissionsExt;
+    let store = Store::new();
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_sessions(Some(store.database())).await;
+    client_session(&mut client, &agent, host_policy()).await;
+    let stored = |id: &str| {
+        rusqlite::Connection::open(store.database())
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM agent_sessions WHERE session_id=?1",
+                [id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+            > 0
+    };
+    let delete = |id: &str| json!({"sessionId":id});
+
+    // A loaded run whose turn waits on an approval.
+    let session = awaiting_approval(&sessions, &agent).await;
+    let id = session.id().to_owned();
+    let at = json!({"sessionId":id,"branchId":"main"});
+    let idle = tokio::spawn({
+        let sessions = sessions.clone();
+        let at = at.clone();
+        async move { sessions.call("idle", at).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!idle.is_finished());
+    assert_eq!(sessions.ok("delete", delete(&id)).await, json!({}));
+    let ended = idle.await.unwrap();
+    assert_eq!(ended["error"]["code"], "session_closed", "{ended}");
+    assert!(agent.get_session(&id).is_none() && !stored(&id));
+    for (method, request) in [
+        ("idle", at.clone()),
+        ("history", at.clone()),
+        ("input", input(&session, "test:after", json!([]))),
+        (
+            "launch",
+            json!({"cwd":std::env::temp_dir(),"starter":at.clone()}),
+        ),
+    ] {
+        assert_eq!(
+            sessions.error(method, request).await,
+            "session_closed",
+            "{method}"
+        );
+    }
+    // Already deleted, or never created.
+    for absent in [id.clone(), uuid::Uuid::new_v4().to_string()] {
+        assert_eq!(sessions.ok("delete", delete(&absent)).await, json!({}));
+    }
+    for request in [
+        delete("a/b"),
+        delete(".."),
+        json!({}),
+        json!({"sessionId":id,"force":true}),
+    ] {
+        assert_eq!(
+            sessions.error("delete", request.clone()).await,
+            "rejected",
+            "{request}"
+        );
+    }
+
+    // The writer is held, so the delete waits in its close while Agents
+    // reloads; it then replies its own outcome, not `reloading`.
+    let id = launched(&sessions, &agent, json!({})).await.id().to_owned();
+    let lock = rusqlite::Connection::open(store.database()).unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let deleting = tokio::spawn({
+        let sessions = sessions.clone();
+        let request = delete(&id);
+        async move { sessions.call("delete", request).await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!deleting.is_finished());
+    let (restarted, ()) = tokio::join!(server.restart("Agents"), async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        lock.execute_batch("COMMIT").unwrap();
+    });
+    restarted.unwrap();
+    assert_eq!(deleting.await.unwrap(), json!({"ok": true, "value": {}}));
+    assert!(!stored(&id));
+
+    // An entry of the run's command output the daemon cannot remove.
+    let id = launched(&sessions, &agent, json!({})).await.id().to_owned();
+    let locked = store.0.join("command-output").join(&id).join("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::write(locked.join("exec.log"), b"output").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+    assert_eq!(
+        std::fs::write(locked.join("probe"), b"")
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "file permissions must bind the test's user"
+    );
+    let failed = sessions.error("delete", delete(&id)).await;
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(failed, "failed");
+    // Closed in this process with its rows kept (S5c D5).
+    assert!(stored(&id));
+    assert_eq!(
+        sessions
+            .error("idle", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+        "session_closed"
+    );
+    assert_eq!(sessions.ok("delete", delete(&id)).await, json!({}));
+    assert!(!stored(&id) && !store.0.join("command-output").join(&id).exists());
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Sessions §6.1 and D5: a starter whose Permission is reloading fails the
+/// launch with `reloading` instead of falling back to the host bound; once
+/// Permission is back, the same launch succeeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_launch_fails_reloading_while_the_starters_permission_reloads() {
+    let rules = HeldRules {
+        hold: Arc::new(tokio::sync::watch::channel(false).0),
+        held: Arc::default(),
+    };
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        rules: Some(rules.clone()),
+        ..Default::default()
+    })
+    .await;
+    let starter = client_session(&mut client, &agent, host_policy()).await;
+    let request =
+        json!({"cwd":std::env::temp_dir(),"starter":{"sessionId":starter.id(),"branchId":"main"}});
+
+    rules.hold.send_replace(true);
+    let (restarted, ()) = tokio::join!(server.restart("Agents"), async {
+        rules.held.notified().await;
+        assert!(starter.get::<PermissionState>("main").unwrap().is_none());
+        let reply = sessions.call("launch", request.clone()).await;
+        assert_eq!(reply["error"]["code"], "reloading", "{reply}");
+        assert_eq!(reply["error"]["retryable"], true);
+        assert!(
+            reply["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Permission"),
+            "{reply}"
+        );
+        rules.hold.send_replace(false);
+    });
+    restarted.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while starter.get::<PermissionState>("main").unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the starter's Permission is back");
+    let reply = sessions.ok("launch", request).await;
+    assert_launched(&mut client, &agent, &reply, host_policy()).await;
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Sessions §6.1, the `model` row: with a model-selection host (configured
+/// models, as in the product), a launch resolves its model through the host,
+/// the request's over the Agent profile's; a model the host cannot resolve
+/// fails the launch and creates nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_launch_resolves_its_model_through_the_model_selection_host() {
+    use dim_agent_aimux::{AimuxModels, config::ModelConfigFile};
+    let models = Arc::new(
+        AimuxModels::from_config(
+            serde_json::from_value::<ModelConfigFile>(json!({
+                "defaultModel":{"providerId":"local","modelId":"alpha"},
+                "providers":[{"id":"local","kind":"openai-compatible","baseUrl":"http://127.0.0.1:9/v1",
+                    "models":[{"id":"alpha","config":{"maxTokens":64}},{"id":"beta","config":{"maxTokens":32}}]}]
+            }))
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    let store = Store::new();
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        database: Some(store.database()),
+        models: Some(models),
+        ..Default::default()
+    })
+    .await;
+    client_session(&mut client, &agent, host_policy()).await;
+    let cwd = std::env::temp_dir();
+    for (model, expected, max_tokens) in [
+        (
+            Some(json!({"providerId":"local","modelId":"beta"})),
+            "beta",
+            32.0,
+        ),
+        (None, "alpha", 64.0),
+    ] {
+        let mut request = json!({"cwd":cwd});
+        if let Some(model) = model {
+            request["model"] = model;
+        }
+        let reply = sessions.ok("launch", request).await;
+        let session = agent
+            .get_session(reply["sessionId"].as_str().unwrap())
+            .unwrap();
+        let selected = &session.config().model;
+        assert_eq!(
+            (selected.provider_id.as_str(), selected.model_id.as_str()),
+            ("local", expected)
+        );
+        // Resolved by the host: it carries the catalog's model defaults.
+        assert_eq!(
+            selected
+                .config
+                .as_ref()
+                .and_then(|config| config.max_tokens),
+            Some(max_tokens)
+        );
+    }
+    let before = agent.sessions().len();
+    assert_eq!(
+        sessions
+            .error(
+                "launch",
+                json!({"cwd":cwd,"model":{"providerId":"local","modelId":"missing"}}),
+            )
+            .await,
+        "failed"
+    );
+    assert_eq!(agent.sessions().len(), before, "nothing was created");
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Sessions §5 and §17 #6: a launch whose caller drops the call after
+/// creation started still creates and registers its Session, so Rpc serves
+/// it. The native writer is held so the call is dropped while creation waits
+/// on its rows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_launch_still_registers_its_session() {
+    let store = Store::new();
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_sessions(Some(store.database())).await;
+    client_session(&mut client, &agent, host_policy()).await;
+    let known: Vec<String> = agent
+        .sessions()
+        .iter()
+        .map(|session| session.id().to_owned())
+        .collect();
+    let lock = rusqlite::Connection::open(store.database()).unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let launch = tokio::spawn({
+        let sessions = sessions.clone();
+        let cwd = std::env::temp_dir();
+        async move { sessions.call("launch", json!({"cwd":cwd})).await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!launch.is_finished());
+    launch.abort();
+    assert!(launch.await.unwrap_err().is_cancelled());
+    lock.execute_batch("COMMIT").unwrap();
+    // Rpc refuses a loaded Session whose protocol version is not registered
+    // (`session_protocol_version`), so an attach that succeeds shows both.
+    let launched = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let created = agent
+                .sessions()
+                .into_iter()
+                .find(|session| !known.iter().any(|id| id == session.id()));
+            if let Some(session) = created
+                && client
+                    .rpc("session.attach", json!({"sessionId":session.id()}))
+                    .await
+                    .get("error")
+                    .is_none()
+            {
+                return session;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the dropped launch registered its Session");
+    assert!(!launched.config().interactive);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Sessions §6.2 and §6.6, §17 #1: `input` and a deleting `withdraw` reply
+/// only once their event is published. When the store fails that write,
+/// the event stays committed but unpublished, and the reply is the
+/// retryable `publication_unknown`, not a receipt that a read right after
+/// it could not find.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_write() {
+    let store = Store::new();
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_sessions(Some(store.database())).await;
+    client_session(&mut client, &agent, host_policy()).await;
+    // The native store fails the next write of `kind` for `session`.
+    let fail = |session: &Session, kind: &str| {
+        rusqlite::Connection::open(store.database())
+            .unwrap()
+            .execute_batch(&format!(
+                "CREATE TRIGGER \"fail-{kind}\" BEFORE INSERT ON timeline_events \
+                 WHEN NEW.session_id = '{}' AND NEW.kind = '{kind}' \
+                 BEGIN SELECT RAISE(ABORT, 'injected write failure'); END",
+                session.id()
+            ))
+            .unwrap();
+    };
+
+    let session = launched(&sessions, &agent, json!({})).await;
+    fail(&session, "input/message");
+    let lost = input(
+        &session,
+        "test:lost",
+        json!([{"type":"text","text":"lost"}]),
+    );
+    assert_eq!(sessions.error("input", lost).await, "publication_unknown");
+
+    // The first input's approval keeps its turn open, so the second is held.
+    let session = awaiting_approval(&sessions, &agent).await;
+    let held = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:held",
+                json!([{"type":"text","text":"later"}]),
+            ),
+        )
+        .await;
+    fail(&session, "input/deleted");
+    assert_eq!(
+        sessions
+            .error(
+                "withdraw",
+                json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"]}),
+            )
+            .await,
+        "publication_unknown"
+    );
+    server.shutdown();
+    // The faulted Sessions report the injected failure as cleanup errors.
+    let _ = server.join().await;
 }

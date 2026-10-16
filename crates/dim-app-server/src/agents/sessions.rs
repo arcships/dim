@@ -4,7 +4,7 @@
 //! [`AgentIndex`]; Agents' directory part, which never reloads, serves them by
 //! name and looks up the index on each call.
 use super::AgentIndex;
-use crate::protocol::{PROTOCOL_VERSION, session_cwd};
+use crate::protocol::{PROTOCOL_VERSION, SessionId, session_cwd};
 use dim_agent_capabilities::{
     input_queue::{InputQueue, Withdrawal},
     permission::PermissionState,
@@ -129,10 +129,13 @@ pub struct HistoryRequest {
     #[serde(default)]
     pub at_least: Option<u64>,
     /// Events per page before the page runs to the end of its batch;
-    /// absent: 256.
+    /// 1 to 256, absent: 256.
     #[serde(default)]
     pub limit: Option<usize>,
 }
+/// The default and largest `history` page: paging bounds each reply that
+/// crosses the bridge (sessions service D11).
+const HISTORY_PAGE_LIMIT: usize = 256;
 /// The branch's own events in `(after, through]`, ending on a batch boundary.
 #[derive(Debug, Serialize)]
 pub struct HistoryPage {
@@ -252,7 +255,9 @@ pub(crate) enum Lookup {
 }
 /// Finds the `input/message` with `submission_id` on a branch: first waits
 /// until nothing committed is unpublished, so `Unknown` is final for every
-/// write that returned before the call, then scans the published pages.
+/// write that returned before the call, then scans the published pages. On
+/// a branch that keeps committing, the wait lasts until its commits pause
+/// (sessions service §6.3).
 /// `sessions.lookup` and Rpc's `session.input_lookup` share it.
 pub(crate) async fn find_input(
     session: &Session,
@@ -528,9 +533,11 @@ impl AgentIndex {
     /// `through`.
     pub async fn history(&self, request: HistoryRequest) -> Result<HistoryPage, SessionsError> {
         self.until_unloaded(async {
-            let limit = request.limit.unwrap_or(256);
-            if limit == 0 {
-                return Err(SessionsError::rejected("limit must be positive"));
+            let limit = request.limit.unwrap_or(HISTORY_PAGE_LIMIT);
+            if !(1..=HISTORY_PAGE_LIMIT).contains(&limit) {
+                return Err(SessionsError::rejected(format!(
+                    "limit must be between 1 and {HISTORY_PAGE_LIMIT}; read more pages by passing the last sequence as after"
+                )));
             }
             if request.at_least.is_some() && request.through.is_some() {
                 return Err(SessionsError::rejected(
@@ -648,6 +655,7 @@ impl HostDispatch for SessionsService {
         Some(json!({
             "launch": "async", "input": "async", "lookup": "async",
             "history": "async", "withdraw": "async", "stop": "async", "idle": "async",
+            "delete": "async",
         }))
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
@@ -703,6 +711,14 @@ async fn call(
         }),
         "stop" => reply(json!({"sequence": index.stop(request(args)?).await?})),
         "idle" => reply(json!({"sequence": index.idle(request(args)?).await?})),
+        // S5c's delete (§6.8): admission gate, close, then the Session's rows
+        // and files. Like Rpc's `session.delete` it runs to its own outcome
+        // across an index reload, so a reload never leaves it half done.
+        "delete" => {
+            let SessionId { session_id } = request(args)?;
+            index.delete(&session_id).await?;
+            reply(json!({}))
+        }
         _ => Err(SessionsError::rejected(format!(
             "unknown sessions method {method}"
         ))),

@@ -145,7 +145,7 @@ flowchart LR
 | `sessionMethods` | Session | 命名空间 | `describe(): async -> MethodDecl[]`；`call(MethodCall): async -> MethodReply` | [方法 A.1](contracts/session-boundary.md#a1-方法贡献) |
 | `managementMethods` | 进程 | 命名空间 | 同上 | [方法 A.1](contracts/session-boundary.md#a1-方法贡献) |
 | `toolContribution` | Session | 工具名 | `declaration(): sync -> ToolDeclaration`；`execute(ToolCall): async -> ToolResult` | [方法 A.5](contracts/session-boundary.md#a5-工具贡献) |
-| `sessions` | 进程 | — | `launch`、`input`、`lookup`、`history`、`withdraw`、`stop`、`idle` | [Session 访问 A.1](contracts/session-access.md#a1-sessions-服务) |
+| `sessions` | 进程 | — | `launch`、`input`、`lookup`、`history`、`withdraw`、`stop`、`idle`、`delete` | [Session 访问 A.1](contracts/session-access.md#a1-sessions-服务) |
 | `modelKind` | 进程 | 种类 | `invoke(ModelRequest, target, ModelCallScope): async -> 模型流` | [ExternalAgent](plugins/ExternalAgent.md) |
 | `scheduleJobs`（提议） | 进程 | — | 供 `schedule` 工具使用的 Session 到进程的任务操作 | [Scheduler](plugins/Scheduler.md) |
 | `workflowRuns`（提议） | 进程 | — | 供 `workflow` 工具使用的 Session 到进程的运行操作 | [Workflow](plugins/Workflow.md) |
