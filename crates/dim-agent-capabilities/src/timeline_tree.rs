@@ -857,6 +857,13 @@ impl TypedPlugin for TimelineTreePlugin {
                     }),
                 }),
             )?;
+            ctx.provide_as::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key_in(
+                    crate::tree_binding::TREE_COMMANDS,
+                    self.scope.instance,
+                ),
+                Arc::new(crate::tree_binding::TreeCommandsService(commands.clone())),
+            )?;
             ctx.provide_as(self.scope.key::<TreeCommands>(), commands)?;
             ctx.provide_as(self.scope.key::<TimelineTree>(), tree.clone())?;
             ctx.provide_as(

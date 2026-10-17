@@ -1,14 +1,12 @@
 # Branch TypeScript binding
 
-Proposed contract for [C5 / #64](https://github.com/arcships/dim/issues/64), the branch portion of
-[#4](https://github.com/arcships/dim/issues/4). The native operations exist; the foreign binding is
-not implemented. The declaration, reference binding and lifecycle choices below require architecture
-confirmation. Implementation also requires full C4 acceptance.
+Contract for [C5 / #64](https://github.com/arcships/dim/issues/64), the branch portion of
+[#4](https://github.com/arcships/dim/issues/4). Status: implemented on top of full C4 (#180); see
+§Implementation.
 
 The contract includes the Session-side TreeCommands and branch-owned service reads required by
-the existing Goal design. Its sole proposed native facade addition is a named counterpart of the
-existing typed public-service read (§Named public branch services); that addition requires explicit
-architecture confirmation and is not implemented.
+the existing Goal design. Its sole native facade addition is a named counterpart of the existing
+typed public-service read (§Named public branch services).
 
 ## Scope and ownership
 
@@ -316,10 +314,10 @@ Extend the nearest public flow tests rather than testing private binding helpers
 
 ## Impact and rule check
 
-Current deliverable: the proposed binding contract and its documentation index entry. No runtime,
-dependency, event format, persistence format or generated graph changes are implemented.
+No dependency, event format or persistence format changes. The generated graph gains the
+Session-scoped `HostDispatch#treeCommands` provided by TimelineTree.
 
-Proposed ownership: App Server's `session_typescript.rs` owns classification, original-row
+Ownership: App Server's `session_typescript.rs` owns classification, original-row
 projection and scoped binding; `lib.rs` inserts rows in the existing branch group and catalogs the
 named services. The capabilities crate's TimelineTree language boundary owns TreeCommands and
 ForeignBranchService references. Both crates already depend on bridge. Runtime owns and verifies
@@ -361,6 +359,27 @@ No new issue or independent mechanism proposal. The following requirement stays 
 
 All other bindings use the existing scoped factories/catalog keys, subscriptions, history reads,
 bridge references and effects. This proposal does not authorize another facade or core extension.
+
+## Implementation
+
+| Part | Where |
+| --- | --- |
+| `Branch::named_service` and `BranchScope::named_key` | [branch.rs](../../crates/dim-agent-runtime/src/branch.rs), [scope.rs](../../crates/dim-agent-runtime/src/scope.rs); the compile-fail coverage includes the named read of an internal service |
+| `treeCommands`, BranchRef and `ForeignBranchService` | [tree_binding.rs](../../crates/dim-agent-capabilities/src/tree_binding.rs), provided by TimelineTreePlugin |
+| Row classification, branch-group placement, original-row bind and publication | [session_typescript.rs](../../crates/dim-app-server/src/session_typescript.rs), [lib.rs](../../crates/dim-app-server/src/lib.rs) |
+| Real Node flows | [branch_typescript.rs](../../crates/dim-app-server/tests/transport_flow/branch_typescript.rs) with the [branch part](../../runtime/fixtures/branch-part.ts) and [Session part](../../runtime/fixtures/branch-tree.ts) fixtures |
+
+Choices made against the code:
+
+- A business-service name is rejected when it is empty, contains `:` (a Session family prefix) or
+  is already a catalog name; a branch row declares exactly one `branchPart`.
+- `bind` must resolve to `null`; anything else, a throw or cancellation fails the row through its
+  loading path, and none of its public services is published.
+- The flows cover ordered consumption with reconstruction at a fixed cutoff, owned input written
+  after `activated`, the Goal-shaped Session read of the owner's fold, two public services, two
+  branches and two Sessions, a row reload that repeats no side effect, a throwing handler failing
+  the Dispatcher, a failed bind, absent services (`reloading`), unknown branches and invalid
+  declarations. The existing C4 flows run unchanged.
 
 ## Source references
 

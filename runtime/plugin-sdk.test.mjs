@@ -31,13 +31,23 @@ test('packed plugin service types compile the author guide and enforce the publi
   });
   const calls = path.join(directory, 'calls.mts');
   writeFileSync(calls, `
-import type { Settings, SettingsResult, Credentials, CredentialsResult, Sessions, FileScope, FileResult, ToolContribution, ToolResult, SessionMethodsContribution } from 'dimcode/plugin';
+import type { Settings, SettingsResult, Credentials, CredentialsResult, Sessions, FileScope, FileResult, ToolContribution, ToolResult, SessionMethodsContribution, TreeCommands, BranchPart, BranchResult, BranchRef } from 'dimcode/plugin';
 declare const settings: Settings;
 declare const credentials: Credentials;
 declare const sessions: Sessions;
 declare const files: FileScope;
 declare const tool: ToolContribution;
 declare const methods: SessionMethodsContribution;
+declare const tree: TreeCommands;
+const branch: BranchResult<BranchRef> = tree.get({ id: 'main' });
+if (branch.ok) void branch.value.input({ user: { content: [{ type: 'text', text: 'hi' }] }, blocks: [{ type: 'raw', text: 'x', key: 'goal:status' }], mode: 'queue' });
+const part: BranchPart = { async bind(binding) {
+  binding.dispatcher.subscribe(['turn/end'], async event => { void event.sequence; });
+  void binding.timeline.committed(); await binding.activated; return null;
+} };
+void part;
+// @ts-expect-error input mode is one of the native modes.
+if (branch.ok) void branch.value.input({ mode: 'later' });
 const at = { sessionId: 'session', branchId: 'main' };
 void settings.read({ source: 'web', scope: 'user' });
 void settings.update({ source: 'web', scope: { project: 1 }, expectedRevision: 'opaque', document: { maxResults: 10 } });

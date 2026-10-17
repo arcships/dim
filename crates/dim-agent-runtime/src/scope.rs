@@ -40,6 +40,13 @@ pub trait BranchService: Send + Sync + 'static {}
 /// }
 /// ```
 ///
+/// ```compile_fail
+/// use dim_agent_runtime::{Branch, Timeline};
+/// fn invalid(branch: &Branch) {
+///     let _ = branch.named_service::<Timeline>("goal");
+/// }
+/// ```
+///
 /// A branch facade reads history but cannot write arbitrary events:
 ///
 /// ```compile_fail
@@ -110,6 +117,10 @@ impl BranchScope {
     #[track_caller]
     pub fn service<T: ?Sized + BranchService>(&self, ctx: &Ctx) -> Result<Arc<T>> {
         lookup(ctx, self.key::<T>())
+    }
+    /// Key of one named branch service among several of the same type.
+    pub fn named_key<T: ?Sized + BranchService>(&self, name: &str) -> TypeKey {
+        TypeKey::keyed_dynamic::<T>(name).with_instance(self.instance)
     }
 }
 

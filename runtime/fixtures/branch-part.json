@@ -1,0 +1,5 @@
+{
+  "branchPart:echo": { "bind": "async" },
+  "echoState": { "get": "sync" },
+  "echoNotes": { "get": "sync" }
+}

@@ -236,3 +236,52 @@ export interface SessionMethodsContribution {
   describe(): Promise<SessionMethodDeclaration[]>;
   call(call: SessionMethodCall, cancelled: Promise<void>, progress: (data: JsonValue) => void): Promise<SessionMethodReply>;
 }
+
+/** C5: errors of the branch binding; a code classifies, it grants no retry. */
+export type BranchErrorCode = 'invalid_params' | 'invalid_input' | 'unknown_branch' | 'closed' |
+  'cancelled' | 'reloading' | 'failed';
+export type BranchResult<T> = { ok: true; value: T } |
+  { ok: false; error: { code: BranchErrorCode; message: string } };
+/** Native `InputMessageData`; raw blocks keyed for the model context. */
+export interface BranchInput {
+  submission_id?: string;
+  user?: { content: ContentBlock[] };
+  blocks?: { type: 'raw'; text: string; key?: string; retire?: boolean }[];
+  mode?: 'queue' | 'steer' | 'append';
+}
+/** A public service of a branch part: its declared methods, called on that owner. */
+export type BranchService = Record<string, (...args: never[]) => unknown>;
+/** A branch facade value; it follows its branch's lifetime. */
+export interface BranchRef {
+  id: string;
+  /** The reply proves commitment, not dispatch or model consumption. */
+  input(data: BranchInput): BranchResult<AgentEvent>;
+  service(request: { name: string }): BranchResult<BranchService>;
+}
+export interface TimelineInfo { id: string; parent?: string; branch_point?: number; create_anchor?: number }
+/** Session service `treeCommands`, for Session and branch parts. */
+export interface TreeCommands {
+  get(request: { id: string }): BranchResult<BranchRef>;
+  list(request: Record<string, never>): BranchResult<TimelineInfo[]>;
+  branch(request: { parent: string; at: number; options: { prompt: string; source: JsonObject } }, signal?: AbortSignal): Promise<BranchResult<BranchRef>>;
+}
+/** What `branchPart:<part>.bind` receives once; resolve it with null. */
+export interface BranchPartBinding {
+  identity: SessionRef;
+  dispatcher: {
+    /** Keys are exact, `*` or `domain/*`; a throw fails the branch's Dispatcher. */
+    subscribe(keys: string[], handler: (event: AgentEvent) => void | Promise<void>): BranchResult<null>;
+  };
+  timeline: {
+    committed(): BranchResult<number>;
+    history(request: { through: number }): Promise<BranchResult<AgentEvent[]>>;
+    local(request: { start: number; through: number }): Promise<BranchResult<AgentEvent[]>>;
+  };
+  /** False when closing or the row's cancellation wins first. */
+  activated: Promise<boolean>;
+  closing: Promise<void>;
+}
+/** Provide as `branchPart:<part>`. */
+export interface BranchPart {
+  bind(binding: BranchPartBinding): Promise<null>;
+}

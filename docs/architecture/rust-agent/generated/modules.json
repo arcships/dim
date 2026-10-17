@@ -715,6 +715,16 @@
       ]
     },
     {
+      "id": "dim_agent_capabilities::tree_binding",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities",
+      "file": "crates/dim-agent-capabilities/src/tree_binding.rs",
+      "unexpandedMacros": [
+        "format",
+        "json"
+      ]
+    },
+    {
       "id": "dim_agent_capabilities::wait",
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities",
@@ -3053,6 +3063,13 @@
       "to": "dim_agent_capabilities::trace",
       "references": [
         "mod trace"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities",
+      "to": "dim_agent_capabilities::tree_binding",
+      "references": [
+        "mod tree_binding"
       ]
     },
     {
@@ -6756,6 +6773,14 @@
     },
     {
       "from": "dim_agent_capabilities::timeline_tree",
+      "to": "dim_agent_capabilities::tree_binding",
+      "references": [
+        "path crate::tree_binding::TREE_COMMANDS",
+        "path crate::tree_binding::TreeCommandsService"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::timeline_tree",
       "to": "dim_agent_runtime::assembly",
       "references": [
         "path TimelineFactory",
@@ -7368,6 +7393,61 @@
         "use dim_agent_types::EventKind",
         "use dim_agent_types::ModelOutputOutcome",
         "use dim_agent_types::TurnOutcome"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::tree_binding",
+      "to": "dim_agent_capabilities::timeline_tree",
+      "references": [
+        "path TreeCommands",
+        "use crate::timeline_tree::TreeCommands"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::tree_binding",
+      "to": "dim_agent_runtime::branch",
+      "references": [
+        "path Branch",
+        "use dim_agent_runtime::Branch"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::tree_binding",
+      "to": "dim_agent_runtime::contracts",
+      "references": [
+        "path BranchOptions",
+        "use dim_agent_runtime::BranchOptions"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::tree_binding",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path AgentError",
+        "path AgentError::Cancelled",
+        "path AgentError::Closed",
+        "path AgentError::InvalidInput",
+        "path AgentError::Reloading",
+        "path AgentError::UnknownBranch",
+        "use dim_agent_runtime::AgentError"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::tree_binding",
+      "to": "dim_agent_runtime::scope",
+      "references": [
+        "path BranchService",
+        "path PublicService",
+        "use dim_agent_runtime::BranchService",
+        "use dim_agent_runtime::PublicService"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::tree_binding",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path InputMessageData",
+        "use dim_agent_types::InputMessageData"
       ]
     },
     {
@@ -9880,6 +9960,13 @@
     },
     {
       "from": "dim_app_server",
+      "to": "dim_agent_capabilities::tree_binding",
+      "references": [
+        "path dim_agent_capabilities::tree_binding::TREE_COMMANDS"
+      ]
+    },
+    {
+      "from": "dim_app_server",
       "to": "dim_agent_capabilities::workspace_tools",
       "references": [
         "path dim_agent_capabilities::workspace_tools::FileWriteCoordinatorPlugin::default"
@@ -9898,6 +9985,8 @@
       "to": "dim_agent_runtime::assembly",
       "references": [
         "path AgentBuilder",
+        "path dim_agent_runtime::BRANCH_GROUP",
+        "path dim_agent_runtime::SESSION_GROUP",
         "path wait_active",
         "use dim_agent_runtime::AgentBuilder",
         "use dim_agent_runtime::wait_active"
@@ -14213,6 +14302,20 @@
     },
     {
       "from": "dim_app_server::session_typescript",
+      "to": "dim_agent_capabilities::tree_binding",
+      "references": [
+        "path ForeignBranchService",
+        "path tree_binding::data",
+        "path tree_binding::failure",
+        "path tree_binding::invalid_params",
+        "path tree_binding::ok",
+        "path tree_binding::request",
+        "use dim_agent_capabilities::tree_binding",
+        "use dim_agent_capabilities::tree_binding::ForeignBranchService"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_typescript",
       "to": "dim_agent_runtime::agent",
       "references": [
         "path Session",
@@ -14224,8 +14327,10 @@
       "to": "dim_agent_runtime::assembly",
       "references": [
         "path AgentBuilder",
+        "path BRANCH_GROUP",
         "path SESSION_GROUP",
         "use dim_agent_runtime::AgentBuilder",
+        "use dim_agent_runtime::BRANCH_GROUP",
         "use dim_agent_runtime::SESSION_GROUP"
       ]
     },
@@ -14233,19 +14338,50 @@
       "from": "dim_app_server::session_typescript",
       "to": "dim_agent_runtime::config",
       "references": [
+        "path BranchLifecycle",
         "path SessionConfig",
         "path SessionIdentity",
         "path SessionLifecycle",
+        "path TimelineIdentity",
+        "use dim_agent_runtime::BranchLifecycle",
         "use dim_agent_runtime::SessionConfig",
         "use dim_agent_runtime::SessionIdentity",
-        "use dim_agent_runtime::SessionLifecycle"
+        "use dim_agent_runtime::SessionLifecycle",
+        "use dim_agent_runtime::TimelineIdentity"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_typescript",
+      "to": "dim_agent_runtime::core::dispatcher",
+      "references": [
+        "path Dispatcher",
+        "use dim_agent_runtime::Dispatcher"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_typescript",
+      "to": "dim_agent_runtime::core::timeline",
+      "references": [
+        "path Timeline",
+        "use dim_agent_runtime::Timeline"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_typescript",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path AgentError",
+        "path AgentError::fault",
+        "use dim_agent_runtime::AgentError"
       ]
     },
     {
       "from": "dim_app_server::session_typescript",
       "to": "dim_agent_runtime::scope",
       "references": [
+        "path BranchScope",
         "path SessionScope",
+        "use dim_agent_runtime::BranchScope",
         "use dim_agent_runtime::SessionScope"
       ]
     },

@@ -19,7 +19,7 @@ This does not disable checking a plugin's calls against the service interfaces.
 | Read/update business configuration | `settings`, process | Owner read/write and Settings event delivery implemented; declare sources in the C4 row's `settings` member. |
 | Resolve a credential reference | `credentials`, process | Host dispatch implemented; no product plugin provides a secret store. Inject only when the embedding host supplies one. |
 | Offer client methods or model tools | `sessionMethods:<namespace>`, `toolContribution:<tool>`, Session | Implemented by C4 through ordinary structural rows and the existing App Server embedding entry. |
-| Observe this Session or act on a branch | Session broadcast / branch Dispatcher | Native Session broadcast is tracked by #168; branch bindings remain C5 work. |
+| Observe this Session or act on a branch | Session broadcast / branch Dispatcher | Native Session broadcast is tracked by #168; branch parts and `treeCommands` are implemented by C5 (see Branch parts). |
 
 See [Session TypeScript bindings](design/session-typescript.md) and
 [Settings](design/appserver/settings-service.md) for their contracts and delivery
@@ -326,8 +326,8 @@ Native Session broadcast remains [#168](https://github.com/arcships/dim/issues/1
 work. rutis 0.11 supplies leaf events; the Dim Session binding design in
 [#174](https://github.com/arcships/dim/pull/174) is merged, but not implemented.
 A runtime `ctx.on` API alone does not deliver Dim Session records.
-The implemented tool/method binding supplies no Session activation method,
-branch Dispatcher access or replacement polling mechanism.
+The tool/method binding supplies no Session activation method; branch work uses
+the branch parts below.
 
 With rutis 0.11, integer values beyond ±(2^53−1) cross into TypeScript as `bigint`,
 including integers nested in model-supplied tool arguments or event data. Ordinary
@@ -340,6 +340,56 @@ or coerce every integer to `number`. At the tool's external-input boundary, vali
 against its actual schema and explicitly choose a lossless representation when
 sending such a value to a JSON-only API. This transport behavior does not make the
 pending Session-event binding available.
+
+## Branch parts
+
+A row whose `provides` declares one `branchPart:<part>` (`{"bind": "async"}`) is
+loaded in every branch of every Session, next to the native branch parts. Its other
+names are the part's public business services, each a method dictionary of `sync`
+or `async` modes; it declares no Session families. Declare `treeCommands` in
+`inject` to reach branches. See the
+[C5 contract](design/branch-typescript.md).
+
+`bind(binding)` runs once while the row loads; resolve it with `null` after
+subscribing and reconstructing your state. Until then none of the row's public
+services is visible. Subscribe first, then fold the local events up to
+`timeline.committed()`, and skip live events at or below that cutoff so none is
+applied twice. A handler registers work and returns; a throw fails the branch's
+Dispatcher. Start background work only after `activated` resolves true, end it on
+`closing`, and write input through your own branch's `BranchRef`; the reply proves
+commitment, not that the input was consumed.
+
+```ts
+import type { BranchPart, TreeCommands } from 'dimcode/plugin';
+
+declare const tree: TreeCommands;
+let through = 0;
+export const part: BranchPart = {
+  async bind(binding) {
+    let ready!: () => void;
+    const reconstructed = new Promise<void>(resolve => { ready = resolve; });
+    binding.dispatcher.subscribe(['turn/end'], async event => {
+      await reconstructed;
+      if (event.sequence <= through) return;
+      through = event.sequence;
+    });
+    const cutoff = binding.timeline.committed();
+    if (cutoff.ok) through = cutoff.value;
+    ready();
+    void binding.activated.then(active => {
+      if (!active) return;
+      const branch = tree.get({ id: binding.identity.branchId });
+      if (branch.ok) branch.value.input({ blocks: [{ type: 'raw', text: 'started' }], mode: 'append' });
+    });
+    return null;
+  },
+};
+```
+
+A Session or branch part reads another part's public service through the branch
+that owns it: `tree.get({id})`, then `branch.service({name})`, then the owner's
+method. The lookup returns `reloading` while that owner is unloaded; do not
+replace its answer with a default.
 
 ## Packaging and trust
 

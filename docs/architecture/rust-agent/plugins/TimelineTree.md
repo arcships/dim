@@ -2,7 +2,10 @@
 
 Owner: [timeline_tree.rs](../../../../crates/dim-agent-capabilities/src/timeline_tree.rs).
 Owns Session branches, reservations and asynchronous creation/restore/close;
-contributes the branch tool and TreeCommands/TimelineTreeControl ports.
+contributes the branch tool and TreeCommands/TimelineTreeControl ports, and the
+Session service `treeCommands` that binds TreeCommands for other languages
+([tree_binding.rs](../../../../crates/dim-agent-capabilities/src/tree_binding.rs),
+[C5](../../../design/branch-typescript.md)).
 
 ## Dependencies
 
@@ -37,6 +40,6 @@ Session close, and closing is not deletion of persisted history.
 | --- | --- |
 | 作用域 | Session |
 | 注入 | `S:SessionIdentity`、`S:TimelineFactory`、`S:dyn TimelineStore` |
-| 提供 | `S:TimelineTree`、`S:ToolContribution#branch`、`S:TreeCommands`、`S:dyn TimelineTreeControl` |
+| 提供 | `S:TimelineTree`、`S:ToolContribution#branch`、`S:TreeCommands`、`S:dyn HostDispatch#treeCommands`、`S:dyn TimelineTreeControl` |
 | 被注入于 | `InputMethods`、`ShellInput`、`TreeTimeline`、`Wait`、`WorkspaceTools` |
 <!-- /generated -->

@@ -174,7 +174,7 @@ P3（AcpGateway、RemoteGateway、Modality、PluginManager）等 P1/P2 落地后
 ```mermaid
 flowchart LR
   PR14["#14"] --> C1["C1 sessionMethods"]
-  C3["C3 toolContribution"] --> C4["C4 TS 工具/方法（已合入）"] --> C5["C5 分支级（待实现）"]
+  C3["C3 toolContribution"] --> C4["C4 TS 工具/方法（已合入）"] --> C5["C5 分支级（已实现）"]
   C1 --> S1["S1 撤回"]
   C2["C2 interactive"] --> S2["S2 sessions"]
   S1 --> S2

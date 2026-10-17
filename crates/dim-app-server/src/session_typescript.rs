@@ -5,17 +5,20 @@ use crate::{
     settings::{ProjectAuthorized, SettingsChanged, SourceDeclaration, project_authorizations},
 };
 use dim_agent_capabilities::{
-    methods::SessionMethods, session_broadcast::SessionBroadcastEvent,
+    methods::SessionMethods,
+    session_broadcast::SessionBroadcastEvent,
     tool_registry::valid_tool_name,
+    tree_binding::{self, ForeignBranchService},
 };
 use dim_agent_runtime::{
-    AgentBuilder, SESSION_GROUP, Session, SessionConfig, SessionIdentity, SessionLifecycle,
-    SessionScope,
+    AgentBuilder, AgentError, BRANCH_GROUP, BranchLifecycle, BranchScope, Dispatcher,
+    SESSION_GROUP, Session, SessionConfig, SessionIdentity, SessionLifecycle, SessionScope,
+    Timeline, TimelineIdentity,
 };
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Event, Plugin, PluginFactory, TypeKey};
 use rutis_bridge::{
     runtime::{LocalRuntime, Process, Stdio},
-    session::{HostDispatch, Value as RpcValue, host_key_in},
+    session::{HostDispatch, Value as RpcValue, host_key_in, settle},
 };
 use rutis_loader::{LoaderError, Resolved, Resolver, RuntimeResolver, ServiceCatalog};
 use serde_json::{Map, Value};
@@ -277,7 +280,9 @@ pub(crate) struct Parts {
     pub runtime: Arc<LocalRuntime>,
     pub rows_runtime: Arc<RuntimeResolver>,
     pub resolver: Arc<SessionResolver>,
+    /// Rows of the Session group and of its nested branch group.
     pub rows: Vec<Value>,
+    pub branch_rows: Vec<Value>,
     pub session_events: bool,
 }
 
@@ -299,6 +304,7 @@ impl Parts {
         let mut identities = HashSet::new();
         let mut snapshots = HashMap::new();
         let mut session_events = false;
+        let mut branch_ids = HashSet::new();
         for row in &config.rows {
             let id = row
                 .get("id")
@@ -329,6 +335,44 @@ impl Parts {
                 return Err(invalid(
                     "rows of one module must share the same provides snapshot",
                 ));
+            }
+            // A branchPart declaration places the row in each branch; its
+            // other names are the part's public business services.
+            if provides.keys().any(|name| name.starts_with("branchPart:")) {
+                let mut parts = 0;
+                for (service, methods) in provides {
+                    if !identities.insert(service.clone()) {
+                        return Err(invalid("duplicate Session TypeScript service identity"));
+                    }
+                    if let Some(part) = service.strip_prefix("branchPart:") {
+                        if part.is_empty() || methods != &serde_json::json!({"bind":"async"}) {
+                            return Err(invalid("invalid branchPart identity or method mode"));
+                        }
+                        parts += 1;
+                    } else if service.is_empty()
+                        || service.contains(':')
+                        || catalog.key(service).is_some()
+                        || methods.as_object().is_none_or(|methods| {
+                            methods.is_empty()
+                                || methods
+                                    .values()
+                                    .any(|mode| mode != "sync" && mode != "async")
+                        })
+                    {
+                        return Err(invalid(
+                            "invalid, mixed or colliding branch part service declaration",
+                        ));
+                    }
+                }
+                if parts != 1 {
+                    return Err(invalid("a branch row declares exactly one branchPart"));
+                }
+                for service in provides.keys() {
+                    catalog.register_shared_instance(service, BRANCH_GROUP);
+                }
+                branch_ids.insert(id.to_owned());
+                snapshots.insert(name.to_owned(), provides.clone());
+                continue;
             }
             for (service, methods) in provides {
                 if !identities.insert(service.clone()) {
@@ -385,23 +429,25 @@ impl Parts {
             runtime: rows_runtime.clone(),
             snapshots,
         });
+        // `settings` is the host's input to Settings, not a loader field.
+        let (branch_rows, rows) = config
+            .rows
+            .iter()
+            .cloned()
+            .map(|mut row| {
+                if let Value::Object(fields) = &mut row {
+                    fields.remove("settings");
+                }
+                row
+            })
+            .partition(|row| row["id"].as_str().is_some_and(|id| branch_ids.contains(id)));
         Ok(Self {
             runtime,
             rows_runtime,
             resolver,
             session_events,
-            // `settings` is the host's input to Settings, not a loader field.
-            rows: config
-                .rows
-                .iter()
-                .cloned()
-                .map(|mut row| {
-                    if let Value::Object(fields) = &mut row {
-                        fields.remove("settings");
-                    }
-                    row
-                })
-                .collect(),
+            rows,
+            branch_rows,
         })
     }
 }
@@ -448,9 +494,30 @@ impl Resolver for SessionResolver {
                 .filter(|name| name.starts_with("sessionEvents:"))
                 .cloned()
                 .collect();
+            let part = snapshot
+                .keys()
+                .find(|name| name.starts_with("branchPart:"))
+                .map(|part| {
+                    let public = snapshot
+                        .iter()
+                        .filter(|(name, _)| *name != part)
+                        .map(|(name, methods)| {
+                            (
+                                name.clone(),
+                                methods.as_object().cloned().unwrap_or_default(),
+                            )
+                        })
+                        .collect();
+                    Arc::new(BranchPart {
+                        setup: part.clone(),
+                        public,
+                    })
+                });
             let mut resolved = Resolved::new(Arc::new(BoundFactory {
                 inner: original.factory.clone(),
                 scope: None,
+                branch: None,
+                part: part.clone(),
                 namespaces: namespaces.clone(),
                 tools: tools.clone(),
                 events: events.clone(),
@@ -484,9 +551,27 @@ impl Resolver for SessionResolver {
                         scope.key::<SessionLifecycle>(),
                     ]);
                 }
+                let branch = match &part {
+                    Some(_) => {
+                        let branch = BranchScope {
+                            session: scope,
+                            instance: build.instance(BRANCH_GROUP)?,
+                        };
+                        injects.extend([
+                            branch.key::<Timeline>(),
+                            branch.key::<Dispatcher>(),
+                            branch.key::<TimelineIdentity>(),
+                            branch.key::<BranchLifecycle>(),
+                        ]);
+                        Some(branch)
+                    }
+                    None => None,
+                };
                 Ok(Arc::new(BoundFactory {
                     inner,
                     scope: Some(scope),
+                    branch,
+                    part: part.clone(),
                     namespaces: namespaces.clone(),
                     tools: tools.clone(),
                     events: events.clone(),
@@ -498,9 +583,18 @@ impl Resolver for SessionResolver {
     }
 }
 
+/// A branch row's `branchPart:<part>` and its public business services with
+/// their declared method modes.
+struct BranchPart {
+    setup: String,
+    public: Vec<(String, Map<String, Value>)>,
+}
+
 struct BoundFactory {
     inner: Arc<dyn PluginFactory<Value>>,
     scope: Option<SessionScope>,
+    branch: Option<BranchScope>,
+    part: Option<Arc<BranchPart>>,
     namespaces: Arc<[String]>,
     tools: Arc<[String]>,
     events: Arc<[String]>,
@@ -522,6 +616,15 @@ impl PluginFactory<Value> for BoundFactory {
             scope: self.scope.ok_or_else(|| {
                 CordisError::PluginFailed("TypeScript part outside a Session".into())
             })?,
+            branch: match (&self.part, self.branch) {
+                (Some(part), Some(branch)) => Some((branch, part.clone())),
+                (None, _) => None,
+                (Some(_), None) => {
+                    return Err(CordisError::PluginFailed(
+                        "TypeScript branch part outside a branch".into(),
+                    ));
+                }
+            },
             namespaces: self.namespaces.clone(),
             tools: self.tools.clone(),
             events: self.events.clone(),
@@ -533,6 +636,7 @@ impl PluginFactory<Value> for BoundFactory {
 struct BoundRow {
     inner: Box<dyn Plugin>,
     scope: SessionScope,
+    branch: Option<(BranchScope, Arc<BranchPart>)>,
     namespaces: Arc<[String]>,
     tools: Arc<[String]>,
     events: Arc<[String]>,
@@ -556,6 +660,278 @@ impl rutis::Listener<rutis::ServiceChanged> for ProjectedServices {
         })
     }
 }
+impl BoundRow {
+    /// Applies the original row, registers its cleanup and waits for its own
+    /// projected services: rows.load may reply before its service
+    /// notification is projected, so the listener exists before loading.
+    async fn apply_projected(
+        &self,
+        ctx: &Ctx,
+        keys: Vec<TypeKey>,
+    ) -> std::result::Result<Vec<Arc<dyn HostDispatch>>, CordisError> {
+        let keys: Arc<[TypeKey]> = keys.into();
+        let changed = Arc::new(tokio::sync::Notify::new());
+        let listener = if keys.is_empty() {
+            None
+        } else {
+            Some(ctx.events().on(
+                ctx,
+                &rutis::EventKey::of(),
+                ProjectedServices {
+                    keys: keys.clone(),
+                    changed: changed.clone(),
+                },
+            )?)
+        };
+        let cleanup = self.inner.apply(ctx).await?;
+        ctx.effect(move || cleanup)?;
+        let cancelled = ctx.cancellation_token();
+        let mut services = Vec::with_capacity(keys.len());
+        for key in keys.iter() {
+            services.push(loop {
+                if let Some(service) = ctx.get_as::<dyn HostDispatch>(key.clone()) {
+                    break service;
+                }
+                tokio::select! {
+                    _ = changed.notified() => {},
+                    _ = cancelled.cancelled() => return Err(CordisError::PluginFailed("TypeScript part binding cancelled".into())),
+                }
+            });
+        }
+        if let Some(listener) = listener {
+            listener
+                .dispose()
+                .await
+                .map_err(|error| CordisError::PluginFailed(error.to_string().into()))?;
+        }
+        Ok(services)
+    }
+
+    /// C5: bind the branch part once with its own branch's references, then
+    /// publish its public services; none is visible before bind completed.
+    async fn apply_branch(
+        &self,
+        ctx: &Ctx,
+        branch: &BranchScope,
+        part: &BranchPart,
+    ) -> std::result::Result<(), CordisError> {
+        let keys = std::iter::once(&part.setup)
+            .chain(part.public.iter().map(|(name, _)| name))
+            .map(|name| host_key_in(name, branch.instance))
+            .collect();
+        let mut services = self.apply_projected(ctx, keys).await?.into_iter();
+        let setup = services.next().expect("setup service");
+        let failed = |error: AgentError| CordisError::PluginFailed(error.to_string().into());
+        let identity = branch.service::<TimelineIdentity>(ctx).map_err(failed)?;
+        let lifecycle = branch.service::<BranchLifecycle>(ctx).map_err(failed)?;
+        let cancelled = ctx.cancellation_token();
+        let activated = {
+            let (lifecycle, cancelled) = (lifecycle.clone(), cancelled.clone());
+            RpcValue::future(async move {
+                let activated = tokio::select! {
+                    biased;
+                    _ = cancelled.cancelled() => false,
+                    activated = lifecycle.activated() => activated,
+                };
+                Ok(serde_json::json!(activated).into())
+            })
+        };
+        let closing = {
+            let cancelled = cancelled.clone();
+            RpcValue::future(async move {
+                tokio::select! {
+                    _ = lifecycle.closing() => {},
+                    _ = cancelled.cancelled() => {},
+                }
+                Ok(RpcValue::Undefined)
+            })
+        };
+        let binding = RpcValue::Record(
+            [
+                (
+                    "identity".into(),
+                    serde_json::json!({"sessionId": identity.session_id, "branchId": identity.branch_id})
+                        .into(),
+                ),
+                (
+                    "dispatcher".into(),
+                    dispatcher_binding(
+                        ctx,
+                        self.inner.name(),
+                        branch.service::<Dispatcher>(ctx).map_err(failed)?,
+                    ),
+                ),
+                (
+                    "timeline".into(),
+                    timeline_binding(ctx, branch.service::<Timeline>(ctx).map_err(failed)?),
+                ),
+                ("activated".into(), activated),
+                ("closing".into(), closing),
+            ]
+            .into(),
+        );
+        let reply = setup
+            .invoke("bind", RpcValue::List(vec![binding]))
+            .map_err(|error| CordisError::PluginFailed(error.into()))?;
+        let reply = tokio::select! {
+            biased;
+            _ = cancelled.cancelled() => return Err(CordisError::PluginFailed("branch part binding cancelled".into())),
+            reply = settle(reply) => reply,
+        }
+        .map_err(|error| CordisError::PluginFailed(error.into()))?;
+        if !matches!(reply, RpcValue::Data(Value::Null)) {
+            return Err(CordisError::PluginFailed(
+                "branchPart.bind must resolve to null".into(),
+            ));
+        }
+        for ((name, methods), service) in part.public.iter().zip(services) {
+            ctx.provide_as(
+                branch.named_key::<ForeignBranchService>(name),
+                Arc::new(ForeignBranchService {
+                    service,
+                    methods: methods.clone(),
+                }),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// A row-bound reference ends with its original row.
+fn ended(row: &Ctx) -> Option<RpcValue> {
+    row.cancellation_token().is_cancelled().then(|| {
+        serde_json::json!({"ok": false, "error": {"code": "closed", "message": "branch part row has ended"}})
+            .into()
+    })
+}
+
+/// `dispatcher.subscribe(keys, handler)` on the original row's context: the
+/// subscription is removed with that row. The handler's result settles before
+/// native handling completes; a failure fails the Dispatcher.
+fn dispatcher_binding(row: &Ctx, part: &str, dispatcher: Arc<Dispatcher>) -> RpcValue {
+    let (row, part) = (row.clone(), part.to_owned());
+    let subscribe = RpcValue::callback(move |args| {
+        if let Some(ended) = ended(&row) {
+            return Ok(ended);
+        }
+        let Ok([keys, handler]) = <[RpcValue; 2]>::try_from(args.list()?) else {
+            return Ok(tree_binding::invalid_params("expected keys and a handler"));
+        };
+        let handler = match handler.reference() {
+            Ok(handler) if handler.is_function() => handler,
+            _ => return Ok(tree_binding::invalid_params("handler must be a function")),
+        };
+        let keys: Vec<String> = match keys.json().map(serde_json::from_value) {
+            Ok(Ok(keys)) => keys,
+            _ => return Ok(tree_binding::invalid_params("keys must be strings")),
+        };
+        let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+        let name = part.clone();
+        Ok(
+            match dispatcher.subscribe(&row, part.clone(), &keys, move |event| {
+                let (handler, name) = (handler.clone(), name.clone());
+                Box::pin(async move {
+                    let reply = match handler
+                        .call_async(RpcValue::List(vec![tree_binding::data(&*event)]))
+                        .await
+                    {
+                        Ok(value) => settle(value).await,
+                        Err(error) => Err(error),
+                    };
+                    match reply {
+                        Ok(RpcValue::Undefined | RpcValue::Data(Value::Null)) => Ok(()),
+                        Ok(_) => Err(AgentError::fault(name, "handler returned a value")),
+                        Err(error) => Err(AgentError::fault(name, error.to_string())),
+                    }
+                })
+            }) {
+                Ok(()) => tree_binding::ok(RpcValue::Data(Value::Null)),
+                Err(error) => tree_binding::failure(&error),
+            },
+        )
+    });
+    RpcValue::Record([("subscribe".into(), subscribe)].into())
+}
+
+/// Read-only reconstruction reads of this branch's Timeline.
+fn timeline_binding(row: &Ctx, timeline: Arc<Timeline>) -> RpcValue {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Through {
+        through: u64,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Local {
+        start: u64,
+        through: u64,
+    }
+    let committed = {
+        let (row, timeline) = (row.clone(), timeline.clone());
+        RpcValue::callback(move |args| {
+            if let Some(ended) = ended(&row) {
+                return Ok(ended);
+            }
+            if !args.list()?.is_empty() {
+                return Ok(tree_binding::invalid_params("committed takes no arguments"));
+            }
+            Ok(tree_binding::ok(tree_binding::data(&timeline.committed())))
+        })
+    };
+    let history = {
+        let (row, timeline) = (row.clone(), timeline.clone());
+        RpcValue::callback(move |args| {
+            if let Some(ended) = ended(&row) {
+                return Ok(ended);
+            }
+            let through = tree_binding::request::<Through>(args).map(|t| t.through);
+            let timeline = timeline.clone();
+            Ok(RpcValue::future(async move {
+                let through = match through {
+                    Ok(through) => through,
+                    Err(invalid) => return Ok(invalid),
+                };
+                Ok(match timeline.history(Some(through)).await {
+                    Ok(events) => tree_binding::ok(tree_binding::data(
+                        &events.iter().map(|event| &**event).collect::<Vec<_>>(),
+                    )),
+                    Err(error) => tree_binding::failure(&error),
+                })
+            }))
+        })
+    };
+    let local = {
+        let row = row.clone();
+        RpcValue::callback(move |args| {
+            if let Some(ended) = ended(&row) {
+                return Ok(ended);
+            }
+            let range = tree_binding::request::<Local>(args);
+            let timeline = timeline.clone();
+            Ok(RpcValue::future(async move {
+                let Local { start, through } = match range {
+                    Ok(range) => range,
+                    Err(invalid) => return Ok(invalid),
+                };
+                Ok(match timeline.local(start..=through).await {
+                    Ok(events) => tree_binding::ok(tree_binding::data(
+                        &events.iter().map(|event| &**event).collect::<Vec<_>>(),
+                    )),
+                    Err(error) => tree_binding::failure(&error),
+                })
+            }))
+        })
+    };
+    RpcValue::Record(
+        [
+            ("committed".into(), committed),
+            ("history".into(), history),
+            ("local".into(), local),
+        ]
+        .into(),
+    )
+}
+
 impl Plugin for BoundRow {
     fn name(&self) -> &str {
         self.inner.name()
@@ -571,6 +947,10 @@ impl Plugin for BoundRow {
         ctx: &'a Ctx,
     ) -> BoxFuture<'a, std::result::Result<Effect, CordisError>> {
         Box::pin(async move {
+            if let Some((branch, part)) = &self.branch {
+                self.apply_branch(ctx, branch, part).await?;
+                return Ok(Effect::Done);
+            }
             for name in self.tools.iter() {
                 ctx.provide_as(
                     TypeKey::keyed_dynamic::<CancellationToken>(name.as_str())
@@ -578,7 +958,7 @@ impl Plugin for BoundRow {
                     Arc::new(ctx.cancellation_token()),
                 )?;
             }
-            let keys: Arc<[TypeKey]> = self
+            let keys = self
                 .namespaces
                 .iter()
                 .map(|namespace| {
@@ -595,34 +975,9 @@ impl Plugin for BoundRow {
                         .map(|name| host_key_in(name, self.scope.instance)),
                 )
                 .collect();
-            let changed = Arc::new(tokio::sync::Notify::new());
-            // rows.load may reply before its service notification is projected.
-            // Subscribe before loading, then read only this row's own services.
-            let listener = if keys.is_empty() {
-                None
-            } else {
-                Some(ctx.events().on(
-                    ctx,
-                    &rutis::EventKey::of(),
-                    ProjectedServices {
-                        keys: keys.clone(),
-                        changed: changed.clone(),
-                    },
-                )?)
-            };
-            let cleanup = self.inner.apply(ctx).await?;
-            ctx.effect(move || cleanup)?;
+            let services = self.apply_projected(ctx, keys).await?;
             let cancelled = ctx.cancellation_token();
-            for (index, key) in keys.iter().enumerate() {
-                let service = loop {
-                    if let Some(service) = ctx.get_as::<dyn HostDispatch>(key.clone()) {
-                        break service;
-                    }
-                    tokio::select! {
-                        _ = changed.notified() => {},
-                        _ = cancelled.cancelled() => return Err(CordisError::PluginFailed("Session part binding cancelled".into())),
-                    }
-                };
+            for (index, service) in services.into_iter().enumerate() {
                 if let Some(namespace) = self.namespaces.get(index) {
                     SessionMethods::provide_foreign(ctx, &self.scope, namespace, service).await?;
                 } else if index >= self.namespaces.len() + self.tools.len() {
@@ -648,12 +1003,6 @@ impl Plugin for BoundRow {
                         ));
                     }
                 }
-            }
-            if let Some(listener) = listener {
-                listener
-                    .dispose()
-                    .await
-                    .map_err(|error| CordisError::PluginFailed(error.to_string().into()))?;
             }
             Ok(Effect::Done)
         })
