@@ -1,0 +1,8 @@
+{
+  "provides": {
+    "branchPart:counter": { "bind": "async" },
+    "counter": { "get": "sync", "through": "async", "arm": "sync", "entered": "async", "release": "sync", "fail": "sync" },
+    "secondCounter": { "get": "sync" }
+  },
+  "inject": ["treeCommands"]
+}

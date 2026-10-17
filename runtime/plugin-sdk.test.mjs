@@ -31,13 +31,16 @@ test('packed plugin service types compile the author guide and enforce the publi
   });
   const calls = path.join(directory, 'calls.mts');
   writeFileSync(calls, `
-import type { Settings, SettingsResult, Credentials, CredentialsResult, Sessions, FileScope, FileResult, ToolContribution, ToolResult, SessionMethodsContribution } from 'dimcode/plugin';
+import type { Settings, SettingsResult, Credentials, CredentialsResult, Sessions, FileScope, FileResult, ToolContribution, ToolResult, SessionMethodsContribution, TreeCommands, BranchBinding, BranchRef } from 'dimcode/plugin';
 declare const settings: Settings;
 declare const credentials: Credentials;
 declare const sessions: Sessions;
 declare const files: FileScope;
 declare const tool: ToolContribution;
 declare const methods: SessionMethodsContribution;
+declare const tree: TreeCommands;
+declare const binding: BranchBinding;
+declare const branch: BranchRef;
 const at = { sessionId: 'session', branchId: 'main' };
 void settings.read({ source: 'web', scope: 'user' });
 void settings.update({ source: 'web', scope: { project: 1 }, expectedRevision: 'opaque', document: { maxResults: 10 } });
@@ -80,6 +83,26 @@ void tool.execute({
 }, Promise.resolve());
 void methods.call({ callId: 'call', method: 'session.example.echo', params: { sessionId: 'session' } },
   Promise.resolve(), () => {});
+void tree.get({ id: 'main' });
+void tree.list({});
+void tree.branch({ parent: 'main', at: 1n, options: { prompt: 'child', source: { kind: 'host', operation_id: 'operation' } } });
+// @ts-expect-error the Node bridge does not send AbortSignal; the cancellation contract is pending.
+void tree.branch({ parent: 'main', at: 1, options: { prompt: 'child', source: { kind: 'host', operation_id: 'operation' } } }, new AbortController().signal);
+void branch.input({ submission_id: 'input', user: { content: [{ type: 'text', text: 'hello' }] }, blocks: [{ type: 'raw', text: 'runtime' }], mode: 'queue' });
+const owner = branch.service<{ get(request: Record<string, never>): { through: number } }>({ name: 'goal' });
+if (owner.ok) void owner.value.get({});
+void binding.dispatcher.subscribe(['input/*'], async event => { void event.sequence; });
+void binding.timeline.local({ start: 1, through: 2n });
+void binding.timeline.history({ through: 2 });
+void binding.activated.then(active => { void active; });
+// @ts-expect-error callback results are unit, not a result or asynchronous work handle.
+void binding.dispatcher.subscribe(['*'], () => 1);
+// @ts-expect-error C5 does not expose arbitrary timeline writes.
+void binding.timeline.append({});
+// @ts-expect-error branch input keeps native serde names, not the S2 or terminal request.
+void branch.input({ text: 'hello' });
+// @ts-expect-error reconstruction requires an explicit fixed cutoff.
+void binding.timeline.history({});
 const result: ToolResult = { content: [{ type: 'text', text: 'handle: owned-id' }],
   structuredContent: { handle: 'owned-id' }, backgroundTask: { taskId: 'task', wakePolicy: 'manual' },
   blobRefs: [{ blobId: 'blob', sessionId: 'session', kind: 'text', path: '/files/result' }],

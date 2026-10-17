@@ -1,0 +1,4 @@
+{
+  "provides": { "sessionMethods:session.cfive": { "describe": "async", "call": "async" } },
+  "inject": ["treeCommands"]
+}

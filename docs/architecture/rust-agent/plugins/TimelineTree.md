@@ -4,6 +4,14 @@ Owner: [timeline_tree.rs](../../../../crates/dim-agent-capabilities/src/timeline
 Owns Session branches, reservations and asynchronous creation/restore/close;
 contributes the branch tool and TreeCommands/TimelineTreeControl ports.
 
+The same owner exports the Session-scoped `treeCommands` named service for
+TypeScript Session and branch parts. Its get/list/branch operations use the
+existing tree and admission rules, with no AgentIndex dependency. Returned branch
+references expose validated native input and explicitly declared public services;
+they do not expose Timeline writes or another branch's Dispatcher. Public foreign
+service references retain their original producer generation and fail after it
+unloads. See the [C5 contract](../../../design/branch-typescript.md).
+
 ## Dependencies
 
 | Service | Purpose |
@@ -37,6 +45,6 @@ Session close, and closing is not deletion of persisted history.
 | --- | --- |
 | 作用域 | Session |
 | 注入 | `S:SessionIdentity`、`S:TimelineFactory`、`S:dyn TimelineStore` |
-| 提供 | `S:TimelineTree`、`S:ToolContribution#branch`、`S:TreeCommands`、`S:dyn TimelineTreeControl` |
+| 提供 | `S:TimelineTree`、`S:ToolContribution#branch`、`S:TreeCommands`、`S:dyn HostDispatch#treeCommands`、`S:dyn TimelineTreeControl` |
 | 被注入于 | `InputMethods`、`ShellInput`、`TreeTimeline`、`Wait`、`WorkspaceTools` |
 <!-- /generated -->

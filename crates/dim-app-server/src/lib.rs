@@ -466,6 +466,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     service_catalog.register_shared("sessions");
     service_catalog.register_shared("settings");
     service_catalog.register_shared("credentials");
+    service_catalog.register_shared_instance("treeCommands", dim_agent_runtime::SESSION_GROUP);
     let mut node_resolver = None;
     let mut private_row = None;
     let mut rows = vec![register_capability(&mut builtins, move || control.clone())];
@@ -713,7 +714,11 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     // Agents, Sessions and branches are instances of this same loader.
     let reserved_names = private_row
         .iter()
-        .chain(session_parts.iter().flat_map(|parts| parts.rows.iter()))
+        .chain(
+            session_parts
+                .iter()
+                .flat_map(|parts| parts.rows.iter().chain(parts.branch_rows.iter())),
+        )
         .flat_map(|row| [&row["id"], &row["name"]])
         .filter_map(serde_json::Value::as_str);
     let mut session_row = match builder.install(&mut builtins, &root, reserved_names).await {
@@ -729,10 +734,18 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         }
     };
     if let Some(parts) = &session_parts {
-        session_row["config"]
+        let session_rows = session_row["config"]
             .as_array_mut()
-            .expect("installed Session rows")
-            .extend(parts.rows.clone());
+            .expect("installed Session rows");
+        let branches = session_rows
+            .iter_mut()
+            .find(|row| row["id"] == dim_agent_runtime::BRANCH_GROUP)
+            .expect("installed branch group");
+        branches["config"]
+            .as_array_mut()
+            .expect("installed branch rows")
+            .extend(parts.branch_rows.clone());
+        session_rows.extend(parts.rows.clone());
     }
     let mut rows: Vec<_> = rows
         .iter()

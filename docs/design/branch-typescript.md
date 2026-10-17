@@ -2,13 +2,22 @@
 
 Contract for [C5 / #64](https://github.com/arcships/dim/issues/64), the branch portion of
 [#4](https://github.com/arcships/dim/issues/4), merged in #100. Implementation is in progress;
-full C4 #180 is merged. The native public named read is implemented and verified through a
-Session/branch flow and marker-bound checks. Foreign binding and real Node acceptance remain pending.
+full C4 #180 is merged. Native public named reads, original-row binding, branch placement
+and foreign references are implemented. Real Node flows verify event/input and model
+consumption, owner-fold reads, isolation, reload/reconstruction, Pending exports,
+callback failure and cleanup before activation. Creation cancellation remains pending
+the contract confirmation below; this is not a completed C5 delivery.
+
+The cancellation-parameter contract below awaits maintainer confirmation. The pinned
+rutis 0.11 Node encoder supports Promise references but does not encode a JavaScript
+AbortSignal as a cancellable argument. The proposed binding uses an optional cancellation
+Promise through that existing reference path; it requires no core or bridge protocol change.
 
 The contract includes the Session-side TreeCommands and branch-owned service reads required by
 the existing Goal design. Its sole native facade addition is a named counterpart of the
 existing typed public-service read (§Named public branch services). Runtime owns it and retains
-the same public-service bounds; the remaining bindings below are not delivered APIs yet.
+the same public-service bounds. C5 remains in implementation until creation cancellation is
+confirmed, implemented and verified along with the complete foreign boundary.
 
 ## Scope and ownership
 
@@ -102,8 +111,11 @@ in `inject` and use the normal `ctx.use("treeCommands")` lease. The provider has
 dependency and does not reload with the Agents index.
 
 The owner captures its existing TreeCommands and cancellation, not a particular caller row.
-Consumers own their calls; owned async creation uses the existing AbortSignal and is cancelled
-from the consumer's cleanup. TimelineTree retains admission, settlement and terminal facts. A
+Consumers own their calls; owned async creation receives an optional `Promise<void>` which
+resolves on cancellation, including from the consumer's original-row cleanup. The binding
+awaits that existing foreign Promise reference and cancels the native admission token when it
+resolves. It then awaits the same native creation operation's settlement; it does not drop or
+restart accepted work. TimelineTree retains admission, settlement and terminal facts. A
 shared service call does not transfer a task to a successor row or add a caller-readiness phase.
 
 ### Named public branch services
@@ -180,14 +192,14 @@ These owner-sensitive native functions are passed by reference rather than insta
 `ctx.use` services: shared `HostDispatch::invoke(method, args)` has no caller-row `Ctx` argument,
 whereas native `Dispatcher::subscribe` requires the registering context. Capturing it in the
 existing row factory keeps subscription removal on that row without a registry or another plugin.
-This named-reference form is the C5 contract; its foreign binding remains pending. It does not
+This named-reference form is the C5 contract and is exercised by real Node flows. It does not
 expose general-purpose native service lookup or another row's context.
 
 ### Operations, data and errors
 
 `Reply<T>` uses the existing named-service envelope: `{ok:true,value:T}` or
 `{ok:false,error:{code,message}}`, as Settings and S2 do. A value may contain bridge references.
-The notation below describes the foreign binding, whose methods are not exported yet.
+The notation below describes the foreign binding, with creation cancellation awaiting confirmation.
 TreeCommands is the ordinary named service; Dispatcher/Timeline functions belong to bind, and
 BranchRef is a by-reference facade value containing id, input and service functions.
 
@@ -198,7 +210,7 @@ BranchRef is a by-reference facade value containing id, input and service functi
 | `BranchRef.service({name})` | sync | Exact public service name; a record of that owner's method references. | `Branch::named_service<ForeignBranchService>` |
 | `treeCommands.get({id})` | sync | Branch id; `BranchRef` value. | `TreeCommands::get` |
 | `treeCommands.list({})` | sync | Empty request object; native `TimelineInfo[]`. | `TreeCommands::list` |
-| `treeCommands.branch({parent, at, options}, signal?)` | async | Native parent id, cutoff and `BranchOptions`, optional bridge AbortSignal; `BranchRef` value. | `TreeCommands::branch` with existing admission cancellation |
+| `treeCommands.branch({parent, at, options}, cancelled?)` | async | Native parent id, cutoff and `BranchOptions`, optional cancellation `Promise<void>`; `BranchRef` value. | `TreeCommands::branch` with existing admission cancellation |
 | `timeline.committed()` | sync | No arguments; native committed sequence. | `Timeline::committed` |
 | `timeline.history({through})` | async | Required cutoff; native `AgentEvent[]`, including the ancestor prefix. | `Timeline::history(Some(through))` |
 | `timeline.local({start, through})` | async | Required inclusive local bounds; native `AgentEvent[]`. | `Timeline::local(start..=through)` |
@@ -231,8 +243,8 @@ public service references retain their selected producer's generation. TreeComma
 follow their existing Session/branch owner lifetime. Cleanup releases owned references, and no
 reference is silently rebound to a successor.
 
-The consumer passes call cancellation to async creation using the existing bridge AbortSignal and
-CancellationToken admission path, including from its original-row cleanup. TimelineTree retains its own cancellation
+The consumer passes call cancellation to async creation using an existing bridge Promise reference and
+the native CancellationToken admission path, including from its original-row cleanup. TimelineTree retains its own cancellation
 and terminal-fact decisions. There is no retry, branch deletion or fabricated completion on loss.
 No arbitrary Timeline append, dynamic event declaration, before callback or extra facade mutation
 is exported by this C5 subset.
@@ -316,9 +328,11 @@ Extend the nearest public flow tests rather than testing private binding helpers
 
 ## Impact and rule check
 
-Current implementation: the native public named read, native Session/branch flow and compile-fail
-marker coverage. TreeCommands' foreign binding, original-row projection and Node flows remain
-pending. No dependency, event format, persistence format or generated graph change is included yet.
+Current implementation includes the native public named read and marker bounds, TreeCommands'
+foreign boundary, original-row projection and three real Node flows. Creation cancellation is
+not implemented pending confirmation of the proposed Promise parameter. No crate dependency,
+event format or persistence format changes are required. Generated service/module snapshots
+include the actual TimelineTree named export and language-boundary module.
 
 Ownership: App Server's `session_typescript.rs` owns classification, original-row
 projection and scoped binding; `lib.rs` inserts rows in the existing branch group and catalogs the

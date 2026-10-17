@@ -5,17 +5,19 @@ use crate::{
     settings::{ProjectAuthorized, SettingsChanged, SourceDeclaration, project_authorizations},
 };
 use dim_agent_capabilities::{
-    methods::SessionMethods, session_broadcast::SessionBroadcastEvent,
+    methods::SessionMethods,
+    session_broadcast::SessionBroadcastEvent,
+    timeline_tree::{ForeignBranchService, branch_binding},
     tool_registry::valid_tool_name,
 };
 use dim_agent_runtime::{
-    AgentBuilder, SESSION_GROUP, Session, SessionConfig, SessionIdentity, SessionLifecycle,
-    SessionScope,
+    AgentBuilder, BRANCH_GROUP, BranchLifecycle, BranchScope, Dispatcher, SESSION_GROUP, Session,
+    SessionConfig, SessionIdentity, SessionLifecycle, SessionScope, Timeline, TimelineIdentity,
 };
 use rutis::{BoxFuture, CordisError, Ctx, Effect, Event, Plugin, PluginFactory, TypeKey};
 use rutis_bridge::{
     runtime::{LocalRuntime, Process, Stdio},
-    session::{HostDispatch, Value as RpcValue, host_key_in},
+    session::{HostDispatch, Value as RpcValue, host_key_in, settle},
 };
 use rutis_loader::{LoaderError, Resolved, Resolver, RuntimeResolver, ServiceCatalog};
 use serde_json::{Map, Value};
@@ -278,7 +280,27 @@ pub(crate) struct Parts {
     pub rows_runtime: Arc<RuntimeResolver>,
     pub resolver: Arc<SessionResolver>,
     pub rows: Vec<Value>,
+    pub branch_rows: Vec<Value>,
     pub session_events: bool,
+}
+
+struct DeclaredService {
+    name: String,
+    methods: Vec<(String, bool)>,
+}
+struct BranchPart {
+    bind: String,
+    services: Vec<DeclaredService>,
+}
+struct Snapshot {
+    provides: Map<String, Value>,
+    branch: Option<Arc<BranchPart>>,
+}
+
+#[derive(Clone)]
+enum PartScope {
+    Session(SessionScope),
+    Branch(BranchScope, Arc<BranchPart>),
 }
 
 impl Parts {
@@ -297,8 +319,10 @@ impl Parts {
         }
         let mut ids = HashSet::new();
         let mut identities = HashSet::new();
-        let mut snapshots = HashMap::new();
+        let mut snapshots: HashMap<String, Snapshot> = HashMap::new();
         let mut session_events = false;
+        let mut rows = Vec::new();
+        let mut branch_rows = Vec::new();
         for row in &config.rows {
             let id = row
                 .get("id")
@@ -324,17 +348,63 @@ impl Parts {
                 .ok_or_else(|| invalid("Session TypeScript row requires RowSchema.provides"))?;
             if snapshots
                 .get(name)
-                .is_some_and(|snapshot| snapshot != provides)
+                .is_some_and(|snapshot| &snapshot.provides != provides)
             {
                 return Err(invalid(
                     "rows of one module must share the same provides snapshot",
                 ));
             }
+            let mut bindings = provides
+                .keys()
+                .filter(|name| name.starts_with("branchPart:"));
+            let binding = bindings.next().cloned();
+            if bindings.next().is_some() {
+                return Err(invalid(
+                    "a branch row requires exactly one branchPart service",
+                ));
+            }
+            let mut services = Vec::new();
             for (service, methods) in provides {
                 if !identities.insert(service.clone()) {
                     return Err(invalid("duplicate Session TypeScript service identity"));
                 }
-                if let Some(tool) = service.strip_prefix("toolContribution:") {
+                if let Some(binding) = &binding {
+                    if service == binding {
+                        if service == "branchPart:"
+                            || methods != &serde_json::json!({"bind":"async"})
+                        {
+                            return Err(invalid("invalid branchPart identity or method mode"));
+                        }
+                    } else {
+                        if service.is_empty()
+                            || ["toolContribution:", "sessionMethods:", "sessionEvents:"]
+                                .iter()
+                                .any(|family| service.starts_with(family))
+                            || catalog.key(service).is_some()
+                            || catalog.is_shared(service)
+                        {
+                            return Err(invalid("invalid or colliding branch service identity"));
+                        }
+                        let methods = methods
+                            .as_object()
+                            .ok_or_else(|| invalid("branch service methods must be an object"))?;
+                        if methods
+                            .values()
+                            .any(|mode| !matches!(mode.as_str(), Some("sync" | "async")))
+                        {
+                            return Err(invalid("invalid branch service method mode"));
+                        }
+                        services.push(DeclaredService {
+                            name: service.clone(),
+                            methods: methods
+                                .iter()
+                                .map(|(name, mode)| (name.clone(), mode == "async"))
+                                .collect(),
+                        });
+                    }
+                    catalog.register_shared_instance(service, BRANCH_GROUP);
+                    continue;
+                } else if let Some(tool) = service.strip_prefix("toolContribution:") {
                     if !valid_tool_name(tool)
                         || methods != &serde_json::json!({"declaration":"sync", "execute":"async"})
                     {
@@ -369,7 +439,24 @@ impl Parts {
                 }
                 catalog.register_shared_instance(service, SESSION_GROUP);
             }
-            snapshots.insert(name.to_owned(), provides.clone());
+            let branch = binding.map(|bind| Arc::new(BranchPart { bind, services }));
+            let mut structural = row.clone();
+            structural
+                .as_object_mut()
+                .expect("validated row object")
+                .remove("settings");
+            if branch.is_some() {
+                branch_rows.push(structural);
+            } else {
+                rows.push(structural);
+            }
+            snapshots.insert(
+                name.to_owned(),
+                Snapshot {
+                    provides: provides.clone(),
+                    branch,
+                },
+            );
         }
         let runtime = Arc::new(
             LocalRuntime::node(&config.js_runtime, &config.anchor)
@@ -390,25 +477,15 @@ impl Parts {
             rows_runtime,
             resolver,
             session_events,
-            // `settings` is the host's input to Settings, not a loader field.
-            rows: config
-                .rows
-                .iter()
-                .cloned()
-                .map(|mut row| {
-                    if let Value::Object(fields) = &mut row {
-                        fields.remove("settings");
-                    }
-                    row
-                })
-                .collect(),
+            rows,
+            branch_rows,
         })
     }
 }
 
 pub(crate) struct SessionResolver {
     runtime: Arc<RuntimeResolver>,
-    snapshots: HashMap<String, Map<String, Value>>,
+    snapshots: HashMap<String, Snapshot>,
 }
 impl Resolver for SessionResolver {
     fn resolve<'a>(
@@ -422,7 +499,7 @@ impl Resolver for SessionResolver {
                 .ok_or_else(|| LoaderError::NotFound { name: name.into() })?;
             let original = self.runtime.resolve(name).await?;
             match original.meta.get("provides") {
-                Some(Value::Object(actual)) if actual == snapshot => {}
+                Some(Value::Object(actual)) if actual == &snapshot.provides => {}
                 // The pinned SDK resolves this placeholder again before releasing RuntimeRows.
                 None if original.meta["source"] == "runtime"
                     && original.meta["schema"]
@@ -435,15 +512,18 @@ impl Resolver for SessionResolver {
                 }
             }
             let namespaces: Arc<[String]> = snapshot
+                .provides
                 .keys()
                 .filter_map(|name| name.strip_prefix("sessionMethods:").map(str::to_owned))
                 .collect();
             let tools: Arc<[String]> = snapshot
+                .provides
                 .keys()
                 .filter(|name| name.starts_with("toolContribution:"))
                 .cloned()
                 .collect();
             let events: Arc<[String]> = snapshot
+                .provides
                 .keys()
                 .filter(|name| name.starts_with("sessionEvents:"))
                 .cloned()
@@ -471,19 +551,35 @@ impl Resolver for SessionResolver {
                     name: name.into(),
                     message: "runtime row has no scoped factory".into(),
                 })?;
+            let branch = snapshot.branch.clone();
             resolved = resolved.with_scoped(Arc::new(move |build| {
                 let inner = scoped(build)?;
                 let scope = SessionScope {
                     instance: build.instance(SESSION_GROUP)?,
                 };
                 let mut injects = inner.injects().to_vec();
-                if !events.is_empty() {
+                let scope = if let Some(part) = &branch {
+                    let branch = BranchScope {
+                        session: scope,
+                        instance: build.instance(BRANCH_GROUP)?,
+                    };
                     injects.extend([
-                        scope.key::<SessionIdentity>(),
-                        scope.key::<SessionConfig>(),
-                        scope.key::<SessionLifecycle>(),
+                        branch.key::<Timeline>(),
+                        branch.key::<Dispatcher>(),
+                        branch.key::<TimelineIdentity>(),
+                        branch.key::<BranchLifecycle>(),
                     ]);
-                }
+                    PartScope::Branch(branch, part.clone())
+                } else {
+                    if !events.is_empty() {
+                        injects.extend([
+                            scope.key::<SessionIdentity>(),
+                            scope.key::<SessionConfig>(),
+                            scope.key::<SessionLifecycle>(),
+                        ]);
+                    }
+                    PartScope::Session(scope)
+                };
                 Ok(Arc::new(BoundFactory {
                     inner,
                     scope: Some(scope),
@@ -500,7 +596,7 @@ impl Resolver for SessionResolver {
 
 struct BoundFactory {
     inner: Arc<dyn PluginFactory<Value>>,
-    scope: Option<SessionScope>,
+    scope: Option<PartScope>,
     namespaces: Arc<[String]>,
     tools: Arc<[String]>,
     events: Arc<[String]>,
@@ -519,7 +615,7 @@ impl PluginFactory<Value> for BoundFactory {
     fn build(&self, config: &Value) -> std::result::Result<Box<dyn Plugin>, CordisError> {
         Ok(Box::new(BoundRow {
             inner: self.inner.build(config)?,
-            scope: self.scope.ok_or_else(|| {
+            scope: self.scope.clone().ok_or_else(|| {
                 CordisError::PluginFailed("TypeScript part outside a Session".into())
             })?,
             namespaces: self.namespaces.clone(),
@@ -532,7 +628,7 @@ impl PluginFactory<Value> for BoundFactory {
 
 struct BoundRow {
     inner: Box<dyn Plugin>,
-    scope: SessionScope,
+    scope: PartScope,
     namespaces: Arc<[String]>,
     tools: Arc<[String]>,
     events: Arc<[String]>,
@@ -571,30 +667,38 @@ impl Plugin for BoundRow {
         ctx: &'a Ctx,
     ) -> BoxFuture<'a, std::result::Result<Effect, CordisError>> {
         Box::pin(async move {
-            for name in self.tools.iter() {
-                ctx.provide_as(
-                    TypeKey::keyed_dynamic::<CancellationToken>(name.as_str())
-                        .with_instance(self.scope.instance),
-                    Arc::new(ctx.cancellation_token()),
-                )?;
+            if let PartScope::Session(scope) = &self.scope {
+                for name in self.tools.iter() {
+                    ctx.provide_as(
+                        TypeKey::keyed_dynamic::<CancellationToken>(name.as_str())
+                            .with_instance(scope.instance),
+                        Arc::new(ctx.cancellation_token()),
+                    )?;
+                }
             }
-            let keys: Arc<[TypeKey]> = self
-                .namespaces
-                .iter()
-                .map(|namespace| {
-                    host_key_in(&format!("sessionMethods:{namespace}"), self.scope.instance)
-                })
-                .chain(
-                    self.tools
-                        .iter()
-                        .map(|name| host_key_in(name, self.scope.instance)),
-                )
-                .chain(
-                    self.events
-                        .iter()
-                        .map(|name| host_key_in(name, self.scope.instance)),
-                )
-                .collect();
+            let keys: Arc<[TypeKey]> = match &self.scope {
+                PartScope::Branch(scope, part) => std::iter::once(part.bind.as_str())
+                    .chain(part.services.iter().map(|service| service.name.as_str()))
+                    .map(|name| host_key_in(name, scope.instance))
+                    .collect(),
+                PartScope::Session(scope) => self
+                    .namespaces
+                    .iter()
+                    .map(|namespace| {
+                        host_key_in(&format!("sessionMethods:{namespace}"), scope.instance)
+                    })
+                    .chain(
+                        self.tools
+                            .iter()
+                            .map(|name| host_key_in(name, scope.instance)),
+                    )
+                    .chain(
+                        self.events
+                            .iter()
+                            .map(|name| host_key_in(name, scope.instance)),
+                    )
+                    .collect(),
+            };
             let changed = Arc::new(tokio::sync::Notify::new());
             // rows.load may reply before its service notification is projected.
             // Subscribe before loading, then read only this row's own services.
@@ -620,15 +724,57 @@ impl Plugin for BoundRow {
                     }
                     tokio::select! {
                         _ = changed.notified() => {},
-                        _ = cancelled.cancelled() => return Err(CordisError::PluginFailed("Session part binding cancelled".into())),
+                        _ = cancelled.cancelled() => return Err(CordisError::PluginFailed("TypeScript part binding cancelled".into())),
                     }
                 };
+                let scope = match &self.scope {
+                    PartScope::Branch(scope, part) => {
+                        if index == 0 {
+                            let binding = branch_binding(
+                                ctx,
+                                self.name(),
+                                scope.service::<TimelineIdentity>(ctx)?,
+                                scope.service::<Timeline>(ctx)?,
+                                scope.service::<Dispatcher>(ctx)?,
+                                scope.service::<BranchLifecycle>(ctx)?,
+                            );
+                            let reply = service
+                                .invoke("bind", RpcValue::List(vec![binding]))
+                                .map_err(|error| CordisError::PluginFailed(error.into()))?;
+                            let reply = tokio::select! {
+                            biased;
+                            _ = cancelled.cancelled() => return Err(CordisError::PluginFailed("branch part binding cancelled".into())),
+                            reply = settle(reply) => reply,
+                        }.map_err(|error| CordisError::PluginFailed(error.into()))?;
+                            if !matches!(reply, RpcValue::Data(Value::Null)) {
+                                return Err(CordisError::PluginFailed(
+                                    "branchPart.bind must return null".into(),
+                                ));
+                            }
+                        } else {
+                            let declaration = &part.services[index - 1];
+                            ctx.provide_as(
+                                TypeKey::keyed_dynamic::<ForeignBranchService>(
+                                    declaration.name.as_str(),
+                                )
+                                .with_instance(scope.instance),
+                                Arc::new(ForeignBranchService::new(
+                                    service,
+                                    declaration.methods.iter().cloned(),
+                                    cancelled.clone(),
+                                )),
+                            )?;
+                        }
+                        continue;
+                    }
+                    PartScope::Session(scope) => scope,
+                };
                 if let Some(namespace) = self.namespaces.get(index) {
-                    SessionMethods::provide_foreign(ctx, &self.scope, namespace, service).await?;
+                    SessionMethods::provide_foreign(ctx, scope, namespace, service).await?;
                 } else if index >= self.namespaces.len() + self.tools.len() {
-                    let identity = self.scope.service::<SessionIdentity>(ctx)?;
-                    let config = self.scope.service::<SessionConfig>(ctx)?;
-                    let lifecycle = self.scope.service::<SessionLifecycle>(ctx)?;
+                    let identity = scope.service::<SessionIdentity>(ctx)?;
+                    let config = scope.service::<SessionConfig>(ctx)?;
+                    let lifecycle = scope.service::<SessionLifecycle>(ctx)?;
                     let cancelled = cancelled.clone();
                     let closing = RpcValue::future(async move {
                         tokio::select! {

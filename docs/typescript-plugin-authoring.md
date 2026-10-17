@@ -19,7 +19,8 @@ This does not disable checking a plugin's calls against the service interfaces.
 | Read/update business configuration | `settings`, process | Owner read/write and Settings event delivery implemented; declare sources in the C4 row's `settings` member. |
 | Resolve a credential reference | `credentials`, process | Host dispatch implemented; no product plugin provides a secret store. Inject only when the embedding host supplies one. |
 | Offer client methods or model tools | `sessionMethods:<namespace>`, `toolContribution:<tool>`, Session | Implemented by C4 through ordinary structural rows and the existing App Server embedding entry. |
-| Observe this Session or act on a branch | Session broadcast / branch Dispatcher | Native Session broadcast is tracked by #168; branch bindings remain C5 work. |
+| Observe this Session | `sessionEvents:<part>`, Session | Implemented by C4 #180 through the original row's bind and leaf events. |
+| Consume branch events, write input or read a branch owner | C5 Dispatcher / `treeCommands` | In implementation; creation cancellation still requires the [C5 contract decision](design/branch-typescript.md). |
 
 See [Session TypeScript bindings](design/session-typescript.md) and
 [Settings](design/appserver/settings-service.md) for their contracts and delivery
@@ -322,12 +323,19 @@ this binding. On unload, C1 stops admission and settles accepted calls before th
 JavaScript row unloads: `report` replies with interruption, while `drain` preserves
 the provider's reply. No business task in this example runs during `apply`.
 
-Native Session broadcast remains [#168](https://github.com/arcships/dim/issues/168)
-work. rutis 0.11 supplies leaf events; the Dim Session binding design in
-[#174](https://github.com/arcships/dim/pull/174) is merged, but not implemented.
-A runtime `ctx.on` API alone does not deliver Dim Session records.
-The implemented tool/method binding supplies no Session activation method,
-branch Dispatcher access or replacement polling mechanism.
+For Session observation, declare `sessionEvents:<part>: {bind: 'sync'}` in the
+row's `provides` and provide that service with `bind(binding, closing)` returning
+null. C4 passes `{sessionId, config}` and a closing Promise to that original row.
+Register `ctx.on('session.event', record => ...)` there; records contain
+`{sessionId, branchId, event}`. Filter by the bound Session id, retain the bound
+creation-time config and stop owned work when closing resolves. The original
+row's effects remove its listeners on unload. See the
+[implemented broadcast contract](design/session-typescript.md).
+
+Session observation may lag native delivery. Critical branch behavior belongs
+to the branch Dispatcher; Session observation does not establish branch
+activation or replace ordered consumption. C5's separate branch binding is
+tracked in its contract above.
 
 With rutis 0.11, integer values beyond ±(2^53−1) cross into TypeScript as `bigint`,
 including integers nested in model-supplied tool arguments or event data. Ordinary

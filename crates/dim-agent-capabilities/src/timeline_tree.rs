@@ -1,3 +1,6 @@
+mod foreign;
+pub use foreign::{ForeignBranchService, branch_binding};
+
 use crate::{
     host::{HostError, HostFuture, ToolExecutionContext},
     tool_registry::{ToolContribution, ToolHandler},
@@ -857,6 +860,7 @@ impl TypedPlugin for TimelineTreePlugin {
                     }),
                 }),
             )?;
+            foreign::provide(ctx, &self.scope, commands.clone())?;
             ctx.provide_as(self.scope.key::<TreeCommands>(), commands)?;
             ctx.provide_as(self.scope.key::<TimelineTree>(), tree.clone())?;
             ctx.provide_as(

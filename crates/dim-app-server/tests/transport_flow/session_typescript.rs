@@ -1360,6 +1360,34 @@ async fn node_session_typescript_rejects_invalid_boundaries_without_disabling_na
             "invalid sessionEvents",
         ),
         (
+            json!({"branchPart:":{"bind":"async"}}),
+            "invalid branchPart",
+        ),
+        (
+            json!({"branchPart:counter":{"bind":"sync"}}),
+            "invalid branchPart",
+        ),
+        (
+            json!({"branchPart:first":{"bind":"async"},"branchPart:second":{"bind":"async"}}),
+            "exactly one branchPart",
+        ),
+        (
+            json!({"branchPart:counter":{"bind":"async"},"sessionMethods:session.counter":{"describe":"async","call":"async"}}),
+            "colliding branch service",
+        ),
+        (
+            json!({"branchPart:counter":{"bind":"async"},"treeCommands":{"get":"sync"}}),
+            "colliding branch service",
+        ),
+        (
+            json!({"branchPart:counter":{"bind":"async"},"counter":{"get":"stream"}}),
+            "branch service method mode",
+        ),
+        (
+            json!({"branchPart:counter":{"bind":"async"},"":{"get":"sync"}}),
+            "colliding branch service",
+        ),
+        (
             json!({"toolContribution:echo":{"declaration":"sync","execute":"async"}}),
             "collides",
         ),
@@ -1669,4 +1697,617 @@ async fn node_session_typescript_unload_cancels_a_stalled_describe() {
     assert!(!requests.recv().await.unwrap().contains(&"ts_echo".into()));
     server.shutdown();
     server.join().await.unwrap();
+}
+
+fn branch_parts(audit: &std::path::Path) -> SessionTypeScriptConfig {
+    let mut parts = fixture();
+    let fixtures = parts.anchor.parent().unwrap().join("fixtures");
+    parts.rows = [
+        (
+            "branch-counter",
+            "branch-part",
+            include_str!("../../../../runtime/fixtures/branch-part.json"),
+        ),
+        (
+            "branch-client",
+            "branch-client",
+            include_str!("../../../../runtime/fixtures/branch-client.json"),
+        ),
+    ]
+    .into_iter()
+    .map(|(id, module, declaration)| {
+        let mut row: Value = serde_json::from_str(declaration).unwrap();
+        row["id"] = json!(id);
+        row["name"] = json!(fixtures.join(format!("{module}.ts")));
+        row["config"] = json!({"lifecycleFile":audit});
+        row
+    })
+    .collect();
+    parts
+}
+
+struct HoldBranchOpening(
+    dim_agent_runtime::BranchScope,
+    Arc<tokio::sync::Notify>,
+    tokio::sync::mpsc::UnboundedSender<(
+        dim_agent_runtime::BranchScope,
+        rutis::Ctx,
+        Arc<rutis_loader::Loader>,
+    )>,
+);
+impl TypedPlugin for HoldBranchOpening {
+    type Deps = (
+        InBranch<dim_agent_runtime::BranchOpening>,
+        Arc<rutis_loader::Loader>,
+    );
+    fn name(&self) -> &str {
+        "test.hold-branch-opening"
+    }
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a rutis::Ctx,
+        (InBranch(opening), loader): Self::Deps,
+    ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
+        Box::pin(async move {
+            let release = self.1.clone();
+            opening.register(Box::pin(async move {
+                release.notified().await;
+                Ok(())
+            }))?;
+            self.2.send((self.0, ctx.clone(), loader)).unwrap();
+            Ok(rutis::Effect::Done)
+        })
+    }
+}
+impl Capability for HoldBranchOpening {
+    fn keys(&self) -> KeysOf<Self> {
+        scoped::<Self::Deps, _>(&self.0)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_branch_typescript_unload_before_activation_settles_original_work() {
+    let audit = std::env::temp_dir().join(format!("dm-c5-early-{}.jsonl", uuid::Uuid::new_v4()));
+    let (mut builder, _requests, _) = setup();
+    let (send, mut contexts) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let gate = release.clone();
+    builder.timeline_plugin(move |scope| HoldBranchOpening(*scope, gate.clone(), send.clone()));
+    let server = serve(
+        builder,
+        ServerConfig {
+            unix_path: Some(std::env::temp_dir().join(format!("dm-c5-{}/s", uuid::Uuid::new_v4()))),
+            session_typescript: Some(branch_parts(&audit)),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut client = Client::new_version(&server, false, 3).await;
+    let creating = client.send("session.create", create(json!(["echo"]))).await;
+    let (scope, ctx, loader) = contexts.recv().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while ctx
+            .get_as::<dim_agent_capabilities::timeline_tree::ForeignBranchService>(
+                rutis::TypeKey::keyed_dynamic::<
+                    dim_agent_capabilities::timeline_tree::ForeignBranchService,
+                >("counter")
+                .with_instance(scope.instance),
+            )
+            .is_none()
+        {
+            tokio::task::yield_now().await
+        }
+    })
+    .await
+    .expect("branch row bound before activation");
+    let view = loader
+        .entries()
+        .into_iter()
+        .find(|entry| {
+            entry.id == "branch-counter"
+                && entry.instance.as_ref().is_some_and(|instance| {
+                    instance.chain.iter().any(|(_, id)| *id == scope.instance)
+                })
+        })
+        .unwrap()
+        .view
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), view.dispose())
+        .await
+        .unwrap()
+        .unwrap();
+    let rows: Vec<Value> = std::fs::read_to_string(&audit)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["active"], false);
+    assert_eq!(rows[0]["closed"], true);
+    assert_eq!(rows[0]["settled"], true);
+    release.notify_one();
+    let created = client.response(creating).await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap();
+    let session = server.agent().unwrap().get_session(id).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while session
+            .session_named_service::<SessionMethods>("session.cfive")
+            .is_err()
+        {
+            tokio::task::yield_now().await
+        }
+    })
+    .await
+    .unwrap();
+    let absent = client
+        .rpc(
+            "session.cfive.lookup",
+            json!({"sessionId":id,"branchId":"main"}),
+        )
+        .await;
+    assert_eq!(absent["result"]["error"]["code"], "reloading");
+    submit(&mut client, id, "native work after early row unload").await;
+    assert_eq!(std::fs::read_to_string(&audit).unwrap().lines().count(), 1);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_file(audit).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_branch_typescript_pending_export_keeps_native_work_available() {
+    let audit = std::env::temp_dir().join(format!("dm-c5-pending-{}.jsonl", uuid::Uuid::new_v4()));
+    let mut parts = branch_parts(&audit);
+    let entry = PathBuf::from(parts.rows[0]["name"].as_str().unwrap());
+    parts.rows[0]["name"] = json!(entry.with_file_name("branch-pending.ts"));
+    parts.rows[0]["inject"] = json!(["treeCommands", "toolContribution:ts_echo"]);
+    let mut disabled = fixture().rows.remove(0);
+    disabled["disabled"] = json!(true);
+    parts.rows.push(disabled);
+    let (mut builder, _requests, _) = setup();
+    let (send, mut controls) = tokio::sync::mpsc::unbounded_channel();
+    builder.session_plugin(move |scope| ControlledGate(*scope, send.clone()));
+    let server = serve(
+        builder,
+        ServerConfig {
+            unix_path: Some(std::env::temp_dir().join(format!("dm-c5-{}/s", uuid::Uuid::new_v4()))),
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = new_session(&mut client, json!(["echo"])).await;
+    let (scope, _, loader, _) = controls.recv().await.unwrap();
+    let session = server.agent().unwrap().get_session(&id).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while session
+            .session_named_service::<SessionMethods>("session.cfive")
+            .is_err()
+        {
+            tokio::task::yield_now().await
+        }
+    })
+    .await
+    .unwrap();
+    let view = loader
+        .entries()
+        .into_iter()
+        .find(|entry| {
+            entry.id == "branch-counter"
+                && entry.instance.as_ref().is_some_and(|instance| {
+                    instance.chain.iter().any(|(_, id)| *id == scope.instance)
+                })
+        })
+        .unwrap()
+        .view
+        .unwrap();
+    assert_eq!(view.state().state, rutis::FiberState::Pending);
+    let pending = client
+        .rpc(
+            "session.cfive.lookup",
+            json!({"sessionId":id,"branchId":"main"}),
+        )
+        .await;
+    assert_eq!(pending["result"]["error"]["code"], "reloading");
+    submit(
+        &mut client,
+        &id,
+        "native input while optional branch row is Pending",
+    )
+    .await;
+    assert!(!audit.exists());
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+async fn branch_part_ready(
+    client: &mut Client,
+    session: &dim_agent_runtime::Session,
+    branch: &str,
+) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while session
+            .session_named_service::<SessionMethods>("session.cfive")
+            .is_err()
+        {
+            tokio::task::yield_now().await;
+        }
+        loop {
+            let reply = client
+                .rpc(
+                    "session.cfive.lookup",
+                    json!({"sessionId":session.id(),"branchId":branch}),
+                )
+                .await;
+            assert_ok(&reply);
+            if reply["result"]["ok"] == true {
+                break;
+            }
+            assert_eq!(reply["result"]["error"]["code"], "reloading", "{reply}");
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "optional C5 row publication: Session {:?}, branch {:?}",
+            session.diagnostics(),
+            session.branch_diagnostics(branch)
+        )
+    });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_branch_typescript_owner_input_isolation_reload_and_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = std::env::temp_dir().join(format!("dm-c5-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let audit = home.join("lifecycle.jsonl");
+    let (mut builder, _requests, _) = setup();
+    let (send, mut controls) = tokio::sync::mpsc::unbounded_channel();
+    builder.session_plugin(move |scope| ControlledGate(*scope, send.clone()));
+    let server = serve(
+        builder,
+        ServerConfig {
+            unix_path: Some(home.join("server.sock")),
+            database_path: Some(home.join("sessions.sqlite")),
+            trace_directory: home.join("trace"),
+            session_typescript: Some(branch_parts(&audit)),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut client = Client::new_version(&server, false, 3).await;
+    let first = new_session(&mut client, json!(["echo"])).await;
+    let (scope, _, loader, _) = controls.recv().await.unwrap();
+    let second = new_session(&mut client, json!(["echo"])).await;
+    let mut session = server.agent().unwrap().get_session(&first).unwrap();
+    let other = server.agent().unwrap().get_session(&second).unwrap();
+    branch_part_ready(&mut client, &session, "main").await;
+    branch_part_ready(&mut client, &other, "main").await;
+    let initial = client
+        .rpc(
+            "session.cfive.retain",
+            json!({"sessionId":first,"branchId":"main"}),
+        )
+        .await;
+    assert_ok(&initial);
+    assert_eq!(
+        initial["result"]["identity"],
+        json!({"sessionId":first,"branchId":"main"})
+    );
+    let second_service = client
+        .rpc(
+            "session.cfive.second",
+            json!({"sessionId":first,"branchId":"main"}),
+        )
+        .await;
+    assert_ok(&second_service);
+    assert_eq!(
+        second_service["result"]["generation"],
+        initial["result"]["generation"]
+    );
+    let unknown = client
+        .rpc(
+            "session.cfive.lookup",
+            json!({"sessionId":first,"branchId":"main","name":"absent"}),
+        )
+        .await;
+    assert_eq!(unknown["result"]["error"]["code"], "reloading");
+    let unknown = client
+        .rpc(
+            "session.cfive.lookup",
+            json!({"sessionId":first,"branchId":"absent"}),
+        )
+        .await;
+    assert_eq!(unknown["result"]["error"]["code"], "unknown_branch");
+    let invalid = client
+        .rpc(
+            "session.cfive.input",
+            json!({"sessionId":first,"branchId":"main","data":{"text":"legacy"}}),
+        )
+        .await;
+    assert_eq!(invalid["result"]["error"]["code"], "invalid_params");
+
+    // The service is the owner's consumed fold while a committed input awaits its handler.
+    assert_ok(
+        &client
+            .rpc(
+                "session.cfive.arm",
+                json!({"sessionId":first,"branchId":"main"}),
+            )
+            .await,
+    );
+    let input = client.rpc("session.cfive.input", json!({"sessionId":first,"branchId":"main","data":{
+        "submission_id":"emit", "user":{"content":[{"type":"text","text":"trigger owned work"}]}
+    }})).await;
+    assert_ok(&input);
+    assert_eq!(input["result"]["ok"], true, "{input}");
+    assert_ok(
+        &client
+            .rpc(
+                "session.cfive.entered",
+                json!({"sessionId":first,"branchId":"main"}),
+            )
+            .await,
+    );
+    let held = client
+        .rpc(
+            "session.cfive.get",
+            json!({"sessionId":first,"branchId":"main"}),
+        )
+        .await;
+    assert!(
+        held["result"]["through"].as_u64().unwrap()
+            < input["result"]["value"]["sequence"].as_u64().unwrap()
+    );
+    submit(&mut client, &second, "independent Session").await;
+    assert_ok(
+        &client
+            .rpc(
+                "session.cfive.release",
+                json!({"sessionId":first,"branchId":"main"}),
+            )
+            .await,
+    );
+    let emitted = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let events = session.local("main", ..).await.unwrap();
+            if let Some(event) = events.into_iter().find(|event| {
+                matches!(&event.kind,
+                EventKind::InputMessage(data) if data.submission_id.as_deref() == Some("emitted"))
+            }) {
+                break event;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("branch-owned committed input");
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":first,"branchId":"main"}))
+            .await,
+    );
+    let cutoff = session.sequence("main").unwrap();
+    let folded = client
+        .rpc(
+            "session.cfive.through",
+            json!({"sessionId":first,"branchId":"main","through":cutoff}),
+        )
+        .await;
+    assert_ok(&folded);
+    assert!(session.local("main", ..=cutoff).await.unwrap().iter().any(|event|
+        matches!(&event.kind, EventKind::Text(data) if data.delta.contains("Echo: branch-owned input"))),
+        "the branch-owned input reached the actual model context");
+    assert_eq!(
+        folded["result"]["events"],
+        json!(session.local("main", ..=cutoff).await.unwrap())
+    );
+    assert!(
+        folded["result"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["id"] == emitted.id)
+    );
+    assert!(folded["result"]["taskError"].is_null(), "{folded}");
+
+    let view = loader
+        .entries()
+        .into_iter()
+        .find(|entry| {
+            entry.id == "branch-counter"
+                && entry.instance.as_ref().is_some_and(|instance| {
+                    instance.chain.iter().any(|(_, id)| *id == scope.instance)
+                })
+        })
+        .unwrap()
+        .view
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), view.restart())
+        .await
+        .unwrap()
+        .unwrap();
+    branch_part_ready(&mut client, &session, "main").await;
+    let stale = client
+        .rpc(
+            "session.cfive.stale",
+            json!({"sessionId":first,"branchId":"main"}),
+        )
+        .await;
+    assert_eq!(stale["result"]["failed"], true, "{stale}");
+    let reloaded = client
+        .rpc(
+            "session.cfive.get",
+            json!({"sessionId":first,"branchId":"main"}),
+        )
+        .await;
+    assert_ne!(
+        reloaded["result"]["generation"],
+        initial["result"]["generation"]
+    );
+    assert_eq!(
+        reloaded["result"]["events"], folded["result"]["events"],
+        "reconstruction does not duplicate live events or repeat owned input"
+    );
+    let audit_rows = || {
+        std::fs::read_to_string(&audit)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        audit_rows()
+            .iter()
+            .any(|row| row["generation"] == initial["result"]["generation"]
+                && row["closed"] == true
+                && row["settled"] == true)
+    );
+
+    let created = client.rpc("session.cfive.create", json!({"sessionId":first,"branchId":"main","through":cutoff,
+        "options":{"prompt":"child branch", "source":{"kind":"host","operation_id":"c5-flow"}}
+    })).await;
+    assert_ok(&created);
+    assert_eq!(created["result"]["ok"], true, "{created}");
+    let child = created["result"]["value"]["id"].as_str().unwrap();
+    branch_part_ready(&mut client, &session, child).await;
+    let child_state = client
+        .rpc(
+            "session.cfive.get",
+            json!({"sessionId":first,"branchId":child}),
+        )
+        .await;
+    assert_eq!(
+        child_state["result"]["identity"],
+        json!({"sessionId":first,"branchId":child})
+    );
+    assert_ne!(
+        child_state["result"]["generation"],
+        reloaded["result"]["generation"]
+    );
+    let listed = client
+        .rpc("session.cfive.list", json!({"sessionId":first}))
+        .await;
+    assert_eq!(listed["result"]["value"].as_array().unwrap().len(), 2);
+    let other_state = client
+        .rpc(
+            "session.cfive.get",
+            json!({"sessionId":second,"branchId":"main"}),
+        )
+        .await;
+    assert_ne!(
+        other_state["result"]["generation"],
+        reloaded["result"]["generation"]
+    );
+    assert!(
+        other_state["result"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["id"] != emitted.id)
+    );
+
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":first,"branchId":child}))
+            .await,
+    );
+    assert!(session.unload_if_idle().await.unwrap());
+    let _restoring = client
+        .rpc(
+            "session.cfive.lookup",
+            json!({"sessionId":first,"branchId":"main"}),
+        )
+        .await;
+    session = server.agent().unwrap().get_session(&first).unwrap();
+    branch_part_ready(&mut client, &session, "main").await;
+    branch_part_ready(&mut client, &session, child).await;
+    let restored_cut = session.sequence("main").unwrap();
+    let restored = client
+        .rpc(
+            "session.cfive.through",
+            json!({"sessionId":first,"branchId":"main","through":restored_cut}),
+        )
+        .await;
+    assert_ok(&restored);
+    assert_ne!(
+        restored["result"]["generation"],
+        reloaded["result"]["generation"]
+    );
+    assert_eq!(
+        restored["result"]["events"],
+        json!(session.local("main", ..=restored_cut).await.unwrap())
+    );
+    assert_eq!(
+        restored["result"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["type"] == "input"
+                && event["name"] == "message"
+                && event["data"]["submission_id"] == "emitted")
+            .count(),
+        1,
+        "restore folds history without repeating external work"
+    );
+
+    assert_ok(
+        &client
+            .rpc(
+                "session.cfive.fail",
+                json!({"sessionId":first,"branchId":child}),
+            )
+            .await,
+    );
+    let mut dispatched = session.dispatch_watch(child).unwrap();
+    let accepted = client
+        .rpc(
+            "session.cfive.input",
+            json!({"sessionId":first,"branchId":child,"data":{
+                "user":{"content":[{"type":"text","text":"critical failure"}]}
+            }}),
+        )
+        .await;
+    assert_eq!(accepted["result"]["ok"], true);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while dispatched.borrow().failure.is_none() {
+            dispatched.changed().await.unwrap()
+        }
+    })
+    .await
+    .expect("foreign callback failure reaches native Dispatcher");
+    assert!(
+        dispatched
+            .borrow()
+            .failure
+            .as_ref()
+            .unwrap()
+            .to_string()
+            .contains("fixture critical callback failure")
+    );
+    submit(
+        &mut client,
+        &second,
+        "other Session still runs after failure",
+    )
+    .await;
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    assert!(
+        audit_rows()
+            .iter()
+            .all(|row| row["closed"] == true && row["settled"] == true)
+    );
+    std::fs::remove_dir_all(home).unwrap();
 }

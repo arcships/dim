@@ -236,3 +236,57 @@ export interface SessionMethodsContribution {
   describe(): Promise<SessionMethodDeclaration[]>;
   call(call: SessionMethodCall, cancelled: Promise<void>, progress: (data: JsonValue) => void): Promise<SessionMethodReply>;
 }
+
+/** C5 keeps the native serde names, rather than the S2 input request. */
+export interface InputMessageData {
+  submission_id?: string;
+  user?: { content: ContentBlock[] } | null;
+  blocks?: { type: 'raw'; text: string; key?: string; retire?: boolean }[];
+  mode?: 'queue' | 'steer' | 'append';
+}
+export type BranchResult<T> = { ok: true; value: T } |
+  { ok: false; error: { code: 'invalid_params' | 'invalid_input' | 'unknown_branch' |
+    'closed' | 'cancelled' | 'reloading' | 'failed'; message: string } };
+/** Preserve rutis integers when passing native cutoffs back to the owner. */
+export type TimelineSequence = number | bigint;
+export interface BranchOptions {
+  prompt: string;
+  source: { kind: 'tool'; turn_id: string; request_id: string; call_id: string } |
+    { kind: 'host'; operation_id: string };
+}
+export interface TimelineInfo {
+  id: string;
+  parent?: string;
+  branch_point?: TimelineSequence;
+  create_anchor?: TimelineSequence;
+}
+export interface BranchRef {
+  readonly id: string;
+  input(data: InputMessageData): BranchResult<AgentEvent>;
+  /** A selected producer reference fails on unload; it never follows a successor. */
+  service<T extends object>(request: { name: string }): BranchResult<T>;
+}
+/** Session service `treeCommands`; both Session and branch rows declare it in inject. */
+export interface TreeCommands {
+  get(request: { id: string }): BranchResult<BranchRef>;
+  list(request: Record<string, never>): BranchResult<TimelineInfo[]>;
+  /** Creation cancellation is pending the C5 contract decision. */
+  branch(request: { parent: string; at: TimelineSequence; options: BranchOptions }): Promise<BranchResult<BranchRef>>;
+}
+/** Original branch-row references passed once to `branchPart:<part>.bind`. */
+export interface BranchBinding {
+  readonly identity: Readonly<SessionRef>;
+  readonly dispatcher: {
+    subscribe(keys: string[], callback: (event: AgentEvent) => void | Promise<void>): BranchResult<null>;
+  };
+  readonly timeline: {
+    committed(): BranchResult<TimelineSequence>;
+    history(request: { through: TimelineSequence }): Promise<BranchResult<AgentEvent[]>>;
+    local(request: { start: TimelineSequence; through: TimelineSequence }): Promise<BranchResult<AgentEvent[]>>;
+  };
+  readonly activated: Promise<boolean>;
+  readonly closing: Promise<void>;
+}
+export interface BranchPart {
+  bind(binding: BranchBinding): Promise<null>;
+}

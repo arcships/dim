@@ -1,6 +1,6 @@
 # 开发计划与优先级
 
-Status: Draft. 依据：[总体设计](overview.md) §8 阶段与附录 B/F、[插件设计索引](plugins/README.md)、[ADR 001](../adr/001-harness-foundation.md) 实现状态，以及 [#21–#30](https://github.com/arcships/dim/issues/31) 的讨论结论。交付基线：`main` @ `e48e70b`（2026-10-17）；PR 的实时状态见 [#114](https://github.com/arcships/dim/issues/114)。
+Status: Draft. 依据：[总体设计](overview.md) §8 阶段与附录 B/F、[插件设计索引](plugins/README.md)、[ADR 001](../adr/001-harness-foundation.md) 实现状态，以及 [#21–#30](https://github.com/arcships/dim/issues/31) 的讨论结论。交付基线：`main` @ `c044140`（2026-10-17）；PR 的实时状态见 [#114](https://github.com/arcships/dim/issues/114)。
 
 跟踪 issue：[#114](https://github.com/arcships/dim/issues/114)，每个工作项一个 issue 和一个 draft PR，各有唯一的负责人。
 
@@ -8,7 +8,7 @@ Status: Draft. 依据：[总体设计](overview.md) §8 阶段与附录 B/F、[�
 
 ## 1. 现状
 
-本轮大部分 Rust 前置机制已合入，包括 C1/C2/C3、S1/S2、S4、S5a/S5c、S6/S7、S8a、S10/S11、R1 和 E1/E2；C7、S3 已确认无需新增机制。C4 工具/方法绑定、rutis 0.11 升级，以及 S8b Rust 服务、C4 行来源声明、TypeScript owner 读写和 Settings 事件已合入；原生 Session 广播实现及产品凭据存储仍未完成。插件按自己需要的接口推进，设计、spike、研究合入不表示产品实现完成。已有、可直接扩展的基础：
+本轮大部分 Rust 前置机制已合入，包括 C1/C2/C3、S1/S2、S4、S5a/S5c、S6/S7、S8a、S10/S11、R1 和 E1/E2；C7、S3 已确认无需新增机制。C4 工具/方法、原生 Session 广播、rutis 0.11 升级，以及 S8b Rust 服务、C4 行来源声明、TypeScript owner 读写和 Settings 事件已合入。C5 实现进行中；产品凭据边界的调整提案 #185 尚未合入。插件按自己需要的接口推进，设计、spike、研究合入不表示产品实现完成。已有、可直接扩展的基础：
 
 | 已有 | 位置 | 对应工作项 |
 | --- | --- | --- |
@@ -29,11 +29,12 @@ Status: Draft. 依据：[总体设计](overview.md) §8 阶段与附录 B/F、[�
 | F3 模型参数 | 设计 #110、`/effort`、`/fast`、`/agent` 实现 #148 | 本轮交付完成 |
 | F4 MCP OAuth | 服务端 #111、CLI 登录与状态 #151 | 本轮交付完成 |
 | F5 OS 隔离 | spike #112、设计 #152 | 产品执行集成尚未合入；持久 shell 输出策略待确认，用户 `!` / `!!` 不在隔离范围内 |
-| C4 Session 级 TS | spike #99、装配前置 #137、工具/方法设计 #141、实现 #150、rutis 0.11 升级 #173、原生 Session 广播设计 #174 | #168 的运行时实现及 Session 隔离/顺序/卸载验收待完成；慢 leaf 的队列积压可观测性或处理策略作为非阻塞实现问题跟进。#156 已关闭且不采用，完整 C4/#63 保持未完成 |
+| C4 Session 级 TS | spike #99、装配前置 #137、工具/方法设计 #141、实现 #150、rutis 0.11 升级 #173、广播设计 #174、实现 #180 | C4 完成，#63/#168 已关闭；慢 leaf 的积压策略作为非阻塞问题跟进。#156 已关闭且不采用 |
+| C5 分支级 TS | 设计 #100 | 原行绑定、公开服务读取及三个真实 Node 流程已验证；创建取消参数的合同调整待确认，保持实现中，不标记 inreview |
 | S8b Settings | 设计 #119、Rust 实现 #166；#175 的 C4 行 `settings` 声明、TypeScript owner 读写及真实 Node 验收（§11 第 1–3 项）；TypeScript 事件 #177 | 不新增 manifest；产品凭据存储提供方与 TypeScript 凭据验收（§11 第 6 项）仍待完成，#118 保持打开 |
-| F1 跟进 | 压缩触发和保留策略研究 #165；死区与截断摘要缺陷 #169 的修复 #172 | #128 的运行时规则、常量和对应设计/流程测试更新待办；摘要提示词/思考评估 #170 属于 M2 |
+| F1 跟进 | 压缩研究 #165、死区/截断修复 #172、运行时规则与流程更新 #183 | #128 已关闭；摘要提示词/思考评估 #170 属于 M2 |
 | P5 Goal | 设计 #105 | 等待 C4/C5/S8b 等自身前置，产品实现未完成 |
-| 插件作者指南 #140 | — | 进程服务、C4 工具/方法及已合入 Settings/credentials 合同的指南和类型 #167 评审中；来源声明与事件沿用 #175/#177，原生广播和 C5 的作者指南待对应实现 |
+| 插件作者指南 #140 | 指南与类型 #167 | C4 广播/C5 增补随对应实现；来源声明与事件沿用 #175/#177 |
 
 S10 后续 #135、S2 删除及评审后续 #159、App Server 真实配置流程测试修正 #157、CLI 私有 socket 启动修复 #158、共享中断监听修复 #162 和 CI fixture 修正 #161 已合入。CLI 修复不属于 F5 隔离或 P1 ShellInput 策略。以上记录交付范围；CI 和评审是否允许合并，以各 PR 当前提交的实时状态为准。
 
@@ -64,7 +65,7 @@ S10 后续 #135、S2 删除及评审后续 #159、App Server 真实配置流程�
 
 1. ~~合入 #14、#16 并补 ADR 003 D3~~：已由 #14 完成（#16 关闭）。
 2. ~~契约定稿：C1 `sessionMethods`、C2 `SessionConfig.interactive`、S8a Settings 业务源~~：#79、#83、#84、#90 已合入。核心部件不硬依赖可选插件的约束继续适用（#34、ADR 002 D3）。
-3. ShellInput、Attachments 服务端与 CLI 输入链路已合入。Web、Scheduler、Workflow 的工具/方法、Settings owner 读写与事件前置已满足，可按 §5.2 准备 Ready 设计；使用凭据引用的功能还需选定产品凭据存储提供方。SessionTitle 仍等 C6/S5b 与 C4 原生广播实现；Goal 仍等 C5 等自身前置。
+3. ShellInput、Attachments 服务端与 CLI 输入链路已合入。Web、Scheduler、Workflow 的工具/方法、Settings owner 读写与事件前置已满足，可按 §5.2 复核 Ready 决策；凭据边界按 #185 的评审结果处理。SessionTitle 仍等 C6/S5b 与自身 Ready 决策；Goal 仍等 C5 等自身前置。
 4. ~~决定 Goal 还是 Pursuit（D3）~~：已决定先做 Goal（#44）。
 5. 确认可能不需要的工作：~~Permission 新类别~~（已确认不需要，现有 `Unclassified` 行为已符合，#45）、~~S3 活动句柄~~（已确认不需要：App Server 不自动卸载空闲 Session，#57）。
 6. 为确定要做的运行时需求开 issue（总体设计附录 F）。rutis 是外部依赖，不向它提需求。
@@ -138,11 +139,11 @@ P3（AcpGateway、RemoteGateway、Modality、PluginManager）等 P1/P2 落地后
 
 | 批次 | eric8810（核心机制与契约） | yyhhyyyyyy（Rpc、Agents、存储、MCP） | zerob13（装配、TS 桥接、TS 插件、CLI、平台） |
 | --- | --- | --- | --- |
-| 1 | ~~A2 契约定稿~~ #79、~~A3 Goal 决策~~ #80、~~A4 权限类别~~ #81 | ~~S6 FileStorage~~ #87、~~R1 Failed 错误码~~ #117 | ~~C3 工具接入~~ #82、~~C4 spike~~ #99、~~S7 argv 辅助~~ #88、~~S10 pluginFiles~~ #91/#135；C4 工具/方法 #150 已合入，完整 C4 的广播由 #168 跟进 |
+| 1 | ~~A2 契约定稿~~ #79、~~A3 Goal 决策~~ #80、~~A4 权限类别~~ #81 | ~~S6 FileStorage~~ #87、~~R1 Failed 错误码~~ #117 | ~~C3 工具接入~~ #82、~~C4~~ #150/#180、~~S7 argv 辅助~~ #88、~~S10 pluginFiles~~ #91/#135 |
 | 2 | ~~S8a Settings 源~~ #90、~~S4 AuxiliaryModel~~ #89 | ~~C1 sessionMethods~~ #83、~~C2 interactive~~ #84、~~S5a Session 文件~~ #95 | ~~装配前置~~ #137；F5 spike #112、设计 #152 已合入，产品实现未合入 |
-| 3 | ~~S1 InputQueue 撤回~~ #94、S8b 设计 #119、Rust 实现 #166、C4 行来源/owner 读写 #175 与事件 #177 已合入（产品凭据存储待选定）、~~S11 图片占位~~ #92、~~F2 权限命令规则~~ #109 | C6 #85、S5b #96 仍为 Draft；~~P1 ShellInput 服务端~~ #101；~~S3 活动句柄~~（不需要） | C5 #100 仍为 Draft；~~P1 CLI~~ #155、~~F6 CLI~~ #149/#153、~~F3 模型参数~~ #148；rutis 升级 #173、广播设计 #174 已合入，广播实现待交付 |
-| 4 | ~~F1 压缩宿主~~ #108、研究 #165、#169 修复 #172 已合入（#128 运行时调参待办）；P5 Goal 设计 #105 已合入（实现等自身前置） | ~~S2 sessions~~ #98/#159、~~P2 Attachments 服务端~~ #102、~~S5c 删除和 fork~~ #97、~~F4 MCP OAuth 服务端~~ #111 | ~~F4 CLI~~ #151、~~CLI Attachments~~ #154/#160/#163/#164；作者指南 #167 评审中；P3 Web #103、P4 SessionTitle #104 仍为 Draft，Web 可按自身依赖准备 Ready 设计 |
-| 5 | — | — | P6 Scheduler #106、P7 Workflow #107 仍为 Draft；工具/方法、Settings owner 读写与事件前置已满足，可准备 Ready 设计；凭据引用还需产品存储提供方 |
+| 3 | ~~S1 InputQueue 撤回~~ #94、S8b #119/#166/#175/#177 已合入（凭据调整 #185 待评审）、~~S11 图片占位~~ #92、~~F2 权限命令规则~~ #109 | C6 #85 inreview、S5b #96 实现中；~~P1 ShellInput 服务端~~ #101；~~S3 活动句柄~~（不需要） | C5 设计 #100 已合入，实现与取消合同确认中；~~P1 CLI~~ #155、~~F6 CLI~~ #149/#153、~~F3 模型参数~~ #148；~~C4 广播~~ #180 |
+| 4 | ~~F1 压缩宿主~~ #108、研究 #165、修复 #172、运行时 #183；P5 Goal 设计 #105 已合入（实现等自身前置） | ~~S2 sessions~~ #98/#159、~~P2 Attachments 服务端~~ #102、~~S5c 删除和 fork~~ #97、~~F4 MCP OAuth 服务端~~ #111 | ~~F4 CLI~~ #151、~~CLI Attachments~~ #154/#160/#163/#164；~~作者指南~~ #167；P3 Web #103 inreview，凭据合同依赖 #185；P4 设计 #104 已合入，C6/S5b 与 Ready 决策待完成 |
+| 5 | — | — | P6 设计 #106、P7 设计 #107 已合入；Ready 业务决策仍待完成，不因设计合入直接实施 |
 
 跨人的交接（都不在同一批文件上）：
 
@@ -161,7 +162,7 @@ P3（AcpGateway、RemoteGateway、Modality、PluginManager）等 P1/P2 落地后
 | S2 sessions | yyhhyyyyyy | P6、P7（zerob13） |
 | C4、C5 TS 桥接 | zerob13 | P5（eric8810） |
 
-第 2、4 批的服务端交付及 Attachments CLI 已合入；Web、Scheduler、Workflow 可使用已交付的工具/方法、Settings owner 读写与事件准备 Ready 设计。C6/S5b、C4 广播实现及产品凭据存储只阻塞实际需要它们的功能，不设新的全局阶段屏障。
+第 2、4 批的服务端交付、Attachments CLI 与 C4 广播均已合入；Web、Scheduler、Workflow 可使用已交付的工具/方法、Settings owner 读写与事件复核 Ready 决策。C6/S5b 和凭据合同决策只阻塞实际需要它们的功能，不设新的全局阶段屏障。
 
 ### 3.6 并发规则
 
@@ -174,7 +175,7 @@ P3（AcpGateway、RemoteGateway、Modality、PluginManager）等 P1/P2 落地后
 ```mermaid
 flowchart LR
   PR14["#14"] --> C1["C1 sessionMethods"]
-  C3["C3 toolContribution"] --> C4["C4 TS 工具/方法（已合入）"] --> C5["C5 分支级（待实现）"]
+  C3["C3 toolContribution"] --> C4["C4 工具/方法与广播（已合入）"] --> C5["C5 分支级（实现中）"]
   C1 --> S1["S1 撤回"]
   C2["C2 interactive"] --> S2["S2 sessions"]
   S1 --> S2
@@ -191,7 +192,7 @@ flowchart LR
   C4 --> S8b
   S8b --> S8bEvents["S8b TS 事件 #177（已合入）"]
   S8b --> WEB
-  C4 --> Broadcast["C4 Session 广播 #168（实现待交付）"] --> ST["SessionTitle"]
+  C4 --> Broadcast["C4 Session 广播 #180（已合入）"] --> ST["SessionTitle"]
   C1 --> ST
   C2 --> ST
   S4["S4 AuxiliaryModel"] --> ST
@@ -210,7 +211,7 @@ flowchart LR
   S10 --> WF
 ```
 
-ShellInput 与 Attachments 的服务端及 CLI 输入链路已合入。C4 工具/方法 #150、rutis 0.11 升级 #173 和原生广播设计 #174 已合入；#168 的运行时实现与验收仍待完成；#156 已关闭且不采用。S8b Rust 服务 #166、C4 行来源声明与真实 Node owner 读写验收 #175、TypeScript 事件 #177 已合入；没有额外 manifest。产品凭据存储及其验收仍待完成。原生 Session 广播目前只由 SessionTitle 使用，其他插件不因 #168 增加前置。S1 → S2 已合入；Web、Scheduler、Workflow 可按 §5.2 复核 Ready 设计，使用 `*Ref` 的功能还需产品凭据存储提供方。Goal 的 C5 与 C6 → S5b → SessionTitle 仍未完成。
+ShellInput 与 Attachments 的服务端及 CLI 输入链路已合入。C4 工具/方法 #150、rutis 0.11 升级 #173、广播设计 #174 与实现 #180 已合入，#63/#168 已关闭；#156 不采用。S8b #166/#175/#177 已合入；凭据边界调整 #185 仍是提案。原生 Session 广播目前只由 SessionTitle 使用，其他插件不因 #168 增加前置。S1 → S2 已合入；Web #103 与已合入的 Scheduler #106、Workflow #107 仍需各自的 Ready 决策。Goal 的 C5 与 C6 → S5b → SessionTitle 仍未完成。
 
 ## 5. 设计变更空间
 
