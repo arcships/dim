@@ -624,6 +624,167 @@ async fn session_facade_reads_a_named_session_service_by_name() {
     agent.close().await.unwrap();
 }
 
+struct BranchNamed(&'static str);
+impl BranchService for BranchNamed {}
+impl PublicService for BranchNamed {}
+
+struct TreeCommandsProbe {
+    scope: SessionScope,
+    send: tokio::sync::mpsc::UnboundedSender<
+        std::sync::Arc<dim_agent_capabilities::timeline_tree::TreeCommands>,
+    >,
+}
+impl TypedPlugin for TreeCommandsProbe {
+    type Deps = (InSession<dim_agent_capabilities::timeline_tree::TreeCommands>,);
+    fn name(&self) -> &str {
+        "test.branch-access"
+    }
+    fn apply<'a>(
+        &'a self,
+        _: &'a rutis::Ctx,
+        (InSession(commands),): Self::Deps,
+    ) -> rutis::BoxFuture<'a, std::result::Result<rutis::Effect, rutis::CordisError>> {
+        Box::pin(async move {
+            self.send.send(commands).unwrap();
+            Ok(rutis::Effect::Done)
+        })
+    }
+}
+impl Capability for TreeCommandsProbe {
+    fn keys(&self) -> KeysOf<Self> {
+        scoped::<Self::Deps, _>(&self.scope)
+    }
+}
+
+struct BranchNamedProvider(BranchScope);
+impl TypedPlugin for BranchNamedProvider {
+    type Deps = ();
+    fn name(&self) -> &str {
+        "test.branch-named"
+    }
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a rutis::Ctx,
+        (): (),
+    ) -> rutis::BoxFuture<'a, std::result::Result<rutis::Effect, rutis::CordisError>> {
+        Box::pin(async move {
+            ctx.provide_as(
+                self.0.key::<BranchNamed>(),
+                std::sync::Arc::new(BranchNamed("typed")),
+            )?;
+            for name in ["one", "two"] {
+                ctx.provide_as(
+                    rutis::TypeKey::keyed_dynamic::<BranchNamed>(name)
+                        .with_instance(self.0.instance),
+                    std::sync::Arc::new(BranchNamed(name)),
+                )?;
+            }
+            Ok(rutis::Effect::Done)
+        })
+    }
+}
+impl Capability for BranchNamedProvider {
+    fn keys(&self) -> KeysOf<Self> {}
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn branch_facade_named_reads_are_isolated_and_follow_provider_reload() {
+    use std::sync::Arc;
+
+    let root = rutis::Ctx::root().unwrap();
+    let mut b = builder();
+    let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
+    b.session_plugin(move |scope| TreeCommandsProbe {
+        scope: *scope,
+        send: send.clone(),
+    });
+    b.timeline_plugin(|scope| BranchNamedProvider(*scope));
+    let agent = b.build_in(&root);
+    let one = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    let tree = receive.recv().await.unwrap();
+    let _two = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    let other_tree = receive.recv().await.unwrap();
+    let child = one
+        .branch(
+            "main".into(),
+            one.sequence("main").unwrap(),
+            BranchOptions {
+                prompt: "child".into(),
+                source: BranchSource::Host {
+                    operation_id: "named-services".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    one.idle(&child).await.unwrap();
+    let main = tree.get("main").unwrap();
+    let child = tree.get(&child).unwrap();
+    let other = other_tree.get("main").unwrap();
+    for branch in [&main, &child, &other] {
+        assert_eq!(branch.service::<BranchNamed>().unwrap().0, "typed");
+        for name in ["one", "two"] {
+            assert_eq!(branch.named_service::<BranchNamed>(name).unwrap().0, name);
+        }
+        assert!(!Arc::ptr_eq(
+            &branch.named_service::<BranchNamed>("one").unwrap(),
+            &branch.named_service::<BranchNamed>("two").unwrap(),
+        ));
+        assert!(matches!(
+            branch.named_service::<BranchNamed>("absent"),
+            Err(AgentError::Reloading(_))
+        ));
+    }
+    let before = main.named_service::<BranchNamed>("one").unwrap();
+    let child_before = child.named_service::<BranchNamed>("one").unwrap();
+    let other_before = other.named_service::<BranchNamed>("one").unwrap();
+    assert!(!Arc::ptr_eq(&before, &child_before));
+    assert!(!Arc::ptr_eq(&before, &other_before));
+
+    let provider = main
+        .diagnostics()
+        .plugins
+        .into_iter()
+        .find(|part| part.name == "test.branch-named")
+        .unwrap()
+        .id;
+    let provider = root.view(provider).unwrap();
+    provider.restart().await.unwrap();
+    let after = main.named_service::<BranchNamed>("one").unwrap();
+    assert!(!Arc::ptr_eq(&before, &after));
+    assert_eq!(after.0, "one");
+    assert!(Arc::ptr_eq(
+        &child_before,
+        &child.named_service::<BranchNamed>("one").unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &other_before,
+        &other.named_service::<BranchNamed>("one").unwrap()
+    ));
+
+    provider.dispose().await.unwrap();
+    assert!(matches!(
+        main.named_service::<BranchNamed>("one"),
+        Err(AgentError::Reloading(_))
+    ));
+    assert!(matches!(
+        main.service::<BranchNamed>(),
+        Err(AgentError::Reloading(_))
+    ));
+    assert!(Arc::ptr_eq(
+        &other_before,
+        &other.named_service::<BranchNamed>("one").unwrap()
+    ));
+    agent.close().await.unwrap();
+    root.shutdown().await.unwrap();
+}
+
 struct AssemblyAnchor(tokio::sync::mpsc::UnboundedSender<rutis::Ctx>);
 impl TypedPlugin for AssemblyAnchor {
     type Deps = ();

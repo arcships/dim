@@ -94,6 +94,13 @@ impl Branch {
     pub fn service<T: ?Sized + BranchService + PublicService>(&self) -> Result<Arc<T>> {
         self.0.port::<T>(std::any::type_name::<T>())
     }
+    /// Reads one named public service from the current branch generation.
+    pub fn named_service<T: ?Sized + BranchService + PublicService>(
+        &self,
+        name: &str,
+    ) -> Result<Arc<T>> {
+        self.0.named_port::<T>(name)
+    }
     /// The branch scope and the capabilities it installed.
     pub fn diagnostics(&self) -> rutis::RuntimeDiagnostics {
         self.0.diagnostics()

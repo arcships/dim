@@ -1,14 +1,14 @@
 # Branch TypeScript binding
 
-Proposed contract for [C5 / #64](https://github.com/arcships/dim/issues/64), the branch portion of
-[#4](https://github.com/arcships/dim/issues/4). The native operations exist; the foreign binding is
-not implemented. The declaration, reference binding and lifecycle choices below require architecture
-confirmation. Implementation also requires full C4 acceptance.
+Contract for [C5 / #64](https://github.com/arcships/dim/issues/64), the branch portion of
+[#4](https://github.com/arcships/dim/issues/4), merged in #100. Implementation is in progress;
+full C4 #180 is merged. The native public named read is implemented and verified through a
+Session/branch flow and marker-bound checks. Foreign binding and real Node acceptance remain pending.
 
 The contract includes the Session-side TreeCommands and branch-owned service reads required by
-the existing Goal design. Its sole proposed native facade addition is a named counterpart of the
-existing typed public-service read (§Named public branch services); that addition requires explicit
-architecture confirmation and is not implemented.
+the existing Goal design. Its sole native facade addition is a named counterpart of the
+existing typed public-service read (§Named public branch services). Runtime owns it and retains
+the same public-service bounds; the remaining bindings below are not delivered APIs yet.
 
 ## Scope and ownership
 
@@ -41,7 +41,7 @@ state; communication with another branch uses its validated input and does not w
 [Goal's accepted design](plugins/Goal.md) is C5's scheduled consumer (Goal §1, §6,
 Appendix A.3 and Appendix G). It requires all of the following, not just an event-to-input example:
 
-| Consumer | Existing requirement | Proposed binding |
+| Consumer | Existing requirement | Binding contract |
 | --- | --- | --- |
 | Goal's Session tool/method part | Resolves branches through `S:TreeCommands` and writes native Branch input. | Declare `treeCommands` as an ordinary injected Session service; use its returned BranchRef. |
 | Goal's branch part | Provides the branch-scoped `goal` service with `get({}) -> {goal, through}`; during unload the read fails `service_reloading`. | Declare `goal` next to the row's setup service and project its public service only after bind/reconstruction completes. |
@@ -108,7 +108,7 @@ shared service call does not transfer a task to a successor row or add a caller-
 
 ### Named public branch services
 
-Propose this generic native read alongside `Branch::service<T>`:
+This generic native read is available alongside `Branch::service<T>`:
 
 ```rust
 pub fn named_service<T: ?Sized + BranchService + PublicService>(
@@ -120,7 +120,7 @@ It uses the existing `TypeKey::keyed_dynamic::<T>(name)` qualified by this branc
 the named-key construction already used by SessionScope. It reads the current provider per call
 and returns the same Reloading error when absent as the existing typed read. There is no raw key,
 context or instance selector in the public API; PublicService is still required. This is the only
-proposed native facade addition. It neither writes state nor changes publication, dispatch,
+native facade addition. It neither writes state nor changes publication, dispatch,
 dependency waiting or lifecycle semantics.
 
 The capabilities language boundary defines one `ForeignBranchService` binding type implementing
@@ -131,7 +131,7 @@ The original BoundRow publishes each such value only after its bind/reconstructi
 No empty fold or not-yet-initialized service is exposed as ready.
 The setup service itself is not projected as a public business service.
 
-TreeCommands' BranchRef resolves `service({name})` with the proposed generic read and returns
+TreeCommands' BranchRef resolves `service({name})` with the generic read and returns
 a bridge record whose method names/modes come from that original declaration. Calls go directly
 to the original service. Its requests, replies and errors retain the owning service's contract;
 there is no second Goal schema or extra reply envelope around its get result. Lookup itself uses
@@ -180,14 +180,14 @@ These owner-sensitive native functions are passed by reference rather than insta
 `ctx.use` services: shared `HostDispatch::invoke(method, args)` has no caller-row `Ctx` argument,
 whereas native `Dispatcher::subscribe` requires the registering context. Capturing it in the
 existing row factory keeps subscription removal on that row without a registry or another plugin.
-This named-reference form is a C5 contract choice requiring confirmation, not an implemented
-general-purpose native service lookup.
+This named-reference form is the C5 contract; its foreign binding remains pending. It does not
+expose general-purpose native service lookup or another row's context.
 
 ### Operations, data and errors
 
 `Reply<T>` uses the existing named-service envelope: `{ok:true,value:T}` or
 `{ok:false,error:{code,message}}`, as Settings and S2 do. A value may contain bridge references.
-The notation below describes this proposed binding, not methods already exported by the runtime.
+The notation below describes the foreign binding, whose methods are not exported yet.
 TreeCommands is the ordinary named service; Dispatcher/Timeline functions belong to bind, and
 BranchRef is a by-reference facade value containing id, input and service functions.
 
@@ -195,7 +195,7 @@ BranchRef is a by-reference facade value containing id, input and service functi
 | --- | --- | --- | --- |
 | `dispatcher.subscribe(keys, handler)` | sync | String key array and callback reference; null value. No separate unsubscribe method. | `Dispatcher::subscribe(originalCtx, partName, keys, handler)` |
 | `BranchRef.input(data)` | sync | Native `InputMessageData`; committed `AgentEvent` value. | Native Branch facade |
-| `BranchRef.service({name})` | sync | Exact public service name; a record of that owner's method references. | Proposed `Branch::named_service<ForeignBranchService>` |
+| `BranchRef.service({name})` | sync | Exact public service name; a record of that owner's method references. | `Branch::named_service<ForeignBranchService>` |
 | `treeCommands.get({id})` | sync | Branch id; `BranchRef` value. | `TreeCommands::get` |
 | `treeCommands.list({})` | sync | Empty request object; native `TimelineInfo[]`. | `TreeCommands::list` |
 | `treeCommands.branch({parent, at, options}, signal?)` | async | Native parent id, cutoff and `BranchOptions`, optional bridge AbortSignal; `BranchRef` value. | `TreeCommands::branch` with existing admission cancellation |
@@ -275,12 +275,12 @@ hide that outcome with retries, a replacement branch or another readiness phase.
 These are native flow constraints. The opening/activation cycle is a control-flow inference from
 the existing source, not a reproduced C5 runtime failure.
 
-## Confirmation and implementation gates
+## Implementation and acceptance gates
 
 | Gate | Required result |
 | --- | --- |
-| Architecture confirmation | Confirm the complete consumer paths, declaration-based placement, original-row bind, named references and contracts together, including the single proposed generic public facade read. This document does not make them accepted APIs. |
-| C4 | Complete full #63/#168 implementation review and merge before C5 implementation. |
+| Contract | Follow the complete #100 contract: consumer paths, declaration-based placement, original-row bind, named references and the single generic public facade read. No additional native capability is part of C5. |
+| C4 | #180 is merged after implementation review; #63/#168 are closed. |
 | Original-row cleanup | Verify existing effect ordering closes admission, settles accepted callbacks/tasks and removes subscriptions before foreign unload. Do not return success merely because a reference was cancelled. |
 | Startup and recovery | Bind may register subscriptions and reconstruct local state. Background business work starts only after activated=true; closing ends it. During a row reload, its own reconstruction/live-consumption sequence uses a fixed committed cutoff and local cursor, as native owners do. No shared replay queue or lock is introduced. |
 | Acceptance | Implement the confirmed binding and pass the real cross-language flows below. Documentation CI is not this acceptance. |
@@ -316,16 +316,17 @@ Extend the nearest public flow tests rather than testing private binding helpers
 
 ## Impact and rule check
 
-Current deliverable: the proposed binding contract and its documentation index entry. No runtime,
-dependency, event format, persistence format or generated graph changes are implemented.
+Current implementation: the native public named read, native Session/branch flow and compile-fail
+marker coverage. TreeCommands' foreign binding, original-row projection and Node flows remain
+pending. No dependency, event format, persistence format or generated graph change is included yet.
 
-Proposed ownership: App Server's `session_typescript.rs` owns classification, original-row
+Ownership: App Server's `session_typescript.rs` owns classification, original-row
 projection and scoped binding; `lib.rs` inserts rows in the existing branch group and catalogs the
 named services. The capabilities crate's TimelineTree language boundary owns TreeCommands and
 ForeignBranchService references. Both crates already depend on bridge. Runtime owns and verifies
 the generic named public read; it gains no bridge dependency or Goal-specific type/handling.
 Business state and work stay in the TypeScript row. Existing native types/method semantics remain;
-the one proposed public read signature is identified above.
+the only new public read signature is identified above.
 
 | Rule | Application |
 | --- | --- |
@@ -335,20 +336,20 @@ the one proposed public read signature is identified above.
 | §4 rule 4 | Native Timeline/Dispatcher semantics remain independent of plugin business behavior. |
 | §4 rule 5 | Existing batches and per-event order are preserved; no bridge batch acknowledgement is invented. |
 | §4 rule 6 | Model context changes only through adopted inputs and tool results. |
-| §4 rule 7 | Proposed named references call existing public services; no private state or another branch's Dispatcher. |
-| §4 rule 8 | Reuse current assembly/Timeline/Dispatcher/rutis. The proposed named public read comes from #4/#64; its implementation/verification would stay within runtime. Rationale and scope are below. |
+| §4 rule 7 | Named references call existing public services; no private state or another branch's Dispatcher. |
+| §4 rule 8 | Reuse current assembly/Timeline/Dispatcher/rutis. The named public read comes from #4/#64; runtime owns its implementation and marker checks, with native Session/branch flow coverage in integration tests. Rationale and scope are below. |
 | §4 rule 9 | No event type, notification fact or persistence format is added. |
 | §1 | Business state and tasks belong to the branch part; App Server owns assembly and foreign transport. |
 | ADR 002 D1 | Branch behavior follows the branch lifetime. Session and process state stay with their owners. |
 | ADR 002 D2 | No forwarding, subscription aggregation or registration Capability. Bind on the original row. |
 | ADR 002 D3 | Dependencies point to this branch or enclosing scopes; native core does not depend on an optional foreign part. |
 | ADR 002 D4 | Structural placement uses loader rows; business settings do not change assembly. |
-| ADR 002 D5 | The proposed declaration, method modes, native payloads, error data and reference cancellation are language-neutral and require confirmation before implementation. |
+| ADR 002 D5 | Declaration, method modes, native payloads, error data and reference cancellation are language-neutral; foreign binding follows this contract. |
 
 ## Requirements raised to mechanism owners
 
-No new issue or independent mechanism proposal. The following requirement stays in the existing
-#4/#64 runtime-services-by-name task and needs architecture confirmation before implementation.
+No new issue or independent mechanism proposal. The following requirement belongs to the existing
+#4/#64 runtime-services-by-name task and the merged #100 contract.
 
 | Item | Requirement and evidence |
 | --- | --- |
@@ -360,7 +361,7 @@ No new issue or independent mechanism proposal. The following requirement stays 
 | Owner and verification | Runtime implements and verifies the generic public read with native flow/marker-bound coverage. C5's capabilities/App Server boundary projects foreign services and verifies the real Goal-shaped Session-to-branch flow. Both remain in #64; no new feature request. |
 
 All other bindings use the existing scoped factories/catalog keys, subscriptions, history reads,
-bridge references and effects. This proposal does not authorize another facade or core extension.
+bridge references and effects. This contract does not authorize another facade or core extension.
 
 ## Source references
 

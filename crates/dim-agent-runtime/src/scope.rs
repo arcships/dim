@@ -40,6 +40,20 @@ pub trait BranchService: Send + Sync + 'static {}
 /// }
 /// ```
 ///
+/// ```compile_fail
+/// use dim_agent_runtime::{Branch, Timeline};
+/// fn invalid(branch: &Branch) {
+///     let _ = branch.named_service::<Timeline>("timeline");
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use dim_agent_runtime::{Branch, StateCell};
+/// fn invalid(branch: &Branch) {
+///     let _ = branch.named_service::<StateCell<String>>("state");
+/// }
+/// ```
+///
 /// A branch facade reads history but cannot write arbitrary events:
 ///
 /// ```compile_fail

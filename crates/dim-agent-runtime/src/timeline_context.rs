@@ -265,6 +265,13 @@ impl TimelineContext {
             .get_as::<T>(self.scope.key::<T>())
             .ok_or_else(|| AgentError::Reloading(name.into()))
     }
+    pub(crate) fn named_port<T: ?Sized + BranchService>(&self, name: &str) -> Result<Arc<T>> {
+        self.ctx
+            .get_as::<T>(
+                rutis::TypeKey::keyed_dynamic::<T>(name).with_instance(self.scope.instance),
+            )
+            .ok_or_else(|| AgentError::Reloading(format!("{} {name}", std::any::type_name::<T>())))
+    }
     /// The branch scope and the capabilities it installed.
     pub(crate) fn diagnostics(&self) -> rutis::RuntimeDiagnostics {
         let scope = self.view.id;
