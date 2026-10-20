@@ -12,7 +12,7 @@
 
 **管理方法**是关于宿主而不是某个 Session 的客户端 RPC 方法：`account.*`、`provider.*`、`mcp.*`、`skills.*`，以及新进程插件的方法（设置方法是后续工作，Settings 目前不发布任何方法）。`daemon.shutdown` 仍是 Rpc 内建方法，同样从不提供给已配对设备。#14 之前，Rpc 直接注入这些服务（[connection.rs](../../../../crates/dim-app-server/src/connection.rs) 中的 `ProductServices` 与 `ExecutionServices`）；#14 删除了它们，Rpc 现在通过 `managementMethods` 按调用查找这些方法，不依赖其提供方。只有进程插件提供管理方法，已配对的远程设备从不获得它们。Session 方法没有级别；唯一的区分是 `sessionMethods`（经 Session 分发）与 `managementMethods`。
 
-提议（P3，随 RemoteGateway；未实现）：Rpc 依据连接的 `ConnectionEntry {name, deviceId}` 决定为它服务什么：本地连接获得 Session 方法和管理方法，带 `deviceId` 的连接（经 RemoteGateway 的已配对设备）从不获得管理方法，导出的 rutis 链接只在导出时获得管理方法。目前 Rpc 按现有的传输 profile 规则（A.3）为每个连接服务。没有注册表、没有端口，也没有 Management 插件。提供方是只在启用时安装的可选插件。Rpc 在每次调用时查找 `managementMethods` 提供方，不依赖它们，因此未启用、Pending、Failed 或正在重载的提供方只影响自己的命名空间（§3.2）。ToolRegistry 同样不依赖 `toolContribution` 提供方：接入哪些提供方在分支初始化首次读取 ToolRegistry 时决定，之后才激活的提供方在下次 Session 重载时接入（A.5）。
+提议（P3，随 RemoteGateway；未实现）：Rpc 依据连接的 `ConnectionEntry {name, deviceId}` 决定为它服务什么：本地连接获得 Session 方法和管理方法，带 `deviceId` 的连接（经 RemoteGateway 的已配对设备）从不获得管理方法，导出的 rutis 链接只在导出时获得管理方法。目前 Rpc 按现有的传输 profile 规则（A.3）为每个连接服务。没有注册表、没有端口，也没有 Management 插件。提供方是只在启用时安装的可选插件。Rpc 在每次调用时查找 `managementMethods` 提供方，不依赖它们，因此未启用、Pending、Failed 或正在重载的提供方只影响自己的命名空间（§3.2）。ToolRegistry 同样不依赖 `toolContribution` 提供方：接入哪些提供方在分支初始化首次读取 ToolRegistry 时决定，之后才激活的提供方在下次 Session 重载时接入（A.5）。#241 提议（A.5.1）：工具表跟随提供方代次，之后才激活的提供方无需重载即被采用。
 
 在工具调用或输入提交前对其作出处理不是本合同的服务。Approval 和 Session 输入路径不变；InputQueue 的撤回是其所有者的变更（[总览附录 B](../overview.md#附录-b-现有插件的补充)）。
 
@@ -120,7 +120,7 @@ sequenceDiagram
 | 在带 `deviceId` 的连接上调用管理方法或 `daemon.shutdown` | — | `unknown_method` | Rpc |
 | 两个提供方声明同一命名空间或工具名 | 装配 | 装配失败；key 在每个作用域内唯一 | 装配 |
 | Session 命名空间与已配置的管理命名空间重叠 | 装配 | 装配失败（A.1） | 装配 |
-| 工具贡献提供方在 turn 期间重载 | call < reload | 在途调用失败；该提供方的工具在 Session 下次重载前不可用；ToolRegistry 与 Loop 照常运行（D3） | ToolRegistry |
+| 工具贡献提供方在 turn 期间重载 | call < reload | 在途调用失败；该提供方的工具在 Session 下次重载前不可用（A.5.1 提议：直到其下一代 Active）；ToolRegistry 与 Loop 照常运行（D3） | ToolRegistry |
 
 完整表格：[附录 B](#附录-b-完整冲突表)。
 
@@ -384,6 +384,128 @@ ToolBinding 沿既有 Prompt / BranchOpening 流程完成匹配与必要的采�
 ```
 
 取消：turn 中断时针对 `callId` 发送取消请求（或丢弃调用）；ToolExecutor 把该调用按中断结算。提供方错误以 `isError: true` 的 `ToolResult` 返回。声明可以取决于该 Session 的配置。ToolRegistry 在分支初始化首次读取注册表时读取一次；之后的提供方代次在下次 Session 重载时接入，届时读取其声明。
+
+### A.5.1 提议：工具表跟随提供方代次（#241）
+
+状态：为 [#241](https://github.com/arcships/dim/issues/241) 提议；未实现。在被接受之前，上面的 A.5、[Session TypeScript](../../../design/session-typescript.md#tools) 与 [进程 TypeScript §5.1](../../../design/process-typescript.md#51-p6p7-access-through-declared-feature-dependencies) 仍是已实现的合同。
+
+**问题。** A.5 只在分支初始化首次读取 ToolRegistry 时对可选 `toolContribution` 提供方取样一次。稍晚一点才 Active 的提供方（即使早于 Session 发布）在这次 Session 装载期间一直缺席；退出后又回来的提供方（#237 接受的 C3 代次可用性下的所有者重载）要等 Session 重载才可用，而 Session 没有单独的重载路径。可选行不能阻塞就绪（ADR 002 D3、#132），所以任何等待都消除不了这个竞争：#223 在 CI 中用 Goal 复现过，`goal_update` 在那个 Session 中从未被声明。
+
+**决定。** 启动、重载与退出遵循同一条规则：
+
+> Session 的工具表是提供方当前处于 Active 的已配置工具。每当某个提供方代次进入或离开 Active，ToolRegistry 重新求值。每个分支经 Prompt 把每次变化采用为一条 `context/configured` 事实，与现在采用动态工具来源完全相同。每个模型请求在绑定时按其前缀采用的工具部分固定。
+
+Session 生命周期中没有哪个时点固定工具表。分支初始化、就绪、发布和首个请求都不特殊：首次读取只是规则的第一次求值，唯一被固定的是单个请求的声明与处理器，而这正是现有 ToolBinding 快照已经做的事。
+
+#### 备选方案
+
+| 固定时点 | 不采用的原因 |
+| --- | --- |
+| 分支初始化（A.5 现状，测试等待该行） | 生产环境的竞争仍在；退出的提供方需要一次无人能触发的 Session 重载。 |
+| 就绪（可选行阻塞就绪直到 Active 或 Failed） | 违反 ADR 002 D3 与 #132：因缺失依赖而 Pending 的行会阻塞原生使用或超时。也不覆盖之后的重载与退出。 |
+| 发布（发布时再取样一次） | 仍是一次性快照：发布后才启动或重载的提供方同样需要重载，还为工具问题增加了一个 core 阶段。 |
+| 首个模型请求（延迟取样） | 只是移动了竞争：首个请求的工具取决于调度，之后的代次仍需重载。 |
+| 每个请求直接读注册表，不采用 | 模型可见的声明会在没有 Timeline 事实的情况下变化（§4 规则 6、AGENTS.md 规则 10）；历史回放以及 ToolBinding 对来源保证的声明与处理器配对都会被破坏。 |
+| 把每个贡献变成带版本的 `SessionToolSource` 集合 | 可行，但会改变声明顺序（提示缓存抖动），把每个固定工具加入 `tool_sources`，并重复按名绑定已经提供的东西：贡献的声明由结构装配与 Session 不可变配置决定，同一工具的各代声明相同。 |
+| **跟随提供方代次，经既有路径采用（推荐）** | 用一条规则消除启动与重载的竞争；复用 ToolRegistry 的 `tools.changed`、ToolBinding 采用、Prompt 串行队列与请求快照；没有任何等待。 |
+
+#### ToolRegistry
+
+| 项 | 规则 |
+| --- | --- |
+| 宿主工具 | 不变：每代注册表固定（`ToolHost` 是真实依赖）。 |
+| 已配置贡献 | 对 `SessionConfig.tools` 中每个已登记的贡献名，执行首次读取已经在做的查找：原生 `ToolContribution` 键，否则外部 `toolContribution:<name>` 服务及其行的代次令牌。找到即表示该提供方代次 Active。 |
+| 触发 | 注册表在首次读取前订阅现有 rutis `FiberStatusChanged`（进程总线，App Server 的 MCP 可用性跟随者在 [connection/mcp.rs](../../../../crates/dim-app-server/src/connection/mcp.rs) 中就是这样做的），在每次进入或离开 Active 的迁移时重新求值。绑定只在其提供方 Active 后可见、离开 Active 时不再可见，因此这些迁移覆盖了每次变化。贡献方不通知注册表，也不注入它。 |
+| 求值 | 与现有来源刷新共用串行锁（`refreshing`）。逐个名称比较找到的代次标识（原生 `ToolContribution` 的 `Arc`，或外部行的代次令牌）与已持有的标识。相同：不做任何事。新代次：读取一次声明（既有的同步原生读取或外部解码）并持有。未找到：该工具离开声明。格式错误的外部声明只省略该工具，并记录既有的 `invalid-declaration` 诊断。Session 范围内不变：名称唯一、与宿主工具冲突、`SessionConfig.tools` 启用与顺序。 |
+| 声明 | `definitions()`/`snapshot()` 列出宿主工具与当前找到的贡献（按 `SessionConfig.tools` 顺序），之后照旧是来源工具。 |
+| 按名绑定 | `fixed(name)` 返回该名称最后接入的代次，无论当前是否找到。前缀仍声明刚退出的工具的请求因此绑定到已退出的处理器，调用以工具错误被拒（既有的退出代次保护），而不是让 turn 失败。更新的代次会替换它。 |
+| 通知 | 声明集合变化时注册表发出既有的 `tools.changed`；没有变化的求值不发任何通知。已配置贡献在首次求值时缺席、或每次离开时，记录一次 `unavailable:<name>`；之后仍缺席的求值不再重复记录。 |
+
+#### 分支与请求
+
+ToolBinding 不变。它在 `apply` 与 BranchOpening 中的 `reconcile` 已经把完整声明列表（宿主、固定与来源工具）与前缀已采用的工具部分比较；它的 `tools.changed` 任务在 `activated()` 之后运行并保留更早的唤醒，已经会经 `Prompt::adopt_tools` 采用任何差异。Loop 的 `bind` 按前缀固定每个请求；ToolExecutor 只读该快照。没有已采用模型配置的分支保留既有的 `bind_current` 路径，每个请求声明注册表当前的表。
+
+```text
+provider row Active ──FiberStatusChanged──> ToolRegistry re-evaluates
+    ──tools.changed──> each branch's ToolBinding (after activated())
+    ──Prompt::adopt_tools──> context/configured {tools}
+Loop.start_preparation(through) ──> bind(prefix tool part) ──> request snapshot
+```
+
+#### 时序
+
+| 场景 | 顺序 | 结果 |
+| --- | --- | --- |
+| 提供方在首次读取前 Active | Active < 首次读取 | 进入初始表；创建或恢复后的首个请求声明它（A.5 验收不变）。 |
+| 提供方在首次读取后 Active（发布前或发布后） | 首次读取 < Active | 在分支 `activated()` 之后采用；前缀包含该采用事实的每个请求都声明它。更早准备的请求不声明。不需要 Session 重载。 |
+| 提供方 Pending、Failed 或未启用 | — | 从不声明；Session 不受影响（D3）。未启用的行仍是已知名称，与现在相同。 |
+| 提供方退出（行卸载、所有者重载传播到它） | 退出 < 采用 | 下一次采用移除该工具。在采用之前绑定的请求得到已退出的处理器：调用以退出代次错误失败。在途调用照旧经其代次结算。 |
+| 替换代次 Active | 退出 < Active | 重新接入并采用；之后的请求到达新代次。已接受的工作从不转移给它。 |
+| 两次迁移相距很近 | — | 每次求值在刷新锁下读当前状态；最后一次为准；只有声明不同时才写采用事实。 |
+| 注册表、`ToolHost` 或 Prompt 重载 | — | 不变（[工具贡献](../../../architecture/rust-agent/tool-contributions.md) §7.6）；新注册表从当前状态开始。 |
+| 恢复 | — | 与创建相同：首次求值看到当时 Active 的提供方，之后的代次按同一规则接入。 |
+
+#### 模型与用户看到什么
+
+| 情形 | 模型 | 用户与恢复 |
+| --- | --- | --- |
+| 工具缺席 | 不被声明，模型不会依赖它。按记忆的名称调用得到既有的 `Unknown tool: <name>` 工具错误。 | 提供方行的既有状态与诊断（`tool.attach`）说明原因。修复或启用提供方；一旦 Active，每个已装载 Session 的分支都会采用该工具。不需要 Session 重载。 |
+| 工具出现或消失 | 声明在请求边界经 `context/configured` 事实变化，与 MCP 服务器连接或断开走同一路径。不额外注入提示输入。 | 历史中可见配置变化。 |
+| 调用到达已退出的代次 | 工具错误结果；文本从“直到 Session 重载”改为：`tool provider generation is unloading; this tool is unavailable until its provider is active again, and it will be declared again then. Retrying now will not help.` | 恢复方式同上。 |
+| 调用发出后代次退出 | `tool provider generation is unloading; this call may already have taken effect. This tool is unavailable until its provider is active again. Check the operation's state before repeating it.` | 不变：已接受的工作不会撤销或重放。 |
+
+对 Goal（#69）而言，`goal_update` 从 Goal 的采用事实之后的首个请求起被声明；目标不再取决于 Goal 是否赢了与分支初始化的竞争。
+
+#### 影响
+
+| 范围 | 变化 |
+| --- | --- |
+| ToolRegistry（[tool_registry.rs](../../../../crates/dim-agent-capabilities/src/tool_registry.rs)） | `LazyLock` 固定表改为宿主工具加上已持有的贡献代次，由 `FiberStatusChanged` 监听器重新求值；上面两条退出代次文本。 |
+| ToolBinding、Prompt、Loop、ToolExecutor | 无。 |
+| 持久化 | 无：`context/configured` 已携带完整工具部分。 |
+| 实现时需更新的文档 | A.5、§4、附录 F、[工具贡献](../../../architecture/rust-agent/tool-contributions.md) §1–§6、[Session TypeScript](../../../design/session-typescript.md#tools)、[进程 TypeScript §5.1](../../../design/process-typescript.md#51-p6p7-access-through-declared-feature-dependencies)（可用性代价与恢复）、Scheduler/Workflow 的可用性行。 |
+| 测试 | 断言“之后才 Active 的工具在重载前一直省略”和“旧取样工具持续拒绝”的流程改为下面的验收；#223 的夹具等待仍然有效。 |
+
+#### 验收
+
+1. 分支初始化后（包括发布前）才 Active 的行，其工具无需 Session 重载，就在前缀包含采用事实的首个请求中被声明，并经 ToolExecutor 执行。
+2. 行卸载后，之后的请求不再声明该工具；在该采用之前绑定的请求得到退出代次工具错误，而不是 turn 失败。
+3. 所有者重载传播到 Session 工具行后，已有 Session 在之后的请求中到达替换代次；旧代次上已接受的调用经旧代次结算。
+4. Pending、Failed 或未启用的行从不延迟创建、恢复或原生工具使用；进程中其他地方的 fiber 迁移不会写配置事实。
+5. 创建与恢复后立即提交的首个请求仍声明分支初始化时已 Active 的工具。
+
+#### 消融
+
+- 没有就绪等待、发布钩子、重试循环或单个 Session 的重载命令：变化通知与采用路径已经存在。
+- 没有新事件、服务、端口或持久化字段；ToolBinding 与 Prompt 不变。
+- 贡献方不发通知：rutis 已经报告改变可见性的迁移。不需要再订阅 `ServiceChanged`，因为贡献方在 `apply` 中为整个代次提供工具。
+- 求值先比较代次标识再读取声明，因此无关的 fiber 迁移只花几次按键查找，从不调用外部 `declaration()`。
+- 保留每个名称最后接入的代次：正是它让与退出竞争的请求以工具错误结束而不是 turn 失败；现在的固定表本来就保留其代次。
+- 把贡献改为带版本的来源已在纸面上尝试并移除（见备选方案）。
+
+#### 规则检查
+
+| 规则 | 应用 |
+| --- | --- |
+| §4 规则 1 | ToolRegistry 拥有自己的表；分支经 Prompt 既有采用修改自己的配置。提供方不写任何东西。 |
+| §4 规则 2 | 交接不变；已绑定的请求保留快照，已接受的调用留在其代次。 |
+| §4 规则 3 | 没有 before 回调。 |
+| §4 规则 4 | 注册表响应通用的 fiber 迁移，不点名任何提供方。 |
+| §4 规则 5 | 没有新批次；采用事实是 Prompt 既有的单次写入。 |
+| §4 规则 6 | 声明只经已采用的 `context/configured` 事实进入模型。 |
+| §4 规则 7 | 注册表按公开键读取服务，不读提供方状态。 |
+| §4 规则 8 | 使用现有 rutis 事件与按键读取；基础设施不变。 |
+| §4 规则 9 | 工具表是 Session 内存状态；只有后续请求要用的分支采用事实进入 Timeline。 |
+| §1 | App Server 与 core 不变；ToolRegistry 仍是唯一的收集者。 |
+| ADR 002 D1 | 作用域不变：Session 级注册表，分支级绑定。 |
+| ADR 002 D2 | 没有接线模块或注册表服务。 |
+| ADR 002 D3 | 注册表仍不依赖可选提供方；它改为在每次迁移时接入 Active 的提供方，而不只在自身装载时，D3 本就允许。 |
+| ADR 002 D4 | 配置不变。 |
+| ADR 002 D5 | 语言中立的 `toolContribution` 合同不变。 |
+
+#### 向机制所有者提出的需求
+
+无。`FiberStatusChanged`、按键读取与 Prompt 采用都已存在；不向 rutis 提任何需求。
 
 ## 附录 B. 完整冲突表
 

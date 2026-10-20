@@ -176,6 +176,10 @@ next registry/Session reload, even if it starts before publication. ToolBinding 
 the fixed table through Prompt/BranchOpening before accepting input, and each request keeps
 its selected handlers. A new generation is not substituted into an old request.
 
+Proposed for [#241](https://github.com/arcships/dim/issues/241), not implemented: the table
+follows provider generations ([Session boundary A.5.1](contracts/session-boundary.md#a51-proposed-the-tool-table-follows-provider-generations-241)),
+so a provider Active after the sample, or a replacement generation, is adopted without a reload.
+
 ## Session methods
 
 `sessionMethods:<namespace>` uses C1's neutral `describe` and `call` service. C4 implements the

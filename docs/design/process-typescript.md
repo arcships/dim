@@ -327,7 +327,10 @@ its dependent Session tool rows, bringing the availability cost below to every
 existing Session.
 
 **Availability cost.** Existing C3 tables keep the provider generation sampled
-at branch initialization. C4 rejects calls through a handler whose row has retired; an existing
+at branch initialization. (Proposed for [#241](https://github.com/arcships/dim/issues/241), not implemented:
+[Session boundary A.5.1](contracts/session-boundary.md#a51-proposed-the-tool-table-follows-provider-generations-241)
+adopts the replacement generation in existing Sessions and changes the two texts below;
+the cost and recovery here stand until it is accepted.) C4 rejects calls through a handler whose row has retired; an existing
 Session's optional tool can therefore remain unavailable after an owner reload
 until the Session is reloaded. A new Session samples the current active provider.
 The binding accepts that C3 load behavior. It adds no hot rebinding or automatic

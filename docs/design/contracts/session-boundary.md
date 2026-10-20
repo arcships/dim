@@ -12,7 +12,7 @@ This contract defines three named services in the language-neutral form of ADR 0
 
 **Management methods** are client RPC methods about the host rather than a Session: `account.*`, `provider.*`, `mcp.*` and `skills.*`, plus the methods of new process plugins (settings methods are future work; Settings publishes none yet). `daemon.shutdown` stays an Rpc built-in and is likewise never served to paired devices. Before #14, Rpc injected their services directly (`ProductServices` and `ExecutionServices` in [connection.rs](../../../crates/dim-app-server/src/connection.rs)); #14 removed them, and Rpc now looks the methods up through `managementMethods`, per call and without a dependency on their providers. Only process plugins provide them, and they are never served to paired remote devices. Session methods have no level; the only split is `sessionMethods` (dispatched through a Session) versus `managementMethods`.
 
-Proposed (P3, with RemoteGateway; not implemented): Rpc decides what a connection is served from its `ConnectionEntry {name, deviceId}`: a local connection gets Session and management methods, a connection with a `deviceId` (a paired device through RemoteGateway) never gets management methods, and an exported rutis link gets management methods only when exported. Today Rpc serves every connection by the existing transport profile rules (A.3). There is no registry, no port and no Management plugin. Providers are optional plugins installed only when enabled. Rpc looks up a `managementMethods` provider on each call and does not depend on it, so a provider that is disabled, Pending, Failed or reloading affects only its own namespace (§3.2). ToolRegistry does not depend on `toolContribution` providers either: which providers it attaches is decided on the first ToolRegistry read during branch initialization, and a provider that becomes active later is attached on the next Session reload (A.5).
+Proposed (P3, with RemoteGateway; not implemented): Rpc decides what a connection is served from its `ConnectionEntry {name, deviceId}`: a local connection gets Session and management methods, a connection with a `deviceId` (a paired device through RemoteGateway) never gets management methods, and an exported rutis link gets management methods only when exported. Today Rpc serves every connection by the existing transport profile rules (A.3). There is no registry, no port and no Management plugin. Providers are optional plugins installed only when enabled. Rpc looks up a `managementMethods` provider on each call and does not depend on it, so a provider that is disabled, Pending, Failed or reloading affects only its own namespace (§3.2). ToolRegistry does not depend on `toolContribution` providers either: which providers it attaches is decided on the first ToolRegistry read during branch initialization, and a provider that becomes active later is attached on the next Session reload (A.5). Proposed for #241 (A.5.1): the table follows provider generations, so a later provider is adopted without a reload.
 
 Acting on a tool call or an input before it is committed is not a service of this contract. Approval and the Session input path are unchanged; InputQueue's withdrawal is its owner's change ([overview Appendix B](../overview.md#appendix-b-supplements-to-existing-plugins)).
 
@@ -120,7 +120,7 @@ Assembly builds the fixed configured `(namespace, row)` pairs in [lib.rs](../../
 | Management method or `daemon.shutdown` on a connection with a `deviceId` | — | `unknown_method` | Rpc |
 | Two providers claim one namespace or tool name | assembly | Assembly fails; keys are unique per scope | Assembly |
 | A Session namespace overlaps a configured management namespace | assembly | Assembly fails (A.1) | Assembly |
-| Tool-contribution provider reloads during a turn | call < reload | The in-flight call fails; that provider's tools are absent until the Session's next reload; ToolRegistry and Loop keep running (D3) | ToolRegistry |
+| Tool-contribution provider reloads during a turn | call < reload | The in-flight call fails; that provider's tools are absent until the Session's next reload (proposed in A.5.1: until its next generation is Active); ToolRegistry and Loop keep running (D3) | ToolRegistry |
 
 Full table: [Appendix B](#appendix-b-full-conflict-table).
 
@@ -385,6 +385,128 @@ ToolBinding reconciles the table through the existing Prompt / BranchOpening flo
 ```
 
 Cancellation: turn interrupt sends a cancel request for `callId` (or drops the call); ToolExecutor settles the call as interrupted. A provider error is returned as `ToolResult` with `isError: true`. The declaration may depend on the Session's configuration. ToolRegistry reads it once, on the first ToolRegistry read during branch initialization; a later provider generation is attached, and its declaration read, on the next Session reload.
+
+### A.5.1 Proposed: the tool table follows provider generations (#241)
+
+Status: Proposed for [#241](https://github.com/arcships/dim/issues/241); not implemented. Until it is accepted, A.5 above, [session TypeScript](../session-typescript.md#tools) and [process TypeScript §5.1](../process-typescript.md#51-p6p7-access-through-declared-feature-dependencies) remain the implemented contract.
+
+**Problem.** A.5 samples optional `toolContribution` providers once, at the first ToolRegistry read during branch initialization. A provider that becomes Active a moment later, even before Session publication, is absent for the life of that Session load; one that retires and comes back (an owner reload under the C3 generation availability accepted in #237) stays unavailable until the Session is reloaded, and there is no per-Session reload path. Optional rows must not gate readiness (ADR 002 D3, #132), so no wait can close the race: #223 hit it in CI with Goal, and `goal_update` was never declared in that Session.
+
+**Decision.** One rule for startup, reload and retirement:
+
+> A Session's tool table is the configured tools whose providers are Active now. ToolRegistry re-evaluates it whenever a provider generation enters or leaves Active. Each branch adopts every change as a `context/configured` fact through Prompt, exactly as it already adopts dynamic tool sources. Each model request is fixed at bind time from the tool part its own prefix adopted.
+
+No point in the Session's lifetime fixes the table. Branch initialization, readiness, publication and the first request are not special: the first read is only the first evaluation of the rule, and the only thing ever fixed is one request's declarations and handlers, which the existing ToolBinding snapshot already fixes.
+
+#### Alternatives
+
+| Fixing point | Why not |
+| --- | --- |
+| Branch initialization (A.5 today, tests wait for the row) | The production race stays; a retired provider needs a Session reload nobody can trigger. |
+| Readiness (optional rows gate readiness until Active or Failed) | Violates ADR 002 D3 and #132: a row Pending on a missing dependency would block or time out native use. Does not cover later reload or retirement. |
+| Publication (sample again at publication) | Still a one-shot snapshot: providers that start or reload after publication need the same reload, and it adds a core phase for a tool concern. |
+| First model request (lazy sample) | Moves the race instead of removing it; the first request's tools depend on scheduling, and later generations still need a reload. |
+| Each request reads the registry directly, no adoption | The model-visible declaration would change without a Timeline fact (§4 rule 6, AGENTS.md rule 10); history replay and the declaration/handler pairing ToolBinding guarantees for sources would break. |
+| Turn every contribution into a `SessionToolSource` set with versions | Works, but changes declaration order (prompt cache churn), adds every fixed tool to `tool_sources`, and duplicates what by-name binding already gives: a contribution's declaration is fixed by structural assembly and the Session's immutable configuration, so generations of one tool declare the same tool. |
+| **Follow provider generations; adopt through the existing path (recommended)** | Removes the race for startup and reload with one rule; reuses ToolRegistry's `tools.changed`, ToolBinding adoption, Prompt's serial queue and request snapshots; nothing waits. |
+
+#### ToolRegistry
+
+| Item | Rule |
+| --- | --- |
+| Host tools | Unchanged: fixed per registry generation (`ToolHost` is a real dependency). |
+| Configured contributions | For each name in `SessionConfig.tools` that is a registered contribution, the registry performs the lookup the first read already performs: the native `ToolContribution` key, else the foreign `toolContribution:<name>` service with its row's generation token. Found means the provider generation is Active. |
+| Trigger | The registry subscribes to the existing rutis `FiberStatusChanged` (process bus, as App Server's MCP availability follower does in [connection/mcp.rs](../../../crates/dim-app-server/src/connection/mcp.rs)) before its first read, and re-evaluates on every transition into or out of Active. A binding becomes visible only once its provider is Active and stops being visible when it leaves Active, so these transitions bracket every change. No contributor notifies the registry and no contributor injects it. |
+| Evaluation | Serialized with the existing source refresh (`refreshing`). For each name, compare the found generation's identity (the native `ToolContribution` `Arc`, or the foreign row's generation token) with the one held. Same: nothing. New: read its declaration once (the existing synchronous native read or foreign decode) and hold it. Not found: the tool leaves the declarations. A malformed foreign declaration omits only that tool with the existing `invalid-declaration` diagnostic. Unchanged Session-wide: name uniqueness, host collisions, `SessionConfig.tools` enablement and order. |
+| Declarations | `definitions()`/`snapshot()` list host tools and the contributions currently found, in `SessionConfig.tools` order, then source tools as today. |
+| Binding by name | `fixed(name)` returns the last generation attached for that name, found or not. A request whose prefix still declares a tool that just retired therefore binds to the retired handler, which rejects the call as a tool error (the existing retired-generation guard) instead of failing the turn. A newer generation replaces it. |
+| Notification | When the declared set changes, the registry emits the existing `tools.changed`; a re-evaluation that changes nothing emits nothing. `unavailable:<name>` is recorded for a configured contribution absent at the first evaluation and each time one leaves, not on every evaluation that still finds it absent. |
+
+#### Branch and request
+
+ToolBinding is unchanged. Its `reconcile` in `apply` and BranchOpening already compares the full declaration list (host, fixed and source tools) with the prefix's adopted tool part; its `tools.changed` task, which runs after `activated()` and keeps an earlier wake-up, already adopts any difference through `Prompt::adopt_tools`. Loop's `bind` fixes each request from its prefix; ToolExecutor reads only that snapshot. A branch without an adopted model configuration keeps the existing `bind_current` path, which declares the registry's current table per request.
+
+```text
+provider row Active ──FiberStatusChanged──> ToolRegistry re-evaluates
+    ──tools.changed──> each branch's ToolBinding (after activated())
+    ──Prompt::adopt_tools──> context/configured {tools}
+Loop.start_preparation(through) ──> bind(prefix tool part) ──> request snapshot
+```
+
+#### Timing
+
+| Scenario | Order | Outcome |
+| --- | --- | --- |
+| Provider Active before the first read | Active < first read | In the initial table; the first request after create or restore declares it (A.5 acceptance unchanged). |
+| Provider Active after the first read, before or after publication | first read < Active | Adopted after the branch's `activated()`; every request whose prefix contains the adoption fact declares it. A request prepared earlier does not. No Session reload. |
+| Provider Pending, Failed or disabled | — | Never declared; the Session is unaffected (D3). Disabled rows remain known names, as today. |
+| Provider retires (row unload, owner reload propagating to it) | retire < adoption | The next adoption removes the tool. A request bound before the adoption gets the retired handler: a call fails with the retired-generation error. An in-flight call settles through its generation as today. |
+| Replacement generation Active | retire < Active | Attached and adopted again; later requests reach the new generation. Accepted work is never moved to it. |
+| Two transitions close together | — | Each evaluation reads current state under the refresh lock; the last one wins; adoption only writes when the declarations differ. |
+| Registry, `ToolHost` or Prompt reload | — | Unchanged (§7.6 of [tool contributions](../../architecture/rust-agent/tool-contributions.md)); the new registry starts from the current state. |
+| Restore | — | Same as create: the first evaluation sees what is Active, later generations attach by the same rule. |
+
+#### What the model and the user see
+
+| Situation | Model | User and recovery |
+| --- | --- | --- |
+| Tool absent | Not declared; the model cannot plan on it. A call by a remembered name gets the existing `Unknown tool: <name>` tool error. | The provider row's existing status and diagnostics (`tool.attach`) show why. Fix or enable the provider; once Active, every loaded Session's branches adopt the tool. No Session reload. |
+| Tool appears or disappears | The declaration changes at a request boundary through a `context/configured` fact, the same path as an MCP server connecting or disconnecting. No extra notice input. | History shows the configuration change. |
+| Call reaches a retired generation | Tool error result; text changes from "until the Session is reloaded" to: `tool provider generation is unloading; this tool is unavailable until its provider is active again, and it will be declared again then. Retrying now will not help.` | Same recovery as above. |
+| Retired during an issued call | `tool provider generation is unloading; this call may already have taken effect. This tool is unavailable until its provider is active again. Check the operation's state before repeating it.` | Unchanged: accepted work is not undone or replayed. |
+
+For Goal (#69) this means `goal_update` is declared from the first request after Goal's adoption fact; a goal no longer depends on whether Goal won the race against branch initialization.
+
+#### Impact
+
+| Area | Change |
+| --- | --- |
+| ToolRegistry ([tool_registry.rs](../../../crates/dim-agent-capabilities/src/tool_registry.rs)) | The `LazyLock` fixed table becomes host tools plus held contribution generations, re-evaluated by a `FiberStatusChanged` listener; the two retired-generation texts above. |
+| ToolBinding, Prompt, Loop, ToolExecutor | None. |
+| Persistence | None: `context/configured` already carries the full tool part. |
+| Documents on implementation | A.5, §4, Appendix F, [tool contributions](../../architecture/rust-agent/tool-contributions.md) §1–§6, [session TypeScript](../session-typescript.md#tools), [process TypeScript §5.1](../process-typescript.md#51-p6p7-access-through-declared-feature-dependencies) (availability cost and recovery), Scheduler/Workflow availability rows. |
+| Tests | Flows that assert "a later Active tool is omitted until reload" and "the old sampled tool keeps rejecting" change to the acceptance below; the #223 fixture wait stays valid. |
+
+#### Acceptance
+
+1. A tool whose row becomes Active after branch initialization (including before publication) is declared, without a Session reload, on the first request whose prefix contains the adoption fact, and executes through ToolExecutor.
+2. After the row unloads, a later request does not declare the tool; a request bound before that adoption gets the retired-generation tool error, not a failed turn.
+3. After an owner reload propagates to a Session tool row, an existing Session reaches the replacement generation on a later request; an admitted call on the old generation settles through it.
+4. A Pending, Failed or disabled row never delays create, restore or native tool use, and fiber transitions elsewhere in the process do not write a configuration fact.
+5. The immediate first request after create and restore still declares tools Active at branch initialization.
+
+#### Ablation
+
+- No readiness wait, publication hook, retry loop or per-Session reload command: the change notification and adoption path already exist.
+- No new event, service, port or persisted field; ToolBinding and Prompt are untouched.
+- Contributors do not notify: rutis already reports the transitions that change visibility. `ServiceChanged` is not also needed because contributors provide their tool for their whole generation in `apply`.
+- Re-evaluation compares generation identity before reading a declaration, so unrelated fiber transitions cost a few keyed lookups and never call a foreign `declaration()`.
+- Retaining the last attached generation per name is kept: it is what makes a request racing a retirement end with a tool error instead of a failed turn, and the fixed table already retains its generation today.
+- Converting contributions to versioned sources was tried on paper and removed (Alternatives).
+
+#### Rule check
+
+| Rule | Application |
+| --- | --- |
+| §4 rule 1 | ToolRegistry owns its table; branches change their own configuration through Prompt's existing adoption. Providers write nothing. |
+| §4 rule 2 | No handover changes; a bound request keeps its snapshot, and accepted calls stay with their generation. |
+| §4 rule 3 | No before callback. |
+| §4 rule 4 | The registry reacts to generic fiber transitions and names no provider. |
+| §4 rule 5 | No new batch; the adoption fact is Prompt's existing single write. |
+| §4 rule 6 | Declarations reach the model only through adopted `context/configured` facts. |
+| §4 rule 7 | The registry reads services by their public keys; it reads no provider state. |
+| §4 rule 8 | Uses existing rutis events and keyed reads; no infrastructure change. |
+| §4 rule 9 | The table is Session memory; only the branch's adoption, which later requests use, enters the Timeline. |
+| §1 | No App Server or core change; ToolRegistry stays the only collector. |
+| ADR 002 D1 | Unchanged scopes: Session registry, branch binding. |
+| ADR 002 D2 | No wiring module or registry service. |
+| ADR 002 D3 | The registry still does not depend on optional providers; it now attaches the active ones on every transition rather than only when it loads, which D3 already allows. |
+| ADR 002 D4 | No configuration change. |
+| ADR 002 D5 | The neutral `toolContribution` contract is unchanged. |
+
+#### Requirements raised to mechanism owners
+
+None. `FiberStatusChanged`, keyed reads and Prompt adoption already exist; rutis is not asked for anything.
 
 ## Appendix B. Full conflict table
 
