@@ -23,7 +23,7 @@ The existing owners implement their language bindings:
 | Owner | Responsibility |
 | --- | --- |
 | App Server assembly | Validate structural input, register names derived from declarations, append ordinary rows inside `SESSION_GROUP`, select the existing runtime resolver. |
-| ToolRegistry | Read a named foreign declaration at its existing first-read sample and retain that provider generation in the fixed table. |
+| ToolRegistry | Read a named foreign declaration when it attaches a provider generation and retain that generation in its versioned contributed set (A.5, #241). |
 | C1 `SessionMethods` | Bind a foreign handler to the existing generation-owned admission, progress, interruption and drain. |
 | Session broadcast | Encode its own records for the native rutis event path. |
 | TypeScript part | Own its business state, work, effects, errors and cancellation settlement. |
@@ -152,8 +152,8 @@ malformed result or unloaded provider becomes the existing host/tool failure and
 it is never turned into an empty successful result. Cancellation uses ToolExecutor's existing
 interruption result rather than inventing a provider error fact.
 
-ToolRegistry samples the ordinary native contribution and neutral service identity at its
-existing `LazyLock` initialization. Assembly permits only one configured owner per tool key;
+ToolRegistry reads the ordinary native contribution and neutral service identity when it
+attaches a provider generation (A.5). Assembly permits only one configured owner per tool key;
 no other provider is tried after that owner's declaration or execution fails. The foreign
 service is looked up directly by its Session instance and bridge name. Its synchronous
 `declaration()` is decoded there, and the handler retains that exact object together with the
@@ -166,15 +166,15 @@ attachment or changed `ToolContribution`
 storage type. Synchronous declaration must not perform external asynchronous business work;
 like a synchronous Rust provider it can delay its caller if it does not return.
 
-The A.5 sample stays at branch initialization. Absent/Pending providers omit only their tool
-and produce the existing attach diagnostic. A malformed foreign declaration is rejected at
-that boundary, omits only that provider's tool, and records an explicit invalid-declaration
-diagnostic; the registry never caches an invalid definition or an empty successful substitute.
-This preserves the existing infallible fixed-table read instead of extending a core interface.
-A provider active after the sample waits for the
-next registry/Session reload, even if it starts before publication. ToolBinding still adopts
-the fixed table through Prompt/BranchOpening before accepting input, and each request keeps
-its selected handlers. A new generation is not substituted into an old request.
+Each configured foreign tool is a registry-owned versioned set (A.5, #241). Absent/Pending
+providers omit only their tool and produce the existing attach diagnostic; once a row's
+generation is active, the next request offers its tool without a Session reload. A malformed
+foreign declaration is rejected when that generation is attached, omits only that provider's
+tool, and records an explicit invalid-declaration diagnostic; the registry never caches an
+invalid definition or an empty successful substitute, and does not retry the same generation.
+A retired generation's set is withdrawn and the next active generation gets a new version.
+ToolBinding adopts changes through Prompt/BranchOpening as for other sources, and each request
+keeps its selected handlers. A new generation is not substituted into an old request.
 
 Proposed for [#241](https://github.com/arcships/dim/issues/241), not implemented: the table
 follows provider generations ([Session boundary A.5.1](contracts/session-boundary.md#a51-proposed-the-tool-table-follows-provider-generations-241)),
@@ -241,7 +241,7 @@ is invented for an uncooperative plugin.
 row subscribes to the existing `ServiceChanged` event before loading and waits for all its own
 declared tool and method-service projections before its apply returns and it becomes Active.
 C1 binds the method namespaces during that apply; tool declarations remain unread until
-ToolRegistry's first read. The row context owns the subscription and cancellation ends the wait.
+ToolRegistry attaches the row's generation. The row context owns the subscription and cancellation ends the wait.
 The foreign cleanup is registered immediately after loading, so a failed declaration or cancelled
 binding still releases that row. This wait does not make another optional row required or change
 Session publication.
@@ -416,7 +416,7 @@ policy belongs to PluginManager rather than an undocumented fallback in ToolRegi
 | Area | Implementation and remaining boundary |
 | --- | --- |
 | App Server `ServerConfig` and assembly | Public embedding input, row boundary validation, names/catalog derived from `provides`, optional Session rows and native resolver factory composition. |
-| ToolRegistry and its page | Native/foreign owner selection and declaration decoding at its existing first read. Existing ToolBinding, Prompt and ToolExecutor flow is reused. |
+| ToolRegistry and its page | Native/foreign owner selection and declaration decoding when a generation is attached. Existing ToolBinding, Prompt and ToolExecutor flow is reused. |
 | C1 `methods` module | Neutral DTO/error decoding and generation-owned foreign handler construction. No Rpc dispatch replacement. |
 | Session broadcast | One native pattern subscription and ordered channel workers in existing SessionNodeRows, one fixed leaf event and original-row identity/closing setup. C6 retains notices. |
 | Dependencies | Existing pinned `rutis-bridge` at the language-boundary owners; no new library or rutis change. Regenerate graphs through `xtask graph`, then run `xtask check`. |

@@ -217,7 +217,9 @@ WorkspaceTools 的 `exec` 和 ShellTools 的 `execute`，两者都已接收 `com
 
 允许回复后的复核本来就有；加上规则后，它也能看到提问期间新写入的 deny 规则。
 
-### 5.4 "总是允许"（客户端流程，在 F6 实现）
+### 5.4 "总是允许"（客户端流程）
+
+由 CLI 权限控制交付（[#257](https://github.com/arcships/dim/issues/257)；[CLI 设计](../cli-commands.md#总是允许)）。
 
 ```
  客户端                         PermissionRules             Approval
@@ -269,7 +271,7 @@ WorkspaceTools 的 `exec` 和 ShellTools 的 `execute`，两者都已接收 `com
 | ToolExecutor、WorkspaceTools、ShellTools | 不变；`exec` 与 `execute` 已声明 `execute_process` 并接收 `command` |
 | Settings | 不变；新增一个来源 `permission`（用户文件、原生行）。它的 `settings.changed` 与任何来源一样照常发出；F2 不监听 |
 | Timeline、Dispatcher、rutis、装配 | 不变 |
-| CLI `/approvals`（F6） | 不属于 F2。F6 承接的需求：`/approvals` 面板经 `permission.rules`/`permission.set_rules` 列出、添加、删除规则，并在审批提示中为简单的 `exec`/`execute` 命令提供"总是"选项（§5.4）。F6 之前现有提示（`Allow once? [y/N]`）不变 |
+| CLI `/approvals` | 不属于 F2。CLI 承接的需求：`/approvals` 面板经 `permission.rules`/`permission.set_rules` 列出、添加、删除规则，并在审批提示中为简单的 `exec`/`execute` 命令提供"总是"选项（§5.4）。由 CLI 权限控制交付（[#257](https://github.com/arcships/dim/issues/257)，[CLI 设计](../cli-commands.md#权限控制)） |
 | HostPlatform | 执行 Shell 仍是它自己的业务配置；不属于 F2 |
 | RemoteGateway | 配对设备可以回答审批，但不能读写规则 |
 | Collaboration、Scheduler、Workflow | 规则是宿主级的，在每个 Session 中生效；由于 allow 只回答 `Ask`，上限为 read-only 的自动化 Session 不会被放宽 |
@@ -316,7 +318,7 @@ WorkspaceTools 的 `exec` 和 ShellTools 的 `execute`，两者都已接收 `com
 6. **绑定：** 按配置在 Session 级绑定端口 `InSession<CommandRulesHost>`（§4.2），不依赖进程服务；
    现有测试不变。
 7. **范围：** F2 只做服务端：规则来源、Permission 检查、管理方法和流程测试。CLI `/approvals` 面板和
-   "总是"选项属于 F6（CLI），作为它承接的需求（§5.4、§8）。
+   "总是"选项属于 F6（CLI），作为它承接的需求（§5.4、§8）；CLI 已在 [#257](https://github.com/arcships/dim/issues/257) 交付。
 
 ## 11. 验收（流程测试）
 

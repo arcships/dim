@@ -16,12 +16,15 @@ This does not disable checking a plugin's calls against the service interfaces.
 | --- | --- | --- |
 | Persist a process plugin's own data | `pluginFiles`, process | Implemented; use its native transactions and lifecycle scope. |
 | Start or drive another Session | `sessions`, process | Implemented by Agents; all eight methods are typed. |
+| Read current branch permissions or host defaults | `sessionPermissions`, process | Generated from Agents: `permission({sessionId, branchId})` and `permissionDefaults({})`. |
 | Read or set a Session's title | `sessionMetadata`, process | Implemented by SessionStore: `read` and the revision-checked `setTitle` ([title metadata](design/appserver/session-title-metadata.md)). SessionTitle is the title's one writer; other plugins only read. |
 | Read/update business configuration | `settings`, process | Owner read/write and Settings event delivery implemented; declare sources in the C4 row's `settings` member. |
+| Read/save Workflow definition files | `workflowFiles`, process | Generated `read/list/replace/createDirectory`; fixed project directories and the calling row's read-only packages ([contract](design/p6-p7-bindings.md#3-workflow-definition-files)). |
 | Offer client methods or model tools | `sessionMethods:<namespace>`, `toolContribution:<tool>`, Session | Implemented by C4 through ordinary structural rows and the existing App Server embedding entry. |
 | Offer host management methods | `managementMethods:<namespace>`, process | Implemented on the original `process_rows` owner, through protected-local v3 Rpc. |
 | Observe this Session | `sessionEvents:<part>` setup and `session.event`, Session | Implemented by C4 on the original row; filter by its bound Session id. |
 | Consume branch events in order or act on branches | `dispatcher`, `branchLifecycle`, `timelineIdentity`, branch; `treeCommands`, Session | Implemented by C5 through rutis-generated exports; use `BranchServices` from the SDK. |
+| Write events of your own domain | `timeline`, branch | Implemented ([extension events](#extension-events)); subscribe and read them through `dispatcher` like any event. |
 
 See [Session TypeScript bindings](design/session-typescript.md) and
 [Settings](design/appserver/settings-service.md) for their contracts and delivery
@@ -286,6 +289,28 @@ owners. The SDK types their envelope and JSON data without asserting that one
 event payload describes every domain. For complete publication, paging, failure
 and cleanup semantics, use the [sessions contract](design/appserver/sessions-service.md).
 
+For permission reads, declare `inject: ['sessionPermissions']` and use
+`ctx.use<SessionPermissions>('sessionPermissions')`. `permission({sessionId, branchId})`
+acquires/restores the target and returns its dispatched `{version, policy}`;
+`permissionDefaults({})` reads the host bound without creating a Session. Both
+use Agents' stable directory and look up the current index per call. There is
+no policy cache or fallback when the branch's Permission is unavailable.
+Versions retain `number | bigint`. These generated methods return values
+directly and throw `SessionsErrorThrown` with the owner's code, message and serde
+data; they do not return the legacy `sessions` envelope. Neither read grants
+permissions or makes a later Settings write or input atomic with that read.
+
+Process rows using `workflowFiles` declare it in `inject` and use
+`ctx.use<WorkflowFiles>('workflowFiles')`. Their structural `config.packages`
+contains `{id, root}` entries; every root must exactly name a canonical absolute
+root already authorized by the host in `ServerConfig.file_roots`. Package ids
+are unique per row. Omitting the list means no installed packages. Only
+Settings-authorized project cwd selectors are accepted. Generated methods return
+Uint8Array, typed directory entries or void and throw `WorkflowFilesErrorThrown`,
+without native root indices or caller context arguments. Mutating methods decode
+package selectors but refuse them as `invalid_path` before I/O. Project enablement
+and definition semantics remain with Settings and the Workflow package.
+
 ## Session tools and client methods
 
 A Session part provides `toolContribution:<tool>` or `sessionMethods:<namespace>`.
@@ -350,8 +375,9 @@ build. The App Server does not discover this export or install a plugin by itsel
 Online module metadata must match the configured row snapshot. Disabled, Pending
 and malformed rows have the outcomes in the
 [binding contract](design/session-typescript.md#host-input-and-declaration-discovery).
-ToolRegistry samples active providers once at branch initialization; a provider
-that becomes active later is available after the next registry/Session reload.
+ToolRegistry offers a configured tool while its provider is active: a provider
+that becomes active later, or a new generation after a reload, is offered from
+the next request without a Session reload.
 
 `declaration` is synchronous and must not start asynchronous work. Its name matches
 the tool key and its Permission risk is nonempty. Permission recognises
@@ -465,7 +491,7 @@ it to a compatible owner.
 
 C5 exports the existing Rust services through rutis 0.12.1. Import their generated types from
 `dimcode/plugin`; no per-service adapter or branch setup call is needed. A row that injects
-`dispatcher`, `branchLifecycle` or `timelineIdentity` runs in each branch of its Session.
+`dispatcher`, `branchLifecycle`, `timeline` or `timelineIdentity` runs in each branch of its Session.
 Its services are branch-scoped. Keep Session tools, client methods and observers in separate rows.
 
 | Service | Contract |
@@ -552,6 +578,60 @@ The export list and signatures come from [build.rs](../crates/dim-app-server/bui
 with `cargo check --locked -p dim-app-server`. The build script intentionally writes the tracked
 `npm/branch-services.d.ts` so the Rust exports and packed SDK share one contract. CI verifies that the committed SDK declarations
 match the generator and compiles this example from the actual packed archive.
+
+### Extension events
+
+A branch part writes events of its own domain with `timeline.append({type, name, data})`, the
+branch Timeline native capabilities use, and gets the committed event back with its sequence.
+Pick a domain of your own, such as your plugin id; `type` and `name` must be non-empty without `/`
+or `*`. The payload is your contract: the host stores and returns it unchanged and never validates
+it.
+
+The core's domains (`input`, `turn`, `step`, `context` and the others its events use) decode only
+through their typed contracts, so a malformed event there is rejected. Which events a part writes
+is otherwise the events' contract, as for native capabilities: core facts belong to their owners,
+so ask them through their commands, such as input through `treeCommands.input`, rather than
+appending their events. The branch's Timeline is closed by the branch itself, so `timeline` has no
+`close`.
+
+Extension events behave like any other branch event. `dispatcher.listen` with a key such as
+`myplugin/*` delivers them in order, `local` and `history` return them, they are persisted and
+restored with the branch, and a restored generation rebuilds from them. They never reach the
+model's context; write an adopted input or return a tool result when the model needs content
+([ADR 001](adr/001-harness-foundation.md#events-and-ownership-issue-2)). Existing v1-v3 client
+feeds do not deliver them. History keeps them after your plugin is uninstalled.
+
+```ts
+import { definePlugin } from '@arcships/rutis'
+import type { BranchEvent, BranchServices } from 'dimcode/plugin'
+
+export default definePlugin({
+  name: 'ExampleCheckpoints',
+  provides: {},
+  inject: ['dispatcher', 'timeline'],
+  async apply(ctx) {
+    const dispatcher = ctx.use<BranchServices['dispatcher']>('dispatcher')
+    const timeline = ctx.use<BranchServices['timeline']>('timeline')
+    // Rebuild from your own events in history; act only on live events.
+    let steps = 0
+    let through = 0n
+    let finishRebuild!: () => void
+    const rebuilt = new Promise<void>(resolve => { finishRebuild = resolve })
+    await dispatcher.listen('example-checkpoints', ['myplugin/*', 'turn/end'], async (event: BranchEvent) => {
+      await rebuilt
+      if (BigInt(event.sequence) <= through) return
+      if (event.type === 'myplugin') steps++
+      else await timeline.append({ type: 'myplugin', name: 'checkpoint', data: { step: steps + 1 } })
+    })
+    const cutoff = await dispatcher.committed()
+    for (const event of await dispatcher.local(0, cutoff)) if (event.type === 'myplugin') steps++
+    through = BigInt(cutoff)
+    finishRebuild()
+  },
+})
+```
+
+See the [real Node part](../runtime/fixtures/extension-events.ts).
 
 ## Packaging and trust
 

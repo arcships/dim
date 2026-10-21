@@ -11,6 +11,7 @@ and exits; redirected stdin supplies the prompt when `-p` is absent.
 Session. Session handles and diagnostics go to stderr. The stream preserves
 public fields, includes live observations after attach and does not replay stored
 history. Approval is denied, the turn is stopped and settled, and exec exits 3.
+`--permission` (below) only changes which calls ask; nothing is approved automatically.
 Ctrl+C waits for settlement and exits 130. Further interrupts while settling
 keep waiting; they do not carry over to the next interactive prompt.
 
@@ -288,12 +289,55 @@ removing their entry through the existing configuration API; the CLI has no entr
 
 See the [MCP OAuth contract](../../docs/design/appserver/mcp-oauth.md#13-requirements-raised-to-mechanism-owners).
 
+## Permission presets and approvals
+
+The App Server decides each tool call by the branch's preset and the user's command rules; the
+CLI selects them through existing methods and never decides a call itself.
+
+| Preset | Reads | File writes | Commands, network, unclassified tools |
+| --- | --- | --- | --- |
+| `read-only` | run | denied | denied |
+| `workspace-write` (product default) | run | run | ask |
+| `full-access` | run | run | run |
+
+`--permission read-only|workspace-write|full-access` works with `dimcode`, `tui`, `exec` and
+`exec resume`. A new Session receives it in `session.create`; a resumed Session's `main` branch
+is changed with `session.permission.get/update` before attach, keeping its tool lists and
+retrying a version conflict. Without the flag a resumed Session keeps its preset. The header
+shows the preset; `exec` prints it to stderr only when the flag is given. A live change on
+`main`, from any client, prints `[permission] main branch preset: ...`.
+
+At the idle prompt, `/approvals` (alias `/permissions`) shows the `main` preset and the user's
+command rules. `/approvals PRESET` switches `main`; `full-access` asks `[y/N]` and only `y`/`yes`
+confirms. `/approvals allow|deny exact|prefix COMMAND` adds a rule and `/approvals remove N`
+removes rule N of the list printed last; both print the new numbered list. A preset or rule list
+that changed since it was shown is reported and nothing is written. Child branches created later inherit a switch; agent members keep the
+Session's starting preset. Rules are user scope and apply in every Session: a deny rule under
+every preset, an allow rule only where the preset would ask.
+
+For a simple `exec`/`execute` command (no `;` `&` `|` `` ` `` `(` `)` `<` `>` `$` or line
+break), the approval prompt also offers `a`:
+
+```text
+[approval] exec: Tool `exec` requires approval for starting processes under the workspace-write preset
+  command: cargo test -p dim-cli
+Allow once, always, or deny? [y/a/N] a
+Always allow `cargo test -p dim-cli` (exact). Press Enter, or type its leading words for a prefix rule: cargo test
+[rule saved] allow prefix `cargo test`
+```
+
+The CLI writes the rule through `permission.rules`/`permission.set_rules`, retrying a revision
+conflict, and then answers allow. If the write fails it prints `[rule not saved]` and asks
+`Allow once? [y/N]` for the same request. See
+[permission controls](../../docs/design/cli-commands.md#permission-controls).
+
 ## Scrollback and session recovery
 
 ```text
 dimcode · model: openai/your-model-id
 workspace: /path/to/project
 session: 00000000-0000-0000-0000-000000000000
+permission: workspace-write
 
 > Explain this project
 Assistant:
@@ -307,7 +351,7 @@ Allow once? [y/N]
 > _
 ```
 
-Only `y` or `yes` permits a pending tool operation once; empty input or any other answer denies it. Approval and account prompts retain their existing line input and echo behavior. Tool status records and approval reasons are displayed without dumping arbitrary tool arguments or tool result bodies. Model and external text are filtered at the terminal boundary to remove control sequences.
+Only `y` or `yes` permits a pending tool operation once (`a` saves a rule first, as above); empty input or any other answer denies it. Approval and account prompts retain their existing line input and echo behavior. Tool status records and approval reasons are displayed without dumping arbitrary tool arguments or tool result bodies. Model and external text are filtered at the terminal boundary to remove control sequences.
 
 The terminal keeps the scrollback. The draft editor uses the existing terminal
 input owner and restores terminal modes and bracketed-paste settings when it
@@ -426,6 +470,13 @@ DIM_TEST_APP_SERVER="$PWD/target/debug/dim-app-server" \
   cargo test --locked -p dim-cli --test cli_flow \
   configured_api_key_model_uses_production_tools_and_restores_the_same_session \
   -- --ignored
+```
+
+The permission flows run against the same fixture: `exec --permission full-access` runs a process tool without a question, default `exec` still exits 3, `exec resume --permission` changes the resumed branch, and "always" saves an exact rule after which the identical call runs without asking until `/approvals remove` deletes it:
+
+```bash
+DIM_TEST_APP_SERVER="$PWD/target/debug/dim-app-server" \
+  cargo test --locked -p dim-cli --test cli_flow permission::real_daemon -- --ignored
 ```
 
 The daemon-profile check rejects an already running mock or different configured daemon, verifies that its process and endpoint remain intact, then explicitly stops it through the CLI despite a changed invalid model configuration:

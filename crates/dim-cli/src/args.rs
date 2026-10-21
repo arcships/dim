@@ -1,11 +1,12 @@
-use crate::{Result, export::Format};
+use crate::{Result, export::Format, permission};
+use dim_agent_types::PermissionPreset;
 use std::path::PathBuf;
 
 pub const HELP: &str = "dimcode [OPTIONS]\n\n\
 Pure Rust scrollback client. With redirected stdin, run one prompt and exit.\n\n\
 Commands:\n\
   tui                              Open the interactive scrollback client\n\
-  exec [-p TEXT] [--image PATH ...] [--json]\n\
+  exec [-p TEXT] [--image PATH ...] [--json] [--permission PRESET]\n\
                                    Run text and/or local images and exit\n\
   exec resume SESSION_ID [-p TEXT] [--image PATH ...] [--json]\n\
   session export SESSION_ID --format markdown|json [--output PATH]\n\
@@ -32,6 +33,8 @@ Options:\n\
   --plugin-dir PATH                Managed account plugin package\n\
   --node PATH --js-runtime PATH    Fixed plugin runtime locations\n\
   --provider ID --model ID         Model selection for a new session\n\
+  --permission PRESET              read-only, workspace-write or full-access for a\n\
+                                   new session, or for the resumed main branch\n\
   -h, --help                       Show this help without starting a daemon\n\
   -V, --version                    Show version without starting a daemon\n\n\
 Enter sends an idle draft; Ctrl+J inserts a newline; bracketed paste does not submit.\n\
@@ -43,7 +46,10 @@ Without -p, exec reads redirected stdin through EOF, including with --image.\n\
 Idle MCP commands: /mcp, /mcp login [--no-browser] [--client-secret] ID, /mcp logout ID.\n\
 Idle commands: /export <markdown|json> PATH, /exit.\n\
 PATH is relative to the CLI current directory; ~ is literal.\n\
-Approval accepts only y/yes; empty input denies. Noninteractive approval exits 3.\n\
+/approvals (alias /permissions) shows the preset and command rules; it also takes\n\
+  PRESET, allow|deny exact|prefix COMMAND, or remove N.\n\
+Approval accepts only y/yes; empty input denies. For a simple exec command, a/always\n\
+  also saves a command rule. Noninteractive approval exits 3.\n\
 Exit codes: 0 success, 1 configuration/transport error, 2 model/turn failure,\n\
             3 interactive approval required, 130 interrupted.\n";
 
@@ -88,6 +94,7 @@ pub struct Options {
     pub js_runtime: Option<PathBuf>,
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub permission: Option<PermissionPreset>,
     pub directory: Option<String>,
     pub device: bool,
     pub refresh: bool,
@@ -119,6 +126,7 @@ impl Options {
             js_runtime: None,
             provider: None,
             model: None,
+            permission: None,
             directory: None,
             device: false,
             refresh: false,
@@ -181,6 +189,12 @@ impl Options {
                 "--js-runtime" => options.js_runtime = Some(PathBuf::from(value(&mut args)?)),
                 "--provider" => options.provider = Some(value(&mut args)?),
                 "--model" => options.model = Some(value(&mut args)?),
+                "--permission" => {
+                    let preset = permission::parse_preset(&value(&mut args)?)?;
+                    if options.permission.replace(preset).is_some() {
+                        return Err("Supply --permission only once".into());
+                    }
+                }
                 "--directory" => options.directory = Some(value(&mut args)?),
                 "--redirect-uri" => options.redirect_uri = value(&mut args)?,
                 "--device" => options.device = true,
@@ -284,7 +298,10 @@ impl Options {
             return Err("A resumed session retains its model; omit --provider and --model".into());
         }
         if !matches!(options.action, Action::Chat | Action::Tui | Action::Exec)
-            && (options.prompt.is_some() || options.resume.is_some() || options.model.is_some())
+            && (options.prompt.is_some()
+                || options.resume.is_some()
+                || options.model.is_some()
+                || options.permission.is_some())
         {
             return Err("Commands cannot be combined with chat options".into());
         }

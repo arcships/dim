@@ -1278,7 +1278,9 @@ async fn startup_opening_dispatch_is_free_and_close_or_deadline_joins_the_host()
                             .into(),
                         )
                         .unwrap();
-                    timeline.close().await.unwrap();
+                    dim_agent_runtime::core::close_timeline(&timeline)
+                        .await
+                        .unwrap();
                 }
                 let mut builder = builder_with_initial(
                     host,
@@ -1605,7 +1607,9 @@ async fn restoring_a_session_keeps_its_adopted_system_and_model() {
             .into(),
         )
         .unwrap();
-    timeline.close().await.unwrap();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let host = Arc::new(Prompts(Mutex::new(BTreeMap::from([(
         "rules".into(),

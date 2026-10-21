@@ -2,7 +2,7 @@
 
 Designs of the new plugins planned in the [overall design](../overview.md). Implemented plugins and their capabilities are documented in [architecture/rust-agent/plugins](../../architecture/rust-agent/plugins/README.md). Rules: [design rules](../../architecture/rust-agent/principles.md) §1 and §4, [ADR 002](../../adr/002-plugin-scope.md). Shared contracts: [session-access](../contracts/session-access.md), [session-boundary](../contracts/session-boundary.md).
 
-A plugin is split by the owner of its state. Process parts are process plugins; Session and branch parts are Capabilities. Status of every document: Draft, except ShellInput, Attachments and the optional Web package, which are implemented, and Notifications, which is withdrawn.
+A plugin is split by the owner of its state. Process parts are process plugins; Session and branch parts are Capabilities. Status of every document: Draft, except ShellInput, Attachments and the optional Web package, which are implemented, Recall, which is Ready, and Notifications, which is withdrawn.
 
 ## Index
 
@@ -16,7 +16,7 @@ A plugin is split by the owner of its state. Process parts are process plugins; 
 | [Pursuit](Pursuit.md) (evaluator judge mode of Goal) | — | `judge` on `session.goal.set` | claims judged by evaluator branches, verdict writes | M2 |
 | [Web](Web.md) | — | `web_search`, `web_fetch` tools | — | P2 (implemented, optional package) |
 | [ContextCompaction](ContextCompaction.md) (supplements to Loop and ContextPreparation) | — | `ContextModelHost`, summary `CompactionStrategyHost`, `session.context.*` | `context/compact` command and compaction step in Loop; K-turn cut and usage query in ContextPreparation | P2 |
-| [Recall](Recall.md) | — | `recall` tool (tells the model its branch's history: turns, a turn, one thing in full, search) | — | M2 (#129) |
+| [Recall](Recall.md) | — | `recall` tool (tells the model its branch's history: turns, a turn, one thing in full, search) | — | M2 (#129, Ready) |
 | [Hooks](Hooks.md) | — | hook documents, runner, `hooks.catalog` | tool advice, permission requests, prompt holds, post-tool, Stop and Session-start hooks | M2 |
 | [Notifications](Notifications.md) | — | Session observer, `notify` tool | — | Withdrawn |
 | [Scheduler](Scheduler.md) | triggers, run history (jobs in Settings) | `schedule` tool | — | P2 |

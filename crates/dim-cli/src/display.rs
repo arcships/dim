@@ -139,6 +139,9 @@ struct TextPosition {
 pub struct Display {
     pub mcp_auth_required: HashSet<String>,
     pub model: Option<Configuration>,
+    /// Local sequence of the last `permission/changed` of `main` already
+    /// reported, by a record or by the command that wrote it.
+    pub permission_seen: u64,
     pub json: bool,
     pub cursor: u64,
     pub failed: bool,
@@ -155,6 +158,7 @@ impl Display {
         Self {
             mcp_auth_required: HashSet::new(),
             model: None,
+            permission_seen: 0,
             json,
             cursor: 0,
             failed: false,

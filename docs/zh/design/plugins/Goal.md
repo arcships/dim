@@ -304,9 +304,8 @@ TypeScript，位于 `runtime/plugins/goal`（C4 工具/方法行，C5 分支行�
 由 `session.goal.pause` 恢复并写入；新的 `maxContinuations` 无需重载即生效；没有 Goal 时为 `unknown_method`）、
 第 11 条（完成后 resume，续跑到新上限）、方法边界与 `pause`/`resume`/`clear` 的顺序，以及 A.5 编码往返。
 
-夹具的模拟 `ToolHost` 声明对 Goal 行原生 `session.goal` 方法的必需依赖，再提供工具。ToolRegistry 依赖该宿主，
-因此首次快照包含 `goal_update`。这是这些 Goal 流程的前置条件；可选提供者仍遵循
-[Session 边界 A.5](../contracts/session-boundary.md#a5-工具贡献)，取样时尚未 Active 就可能被省略。
+这些流程中的 Goal 行是普通可选行，没有任何依赖强制 Goal 先于工具快照：Goal 行 Active 后，
+ToolRegistry 即提供 `goal_update`（[Session 边界 A.5](../contracts/session-boundary.md#a5-工具贡献)，#241）。
 
 第 6 条中关于键控基线的一半是 F1 的契约，由其 `keyed_blocks_replay_verbatim_after_repeated_compaction_until_retired`
 与手动压缩流程覆盖；产品压缩配置在测试中不加载 TypeScript 行。
@@ -403,13 +402,9 @@ Goal 消费分支 `B` 上序号 `N` 处的 `turn/end` 时，基于直到 `N` 的
 
 ## 附录 B. 完整冲突表
 
-首次工具接入是 [C3 首次取样合同](../contracts/session-boundary.md#a5-工具贡献) 下已知的产品限制。
-其他可选 C4 工具行（包括 Web）也可能错过取样。Goal 的 Node 夹具通过模拟 `ToolHost` 的必需依赖，
-使 Goal 在取样前 Active；这些流程通过不代表覆盖了此生产启动情况。
-
 | 场景 | 序号顺序 | 结果 | 归属 |
 | --- | --- | --- | --- |
-| 可选 Goal Session 行在首次工具取样时仍为 Pending | 取样 < 行 Active | `goal_update` 在 registry/Session 重载前缺失。分支部件仍可续跑，因此模型无法通过此工具报告完成/阻塞，可能直到 `maxContinuations` 上限才暂停。产品修复跟踪：[#69](https://github.com/arcships/dim/issues/69) | Goal；产品装配 |
+| Session 启动时可选 Goal Session 行仍为 Pending | 首个请求 < 行 Active | 行 Active 前的请求不含 `goal_update`，此后的下一个请求起提供（[A.5](../contracts/session-boundary.md#a5-工具贡献)，#241）；其间的续跑无法经该工具报告 | Goal；ToolRegistry |
 | 目标轮次运行时的用户 Queue 输入 | 输入 < `turn/end` N，未消费 | C5 不成立；用户的轮次运行；其结束时以重置后的计数续跑 | Goal、InputQueue |
 | 用户输入在 N 之后、续跑之前提交 | N < 输入 < 续跑 | 两者按顺序运行：先用户轮次，再续跑轮次；计数重置 | InputQueue、Loop |
 | 续跑之后的用户输入 | 续跑 < 输入 | 先运行续跑轮次；Queue 接着运行；Steer 加入续跑轮次 | InputQueue、Loop |

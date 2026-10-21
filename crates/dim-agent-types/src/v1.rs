@@ -556,6 +556,8 @@ impl<'a> EventRef<'a> {
                     | crate::EventKind::ContextCompact(_)
                     | crate::EventKind::ContextCompactionStart(_)
                     | crate::EventKind::ContextCompaction(_)
+                    // Extension events reach only a dynamic protocol (ADR 001).
+                    | crate::EventKind::Extension(_)
             )
             && match &event.kind {
                 crate::EventKind::BranchCreate(data) => {

@@ -87,7 +87,10 @@ impl ProductEvent {
             // Reloading a stored branch is not a client business fact.
             | EventKind::BranchResume(_)
             // The fork's reply already reports it to the client.
-            | EventKind::SessionForked(_) => false,
+            | EventKind::SessionForked(_)
+            // v2/v3 keep their allowlists; extension events reach only a
+            // dynamic protocol after host visibility filtering (ADR 001).
+            | EventKind::Extension(_) => false,
         };
         visible.then_some(Self(event))
     }

@@ -962,6 +962,12 @@
         "removing": false
       },
       {
+        "service": "dim_app_server::agents::sessions::SessionPermissions",
+        "provider": 20,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dim_app_server::codex_oauth::OpenAICodexOAuthService",
         "provider": 10,
         "generation": 1,
@@ -1077,6 +1083,12 @@
       },
       {
         "service": "dim_app_server::settings::SettingsService",
+        "provider": 13,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dim_app_server::settings::workflow_files::WorkflowFiles",
         "provider": 13,
         "generation": 1,
         "removing": false

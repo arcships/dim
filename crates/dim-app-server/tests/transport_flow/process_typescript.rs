@@ -53,7 +53,7 @@ async fn available(client: &mut Client, server: &RunningServer) -> Value {
     .unwrap()
 }
 
-async fn select_model(client: &mut Client) {
+pub(super) async fn select_model(client: &mut Client) {
     assert_ok(&client.rpc("provider.save", json!({"provider":{
         "providerId":"process-fixture", "displayName":"Fixture", "driverKind":"openai-compatible",
         "baseUrl":"http://localhost/v1", "auth":{"type":"anonymous"}, "models":[{
@@ -93,6 +93,7 @@ async fn process_typescript_rejects_invalid_embedding_before_runtime_start() {
         "managementMethods:bad-namespace",
         "managementMethods:daemon.shutdown.child",
         "settings",
+        "workflowFiles",
         "treeCommands",
         "toolContribution:unexpected",
         "sessionMethods:session.example",
@@ -296,7 +297,7 @@ async fn node_process_typescript_owner_reload_keeps_native_session_work_running(
         );
     }
     let (_, _, loader, registry) = controls.recv().await.unwrap();
-    let retained = registry.fixed("ts_echo").unwrap();
+    let retained = registry.contributed("ts_echo").unwrap();
     assert_ok(
         &client
             .rpc(
@@ -316,7 +317,7 @@ async fn node_process_typescript_owner_reload_keeps_native_session_work_running(
     loader.restart("process-example").await.unwrap();
     let current = available(&mut client, &server).await;
     assert_ne!(current["generation"], process["generation"]);
-    let retired_error = "tool provider generation is unloading; this tool is unavailable until the Session is reloaded. Retrying in the current Session will not help.";
+    let retired_error = "tool provider generation is unloading; this call was not made. The tool is offered again once its provider is active; a later request uses the current provider.";
     assert_eq!(
         retained
             .handler
@@ -375,10 +376,12 @@ async fn node_process_typescript_owner_reload_keeps_native_session_work_running(
                 && result.result.is_error != Some(true)
         }))
     }), "the admitted native tool must finish across the optional owner's reload");
+    // The existing Session adopts the replacement owner's tool for its next
+    // request; only the retained old handler stays retired (#241).
     session_typescript::submit(
         &mut client,
         &sessions[0],
-        r#"tool:ts_echo {"text":"old generation"}"#,
+        r#"tool:ts_echo {"text":"existing session"}"#,
     )
     .await;
     let history = session.history("main", None).await.unwrap();
@@ -390,15 +393,13 @@ async fn node_process_typescript_owner_reload_keeps_native_session_work_running(
             _ => None,
         })
         .unwrap();
+    assert_ne!(result.result.is_error, Some(true), "{result:?}");
+    let dim_agent_types::ToolContent::Text(content) = &result.result.content else {
+        panic!("text result")
+    };
     assert_eq!(
-        result.result.is_error,
-        Some(true),
-        "C3 does not hot-rebind the old tool table"
-    );
-    assert_eq!(
-        result.result.content,
-        dim_agent_types::ToolContent::Text(retired_error.into()),
-        "the host must reject the retired tool before calling its disposed fixture"
+        serde_json::from_str::<Value>(content).unwrap()["processGeneration"],
+        current["generation"]
     );
     for id in sessions {
         session_typescript::submit(
@@ -423,6 +424,21 @@ async fn node_process_typescript_owner_reload_keeps_native_session_work_running(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
 async fn node_process_typescript_dependency_reload_settles_calls_and_keeps_failures_local() {
+    async fn unavailable(client: &mut Client) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let reply = client.rpc("example.status", json!({})).await;
+                let code = &reply["error"]["data"]["appError"];
+                if code == "service_unavailable" {
+                    break;
+                }
+                assert_eq!(code, "service_reloading", "{reply}");
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
     let home = home();
     let mut parts = parts();
     parts.process_rows[0]["config"] = json!({"failAfter":2});
@@ -463,29 +479,17 @@ async fn node_process_typescript_dependency_reload_settles_calls_and_keeps_failu
     assert_ok(&settled);
     assert_eq!(settled["result"]["generation"], before["generation"]);
     assert_eq!(settled["result"]["alive"], true);
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if matches!(loader.get("process-example").unwrap().status,
-                rutis_loader::EntryStatus::Running(ref state) if state.state == rutis::FiberState::Failed) {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    }).await.unwrap();
-    assert_eq!(
-        client.rpc("example.status", json!({})).await["error"]["data"]["appError"],
-        "service_unavailable"
-    );
+    // Rpc publishes namespace status independently of the loader's failure.
+    unavailable(&mut client).await;
+    assert!(matches!(loader.get("process-example").unwrap().status,
+        rutis_loader::EntryStatus::Running(ref state) if state.state == rutis::FiberState::Failed));
     for plugin in ["Rpc", "Agents"] {
         tokio::time::timeout(Duration::from_secs(10), server.restart(plugin))
             .await
             .unwrap()
             .unwrap();
         client = Client::new_version(&server, false, 3).await;
-        assert_eq!(
-            client.rpc("example.status", json!({})).await["error"]["data"]["appError"],
-            "service_unavailable"
-        );
+        unavailable(&mut client).await;
     }
     server.shutdown();
     server.join().await.unwrap();
@@ -620,4 +624,350 @@ async fn node_process_typescript_held_apply_and_describe_do_not_hold_native_star
         );
         std::fs::remove_dir_all(home).unwrap();
     }
+}
+
+async fn workflow_file_call(client: &mut Client, method: &str, params: Value) -> Value {
+    let reply = client.rpc(method, params).await;
+    assert_ok(&reply);
+    reply["result"].clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_workflow_files_enforces_project_and_original_row_package_authority() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let store = super::deletion::Store::new();
+    let home = &store.0;
+    let project = home.join("project");
+    let package = home.join("package");
+    let other = home.join("other");
+    for path in [
+        &project,
+        &package.join("workflows"),
+        &other.join("workflows"),
+    ] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let package_bytes = b"name: package-flow\nstages: []\n";
+    std::fs::write(package.join("workflows/flow.yaml"), package_bytes).unwrap();
+    std::fs::write(other.join("workflows/private.yaml"), b"other row").unwrap();
+    std::fs::write(
+        home.join("workflow.json"),
+        b"{\"definitions\":{},\"projectEnabled\":{}}",
+    )
+    .unwrap();
+    let mut parts = session_typescript::fixture();
+    parts.rows.clear();
+    let row = |id: &str, module: &str, namespace: &str, id_root: &str, root: &std::path::Path| {
+        json!({
+            "id":id, "name":parts.anchor.parent().unwrap().join(format!("fixtures/{module}.ts")),
+            "provides":{format!("managementMethods:{namespace}"):{"describe":"async","call":"async"}},
+            "config":{"packages":[{"id":id_root,"root":root}]},
+        })
+    };
+    let mut first = row(
+        "workflow-reader",
+        "workflow-files",
+        "workflow_files_test",
+        "installed",
+        &package,
+    );
+    first["settings"] = json!([{
+        "source":"workflow", "userFile":"workflow.json", "projectFile":null,
+        "schema":{"type":"object","properties":{
+            "definitions":{"type":"object","default":{}},
+            "projectEnabled":{"type":"object","default":{}}
+        },"additionalProperties":false},
+        "userOnly":["/projectEnabled"]
+    }]);
+    parts.process_rows = vec![
+        first,
+        row(
+            "other-reader",
+            "workflow-files-other",
+            "workflow_files_other",
+            "other",
+            &other,
+        ),
+    ];
+    let mut config = config(home, parts);
+    config.file_roots = vec![package.clone(), other.clone()];
+    let (mut builder, _, _) = session_typescript::setup();
+    let (send, mut controls) = tokio::sync::mpsc::unbounded_channel();
+    builder.session_plugin(move |scope| session_typescript::ControlledGate(*scope, send.clone()));
+    config.unix_path = Some(PathBuf::from("/tmp").join(format!(
+        "wf-{}/server.sock",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    )));
+    let server = serve(builder, config).await.unwrap();
+    let mut client = Client::new_version(&server, false, 3).await;
+    select_model(&mut client).await;
+    for namespace in ["workflow_files_test", "workflow_files_other"] {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let reply = client.rpc(&format!("{namespace}.status"), json!({})).await;
+                if reply.get("result").is_some() {
+                    break;
+                }
+                assert_eq!(
+                    reply["error"]["data"]["appError"], "service_reloading",
+                    "{reply}"
+                );
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let project_root = json!({"project":project});
+    // A host root alone does not authorize a project. Session creation does.
+    let denied = workflow_file_call(
+        &mut client,
+        "workflow_files_test.list",
+        json!({"root":project_root}),
+    )
+    .await;
+    let error: Value = serde_json::from_str(denied["error"].as_str().unwrap()).unwrap();
+    assert_eq!(error["code"], "invalid_path", "{error}");
+    assert_ok(
+        &client
+            .rpc("session.create", json!({"cwd":project,"tools":[]}))
+            .await,
+    );
+    let missing = workflow_file_call(
+        &mut client,
+        "workflow_files_test.list",
+        json!({"root":project_root}),
+    )
+    .await;
+    let error: Value = serde_json::from_str(missing["error"].as_str().unwrap()).unwrap();
+    assert_eq!(error["code"], "not_found", "{error}");
+    assert_eq!(
+        workflow_file_call(
+            &mut client,
+            "workflow_files_test.create_directory",
+            json!({"root":project_root})
+        )
+        .await,
+        true
+    );
+    assert!(project.join(".dimcode/workflows").is_dir());
+    assert!(!project.join("workflows").exists());
+    let definition = vec![0xff_u8, 0, 0x80, b'\n'];
+    let target = project.join(".dimcode/workflows/flow.yaml");
+    std::fs::write(&target, b"old").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640)).unwrap();
+    assert_eq!(
+        workflow_file_call(
+            &mut client,
+            "workflow_files_test.replace",
+            json!({"root":project_root,"path":"flow.yaml","bytes":definition})
+        )
+        .await,
+        true
+    );
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        definition,
+        "raw bytes without S10 wrapping"
+    );
+    assert_eq!(
+        std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    let read = workflow_file_call(
+        &mut client,
+        "workflow_files_test.read",
+        json!({"root":project_root,"path":"flow.yaml"}),
+    )
+    .await;
+    assert_eq!(read, json!({"bytes":definition,"typed":true}));
+    std::fs::create_dir(project.join(".dimcode/workflows/directory")).unwrap();
+    symlink(
+        home.join("workflow.json"),
+        project.join(".dimcode/workflows/link.yaml"),
+    )
+    .unwrap();
+    let entries = workflow_file_call(
+        &mut client,
+        "workflow_files_test.list",
+        json!({"root":project_root}),
+    )
+    .await;
+    let entries: Value = serde_json::from_str(entries.as_str().unwrap()).unwrap();
+    assert_eq!(
+        entries,
+        json!([
+            {"name":"directory","kind":"directory"},{"name":"flow.yaml","kind":"file"},{"name":"link.yaml","kind":"other"}
+        ])
+    );
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let bad_name = project
+            .join(".dimcode/workflows")
+            .join(std::ffi::OsString::from_vec(vec![0xff]));
+        std::fs::write(&bad_name, b"untouched").unwrap();
+        let bad = workflow_file_call(
+            &mut client,
+            "workflow_files_test.list",
+            json!({"root":project_root}),
+        )
+        .await;
+        let error: Value = serde_json::from_str(bad["error"].as_str().unwrap()).unwrap();
+        assert_eq!(error["code"], "invalid_data");
+        assert_eq!(std::fs::read(&bad_name).unwrap(), b"untouched");
+        std::fs::remove_file(bad_name).unwrap();
+    }
+    let package_read = workflow_file_call(
+        &mut client,
+        "workflow_files_test.read",
+        json!({"root":{"package":"installed"},"path":"flow.yaml"}),
+    )
+    .await;
+    assert_eq!(
+        package_read,
+        json!({"bytes":package_bytes.to_vec(),"typed":true})
+    );
+    for (method, request) in [
+        (
+            "workflow_files_test.read",
+            json!({"root":{"package":"other"},"path":"private.yaml"}),
+        ),
+        (
+            "workflow_files_other.read",
+            json!({"root":{"package":"installed"},"path":"flow.yaml"}),
+        ),
+        (
+            "workflow_files_test.replace",
+            json!({"root":{"package":"installed"},"path":"flow.yaml","bytes":[]}),
+        ),
+        (
+            "workflow_files_test.create_directory",
+            json!({"root":{"package":"installed"}}),
+        ),
+        (
+            "workflow_files_test.read",
+            json!({"root":{"project":home},"path":"workflow.yaml"}),
+        ),
+    ] {
+        let denied = workflow_file_call(&mut client, method, request).await;
+        let error: Value = serde_json::from_str(denied["error"].as_str().unwrap()).unwrap();
+        assert_eq!(error["name"], "WorkflowFilesError", "{error}");
+        assert_eq!(error["code"], "invalid_path", "{error}");
+        assert_eq!(error["data"]["code"], "invalid_path");
+        assert_eq!(error["data"]["message"], error["message"]);
+    }
+    for path in [
+        "../workflow.json",
+        "../../dimcode.sqlite",
+        "/outside.yaml",
+        "bad\\path.yaml",
+        "workflow.json",
+        ".mcp.json",
+        "bad.yml",
+    ] {
+        for method in ["workflow_files_test.read", "workflow_files_test.replace"] {
+            let mut request = json!({"root":project_root,"path":path});
+            if method.ends_with("replace") {
+                request["bytes"] = json!([]);
+            }
+            let denied = workflow_file_call(&mut client, method, request).await;
+            let error: Value = serde_json::from_str(denied["error"].as_str().unwrap()).unwrap();
+            assert_eq!(error["code"], "invalid_path", "{path}: {error}");
+        }
+    }
+    let forged = workflow_file_call(
+        &mut client,
+        "workflow_files_test.read",
+        json!({"root":0,"path":"flow.yaml"}),
+    )
+    .await;
+    let error: Value = serde_json::from_str(forged["error"].as_str().unwrap()).unwrap();
+    assert_ne!(
+        error["name"], "WorkflowFilesError",
+        "the generated decoder rejects raw indices"
+    );
+    let linked = workflow_file_call(
+        &mut client,
+        "workflow_files_test.read",
+        json!({"root":project_root,"path":"link.yaml"}),
+    )
+    .await;
+    let error: Value = serde_json::from_str(linked["error"].as_str().unwrap()).unwrap();
+    assert_eq!(error["code"], "io", "a link must not expose home bytes");
+    assert_eq!(
+        std::fs::read(package.join("workflows/flow.yaml")).unwrap(),
+        package_bytes
+    );
+    let settings = client
+        .rpc("settings.read", json!({"source":"workflow","scope":"user"}))
+        .await;
+    assert_ok(&settings);
+    let mut document = settings["result"]["document"].clone();
+    document["definitions"] = json!({"user-flow":{"name":"user-flow"}});
+    document["projectEnabled"] = json!({project.to_str().unwrap():{"flow":true}});
+    let denied = workflow_file_call(
+        &mut client,
+        "workflow_files_test.settings_update",
+        document.clone(),
+    )
+    .await;
+    let denied: Value = serde_json::from_str(denied.as_str().unwrap()).unwrap();
+    assert_eq!(denied["error"]["code"], "user_only_field");
+    assert_ok(&client.rpc("settings.update", json!({"source":"workflow","scope":"user","expectedRevision":settings["result"]["revision"],"document":document})).await);
+    let read =
+        workflow_file_call(&mut client, "workflow_files_test.settings_read", json!({})).await;
+    let read: Value = serde_json::from_str(read.as_str().unwrap()).unwrap();
+    assert_eq!(read["value"]["document"], document);
+    let (_, _, loader, _) = controls.recv().await.unwrap();
+    loader.restart("Settings").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let restored = client
+                .rpc(
+                    "workflow_files_test.read",
+                    json!({"root":{"package":"installed"},"path":"flow.yaml"}),
+                )
+                .await;
+            if restored.get("result").is_some() {
+                assert_eq!(restored["result"], package_read);
+                break;
+            }
+            assert_eq!(
+                restored["error"]["data"]["appError"], "service_reloading",
+                "{restored}"
+            );
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // A package under an authorized parent still needs its own explicit host root.
+    let unlisted = home.join("unlisted");
+    std::fs::create_dir_all(unlisted.join("workflows")).unwrap();
+    std::fs::write(unlisted.join("workflows/secret.yaml"), b"unlisted").unwrap();
+    let patch = serde_json::from_value(
+        json!({"id":"workflow-reader","config":{"packages":[{"id":"unlisted","root":unlisted}]}}),
+    )
+    .unwrap();
+    let report = loader
+        .set_overlay("workflow-package-roots", Some(vec![patch]))
+        .await
+        .unwrap();
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|failure| failure.id == "workflow-reader"
+                && failure.error.contains("canonical authorized host root")),
+        "{report:?}"
+    );
+    assert_ok(&client.rpc("session.list", json!({})).await);
+    assert_eq!(
+        std::fs::read(unlisted.join("workflows/secret.yaml")).unwrap(),
+        b"unlisted"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
 }

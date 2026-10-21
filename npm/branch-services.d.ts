@@ -7,6 +7,121 @@ export interface RustError<Name extends string = string, Code extends string = s
   readonly data: Data
 }
 
+/** A branch of a Session. */
+export interface SessionRef {
+  sessionId: string
+  branchId: string
+}
+
+export type PermissionPreset = "read-only" | "workspace-write" | "full-access"
+
+export interface PermissionPolicy {
+  preset?: PermissionPreset
+  allowedTools?: string[]
+  disallowedTools?: string[]
+}
+
+/**
+ * The dispatched policy; `version` is the local sequence of the last
+ * `permission/changed` of this branch, 0 when there is none.
+ */
+export interface PermissionState {
+  version: number | bigint
+  policy: PermissionPolicy
+}
+
+/** A Session service failure; generated exports throw this serde value. */
+export type SessionsError =
+  | { code: "rejected"; message: string }
+  | { code: "agent_unknown"; message: string }
+  | { code: "session_closed"; message: string }
+  | { code: "branch_missing"; message: string }
+  | { code: "reloading"; message: string }
+  | { code: "future_sequence"; message: string }
+  | { code: "ambiguous"; message: string }
+  | { code: "publication_unknown"; message: string }
+  | { code: "failed"; message: string }
+
+export interface Empty {
+}
+
+/** Read-only policy access through the stable Agents directory. */
+export interface SessionPermissions {
+  /**
+   * Reads the branch's dispatched policy while holding its Session lease.
+   * @throws {SessionsErrorThrown}
+   */
+  permission(request: SessionRef): Promise<PermissionState>
+  /**
+   * Reads the current host bound without creating or choosing a Session.
+   * @throws {SessionsErrorThrown}
+   */
+  permissionDefaults(request: Empty): Promise<PermissionPolicy>
+}
+
+export type WorkflowRoot = { project: string } | { package: string }
+
+export interface WorkflowReadRequest {
+  root: WorkflowRoot
+  path: string
+}
+
+export type WorkflowFilesError =
+  | { code: "invalid_path"; message: string }
+  | { code: "closed"; message: string }
+  | { code: "cancelled"; message: string }
+  | { code: "locked"; message: string }
+  | { code: "unsupported"; message: string }
+  | { code: "unsynced"; message: string }
+  | { code: "io"; message: string }
+  | { code: "not_found"; message: string }
+  | { code: "invalid_data"; message: string }
+
+export interface WorkflowDirectoryRequest {
+  root: WorkflowRoot
+}
+
+/** What a directory entry is, without following links. */
+export type EntryKind =
+  | "file"
+  | "directory"
+  | /** A symbolic link, reparse point or special file. Storage operations never follow it. */ "other"
+
+export interface WorkflowFileEntry {
+  name: string
+  kind: EntryKind
+}
+
+export interface WorkflowReplaceRequest {
+  root: WorkflowRoot
+  path: string
+  bytes: Uint8Array
+}
+
+/** Generated access to authorized project definitions and the calling row's packages. */
+export interface WorkflowFiles {
+  /**
+   * Reads raw bytes from one .yaml basename; no S10 envelope or text conversion.
+   * @throws {WorkflowFilesErrorThrown}
+   */
+  read(request: WorkflowReadRequest): Promise<Uint8Array>
+  /**
+   * Lists the fixed definition directory; non-UTF-8 names fail without aliases.
+   * @throws {WorkflowFilesErrorThrown}
+   */
+  list(request: WorkflowDirectoryRequest): Promise<WorkflowFileEntry[]>
+  /**
+   * Atomically replaces a project definition. Package selectors return invalid_path.
+   * @throws {WorkflowFilesErrorThrown}
+   */
+  replace(request: WorkflowReplaceRequest): Promise<void>
+  /**
+   * Ensures only the project's .dimcode and .dimcode/workflows directories.
+   * @throws {WorkflowFilesErrorThrown}
+   */
+  createDirectory(request: WorkflowDirectoryRequest): Promise<void>
+}
+
 export interface TimelineInfo {
   id: string
   parent?: string | null
@@ -131,6 +246,28 @@ export interface BranchLifecycle {
   closing(): Promise<void>
 }
 
+export interface Timeline {
+  ancestors(): Promise<[string, number | bigint][]>
+  /**
+   * Appends one event; it is published once its batch commits. Parts in
+   * other languages write through it like native capabilities (ADR 001).
+   * @throws {AgentErrorThrown}
+   */
+  append(original: { type: string; name: string; data: unknown; tags?: string[] }): Promise<import('./plugin.js').BranchEvent>
+  /**
+   * Published sequence: what is durable and visible to the Dispatcher
+   * and to readers outside the branch.
+   */
+  sequence(): Promise<number | bigint>
+  /**
+   * Last sequence assigned on this bus, published or not. An event is a
+   * fact once it has its sequence; the reads below cover it.
+   */
+  committed(): Promise<number | bigint>
+  /** Pending events participate in idle/close accounting before publication. */
+  hasPending(): Promise<boolean>
+}
+
 export interface TimelineIdentity {
   /** The identity as data, for parts in other languages. */
   get(): Promise<import('./plugin.js').SessionRef>
@@ -139,10 +276,19 @@ export interface TimelineIdentity {
 /** What a method returning `Err(AgentError)` throws. */
 export type AgentErrorThrown = RustError<"AgentError", "InvalidInput" | "Closed" | "UnknownBranch" | "Storage" | "Build" | "Cancelled" | "Reloading" | "Fault" | "Framework" | "Multiple", undefined>
 
+/** What a method returning `Err(SessionsError)` throws. */
+export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "agent_unknown" | "session_closed" | "branch_missing" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
+
+/** What a method returning `Err(WorkflowFilesError)` throws. */
+export type WorkflowFilesErrorThrown = RustError<"WorkflowFilesError", "invalid_path" | "closed" | "cancelled" | "locked" | "unsupported" | "unsynced" | "io" | "not_found" | "invalid_data", WorkflowFilesError>
+
 /** The exported services by name: `ctx.use<Services['name']>('name')`. */
 export interface Services {
+  sessionPermissions: SessionPermissions
+  workflowFiles: WorkflowFiles
   treeCommands: TreeCommands
   dispatcher: Dispatcher
   branchLifecycle: BranchLifecycle
+  timeline: Timeline
   timelineIdentity: TimelineIdentity
 }

@@ -285,7 +285,7 @@ release 构建，同一台 Apple M4，一次性存储放在隔离的 home 下，
 
 子分支（一次 plain Session 的恢复跟踪，子分支截于 `main` 第 3,002 条事件；只计次数，见 §7）：`main` 的前缀在 #224 上被读 5 次，原型下 2 次；子分支自己的事件分别是 11 次和 2 次。
 
-**创建 Session。** 同样的几轮中，`main` 与 #224 创建一个 Session 用 9 ms（plain、tools）和 39 ms（product），原型下是 21 到 24 ms 和 51 ms，尽管新的 `main` 不开始打开期间（`h` = 0，没有祖先链）。原因在存储的写入任务：两轮开始时间至少间隔 20 ms（[storage/timeline.rs](../../../../crates/dim-app-server/src/storage/timeline.rs)、[timeline-storage §3](../../../architecture/rust-agent/timeline-storage.md#3-写入与发布)）。原型的恢复在它自己的 `branch/resume` 那一轮之后 20 ms 内就结束了，所以创建的第一轮要等待。在创建之前暂停 40 ms，原型的创建是 9 ms（plain）和 36 ms（product）。同样的节奏也拉长了原型在小规模恢复中的 `branch/resume` 追加（plain 1k 时 8.5 ms 对 4.1 ms），所以 1k 的比值低估了收益。
+**创建 Session。** 同样的几轮中，`main` 与 #224 创建一个 Session 用 9 ms（plain、tools）和 39 ms（product），原型下是 21 到 24 ms 和 51 ms，尽管新的 `main` 不开始打开期间（`h` = 0，没有祖先链）。原因在存储的写入任务：当时两轮开始时间至少间隔 20 ms（[storage/timeline.rs](../../../../crates/dim-app-server/src/storage/timeline.rs)、[timeline-storage §3](../../../architecture/rust-agent/timeline-storage.md#3-写入与发布)）。原型的恢复在它自己的 `branch/resume` 那一轮之后 20 ms 内就结束了，所以创建的第一轮要等待。在创建之前暂停 40 ms，原型的创建是 9 ms（plain）和 36 ms（product）。同样的节奏也拉长了原型在小规模恢复中的 `branch/resume` 追加（plain 1k 时 8.5 ms 对 4.1 ms），所以 1k 的比值低估了收益。
 
 **实现。** 在 #235 上按同样的方式测量：第 2 阶段之前的 `main`（0fb1d2bf，v16 加 #213）、v17（ae1bbe72）和 #235 的发布构建，都使用 #235 提交的 `restore_cost` 测量程序（两个基线不含其中的打开期间计数）；v16 的 Session 由 v16 构建生成，v17 的 Session 由 v17 构建生成，#235 也恢复这些 Session；每个规模交错两轮、每轮恢复七次，取两轮中位数的平均。恢复加首次 idle（ms）以及恢复期间的堆峰值（MB）：
 
@@ -303,7 +303,7 @@ release 构建，同一台 Apple M4，一次性存储放在隔离的 home 下，
 
 每次恢复除校验外的存储读取：plain 与 tools 为 3 次调用、2.0 次全量历史读取，product 为 8 次调用、2.0 次（v17 为 11 次和 18 次调用）。首次 idle 时，每种配置和规模下的堆与 v17 相差不超过 0.003 MB，也没有存活的打开期间。两轮中位数相差不超过 11%（10k 时不超过 8%）。
 
-**恢复之后创建 Session，予以接受。** 同样的几轮中，#235 创建一个 Session 用 21.1、21.9 和 45.6 ms（plain、tools、product），v17 是 10.1、8.9 和 35.3 ms；在创建之前暂停 40 ms，#235 是 8.8 和 32.6 ms（plain、product），v17 是 8.9 和 32.5 ms。差别来自上面所说的写入任务的轮次节奏，而不是创建本身的工作，只在创建紧跟在恢复最后一轮写入之后 20 ms 内开始时出现。这一节奏是存储的约定，不在本次改动范围内，所以接受这一差别，而不去绕开它。
+**恢复之后创建 Session，予以接受。** 同样的几轮中，#235 创建一个 Session 用 21.1、21.9 和 45.6 ms（plain、tools、product），v17 是 10.1、8.9 和 35.3 ms；在创建之前暂停 40 ms，#235 是 8.8 和 32.6 ms（plain、product），v17 是 8.9 和 32.5 ms。差别来自上面所说的写入任务的轮次节奏，而不是创建本身的工作，只在创建紧跟在恢复最后一轮写入之后 20 ms 内开始时出现。这一节奏是存储的约定，不在本次改动范围内，所以接受这一差别，而不去绕开它。[#238](https://github.com/arcships/dim/issues/238) 随后修改了这一约定（[#243](https://github.com/arcships/dim/pull/243)）：除非待写批次全部是流式输出，上一轮提交后下一轮即开始（[timeline-storage §3](../../../architecture/rust-agent/timeline-storage.md#3-写入与发布)）。在那次修改上测量，恢复之后创建 Session 用 7.8 和 12.0 ms（plain、product），修改前是 24.6 和 51.0 ms。
 
 ## 9. 影响面
 

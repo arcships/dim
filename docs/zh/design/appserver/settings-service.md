@@ -30,6 +30,8 @@ Settings 不赋予任何字段特殊含义。密钥是所有者文档中的普�
 
 不新增插件，不新增 Timeline 事件，不改 Timeline、Dispatcher、rutis 或装配。
 
+同一 Settings 提供者还提供生成的 `workflowFiles`，只访问定义目录；它读取现有项目授权表和原调用进程行声明的包范围，不导出 FileStorage 或原始 root 编号。见[原生定义文件合同](../../../design/p6-p7-bindings.md#3-workflow-definition-files)。
+
 ### 1.1 不做什么
 
 - 不做 `subscribe(source)`。issue 正文列了它，但 S8a 已把变更通知移到 rutis 事件总线（见 issue

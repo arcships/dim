@@ -23,6 +23,8 @@ contract records the native platform acceptance evidence and outstanding checks.
 | `/export markdown PATH` or `/export json PATH` | Export the current main branch to a file while the interactive client is idle. |
 | `/exit` | Detach and exit from the idle interactive prompt. |
 | `!command` / `!!command` | Call the Session's existing `shell.run` in record/private mode, including during a model turn. |
+| `--permission read-only\|workspace-write\|full-access` | Select the preset of a new or resumed Session for `dimcode`, `tui`, `exec` and `exec resume` ([permission controls](#permission-controls)). |
+| `/approvals` (alias `/permissions`) | Show, switch and manage the preset and command rules while the interactive client is idle. |
 
 Global home, workspace, server and model-profile options retain their current
 meanings and work before or after the command. Existing login/account/logout,
@@ -137,6 +139,8 @@ submitted. As the attached interaction client, `exec` actively sends the ordinar
 denial response to an approval request, stops the turn, waits for stop
 settlement, and exits with code 3. It does not change
 `SessionConfig.interactive`. Sessions created as noninteractive retain Approval's existing owner-side policy (#98 D10).
+`--permission` changes only which calls need approval; a call that still asks is denied
+the same way ([headless execution](#headless-execution)).
 Other exit codes retain the native CLI contract, including 2 for turn failure
 and 130 for interruption. A transport failure does not retry a submission.
 Repeated `--image` arguments follow the headless attachment contract: text first,
@@ -208,14 +212,306 @@ interactive export, Ctrl+C reports that the CLI is waiting for the result and
 continues consuming further interrupts until the operation settles. Those
 interrupts do not become an exit or draft-clear action at the next prompt.
 
+## Permission controls
+
+The App Server already owns everything needed to decide tool calls: a branch preset fixed
+at `session.create {permissionPolicy}` and changed with `session.permission.get/update`
+(versioned per branch), and the user's command rules read and replaced with
+`permission.rules`/`permission.set_rules` ([F2](appserver/permission-command-rules.md)). The
+CLI only answered each approval once with `y`. This section adds CLI entry points over those
+contracts and the [F2 §5.4](appserver/permission-command-rules.md#54-always-allow-client-flow)
+client flow. The App Server, Permission, Approval, events, protocol and storage do not change.
+
+| Preset | What runs (Permission's existing decision, after `disallowedTools` and deny rules) |
+| --- | --- |
+| `read-only` | Reads and Session tools run; file writes, commands, network and unclassified tools are denied |
+| `workspace-write` | Reads, file writes and Session tools run; commands, network and unclassified tools ask |
+| `full-access` | Every tool call runs without asking |
+
+A deny rule applies under every preset. An allow rule only turns a question into a run for a
+simple command; it never lifts a denial. The product and configured daemon profiles create
+Sessions with `workspace-write`; that default is unchanged.
+
+### Startup selection
+
+`--permission read-only|workspace-write|full-access` applies to `dimcode`, `tui`, `exec` and
+`exec resume`, before or after the command. Another value, a repeated flag or the flag on any
+other command is an argument error before the daemon starts.
+
+```text
+$ dimcode exec --permission full-access -p 'Run the tests'
+  hello
+  session.create {cwd, permissionPolicy: {preset: "full-access"}}
+  attach -> history -> submit -> idle -> detach
+
+$ dimcode exec resume <session-id> --permission read-only -p 'Summarize'
+  hello
+  session.permission.get {sessionId, branchId: "main"}  -> {version: v, policy}
+     preset already read-only: nothing is written
+  session.permission.update {..., expectedVersion: v, policy: policy with preset read-only}
+     permission_conflict: read again and retry, at most 3 attempts, then exit 1
+  attach -> history -> submit -> idle -> detach
+```
+
+A new Session receives the whole policy `{preset}` in `session.create`: no tool lists, which is
+the product profile's form. Agent members copy this creation policy (see branch semantics). On
+resume the flag replaces only the preset; the stored `allowedTools`/`disallowedTools` are kept.
+The update happens before attach, so no turn submitted by this invocation runs under the old
+preset. Without the flag, `session.create` omits the policy and a resumed Session keeps its own.
+A resume flag against a daemon that does not advertise `session.permission.update` fails before
+attach. A conflict retry is correct here because the requested preset does not depend on what
+the read returned; the read only supplies the version and the tool lists to keep.
+
+The preset is shown where the Session is identified. Interactive start reads it with
+`session.permission.get` when the daemon advertises that method; `exec` prints it to stderr only
+when `--permission` was given, so its existing diagnostics are otherwise unchanged. A
+`permission/changed` event that arrives live on `main`, from this or another client such as a
+paired device, prints one record. The approval reason already names the preset in force.
+
+```text
+$ dimcode --permission read-only
+dimcode · model: provider/model
+local files: /workspace/project
+session: <session-id>
+permission: read-only
+
+> Fix the build
+Assistant: ...
+[permission] main branch preset: workspace-write     <- changed by another client
+```
+
+There is no status line: the scrollback client has no persistent area, and the editor's hint
+line is fixed help text truncated to the terminal width.
+
+### Headless execution
+
+`exec` keeps its contract: an approval request is answered with the ordinary denial, the turn is
+stopped and settled, and the exit code is 3. `--permission` only changes which calls ask. With
+`full-access` nothing asks; with `read-only` writes and commands return Permission's denial to
+the model without a question; with `workspace-write` a command still asks and exits 3. There is
+no automatic approval. The flag is the explicit choice, so `exec` asks for no confirmation.
+
+### Branch semantics
+
+Permission's state for a branch is `SessionConfig.permissionPolicy` folded with the
+`permission/changed` events of its ancestor prefix and then its own. The CLI writes only `main`,
+the branch it submits to, idles on and exports.
+
+```text
+session.create {permissionPolicy}  -->  SessionConfig.permissionPolicy
+        |                                         |
+        v                                         v  copied when a member is created
+ main: permission/changed (CAS on version)    agent member Sessions (Collaboration)
+   ^  written by --permission on resume
+   |  and /approvals
+   +-- branch point --> child branch (branch tool): main's policy at the branch point,
+                         then its own changes
+```
+
+- Child branches that the branch tool creates after a change inherit it. Existing child branches
+  keep their policy; the CLI does not enumerate or update them. Their approval requests are
+  still answered on their own branch id, as today.
+- Agent members copy the leader Session's creation policy. `--permission` on a new Session
+  reaches them; a later change on `main` does not. The confirmation of a switch says so, and
+  requirement R2 below asks Collaboration to copy the leader branch's current policy.
+- A fork copies the source's facts, so it starts with the source's current `main` policy (#26).
+
+### `/approvals`
+
+`/approvals` and its alias `/permissions` run at the idle prompt like the other commands and need
+plain single-line input. Without arguments they read the preset of `main` and, when the daemon
+advertises `permission.rules`, the command rules, numbered. The printed rules and their revision
+are kept for `remove`.
+
+```text
+> /approvals
+Preset (main branch): workspace-write
+  read-only        reads run; writes, commands, network and unclassified tools are denied
+* workspace-write  reads and file writes run; commands, network and unclassified tools ask
+  full-access      every tool call runs without asking
+Command rules (user scope, every Session):
+  1  allow  exact   cargo test -p dim-cli
+  2  deny   prefix  git push
+Usage: /approvals [PRESET | allow|deny exact|prefix COMMAND | remove N]
+
+> /approvals full-access
+Full access runs every tool call, including commands, without asking.
+Switch the main branch to full-access? [y/N]
+Preset unchanged: workspace-write
+
+> /approvals read-only
+Preset (main branch): read-only. Child branches created later inherit it; agent members keep the Session's starting preset.
+
+> /approvals deny prefix git push
+Rule already present: deny prefix `git push`
+
+> /approvals remove 1
+Rule removed: allow exact `cargo test -p dim-cli`
+Command rules (user scope, every Session):
+  1  deny   prefix  git push
+```
+
+| Form | Calls | Conflict |
+| --- | --- | --- |
+| `/approvals` | `session.permission.get` on `main`; `permission.rules` | none |
+| `/approvals PRESET` | `get`; for `full-access` a `[y/N]` confirmation where Enter, any other answer, EOF and Ctrl+C mean No; then `update` with the read version and tool lists | `permission_conflict`: read again, print the current preset, write nothing; the user decides again |
+| `/approvals allow\|deny exact\|prefix COMMAND` | `permission.rules`; unless the same rule exists, `set_rules(revision, rules + rule)`, then print the new list | read again and retry, at most 3 attempts: adding does not depend on the other rules |
+| `/approvals remove N` | `set_rules(listing revision, listing without rule N)`, then print the new list | `permission_rules_conflict`: read again, print the current list, remove nothing |
+
+`remove N` refers to the numbered list printed last. The listing, an added rule, a removal and a
+removal conflict each print the resulting list, and only a printed list is kept for `remove`, so
+a number never refers to a position the user has not seen. A form that prints no list (a rule
+already present, a preset switch, an "always" answer during a turn) keeps the last printed one; if
+the rules changed since, its revision makes the next `remove` fail, and the conflict prints the
+current list. Without a printed list in this process, `remove` asks for `/approvals` first.
+COMMAND is the rest of the line; the CLI rejects an empty command or one containing a separator
+character (`dim_agent_types::COMMAND_SEPARATORS`, the set F2 validates) before any call. A
+preset that is already in force writes nothing. Without the advertised methods, the command
+reports that this daemon does not provide them. While a call is outstanding, Ctrl+C reports
+that the CLI is waiting for the result, as for `/export`. Errors are printed as command errors
+and never become model input.
+
+### "Always allow"
+
+The approval prompt offers `a` when all of these hold; otherwise it is `Allow once? [y/N]` as
+before:
+
+- the call is `exec` or `execute`, the two tools F2 names (the request carries no risk
+  category; a rule for any other tool would never match, so the failure mode is asking again);
+- `call.input.command` is a string with at least one word and no separator character;
+- the daemon advertises `permission.rules` and `permission.set_rules`.
+
+```text
+[approval] exec: Tool `exec` requires approval for starting processes under the workspace-write preset
+  command: cargo test -p dim-cli
+Allow once, always, or deny? [y/a/N] a
+Always allow `cargo test -p dim-cli` (exact). Press Enter, or type its leading words for a prefix rule: cargo test
+[rule saved] allow prefix `cargo test`
+[tool] exec
+[done] exec
+```
+
+`y`/`yes` allows once and `a`/`always` asks for the rule; every other answer, including an
+empty line, denies. At the rule prompt Enter keeps the exact rule; the command's leading words
+make a prefix rule (all its words make the exact rule); other text repeats the rule prompt. EOF
+and Ctrl+C keep their meaning: EOF denies and closes input, Ctrl+C stops the turn.
+
+```text
+ CLI                                    App Server
+  | approval.request {exec, command}  <--|
+  | user: a, rule words                  |
+  | permission.rules ------------------->|  {revision r1, rules}
+  | permission.set_rules(r1, rules+rule)->|  {revision r2}
+  |    permission_rules_conflict: read again and retry (at most 3 attempts)
+  |    other failure: [rule not saved] ..., then "Allow once? [y/N]" for the same request
+  | approval.respond allow ------------->|  Approval rechecks; the rule now answers
+  |                                      |  identical later calls without asking
+```
+
+The rule and the answer are separate writes. A rule that already exists is not written again
+(`[rule present]`). If the request is cancelled while the write is outstanding, the CLI reports
+the rule's outcome and sends no answer. After Ctrl+C it starts no further write: a pending read
+ends as `[rule not saved]`, and the stop settles the request. The recheck after allow (F2 §5.3)
+still applies, so a deny rule written meanwhile wins. Command text is shown through the terminal
+filter.
+
+### Decisions
+
+1. **No default preset in the CLI.** A default for new Sessions is user host configuration
+   that every client creating Sessions must honor: Web, ACP, paired devices and automation as
+   well as `dimcode`. A CLI file or environment variable would make the default depend on the
+   client and become a second source to migrate. The durable place is the daemon's user
+   Settings, read by `session.create`, which is a server change: requirement R1. Until then
+   `--permission` (or a shell alias) selects the preset per invocation.
+2. **No `--allowed-tools`/`--disallowed-tools`.** Tool names belong to the daemon profile and the
+   protocol offers no catalog to validate them, so a misspelled name would be accepted and do
+   nothing. `allowedTools` also bypasses the preset for every call of a tool, which presets and
+   command rules already express more narrowly. The CLI keeps existing lists on every update.
+3. **The CLI writes `main` only** (branch semantics above).
+4. **No Shift+Tab cycle.** The key decoder belongs to the idle draft editor, which returns only
+   send or exit; a running turn reads plain lines. A cycle needs an editor action result and a
+   full-access confirmation inside the editor. `/approvals` covers switching.
+5. **`/approvals` also adds rules.** F2 §8 lists adding as part of the panel, and with product
+   storage the rules live in a database row that the user cannot edit as a file; without `add`
+   a deny rule could not be created from the CLI.
+6. **Retry only when the outcome does not depend on the read.** The startup flag and adding a
+   rule retry conflicts; switching from the panel and removing by number report them, because
+   the user chose from what was shown.
+7. **Confirmation only for an interactive switch to full-access.** The startup flag is itself
+   the explicit choice and works headless.
+
+### Out of scope
+
+| Item | What it needs |
+| --- | --- |
+| A reviewer model that answers approvals for the user | An approval answerer that responds through Approval's public respond operation, with its own model call and design, like the Collaboration leader route; not a CLI change |
+| Allows remembered only for one Session | A recorded fact or a Session-scoped rules source (F2 §10.2 defers per-workspace user rules); a CLI-process memory would answer without a recorded decision |
+| Sandbox settings in the CLI | F5 exposes `host-isolation.json` without a read or write method; HostPlatform management methods with a revision, local only, like `permission.rules` |
+| Shift+Tab cycle | CLI only: an editor action result and a confirmation path (decision 4) |
+| `--allowed-tools`/`--disallowed-tools` | A tool catalog read to validate names at the argument boundary (decision 2) |
+| `/approvals` during a running turn | CLI only: the running turn reads plain lines and answers approvals; panel calls would join its multiplexed loop |
+
+### Rule check
+
+| Rule | Answer |
+| --- | --- |
+| Principles §1 (bounded plugins, App Server only assembles) | No new plugin or Capability; the CLI is a client of existing methods |
+| Principles §3 (dependency direction) | The CLI depends on `dim-agent-types` for `PermissionPolicy`, `CommandRule` and `COMMAND_SEPARATORS`, as it already does for events; nothing depends on the CLI |
+| §4 rule 1 (command events) | Policy changes go through Permission's existing `session.permission.update`, which writes `permission/changed`; rules go through their owner's typed write |
+| §4 rule 2 (handover) | Unchanged |
+| §4 rule 3 (before callback) | Not used |
+| §4 rule 4 (core has no business meaning) | Timeline, Dispatcher and Permission are unchanged; tool names appear only in the CLI's prompt eligibility |
+| §4 rule 5 (batches) | The rule write and the approval answer are separate owners' writes, ordered by the client as F2 §5.4 specifies |
+| §4 rule 6 (context) | The model sees only the existing results and denials |
+| §4 rule 7 (public interfaces only) | Only public methods and notifications; the CLI reads `permission/changed` from the public event stream |
+| §4 rule 8 (infrastructure unchanged) | No change; two requirements are raised below for App Server owners, not infrastructure |
+| §4 rule 9 (only needed facts in Timeline) | No new event; rules stay out of the Timeline |
+| ADR 002 D1 to D5 | No new part, wiring, dependency, configuration or contract |
+| ADR 003 | Presets and rules govern only agent tool calls; `!command` is unaffected; rules are user scope only, so no project file can widen them; replay, restore and fork confer nothing new |
+
+### Requirements raised to mechanism owners
+
+**R1. A user default preset for new Sessions.**
+- Blocked: the feature list's permission policies and tool-approval settings need a default
+  that new Sessions use. `session.create` takes its default from the daemon profile's fixed
+  `session_defaults` (`workspace-write` for product and configured profiles), and no Settings
+  source holds a user choice.
+- Considered: a CLI file or environment variable (only `dimcode` would honor it; other clients
+  and automation would create Sessions with another default); a field in the `permission`
+  source (right owner, but it changes the F2 document and `session.create`, a server change).
+- Needed: a user-scope value, never project scope, that `session.create` uses when the request
+  omits `permissionPolicy`, managed by local-only revisioned methods like `permission.rules`.
+  An existing Session never reads it again: its `SessionConfig` is fixed at creation.
+- Ordering, batches, interruption, reload: none; it is read once at creation and is not an event.
+- Owner: App Server (Sessions service and the `permission` Settings owner); tracked in
+  [#257](https://github.com/arcships/dim/issues/257).
+
+**R2. Agent members follow the leader branch's current policy.**
+- Blocked: "a member works under the leader's policy" holds only until the leader changes its
+  preset. Collaboration copies the leader Session's `SessionConfig.permissionPolicy`, so after
+  `/approvals read-only` new members still start with the creation preset.
+- Considered: the CLI updating each member (it cannot see members' creation and would race it);
+  creating Sessions only through the flag (does not cover later changes).
+- Needed: when Collaboration creates a member, it copies the leader branch's dispatched
+  `PermissionState.policy` (Permission's public state) instead of the creation configuration.
+- Ordering: the member takes the policy dispatched when it is created; later leader changes do
+  not reach existing members, as for child branches.
+- Owner: Collaboration (App Server); tracked in [#257](https://github.com/arcships/dim/issues/257).
+
 ## Implementation and verification
 
 Changes stay in `crates/dim-cli`: `args.rs`/`main.rs` select commands,
 `session.rs` reuses Session execution and its shared paged-history reader,
 `display.rs` keeps human rendering separate from JSON output, and `export.rs`
-formats conversations and writes new files. Conversation formatting belongs to
-the CLI. No App Server, Capability, core lifecycle, protocol, storage migration,
-dependency or runtime registration changes are required.
+formats conversations and writes new files. `permission.rs` holds the permission operations any
+CLI client can call, without terminal input or output: reading and switching the `main` preset
+with version checks, listing, adding and removing command rules with revision checks, and the
+"always allow" steps (the eligible command, the proposed rule, the rule write as request and reply
+steps for a turn loop that multiplexes its connection, and the allow answer).
+`permission_command.rs` is the line-mode `/approvals` command, and the approval prompt stays in
+`session.rs`; both only show results. Conversation formatting belongs to the CLI. No App Server,
+Capability, core lifecycle, protocol, storage migration, dependency or runtime registration changes
+are required.
 
 Reuse `cli_flow.rs` and its actual daemon profile fixture to cover `exec` and
 resume, stdout/stderr separation, public JSON notification preservation,
@@ -226,3 +522,15 @@ usage, child-branch omission/markers, failed or cancelled child creation, and
 Unix file privacy.
 Use isolated homes only. Implementation requires the focused CLI flows and
 affected Clippy.
+
+Permission controls are covered at both boundaries. Scripted daemon flows check the
+`session.create` policy, the resume read/update with a conflict retry, argument errors, the
+`/approvals` listing, switch confirmation, conflict reports, adding and removing rules with the
+new numbered list printed after each, two removals in a row where the second number refers to the
+list the first printed, the "always" prompt with a prefix rule, a conflict retry, a failed write
+that falls back to answering once, an existing rule that is not written again, Ctrl+C during the
+write that abandons the rule, and a command with a separator that is not offered "always". Flows against the built App
+Server (run by CI with `DIM_TEST_APP_SERVER`) check that `exec --permission full-access` runs a
+process tool without a question, that default `exec` still exits 3, that `exec resume
+--permission` changes the resumed branch, and that "always" writes an exact rule after which the
+identical call runs without asking, until `/approvals remove` deletes it.

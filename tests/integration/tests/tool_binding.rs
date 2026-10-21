@@ -138,6 +138,7 @@ fn set(
 struct SourcePlugin {
     scope: SessionScope,
     source: Arc<TestSource>,
+    name: &'static str,
 }
 impl TypedPlugin for SourcePlugin {
     type Deps = ();
@@ -156,7 +157,7 @@ impl TypedPlugin for SourcePlugin {
             });
             ctx.provide_as(self.scope.key::<TestSource>(), source.clone())?;
             ctx.provide_as(
-                self.scope.named_key::<SessionToolSource>("mcp"),
+                self.scope.named_key::<SessionToolSource>(self.name),
                 Arc::new(SessionToolSource(source)),
             )?;
             Ok(Effect::Done)
@@ -194,6 +195,15 @@ fn selection(model_id: &str) -> ModelSelection {
 }
 
 fn env(source: Arc<TestSource>, store: Option<Arc<MemoryTimelineStore>>) -> Env {
+    env_named(source, store, "mcp")
+}
+
+/// `env` with the test source registered under `name`.
+fn env_named(
+    source: Arc<TestSource>,
+    store: Option<Arc<MemoryTimelineStore>>,
+    name: &'static str,
+) -> Env {
     let model = Arc::new(ScriptedModel::default());
     let mut builder = AgentBuilder::new(AgentConfig::default());
     if let Some(store) = store {
@@ -216,10 +226,11 @@ fn env(source: Arc<TestSource>, store: Option<Arc<MemoryTimelineStore>>) -> Env 
         }),
     );
     builder
-        .session_tool_source("mcp")
+        .session_tool_source(name)
         .session_plugin(move |scope| SourcePlugin {
             scope: *scope,
             source: source.clone(),
+            name,
         });
     Env {
         agent: builder.build(),
@@ -333,6 +344,8 @@ struct OptionalContributor {
     scope: SessionScope,
     generations: Arc<AtomicUsize>,
     hold: Arc<Gate>,
+    /// Every generation's contribution, to observe its release.
+    provided: Arc<Mutex<Vec<std::sync::Weak<ToolContribution>>>>,
 }
 struct OptionalHandler {
     generation: usize,
@@ -375,20 +388,25 @@ impl TypedPlugin for OptionalContributor {
     ) -> BoxFuture<'a, std::result::Result<Effect, CordisError>> {
         Box::pin(async move {
             let generation = self.generations.fetch_add(1, Ordering::SeqCst) + 1;
+            let contribution = Arc::new(ToolContribution {
+                definition: definition(
+                    "optional",
+                    "Report provider generation",
+                    serde_json::json!({"type":"object"}),
+                ),
+                handler: Arc::new(OptionalHandler {
+                    generation,
+                    stopping: ctx.cancellation_token(),
+                    hold: self.hold.clone(),
+                }),
+            });
+            self.provided
+                .lock()
+                .unwrap()
+                .push(Arc::downgrade(&contribution));
             ctx.provide_as(
                 self.scope.named_key::<ToolContribution>("optional"),
-                Arc::new(ToolContribution {
-                    definition: definition(
-                        "optional",
-                        "Report provider generation",
-                        serde_json::json!({"type":"object"}),
-                    ),
-                    handler: Arc::new(OptionalHandler {
-                        generation,
-                        stopping: ctx.cancellation_token(),
-                        hold: self.hold.clone(),
-                    }),
-                }),
+                contribution,
             )?;
             Ok(Effect::Done)
         })
@@ -410,13 +428,14 @@ async fn plugin_state(view: &rutis::FiberView, state: rutis::FiberState) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn optional_contributors_do_not_gate_the_loop_and_new_generations_wait_for_reload() {
+async fn optional_contributors_do_not_gate_the_loop_and_follow_new_generations() {
     let root = Ctx::root().unwrap();
     let enabled = root.plugin(capability_plugin(EnableContributor));
     plugin_state(&enabled, rutis::FiberState::Active).await;
     let generations = Arc::new(AtomicUsize::new(0));
     let hold = Arc::new(Gate::default());
     let held = hold.clone();
+    let provided: Arc<Mutex<Vec<std::sync::Weak<ToolContribution>>>> = Arc::default();
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::mock_hosts(&mut builder);
     defaults::install_with_prompt(
@@ -430,10 +449,14 @@ async fn optional_contributors_do_not_gate_the_loop_and_new_generations_wait_for
     builder
         .session_tool("optional")
         .session_tool("absent")
-        .session_plugin(move |scope| OptionalContributor {
-            scope: *scope,
-            generations: generations.clone(),
-            hold: held.clone(),
+        .session_plugin({
+            let provided = provided.clone();
+            move |scope| OptionalContributor {
+                scope: *scope,
+                generations: generations.clone(),
+                hold: held.clone(),
+                provided: provided.clone(),
+            }
         });
     let agent = builder.build_in(&root);
     let session = agent
@@ -525,6 +548,10 @@ async fn optional_contributors_do_not_gate_the_loop_and_new_generations_wait_for
     assert_eq!(registry.state, rutis::FiberState::Active);
     assert_eq!(registry.generation, registry_generation);
 
+    // The provider's next generation is offered without a Session reload
+    // (#241); this configuration has no tool part, so the next request
+    // declares it with no adoption fact.
+    let reloaded = session.sequence("main").unwrap();
     let enabled = root.plugin(capability_plugin(EnableContributor));
     plugin_state(&enabled, rutis::FiberState::Active).await;
     plugin_state(&provider, rutis::FiberState::Active).await;
@@ -533,10 +560,19 @@ async fn optional_contributors_do_not_gate_the_loop_and_new_generations_wait_for
         .await
         .unwrap();
     session.idle("main").await.unwrap();
+    assert_eq!(last_result(&session, "main").await, "generation 2");
+    // Generation 1 is released once its requests finished: nothing that
+    // binds through `bind_current` pins it.
+    assert!(provided.lock().unwrap()[0].upgrade().is_none());
     assert!(
-        last_result(&session, "main")
+        !session
+            .history("main", None)
             .await
-            .contains("provider unloaded")
+            .unwrap()
+            .iter()
+            .any(|event| event.sequence > reloaded
+                && matches!(event.kind, EventKind::ContextConfigured(_))),
+        "a contributed change writes no adoption without a tool part"
     );
     let branches = session.branch_diagnostics("main").unwrap();
     let previous_loop = branches
@@ -569,7 +605,7 @@ async fn optional_contributors_do_not_gate_the_loop_and_new_generations_wait_for
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn fixed_contributors_are_sampled_before_the_first_request_without_initial_configuration() {
+async fn contributors_are_current_for_the_first_request_without_initial_configuration() {
     let root = Ctx::root().unwrap();
     let enabled = root.plugin(capability_plugin(EnableContributor));
     plugin_state(&enabled, rutis::FiberState::Active).await;
@@ -590,6 +626,7 @@ async fn fixed_contributors_are_sampled_before_the_first_request_without_initial
                     scope: *scope,
                     generations: generations.clone(),
                     hold: hold.clone(),
+                    provided: Arc::default(),
                 }
             });
         builder.build_in(&root)
@@ -627,12 +664,10 @@ async fn fixed_contributors_are_sampled_before_the_first_request_without_initial
         .await
         .unwrap();
     session.idle("main").await.unwrap();
+    // Without a tool part each request declares the current contributors, so
+    // the first request already reaches the provider's second generation.
     assert_eq!(declared(&requests(&session).await[0]), ["optional", "echo"]);
-    assert!(
-        last_result(&session, "main")
-            .await
-            .contains("provider unloaded")
-    );
+    assert_eq!(last_result(&session, "main").await, "generation 2");
     let id = session.id().to_owned();
     agent.close().await.unwrap();
 
@@ -1014,6 +1049,7 @@ async fn tool_updates_wait_for_branch_activation_and_do_not_run_after_failed_ass
             .session_plugin(move |scope| SourcePlugin {
                 scope: *scope,
                 source: provider.clone(),
+                name: "mcp",
             });
         let gate = Arc::new(Gate::default());
         let hold = gate.clone();
@@ -1081,4 +1117,30 @@ async fn tool_updates_wait_for_branch_activation_and_do_not_run_after_failed_ass
             "tool update was adopted before branch activation"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registered_sources_keep_their_names_apart_from_contributed_tools() {
+    // `contributed` is an ordinary source name: the registry's own sets use
+    // `#contributed`, which no registered name may contain.
+    let (source, log) = (TestSource::new(), Arc::new(Log::default()));
+    source.seed(vec![set("contributed:a", "v1", &["lookup"], &log, None)]);
+    let env = env_named(source, None, "contributed");
+    let session = env.session().await;
+    adopted(&session, "main", &[("contributed:a", "v1")]).await;
+    env.turn(&session, "main", &["lookup"]).await;
+    assert_eq!(last_result(&session, "main").await, "v1 ran lookup");
+
+    let invalid = env_named(TestSource::new(), None, "#contributed");
+    let error = invalid
+        .agent
+        .create_session(SessionConfig {
+            tools: vec!["gate".into()],
+            ..SessionConfig::default()
+        })
+        .await
+        .err()
+        .expect("an invalid source name fails the Session")
+        .to_string();
+    assert!(error.contains("tool source name"), "{error}");
 }

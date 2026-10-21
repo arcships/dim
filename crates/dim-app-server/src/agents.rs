@@ -35,6 +35,7 @@ pub(crate) use configuration::AgentsSessionPlugin;
 pub(crate) const SESSION_NAMESPACE: &str = "session.agent";
 
 mod sessions;
+pub use sessions::SessionPermissions;
 pub(crate) use sessions::{Lookup, find_input};
 
 /// The process default profile carries the process Session defaults.
@@ -228,6 +229,10 @@ impl TypedPlugin for AgentDirectoryPlugin {
             ctx.provide_as::<dyn HostDispatch>(
                 host_key("sessions"),
                 Arc::new(sessions::SessionsService(ctx.clone())),
+            )?;
+            ctx.provide_as(
+                TypeKey::of::<SessionPermissions>(),
+                Arc::new(SessionPermissions(ctx.clone())),
             )?;
             Ok(Effect::Done)
         })

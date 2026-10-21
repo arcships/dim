@@ -1457,10 +1457,17 @@ async fn node_session_typescript_pending_parts_keep_native_sessions_available() 
             .await["result"],
         "active"
     );
+    // Once active, the late provider's tool is offered to this Session's
+    // next request without a reload (#241).
     submit(&mut client, &session, r#"tool:echo {"text":"after"}"#).await;
+    let mut offered = false;
     while let Ok(names) = requests.try_recv() {
-        assert!(!names.contains(&"late".into()));
+        offered |= names.contains(&"late".into());
     }
+    assert!(
+        offered,
+        "the late provider's tool is offered once it is active"
+    );
     server.shutdown();
     server.join().await.unwrap();
 }
@@ -1809,7 +1816,7 @@ async fn node_session_typescript_row_reload_settles_tools_and_rejects_retained_h
     let mut client = Client::new_version(&server, false, 3).await;
     let session_id = new_session(&mut client, json!(["ts_echo", "echo"])).await;
     let (scope, _, loader, registry) = controls.recv().await.unwrap();
-    let retained = registry.fixed("ts_echo").unwrap();
+    let retained = registry.contributed("ts_echo").unwrap();
     let old = client
         .rpc("session.typescript.status", json!({"sessionId":session_id}))
         .await;
@@ -1858,7 +1865,7 @@ async fn node_session_typescript_row_reload_settles_tools_and_rejects_retained_h
     assert!(session.history("main", None).await.unwrap().iter().any(|event| {
         matches!(&event.kind, EventKind::ToolResult(batch) if batch.results.iter().any(|result| {
             result.result.is_error == Some(true)
-                && result.result.content == dim_agent_types::ToolContent::Text("tool provider generation is unloading; this call may already have taken effect. This tool is unavailable until the Session is reloaded. Check the operation's state before repeating it, including after recovery.".into())
+                && result.result.content == dim_agent_types::ToolContent::Text("tool provider generation is unloading; this call may already have taken effect. Check the operation's state before repeating it with the current provider.".into())
         }))
     }), "an interrupted native wait must preserve uncertainty about the foreign call's effects");
     let result = retained

@@ -314,7 +314,9 @@ async fn restore_settles_interrupted_creates_and_keeps_failed_directories_inacti
             .into(),
         )
         .unwrap();
-    failed_child.close().await.unwrap();
+    dim_agent_runtime::core::close_timeline(&failed_child)
+        .await
+        .unwrap();
     let pending = main
         .append(
             EventKind::BranchCreate(BranchCreateData {
@@ -359,7 +361,9 @@ async fn restore_settles_interrupted_creates_and_keeps_failed_directories_inacti
             .into(),
         )
         .unwrap();
-    partial.close().await.unwrap();
+    dim_agent_runtime::core::close_timeline(&partial)
+        .await
+        .unwrap();
     // A capability wrote a status-only input while the child loaded; the
     // crash came before `branch/start` and the prompt.
     let loading = main
@@ -394,7 +398,9 @@ async fn restore_settles_interrupted_creates_and_keeps_failed_directories_inacti
             .into(),
         )
         .unwrap();
-    loaded.close().await.unwrap();
+    dim_agent_runtime::core::close_timeline(&loaded)
+        .await
+        .unwrap();
     // Committed, then a crash before the child's directory existed.
     let orphan = main
         .append(
@@ -407,7 +413,9 @@ async fn restore_settles_interrupted_creates_and_keeps_failed_directories_inacti
             .into(),
         )
         .unwrap();
-    main.close().await.unwrap();
+    dim_agent_runtime::core::close_timeline(&main)
+        .await
+        .unwrap();
     let probe = Arc::new(Probe::default());
     probe.read_while_opening.store(true, Ordering::SeqCst);
     let mut builder = builder(&probe);

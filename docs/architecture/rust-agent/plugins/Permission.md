@@ -4,6 +4,11 @@ Owner: [permission.rs](../../../../crates/dim-agent-capabilities/src/permission.
 Evaluates tool risk, explicit allow/deny policy and the user's command rules,
 and exposes versioned branch-local permission state.
 
+`PermissionState` is serializable for read-only generated host exports. Agents'
+`sessionPermissions.permission` reads this same dispatched state through the
+Session facade and holds its Session lease; it adds no Permission dependency,
+cache or event.
+
 ## Dependencies
 
 | Service | Purpose |

@@ -8,6 +8,8 @@ mod images;
 mod input;
 mod login;
 mod mcp;
+mod permission;
+mod permission_command;
 mod session;
 
 use args::{Action, Options};

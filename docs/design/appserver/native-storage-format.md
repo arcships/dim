@@ -1,28 +1,29 @@
 # Rust 会话存储格式
 
-The current native format is **v17**, with source-owned `settings_documents`,
-SessionStore's Session-file rows, its title metadata, and request messages
-stored as lists of content-addressed nodes. Startup requires the exact v17 SQL
-schema and a single format marker of 17 before writable PRAGMAs, or the exact
-v16, v15 or v13 schema with its own marker, which the same startup transaction
-upgrades in place to v17 one step after another
+The current native format is **v18**, with source-owned `settings_documents`,
+SessionStore's Session-file rows, its title metadata, request messages stored
+as lists of content-addressed nodes, and extension event rows. Startup requires
+the exact v18 SQL schema and a single format marker of 18 before writable
+PRAGMAs, or the exact v17, v16, v15 or v13 schema with its own marker, which the
+same startup transaction upgrades in place to v18 one step after another
 ([S5a v15 decision](#s5a-v15-格式决定), [S5b v16 decision](#s5b-v16-格式决定),
-[#193 v17 decision](#193-v17-格式决定)). Older databases and the removed
-branch-only v14 `user_configuration` format are unsupported and preserved, never
-migrated, downgraded or interpreted as v13, v15, v16 or v17. No migration API or
-startup option is provided. S5c (Session deletion and fork) kept v15 unchanged
-([S5c decision](#s5c-格式决定)). v13 document bytes remain valid in v17, and v16
-request rows stay readable as written.
+[#193 v17 decision](#193-v17-格式决定), [#2 v18 decision](#2-v18-格式决定)).
+Older databases and the removed branch-only v14 `user_configuration` format are
+unsupported and preserved, never migrated, downgraded or interpreted as v13,
+v15, v16, v17 or v18. No migration API or startup option is provided. S5c
+(Session deletion and fork) kept v15 unchanged ([S5c decision](#s5c-格式决定)).
+v13 document bytes remain valid in v18, and v16 request rows stay readable as
+written.
 Storage versions are independent of RPC versions. Private MCP/Skill business documents do not belong
 in loader rows, events, diagnostics, Sessions or Timelines.
 
-## Current v17 tables
+## Current v18 tables
 
 下表逐列对应 `SqliteStorage::SCHEMA`。新表按业务实体命名，其中 `agent_sessions` 与旧 TypeScript 的 `sessions` 区分；当前启动门禁仍只接受本格式，不因此支持旧表同库存取。`—` 表示 SQL 中没有显式 `DEFAULT`；可空列若省略会得到 SQLite 的隐式 `NULL`。SQLite rowid 表中的 `TEXT PRIMARY KEY` 不自动保证非空，因此下表如实标出 v1 的两个缺口；正常写入仍必须给出 ID。
 
 | 表.列 | SQLite 类型 | 可空 | 默认 | 约束与含义 |
 | --- | --- | --- | --- | --- |
-| `agent_store_format.version` | `INTEGER` | No | — | Primary key, `CHECK(version = 17)`; exactly one row |
+| `agent_store_format.version` | `INTEGER` | No | — | Primary key, `CHECK(version = 18)`; exactly one row |
 | `settings_documents.source` | `TEXT` | No | — | Primary key; `user/mcp`, `user/skills` or `user/mcp-projects`; workspace files are not mirrored |
 | `settings_documents.version` | `INTEGER` | No | — | Positive per-source CAS revision; token `native:<source>:<version>` |
 | `settings_documents.document` | `TEXT` | No | — | Plain business payload JSON, without a `{kind, document}` envelope; unknown business fields are preserved |
@@ -159,7 +160,7 @@ AgentEvent = { id: string, sequence: integer, create_at: integer,
 EventDraft = { tags?: string[], type: string, name: string, data: object }
 ```
 
-`AgentEvent` 与 `EventDraft` 的 `{type,name,data}` 是现有 `EventKind` 标记联合，`data` 由该变体的类型定义（如 `ModelCallData`、`ContextCompactionData`）校验；存储没有第二套业务事件定义。`ModelRequest` 正文为 `{providerId,modelId,messages,tools?,system?,config?,metadata?}`，末尾四项是可选字段，缺省时省略，不能写 `null`。`event` 行有且仅有一个 `record`，其 `sequence = last_sequence = timeline_events.sequence`；`output` 行的 `records` 非空、同一 `kind`/turn/request，逐条保留 ID、sequence、`create_at`、tags、delta、refs、trace 和各自 `batch_end`。输出行只在 `step/text` 或 `step/thinking` 出现，`turn_id`/`request_id` 提到行级并从各 `record.event.data` 移除，读取时补回；`started_at` 是首事件的 `create_at`。合并不改变逻辑事件或原子批次，`last_sequence` 必须等于最后一条的序号。
+`AgentEvent` 与 `EventDraft` 的 `{type,name,data}` 是 `EventKind` 标记联合，核心定义的事件由该变体的类型定义（如 `ModelCallData`、`ContextCompactionData`）校验；存储没有第二套业务事件定义。核心未定义领域的扩展事件（`EventKind::Extension`，[ADR 001](../../adr/001-harness-foundation.md#events-and-ownership-issue-2)）以同一信封原样保存 `data`，`kind` 为 `<type>/<name>`；核心保留领域的行只按其类型解码，解码失败即报错，不当作扩展事件。格式决定见 [#2 v18 格式决定](#2-v18-格式决定)。`ModelRequest` 正文为 `{providerId,modelId,messages,tools?,system?,config?,metadata?}`，末尾四项是可选字段，缺省时省略，不能写 `null`。`event` 行有且仅有一个 `record`，其 `sequence = last_sequence = timeline_events.sequence`；`output` 行的 `records` 非空、同一 `kind`/turn/request，逐条保留 ID、sequence、`create_at`、tags、delta、refs、trace 和各自 `batch_end`。输出行只在 `step/text` 或 `step/thinking` 出现，`turn_id`/`request_id` 提到行级并从各 `record.event.data` 移除，读取时补回；`started_at` 是首事件的 `create_at`。合并不改变逻辑事件或原子批次，`last_sequence` 必须等于最后一条的序号。
 
 写入时只有前一物理行与当前增量同 `kind`、同 `turn_id`/`request_id`，前一行编码长度小于 4096 字节，且当前事件的 `create_at - started_at < 1000` 毫秒，才向该行追加；否则新建 `output` 行。阈值检查发生在追加前，故追加后的行可以超过 4096 字节。读取现有输出行不依赖这些写入侧阈值，只校验行内事件与区间。
 
@@ -220,7 +221,7 @@ ProjectionCheckpoint = {
 
 `agent_store_format.version` 同时标识 SQL 结构、持久化 JSON 和内容寻址规则。已发布格式发生不兼容变化时，必须定义新版本及读取或转换路径。保持版本的条件是旧读取器能正确解释新值、旧写入器不会重写丢失新值，且存储不变量不变。纯运行时重构不改变格式版本。
 
-首版定稿前的开发库兼容范围由上层持久化设计明确，不预设下一版本或迁移字段；S5a 的 Session 文件、S5b 的标题元数据与 #193 的请求列表各自为下一版本作出的决定见下文。
+首版定稿前的开发库兼容范围由上层持久化设计明确，不预设下一版本或迁移字段；S5a 的 Session 文件、S5b 的标题元数据、#193 的请求列表与 #2 的扩展事件各自为下一版本作出的决定见下文。
 
 ### S5a v15 格式决定
 
@@ -289,6 +290,23 @@ ProjectionCheckpoint = {
 - **单向**：不做备份，与 S5a、S5b 相同。v16 守护进程以现有的"unsupported SQLite schema … preserved"错误拒绝升级后的库：其启动门禁比较精确的 SQL 结构，`agent_store_format` 的 `CHECK (version = 17)` 已不同。升级日志沿用 S5a 的那一行：`Upgraded native store <path> from format v16 to v17; earlier dimcode versions cannot open it.`
 - **验证**：测试用 v16 结构的冻结副本和完整记录示例构建一次性 v16 库，升级后核对结构恰为 v17、业务行逐行不变，再续写一条请求行，核对它写出完整列表、旧行仍可读；v15、v13 库一次升级到 v17；标记不符或升级到一半的 v16、v17 结构被拒绝并保留；从不打开用户已有的库（`storage_flow.rs` 的 `a_v16_store_upgrades_in_place_once`、`a_v15_store_upgrades_in_place_once`、`a_v13_store_upgrades_in_place_once` 与 `unsupported_legacy_or_changed_schema_is_rejected_without_migration`）。
 
+### #2 v18 格式决定
+
+[扩展事件](../../adr/001-harness-foundation.md#events-and-ownership-issue-2)（#2）的格式决定：升级到 **v18**，从 v17 原地升级。
+
+- **只增一种行**：核心未定义领域的事件以 `EventKind::Extension` 写入普通 `event` 行，`kind` 为 `<type>/<name>`，`data` 原样保存（见上文[事件封装](#事件封装)）。它不进输出行、不带请求引用；行结构、内容寻址和其他记录的字节不变。
+- **不能留在 v17**：v17 读取器的 `EventKind` 是封闭列表，解码不了扩展事件行，不满足"旧读取器能正确解释新值"。#193 的 v17 起，能打开某版本库的守护进程都能解码其中每一行（见上文 [S5c 决定](#s5c-格式决定)）；留在 v17 就打破这一点，为不兼容的已提交格式沿用了版本号。此后的读取器按领域解码：核心保留领域只按其类型解码，其他领域都读作扩展事件，所以新的扩展领域不再改变格式；新增核心事件仍需各自的格式决定。
+- **SQL 不变**：表、列与索引不变，`agent_store_format` 的约束改为 `CHECK (version = 18)`。
+- **读取或转换路径**：在现有的启动准入事务内处理：
+  - 空库直接建 v18。
+  - 结构恰为 v17 且标记为 17 的库，在同一事务内只重建 `agent_store_format` 并写入 18，不读取、不改写任何业务行；失败则回滚，原 v17 库保持不变。
+  - 结构恰为 v16、v15 或 v13 且标记相符的库，在同一事务内先走已有各步，再走本步，直接成为 v18。
+  - 恰为 v18 的库直接打开。
+  - 其他库（标记不符的 v17 结构、升级到一半的库、更旧的格式、分支专用 v14、未知结构）照旧拒绝并保留。
+- **旧版本的失败方式**：v17 守护进程以现有的"unsupported SQLite schema … preserved"错误在启动时拒绝整个 v18 库：其启动门禁比较精确的 SQL 结构，`agent_store_format` 的 `CHECK (version = 18)` 已不同。留在 v17 时，它会打开该库，到恢复含扩展事件的 Session 时才按[格式不可读](../../architecture/rust-agent/timeline-storage.md#6-故障)拒绝该 Session 并保留数据；v18 让这一失败在启动时出现，并由版本号说明原因。
+- **单向**：不做备份，与 S5a、S5b、#193 相同。升级日志沿用 S5a 的那一行：`Upgraded native store <path> from format v17 to v18; earlier dimcode versions cannot open it.`
+- **验证**：测试用 v17 结构和完整记录示例构建一次性 v17 库，升级后核对结构恰为 v18、标记为 18、业务行逐行不变；v16、v15、v13 库一次升级到 v18；标记不符的 v17、v18 结构被拒绝并保留；扩展事件各占一行、保存 `data` 的原字节、两侧的输出增量不跨它合并，经 Session 恢复原样读出；从不打开用户已有的库（`storage_flow.rs` 的 `a_v17_store_upgrades_in_place_once`、`a_v16_store_upgrades_in_place_once`、`a_v15_store_upgrades_in_place_once`、`a_v13_store_upgrades_in_place_once`、`unsupported_legacy_or_changed_schema_is_rejected_without_migration` 与 `extension_events_keep_their_own_rows_and_restore_unchanged`）。
+
 ## 索引与实际查询
 
 | 版本与索引 | 精确列序/条件 | 服务的查询 |
@@ -320,7 +338,7 @@ ProjectionCheckpoint = {
 
 当前两个 ID 列的 SQL 可空缺口见表结构。永久关闭字段、协作表和旧记录回填在业务范围确定后另行设计。
 
-## 完整记录示例（v17）
+## 完整记录示例（v18）
 
 下例是一条 Session `s1`、主分支 `main` 和子分支 `child` 的全部原生表记录，用于核对存储关系，不代表完整的对话执行序列。为便于阅读，`profile`、`config`、`info` 和事件 `body` 这几个实际为 `TEXT` 的列在展示时解析为 JSON；写入时各自是完整 JSON 字符串，类型规定省略的可选字段照常省略。ID/时间是示例值。`timeline_content.body` 保留实际写入的字符串形式，因此下面各 hash 可以按上文算法复核。`main` 第 4 条 `model/call` 是升级前 v16 写入的行，`child` 第 3 条是升级后 v17 写入的行，示例同时展示两种行混存。
 
@@ -333,7 +351,7 @@ current manual title.
 
 ```json
 {
-  "agent_store_format": [{"version": 17}],
+  "agent_store_format": [{"version": 18}],
   "settings_documents": [],
   "providers": [],
   "provider_selections": [],

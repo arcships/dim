@@ -10,6 +10,17 @@ merged in [#94](https://github.com/arcships/dim/pull/94)). Contract:
 process scope, inside the existing Agents plugin. Consumers: [Scheduler](../plugins/Scheduler.md) (P6) and
 [Workflow](../plugins/Workflow.md) (P7), both TypeScript.
 
+Agents also provides the generated read-only `sessionPermissions` service from
+its stable directory: `permission({sessionId, branchId})` returns live
+`PermissionState`, and `permissionDefaults({})` returns the current host bound.
+Those calls return values or throw generated `RustError`, while `sessions`
+retains its existing envelope. See [native access §2](../p6-p7-bindings.md#2-read-only-permission-access).
+
+Input ownership in §5, §6.2 and §8.3–8.4 follows the accepted
+[native access contract](../p6-p7-bindings.md#4-native-report-settlement): admitted
+input retains its own append/publication outcome, and runtime-row calls drain
+before their original row is replaced.
+
 ## 1. Summary
 
 Agents exposes the process service `sessions`, so a process plugin in any language can start and drive Sessions as
@@ -119,13 +130,18 @@ The call path from a consumer to a Session (a call path, not an assembly graph):
 | Item | Content |
 | --- | --- |
 | Identity | Name `sessions`, process scope, control node only, no instance key |
-| Provider | Agents' directory part. Each call looks up the current `AgentIndex`; while there is none, the call fails `reloading`. A reload of the index fails only the calls in flight and never reloads a consumer (D1) |
+| Provider | Agents' directory part. Each call looks up the current `AgentIndex`; while there is none, the call fails `reloading`. Index reload ends cancellable calls, preserves own-outcome calls (§8.3), and never reloads a consumer (D1) |
 | Calls | All methods are async. Each takes one request object, carried as `[request]` by rutis, and returns one envelope: `{ok: true, value}` or `{ok: false, error: SessionsError}`. The envelope follows the managedProvider [service contract](../../../crates/dim-app-server/README.md#service-contract), with `retryable` added to the error. An unknown method, a missing or extra argument, an unknown field or a wrong type replies `rejected` |
 | Errors | `SessionsError {code, message, retryable}` (§9) |
-| Cancellation | The consumer drops the call. In Rust, dropping the future ends the call and releases its lease; a dropped `launch` still finishes creating and registering its Session (§6.1), like a lost reply. A JavaScript caller cannot drop a call in rutis 0.10, so its waits end as in §8.4 |
+| Cancellation | The consumer drops the call. Dropping a Rust future ends cancellable work and releases its lease. A dropped `launch` still finishes creation (§6.1); admitted `input` retains its task and lease (§6.2). Runtime-row input drains as in §8.4 |
 | Rust consumers | Look up `AgentIndex` on each use, as Rpc looks up Provider, and call the typed methods in Appendix A. They may also use the named service |
 | Core independence | Agents, Rpc and Session assembly never depend on a consumer of `sessions`. Rpc does not use `sessions` |
 | Exposure | Only plugins in the control node's process. `sessions` is not an Rpc method and is never served to a client or exported over a rutis link |
+
+**Input cancellation:** after §6.2 admission,
+dropping any caller's result does not stop the owned input task or release its
+lease early. Only a call with an original runtime row additionally has §8.4's
+row-drain effect; a native Rust caller receives no synthetic row lifetime.
 
 ## 6. Methods
 
@@ -211,10 +227,39 @@ Agents takes the branch's publication watch and calls `Session::input`, which va
 | Not valid | `rejected`, nothing written |
 | Closed Session or unknown branch | `session_closed`, `branch_missing`, nothing written |
 | Committed, but the branch closed or failed before publication | `publication_unknown` |
-| The index unloads while waiting | `reloading`; the input may be committed |
+| The index stops before admission | `reloading`; nothing written |
+| The index unloads after admission | The admitted task's own outcome |
 
 Writes are not deduplicated (A.2). After `publication_unknown`, `reloading` or a lost reply, the caller calls
 `lookup` before writing again.
+
+**Input ownership.** Preparation validates the request,
+acquires the Session lease and obtains the publication watch. Admission is the
+synchronous handoff of that prepared input and lease to an owned task that calls
+`Session::input`. At the final admission check immediately before handoff, check
+index stopping and, for a row call, its captured original generation's
+`Ctx::cancellation_token()`, without an intervening await. A cancellation observed
+there refuses input, even if its drain effect was registered before lease/restore
+preparation. Cancellation after that decision cannot recall an admitted task.
+
+Preparation races index stop, not row retirement. A retiring row waits for an
+already-started Session restore to finish, then the final row-token check refuses
+input. A held restore can therefore delay that row's replacement; no input is
+written while waiting.
+
+| Reload outcome | Reply / ownership |
+| --- | --- |
+| No active index, or index stop observed before admission | `reloading` (`retryable:true`); nothing written |
+| Runtime row already unloading; its drain effect cannot be registered | Same `reloading` envelope; no task started and nothing written |
+| Effect registered, then original row stops during preparation | Final row-token check returns `reloading`; no input admitted or written |
+| Index unload after admission | Await the task's own append/publication outcome; do not substitute `reloading` |
+| Caller discards its result after admission | Task and lease remain until settlement; a lost reply is still uncertain |
+
+This own-outcome lifetime applies to typed Rust and named-service callers alike.
+The original-row drain in §8.4 applies only when `caller_row()` supplies a real
+runtime row. Validation, publication receipts and lookup are unchanged; an actual
+`publication_unknown` still needs lookup. A lost bridge result is not proof that
+the native writer ended.
 
 ### 6.3 lookup
 
@@ -386,19 +431,36 @@ Like every Session, a launched Session stays loaded until it is closed or the pr
 
 ### 8.3 Agents index reload
 
-AgentScope and the Sessions keep running, and the `sessions` service stays. Calls in flight end `reloading` when the
-old index cancels its stopping token; new calls fail `reloading` until the next index is active. Consumers do not
-reload. An `input` or `withdraw` whose reply was `reloading` is resolved with `lookup` or `history`. A `launch` that
+AgentScope and the Sessions keep running, and the `sessions` service stays.
+Cancellable calls end `reloading` when the old index stops; new calls fail
+`reloading` until the next index is active. Consumers do not reload. A `withdraw`
+whose reply was `reloading` is resolved with `history`. A `launch` that
 has started creating its Session is not cut short: it replies that creation's outcome, because a `reloading` reply
 would invite a retry while the first Session is still created (§6.1). Nor is a `delete`: it replies its own outcome
 (§6.8).
 
+Admitted `input` also replies its own outcome. All callers retain the admitted task and Session lease
+through actual append/publication settlement (§6.2). Index stop or original-row
+stop observed at the final admission check returns `reloading` without a write.
+Index reload still does not reload consumers.
+
 ### 8.4 Consumer reload during a call
 
-A consumer's old generation unloads, and rutis 0.10 gives it no way to cancel its pending calls into Rust (§5). An
-`idle` wait goes on until its own end (§6.4) and holds its lease until then; its reply is discarded. A `launch` or
-`input` completes, and its reply is lost. The new generation reads the state again with `lookup`, `idle` and
-`history`. Nothing is harmed: a stale `idle` ends at the Session's next idle point, the same moment a new one would.
+A consumer's old generation unloads. An `idle` wait can continue to its own end
+(§6.4), holding its lease; a lost reply does not close its Session. A `launch` or
+admitted `input` completes even if its reply is lost. The new generation reads the state again with `lookup`, `idle` and
+`history`. A stale `idle` ends at the Session's next idle point, the same moment a
+new one would. Those reads do not prove an old input writer has ended.
+
+**Original-row input drain:** capture `caller_row()`
+synchronously in `HostDispatch::invoke`. Register a drain effect on that original
+row before starting the native call; a row already unloading replies `reloading`
+with no write. The result and effect await the same task, and completed effects
+are removed. Row retirement closes admission and waits for those effects before
+foreign cleanup and replacement. A dropped bridge reply cannot end the native
+work early. A typed Rust caller has the same §6.2 admitted-task lifetime, but no
+row drain; it must join its own work before transfer. A fresh Node process alone
+is not evidence that an earlier native writer settled.
 
 ### 8.5 Delete (S5c)
 

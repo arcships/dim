@@ -26,10 +26,7 @@ use std::{
     io::{BufRead, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
@@ -312,7 +309,33 @@ async fn memory(steps: usize) -> std::result::Result<(), Error> {
     db.close().await?;
     Ok(())
 }
-async fn rounds(branches: usize) -> std::result::Result<(), Error> {
+/// Appends `kind` at `sequence` to `session`'s `main`; the receiver yields
+/// the publish result, the delay in ms, and the WAL syncs so far, which
+/// identify the write round that published it.
+fn timed(
+    store: &SqliteTimelineStore,
+    session: &str,
+    sequence: u64,
+    kind: EventKind,
+) -> Result<tokio::sync::oneshot::Receiver<(Result<()>, f64, usize)>> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let start = Instant::now();
+    store.append(
+        key(session),
+        vec![record(sequence, kind)],
+        Box::new(move |result| {
+            let delay = start.elapsed().as_secs_f64() * 1000.;
+            let _ = sender.send((result, delay, durable_vfs::wal_syncs()));
+        }),
+    )?;
+    Ok(receiver)
+}
+/// `rounds [BRANCHES [PER_SECOND [CHAINS]]]`: for five seconds each of
+/// BRANCHES Sessions appends a 128-byte `step/text` delta PER_SECOND times a
+/// second, the branches spread over the period, while each of CHAINS more
+/// Sessions runs chains of ten `turn/start` writes, each appended once the
+/// previous one is published, 20 to 80 ms apart.
+async fn rounds(branches: usize, per_second: f64, chains: usize) -> std::result::Result<(), Error> {
     durable_vfs::install_tracking();
     let directory = directory("rounds");
     let db = SqliteStorage::open(directory.join("dimcode.sqlite"))?;
@@ -322,69 +345,103 @@ async fn rounds(branches: usize) -> std::result::Result<(), Error> {
             .create_session(&format!("stream-{index}"), &SessionConfig::default())
             .await?;
     }
+    for index in 0..chains {
+        store
+            .create_session(&format!("chain-{index}"), &SessionConfig::default())
+            .await?;
+    }
     durable_vfs::reset_measurement();
-    let mut times = Vec::new();
-    let mut enqueue = Vec::new();
     let started = Instant::now();
-    let stop = Arc::new(AtomicBool::new(false));
-    let stopped = stop.clone();
-    let path = directory.join("dimcode.sqlite");
-    let observer = std::thread::spawn(move || {
-        let connection = Connection::open(path).unwrap();
-        let mut sequence: i64 = 0;
-        let mut commits = Vec::new();
-        while !stopped.load(Ordering::Relaxed) {
-            let current: i64 = connection.query_row("SELECT sequence FROM timeline_branches WHERE session_id = 'stream-0' AND branch_id = 'main'", [], |row| row.get(0)).unwrap();
-            if current != sequence {
-                sequence = current;
-                commits.push(started.elapsed().as_secs_f64() * 1000.);
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        commits
-    });
-    let mut sequence = 0;
-    while started.elapsed() < Duration::from_secs(2) {
-        sequence += 1;
-        for index in 0..branches {
-            let start = Instant::now();
-            let (sender, receiver) = tokio::sync::oneshot::channel();
-            store.append(
-                key(&format!("stream-{index}")),
-                vec![record(
-                    sequence,
-                    EventKind::Text(DeltaData {
-                        turn_id: "turn".into(),
-                        request_id: "request".into(),
-                        delta: "x".repeat(128),
-                    }),
-                )],
-                Box::new(move |result| {
-                    let _ = sender.send((result, start.elapsed().as_secs_f64() * 1000.));
-                }),
-            )?;
-            enqueue.push(start.elapsed().as_secs_f64() * 1000.);
-            times.push(receiver);
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
+    let end = started + Duration::from_secs(5);
+    let period = Duration::from_secs_f64(1. / per_second);
+    let streams: Vec<_> = (0..branches)
+        .map(|index| {
+            let store = store.clone();
+            tokio::spawn(async move {
+                let first = started + period.mul_f64(index as f64 / branches as f64);
+                let mut tick = tokio::time::interval_at(first.into(), period);
+                let (mut published, mut enqueue) = (vec![], vec![]);
+                let mut sequence = 0;
+                while tick.tick().await.into_std() < end {
+                    sequence += 1;
+                    let start = Instant::now();
+                    published.push(timed(
+                        &store,
+                        &format!("stream-{index}"),
+                        sequence,
+                        EventKind::Text(DeltaData {
+                            turn_id: "turn".into(),
+                            request_id: "request".into(),
+                            delta: "x".repeat(128),
+                        }),
+                    )?);
+                    enqueue.push(start.elapsed().as_secs_f64() * 1000.);
+                }
+                let mut delays = vec![];
+                for receiver in published {
+                    let (result, delay, round) = receiver.await?;
+                    result?;
+                    delays.push((delay, round));
+                }
+                Ok::<_, Error>((delays, enqueue))
+            })
+        })
+        .collect();
+    let writers: Vec<_> = (0..chains)
+        .map(|index| {
+            let store = store.clone();
+            tokio::spawn(async move {
+                let session = format!("chain-{index}");
+                let (mut hops, mut chains) = (vec![], vec![]);
+                let mut sequence = 0;
+                while Instant::now() < end {
+                    let pause = 20 + ((chains.len() + index) as u64 * 37) % 61;
+                    tokio::time::sleep(Duration::from_millis(pause)).await;
+                    let began = Instant::now();
+                    for _ in 0..10 {
+                        sequence += 1;
+                        let kind = EventKind::TurnStart(TurnStartData {
+                            turn_id: format!("turn-{sequence}"),
+                        });
+                        let (result, delay, round) =
+                            timed(&store, &session, sequence, kind)?.await?;
+                        result?;
+                        hops.push((delay, round));
+                    }
+                    chains.push(began.elapsed().as_secs_f64() * 1000.);
+                }
+                Ok::<_, Error>((hops, chains))
+            })
+        })
+        .collect();
+    let (mut delay, mut enqueue) = (vec![], vec![]);
+    let mut rounds = std::collections::BTreeSet::new();
+    for stream in streams {
+        let (delays, enqueued) = stream.await??;
+        rounds.extend(delays.iter().map(|(_, round)| *round));
+        delay.extend(delays.into_iter().map(|(delay, _)| delay));
+        enqueue.extend(enqueued);
     }
-    let mut delay = Vec::new();
-    for receiver in times {
-        let (result, elapsed) = receiver.await?;
-        result?;
-        delay.push(elapsed);
+    let (mut hops, mut ten_hops) = (vec![], vec![]);
+    for writer in writers {
+        let (delays, chained) = writer.await??;
+        rounds.extend(delays.iter().map(|(_, round)| *round));
+        hops.extend(delays.into_iter().map(|(delay, _)| delay));
+        ten_hops.extend(chained);
     }
-    stop.store(true, Ordering::Relaxed);
-    let commits = observer.join().unwrap();
-    let connection = Connection::open(directory.join("dimcode.sqlite"))?;
-    let output_rows: i64 =
-        connection.query_row("SELECT count(*) FROM timeline_events", [], |row| row.get(0))?;
-    let wal = std::fs::metadata(directory.join("dimcode.sqlite-wal"))?.len();
-    let intervals: Vec<_> = commits.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    let elapsed = started.elapsed().as_secs_f64();
     let (written, syncs) = durable_vfs::measurement();
+    let connection = Connection::open(directory.join("dimcode.sqlite"))?;
+    let output_rows: i64 = connection.query_row(
+        "SELECT count(*) FROM timeline_events WHERE kind = 'step/text'",
+        [],
+        |row| row.get(0),
+    )?;
+    let wal = std::fs::metadata(directory.join("dimcode.sqlite-wal"))?.len();
+    let at = |values: &mut Vec<f64>, p| (!values.is_empty()).then(|| quantile(values, p));
     println!(
         "{}",
-        serde_json::json!({"scenario":"rounds","branches":branches,"events":branches*sequence as usize,"observedTransactions":commits.len(),"writeRoundsPerSecond":commits.len() as f64/(started.elapsed().as_secs_f64()),"roundIntervalMinMs":intervals.iter().copied().reduce(f64::min),"publishP50Ms":quantile(&mut delay,0.5),"publishP99Ms":quantile(&mut delay,0.99),"enqueueP99Ms":quantile(&mut enqueue,0.99),"walFileBytes":wal,"walWrittenBytes":written,"walWriteBytesPerSecond":written as f64/started.elapsed().as_secs_f64(),"walSyncs":syncs.len(),"physicalOutputRows":output_rows,"debugAssertions":cfg!(debug_assertions),"database":directory})
+        serde_json::json!({"scenario":"rounds","branches":branches,"perSecond":per_second,"chains":chains,"events":delay.len(),"writeRounds":rounds.len(),"writeRoundsPerSecond":rounds.len() as f64/elapsed,"publishP50Ms":at(&mut delay,0.5),"publishP99Ms":at(&mut delay,0.99),"enqueueP99Ms":at(&mut enqueue,0.99),"walFileBytes":wal,"walWrittenBytes":written,"walWriteBytesPerSecond":written as f64/elapsed,"walSyncs":syncs.len(),"walSyncsPerSecond":syncs.len() as f64/elapsed,"physicalOutputRows":output_rows,"chainHops":hops.len(),"chainWritesPerSecond":hops.len() as f64/elapsed,"chainHopP50Ms":at(&mut hops,0.5),"chainHopP99Ms":at(&mut hops,0.99),"chainP50Ms":at(&mut ten_hops,0.5),"debugAssertions":cfg!(debug_assertions),"database":directory})
     );
     store.close().await?;
     db.close().await?;
@@ -838,7 +895,26 @@ async fn main() -> std::result::Result<(), Error> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("memory") => memory(args.next().map(|n| n.parse()).transpose()?.unwrap_or(2000)).await,
-        Some("rounds") => rounds(args.next().map(|n| n.parse()).transpose()?.unwrap_or(64)).await,
+        Some("rounds") => {
+            let usage = "usage: rounds [BRANCHES [PER_SECOND [CHAINS]]], BRANCHES and CHAINS counts (default 64 and 0, not both 0), PER_SECOND a positive rate (default 200)";
+            let count = |arg: Option<String>, default| {
+                arg.map_or(Some(default), |count| count.parse::<usize>().ok())
+                    .ok_or(usage)
+            };
+            let branches = count(args.next(), 64)?;
+            let per_second = args
+                .next()
+                .map_or(Some(200.), |rate| rate.parse::<f64>().ok())
+                .filter(|&rate| {
+                    Duration::try_from_secs_f64(1. / rate).is_ok_and(|period| !period.is_zero())
+                })
+                .ok_or(usage)?;
+            let chains = count(args.next(), 0)?;
+            if branches == 0 && chains == 0 || args.next().is_some() {
+                return Err(usage.into());
+            }
+            rounds(branches, per_second, chains).await
+        }
         Some("reads") => reads().await,
         Some("paged-reads") => paged_reads().await,
         Some("crash-child") => {
@@ -859,6 +935,6 @@ async fn main() -> std::result::Result<(), Error> {
             .await
         }
         Some("powerloss") => power_parent().await,
-        _ => Err("expected memory [steps], rounds [branches], reads, crashes, or powerloss".into()),
+        _ => Err("expected memory [steps], rounds [branches [per-second [chains]]], reads, crashes, or powerloss".into()),
     }
 }

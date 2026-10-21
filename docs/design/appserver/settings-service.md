@@ -33,6 +33,11 @@ management methods. F2's `permission.rules`/`permission.set_rules` stay (§8.1).
 
 No new plugin, no Timeline event, no change to Timeline, Dispatcher, rutis or assembly.
 
+The same Settings provider supplies generated `workflowFiles` for definition
+directories. It reads the existing project authorization map and the original
+process caller’s declared package scope, without exporting FileStorage or raw
+root indices. See the [native definition-file contract](../p6-p7-bindings.md#3-workflow-definition-files).
+
 ### 1.1 What this does not do
 
 - No `subscribe(source)`. The issue text lists it, but S8a moved change notification to the rutis

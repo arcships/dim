@@ -28,6 +28,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Rounds of output deltas alone wait until this long after the previous
+/// round started (timeline storage §3).
+const ROUND_WINDOW: Duration = Duration::from_millis(20);
 struct Pending {
     key: TimelineKey,
     events: Vec<StoredEvent>,
@@ -57,6 +60,8 @@ pub struct SqliteTimelineStore {
     memo: Option<Mutex<Memo>>,
     #[cfg(feature = "testing")]
     node_loads: Mutex<codec::NodeLoads>,
+    #[cfg(feature = "testing")]
+    round_deadlines: Mutex<Vec<Option<Instant>>>,
 }
 struct Admission {
     sender: mpsc::Sender<Command>,
@@ -95,19 +100,35 @@ struct Round {
 }
 impl SqliteTimelineStore {
     pub fn new(db: Arc<SqliteStorage>) -> Arc<Self> {
-        Self::start(db, CONTENT_BUDGET, true)
+        Self::start(db, CONTENT_BUDGET, true, ROUND_WINDOW)
     }
     /// A store whose reads keep at most `bytes` of decoded request content;
     /// flow tests make it small to force evictions. Feature `testing` only.
     #[cfg(feature = "testing")]
     pub fn with_content_budget(db: Arc<SqliteStorage>, bytes: usize) -> Arc<Self> {
-        Self::start(db, bytes, true)
+        Self::start(db, bytes, true, ROUND_WINDOW)
     }
     /// A store whose writer has no memo, so that every request write reads
     /// its previous request from the store. Feature `testing` only.
     #[cfg(feature = "testing")]
     pub fn without_writer_memo(db: Arc<SqliteStorage>) -> Arc<Self> {
-        Self::start(db, CONTENT_BUDGET, false)
+        Self::start(db, CONTENT_BUDGET, false, ROUND_WINDOW)
+    }
+    /// A store whose rounds of output deltas wait until `window` after the
+    /// previous round started; a flow test makes it longer than its publish
+    /// timeout, so that a wait the writer should end or not begin fails the
+    /// test. Feature `testing` only.
+    #[cfg(feature = "testing")]
+    pub fn with_round_window(db: Arc<SqliteStorage>, window: Duration) -> Arc<Self> {
+        Self::start(db, CONTENT_BUDGET, true, window)
+    }
+    /// For each write round since the last call, the instant until which it
+    /// was to wait for more batches: the window after the previous round
+    /// started when it began with output deltas, `None` when it started at
+    /// once. Feature `testing` only.
+    #[cfg(feature = "testing")]
+    pub fn take_round_deadlines(&self) -> Vec<Option<Instant>> {
+        std::mem::take(&mut *self.round_deadlines.lock().unwrap())
     }
     /// The node rows reads and the writer loaded since the last call, how
     /// they were spread over connection holds, and the nodes the writer
@@ -129,7 +150,12 @@ impl SqliteTimelineStore {
             })
         })
     }
-    fn start(db: Arc<SqliteStorage>, content_budget: usize, memo: bool) -> Arc<Self> {
+    fn start(
+        db: Arc<SqliteStorage>,
+        content_budget: usize,
+        memo: bool,
+        window: Duration,
+    ) -> Arc<Self> {
         let (sender, receiver) = mpsc::channel();
         let store = Arc::new(Self {
             db,
@@ -145,6 +171,8 @@ impl SqliteTimelineStore {
             memo: memo.then(Mutex::default),
             #[cfg(feature = "testing")]
             node_loads: Mutex::default(),
+            #[cfg(feature = "testing")]
+            round_deadlines: Mutex::default(),
         });
         let weak = Arc::downgrade(&store);
         let writer = thread::spawn(move || {
@@ -164,21 +192,45 @@ impl SqliteTimelineStore {
                     }
                     Command::Close => break,
                 };
-                if let Some(started) = last_round {
-                    thread::sleep(Duration::from_millis(20).saturating_sub(started.elapsed()));
-                }
+                // A round takes every pending batch up to the next control
+                // command. While they all hold output-row events only, it
+                // waits for more until the window after the previous round
+                // started (timeline storage §3): an output row grows by
+                // rewriting its page, and a round writes each page it
+                // touched to the WAL and syncs once, so the window bounds
+                // those rewrites and syncs. Any other batch ends the wait.
+                let outputs = |batch: &Pending| {
+                    batch
+                        .events
+                        .iter()
+                        .all(|record| output_row(record.event.kind.key()))
+                };
+                let mut deadline = last_round
+                    .filter(|_| outputs(&first))
+                    .map(|started| started + window);
+                #[cfg(feature = "testing")]
+                let waited = deadline;
                 let mut pending = vec![first];
-                while let Ok(command) = receiver.try_recv() {
-                    match command {
-                        Command::Append(batch) => pending.push(batch),
-                        command => {
+                loop {
+                    let wait = deadline.map_or(Duration::ZERO, |deadline| {
+                        deadline.saturating_duration_since(Instant::now())
+                    });
+                    match receiver.recv_timeout(wait) {
+                        Ok(Command::Append(batch)) => {
+                            deadline = deadline.filter(|_| outputs(&batch));
+                            pending.push(batch);
+                        }
+                        Ok(command) => {
                             control = Some(command);
                             break;
                         }
+                        Err(_) => break,
                     }
                 }
                 last_round = Some(Instant::now());
                 let Some(store) = weak.upgrade() else { break };
+                #[cfg(feature = "testing")]
+                store.round_deadlines.lock().unwrap().push(waited);
                 store.commit_round(pending);
             }
         });
@@ -1237,6 +1289,12 @@ impl Row {
         }
     }
 }
+/// Whether events of `kind` are streamed model output, which `write_batch`
+/// merges into output rows (native storage format). Output rows carry no
+/// identity index, and a write round of them alone waits for its window.
+fn output_row(kind: &str) -> bool {
+    matches!(kind, "step/text" | "step/thinking")
+}
 fn head(connection: &Connection, key: &TimelineKey) -> Result<u64> {
     connection
         .query_row(
@@ -1396,7 +1454,7 @@ impl Fetched {
                 records,
                 ..
             } => {
-                if kind != "step/text" && kind != "step/thinking" {
+                if !output_row(&kind) {
                     return Err(error("output row has invalid event kind"));
                 }
                 records
@@ -1960,7 +2018,7 @@ async fn validate_session(
                 ..
             } in page
             {
-                let indexed = !matches!(kind.as_str(), "step/text" | "step/thinking");
+                let indexed = !output_row(&kind);
                 if indexed && event_id.as_deref() != Some(records[0].event.id.as_str())
                     || !indexed && event_id.is_some()
                 {

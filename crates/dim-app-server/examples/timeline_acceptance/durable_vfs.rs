@@ -24,6 +24,7 @@ static IMAGES: OnceLock<PathBuf> = OnceLock::new();
 static INTERRUPT: AtomicBool = AtomicBool::new(false);
 static WAL_BYTES: AtomicU64 = AtomicU64::new(0);
 static WAL_SYNCS: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
+static PLAIN_FSYNC: OnceLock<bool> = OnceLock::new();
 
 pub fn install(images: PathBuf) {
     std::fs::create_dir_all(&images).unwrap();
@@ -57,6 +58,11 @@ pub fn interrupt_next_wal_sync() {
 pub fn reset_measurement() {
     WAL_BYTES.store(0, Ordering::SeqCst);
     WAL_SYNCS.lock().unwrap().clear();
+}
+
+/// The WAL syncs since the last reset.
+pub fn wal_syncs() -> usize {
+    WAL_SYNCS.lock().unwrap().len()
 }
 
 pub fn measurement() -> (u64, Vec<Instant>) {
@@ -144,6 +150,17 @@ unsafe extern "C" fn sync(file: *mut ffi::sqlite3_file, flags: i32) -> i32 {
             std::thread::park();
         }
     }
+    // `TIMELINE_ACCEPTANCE_PLAIN_FSYNC` turns macOS F_FULLFSYNC into a plain
+    // fsync, a model of a disk whose sync is fast; SQLite uses F_FULLFSYNC
+    // nowhere else.
+    let flags = if flags & 0x0f == ffi::SQLITE_SYNC_FULL
+        && *PLAIN_FSYNC
+            .get_or_init(|| std::env::var_os("TIMELINE_ACCEPTANCE_PLAIN_FSYNC").is_some())
+    {
+        (flags & !0x0f) | ffi::SQLITE_SYNC_NORMAL
+    } else {
+        flags
+    };
     let result = unsafe {
         (*(original as *const ffi::sqlite3_io_methods))
             .xSync

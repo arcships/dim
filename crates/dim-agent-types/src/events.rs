@@ -1,5 +1,5 @@
 use crate::*;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de};
 
 use std::sync::Arc;
 
@@ -957,10 +957,106 @@ pub enum EventKind {
     CollaborationDelivered(CollaborationDeliveredData),
     CollaborationResult(CollaborationResultData),
     SessionForked(SessionForkedData),
+    /// An event whose type the core does not define (ADR 001, issue #2).
+    Extension(ExtensionEvent),
+}
+
+/// Domains (`type` values) of the events [`EventKind`] defines. They are
+/// reserved for those typed events: an [`ExtensionEvent`] cannot use them.
+pub const RESERVED_DOMAINS: [&str; 13] = [
+    "input",
+    "stop",
+    "approval",
+    "permission",
+    "exec",
+    "turn",
+    "prompt",
+    "context",
+    "model",
+    "step",
+    "branch",
+    "collaboration",
+    "session",
+];
+
+/// An event in a domain the core does not define. Its payload is the
+/// contract of the extension that introduces the type, guaranteed by its
+/// producer; the core carries it unchanged. Construction checks only the
+/// envelope: a non-empty domain and name without `/` or `*`, in a domain
+/// outside [`RESERVED_DOMAINS`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "ExtensionWire", into = "ExtensionWire")]
+pub struct ExtensionEvent {
+    key: String,
+    split: usize,
+    data: serde_json::Value,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ExtensionWire {
+    r#type: String,
+    name: String,
+    data: serde_json::Value,
+}
+
+impl ExtensionEvent {
+    pub fn new(
+        domain: impl Into<String>,
+        name: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Result<Self, String> {
+        let (domain, name) = (domain.into(), name.into());
+        for (part, value) in [("domain", &domain), ("name", &name)] {
+            if value.is_empty() || value.contains(['/', '*']) {
+                return Err(format!(
+                    "extension event {part} {value:?} must be non-empty without '/' or '*'"
+                ));
+            }
+        }
+        if RESERVED_DOMAINS.contains(&domain.as_str()) {
+            return Err(format!(
+                "extension event `{domain}/{name}`: domain `{domain}` is reserved for core events"
+            ));
+        }
+        Ok(Self {
+            split: domain.len(),
+            key: format!("{domain}/{name}"),
+            data,
+        })
+    }
+    pub fn domain(&self) -> &str {
+        &self.key[..self.split]
+    }
+    pub fn name(&self) -> &str {
+        &self.key[self.split + 1..]
+    }
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+    pub fn data(&self) -> &serde_json::Value {
+        &self.data
+    }
+}
+
+impl TryFrom<ExtensionWire> for ExtensionEvent {
+    type Error = String;
+    fn try_from(wire: ExtensionWire) -> Result<Self, String> {
+        Self::new(wire.r#type, wire.name, wire.data)
+    }
+}
+
+impl From<ExtensionEvent> for ExtensionWire {
+    fn from(event: ExtensionEvent) -> Self {
+        Self {
+            r#type: event.domain().into(),
+            name: event.name().into(),
+            data: event.data,
+        }
+    }
 }
 
 impl EventKind {
-    pub fn key(&self) -> &'static str {
+    pub fn key(&self) -> &str {
         match self {
             Self::InputMessage(_) => "input/message",
             Self::InputApplied(_) => "input/applied",
@@ -1010,6 +1106,7 @@ impl EventKind {
             Self::CollaborationDelivered(_) => "collaboration/delivered",
             Self::CollaborationResult(_) => "collaboration/result",
             Self::SessionForked(_) => "session/forked",
+            Self::Extension(event) => event.key(),
         }
     }
 
@@ -1027,10 +1124,9 @@ impl EventKind {
     }
 }
 
-// Decode with nested tagged enums to retain typed payload validation without
-// converting known payloads through serde_json::Value.
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+// A core event by domain: each domain's nested tagged enum keeps typed payload
+// validation and serde's field errors without converting payloads through
+// serde_json::Value.
 enum TaggedEvent {
     Input(InputEvent),
     Stop(StopEvent),
@@ -1045,6 +1141,31 @@ enum TaggedEvent {
     Branch(BranchEvent),
     Collaboration(CollaborationEvent),
     Session(SessionEvent),
+}
+
+impl TaggedEvent {
+    /// Decodes the rest of an event whose `type` is the core domain `domain`.
+    fn deserialize<'de, D: serde::Deserializer<'de>>(
+        domain: &str,
+        rest: D,
+    ) -> Result<Self, D::Error> {
+        Ok(match domain {
+            "input" => Self::Input(Deserialize::deserialize(rest)?),
+            "stop" => Self::Stop(Deserialize::deserialize(rest)?),
+            "approval" => Self::Approval(Deserialize::deserialize(rest)?),
+            "permission" => Self::Permission(Deserialize::deserialize(rest)?),
+            "exec" => Self::Exec(Deserialize::deserialize(rest)?),
+            "turn" => Self::Turn(Deserialize::deserialize(rest)?),
+            "prompt" => Self::Prompt(Deserialize::deserialize(rest)?),
+            "context" => Self::Context(Deserialize::deserialize(rest)?),
+            "model" => Self::Model(Deserialize::deserialize(rest)?),
+            "step" => Self::Step(Deserialize::deserialize(rest)?),
+            "branch" => Self::Branch(Deserialize::deserialize(rest)?),
+            "collaboration" => Self::Collaboration(Deserialize::deserialize(rest)?),
+            "session" => Self::Session(Deserialize::deserialize(rest)?),
+            _ => return Err(de::Error::unknown_variant(domain, &RESERVED_DOMAINS)),
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -1208,9 +1329,101 @@ enum CollaborationEvent {
     Result(CollaborationResultData),
 }
 
+// The domain picks the decoder before the payload is read: a reserved domain
+// decodes only through its typed contract, so a malformed core event fails
+// with serde's own error; any other domain is an extension event whose data is
+// kept as given. Entries before `type` are held until then; events as written
+// put `type` before `name` and `data`, so none are.
 impl<'de> Deserialize<'de> for EventKind {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(match TaggedEvent::deserialize(deserializer)? {
+        deserializer.deserialize_map(EventVisitor)
+    }
+}
+
+struct EventVisitor;
+
+impl<'de> de::Visitor<'de> for EventVisitor {
+    type Value = EventKind;
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("an event with `type`, `name` and `data`")
+    }
+    fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<EventKind, A::Error> {
+        use de::Error;
+        let (mut domain, mut name, mut data) = (None::<String>, None, None);
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "type" if domain.is_none() => {
+                    let value: String = map.next_value()?;
+                    if RESERVED_DOMAINS.contains(&value.as_str()) {
+                        let rest = Rest {
+                            held: [
+                                name.map(|name| ("name", serde_json::Value::String(name))),
+                                data.map(|data| ("data", data)),
+                            ],
+                            value: None,
+                            map,
+                        };
+                        return TaggedEvent::deserialize(
+                            &value,
+                            de::value::MapAccessDeserializer::new(rest),
+                        )
+                        .map(EventKind::from);
+                    }
+                    domain = Some(value);
+                }
+                "name" if name.is_none() => name = Some(map.next_value::<String>()?),
+                "data" if data.is_none() => data = Some(map.next_value::<serde_json::Value>()?),
+                "type" => return Err(A::Error::duplicate_field("type")),
+                "name" => return Err(A::Error::duplicate_field("name")),
+                "data" => return Err(A::Error::duplicate_field("data")),
+                _ => return Err(A::Error::unknown_field(&key, &["type", "name", "data"])),
+            }
+        }
+        ExtensionEvent::new(
+            domain.ok_or_else(|| A::Error::missing_field("type"))?,
+            name.ok_or_else(|| A::Error::missing_field("name"))?,
+            data.ok_or_else(|| A::Error::missing_field("data"))?,
+        )
+        .map(EventKind::Extension)
+        .map_err(A::Error::custom)
+    }
+}
+
+/// The rest of a core event after its `type`: the entries held before it,
+/// `name` first so the tag picks the payload type, then the map's own.
+struct Rest<A> {
+    held: [Option<(&'static str, serde_json::Value)>; 2],
+    value: Option<serde_json::Value>,
+    map: A,
+}
+
+impl<'de, A: de::MapAccess<'de>> de::MapAccess<'de> for Rest<A> {
+    type Error = A::Error;
+    fn next_key_seed<K: de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, A::Error> {
+        let Some((key, value)) = self.held.iter_mut().find_map(Option::take) else {
+            return self.map.next_key_seed(seed);
+        };
+        self.value = Some(value);
+        seed.deserialize(de::value::StrDeserializer::new(key))
+            .map(Some)
+    }
+    fn next_value_seed<V: de::DeserializeSeed<'de>>(
+        &mut self,
+        seed: V,
+    ) -> Result<V::Value, A::Error> {
+        match self.value.take() {
+            Some(value) => seed.deserialize(value).map_err(de::Error::custom),
+            None => self.map.next_value_seed(seed),
+        }
+    }
+}
+
+impl From<TaggedEvent> for EventKind {
+    fn from(event: TaggedEvent) -> Self {
+        match event {
             TaggedEvent::Input(InputEvent::InputMessage(data)) => Self::InputMessage(data),
             TaggedEvent::Input(InputEvent::InputApplied(data)) => Self::InputApplied(data),
             TaggedEvent::Input(InputEvent::InputWithdraw(data)) => Self::InputWithdraw(data),
@@ -1279,7 +1492,7 @@ impl<'de> Deserialize<'de> for EventKind {
                 Self::CollaborationResult(data)
             }
             TaggedEvent::Session(SessionEvent::Forked(data)) => Self::SessionForked(data),
-        })
+        }
     }
 }
 
@@ -1527,6 +1740,11 @@ impl Serialize for EventKind {
                 state.serialize_field("type", "session")?;
                 state.serialize_field("name", "forked")?;
                 state.serialize_field("data", data)?;
+            }
+            Self::Extension(event) => {
+                state.serialize_field("type", event.domain())?;
+                state.serialize_field("name", event.name())?;
+                state.serialize_field("data", event.data())?;
             }
         }
         state.end()

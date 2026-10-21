@@ -2,38 +2,8 @@
 //! part writes change inputs by branch id, and its branch part folds the
 //! branch's events and decides continuation.
 use super::*;
-use dim_agent_capabilities::{host::ToolHost, methods::SessionMethods};
-use dim_agent_runtime::SessionScope;
 use dim_app_server::session_typescript::SessionTypeScriptConfig;
-use rutis::{DepKey, Keyed};
 use std::path::{Path, PathBuf};
-
-// These flows require Goal in the first tool snapshot, unlike an optional row.
-struct GoalTestTools(SessionScope);
-impl TypedPlugin for GoalTestTools {
-    type Deps = Keyed<SessionMethods>;
-    fn name(&self) -> &str {
-        "GoalTestTools"
-    }
-    fn apply<'a>(
-        &'a self,
-        ctx: &'a rutis::Ctx,
-        _: Self::Deps,
-    ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
-        Box::pin(async move {
-            ctx.provide_as(
-                self.0.key::<ToolHost>(),
-                Arc::new(ToolHost(Arc::new(MockTools))),
-            )?;
-            Ok(rutis::Effect::Done)
-        })
-    }
-}
-impl Capability for GoalTestTools {
-    fn keys(&self) -> KeysOf<Self> {
-        DepKey::named("session.goal").instance(self.0.instance)
-    }
-}
 
 fn repository() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -369,8 +339,9 @@ async fn launch_goal(
 ) -> (RunningServer, dim_agent_runtime::Agent) {
     defaults::install(&mut builder);
     defaults::mock_model_hosts(&mut builder);
-    builder.host_tools(MockTools.definitions().into_iter().map(|tool| tool.name));
-    builder.session_plugin(|scope| GoalTestTools(*scope));
+    // Goal stays an ordinary optional row: its tool is adopted whenever it
+    // becomes active (#241), with no dependency forcing it first (#223).
+    dim_agent_capabilities::defaults::tool_host(&mut builder, Arc::new(MockTools));
     let server = serve(
         builder,
         ServerConfig {

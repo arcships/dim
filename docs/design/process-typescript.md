@@ -289,6 +289,14 @@ undeclared `ctx.use`,
 an optional lookup API or a hard dependency from every Session to its owner.
 P7 A17 already uses the first actual `sessions.launch` reply's policy.
 
+The accepted [native access contract](p6-p7-bindings.md) supplies generated
+`sessionPermissions` for current branch policy and host defaults, and
+`workflowFiles` from Settings for fixed project directories and the calling row’s
+read-only packages. Both use the current Rust export generator. Native
+`sessions.input` retains admitted work and drains it on the original row before
+replacement. These bindings do not establish
+P6/P7 business acceptance or full Ready.
+
 <a id="51-proposed-p6p7-access-through-declared-feature-dependencies"></a>
 
 ### 5.1 P6/P7 access through declared feature dependencies
@@ -314,10 +322,13 @@ edits still do not reload either row. A structural owner reload may retire its
 real dependents, as ADR 002 D3 permits.
 
 The process dependencies specified by [Scheduler §1](plugins/Scheduler.md#1-structure)
-and [Workflow §1](plugins/Workflow.md#1-structure) are `sessions`, `settings` and
-`pluginFiles`. The stable `AgentDirectory` provides `sessions`, rather than the
-reloading Agents index; `settings` and `pluginFiles` do not depend on Provider or
-that index. Provider and Agents-index reloads therefore do not reach these owners
+and [Workflow §1](plugins/Workflow.md#1-structure) share `sessions`, `settings` and
+`pluginFiles`; Scheduler also injects `sessionPermissions`, and Workflow injects
+`workflowFiles`. The stable `AgentDirectory` provides both `sessions` and
+`sessionPermissions`, rather than the reloading Agents index. `workflowFiles`
+belongs to the Settings generation the Workflow row already injects, so it adds
+no independent reload source. `settings` and `pluginFiles` do not depend on
+Provider or the Agents index. Provider and Agents-index reloads therefore do not reach these owners
 through the old dependency chain in #35. Structural reloads of their declared
 dependencies still propagate. The owner rows must keep this stable dependency
 boundary: adding a frequently reloading dependency needs a new availability
@@ -326,28 +337,27 @@ as Provider's `auxiliaryModel`, every Provider reload would retire that owner an
 its dependent Session tool rows, bringing the availability cost below to every
 existing Session.
 
-**Availability cost.** Existing C3 tables keep the provider generation sampled
-at branch initialization. (Proposed for [#241](https://github.com/arcships/dim/issues/241), not implemented:
-[Session boundary A.5.1](contracts/session-boundary.md#a51-proposed-the-tool-table-follows-provider-generations-241)
-adopts the replacement generation in existing Sessions and changes the two texts below;
-the cost and recovery here stand until it is accepted.) C4 rejects calls through a handler whose row has retired; an existing
-Session's optional tool can therefore remain unavailable after an owner reload
-until the Session is reloaded. A new Session samples the current active provider.
-The binding accepts that C3 load behavior. It adds no hot rebinding or automatic
-replay of a failed operation.
+**Availability after reload.** ToolRegistry follows contributed tools as their
+providers activate and retire ([session boundary A.5](contracts/session-boundary.md#a5-tool-contribution), #241).
+When an owner reload retires a tool row, its set is withdrawn; when the row's next
+generation is active, existing and new Sessions are offered it again as a new
+version from their next request. C4 still rejects calls through a handler whose
+row has retired, and a request keeps the generation its prefix adopted. The
+binding adds no hot rebinding of an issued call or automatic replay of a failed
+operation.
 
 A call rejected before invoking a retired foreign tool returns `is_error: true`
 with this model-visible `content`:
 
 ```text
-tool provider generation is unloading; this tool is unavailable until the Session is reloaded. Retrying in the current Session will not help.
+tool provider generation is unloading; this call was not made. The tool is offered again once its provider is active; a later request uses the current provider.
 ```
 
 If the row unloads after the call has been issued, C4 ends the native wait without
 proving that the JavaScript work stopped or had no effect. The error instead says:
 
 ```text
-tool provider generation is unloading; this call may already have taken effect. This tool is unavailable until the Session is reloaded. Check the operation's state before repeating it, including after recovery.
+tool provider generation is unloading; this call may already have taken effect. Check the operation's state before repeating it with the current provider.
 ```
 
 Session recovery does not undo accepted work. For example, check Scheduler job
@@ -358,19 +368,17 @@ The real Scheduler and Workflow packages must also reject calls once their own
 cleanup begins; the host's retained-generation guard does not replace that
 package contract.
 
-**Recovery.** There is no per-Session reload command. A server restart followed
-by restoration samples the active owner. [#126](https://github.com/arcships/dim/issues/126)
-will also unload an idle Session and restore it on its next use; that unload pass
-is not implemented yet and is a shipping prerequisite for this recovery path as
-well as P6/P7 repeated Session creation. `session.close` is a business close, not
-a way to reload a retained Session. Repeated tool calls cannot repair the old table.
+**Recovery.** No Session reload is needed: once the owner and the dependent tool row
+are active again, the next request uses the current provider. Calls rejected or
+interrupted during the reload are not replayed.
 
 The actual Node flow
 `node_process_typescript_owner_reload_keeps_native_session_work_running` exercises
 that boundary through public Session calls: two Session tool rows inject one
 process service; the process owner restarts while a native tool is held; a new
 Session's tool reaches the replacement owner; the admitted native tool completes;
-the old sampled tool rejects another call; and native tools continue in both
+the retained old handler rejects another call; an existing Session's next request
+reaches the replacement owner without a reload; and native tools continue in both
 existing Sessions. The fixtures reject calls after their own cleanup begins,
 as the existing retained-object contract requires. This is evidence for the
 current shared-runtime binding, not for new cross-runtime or crash semantics.
@@ -381,6 +389,56 @@ Session usable and omit that tool from the model's first request.
 P6 live-policy capture/reuse, P7 definition readers and report settlement, and
 the other feature-specific Ready decisions remain separate. No Permission,
 Timeline, storage or persistence contract changes here.
+
+### 5.2 Public pluginFiles binding (proposed)
+
+`pluginFiles` is a shared named service with an implemented text/transaction API.
+The current `serve` composition registers its `PluginFilesPlugin` only inside
+the managed-plugin condition. A public process row that injects it therefore
+has a Missing dependency, including with `product_home` configured; it stays
+Pending under the existing rules and its management method reports
+`service_reloading`. A catalog entry or SDK declaration does not install a provider.
+This blocks Scheduler and Workflow readiness and their durable run-store checks.
+
+Use the existing native provider and authorized product root:
+
+| Host configuration | Proposed registration |
+| --- | --- |
+| Authorized `product_home` | Register the existing `PluginFilesPlugin(product_root)` once in the native process rows, outside the managed-plugin-only condition; availability does not depend on which process, Session or branch rows are configured |
+| No authorized product root | Do not invent a root or fall back to the working directory; no provider is supplied |
+
+This changes only native composition. Keep `pluginFiles.open`, the scope/lease
+API, S10 outer v1, errors, FileStorage authority and provider lifetime unchanged.
+No row field, SDK method, dependency registry, optional lookup or rutis/core
+mechanism is added. The managed plugin keeps its existing binding; public rows
+use their own ordinary runtime and declarations, without a managed-plugin slot.
+The provider depends only on FileStorage, preserving §5.1's stable boundary.
+Session and branch rows resolve this same shared service through the existing
+catalog; a Session-only configuration must not require a dummy process row.
+
+All trusted consumers use that same host-authorized root. A FileScope owns
+operations and cleanup; it is not a per-package directory sandbox. Consumers
+use their declared relative paths. The embedding host provisions their parent
+directories before enabling them; the existing file API does not create missing
+parents. Scheduler and Workflow use their specified `scheduler/` and `workflow/`
+directories. Provisioning belongs to installation, not feature-specific App
+Server branches or a new filesystem method. PluginManager #3 remains separate;
+explicit embedding can supply the directories and rows today. If a parent is
+not provisioned, the first `withLock` fails with the existing `io` result before
+the callback can read or write. The consumer surfaces that storage failure and
+starts no run effect; it does not create a Session or submit input without the
+required durable transition.
+
+Before claiming this binding implemented, use the actual Node bridge with an
+isolated product home and no managed plugin: public process and Session-only
+configurations become Active, open a scope, replace/read versioned text under
+that root, and drain owned work before scope closure. Include an unprovisioned
+parent: `io`, no new directory, and no run effect. Preserve the existing missing-root and optional
+row behavior, and verify the managed configuration registers only one provider.
+Then run Workflow's persisted-attempt, failed-replacement and host-restart
+acceptance under this public binding. Neither feature is Ready merely because
+the API exists. The binding proposal requires architecture/storage review before
+production implementation.
 
 ## 6. Rule check
 
@@ -393,7 +451,7 @@ Timeline, storage or persistence contract changes here.
 | §4.5 Batches | No event or batch change. |
 | §4.6 Model context | Management bindings introduce no context path; inputs and tool results retain their existing owners. |
 | §4.7 Public access | Supported process behavior uses declared dependencies and the original row's projections. Shared `session.event` visibility is incidental runtime behavior, not a process observation contract or sandbox (§2). No private plugin state is accessed. |
-| §4.8 Infrastructure | #4 completes host bindings and makes the host readiness selection obey D3 for configured optional rows, including startup report failures and restart completion (§2.1–2.2). Required rows keep their waiting rules; rutis and the runtime gate are unchanged. |
+| §4.8 Infrastructure | #4 completes host bindings and makes the host readiness selection obey D3 for configured optional rows, including startup report failures and restart completion (§2.1–2.2). §5.2 proposes placing the existing storage provider in public composition; required-row waiting, rutis and the runtime gate are unchanged. |
 | §4.9 Durable facts | Assembly metadata and process call bookkeeping do not enter Timeline. |
 | §1 Scope/App Server | Process parts are loader rows, not Capabilities; App Server owns assembly/wire binding, packages own all feature work. |
 | ADR 002 D1 | Process rows outlive Sessions; existing Session/branch rows retain their own lifetimes. |
@@ -411,3 +469,4 @@ Timeline, storage or persistence contract changes here.
 | Generic binding | Explicit process rows, same-row named management projection, and required-host selection for startup and restart within App Server assembly. No new core service, facade, rutis requirement, loader API or public restart endpoint. |
 | Ordering and lifecycle impact | No Timeline sequence, batch or event change. Keep one initial reconcile, the existing runtime declaration gate and required-row deadline. Optional row failures stay local at startup and restart; native management admission and provider report/drain settlement remain unchanged. |
 | Implementation owner / issue | zerob13, App Server assembly and method binding under #4. Architecture review by the existing assembly/management maintainers; this does not assign new work to S2 or rutis. |
+| Public storage placement | Public rows declare the existing pluginFiles service, but serve registers its provider only in managed composition. Reuse PluginFilesPlugin and the authorized product root under §5.2; do not use a Session factory, private plugin slot or new filesystem API. This is App Server composition work for #70/#71, owned by zerob13 with architecture/storage review. No Timeline ordering, lifecycle protocol or mechanism-owner extension is requested. |

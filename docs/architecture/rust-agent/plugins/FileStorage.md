@@ -101,6 +101,9 @@ name, each a `File`, `Directory` or `Other` (a link, reparse point or special
 file, never followed). FileStorage's lock, temporary and account-marker
 resources are omitted, including names the filesystem equates with them.
 
+`EntryKind` serializes as `file`, `directory` or `other` for generated exports.
+Native entry names remain `OsString`; the exporting boundary chooses its UTF-8 policy.
+
 `remove` makes an entry absent. Files, including those beneath a directory,
 are removed under the lock leases use, so removing a leased file, or a directory
 with a lease held anywhere beneath it, returns `Locked`. A link is removed

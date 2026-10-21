@@ -99,7 +99,6 @@ fn controls_reject_ambiguous_or_unknown_payloads() {
         json!({"type":"stop","name":"resume"}),
         json!({"type":"approval","name":"respond","data":{"approval_id":"a","decision":"always"}}),
         json!({"type":"approval","name":"request","data":{"approval_id":"a"}}),
-        json!({"type":"task","name":"stop","data":{"task_id":"t"}}),
         json!({"type":"exec","name":"ended","data":{"task_id":"t","status":"running","result":{"content":"output"}}}),
         json!({"type":"exec","name":"started","data":{"turn_id":"t","request_id":"r","call_id":"c","task_id":"e","description":"command"}}),
         json!({"type":"permission","name":"changed","data":{"policy":{"preset":"allow-all"}}}),

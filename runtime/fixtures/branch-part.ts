@@ -17,6 +17,7 @@ export default definePlugin({
     const seen: string[] = []
     let written = false
     let reported = false
+    let replayingMarker = false
     let cutoff = 0n
     let rebuilt!: () => void
     const ready = new Promise<void>(resolve => { rebuilt = resolve })
@@ -32,7 +33,7 @@ export default definePlugin({
           blocks: [{ type: 'raw', text: `<c5-marker branch="${branchId}" seen="${seen.join(',')}"/>` }],
           mode: 'queue',
         })
-      } else if (live && key === 'turn/end' && cutoff > 0n && !reported) {
+      } else if (live && key === 'turn/end' && replayingMarker && !reported) {
         reported = true
         void tree.input(branchId, {
           blocks: [{ type: 'raw', text: `<c5-rebuilt from="${cutoff}" folded="${seen.length}"/>` }],
@@ -48,6 +49,7 @@ export default definePlugin({
     })
     cutoff = BigInt(await dispatcher.committed())
     if (cutoff > 0n) for (const event of await dispatcher.local(0, cutoff)) step(event, false)
+    replayingMarker = written
     rebuilt()
   },
 })

@@ -1,6 +1,6 @@
 # Rust 运行时诊断与 Trace
 
-状态：已实现；诊断经 `diagnostics/{sessionId}` 通道交付。
+状态：已实现；诊断经 `diagnostics/{sessionId}` 通道交付。[ADR 005](../../adr/005-observability.md) 提议删除诊断通道与 Trace 归档，删除代码时一并删除本页。
 
 Trace 是可选观察能力，不是恢复数据，也不参与业务决策。诊断接口独立于 App Server RPC、客户端接入和业务事件兼容基线。
 

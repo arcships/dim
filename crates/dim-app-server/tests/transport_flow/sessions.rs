@@ -6,6 +6,7 @@ use dim_agent_capabilities::permission::{
 };
 use dim_agent_runtime::{Agent, Session, SessionScope};
 use dim_agent_types::{InputBlock, InputMessageData, PermissionPolicy, UserInput};
+use dim_app_server::methods::ManagementMethods;
 use rutis::{DepKey, Keyed};
 use rutis_bridge::session::HostDispatch;
 use std::sync::OnceLock;
@@ -15,6 +16,7 @@ use std::sync::OnceLock;
 #[derive(Clone, Default)]
 struct Sessions {
     service: Arc<OnceLock<Arc<dyn HostDispatch>>>,
+    context: Arc<OnceLock<rutis::Ctx>>,
     /// How often the consumer part applied; an index reload must not reload it.
     applied: Arc<AtomicUsize>,
 }
@@ -26,12 +28,13 @@ impl TypedPlugin for SessionsConsumer {
     }
     fn apply<'a>(
         &'a self,
-        _: &'a rutis::Ctx,
+        ctx: &'a rutis::Ctx,
         Keyed(service): Self::Deps,
     ) -> rutis::BoxFuture<'a, Result<rutis::Effect, rutis::CordisError>> {
         Box::pin(async move {
             self.0.applied.fetch_add(1, Ordering::SeqCst);
             let _ = self.0.service.set(service);
+            let _ = self.0.context.set(ctx.clone());
             Ok(rutis::Effect::Done)
         })
     }
@@ -133,6 +136,10 @@ impl Capability for HeldRulesPart {
 #[derive(Default)]
 struct Setup {
     database: Option<std::path::PathBuf>,
+    home: Option<std::path::PathBuf>,
+    typescript: Option<dim_app_server::session_typescript::SessionTypeScriptConfig>,
+    store: Option<Arc<dyn dim_agent_runtime::TimelineStore>>,
+    controls: Option<tokio::sync::mpsc::UnboundedSender<super::session_typescript::Control>>,
     /// Binds Permission's command rules through `HeldRules`.
     rules: Option<HeldRules>,
     /// Configured models: launches resolve through a model-selection host.
@@ -155,6 +162,8 @@ async fn serve_with(setup: Setup) -> Served {
     let mut config = ServerConfig {
         database_path: setup.database,
         model_catalog: setup.models,
+        product_home: setup.home,
+        session_typescript: setup.typescript,
         unix_path: Some(
             std::path::PathBuf::from("/tmp")
                 .join(format!("dim-sessions-{}/server.sock", uuid::Uuid::new_v4())),
@@ -164,7 +173,16 @@ async fn serve_with(setup: Setup) -> Served {
     config.session_defaults.tools = vec!["confirm".into()];
     config.session_defaults.permission_policy = serde_json::from_value(host_policy()).unwrap();
     let mut builder = AgentBuilder::new(AgentConfig::default());
-    builder.timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()));
+    builder.timeline_store(
+        setup
+            .store
+            .unwrap_or_else(|| Arc::new(dim_agent_runtime::MemoryTimelineStore::default())),
+    );
+    if let Some(controls) = setup.controls {
+        builder.session_plugin(move |scope| {
+            super::session_typescript::ControlledGate(*scope, controls.clone())
+        });
+    }
     match setup.rules {
         None => defaults::install(&mut builder),
         Some(rules) => {
@@ -1323,4 +1341,562 @@ async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_w
     server.shutdown();
     // The faulted Sessions report the injected failure as cleanup errors.
     let _ = server.join().await;
+}
+
+/// The generated process export reads live state and keeps its directory
+/// binding across index reload, including a temporarily absent Permission.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_session_permissions_reads_live_policy_and_survives_index_reload() {
+    let store = Store::new();
+    let mut parts = super::session_typescript::fixture();
+    parts.rows.clear();
+    parts.process_rows = vec![json!({
+        "id":"permission-reader", "name":parts.anchor.parent().unwrap().join("fixtures/session-permissions.ts"),
+        "provides":{"managementMethods:permissions":{"describe":"async","call":"async"}},
+        "config":{},
+    })];
+    let rules = HeldRules {
+        hold: Arc::new(tokio::sync::watch::channel(false).0),
+        held: Arc::default(),
+    };
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        database: Some(store.database()),
+        home: Some(store.0.clone()),
+        typescript: Some(parts),
+        rules: Some(rules.clone()),
+        ..Default::default()
+    })
+    .await;
+    super::process_typescript::select_model(&mut client).await;
+    let defaults = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let reply = client.rpc("permissions.defaults", json!({})).await;
+            if reply.get("result").is_some() {
+                break reply["result"].clone();
+            }
+            assert_eq!(
+                reply["error"]["data"]["appError"], "service_reloading",
+                "{reply}"
+            );
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(defaults["policy"].as_str().unwrap()).unwrap(),
+        host_policy()
+    );
+    let starter = client_session(&mut client, &agent, json!({"preset":"full-access"})).await;
+    let at = json!({"sessionId":starter.id(),"branchId":"main"});
+    let before = starter.sequence("main").unwrap();
+    let initial = client.rpc("permissions.branch", at.clone()).await;
+    assert_ok(&initial);
+    assert_eq!(initial["result"]["version"], "0");
+    assert_eq!(
+        serde_json::from_str::<Value>(initial["result"]["policy"].as_str().unwrap()).unwrap()["preset"],
+        "full-access"
+    );
+    assert_eq!(
+        starter.sequence("main").unwrap(),
+        before,
+        "reads append no events"
+    );
+    let narrowed =
+        json!({"preset":"read-only","allowedTools":["confirm"],"disallowedTools":["blocked"]});
+    let changed = starter
+        .service::<Permission>("main")
+        .unwrap()
+        .update(0, policy(narrowed.clone()))
+        .await
+        .unwrap();
+    let live = client.rpc("permissions.branch", at.clone()).await;
+    assert_ok(&live);
+    assert_eq!(live["result"]["version"], changed.to_string());
+    assert_eq!(
+        serde_json::from_str::<Value>(live["result"]["policy"].as_str().unwrap()).unwrap(),
+        narrowed
+    );
+    assert_eq!(
+        starter.config().permission_policy.preset,
+        dim_agent_types::PermissionPreset::FullAccess
+    );
+    for (request, code) in [
+        (
+            json!({"sessionId":"missing","branchId":"main"}),
+            "session_closed",
+        ),
+        (
+            json!({"sessionId":starter.id(),"branchId":"missing"}),
+            "branch_missing",
+        ),
+    ] {
+        let read = client.rpc("permissions.branch", request.clone()).await;
+        assert_ok(&read);
+        let error = &read["result"]["error"];
+        assert_eq!(error["name"], "SessionsError", "{read}");
+        assert_eq!(error["code"], code, "{read}");
+        assert_eq!(error["retryable"], false, "no envelope retryable field");
+        let data: Value = serde_json::from_str(error["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data, json!({"code":code,"message":error["message"]}));
+        let legacy = client.rpc("permissions.legacy", request).await;
+        assert_ok(&legacy);
+        let legacy: Value = serde_json::from_str(legacy["result"].as_str().unwrap()).unwrap();
+        assert_eq!(legacy["ok"], false);
+        assert_eq!(legacy["error"]["code"], code);
+        assert_eq!(legacy["error"]["retryable"], false);
+    }
+    rules.hold.send_replace(true);
+    let (restarted, ()) = tokio::join!(server.restart("Agents"), async {
+        rules.held.notified().await;
+        assert!(starter.get::<PermissionState>("main").unwrap().is_none());
+        // Rpc also reloads with the index; call the unchanged process owner directly.
+        let owner = sessions
+            .context
+            .get()
+            .unwrap()
+            .get_as::<ManagementMethods>(rutis::TypeKey::keyed_dynamic::<ManagementMethods>(
+                "permissions",
+            ))
+            .unwrap();
+        let call = owner
+            .accept(
+                "permissions.branch".into(),
+                at.clone(),
+                CancellationToken::new(),
+                |_| {},
+            )
+            .unwrap();
+        let read = call.reply.await.unwrap().unwrap();
+        assert_eq!(read["error"]["name"], "SessionsError");
+        assert_eq!(read["error"]["code"], "reloading", "{read}");
+        assert!(
+            read["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Permission")
+        );
+        rules.hold.send_replace(false);
+    });
+    restarted.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while starter.get::<PermissionState>("main").unwrap().is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let after = client.rpc("permissions.branch", at).await;
+    assert_ok(&after);
+    assert_eq!(
+        after["result"], live["result"],
+        "same consumer generation and live state"
+    );
+    let after = client.rpc("permissions.defaults", json!({})).await;
+    assert_eq!(after["result"], defaults);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[path = "../../src/agents/sessions/tests/deferred_inputs.rs"]
+mod deferred_inputs;
+use deferred_inputs::DeferredInputs;
+
+fn settlement_parts() -> dim_app_server::session_typescript::SessionTypeScriptConfig {
+    let mut parts = super::session_typescript::fixture();
+    parts.rows.clear();
+    parts.process_rows = vec![json!({
+        "id":"settlement-owner", "name":parts.anchor.parent().unwrap().join("fixtures/input-settlement.ts"),
+        "provides":{"managementMethods:settlement":{"describe":"async","call":"async"}},"config":{},
+    })];
+    parts
+}
+async fn settlement_status(client: &mut Client) -> Value {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let reply = client.rpc("settlement.status", json!({})).await;
+            if let Some(value) = reply.get("result") {
+                break serde_json::from_str(value.as_str().unwrap()).unwrap();
+            }
+            assert_eq!(
+                reply["error"]["data"]["appError"], "service_reloading",
+                "{reply}"
+            );
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_input_settlement_outlives_index_reload_and_drains_the_original_row() {
+    let (store, mut held) = DeferredInputs::new();
+    let (send, mut controls) = tokio::sync::mpsc::unbounded_channel();
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        store: Some(store),
+        typescript: Some(settlement_parts()),
+        controls: Some(send),
+        ..Default::default()
+    })
+    .await;
+    let target = client_session(&mut client, &agent, host_policy()).await;
+    let (_, _, loader, _) = controls.recv().await.unwrap();
+    let owner = loader.get("settlement-owner").unwrap().view.unwrap();
+    let before = settlement_status(&mut client).await;
+    assert!(
+        owner
+            .effects()
+            .iter()
+            .all(|effect| effect.label != "sessions.input")
+    );
+    let write = |id: &str| {
+        let mut write = input(&target, id, json!([]));
+        write["mode"] = json!("append");
+        write
+    };
+    let request = client
+        .send("settlement.input", write("settlement:index:publication"))
+        .await;
+    let waiting = tokio::time::timeout(Duration::from_secs(5), held.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(waiting.submission_id, "settlement:index:publication");
+    assert!(target.publication("main").unwrap().sequence() < waiting.sequence);
+    assert_eq!(
+        owner
+            .effects()
+            .iter()
+            .filter(|effect| effect.label == "sessions.input")
+            .count(),
+        1
+    );
+    let (restarted, ()) = tokio::join!(server.restart("Agents"), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let probe = sessions
+                    .call("idle", json!({"sessionId":"missing","branchId":"main"}))
+                    .await;
+                if probe["error"]["code"] == "reloading" {
+                    break;
+                }
+                assert_eq!(probe["error"]["code"], "session_closed");
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        waiting.release.send(()).unwrap();
+    });
+    restarted.unwrap();
+    let reply = client.response(request).await;
+    assert_ok(&reply);
+    let receipt: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
+    assert_eq!(receipt["ok"], true, "{receipt}");
+    assert!(
+        target.publication("main").unwrap().sequence()
+            >= receipt["value"]["sequence"].as_u64().unwrap()
+    );
+    assert_eq!(
+        settlement_status(&mut client).await["generation"],
+        before["generation"]
+    );
+    assert!(
+        owner
+            .effects()
+            .iter()
+            .all(|effect| effect.label != "sessions.input")
+    );
+    assert_ok(
+        &client
+            .rpc("settlement.arm", write("test:late-row-call"))
+            .await,
+    );
+    let request = client
+        .send("settlement.input", write("settlement:row:append"))
+        .await;
+    let waiting = tokio::time::timeout(Duration::from_secs(5), held.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(waiting.submission_id, "settlement:row:append");
+    let (restarted, ()) = tokio::join!(loader.restart("settlement-owner"), async {
+        let mut changed = owner.watch();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while changed.borrow_and_update().state != rutis::FiberState::Unloading {
+                changed.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            owner
+                .effects()
+                .iter()
+                .any(|effect| effect.label == "sessions.input")
+        );
+        waiting.release.send(()).unwrap();
+    });
+    restarted.unwrap();
+    let reply = client.response(request).await;
+    assert_ok(&reply);
+    let receipt: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
+    assert_eq!(receipt["ok"], true, "{receipt}");
+    let after = settlement_status(&mut client).await;
+    assert_ne!(after["generation"], before["generation"]);
+    assert_eq!(
+        after["cleanup"]["error"]["code"], "reloading",
+        "late cleanup cannot register native input"
+    );
+    assert_eq!(sessions.ok("lookup", json!({"sessionId":target.id(),"branchId":"main","submissionId":"test:late-row-call"})).await, json!({"status":"unknown"}));
+    let history = target.local("main", ..).await.unwrap();
+    for id in ["settlement:index:publication", "settlement:row:append"] {
+        assert_eq!(history.iter().filter(|event| matches!(&event.kind, EventKind::InputMessage(data) if data.submission_id.as_deref() == Some(id))).count(), 1);
+    }
+    assert!(
+        owner
+            .effects()
+            .iter()
+            .all(|effect| effect.label != "sessions.input")
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rust_named_input_keeps_its_outcome_across_reload_and_a_dropped_result() {
+    let (store, mut held) = DeferredInputs::new();
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        store: Some(store),
+        ..Default::default()
+    })
+    .await;
+    let target = client_session(&mut client, &agent, host_policy()).await;
+    let caller = sessions.clone();
+    let write = |id| {
+        let mut write = input(&target, id, json!([]));
+        write["mode"] = json!("append");
+        write
+    };
+    let request = write("settlement:rust:publication");
+    let call = tokio::spawn(async move { caller.ok("input", request).await });
+    let waiting = tokio::time::timeout(Duration::from_secs(5), held.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let (restarted, ()) = tokio::join!(server.restart("Agents"), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let probe = sessions
+                    .call("idle", json!({"sessionId":"missing","branchId":"main"}))
+                    .await;
+                if probe["error"]["code"] == "reloading" {
+                    break;
+                }
+                assert_eq!(probe["error"]["code"], "session_closed");
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        waiting.release.send(()).unwrap();
+    });
+    restarted.unwrap();
+    let receipt = call.await.unwrap();
+    assert!(
+        target.publication("main").unwrap().sequence() >= receipt["sequence"].as_u64().unwrap()
+    );
+
+    let caller = sessions.clone();
+    let request = write("settlement:rust:dropped");
+    let call = tokio::spawn(async move { caller.ok("input", request).await });
+    let waiting = tokio::time::timeout(Duration::from_secs(5), held.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    call.abort();
+    assert!(call.await.unwrap_err().is_cancelled());
+    waiting.release.send(()).unwrap();
+    let recovered = sessions.ok("lookup", json!({"sessionId":target.id(),"branchId":"main","submissionId":"settlement:rust:dropped"})).await;
+    assert_eq!(
+        recovered["status"], "accepted",
+        "dropping a result does not end its admitted writer"
+    );
+    let history = target.local("main", ..).await.unwrap();
+    for id in ["settlement:rust:publication", "settlement:rust:dropped"] {
+        assert_eq!(history.iter().filter(|event| matches!(&event.kind, EventKind::InputMessage(data) if data.submission_id.as_deref() == Some(id))).count(), 1);
+    }
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_input_preparation_refuses_a_retired_row_before_handoff() {
+    let store = Store::new();
+    let rules = HeldRules {
+        hold: Arc::new(tokio::sync::watch::channel(false).0),
+        held: Arc::default(),
+    };
+    let (send, mut controls) = tokio::sync::mpsc::unbounded_channel();
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        database: Some(store.database()),
+        home: Some(store.0.clone()),
+        typescript: Some(settlement_parts()),
+        rules: Some(rules.clone()),
+        controls: Some(send),
+        ..Default::default()
+    })
+    .await;
+    super::process_typescript::select_model(&mut client).await;
+    let target = client_session(&mut client, &agent, host_policy()).await;
+    let (_, _, loader, _) = controls.recv().await.unwrap();
+    let owner = loader.get("settlement-owner").unwrap().view.unwrap();
+    let before = settlement_status(&mut client).await;
+    let request = input(&target, "test:retired-before-handoff", json!([]));
+    assert!(target.unload_if_idle().await.unwrap());
+    rules.hold.send_replace(true);
+    let call = client.send("settlement.input", request.clone()).await;
+    tokio::time::timeout(Duration::from_secs(5), rules.held.notified())
+        .await
+        .unwrap();
+    assert!(
+        owner
+            .effects()
+            .iter()
+            .any(|effect| effect.label == "sessions.input")
+    );
+    let (restarted, ()) = tokio::join!(loader.restart("settlement-owner"), async {
+        let mut changed = owner.watch();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while changed.borrow_and_update().state != rutis::FiberState::Unloading {
+                changed.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        rules.hold.send_replace(false);
+    });
+    restarted.unwrap();
+    let reply = client.response(call).await;
+    assert_ok(&reply);
+    let reply: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
+    assert_eq!(reply["error"]["code"], "reloading", "{reply}");
+    assert_eq!(sessions.ok("lookup", json!({"sessionId":target.id(),"branchId":"main","submissionId":"test:retired-before-handoff"})).await, json!({"status":"unknown"}));
+    assert_ne!(
+        settlement_status(&mut client).await["generation"],
+        before["generation"]
+    );
+    let reply = client.rpc("settlement.input", request).await;
+    assert_ok(&reply);
+    let reply: Value = serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
+    assert_eq!(reply["ok"], true, "the replacement row can submit: {reply}");
+    let current = agent.get_session(target.id()).unwrap();
+    assert_eq!(current.local("main", ..).await.unwrap().iter().filter(|event| matches!(&event.kind, EventKind::InputMessage(data) if data.submission_id.as_deref() == Some("test:retired-before-handoff"))).count(), 1);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_crash_does_not_release_the_original_rows_native_input_drain() {
+    let (store, mut held) = DeferredInputs::new();
+    let (send, mut controls) = tokio::sync::mpsc::unbounded_channel();
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        store: Some(store),
+        typescript: Some(settlement_parts()),
+        controls: Some(send),
+        ..Default::default()
+    })
+    .await;
+    let target = client_session(&mut client, &agent, host_policy()).await;
+    let (_, _, loader, _) = controls.recv().await.unwrap();
+    let owner = loader.get("settlement-owner").unwrap().view.unwrap();
+    let before = settlement_status(&mut client).await;
+    let mut write = input(&target, "settlement:crash:append", json!([]));
+    write["mode"] = json!("append");
+    let request = client.send("settlement.input", write).await;
+    let waiting = tokio::time::timeout(Duration::from_secs(5), held.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(waiting.submission_id, "settlement:crash:append");
+    let pid = before["pid"].as_u64().unwrap().to_string();
+    assert!(
+        std::process::Command::new("kill")
+            .args(["-KILL", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let reply = client.response(request).await;
+    assert!(
+        reply.get("error").is_some(),
+        "the dead Node cannot return its receipt: {reply}"
+    );
+    let (restarted, ()) = tokio::join!(loader.restart("SessionNodeRuntime"), async {
+        let mut changed = owner.watch();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while changed.borrow_and_update().state != rutis::FiberState::Unloading {
+                changed.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            owner
+                .effects()
+                .iter()
+                .any(|effect| effect.label == "sessions.input"),
+            "bridge failure is not native writer settlement"
+        );
+        waiting.release.send(()).unwrap();
+    });
+    restarted.unwrap();
+    let after = settlement_status(&mut client).await;
+    assert_ne!(after["pid"], before["pid"]);
+    let recovered = sessions.ok("lookup", json!({"sessionId":target.id(),"branchId":"main","submissionId":"settlement:crash:append"})).await;
+    assert_eq!(recovered["status"], "accepted");
+    assert_eq!(target.local("main", ..).await.unwrap().iter().filter(|event| matches!(&event.kind, EventKind::InputMessage(data) if data.submission_id.as_deref() == Some("settlement:crash:append"))).count(), 1);
+    assert!(
+        owner
+            .effects()
+            .iter()
+            .all(|effect| effect.label != "sessions.input")
+    );
+    server.shutdown();
+    server.join().await.unwrap();
 }

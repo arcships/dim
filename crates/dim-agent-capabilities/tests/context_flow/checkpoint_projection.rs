@@ -338,7 +338,9 @@ async fn incompatible_snapshot_is_rejected_before_custom_renderer_decoding() {
     mismatched.state = (renderer.encode_checkpoint)(&mismatched, &moved).unwrap();
     assert!((renderer.decode_checkpoint)(&mismatched, &fact).is_none());
     fallback(mismatched).await;
-    timeline.close().await.unwrap();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
 }
 
 fn resume(context: &ContextHistory, cut: &str) -> ContextHistory {

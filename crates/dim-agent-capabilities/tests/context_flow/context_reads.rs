@@ -776,7 +776,9 @@ async fn each_model_step_reads_context_twice_with_and_without_compaction_policy(
                     store.earliest_read.load(Ordering::SeqCst),
                     checkpoint.resume.sequence
                 );
-                timeline.close().await.unwrap();
+                dim_agent_runtime::core::close_timeline(&timeline)
+                    .await
+                    .unwrap();
             }
             assert_eq!(
                 history

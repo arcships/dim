@@ -29,7 +29,7 @@ pub enum Decision {
 
 /// The dispatched policy; `version` is the local sequence of the last
 /// `permission/changed` of this branch, 0 when there is none.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct PermissionState {
     pub version: u64,
     pub policy: PermissionPolicy,

@@ -268,7 +268,7 @@ sequenceDiagram
 
 ### 5.5 Scheduled run through Agents
 
-[Scheduler](plugins/Scheduler.md) remains Draft/unimplemented. The diagram shows its owned create-mode run flow; S2, Settings and pluginFiles are delivered, while full Ready and package-binding decisions remain in the owner document.
+[Scheduler](plugins/Scheduler.md) remains Draft/unimplemented. The diagram shows its owned create-mode run flow. S2 and Settings are delivered; the pluginFiles API exists, but its [public composition](process-typescript.md#52-public-pluginfiles-binding-proposed) is not installed yet. Full Ready and package-binding conditions remain in the owner document.
 
 ```mermaid
 sequenceDiagram

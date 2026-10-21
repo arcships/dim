@@ -45,7 +45,7 @@ identities; missing tools cannot be recovered by replaying their old definitions
 | §4 rule 9 | Change notifications stay outside the Timeline |
 | §1, ADR 002 D1 | Adoption and its pending wake belong to this branch capability |
 | ADR 002 D2 | No wiring plugin, new bus or shared notification channel |
-| ADR 002 D3 | Existing declared dependencies and C3 sampling remain unchanged |
+| ADR 002 D3 | Existing declared dependencies remain unchanged; contributed tools are registry sources (#241), and a configuration without a tool part adopts none of their changes |
 | ADR 002 D4 | No configuration or reload policy change |
 | ADR 002 D5 | `tools.changed` is an empty notification on one Session instance; no wire protocol change |
 
@@ -61,7 +61,7 @@ task, mutex, lifecycle phase or protocol field is needed.
 [tool_binding.rs](../../../../tests/integration/tests/tool_binding.rs):
 `a_call_runs_the_version_its_request_declared_and_old_versions_are_released`,
 `a_restored_branch_adopts_the_new_versions_before_its_first_request`,
-`fixed_contributors_are_sampled_before_the_first_request_without_initial_configuration`,
+`contributors_are_current_for_the_first_request_without_initial_configuration`,
 `tool_updates_wait_for_branch_activation_and_do_not_run_after_failed_assembly`.
 
 <!-- generated:plugin ToolBinding — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->

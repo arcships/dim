@@ -357,7 +357,7 @@ async fn large_report_readback_survives_member_close_and_is_branch_local() {
         let registry = captured_registry.get().expect("leader ToolRegistry");
         store.largest_read.store(0, Ordering::SeqCst);
         let direct = registry
-            .fixed("agent")
+            .contributed("agent")
             .expect("agent tool")
             .handler
             .execute(
@@ -1497,13 +1497,11 @@ async fn members_cancel_close_and_leave_the_team() {
             reason: dim_agent_runtime::CAPABILITY_RELOADING.into(),
         }]
     );
-    // The registry keeps its old generation until it reloads; even a read-only
-    // action must reject the stopped provider, while host tools keep working.
+    // The registry follows the provider's new generation (#241): the next
+    // request reaches it without a Session reload, and host tools keep working.
     say(&mut client, &lead, tool(json!({"action": "list"})), "queue").await;
     idle(&mut client, &lead).await;
-    assert!(
-        last_error(&events(&lead_session).await).contains(dim_agent_runtime::CAPABILITY_RELOADING)
-    );
+    assert_eq!(last_ok(&events(&lead_session).await)["role"], "leader");
     say(
         &mut client,
         &lead,

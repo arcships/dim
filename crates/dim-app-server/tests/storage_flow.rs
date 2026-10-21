@@ -6,7 +6,11 @@ use dim_agent_runtime::{
 use dim_agent_types::*;
 use dim_app_server::storage::{NodeLoads, SqliteStorage, SqliteTimelineStore};
 use rusqlite::{Connection, params};
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 const INTERPRETER: &str = "dim/context-projection/v3";
 fn snapshot(sequence: u64, checkpoint: &ProjectionCheckpoint) -> RecoverySnapshot {
@@ -101,10 +105,65 @@ async fn append(
             let _ = sender.send(result);
         }),
     )?;
-    tokio::time::timeout(Duration::from_secs(5), receiver)
+    tokio::time::timeout(PUBLISHED, receiver)
         .await
         .unwrap()
         .unwrap()
+}
+/// How long a flow waits for the writer to publish a write before it fails
+/// instead of hanging.
+const PUBLISHED: Duration = Duration::from_secs(5);
+/// Queues `records` and returns their publish result, which fails the test
+/// after `PUBLISHED`.
+fn queue(
+    store: &SqliteTimelineStore,
+    key: TimelineKey,
+    records: Vec<StoredEvent>,
+) -> impl Future<Output = dim_agent_runtime::Result<()>> + use<> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    store
+        .append(
+            key,
+            records,
+            Box::new(move |result| {
+                let _ = sender.send(result);
+            }),
+        )
+        .unwrap();
+    async move {
+        tokio::time::timeout(PUBLISHED, receiver)
+            .await
+            .expect("the writer did not publish the write")
+            .unwrap()
+    }
+}
+/// Appends `records` and holds the writer thread in their publish callback,
+/// after their round committed, until the returned sender drops, which a
+/// failing test's unwinding also does. The batches queued meanwhile all meet
+/// in the writer's next round.
+async fn hold_writer(
+    store: &SqliteTimelineStore,
+    key: TimelineKey,
+    records: Vec<StoredEvent>,
+) -> std::sync::mpsc::Sender<()> {
+    let (held, holding) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    store
+        .append(
+            key,
+            records,
+            Box::new(move |result| {
+                let _ = held.send(result);
+                let _ = released.recv();
+            }),
+        )
+        .unwrap();
+    tokio::time::timeout(PUBLISHED, holding)
+        .await
+        .expect("the writer did not publish the write")
+        .unwrap()
+        .unwrap();
+    release
 }
 
 /// The tables of the documented record example that hold business rows, in
@@ -125,8 +184,8 @@ const BUSINESS_TABLES: &[&str] = &[
     "session_file_owners",
     "session_metadata",
 ];
-/// The business tables each upgrade step adds: v15's, then v16's; v17 adds
-/// none.
+/// The business tables each upgrade step adds: v15's, then v16's; v17 and
+/// v18 add none.
 const V15_TABLES: [&str; 2] = ["session_files", "session_file_owners"];
 const V16_TABLES: [&str; 1] = ["session_metadata"];
 /// Inserts the rows of `tables` from the complete record example in
@@ -226,16 +285,17 @@ fn v13_store(path: &std::path::Path) -> Connection {
         .unwrap();
     connection
 }
-/// Builds a disposable v16 store, as a v16 daemon created it.
-fn v16_store(path: &std::path::Path) -> Connection {
+/// Builds a disposable store of v16's tables under `marker`, as a v16 daemon
+/// created it, or a v17 daemon, which added no table.
+fn v16_tables_store(path: &std::path::Path, marker: u32) -> Connection {
     let connection = Connection::open(path).unwrap();
     for sql in V13_SCHEMA.iter().chain(V15_ADDITIONS).chain(V16_ADDITIONS) {
         connection
-            .execute_batch(&sql.replace("(version = 13)", "(version = 16)"))
+            .execute_batch(&sql.replace("(version = 13)", &format!("(version = {marker})")))
             .unwrap();
     }
     connection
-        .execute("INSERT INTO agent_store_format VALUES (16)", [])
+        .execute("INSERT INTO agent_store_format VALUES (?1)", [marker])
         .unwrap();
     connection
 }
@@ -696,8 +756,86 @@ async fn committed_history_round_trips_requests_outputs_traces_and_branch_direct
             },
         )))
         .unwrap();
-    timeline.close().await.unwrap();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
     assert_eq!(store.head(&key("session", "main")).await.unwrap(), 11);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+/// An extension event (#2) is stored and read like any other event: it gets a
+/// row of its own holding its data's bytes, so the output deltas around it are
+/// not merged across it, and a restored Session, whose TimelineTree reads each
+/// branch's history once as it opens, decodes it unchanged.
+#[tokio::test]
+async fn extension_events_keep_their_own_rows_and_restore_unchanged() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("session", &SessionConfig::default())
+        .await
+        .unwrap();
+    let data = serde_json::json!({"z": 1, "a": [true, null], "nested": {"y": "x"}});
+    let extension = ExtensionEvent::new("myplugin", "checkpoint", data.clone()).unwrap();
+    let written = [
+        text(1, "a"),
+        record(2, EventKind::Extension(extension)),
+        text(3, "b"),
+    ];
+    for entry in &written {
+        append(&store, key("session", "main"), vec![entry.clone()])
+            .await
+            .unwrap();
+    }
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    let rows = connection
+        .prepare(
+            "SELECT sequence, last_sequence, kind, body FROM timeline_events ORDER BY sequence",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|(sequence, last, kind, _)| (*sequence, *last, kind.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (1, 1, "step/text"),
+            (2, 2, "myplugin/checkpoint"),
+            (3, 3, "step/text")
+        ]
+    );
+    assert!(rows[1].3.contains(&serde_json::to_string(&data).unwrap()));
+    drop(connection);
+
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    dim_agent_capabilities::defaults::mock_hosts(&mut builder);
+    dim_agent_capabilities::defaults::install(&mut builder);
+    builder.timeline_store(store.clone());
+    let agent = builder.build();
+    let session = agent.restore_session("session".into()).await.unwrap();
+    let restored = session.history("main", Some(3)).await.unwrap();
+    let written: Vec<_> = written.iter().map(|entry| entry.event.clone()).collect();
+    assert_eq!(
+        serde_json::to_string(&restored).unwrap(),
+        serde_json::to_string(&written).unwrap()
+    );
+    agent.close().await.unwrap();
     store.close().await.unwrap();
     db.close().await.unwrap();
 }
@@ -942,19 +1080,6 @@ fn session_rows(connection: &Connection, session: &str) -> (Vec<String>, Vec<Str
 #[tokio::test]
 async fn request_lists_round_trip_with_the_same_bytes_however_writes_meet_rounds() {
     let history = request_history();
-    let queue = |store: &SqliteTimelineStore, branch: &str, record: &StoredEvent| {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        store
-            .append(
-                key("session", branch),
-                vec![record.clone()],
-                Box::new(move |result| {
-                    let _ = sender.send(result);
-                }),
-            )
-            .unwrap();
-        receiver
-    };
     let mut written = vec![];
     for way in [
         "rounds",
@@ -986,17 +1111,18 @@ async fn request_lists_round_trip_with_the_same_bytes_however_writes_meet_rounds
                 }
             }
             "one round" => {
-                // After a first round the writer waits before the next, so
-                // the rest queue up for one round.
-                append(&store, key("bad", "main"), vec![text(1, "warm")])
-                    .await
-                    .unwrap();
+                // The writer is held after a first round, so the rest queue
+                // up for one round.
+                let release = hold_writer(&store, key("bad", "main"), vec![text(1, "warm")]).await;
                 let queued: Vec<_> = history
                     .iter()
-                    .map(|(branch, record)| queue(&store, branch, record))
+                    .map(|(branch, record)| {
+                        queue(&store, key("session", branch), vec![record.clone()])
+                    })
                     .collect();
-                for receiver in queued {
-                    receiver.await.unwrap().unwrap();
+                drop(release);
+                for published in queued {
+                    published.await.unwrap();
                 }
             }
             "restart" => {
@@ -1011,38 +1137,31 @@ async fn request_lists_round_trip_with_the_same_bytes_however_writes_meet_rounds
                 }
             }
             "failed neighbour" => {
-                // The combined commit of the round fails on Session `bad`;
-                // `session` commits alone, and its later writes continue
-                // from what committed.
+                // The writer is held after the round of entry 2, so `bad`'s
+                // write and entry 3 meet in one round. Its combined commit
+                // fails on Session `bad`; `session` commits alone, and its
+                // later writes continue from what committed.
                 connection.execute_batch("CREATE TRIGGER fail_bad BEFORE INSERT ON timeline_events WHEN NEW.session_id = 'bad' BEGIN SELECT RAISE(ABORT, 'injected failure'); END").unwrap();
-                append(&store, key("session", "main"), vec![history[0].1.clone()])
-                    .await
-                    .unwrap();
-                for (index, (branch, record)) in history.iter().enumerate().skip(1) {
-                    if index == 3 {
-                        let (bad, good) = tokio::join!(
-                            async {
-                                let (sender, receiver) = tokio::sync::oneshot::channel();
-                                store
-                                    .append(
-                                        key("bad", "main"),
-                                        vec![text(1, "bad")],
-                                        Box::new(move |result| {
-                                            let _ = sender.send(result);
-                                        }),
-                                    )
-                                    .unwrap();
-                                receiver.await.unwrap()
-                            },
-                            queue(&store, branch, record)
-                        );
-                        assert!(bad.is_err());
-                        good.unwrap().unwrap();
-                        continue;
+                let mut release = None;
+                for (index, (branch, record)) in history.iter().enumerate() {
+                    match index {
+                        2 => {
+                            release = Some(
+                                hold_writer(&store, key("session", branch), vec![record.clone()])
+                                    .await,
+                            );
+                        }
+                        3 => {
+                            let bad = queue(&store, key("bad", "main"), vec![text(1, "bad")]);
+                            let good = queue(&store, key("session", branch), vec![record.clone()]);
+                            drop(release.take());
+                            assert!(bad.await.is_err());
+                            good.await.unwrap();
+                        }
+                        _ => append(&store, key("session", branch), vec![record.clone()])
+                            .await
+                            .unwrap(),
                     }
-                    append(&store, key("session", branch), vec![record.clone()])
-                        .await
-                        .unwrap();
                 }
             }
             _ => unreachable!(),
@@ -1097,6 +1216,162 @@ async fn request_lists_round_trip_with_the_same_bytes_however_writes_meet_rounds
     for (way, rows) in &written[1..] {
         assert_eq!(rows, &written[0].1, "{way}");
     }
+}
+
+/// Only output deltas wait for a write round (timeline storage §3). A round
+/// that begins with them waits until the window after the previous round
+/// started, and any other batch or a close ends the wait; every other round
+/// starts at once. A round takes every pending batch, each branch in
+/// sequence order, and output rows hold the same bytes whether deltas meet
+/// in one round or each commits in its own.
+#[tokio::test]
+async fn only_output_deltas_wait_for_a_round_until_another_batch_or_close() {
+    // Twice `PUBLISHED`: a wait the writer should end or not begin holds a
+    // write past its timeout and fails the test, which still ends.
+    const WINDOW: Duration = Duration::from_secs(10);
+    let thinking = |sequence, delta: &str| {
+        record(
+            sequence,
+            EventKind::Thinking(DeltaData {
+                turn_id: "turn".into(),
+                request_id: "request".into(),
+                delta: delta.into(),
+            }),
+        )
+    };
+    let input = |sequence, text: &str| {
+        record(
+            sequence,
+            EventKind::InputMessage(InputMessageData::text(text, None)),
+        )
+    };
+    let mut pair = vec![text(4, "c"), text(5, "d")];
+    pair[0].batch_end = 5;
+    // In queue order: deltas of two Sessions, an input between them, and a
+    // batch of two deltas.
+    let batches = [
+        ("s", vec![thinking(1, "a")]),
+        ("t", vec![text(1, "x")]),
+        ("s", vec![thinking(2, "b")]),
+        ("s", vec![input(3, "u")]),
+        ("t", vec![text(2, "y")]),
+        ("s", pair),
+    ];
+    let heads = |connection: &Connection| -> Vec<String> {
+        connection
+            .prepare("SELECT session_id || '/' || sequence FROM timeline_branches WHERE session_id IN ('s', 't') ORDER BY session_id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let mut written = vec![];
+    for one_round in [false, true] {
+        let database = Database::new();
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = if one_round {
+            SqliteTimelineStore::with_round_window(db.clone(), WINDOW)
+        } else {
+            SqliteTimelineStore::new(db.clone())
+        };
+        for session in ["warm", "s", "t"] {
+            store
+                .create_session(session, &SessionConfig::default())
+                .await
+                .unwrap();
+        }
+        let connection = Connection::open(&database.0).unwrap();
+        if one_round {
+            append(&store, key("warm", "main"), vec![input(1, "first")])
+                .await
+                .unwrap();
+            // Held after the next round, the writer finds every batch
+            // pending. Each batch publishes with every other one already
+            // durable: they committed in one round.
+            let before = Instant::now();
+            let release = hold_writer(&store, key("warm", "main"), vec![input(2, "held")]).await;
+            let held = Instant::now();
+            let published: Vec<_> = batches
+                .iter()
+                .map(|(session, records)| {
+                    let (sender, receiver) = tokio::sync::oneshot::channel();
+                    let path = database.0.clone();
+                    store
+                        .append(
+                            key(session, "main"),
+                            records.clone(),
+                            Box::new(move |result| {
+                                let durable = Connection::open(path).map(|probe| heads(&probe));
+                                let _ = sender.send((result, durable));
+                            }),
+                        )
+                        .unwrap();
+                    receiver
+                })
+                .collect();
+            drop(release);
+            for receiver in published {
+                let (result, durable) = tokio::time::timeout(PUBLISHED, receiver)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                result.unwrap();
+                assert_eq!(durable.unwrap(), ["s/5", "t/2"]);
+            }
+            // The held round, an input after a round, started at once. The
+            // last one began with deltas, so it was to wait until the window
+            // after the held round started, and the input ended the wait.
+            let deadlines = store.take_round_deadlines();
+            let [None, None, Some(deadline)] = deadlines[..] else {
+                panic!("{deadlines:?}");
+            };
+            assert!(before + WINDOW <= deadline && deadline <= held + WINDOW);
+        } else {
+            for (session, records) in &batches {
+                append(&store, key(session, "main"), records.clone())
+                    .await
+                    .unwrap();
+            }
+            // After the first round, each round of deltas waited for the
+            // window and the input's round did not.
+            let waited: Vec<_> = store
+                .take_round_deadlines()
+                .iter()
+                .map(Option::is_some)
+                .collect();
+            assert_eq!(waited, [false, true, true, false, true, true]);
+        }
+        for (session, last) in [("s", 5), ("t", 2)] {
+            let expected: Vec<_> = batches
+                .iter()
+                .filter(|(owner, _)| *owner == session)
+                .flat_map(|(_, records)| records)
+                .collect();
+            let read = store.read(&key(session, "main"), 1..=last).await.unwrap();
+            assert_eq!(read.len(), expected.len());
+            for (actual, expected) in read.iter().zip(expected) {
+                assert_eq!(actual.event, expected.event);
+                assert_eq!(actual.batch_end, expected.batch_end);
+            }
+        }
+        written.push([
+            session_rows(&connection, "s"),
+            session_rows(&connection, "t"),
+        ]);
+        // A delta waits again, and closing ends the wait: the close returns
+        // once its round committed.
+        let last = queue(&store, key("t", "main"), vec![text(3, "z")]);
+        tokio::time::timeout(PUBLISHED, store.close())
+            .await
+            .unwrap()
+            .unwrap();
+        last.await.unwrap();
+        assert!(matches!(store.take_round_deadlines()[..], [Some(_)]));
+        drop(connection);
+        db.close().await.unwrap();
+    }
+    assert_eq!(written[0], written[1]);
 }
 
 /// A model call at `sequence` whose request has `messages`.
@@ -1172,7 +1447,9 @@ async fn reads_rebuild_lists_from_where_they_start_in_bounded_holds() {
     let retain_from = format!("event-{}", 3 * (TURNS - 2) - 2);
     let checkpoint =
         projection_checkpoint(&timeline.context(through).await.unwrap(), &retain_from).unwrap();
-    timeline.close().await.unwrap();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
     let resume = checkpoint.resume.sequence;
     assert!(resume <= 3 * (TURNS - 2));
     let compaction = through + 1;
@@ -1266,7 +1543,9 @@ async fn reads_rebuild_lists_from_where_they_start_in_bounded_holds() {
         .await
         .unwrap();
         let context = read_context(&timeline, head).await.unwrap();
-        timeline.close().await.unwrap();
+        dim_agent_runtime::core::close_timeline(&timeline)
+            .await
+            .unwrap();
         (context.checkpoint, context.events, context.positions)
     };
     let before = context().await;
@@ -1395,6 +1674,9 @@ async fn a_long_request_is_read_and_extended_in_bounded_holds() {
     }
 }
 
+/// The round's combined commit fails on Session `bad`, so the writer
+/// retries each Session alone: `bad` fails and is closed to writes with its
+/// directory unchanged, and the other Sessions of the round commit.
 #[tokio::test]
 async fn failed_session_rolls_back_directory_and_does_not_block_other_sessions() {
     let database = Database::new();
@@ -1406,9 +1688,6 @@ async fn failed_session_rolls_back_directory_and_does_not_block_other_sessions()
             .await
             .unwrap();
     }
-    append(&store, key("warm", "main"), vec![text(1, "warm")])
-        .await
-        .unwrap();
     // A request the runtime still holds when its Session's commit fails.
     let history = request_history();
     let request = record(1, history[1].1.event.kind.clone());
@@ -1418,6 +1697,9 @@ async fn failed_session_rolls_back_directory_and_does_not_block_other_sessions()
     assert_eq!(store.writer_memo_requests("bad"), 1);
     let connection = Connection::open(&database.0).unwrap();
     connection.execute_batch("CREATE TRIGGER fail_bad BEFORE INSERT ON timeline_events WHEN NEW.session_id = 'bad' BEGIN SELECT RAISE(ABORT, 'injected failure'); END").unwrap();
+    // The writer is held after a round of `warm`, so the three writes below
+    // meet in its next round.
+    let release = hold_writer(&store, key("warm", "main"), vec![text(1, "warm")]).await;
     let bad_event = record(
         2,
         EventKind::BranchCreate(BranchCreateData {
@@ -1429,14 +1711,13 @@ async fn failed_session_rolls_back_directory_and_does_not_block_other_sessions()
             prompt: String::new(),
         }),
     );
-    let (bad, good, other) = tokio::join!(
-        append(&store, key("bad", "main"), vec![bad_event]),
-        append(&store, key("good", "main"), vec![text(1, "good")]),
-        append(&store, key("other", "main"), vec![text(1, "other")])
-    );
-    assert!(matches!(bad, Err(AgentError::Storage(_))));
-    good.unwrap();
-    other.unwrap();
+    let bad = queue(&store, key("bad", "main"), vec![bad_event]);
+    let good = queue(&store, key("good", "main"), vec![text(1, "good")]);
+    let other = queue(&store, key("other", "main"), vec![text(1, "other")]);
+    drop(release);
+    assert!(matches!(bad.await, Err(AgentError::Storage(_))));
+    good.await.unwrap();
+    other.await.unwrap();
     assert_eq!(store.writer_memo_requests("bad"), 0);
     assert_eq!(store.head(&key("bad", "main")).await.unwrap(), 1);
     assert_eq!(store.branches("bad").await.unwrap().len(), 1);
@@ -1956,6 +2237,7 @@ fn unsupported_legacy_or_changed_schema_is_rejected_without_migration() {
         V15,
         V16,
         V17,
+        V18,
     }
     for (base, sql) in [
         (Base::Empty, "CREATE TABLE sessions (id TEXT PRIMARY KEY)"),
@@ -2081,11 +2363,21 @@ fn unsupported_legacy_or_changed_schema_is_rejected_without_migration() {
             Base::V16,
             "PRAGMA ignore_check_constraints=ON; UPDATE agent_store_format SET version=17",
         ),
-        // A v17 schema requires marker 17; it is never read as v16.
+        // A v17 schema requires marker 17; it is never read as v16 or v18.
         (Base::V17, "DELETE FROM agent_store_format"),
         (
             Base::V17,
             "PRAGMA ignore_check_constraints=ON; UPDATE agent_store_format SET version=16",
+        ),
+        (
+            Base::V17,
+            "PRAGMA ignore_check_constraints=ON; UPDATE agent_store_format SET version=18",
+        ),
+        // A v18 schema requires marker 18; it is never read as v17.
+        (Base::V18, "DELETE FROM agent_store_format"),
+        (
+            Base::V18,
+            "PRAGMA ignore_check_constraints=ON; UPDATE agent_store_format SET version=17",
         ),
         // A partly upgraded store is neither format.
         (
@@ -2096,6 +2388,7 @@ fn unsupported_legacy_or_changed_schema_is_rejected_without_migration() {
         (Base::V15, V16_ADDITIONS[0]),
         (Base::V16, "DROP TABLE session_metadata"),
         (Base::V17, "DROP TABLE session_metadata"),
+        (Base::V18, "DROP TABLE session_metadata"),
     ] {
         let database = Database::new();
         match base {
@@ -2103,8 +2396,9 @@ fn unsupported_legacy_or_changed_schema_is_rejected_without_migration() {
             // v1 to v13 used the same tables; only their markers differ.
             Base::V13 => drop(v13_store(&database.0)),
             Base::V15 => drop(v15_store(&database.0)),
-            Base::V16 => drop(v16_store(&database.0)),
-            Base::V17 => drop(SqliteStorage::open(database.0.clone()).unwrap()),
+            Base::V16 => drop(v16_tables_store(&database.0, 16)),
+            Base::V17 => drop(v16_tables_store(&database.0, 17)),
+            Base::V18 => drop(SqliteStorage::open(database.0.clone()).unwrap()),
         }
         let connection = Connection::open(&database.0).unwrap();
         connection.execute_batch(sql).unwrap();
@@ -2139,7 +2433,7 @@ fn marker(connection: &Connection) -> Vec<i64> {
 }
 
 /// Upgrades the disposable `connection`'s store, built at `from` and holding
-/// every documented row of the tables it has, to the exact v17 store in place:
+/// every documented row of the tables it has, to the exact v18 store in place:
 /// every business row is unchanged, the added tables are empty, and only that
 /// open reports the upgrade. The documented v16 request row then reads and
 /// continues as mixed rows.
@@ -2170,16 +2464,16 @@ async fn upgrades_in_place_once(database: &Database, connection: Connection, fro
     store.close().await.unwrap();
     db.close().await.unwrap();
     let connection = Connection::open(&database.0).unwrap();
-    assert_eq!(schema(&connection), schema_of(17));
-    assert_eq!(marker(&connection), [17]);
+    assert_eq!(schema(&connection), schema_of(18));
+    assert_eq!(marker(&connection), [18]);
     let after: Vec<_> = kept.iter().map(|table| rows(&connection, table)).collect();
     assert_eq!(after, before);
     for table in added {
         assert!(rows(&connection, table).is_empty());
     }
 
-    // The upgraded store reopens as v17 and reports nothing. `main`'s next
-    // request row is v17; its previous request, the v16 row at 4, has no
+    // The upgraded store reopens as v18 and reports nothing. `main`'s next
+    // request row is a v17 list; its previous request, the v16 row at 4, has no
     // list to share, so it writes a node for every message, and content
     // addresses meet the node the child already has for "Hi".
     let db = SqliteStorage::open(database.0.clone()).unwrap();
@@ -2238,8 +2532,8 @@ async fn upgrades_in_place_once(database: &Database, connection: Connection, fro
     db.close().await.unwrap();
 }
 
-/// An empty store is created at exactly v17; a v13 store takes S5a's,
-/// S5b's and #193's one-way steps in one open.
+/// An empty store is created at exactly v18; a v13 store takes S5a's,
+/// S5b's, #193's and #2's one-way steps in one open.
 #[tokio::test]
 async fn a_v13_store_upgrades_in_place_once() {
     let fresh = Database::new();
@@ -2247,8 +2541,8 @@ async fn a_v13_store_upgrades_in_place_once() {
     assert_eq!(db.upgraded_from(), None);
     db.close().await.unwrap();
     let connection = Connection::open(&fresh.0).unwrap();
-    assert_eq!(schema(&connection), schema_of(17));
-    assert_eq!(marker(&connection), [17]);
+    assert_eq!(schema(&connection), schema_of(18));
+    assert_eq!(marker(&connection), [18]);
     drop(connection);
 
     let database = Database::new();
@@ -2256,8 +2550,8 @@ async fn a_v13_store_upgrades_in_place_once() {
     upgrades_in_place_once(&database, connection, 13).await;
 }
 
-/// S5b's one-way upgrade, then #193's: an exact v15 store becomes the exact
-/// v17 store.
+/// S5b's one-way upgrade, then #193's and #2's: an exact v15 store becomes
+/// the exact v18 store.
 #[tokio::test]
 async fn a_v15_store_upgrades_in_place_once() {
     let database = Database::new();
@@ -2266,13 +2560,24 @@ async fn a_v15_store_upgrades_in_place_once() {
     upgrades_in_place_once(&database, connection, 15).await;
 }
 
-/// #193's one-way upgrade replaces only the marker of an exact v16 store.
+/// #193's and #2's one-way upgrades replace only the marker of an exact v16
+/// store.
 #[tokio::test]
 async fn a_v16_store_upgrades_in_place_once() {
     let database = Database::new();
-    let connection = v16_store(&database.0);
+    let connection = v16_tables_store(&database.0, 16);
     assert_eq!(schema(&connection), schema_of(16));
     upgrades_in_place_once(&database, connection, 16).await;
+}
+
+/// #2's one-way upgrade replaces only the marker of an exact v17 store: its
+/// rows, v16 and v17 request rows alike, are unchanged.
+#[tokio::test]
+async fn a_v17_store_upgrades_in_place_once() {
+    let database = Database::new();
+    let connection = v16_tables_store(&database.0, 17);
+    assert_eq!(schema(&connection), schema_of(17));
+    upgrades_in_place_once(&database, connection, 17).await;
 }
 
 /// The daemon names the one-way upgrade on stderr, where its default log
@@ -2318,7 +2623,7 @@ async fn the_daemon_reports_a_v13_upgrade_on_stderr_once() {
         reports.push(stderr);
     }
     let line = format!(
-        "Upgraded native store {} from format v13 to v17; earlier dimcode versions cannot open it.",
+        "Upgraded native store {} from format v13 to v18; earlier dimcode versions cannot open it.",
         path.display()
     );
     assert!(
@@ -2665,7 +2970,9 @@ async fn damaged_snapshot_cannot_silently_remove_retained_output_after_restart()
     assert_eq!(checkpoint.resume.sequence, 5);
     assert!(!checkpoint.state.output.is_empty());
     let compaction = completed("event-3", "summary", 5);
-    timeline.close().await.unwrap();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
     append(
         &store,
         key("session", "main"),
@@ -2735,7 +3042,9 @@ async fn damaged_snapshot_cannot_silently_remove_retained_output_after_restart()
             expected
         );
         assert_eq!(recovered.checkpoint.is_some(), intact);
-        timeline.close().await.unwrap();
+        dim_agent_runtime::core::close_timeline(&timeline)
+            .await
+            .unwrap();
         store.close().await.unwrap();
         db.close().await.unwrap();
         assert_eq!(facts(), original);
@@ -2934,7 +3243,9 @@ async fn recovery_ignores_disposable_snapshots_but_preserves_and_validates_facts
         let agent = builder.build();
         agent.restore_session("session".into()).await.unwrap();
         agent.close().await.unwrap();
-        timeline.close().await.unwrap();
+        dim_agent_runtime::core::close_timeline(&timeline)
+            .await
+            .unwrap();
         store.close().await.unwrap();
         db.close().await.unwrap();
         assert_eq!(
@@ -3140,7 +3451,9 @@ async fn nested_branches_read_fixed_ancestor_checkpoints_after_their_parents_clo
     )
     .await
     .unwrap();
-    main.close().await.unwrap();
+    dim_agent_runtime::core::close_timeline(&main)
+        .await
+        .unwrap();
     let early = Timeline::restore(
         rutis::Ctx::root().unwrap(),
         key("nested", "early"),
@@ -3194,7 +3507,9 @@ async fn nested_branches_read_fixed_ancestor_checkpoints_after_their_parents_clo
             .into(),
         )
         .unwrap();
-    child.close().await.unwrap();
+    dim_agent_runtime::core::close_timeline(&child)
+        .await
+        .unwrap();
     let grandchild = Timeline::restore(
         rutis::Ctx::root().unwrap(),
         key("nested", "grandchild"),
@@ -3225,9 +3540,15 @@ async fn nested_branches_read_fixed_ancestor_checkpoints_after_their_parents_clo
     assert_eq!(history[..4], main.local(..=4).await.unwrap());
     assert_eq!(history[4..], child.local(..=2).await.unwrap());
     assert_eq!(store.branches("nested").await.unwrap().len(), 4);
-    early.close().await.unwrap();
-    grandchild.close().await.unwrap();
-    prefix.close().await.unwrap();
+    dim_agent_runtime::core::close_timeline(&early)
+        .await
+        .unwrap();
+    dim_agent_runtime::core::close_timeline(&grandchild)
+        .await
+        .unwrap();
+    dim_agent_runtime::core::close_timeline(&prefix)
+        .await
+        .unwrap();
     store.close().await.unwrap();
     db.close().await.unwrap();
 }
@@ -3295,7 +3616,9 @@ async fn failed_branch_cuts_remain_readable_as_original_durable_facts() {
                 .into(),
             )
             .unwrap();
-        timeline.close().await.unwrap();
+        dim_agent_runtime::core::close_timeline(&timeline)
+            .await
+            .unwrap();
         originals.push((session, created, failed));
         before.dispose().await.unwrap();
         drop(timeline);
@@ -3960,7 +4283,9 @@ async fn native_continuation_survives_sqlite_checkpoint_request_and_child_restor
         )
         .await
         .unwrap();
-        timeline.close().await.unwrap();
+        dim_agent_runtime::core::close_timeline(&timeline)
+            .await
+            .unwrap();
         store.close().await.unwrap();
         db.close().await.unwrap();
         drop(timeline);
@@ -3990,7 +4315,9 @@ async fn native_continuation_survives_sqlite_checkpoint_request_and_child_restor
             );
             let events = timeline.history(None).await.unwrap();
             assert!(events.iter().any(|e|matches!(&e.kind,EventKind::ModelCall(call) if call.request.messages[0].as_ref()==&assistant)));
-            timeline.close().await.unwrap();
+            dim_agent_runtime::core::close_timeline(&timeline)
+                .await
+                .unwrap();
         }
         let saved = store
             .latest_snapshot(&key("native", "main"), 9, INTERPRETER)
@@ -4011,7 +4338,9 @@ async fn native_continuation_survives_sqlite_checkpoint_request_and_child_restor
             .unwrap()
             .pop()
             .unwrap();
-        timeline.close().await.unwrap();
+        dim_agent_runtime::core::close_timeline(&timeline)
+            .await
+            .unwrap();
         let checkpoint = (HistoryRenderer::default().decode_checkpoint)(&saved, &anchor).unwrap();
         assert_eq!(checkpoint.state.output, content);
         store.close().await.unwrap();

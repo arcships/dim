@@ -341,6 +341,8 @@ fork 复制源 Session 的整个 `SessionConfig`；权限预设随复制过来�
 | `node_unavailable` | 不由 `sessions` 返回：对离线资源节点的调用在该 Session 的工具内部失败 |
 | `failed` | Session 故障、存储、模型解析、项目授权或 Session 构建 |
 
+**input 生命周期：** 按 [S2 §6.2](../appserver/sessions-service.md#62-input)，input 准入前的索引停止，或原 row effect 登记失败，回复 `reloading` 且未写入。row 调用在最终交接检查捕获的 generation 令牌：即使 effect 已登记，租约/恢复准备期间的 row 停止仍拒绝 input。准入后，类型化 Rust 和具名调用都跨索引重载等待任务自身结果。只有原始 runtime row 另有 S2 §8.4 的 drain。回复丢失不能证明写入者已结束。`publication_unknown` 和回复丢失仍须 lookup。
+
 ## 附录 B. 完整冲突表
 
 | 场景 | 序号顺序 | 结果 | 决定所有者 |
@@ -360,7 +362,8 @@ fork 复制源 Session 的整个 `SessionConfig`；权限预设随复制过来�
 | 写入与消费之间切出子分支 | input < cut < consumed | 子分支不采纳它 | InputQueue（子分支） |
 | 两个写入方，同一 key | Timeline 顺序 | 后者取代前者；所有者前缀按约定避免冲突 | 历史投影 |
 | 读取决策依据、出现更新的事实、然后写入 | through < fact < write | 写入排在该事实之后 | 输入所有者 |
-| Agents 重载 | — | 进行中的调用以 `reloading` 失败，已受理的 `launch` 与 `delete` 除外，它们回复自己的结果；调用方不重载（#35）；已提交的输入保留 | Agents |
+| Agents 重载 | — | 进行中的调用以 `reloading` 失败，已准入的 `launch`/`input` 与 `delete` 除外，它们回复自己的结果；调用方不重载（#35）；已提交的输入保留 | Agents |
+| input 准入后索引重载 | admission < index stop | 已准入的 input 也回复自身追加/发布结果；准入前停止则 reloading 且未写入（S2 §6.2 / §8.3） | Agents |
 | 提交后重启，回复丢失 | — | `lookup` 返回 `accepted`；无重复 | 调用方 |
 | Session 未装载 | — | Agents 在调用前恢复它 | Agents |
 | 资源节点离线 | — | 输入已提交；turn 运行，该节点上的调用以 `node_unavailable` 失败；没有依赖方重载或进入 Pending（对 #5 的要求） | rutis 链接 |

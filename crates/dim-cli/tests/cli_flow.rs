@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+#[path = "cli_flow/permission.rs"]
+mod permission;
+
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -68,13 +71,26 @@ impl Wire {
         self.send(json!({"jsonrpc":"2.0","method":method,"params":params}));
     }
     fn start(&mut self, resume: bool) {
+        self.hello(&[]);
+        if !resume {
+            self.created();
+        }
+        self.attached();
+    }
+    /// Answers `hello`, advertising `extra` methods besides the Session basics.
+    fn hello(&mut self, extra: &[&str]) {
         let hello = self.read("hello");
         assert_eq!(hello["params"]["protocolVersion"], 3);
-        self.reply(&hello, json!({"instanceId":"server","serverVersion":"0.1.0","protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","provider.list"]}));
-        if !resume {
-            let create = self.read("session.create");
-            self.reply(&create, json!({"sessionId":"session","sequence":8,"model":{"providerId":"test","modelId":"model"}}));
-        }
+        let mut features = vec!["session.create", "session.history", "provider.list"];
+        features.extend(extra);
+        self.reply(&hello, json!({"instanceId":"server","serverVersion":"0.1.0","protocolVersion":3,"daemonProfile":{"kind":"product"},"features":features}));
+    }
+    fn created(&mut self) -> Value {
+        let create = self.read("session.create");
+        self.reply(&create, json!({"sessionId":"session","sequence":8,"model":{"providerId":"test","modelId":"model"}}));
+        create
+    }
+    fn attached(&mut self) {
         let attach = self.read("session.attach");
         self.reply(&attach, json!({}));
         let history = self.read("session.history");
@@ -727,6 +743,26 @@ fn f6_argument_errors_do_not_connect_or_create_product_state() {
         vec!["session", "export", "session", "--format", "xml"],
         vec!["tui"],
         vec!["exec"],
+        vec!["exec", "--permission", "admin", "-p", "text"],
+        vec!["exec", "--permission", "-p", "text"],
+        vec![
+            "--permission",
+            "read-only",
+            "--permission",
+            "full-access",
+            "-p",
+            "text",
+        ],
+        vec!["mcp", "list", "--permission", "read-only"],
+        vec![
+            "session",
+            "export",
+            "session",
+            "--format",
+            "json",
+            "--permission",
+            "full-access",
+        ],
     ] {
         let output = home
             .command()

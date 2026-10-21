@@ -256,6 +256,11 @@ This fragment shows declaration and ownership; a usable account plugin implement
 
 ### Trusted plugin storage
 
+The native provider is currently installed only by the managed-plugin composition.
+Declaring `pluginFiles` in a public TypeScript process row does not yet install it.
+The [public binding proposal](../../docs/design/process-typescript.md#52-public-pluginfiles-binding-proposed)
+reuses this provider and the authorized product root; it is not implemented.
+
 A plugin declares `inject: ['pluginFiles']` and opens a fresh scope during each `apply`. Register `scope.close()` with `ctx.effect` immediately after opening, then register business cleanup. The host chooses the authorized product root; the plugin supplies relative file paths only. This is a trusted-plugin API, not a sandbox for untrusted Node code.
 
 Import `PluginFiles`, `FileScope`, `FileLease` and `FileResult` with

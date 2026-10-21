@@ -662,7 +662,13 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         .session_typescript
         .as_ref()
         .map(|parts| {
-            session_typescript::Parts::new(parts, &mut builder, &mut service_catalog, &owners)
+            session_typescript::Parts::new(
+                parts,
+                &mut builder,
+                &mut service_catalog,
+                &owners,
+                &config.file_roots,
+            )
         })
         .transpose()?;
     if let Some(parts) = &session_parts {

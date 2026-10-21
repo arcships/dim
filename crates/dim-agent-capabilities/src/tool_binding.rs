@@ -39,6 +39,10 @@ struct State {
     pins: Vec<(u64, Vec<Arc<ToolSourceSet>>)>,
     /// The tool part this branch adopted last.
     adopted: Option<ToolSetAdoption>,
+    /// Whether the adopted configuration carries a tool part. Without one,
+    /// each request declares the registry's current host and contributed
+    /// tools (`bind_current`), so only another source's tools need adoption.
+    declares_tools: bool,
     snapshots: HashMap<String, Snapshot>,
 }
 
@@ -229,12 +233,18 @@ impl ToolBinding {
                 *tools == adoption.tools
                     && configuration.settings.tool_sources == adoption.tool_sources
             }
-            None => adoption.tool_sources.is_empty(),
+            None => only_contributed(&adoption),
         };
+        self.state.lock().unwrap().declares_tools = configuration.settings.tools.is_some();
         if declared {
             let mut state = self.state.lock().unwrap();
             if state.adopted.is_none() {
-                state.pins.push((0, sets));
+                // Without a tool part requests bind the registry's current
+                // sets and retain them in their own snapshots; no prefix can
+                // name these versions, so they are not pinned.
+                if state.declares_tools {
+                    state.pins.push((0, sets));
+                }
                 state.adopted = Some(adoption);
             }
             Ok(())
@@ -251,14 +261,22 @@ impl ToolBinding {
         cancel: &CancellationToken,
     ) -> dim_agent_runtime::Result<()> {
         let (adoption, sets) = current(&self.registry);
-        if self.state.lock().unwrap().adopted.as_ref() == Some(&adoption) {
-            return Ok(());
+        {
+            let mut state = self.state.lock().unwrap();
+            if state.adopted.as_ref() == Some(&adoption) {
+                return Ok(());
+            }
+            if !state.declares_tools && only_contributed(&adoption) {
+                state.adopted = Some(adoption);
+                return Ok(());
+            }
         }
         match prompt.adopt_tools(adoption.clone(), cancel.clone()).await? {
             ToolAdoptOutcome::Adopted { sequence } => {
                 let mut state = self.state.lock().unwrap();
                 state.pins.push((sequence, sets));
                 state.adopted = Some(adoption);
+                state.declares_tools = true;
             }
             ToolAdoptOutcome::Unchanged => {
                 let mut state = self.state.lock().unwrap();
@@ -269,6 +287,13 @@ impl ToolBinding {
         }
         Ok(())
     }
+}
+
+fn only_contributed(adoption: &ToolSetAdoption) -> bool {
+    adoption
+        .tool_sources
+        .iter()
+        .all(|source| crate::tool_registry::is_contributed(&source.key))
 }
 
 fn register(

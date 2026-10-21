@@ -4,7 +4,7 @@ Status: Draft. Overall design: [overview §3 integration](../overview.md#3-integ
 
 > **Offline resource nodes.** Rows about an offline resource node describe P3 multi-node behaviour. #5 is withdrawn (rutis is an external dependency, and it withdraws imported services when a link drops), so these rows are redesigned in P3 following overview §6.3: node services are looked up on each call by the Session's resource node, which P3 adds to `SessionConfig` ([A.3](#a3-sessionconfig-fields)). In P1/P2 every Session uses the control node.
 
-Process plugins reach Sessions the way Collaboration already does: through Agents and the public Session interface. This document defines that access as the language-neutral process service `sessions` (ADR 002 D5), provided by Agents, so a TypeScript or Python process plugin (Scheduler, Workflow) uses it by name. Its methods are `launch`, `input`, `lookup`, `history`, `withdraw`, `stop`, `idle` and `delete`, with request and reply as data ([A.1](#a1-the-sessions-service)). In Rust it is `AgentIndex` plus the `Session` facade ([Appendix E](#appendix-e-rust-binding)). It adds no host or facade plugin. Agents provides it from its directory part, which does not reload, so an Agents reload fails only the calls in flight and never reloads a caller (D3, #35); the binding, the lifecycle and the spike behind them are in the [sessions service](../appserver/sessions-service.md) design.
+Process plugins reach Sessions the way Collaboration already does: through Agents and the public Session interface. This document defines that access as the language-neutral process service `sessions` (ADR 002 D5), provided by Agents, so a TypeScript or Python process plugin (Scheduler, Workflow) uses it by name. Its methods are `launch`, `input`, `lookup`, `history`, `withdraw`, `stop`, `idle` and `delete`, with request and reply as data ([A.1](#a1-the-sessions-service)). In Rust it is `AgentIndex` plus the `Session` facade ([Appendix E](#appendix-e-rust-binding)). It adds no host or facade plugin. Agents provides it from its directory part, which does not reload, so an Agents reload ends cancellable calls, retains own-outcome calls, and never reloads a caller (D3, #35); the binding, the lifecycle and the spike behind them are in the [sessions service](../appserver/sessions-service.md) design.
 
 | Supplement | Owner | Used by |
 | --- | --- | --- |
@@ -341,6 +341,15 @@ Not in this contract: `createdBy` (the Session's origin) and the `client` parame
 | `node_unavailable` | Not returned by `sessions`: calls on an offline resource node fail inside the Session's tools |
 | `failed` | Session fault, storage, model resolution, project authorization or Session build |
 
+**Input lifetime.** Under [S2 §6.2](../appserver/sessions-service.md#62-input),
+`reloading` caused by index stop or failed original-row effect registration before
+input admission means nothing was written. A row call also checks its captured
+generation token at final handoff: stopping during lease/restore preparation
+refuses input even after effect registration. After admission, typed Rust and named
+callers await the task's actual outcome across index reload. Only an original
+runtime row supplies the additional drain in S2 §8.4. Losing a reply is not
+writer-termination proof. `publication_unknown` and lost replies still require lookup.
+
 ## Appendix B. Full conflict table
 
 | Scenario | Sequence order | Outcome | Owner of the decision |
@@ -360,7 +369,8 @@ Not in this contract: `createdBy` (the Session's origin) and the `client` parame
 | Child branch cut between write and consumption | input < cut < consumed | Child does not adopt it | InputQueue (child) |
 | Two writers, same key | Timeline order | Later supersedes; owner prefixes avoid collisions by convention | History projection |
 | Decision read, newer fact, then write | through < fact < write | Write ordered after the fact | Input owners |
-| Agents reload | — | Calls in flight fail `reloading`, except an admitted `launch` and a `delete`, which reply their own outcome; callers do not reload (#35); committed inputs stay | Agents |
+| Agents reload | — | Calls in flight fail `reloading`, except admitted `launch`/`input` and `delete`, which reply their own outcome; callers do not reload (#35); committed inputs stay | Agents |
+| Index reload after input admission | admission < index stop | Admitted `input` also replies its own append/publication outcome; pre-admission stop replies `reloading` without a write (S2 §6.2 / §8.3) | Agents |
 | Restart after commit, reply lost | — | `lookup` returns `accepted`; no duplicate | Caller |
 | Session not loaded | — | Agents restores it before the call | Agents |
 | Resource node offline | — | Input committed; the turn runs and calls on that node fail `node_unavailable`; no dependent reloads or goes Pending (requirement on #5) | rutis link |

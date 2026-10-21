@@ -234,7 +234,9 @@ read-only stays read-only. A read failure fails closed because a deny rule may e
 The recheck after an allow response already exists; with rules it also picks up a deny rule
 written while the question was open.
 
-### 5.4 "Always allow" (client flow, implemented in F6)
+### 5.4 "Always allow" (client flow)
+
+Delivered by the CLI permission controls ([#257](https://github.com/arcships/dim/issues/257); [CLI design](../cli-commands.md#always-allow)).
 
 ```
  Client                         PermissionRules             Approval
@@ -290,7 +292,7 @@ denials do today, for example
 | ToolExecutor, WorkspaceTools, ShellTools | Unchanged; `exec` and `execute` already declare `execute_process` and take `command` |
 | Settings | Unchanged; one new source `permission` (user file, native row). Its `settings.changed` event is emitted as for any source; F2 does not listen |
 | Timeline, Dispatcher, rutis, assembly | Unchanged |
-| CLI `/approvals` (F6) | Not part of F2. Requirement F6 consumes: a `/approvals` panel that lists, adds and removes rules through `permission.rules`/`permission.set_rules`, and an "always" choice on the approval prompt for simple `exec`/`execute` commands (§5.4). The current prompt (`Allow once? [y/N]`) is unchanged until F6 |
+| CLI `/approvals` | Not part of F2. The requirement the CLI consumes: a `/approvals` panel that lists, adds and removes rules through `permission.rules`/`permission.set_rules`, and an "always" choice on the approval prompt for simple `exec`/`execute` commands (§5.4). Delivered by the CLI permission controls ([#257](https://github.com/arcships/dim/issues/257), [CLI design](../cli-commands.md#permission-controls)) |
 | HostPlatform | The execution shell stays its own business configuration; not F2 |
 | RemoteGateway | Paired devices answer approvals but cannot read or write rules |
 | Collaboration, Scheduler, Workflow | Rules are host-wide and apply in every Session; since allow only answers `Ask`, an automation Session capped at read-only is not widened |
@@ -339,7 +341,7 @@ Decided by the maintainer:
    service dependency; existing tests are unchanged.
 7. **Scope:** F2 is server side only: rules source, Permission check, management methods and flow
    tests. The CLI `/approvals` panel and the "always" option belong to F6 (CLI) as a requirement it
-   consumes (§5.4, §8).
+   consumes (§5.4, §8); the CLI delivered them in [#257](https://github.com/arcships/dim/issues/257).
 
 ## 11. Acceptance (flow tests)
 

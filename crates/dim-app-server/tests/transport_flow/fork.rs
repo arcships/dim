@@ -40,7 +40,7 @@ fn forked(reply: &Value) -> String {
 async fn history(session: &Session, branch: &str) -> Vec<Arc<AgentEvent>> {
     session.history(branch, None).await.unwrap()
 }
-fn keys(events: &[Arc<AgentEvent>]) -> Vec<&'static str> {
+fn keys(events: &[Arc<AgentEvent>]) -> Vec<&str> {
     events.iter().map(|event| event.kind.key()).collect()
 }
 fn failed_creations(events: &[Arc<AgentEvent>]) -> Vec<String> {

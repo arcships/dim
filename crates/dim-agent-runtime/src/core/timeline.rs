@@ -160,7 +160,9 @@ impl Timeline {
     pub(crate) fn restored_sequence(&self) -> u64 {
         self.0.restored_sequence
     }
-    pub fn append(&self, original: EventDraft) -> Result<Arc<AgentEvent>> {
+    /// Appends one event; it is published once its batch commits. Parts in
+    /// other languages write through it like native capabilities (ADR 001).
+    pub fn append(&self, original: EventDraft) -> std::result::Result<Arc<AgentEvent>, AgentError> {
         self.append_registered(original, |_| Ok(()))
     }
     /// Registers producer state before queueing; publication follows store commit.
@@ -815,7 +817,10 @@ impl Timeline {
         let _commit = self.0.commit.lock().unwrap();
         self.0.data.lock().unwrap().closing = false;
     }
-    pub fn close(&self) -> BoxFuture<'static, Result<()>> {
+    /// Closes this Timeline. Only its owner calls it: a branch's Timeline is
+    /// settled and closed by its TimelineTree (principles §2), so it is not a
+    /// public method and is not exported to other languages.
+    pub(crate) fn close(&self) -> BoxFuture<'static, Result<()>> {
         let mut changed = self.watch();
         {
             let _commit = self.0.commit.lock().unwrap();
@@ -1046,4 +1051,11 @@ impl TailLock<'_> {
     pub(crate) fn freeze(self) {
         self.timeline.0.data.lock().unwrap().closing = true;
     }
+}
+
+/// Closes a Timeline a test built directly with `Timeline::new`. A free
+/// function rather than a method, so the bridge generator never exports it.
+#[cfg(feature = "testing")]
+pub fn close_timeline(timeline: &Timeline) -> BoxFuture<'static, Result<()>> {
+    timeline.close()
 }

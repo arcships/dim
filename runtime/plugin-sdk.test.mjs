@@ -32,11 +32,19 @@ test('packed plugin service types compile the author guide and enforce the publi
   const branchFixture = path.join(directory, 'branch-part.mts');
   writeFileSync(branchFixture, readFileSync(path.join(root, 'runtime/fixtures/branch-part.ts'), 'utf8')
     .replace("'../../npm/plugin.js'", "'dimcode/plugin'"));
+  const permissionsFixture = path.join(directory, 'session-permissions.mts');
+  writeFileSync(permissionsFixture, readFileSync(path.join(root, 'runtime/fixtures/session-permissions.ts'), 'utf8')
+    .replace("'../../npm/plugin.js'", "'dimcode/plugin'"));
+  const workflowFixture = path.join(directory, 'workflow-files.mts');
+  writeFileSync(workflowFixture, readFileSync(path.join(root, 'runtime/fixtures/workflow-files.ts'), 'utf8')
+    .replace("'../../npm/plugin.js'", "'dimcode/plugin'"));
   const calls = path.join(directory, 'calls.mts');
   writeFileSync(calls, `
-import type { Settings, SettingsResult, Sessions, SessionMetadata, SessionMetadataResult, AuxiliaryModel, AuxiliaryReply, FileScope, FileResult, ToolContribution, ToolResult, SessionMethodsContribution, ManagementMethodsContribution, SessionConfig, SessionEventRecord, SessionEventsContribution, BranchEvent, BranchServices, AgentErrorThrown } from 'dimcode/plugin';
+import type { Settings, SettingsResult, Sessions, WorkflowFiles, WorkflowFileEntry, WorkflowFilesErrorThrown, SessionPermissions, PermissionState, SessionsErrorThrown, SessionMetadata, SessionMetadataResult, AuxiliaryModel, AuxiliaryReply, FileScope, FileResult, ToolContribution, ToolResult, SessionMethodsContribution, ManagementMethodsContribution, SessionConfig, SessionEventRecord, SessionEventsContribution, BranchEvent, BranchServices, AgentErrorThrown } from 'dimcode/plugin';
 declare const settings: Settings;
 declare const sessions: Sessions;
+declare const permissions: SessionPermissions;
+declare const workflowFiles: WorkflowFiles;
 declare const metadata: SessionMetadata;
 declare const auxiliary: AuxiliaryModel;
 declare const files: FileScope;
@@ -48,6 +56,32 @@ void management.call({ callId: 'call', method: 'example.status', params: [1, tru
 declare const events: SessionEventsContribution;
 declare const config: SessionConfig;
 const at = { sessionId: 'session', branchId: 'main' };
+const permission: PermissionState = await permissions.permission(at);
+const permissionVersion: number | bigint = permission.version;
+const defaults = await permissions.permissionDefaults({});
+const preset: 'read-only' | 'workspace-write' | 'full-access' | undefined = defaults.preset;
+declare const permissionError: SessionsErrorThrown;
+const permissionCode: 'rejected' | 'agent_unknown' | 'session_closed' | 'branch_missing' | 'reloading' | 'future_sequence' | 'ambiguous' | 'publication_unknown' | 'failed' = permissionError.code;
+void permissionVersion; void preset; void permissionCode;
+// @ts-expect-error permission reads require a branch identity.
+void permissions.permission({ sessionId: 'session' });
+// @ts-expect-error generated permission reads return a value without a sessions envelope.
+const permissionEnvelope: { ok: boolean } = await permissions.permission(at);
+// @ts-expect-error generated permission versions preserve number | bigint.
+const lossyPermissionVersion: number = permission.version;
+const definitionBytes: Uint8Array = await workflowFiles.read({ root: { package: 'installed' }, path: 'example.yaml' });
+const definitions: WorkflowFileEntry[] = await workflowFiles.list({ root: { project: '/workspace' } });
+const created: void = await workflowFiles.createDirectory({ root: { project: '/workspace' } });
+const replaced: void = await workflowFiles.replace({ root: { project: '/workspace' }, path: 'example.yaml', bytes: definitionBytes });
+declare const fileError: WorkflowFilesErrorThrown;
+const fileCode: string = fileError.code;
+void definitions; void created; void replaced; void fileCode;
+// @ts-expect-error raw FileStorage root indices are not exposed.
+void workflowFiles.read({ root: 0, path: 'example.yaml' });
+// @ts-expect-error replacement uses native Bytes, not JSON text or a storage envelope.
+void workflowFiles.replace({ root: { project: '/workspace' }, path: 'example.yaml', bytes: 'text' });
+// @ts-expect-error original caller context is supplied by the generator.
+void workflowFiles.list({}, { root: { project: '/workspace' } });
 void settings.read({ source: 'web', scope: 'user' });
 void settings.update({ source: 'web', scope: { project: 1 }, expectedRevision: 'opaque', document: { maxResults: 10 } });
 const projects: SettingsResult<{ projects: { root: number; cwd: string }[] }> = settings.projects({});
@@ -177,6 +211,6 @@ const lossyCut: number = cutoff;
   assert.equal(declarations.status, 0, declarations.stdout + declarations.stderr);
   const checked = spawnSync(process.execPath, [compiler,
     '--strict', '--noEmit', '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext',
-    ...files, calls, branchFixture], { encoding: 'utf8' });
+    ...files, calls, branchFixture, permissionsFixture, workflowFixture], { encoding: 'utf8' });
   assert.equal(checked.status, 0, checked.stdout + checked.stderr);
 });

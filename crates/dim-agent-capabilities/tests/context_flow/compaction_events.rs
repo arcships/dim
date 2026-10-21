@@ -100,7 +100,9 @@ async fn snapshot_codecs_preserve_completed_compaction_even_when_saving_fails() 
                 project_context_history(&timeline.context(timeline.sequence()).await.unwrap())
                     .unwrap()
             );
-            timeline.close().await.unwrap();
+            dim_agent_runtime::core::close_timeline(&timeline)
+                .await
+                .unwrap();
         } else {
             assert!(saved.is_none());
         }

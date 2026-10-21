@@ -3,6 +3,9 @@
 //! declare (settings-service design).
 mod declared;
 mod native;
+pub mod workflow_files;
+pub use workflow_files::WorkflowFiles;
+pub(crate) use workflow_files::WorkflowPackages;
 
 use crate::storage::SqliteStorage;
 use dim_agent_capabilities::file_storage::{FilePath, FileStorage, FileStorageError};
@@ -583,6 +586,10 @@ impl TypedPlugin for SettingsPlugin {
                 }))
             })?;
             declared::provide(ctx, &service)?;
+            ctx.provide_as(
+                TypeKey::of::<WorkflowFiles>(),
+                Arc::new(WorkflowFiles(service.clone())),
+            )?;
             ctx.provide_as(TypeKey::of::<SettingsService>(), service)?;
             Ok(Effect::Done)
         })

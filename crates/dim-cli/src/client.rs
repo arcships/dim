@@ -65,6 +65,15 @@ impl std::fmt::Display for RpcError {
     }
 }
 impl std::error::Error for RpcError {}
+/// The App Server error code of a failed call, if the error is one.
+pub fn app_error(error: &crate::Error) -> Option<&str> {
+    error
+        .downcast_ref::<RpcError>()?
+        .data
+        .as_ref()?
+        .get("appError")?
+        .as_str()
+}
 
 #[derive(Debug)]
 pub enum Message {
@@ -85,6 +94,8 @@ pub struct Client {
     frame: Vec<u8>,
     pub notices: VecDeque<Message>,
     shutdown_completion: bool,
+    /// The methods and capabilities the server's hello listed.
+    features: Vec<String>,
     #[cfg(windows)]
     _bridge: tokio::process::Child,
 }
@@ -166,6 +177,7 @@ impl Client {
             frame: Vec::new(),
             notices: VecDeque::new(),
             shutdown_completion: false,
+            features: Vec::new(),
             #[cfg(windows)]
             _bridge: bridge,
         })
@@ -239,6 +251,13 @@ impl Client {
         }
     }
 
+    /// Whether the daemon advertised every named method.
+    pub fn supports(&self, methods: &[&str]) -> bool {
+        methods
+            .iter()
+            .all(|method| self.features.iter().any(|feature| feature == method))
+    }
+
     pub async fn next(&mut self) -> Result<Message> {
         if let Some(message) = self.notices.pop_front() {
             return Ok(message);
@@ -292,6 +311,7 @@ impl Client {
             .features
             .iter()
             .any(|feature| feature == "daemon.shutdown.completed");
+        self.features = hello.features;
         Ok(())
     }
 }

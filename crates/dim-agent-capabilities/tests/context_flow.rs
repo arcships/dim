@@ -1065,7 +1065,9 @@ async fn restoring_idle_unpaused_queue_input_applies_it_without_a_new_submission
             .into(),
         )
         .unwrap();
-    timeline.close().await.unwrap();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
     let mut builder = builder_with_context(
         Arc::new(EchoModel),
         HistoryRenderer::default(),
@@ -1127,7 +1129,9 @@ async fn restoring_pending_inputs_runs_each_queued_input_in_its_own_turn() {
                 .into(),
         )
         .unwrap();
-    timeline.close().await.unwrap();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
     let mut builder = builder_with_context(
         Arc::new(EchoModel),
         HistoryRenderer::default(),

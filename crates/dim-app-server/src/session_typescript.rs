@@ -3,7 +3,10 @@ use crate::{
     Result, ServerError,
     agents::AgentIndex,
     methods::ManagementMethods,
-    settings::{ProjectAuthorized, SettingsChanged, SourceDeclaration, project_authorizations},
+    settings::{
+        ProjectAuthorized, SettingsChanged, SourceDeclaration, WorkflowPackages,
+        project_authorizations,
+    },
 };
 use dim_agent_capabilities::{
     methods::{SessionMethods, within},
@@ -50,7 +53,12 @@ const SESSION_EVENT: &str = "session.event";
 // Existing Session and branch services exported by name (build.rs).
 rutis_bridge::include_exports!(mod exports);
 /// The exported branch services: a row that injects one runs in each branch.
-const BRANCH_SERVICES: [&str; 3] = ["dispatcher", "branchLifecycle", "timelineIdentity"];
+const BRANCH_SERVICES: [&str; 4] = [
+    "dispatcher",
+    "branchLifecycle",
+    "timeline",
+    "timelineIdentity",
+];
 
 enum SessionDelivery {
     Event(Session, Value),
@@ -306,6 +314,7 @@ impl Parts {
         builder: &mut AgentBuilder,
         catalog: &mut ServiceCatalog,
         management: &[(String, String)],
+        file_roots: &[PathBuf],
     ) -> Result<Self> {
         let invalid = |message: &str| ServerError::Configuration(message.into());
         if [&config.node, &config.js_runtime, &config.anchor]
@@ -512,6 +521,7 @@ impl Parts {
         let resolver = Arc::new(SessionResolver {
             runtime: rows_runtime.clone(),
             snapshots,
+            file_roots: file_roots.to_vec().into(),
         });
         // `settings` is the host's input to Settings, not a loader field.
         let without_settings = |mut row: Value| {
@@ -548,6 +558,7 @@ impl Parts {
 pub(crate) struct SessionResolver {
     runtime: Arc<RuntimeResolver>,
     snapshots: HashMap<String, Map<String, Value>>,
+    file_roots: Arc<[PathBuf]>,
 }
 impl Resolver for SessionResolver {
     fn resolve<'a>(
@@ -598,6 +609,7 @@ impl Resolver for SessionResolver {
                 tools: tools.clone(),
                 events: events.clone(),
                 injects: original.factory.injects().to_vec(),
+                file_roots: self.file_roots.clone(),
             }))
             .with_schema(original.schema.clone())
             .with_meta(original.meta.clone());
@@ -614,6 +626,7 @@ impl Resolver for SessionResolver {
                     name: name.into(),
                     message: "runtime row has no scoped factory".into(),
                 })?;
+            let file_roots = self.file_roots.clone();
             resolved = resolved.with_scoped(Arc::new(move |build| {
                 let inner = scoped(build)?;
                 let scope = build
@@ -638,6 +651,7 @@ impl Resolver for SessionResolver {
                     tools: tools.clone(),
                     events: events.clone(),
                     injects,
+                    file_roots: file_roots.clone(),
                 }))
             }));
             Ok(Arc::new(resolved))
@@ -652,6 +666,7 @@ struct BoundFactory {
     tools: Arc<[String]>,
     events: Arc<[String]>,
     injects: Vec<TypeKey>,
+    file_roots: Arc<[PathBuf]>,
 }
 impl PluginFactory<Value> for BoundFactory {
     fn name(&self) -> &str {
@@ -664,6 +679,15 @@ impl PluginFactory<Value> for BoundFactory {
         self.inner.validate_config(config)
     }
     fn build(&self, config: &Value) -> std::result::Result<Box<dyn Plugin>, CordisError> {
+        let packages = if self.scope.is_none() && self.injects.contains(&host_key("workflowFiles"))
+        {
+            Some(Arc::new(WorkflowPackages::from_config(
+                config,
+                &self.file_roots,
+            )?))
+        } else {
+            None
+        };
         Ok(Box::new(BoundRow {
             inner: self.inner.build(config)?,
             scope: self.scope,
@@ -671,6 +695,7 @@ impl PluginFactory<Value> for BoundFactory {
             tools: self.tools.clone(),
             events: self.events.clone(),
             injects: self.injects.clone(),
+            packages,
         }))
     }
 }
@@ -682,6 +707,7 @@ struct BoundRow {
     tools: Arc<[String]>,
     events: Arc<[String]>,
     injects: Vec<TypeKey>,
+    packages: Option<Arc<WorkflowPackages>>,
 }
 struct ProjectedServices {
     keys: Arc<[TypeKey]>,
@@ -716,6 +742,12 @@ impl Plugin for BoundRow {
         ctx: &'a Ctx,
     ) -> BoxFuture<'a, std::result::Result<Effect, CordisError>> {
         Box::pin(async move {
+            if let Some(packages) = &self.packages {
+                ctx.provide_as(
+                    TypeKey::instance::<WorkflowPackages>(ctx.instance()),
+                    packages.clone(),
+                )?;
+            }
             for name in self.tools.iter() {
                 ctx.provide_as(
                     TypeKey::keyed_dynamic::<CancellationToken>(name.as_str())

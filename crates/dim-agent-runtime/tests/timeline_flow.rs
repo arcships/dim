@@ -139,7 +139,9 @@ async fn history_has_no_byte_quota_and_atomic_cuts_stay_fixed() {
         timeline.history(Some(4)).await,
         Err(AgentError::InvalidInput(_))
     ));
-    timeline.close().await.unwrap();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
     assert!(matches!(
         timeline.append(input("closed")),
         Err(AgentError::Closed(_))

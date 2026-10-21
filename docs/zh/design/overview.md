@@ -268,7 +268,7 @@ sequenceDiagram
 
 ### 5.5 经 Agents 的定时运行
 
-[Scheduler](plugins/Scheduler.md) 仍为 Draft/未实现。图示为其自持的 create 模式运行流程；S2、Settings 和 pluginFiles 已交付，完整 Ready 与包绑定条件仍以所有者文档为准。
+[Scheduler](plugins/Scheduler.md) 仍为 Draft/未实现。图示为其自持的 create 模式运行流程。S2、Settings 已交付；pluginFiles API 已存在，但[公开装配](../../design/process-typescript.md#52-public-pluginfiles-binding-proposed)尚未安装。完整 Ready 与包绑定条件仍以所有者文档为准。
 
 ```mermaid
 sequenceDiagram
