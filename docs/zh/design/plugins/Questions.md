@@ -1,12 +1,12 @@
 # Questions
 
-状态：草案（重新设计，[#144](https://github.com/arcships/dim/issues/144)）。总体设计：[overview §4](../overview.md#4-插件目录)。里程碑：M2。语言：Rust。作用域：Session + 分支（[ADR 002](../../adr/002-plugin-scope.md)）。
+状态：Ready，可开始实施。总体设计：[overview §4](../overview.md#4-插件目录)。里程碑：M2。语言：Rust。作用域：Session + 分支（[ADR 002](../../adr/002-plugin-scope.md)）。实现跟踪：[#262](https://github.com/arcships/dim/issues/262)。
+
+**交付边界。** Questions capability 与客户端接入尚未实现。下文采用的工具、Session 方法与分支服务机制已可用；Ready 确认后按附录 D 实施，不增加 Timeline 事件、静态 RPC 分支或 core/rutis 机制。
 
 模型通过 `ask_user` 工具向用户提出一个或多个问题并等待回答：单选、多选、一次调用多个问题、自定义回答或拒绝回答。**问题就是待完成的工具调用，回答就是它的工具结果。** 客户端把已提交、尚无 `step/tool-result` 的 `ask_user` 的 `step/tool-call` 视为问题，用 Session 方法 `session.question.respond` 回答；等待中的处理函数把回答作为自己的 `ToolResult` 返回，ToolExecutor 像发布其他工具输出一样把它写进该批次的 `step/tool-result`。模型只从 `ToolResult.content` 得知用户的选择。
 
 Questions **不定义任何 Timeline 事件**。**Session 部分**提供 `ask_user` 工具（`toolContribution`，key `ask_user`）和方法 `session.question.respond`（`sessionMethods`，key `session.question`）（[session-boundary](../contracts/session-boundary.md)）。**分支部分**在内存中持有本分支正在运行的 `ask_user` 调用的等待者，如同运行中的工具持有自己的 I/O。中断、关闭、重载、重启和 fork 都由 [ToolExecutor](../../../architecture/rust-agent/plugins/ToolExecutor.md) 现有的工具调用生命周期结算。
-
-与上一版草案相比：删除了三个 `question/*` 事件、Questions 专用的回答与中断排序，以及对客户端可见动态事件（[#2](https://github.com/arcships/dim/issues/2)）的依赖。每个被删除的事实都在 [§2](#2-数据与状态) 中按原则 §4 第 9 条说明理由。
 
 ## 1. 结构
 
@@ -53,6 +53,23 @@ Session 部分不持有状态；每次调用时通过 `S:TreeCommands` 解析调
 
 本文定义的合同：`ask_user` 工具（声明、输入 schema、结果文本）、`session.question.respond` 及其错误，以及客户端从历史推导待答问题的规则。`questions` 分支服务是 Questions 私有的。
 
+### 1.1 既有原生绑定与交付顺序
+
+通过 `AgentBuilder::session_tool` 注册 `ask_user`，在 Session 命名 key 提供
+`ToolContribution`。通过 `AgentBuilder::session_methods` 注册命名空间
+`session.question`，Session 部分用 `SessionMethods::provide` 提供 A.3 的声明与处理函数。
+Rpc 已能分派贡献的 Session 方法，并通过 `session.methods` 发现它们；不在
+`protocol.rs` 增加 Questions 分支、另一套分派器或静态 `hello` feature。
+客户端看到待答 `ask_user` 时调用约定方法；禁用或重载时沿用既有错误合同。
+
+Session 部分像 Wait 一样逐次通过 `TreeCommands` 解析分支；分支部分拥有等待者、
+取消和 Dispatcher 订阅，不增 Session 级等待者注册表或可选服务查询。
+取消采用既有分支工具 token。
+
+在 main 交付 capability 与协议流程验收；[#262](https://github.com/arcships/dim/issues/262)
+的 TUI 接入采用 `rust-tui` 既有 `AskUserPrompt`，行模式与无交互行为遵循 A.5。
+各客户端消费相同的工具调用、结果与回答格式；UI 分支实现不代表 main 已提供 capability。
+
 ## 2. 数据与状态
 
 ```mermaid
@@ -78,7 +95,7 @@ Timeline 已有的内容，以及为什么不再写其他事实：
 | 批次完成前崩溃时保留回答 | — | 重启后该 turn 已经 `Failed`，批次按重载结算（[单树装配](../../../architecture/rust-agent/single-tree.md)重载规则）；持久化的回答不会被任何东西读取。所有工具都有同样的窗口 |
 | 中断、关闭、重载、重启的结果 | ToolExecutor 的 `step/tool-result`（取消或重载结算） | 归 ToolExecutor |
 
-**动态事件（#2）：** 重新设计不定义事件，因此不需要 #2。上一版草案的需求 R1 撤回，#2 在当前设计中没有消费者。
+**动态事件（#2）：** Questions 不定义事件，也不依赖 #2。
 
 ## 3. 流程
 
@@ -216,7 +233,7 @@ Session fork 只在 `main` 的静止点切分，且切点处没有缺少结果�
 
 ## 9. 向机制所有者提出的需求
 
-无。由于 Questions 不定义事件，上一版草案的 R1（客户端可见的动态事件，#2）撤回。R2（按启用状态安装可选部分）不变，见 [Session 访问 §9.4](../contracts/session-access.md#94-按启用状态安装可选部分)；Questions 是它的使用者之一。
+无。Questions 使用既有工具、方法和分支服务，按 [Session 访问 §9.4](../contracts/session-access.md#94-按启用状态安装可选部分) 在启用时安装两部分，不在安装时读取 `interactive`。
 
 ## 10. 影响面
 
@@ -274,7 +291,7 @@ Session fork 只在 `main` 的静止点切分，且切点处没有缺少结果�
 
 服务 `sessionMethods`，Session 作用域，key `session.question`。`describe()` 返回 `{name: "session.question.respond", mutating: true, interruption: "report", progress: false}`。处理函数经 `S:TreeCommands` 解析指定分支的 `questions`。
 
-`params`：`{sessionId, branchId?: "main", callId, answers: [{questionId, selected: [label], custom?}], declined?: false}` → `{}`。错误是 `MethodError` 数据：
+`params`：`{sessionId, branchId?: "main", callId, answers: [{questionId, selected: [label], custom?}], declined?: false}` → `{}`。RPC 错误通过 `data.appError` 返回下列代码：
 
 | `appError` | 条件 |
 | --- | --- |
@@ -302,6 +319,15 @@ Session fork 只在 `main` 的静止点切分，且切点处没有缺少结果�
 ### A.5 CLI 合同
 
 CLI 处理所附着 Session 中每个分支的问题（A9）。
+
+```text
+[question] Storage
+Where should the result be saved?
+  1. Project
+  2. User directory
+  0. Other (type your answer)
+Choose 1-2:
+```
 
 | 情况 | CLI 行为 |
 | --- | --- |
@@ -387,21 +413,19 @@ CLI 处理所附着 Session 中每个分支的问题（A9）。
 | A11 | Steer 不结束等待中的问题 | 判断 | Steer 取消该调用 |
 | A12 | 其他客户端在 `step/tool-result` 时关闭提示，而不是在回答的那一刻 | 第 9 条；`ask_user` 通常单独成批 | F1 增加更早的关闭 |
 
-（上一版草案的 A3，即 `question/*` 载荷扩展，随事件一并删除。）
-
-## 附录 F. 待对齐问题
+## 附录 F. 延后范围
 
 | # | 问题 | 说明 |
 | --- | --- | --- |
-| F1 | 其他客户端更早关闭提示 | 不是必需的。若需要，两条已有路线都不需新机制：在通用通知记录（[SessionTitle R1](SessionTitle.md#9-向机制所有者提出的需求)）实现后，发出 Session 广播通知 `{source: "Questions", kind: "answered", data: {branchId, callId}}`；或启用 ToolExecutor 已有的单次调用 `step/tool-completed`（目前产品中关闭） |
+| F1 | 其他客户端更早关闭提示 | 延后；按 A12 在批次 `step/tool-result` 时关闭提示，当前实现不需要更早的显示反馈。 |
 | F2 | 非交互 Session 中的审批 | [sessions-service D10](../appserver/sessions-service.md) 把它与 Questions 重新设计关联；Questions 不做这个决定，Approval 的行为不变 |
 
 ## 附录 G. Rust 绑定
 
 | 中立合同 | Rust 绑定 |
 | --- | --- |
-| `toolContribution` key `ask_user` | `S:ToolContribution`，`Contributions<ToolContribution>` 中的条目 `ask_user`；取消请求 = 批次 `CancellationToken`；`cancelled` = `HostError::Cancelled` |
-| `sessionMethods` key `session.question` | `SessionMethodContribution(Arc<dyn MethodProvider>)`，key `SessionScope::named_key::<SessionMethodContribution>("session.question")` |
+| `toolContribution` key `ask_user` | `ToolContribution {definition, handler: Arc<dyn ToolHandler>}`，key `SessionScope::named_key::<ToolContribution>("ask_user")`；处理函数取得 `ToolExecutionContext` 与批次 `CancellationToken`，取消使用 `HostError::Cancelled` |
+| `sessionMethods` key `session.question` | `SessionMethods::provide(ctx, scope, "session.question", declarations, handler)`，key `SessionScope::named_key::<SessionMethods>("session.question")`；错误使用 `RpcError` 的 `data.appError` |
 | `S:SessionConfig` | `InSession<SessionConfig>`，每次调用时读取 |
 | `questions` | `B:Questions`，key `BranchScope::key::<Questions>()`；Dispatcher 订阅 `"Questions"`，事件 `step/tool-result` |
 

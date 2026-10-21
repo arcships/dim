@@ -1,12 +1,12 @@
 # Questions
 
-Status: Draft (redesign, [#144](https://github.com/arcships/dim/issues/144)). Overall design: [overview §4](../overview.md#4-plugin-catalog). Milestone: M2. Language: Rust. Scope: Session + branch ([ADR 002](../../adr/002-plugin-scope.md)).
+Status: Ready for implementation. Overall design: [overview §4](../overview.md#4-plugin-catalog). Milestone: M2. Language: Rust. Scope: Session + branch ([ADR 002](../../adr/002-plugin-scope.md)). Implementation: [#262](https://github.com/arcships/dim/issues/262).
+
+**Delivery boundary.** The Questions capability and its client wiring are unimplemented. The public tool, Session-method and branch-service mechanisms below are available. Implement Appendix D after Ready confirmation; no Timeline event, static RPC variant or new core/rutis mechanism is required.
 
 The model asks the user one or more questions through the `ask_user` tool and waits for the answer: single choice, multiple choice, several questions in one call, custom answer, or a decline. **The question is the pending tool call, and the answer is its tool result.** A client sees the question as the committed `step/tool-call` of `ask_user` that has no `step/tool-result` yet, answers it with the Session method `session.question.respond`, and the waiting handler returns the answer as its `ToolResult`; ToolExecutor publishes it in the batch's `step/tool-result` like any other tool output. The model learns the user's choice only from `ToolResult.content`.
 
 Questions defines **no Timeline events**. The **Session part** provides the `ask_user` tool (`toolContribution`, key `ask_user`) and the method `session.question.respond` (`sessionMethods`, key `session.question`) ([session-boundary](../contracts/session-boundary.md)). The **branch part** holds the waiters of the branch's running `ask_user` calls, in memory, as a running tool holds its I/O. Interrupt, close, reload, restart and fork are settled by the existing tool-call lifecycle of [ToolExecutor](../../architecture/rust-agent/plugins/ToolExecutor.md).
-
-What changed from the previous draft: the three `question/*` events, the Questions-specific answer-versus-interrupt ordering and the dependency on client-visible dynamic events ([#2](https://github.com/arcships/dim/issues/2)) are removed. Each removed fact is justified against principles §4 rule 9 in [§2](#2-data-and-state).
 
 ## 1. Structure
 
@@ -53,6 +53,28 @@ Contracts depended on: `toolContribution` and ToolExecutor's per-call cancel req
 
 Contracts defined here: the `ask_user` tool (declaration, input schema, result text), `session.question.respond` and its errors, and the client rule that derives a pending question from history. The `questions` branch service is private to Questions.
 
+### 1.1 Existing native binding and delivery order
+
+Register `ask_user` with `AgentBuilder::session_tool` and provide its
+`ToolContribution` under the Session's named key. Register namespace
+`session.question` with `AgentBuilder::session_methods`; the Session part uses
+`SessionMethods::provide` with A.3's declaration and handler. Rpc already routes
+contributed Session methods and exposes `session.methods` discovery. Do not add
+a Questions case to `protocol.rs`, a second dispatcher or a static `hello`
+feature entry. A client that sees a pending `ask_user` uses the specified method;
+disabled or reloading providers keep the existing error contract.
+
+The Session part resolves the branch on each call through `TreeCommands`, as
+Wait does. The branch part owns the waiters, cancellation and Dispatcher
+subscription; no Session-wide waiter registry or optional-service lookup is
+introduced. The existing branch tool token supplies cancellation.
+
+Deliver the capability and protocol flow acceptance on main. TUI integration
+in [#262](https://github.com/arcships/dim/issues/262) uses the existing
+`AskUserPrompt` on `rust-tui`; line-mode/headless behavior follows A.5. Each
+client consumes the same tool-call/result and response shapes. A UI branch
+implementation does not make the capability available on main.
+
 ## 2. Data and state
 
 ```mermaid
@@ -78,7 +100,7 @@ What the Timeline already holds, and why nothing else is written:
 | Answer survives a crash before the batch settles | — | After a restart the turn is already `Failed` and the batch reload-settled ([single-tree](../../architecture/rust-agent/single-tree.md) reload rules); a durable answer would be read by nothing. The same window exists for every tool |
 | Interrupt, close, reload, restart outcome | ToolExecutor's `step/tool-result` (cancelled or reload-settled) | Owned by ToolExecutor |
 
-**Dynamic events (#2):** the redesign defines no events, so it does not need #2. The previous draft's requirement R1 is withdrawn, and #2 has no consumer in the current designs.
+**Dynamic events (#2):** Questions defines no events and does not depend on #2.
 
 ## 3. Flows
 
@@ -216,7 +238,7 @@ Rules: [principles §1 and §4](../../architecture/rust-agent/principles.md), [A
 
 ## 9. Requirements raised to mechanism owners
 
-None. The previous draft's R1 (client-visible dynamic events, #2) is withdrawn because Questions defines no events. R2 (optional parts installed per enabled plugin) is unchanged and stated in [session access §9.4](../contracts/session-access.md#94-optional-parts-per-enabled-plugin); Questions is one of its users.
+None. Questions uses existing tool, method and branch services. Install both parts when enabled under [session access §9.4](../contracts/session-access.md#94-optional-parts-per-enabled-plugin); installation does not inspect `interactive`.
 
 ## 10. Impact
 
@@ -274,7 +296,7 @@ Branch scope, no key, provided by `QuestionsBranchPlugin`, called only by its Se
 
 Service `sessionMethods`, Session scope, key `session.question`. `describe()` returns `{name: "session.question.respond", mutating: true, interruption: "report", progress: false}`. The handler resolves `questions` of the named branch through `S:TreeCommands`.
 
-`params`: `{sessionId, branchId?: "main", callId, answers: [{questionId, selected: [label], custom?}], declined?: false}` → `{}`. Errors are `MethodError` data:
+`params`: `{sessionId, branchId?: "main", callId, answers: [{questionId, selected: [label], custom?}], declined?: false}` → `{}`. RPC errors carry these `data.appError` codes:
 
 | `appError` | Condition |
 | --- | --- |
@@ -302,6 +324,15 @@ A client tells "not yet" from "settled" for `question_not_pending` by whether th
 ### A.5 CLI contract
 
 The CLI handles questions of every branch of the attached Session (A9).
+
+```text
+[question] Storage
+Where should the result be saved?
+  1. Project
+  2. User directory
+  0. Other (type your answer)
+Choose 1-2:
+```
 
 | Situation | CLI behavior |
 | --- | --- |
@@ -387,21 +418,19 @@ Flow tests through RPC, tool calls and events:
 | A11 | Steer does not end a waiting question | Judgment | Steer cancels the call |
 | A12 | Other clients close the prompt at `step/tool-result`, not at the moment of the answer | Rule 9; usually `ask_user` is alone in its batch | F1 adds an earlier close |
 
-(A3 of the previous draft, the `question/*` payload extension, is removed with the events.)
-
-## Appendix F. Open questions
+## Appendix F. Deferred scope
 
 | # | Question | Description |
 | --- | --- | --- |
-| F1 | Earlier close on other clients | Not required. If wanted, two existing routes need no new mechanism: a Session broadcast notice `{source: "Questions", kind: "answered", data: {branchId, callId}}` once the generic notice record ([SessionTitle R1](SessionTitle.md#9-requirements-raised-to-mechanism-owners)) exists, or enabling ToolExecutor's existing per-call `step/tool-completed` (off in the product today) |
+| F1 | Earlier close on other clients | Deferred; prompts close at the batch's `step/tool-result` under A12. Earlier display feedback is not required for this implementation. |
 | F2 | Approvals in non-interactive Sessions | [sessions-service D10](../appserver/sessions-service.md) tied this to the Questions redesign; Questions does not decide it, and Approval's behavior is unchanged |
 
 ## Appendix G. Rust binding
 
 | Neutral contract | Rust binding |
 | --- | --- |
-| `toolContribution` key `ask_user` | `S:ToolContribution`, entry `ask_user` of `Contributions<ToolContribution>`; cancel request = the batch `CancellationToken`; `cancelled` = `HostError::Cancelled` |
-| `sessionMethods` key `session.question` | `SessionMethodContribution(Arc<dyn MethodProvider>)`, key `SessionScope::named_key::<SessionMethodContribution>("session.question")` |
+| `toolContribution` key `ask_user` | `ToolContribution {definition, handler: Arc<dyn ToolHandler>}` at `SessionScope::named_key::<ToolContribution>("ask_user")`; handler receives `ToolExecutionContext` and the batch `CancellationToken`; cancellation is `HostError::Cancelled` |
+| `sessionMethods` key `session.question` | `SessionMethods::provide(ctx, scope, "session.question", declarations, handler)`; key `SessionScope::named_key::<SessionMethods>("session.question")`; failures use `RpcError` with `data.appError` |
 | `S:SessionConfig` | `InSession<SessionConfig>`, read per call |
 | `questions` | `B:Questions`, key `BranchScope::key::<Questions>()`; Dispatcher subscription `"Questions"` on `step/tool-result` |
 

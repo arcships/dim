@@ -70,7 +70,7 @@ S10 后续 #135、S2 删除及评审后续 #159、App Server 真实配置流程�
 5. 确认可能不需要的工作：~~Permission 新类别~~（已确认不需要，现有 `Unclassified` 行为已符合，#45）、~~S3 活动句柄~~（已确认不需要：App Server 不自动卸载空闲 Session，#57）。
 6. 为确定要做的运行时需求开 issue（总体设计附录 F）。rutis 是外部依赖，不向它提需求。
 
-归下一个里程碑 [M2](https://github.com/arcships/dim/milestone/1)：Questions（#144/#178）、Hooks（#143/#181）、ExternalAgent（#145/#182）与 Pursuit（#146/#179）的设计已合入，仍待各自 Ready 确认与实现；回忆工具 `recall`（#129，设计见 [Recall](plugins/Recall.md)）、摘要提示词/思考与目标长度评估（#170）也归该里程碑。#2 动态事件不归 M2，已于 2026-10-20 移入 M1（C8）：M1 对外开放插件开发，插件写自己的事件属于公开契约。其设计已于同日收敛（[ADR 001](../adr/001-harness-foundation.md#events-and-ownership-issue-2)）：Timeline 只检查信封与核心保留领域，并以不透明数据承载核心未定义的事件类型，Dispatcher 订阅只做过滤，能力事件声明只是描述契约；现有 `EventKind` 事件（含 F1、S1 加入的 4 个）不迁移。F1 的研究 #165、#169 的修复 #172 和 #128 的运行时调参 #183 已合入；#170 保留独立评估范围。
+归下一个里程碑 [M2](https://github.com/arcships/dim/milestone/1)：Questions（#144/#178，设计为 Ready、实现归 #262）、Hooks（#143/#181）、ExternalAgent（#145/#182）与 Pursuit（#146/#179）的设计已合入；后三项仍待各自 Ready 确认，四项均未完整交付；回忆工具 `recall`（#129，设计见 [Recall](plugins/Recall.md)）、摘要提示词/思考与目标长度评估（#170）也归该里程碑。#2 动态事件不归 M2，已于 2026-10-20 移入 M1（C8）：M1 对外开放插件开发，插件写自己的事件属于公开契约。其设计已于同日收敛（[ADR 001](../adr/001-harness-foundation.md#events-and-ownership-issue-2)）：Timeline 只检查信封与核心保留领域，并以不透明数据承载核心未定义的事件类型，Dispatcher 订阅只做过滤，能力事件声明只是描述契约；现有 `EventKind` 事件（含 F1、S1 加入的 4 个）不迁移。F1 的研究 #165、#169 的修复 #172 和 #128 的运行时调参 #183 已合入；#170 保留独立评估范围。
 
 已撤回：Notifications。提醒归客户端，定时任务结果通知归 Scheduler，对外沟通渠道由各平台各自的插件和工具负责。
 
@@ -232,7 +232,7 @@ P6/P7 的每秒历史跟踪及现有停止边界已确认：按分支停止可�
 
 | 状态 | 含义 | 何时进入 |
 | --- | --- | --- |
-| Draft | 当前插件设计（Questions #178、ExternalAgent #182、Hooks #181、Pursuit #179 已合入，仍待各自 Ready 确认） | — |
+| Draft | 当前插件设计（ExternalAgent #182、Hooks #181、Pursuit #179 已合入，仍待各自 Ready 确认） | — |
 | Ready | 已按代码现状复核，开放问题已决定或明确推迟，维护者已确认 | 开工前的设计细化 PR 合入 |
 | Implemented | 代码与设计一致；能力页移入或链接到 `architecture/rust-agent/plugins/`，由 `xtask check` 校验 | 实现 PR 合入 |
 
