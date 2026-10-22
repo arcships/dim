@@ -496,6 +496,122 @@ async fn decisions_are_consumed_in_order_on_both_transports_and_survive_disconne
 }
 
 #[tokio::test]
+async fn another_client_learns_each_committed_response_on_both_transports() {
+    for ws in [false, true] {
+        let probe = Arc::new(Probe::default());
+        let (server, session, mut a, calls) = setup_version(ws, probe.clone(), 3).await;
+        let mut b = Client::new_version(&server, !ws, 3).await;
+        assert_ok(
+            &b.rpc("session.attach", json!({"sessionId":session.id()}))
+                .await,
+        );
+        let request_id = request_v2(&mut a, &session).await;
+        assert_eq!(
+            b.notice("approval.request").await["params"]["requestId"],
+            request_id
+        );
+        assert_ok(
+            &a.rpc(
+                "approval.respond",
+                json!({"sessionId":session.id(),"branchId":"main","requestId":request_id,"decision":"allow"}),
+            )
+            .await,
+        );
+        let resolved = b.notice("approval.resolved").await;
+        assert_eq!(
+            resolved["params"],
+            json!({"sessionId":session.id(),"branchId":"main","requestId":request_id,"decision":"allow"})
+        );
+        assert_eq!(a.notice("approval.resolved").await, resolved);
+        session.idle("main").await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Both answer before Approval consumes either: the first notice per
+        // request carries the accepted decision, the later one was refused.
+        let request_id = request_v2(&mut a, &session).await;
+        b.notice("approval.request").await;
+        gate(&session, &probe).await;
+        let first = a
+            .send(
+                "approval.respond",
+                json!({"sessionId":session.id(),"branchId":"main","requestId":request_id,"decision":"deny"}),
+            )
+            .await;
+        wait_events(&session, "approval/respond", 2).await;
+        let second = b
+            .send(
+                "approval.respond",
+                json!({"sessionId":session.id(),"branchId":"main","requestId":request_id,"decision":"allow"}),
+            )
+            .await;
+        wait_events(&session, "approval/respond", 3).await;
+        probe.release.notify_one();
+        assert_ok(&a.response(first).await);
+        assert_eq!(b.response(second).await["error"]["code"], -32602);
+        let decisions = [
+            b.notice("approval.resolved").await,
+            b.notice("approval.resolved").await,
+        ]
+        .map(|notice| {
+            assert_eq!(notice["params"]["requestId"], request_id);
+            notice["params"]["decision"].clone()
+        });
+        assert_eq!(decisions, [json!("deny"), json!("allow")]);
+        session.idle("main").await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // The response stays a control event: no client business feed carries it.
+        assert!(b.notices.iter().all(|notice| {
+            notice["method"] != "session.event" || notice["params"]["event"]["type"] != "approval"
+        }));
+        session.close().await.unwrap();
+        server.shutdown();
+        server.join().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn v2_clients_receive_no_approval_resolved_on_both_transports() {
+    for ws in [false, true] {
+        let probe = Arc::new(Probe::default());
+        let (server, session, mut a, calls) = setup_version(ws, probe, 2).await;
+        let mut b = Client::new_version(&server, !ws, 2).await;
+        assert_ok(
+            &b.rpc("session.attach", json!({"sessionId":session.id()}))
+                .await,
+        );
+        let request_id = request_v2(&mut a, &session).await;
+        assert_eq!(
+            b.notice("approval.request").await["params"]["requestId"],
+            request_id
+        );
+        assert_ok(
+            &a.rpc(
+                "approval.respond",
+                json!({"sessionId":session.id(),"branchId":"main","requestId":request_id,"decision":"allow"}),
+            )
+            .await,
+        );
+        session.idle("main").await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // Closing drains every pending notification before session.closed.
+        session.close().await.unwrap();
+        for client in [&mut a, &mut b] {
+            client.notice("session.closed").await;
+            assert!(
+                client
+                    .notices
+                    .iter()
+                    .all(|notice| notice["method"] != "approval.resolved"),
+                "{:?}",
+                client.notices
+            );
+        }
+        server.shutdown();
+        server.join().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn stop_before_request_and_after_allow_prevent_tool_start_on_both_transports() {
     for ws in [false, true] {
         let probe = Arc::new(Probe::default());

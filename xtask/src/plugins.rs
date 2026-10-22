@@ -161,6 +161,8 @@ pub async fn local_graph() -> Result<BTreeMap<&'static str, Value>> {
     );
     // `serve` adds Attachments where the host has native storage.
     dim_agent_attachments::install(&mut builder);
+    // The product profiles add Questions.
+    dim_agent_questions::install(&mut builder);
     let agent = builder.build_in(&process);
     let session = agent
         .create_session(SessionConfig {

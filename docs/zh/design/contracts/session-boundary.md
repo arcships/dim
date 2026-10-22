@@ -36,7 +36,7 @@ flowchart LR
     TC2["toolContribution[tool]：Web, Questions, ..."]
   end
   subgraph BR["分支"]
-    BS["分支服务：Questions, Goal, InputQueue"]
+    BS["分支服务：Goal, InputQueue"]
   end
   Local --> Rpc
   Remote --> Rpc
@@ -71,7 +71,6 @@ sequenceDiagram
   participant AI as Agents
   participant S as Session
   participant Q as sessionMethods session.question
-  participant QB as Questions 分支服务
   participant H as ask_user 处理函数
   CL->>Rpc: session.question.respond {sessionId, branchId, ...}
   Rpc->>Rpc: 非内建方法，不在已配置的管理命名空间内，params 中带 sessionId，授权 Session 访问
@@ -80,8 +79,7 @@ sequenceDiagram
   Rpc->>S: 按命名空间 session.question 取 sessionMethods
   S-->>Rpc: 提供方
   Rpc->>Q: call(MethodCall)
-  Q->>QB: 在 branchId 上 respond(callId, answers)
-  QB->>H: 把回答交给等待中的调用
+  Q->>H: 把回答交给等待中的调用 (branchId, requestId, callId)
   Q-->>Rpc: MethodReply
   Rpc-->>CL: 结果
 ```
@@ -511,7 +509,7 @@ Loop.start_preparation(through) ──> bind(prefix tool part) ──> request s
 
 | 场景 | 序号顺序 | 结果 | 决定所有者 |
 | --- | --- | --- | --- |
-| 分支 `stop/interrupt` 期间的 Session 方法 | 按所有者的事实 | 由所有者决定（例如，ToolExecutor 已取消调用之后的 Questions 回答回复 `question_cancelled`） | 所属插件 |
+| 分支 `stop/interrupt` 期间的 Session 方法 | 按所有者的事实 | 由所有者决定（例如，ToolExecutor 已取消调用之后的 Questions 回答回复 `question_not_pending`） | 所属插件 |
 | 对已关闭分支调用 Session 方法 | — | 所有者的 `BranchMissing` 错误 | 所属插件 |
 | 对未装载 Session 调用 Session 方法 | — | Rpc 通过 `index.acquire` 恢复后再分发（不同于 `approval.respond`，它返回 `session_closed`） | Rpc |
 | Session 级提供方在调用中途重载 | admitted < reload | `report`：`operation_interrupted`；`drain`：调用自己的结果；卸载等待两者 | 提供方 |

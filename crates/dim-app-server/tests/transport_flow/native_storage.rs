@@ -436,7 +436,6 @@ async fn database_session_creation_adopts_initial_prompt_once_across_restart() {
     let directory = std::env::temp_dir().join(format!("dim-prompt-{}", uuid::Uuid::new_v4()));
     let config = ServerConfig {
         database_path: Some(directory.join("dimcode.sqlite")),
-        trace_directory: directory.join("traces"),
         ..Default::default()
     };
     let loads = Arc::new(AtomicUsize::new(0));
@@ -466,36 +465,28 @@ async fn database_session_creation_adopts_initial_prompt_once_across_restart() {
     let server = serve(build(), config.clone()).await.unwrap();
     let agent = server.agent().unwrap();
     let mut client = Client::new_version(&server, true, 3).await;
-    let mut sessions = Vec::new();
-    for traced in [false, true] {
-        let mut parameters = create(json!([]));
-        if traced {
-            parameters["trace"] = json!(true);
-        }
-        let created = client.rpc("session.create", parameters).await;
-        assert_ok(&created);
-        let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
-        let history = agent
-            .get_session(&id)
-            .unwrap()
-            .history("main", None)
-            .await
-            .unwrap();
-        assert_eq!(
-            history
-                .iter()
-                .filter(|event| matches!(&event.kind, dim_agent_types::EventKind::PromptChanged(_)))
-                .count(),
-            1
-        );
-        assert!(history.iter().any(|event| matches!(&event.kind,
-            dim_agent_types::EventKind::PromptChanged(data)
-                if data.changes.iter().any(|change| matches!(change,
-                    dim_agent_types::PromptChange::Set { entry }
-                        if entry.source == "startup" && entry.body == "startup rules")))));
-        sessions.push((id, history));
-    }
-    assert_eq!(loads.load(Ordering::SeqCst), 2);
+    let created = client.rpc("session.create", create(json!([]))).await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let before = agent
+        .get_session(&id)
+        .unwrap()
+        .history("main", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        before
+            .iter()
+            .filter(|event| matches!(&event.kind, dim_agent_types::EventKind::PromptChanged(_)))
+            .count(),
+        1
+    );
+    assert!(before.iter().any(|event| matches!(&event.kind,
+        dim_agent_types::EventKind::PromptChanged(data)
+            if data.changes.iter().any(|change| matches!(change,
+                dim_agent_types::PromptChange::Set { entry }
+                    if entry.source == "startup" && entry.body == "startup rules")))));
+    assert_eq!(loads.load(Ordering::SeqCst), 1);
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
@@ -503,29 +494,27 @@ async fn database_session_creation_adopts_initial_prompt_once_across_restart() {
 
     let server = serve(build(), config).await.unwrap();
     let agent = server.agent().unwrap();
-    assert_eq!(loads.load(Ordering::SeqCst), 2);
+    assert_eq!(loads.load(Ordering::SeqCst), 1);
     assert!(
         agent.sessions().is_empty(),
         "startup only loads the directory"
     );
     let mut client = Client::new_version(&server, true, 3).await;
-    for (id, before) in sessions {
-        assert_ok(&client.rpc("session.attach", json!({"sessionId": id})).await);
-        let after = agent
-            .get_session(&id)
-            .unwrap()
-            .history("main", None)
-            .await
-            .unwrap();
-        assert_eq!(&after[..before.len()], before.as_slice());
-        assert_eq!(
-            after
-                .iter()
-                .filter(|event| matches!(&event.kind, dim_agent_types::EventKind::PromptChanged(_)))
-                .count(),
-            1
-        );
-    }
+    assert_ok(&client.rpc("session.attach", json!({"sessionId": id})).await);
+    let after = agent
+        .get_session(&id)
+        .unwrap()
+        .history("main", None)
+        .await
+        .unwrap();
+    assert_eq!(&after[..before.len()], before.as_slice());
+    assert_eq!(
+        after
+            .iter()
+            .filter(|event| matches!(&event.kind, dim_agent_types::EventKind::PromptChanged(_)))
+            .count(),
+        1
+    );
     server.shutdown();
     server.join().await.unwrap();
     drop(agent);
@@ -1239,7 +1228,6 @@ async fn failed_creation_rolls_back_storage_but_failed_restore_preserves_it() {
     let database = directory.join("dimcode.sqlite");
     let config = ServerConfig {
         database_path: Some(database.clone()),
-        trace_directory: directory.join("traces"),
         ..Default::default()
     };
     let failing = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -1284,18 +1272,12 @@ async fn failed_creation_rolls_back_storage_but_failed_restore_preserves_it() {
     };
     let server = serve(build(), config.clone()).await.unwrap();
     let mut client = Client::new_version(&server, true, 3).await;
-    for trace in [false, true] {
-        let mut params = create(json!([]));
-        if trace {
-            params["trace"] = json!(true);
-        }
-        let failed = client.rpc("session.create", params).await;
-        assert!(failed.get("error").is_some(), "{failed}");
-        let listed = client.rpc("session.list", json!({})).await;
-        assert_eq!(listed["result"], json!([]));
-        assert_eq!(counts(&Connection::open(&database).unwrap()), vec![0; 5]);
-        assert!(server.agent().unwrap().sessions().is_empty());
-    }
+    let failed = client.rpc("session.create", create(json!([]))).await;
+    assert!(failed.get("error").is_some(), "{failed}");
+    let listed = client.rpc("session.list", json!({})).await;
+    assert_eq!(listed["result"], json!([]));
+    assert_eq!(counts(&Connection::open(&database).unwrap()), vec![0; 5]);
+    assert!(server.agent().unwrap().sessions().is_empty());
     failing.store(false, Ordering::SeqCst);
     let created = client.rpc("session.create", create(json!([]))).await;
     assert_ok(&created);

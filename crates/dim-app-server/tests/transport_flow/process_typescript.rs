@@ -13,6 +13,35 @@ fn parts() -> SessionTypeScriptConfig {
     parts
 }
 
+pub(super) fn file_parts() -> SessionTypeScriptConfig {
+    let mut parts = session_typescript::fixture();
+    parts.rows.clear();
+    parts.process_rows = vec![json!({
+        "id":"files-process", "name":parts.anchor.parent().unwrap().join("fixtures/files-process.ts"),
+        "provides":{"managementMethods:files":{"describe":"async","call":"async"}},
+        "config":{},
+    })];
+    parts
+}
+
+pub(super) async fn files_available(client: &mut Client, method: &str, params: Value) -> Value {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let reply = client.rpc(method, params.clone()).await;
+            if let Some(result) = reply.get("result") {
+                return result.clone();
+            }
+            assert_eq!(
+                reply["error"]["data"]["appError"], "service_reloading",
+                "{reply}"
+            );
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
 fn config(home: &std::path::Path, parts: SessionTypeScriptConfig) -> ServerConfig {
     ServerConfig {
         product_home: Some(home.to_owned()),
@@ -78,6 +107,166 @@ async fn started(client: &mut Client, id: u64) {
             return;
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_public_plugin_files_process_storage_and_close_drain() {
+    let home = home();
+    std::fs::create_dir_all(home.join("public-files")).unwrap();
+    let gate = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut parts = file_parts();
+    parts.process_rows[0]["config"]["gate"] = json!({
+        "host":"127.0.0.1", "port":gate.local_addr().unwrap().port()
+    });
+    let (server, _, _) = session_typescript::start(config(&home, parts)).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_eq!(
+        files_available(&mut client, "files.read", json!({})).await,
+        json!({"ok":true,"value":{"ok":true,"value":null}})
+    );
+    assert_eq!(
+        client.rpc("files.write", json!({})).await["result"],
+        json!({"ok":true,"value":{"ok":true,"value":null}})
+    );
+    assert_eq!(
+        client.rpc("files.read", json!({})).await["result"],
+        json!({"ok":true,"value":{"ok":true,"value":"public process text"}})
+    );
+    let stored = home.join("public-files/state.json");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&std::fs::read(&stored).unwrap()).unwrap(),
+        json!({"version":1,"text":"public process text"})
+    );
+    assert_eq!(
+        client.rpc("files.missing", json!({})).await["result"],
+        json!({"ok":false,"error":"io"})
+    );
+    assert!(!home.join("unprovisioned").exists());
+    let invalid = home.join("public-files/invalid.json");
+    let bytes = b"unversioned original text";
+    std::fs::write(&invalid, bytes).unwrap();
+    assert_eq!(
+        client.rpc("files.invalid", json!({})).await["result"],
+        json!({"ok":true,"value":{"ok":false,"error":"invalid_data"}})
+    );
+    assert_eq!(std::fs::read(invalid).unwrap(), bytes);
+
+    let held = client.send("files.hold", json!({})).await;
+    let (mut release, _) = tokio::time::timeout(Duration::from_secs(10), gate.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    started(&mut client, held).await;
+    let close = client.send("files.close", json!({})).await;
+    assert_eq!(
+        client.rpc("files.read", json!({})).await["result"],
+        json!({"ok":false,"error":"closed"})
+    );
+    {
+        let closed = client.response(close);
+        tokio::pin!(closed);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut closed)
+                .await
+                .is_err()
+        );
+        release.write_all(b"settle").await.unwrap();
+        assert_ok(&closed.await);
+    }
+    assert_ok(&client.response(held).await);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&std::fs::read(stored).unwrap()).unwrap(),
+        json!({"version":1,"text":"settled public process text"})
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_public_plugin_files_session_only_configuration() {
+    let home = home();
+    std::fs::create_dir_all(home.join("public-files")).unwrap();
+    let gate = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut parts = session_typescript::fixture();
+    assert!(parts.process_rows.is_empty());
+    parts.rows = vec![json!({
+        "id":"files-session", "name":parts.anchor.parent().unwrap().join("fixtures/files-session.ts"),
+        "provides":{"sessionMethods:session.files":{"describe":"async","call":"async"}},
+        "config":{"gate":{"host":"127.0.0.1", "port":gate.local_addr().unwrap().port()}},
+    })];
+    let (server, _, _) = session_typescript::start(config(&home, parts)).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    select_model(&mut client).await;
+    let mut expected = json!(null);
+    for _ in 0..2 {
+        let session = session_typescript::new_session(&mut client, json!([])).await;
+        let params = json!({"sessionId":session});
+        assert_eq!(
+            files_available(&mut client, "session.files.read", params.clone()).await,
+            json!({"ok":true,"value":{"ok":true,"value":expected}})
+        );
+        assert_eq!(
+            client.rpc("session.files.write", params.clone()).await["result"],
+            json!({"ok":true,"value":{"ok":true,"value":null}})
+        );
+        let held = client.send("session.files.hold", params.clone()).await;
+        let (mut release, _) = tokio::time::timeout(Duration::from_secs(10), gate.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let held = client.response(held).await;
+        assert_ok(&held);
+        assert_eq!(held["result"], Value::Null);
+        let close = client.send("session.close", params).await;
+        {
+            let closed = client.response(close);
+            tokio::pin!(closed);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut closed)
+                    .await
+                    .is_err()
+            );
+            release.write_all(b"settle").await.unwrap();
+            assert_ok(&closed.await);
+        }
+        expected = json!("settled public Session text");
+        assert_eq!(
+            serde_json::from_slice::<Value>(
+                &std::fs::read(home.join("public-files/state.json")).unwrap()
+            )
+            .unwrap(),
+            json!({"version":1,"text":expected})
+        );
+    }
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_public_plugin_files_without_product_root_stays_optional() {
+    let (server, _, _) = session_typescript::start(ServerConfig {
+        session_typescript: Some(file_parts()),
+        ..Default::default()
+    })
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_eq!(
+        client.rpc("files.read", json!({})).await["error"]["data"]["appError"],
+        "service_reloading"
+    );
+    let session = session_typescript::new_session(&mut client, json!([])).await;
+    assert_ok(
+        &client
+            .rpc("session.close", json!({"sessionId":session}))
+            .await,
+    );
+    server.shutdown();
+    server.join().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

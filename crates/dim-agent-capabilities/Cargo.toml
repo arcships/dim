@@ -4,10 +4,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[[example]]
-name = "trace_archive"
-test = true
-
 [dependencies]
 dim-agent-types.workspace = true
 dim-agent-runtime.workspace = true

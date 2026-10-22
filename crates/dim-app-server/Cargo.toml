@@ -10,6 +10,7 @@ dim-agent-types.workspace = true
 dim-agent-capabilities.workspace = true
 dim-agent-aimux.workspace = true
 dim-agent-attachments.workspace = true
+dim-agent-questions.workspace = true
 rutis.workspace = true
 rutis-loader.workspace = true
 rutis-bridge.workspace = true

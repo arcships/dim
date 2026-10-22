@@ -24,7 +24,4 @@ impl KeyFilter {
             None => filter == key,
         })
     }
-    pub(crate) fn keys(&self) -> Vec<String> {
-        self.0.clone()
-    }
 }

@@ -2,7 +2,7 @@ use crate::*;
 use crate::{
     assembly::{
         AgentHost, Assembly, BuiltSession, Extension, Owned, Placement, SessionInitialization,
-        announce, build_session, own_placement, release, scope_diagnostics, shutdown_scope,
+        build_session, own_placement, release, scope_diagnostics, shutdown_scope,
     },
     core::TailLock,
     lifecycle::{CloseOnce, guarded},
@@ -681,10 +681,11 @@ impl Session {
         self.0.owner.lifecycle.advance(SessionPhase::Closing);
         let this = self.clone();
         self.0.close.start(&self.0.handle, async move {
-            let diagnostics = &this.0.owner.diagnostics;
-            // Declared before the span: the span ends before the channel does.
-            let _end = diagnostics.end_on_drop();
-            let span = diagnostics.span("session.close", None, None, None);
+            let span = tracing::info_span!(
+                "session.close",
+                session_id = %this.id(),
+                outcome = tracing::field::Empty,
+            );
             let mut errors = vec![];
             this.0.tree.begin_close();
             if let Some(error) = this.0.owner.faults.failure() {
@@ -731,14 +732,7 @@ impl Session {
                     store.remove_session(this.id());
                 }
             }
-            if let Some(loaded) = this.0.owner.loaded.lock().unwrap().take() {
-                announce(
-                    diagnostics,
-                    &this.0.view,
-                    &loaded.children,
-                    ComponentPhase::Released,
-                );
-            }
+            *this.0.owner.loaded.lock().unwrap() = None;
             span.record(
                 "outcome",
                 if errors.is_empty() {

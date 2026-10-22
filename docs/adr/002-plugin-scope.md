@@ -100,7 +100,7 @@ of issue #4.
 
 | Plugin | Scope | Reason |
 | --- | --- | --- |
-| Questions | Session (`ask_user` tool) + branch (waiters of running `ask_user` calls; no events) | the question belongs to a branch's turn |
+| Questions | Session (`ask_user` tool, `session.question` methods and the waiters of running `ask_user` calls; no events) | the waiter is the Session-scoped tool handler's own call; branch lifecycle reaches it through ToolExecutor's cancel token |
 | Goal | Session (`goal_update` tool) + branch (goal state, continuation) | a goal belongs to a branch and continuation follows its events in order |
 | ShellInput | Session | commands run in the Session's workspace and feed its input |
 | Attachments | Session | attachments are Session data |

@@ -111,7 +111,8 @@ $ dimcode exec -p 'Explain this project' --json > run.jsonl
 
 `exec` 使用现有的 create/attach/history/submit/idle/detach 顺序和停止收尾。恢复时正在运行的回合
 先收尾，再提交新提示词。作为已连接的交互客户端，`exec` 主动对审批请求发送普通的拒绝回复，停止
-回合，等待停止收尾，并以退出码 3 退出。它不改变 `SessionConfig.interactive`。以非交互方式创建的
+回合，等待停止收尾，并以退出码 3 退出。[问题](#问题)同样得不到回答：该问题所在的分支和回合被停止，
+退出码为 3。它不改变 `SessionConfig.interactive`。以非交互方式创建的
 Session 保留 Approval 现有的所有者侧策略（#98 D10）。`--permission` 只改变哪些调用需要审批；
 仍需审批的调用照样被拒绝（[无头执行](#无头执行)）。其他退出码保持原生 CLI 合同，包括回合失败为 2、
 中断为 130。传输失败不重试提交。重复的 `--image` 参数遵循无头附件合同：先文本，再按参数顺序放入
@@ -416,6 +417,70 @@ CLI 报告规则的结果，不发送回答。Ctrl+C 之后不再发起新的写
 - 顺序：成员采用其创建时已派发的策略；领导者之后的修改不影响已有成员，与子分支相同。
 - 所有者：Collaboration（App Server）；跟踪于 [#257](https://github.com/arcships/dim/issues/257)。
 
+## 问题
+
+模型的 `ask_user` 工具向用户提出一到四个选择题并等待回答，回答成为该调用的工具结果
+（[Questions](../../architecture/rust-agent/plugins/Questions.md)，#262）。行模式 CLI 是负责回答的
+客户端之一。它按到达顺序、一次一个调用地询问已连接 Session 所有分支上等待中的调用，并用
+`session.question.respond` 回答：
+
+```text
+> Plan the service
+[question] Database                             <- 标题，没有时为 "[question]"
+1. Which database should the service use?
+   1. PostgreSQL  managed, relational
+   2. SQLite      single file
+   0. Other (type your answer)                  <- 仅在允许自填时出现
+Choose 1-2, 0 for other, empty to decline: 1
+2. Which features ship first?                   <- multiSelect
+   1. Auth
+   2. Billing
+   3. Search
+   0. Other (type your answer)
+Choose numbers, comma separated, 0 for other: 1,3,0
+Other: audit log
+[question answered]
+[question] Deploy (branch reviewer)             <- 另一个分支的问题
+1. Where to deploy?
+   1. production
+   2. staging
+   0. Other (type your answer)
+Choose 1-2, 0 for other, empty to decline:
+[question answered elsewhere]                   <- 另一个客户端先回答了
+```
+
+CLI 从每个分支的 `step/tool-call` 和 `step/tool-result` 事件中找出等待中的调用：实时的
+`session.event` 通知、连接时读取的 `main` 历史，以及其他每个分支的历史（在该分支第一次出现
+`session.state` 通知时读取一次）。同一个事件可能既实时到达又出现在历史里，先后不定，所以调用和结果
+按事件身份匹配。调用 id 可能在之后的模型请求中再次出现，所以一个调用由它的分支、其 `step/tool-call`
+的 `request_id` 和调用 id 共同命名、结算和回答：
+
+```text
+session.event（实时，所有分支）──┐
+session.history（连接时读 main， ├──> 等待中的 ask_user 调用 ──> 一次一个提示
+  其他分支在首个 state 时读取）──┘    step/tool-call 加入调用        │
+                                      step/tool-result 移除调用      v
+                                                       session.question.respond
+                                                       {branchId, requestId, callId,
+                                                        answers | declined}
+```
+
+第一个问题输入空行表示拒绝回答整个调用；后续问题输入空行或无效内容会重新询问。问题打开期间，审批、
+模型输出和 shell 结果都要等待，与审批提示时一样；已打开的审批也会让问题等待。
+
+| 回复或事件 | CLI |
+| --- | --- |
+| `{}` | `[question answered]` |
+| `invalid_params` | `[question rejected] <原因>`；从该调用的第一个问题重新询问 |
+| 调用结果到达前的 `question_not_pending` | `[question not ready; press Enter to send again]`；按 Enter 重发同一个回答 |
+| 调用结果到达前的其他失败 | `[question error] <错误>; press Enter to send again` |
+| 回复之前或尚未发送时读到该调用的 `step/tool-result` | 结果是回答或拒绝时打印 `[question answered elsewhere]`，否则打印 `[question cancelled]` |
+| 问题提示时按 `Ctrl+C` 或 EOF | 对问题所在分支发送 `session.stop`（该分支上的其他调用也随之结束），回合仍在运行时也停止回合；与审批提示时一样，不会先停止正在运行的 shell 命令 |
+
+没有终端输入时（`exec` 或重定向的提示词）没有人能回答。CLI 打印一次
+`Interactive answer required; stopping. Rerun in a terminal to answer it`，停止退出前读到的每个问题
+所在的分支，回合仍在运行时也停止回合，并以 3 退出。退出码 3 现在表示"需要交互式审批或回答"。
+
 ## 实现与验证
 
 改动限于 `crates/dim-cli`：`args.rs`/`main.rs` 选择命令，`session.rs` 复用 Session 执行及其共享的
@@ -423,7 +488,10 @@ CLI 报告规则的结果，不发送回答。Ctrl+C 之后不再发起新的写
 `permission.rs` 存放任何 CLI 客户端都能调用的权限操作，不读终端、不做输出：带版本检查地读取和切换
 `main` 的预设，带修订号检查地列出、添加和删除命令规则，以及"总是允许"的各个步骤（可用的命令、建议的
 规则、为多路复用连接的回合循环拆成请求与回复步骤的规则写入，以及允许答复）。`permission_command.rs`
-是行模式的 `/approvals` 命令，审批提示留在 `session.rs`；两者只负责展示结果。对话格式化属于 CLI。
+是行模式的 `/approvals` 命令，审批提示留在 `session.rs`；两者只负责展示结果。`question/mod.rs` 存放
+任何客户端处理问题都需要的部分，不读终端、不做输出：`ask_user` 的输入规则、由事件推导出的等待中调用、
+`session.question.respond` 的参数以及回复的含义。`question/line.rs` 是行模式的问题提示，由
+`session.rs` 把通知和回复交给它。对话格式化属于 CLI。除了 CLI 所回答的 Questions Capability，
 不需要改动 App Server、Capability、核心生命周期、协议、存储迁移、依赖或运行时注册。
 
 复用 `cli_flow.rs` 及其真实守护进程配置夹具，覆盖 `exec` 和恢复、stdout/stderr 分离、公开 JSON 通知的
@@ -439,3 +507,9 @@ Unix 文件私密性。只使用隔离的 home。实现需要通过相关的 CLI
 `exec --permission full-access` 不询问就运行进程工具；默认的 `exec` 仍以 3 退出；`exec resume
 --permission` 修改恢复的分支；"总是"写入精确规则，之后相同的调用不再询问，直到 `/approvals remove`
 删除该规则。
+
+问题由脚本化守护进程流程（`cli_flow/question.rs`）覆盖：单选和多选、自填文本、拒绝回答、无效输入行、
+处理器会拒绝的输入和其他工具不会触发询问、与审批双向的延后、等待中的 shell 结果、重复使用的调用 id、
+之后的请求重用同一调用 id 且实时先于含有前一个调用及其结果的历史页到达、从两页历史中读到并以其
+`branchId` 回答的子分支问题、重复的实时事件、上表中的每种回复、在回复之前或期间关闭提示的结果、回合收尾前后的 Ctrl+C 和 EOF、Ctrl+C 之后被丢弃的回复，以及 `exec` 在 `main`
+上、子分支上和回合收尾之后遇到问题时以 3 退出，而先于调用读到结果时不会询问。

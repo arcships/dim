@@ -16,7 +16,7 @@ flowchart LR
   subgraph S["Session scope"]
     SI["ShellInputPlugin (run registry, sessionMethods shell)"]:::new
     TC["TreeCommands"]
-    SS["SessionConfig, SessionLifecycle, Diagnostics"]
+    SS["SessionConfig, SessionLifecycle, SessionIdentity"]
   end
   subgraph B["Branch"]
     IQ["Timeline, InputQueue, Loop"]
@@ -32,7 +32,7 @@ flowchart LR
 
 | Part | Scope | Depends on | Provides |
 | --- | --- | --- | --- |
-| `ShellInputPlugin` | Session | `P:HostPlatform` (as WorkspaceTools uses it), `S:SessionConfig` (`cwd`), `S:TreeCommands`, `S:SessionLifecycle`, `S:Diagnostics` | `sessionMethods` key `shell` |
+| `ShellInputPlugin` | Session | `P:HostPlatform` (as WorkspaceTools uses it), `S:SessionConfig` (`cwd`), `S:TreeCommands`, `S:SessionLifecycle`, `S:SessionIdentity` | `sessionMethods` key `shell` |
 
 Contracts depended on:
 
@@ -57,7 +57,7 @@ flowchart LR
     IM["input/message (Append, marker dim-shell-input)"]
     IA["input/applied, input/consumed (InputQueue, Loop)"]
   end
-  DG["Diagnostics: one shell.run span per run"]
+  DG["Process log: one shell.run span per run"]
   RR -- "record mode: written once after the process ends" --> IM
   IM --> IA
   RR -- "runId and outcome" --> DG
@@ -66,7 +66,7 @@ flowchart LR
 
 The run registry is memory of the plugin generation and is never rebuilt: when the Session part ends, the running command is terminated. It also keeps the run ids used in this generation, so a repeated `runId` is refused (`duplicate_run`) and a command sent once never runs twice, and the run ids a `shell.stop` reached before their run did, so that run starts nothing (A.4). The only durable result is the `input/message` of a recorded run, restored with the Session.
 
-Events: none. A run is started by the user, not by a turn, so a turn or branch interrupt does not end it. The only later-relevant outcome of `!command` is the input; `!!command` affects nothing later. Diagnostics get one `shell.run` span per started run with the `runId` and the outcome (status and exit), never the command text or output (A11).
+Events: none. A run is started by the user, not by a turn, so a turn or branch interrupt does not end it. The only later-relevant outcome of `!command` is the input; `!!command` affects nothing later. The process log gets one `shell.run` span per started run with the Session and branch ids, the `runId` and the outcome (status and exit), never the command text or output (A11).
 
 ## 3. Flows
 
@@ -171,7 +171,7 @@ Full table: Appendix B.
 | `!command` | `<dim-shell-input kind="command" status="completed" exit="0" truncated="false">`, then `$ <command>` and the bounded output, then `</dim-shell-input>` | One unkeyed raw block (user-role message) at the input's consumed position |
 | `!!command` | Nothing | — |
 
-No tool declaration, prompt source or key: each run is a one-time observation. After compaction the result survives only through the summary. Child branches inherit it only if it was consumed before the cut. The model never sees the `runId`, durations or diagnostics.
+No tool declaration, prompt source or key: each run is a one-time observation. After compaction the result survives only through the summary. Child branches inherit it only if it was consumed before the cut. The model never sees the `runId`, durations or process logs.
 
 ## 6. Interfaces (summary)
 
@@ -185,7 +185,7 @@ No tool declaration, prompt source or key: each run is a one-time observation. A
 
 ## 7. Security
 
-`!` and `!!` execute arbitrary commands as the service user without Approval: Approval and Permission govern only actions an agent decides, and these commands are the user's ([ADR 003](../../adr/003-approval-scope.md) D1). Nor does `!` refuse a background `&`, which `exec` refuses in POSIX shells: that refusal is a policy of the agent's tool, steering an agent's background work to BackgroundExec, and a `!` command is typed by the user (D1). Processes it leaves in the background keep running as the service user after the run, the Session and the App Server end, and nothing in Dim tracks them (A.2). `shell.*` are ordinary Session methods: any connection served Session methods may call them on any Session it can address. Today that is a local protected connection; with RemoteGateway (P3) it includes paired devices (decision E3, [overview §6.2](../overview.md#62-constraints) constraint 10), so pairing a device grants command execution on the host. Session methods have no level; only management methods are withheld from paired devices ([session-boundary](../contracts/session-boundary.md)). These user-initiated commands use ordinary HostPlatform spawn, outside F5's model-execution isolation (Q4). For `!`, the command text and output are written to the Timeline and replayed to the model; users must avoid printing secrets. The environment is the service's, as for `exec`, never the client's. Diagnostics carry no command text or output (A11).
+`!` and `!!` execute arbitrary commands as the service user without Approval: Approval and Permission govern only actions an agent decides, and these commands are the user's ([ADR 003](../../adr/003-approval-scope.md) D1). Nor does `!` refuse a background `&`, which `exec` refuses in POSIX shells: that refusal is a policy of the agent's tool, steering an agent's background work to BackgroundExec, and a `!` command is typed by the user (D1). Processes it leaves in the background keep running as the service user after the run, the Session and the App Server end, and nothing in Dim tracks them (A.2). `shell.*` are ordinary Session methods: any connection served Session methods may call them on any Session it can address. Today that is a local protected connection; with RemoteGateway (P3) it includes paired devices (decision E3, [overview §6.2](../overview.md#62-constraints) constraint 10), so pairing a device grants command execution on the host. Session methods have no level; only management methods are withheld from paired devices ([session-boundary](../contracts/session-boundary.md)). These user-initiated commands use ordinary HostPlatform spawn, outside F5's model-execution isolation (Q4). For `!`, the command text and output are written to the Timeline and replayed to the model; users must avoid printing secrets. The environment is the service's, as for `exec`, never the client's. The process log carries no command text or output (A11).
 
 ## 8. Rule check
 
@@ -199,9 +199,9 @@ Rules: [principles §1 and §4](../../architecture/rust-agent/principles.md), [A
 | §4.4 No business meaning in core | Rpc, InputQueue and Loop gain no ShellInput handling: Rpc reaches it by namespace, and the marker is an ordinary raw block. |
 | §4.5 Read the whole batch | Not applicable: ShellInput reads no Timeline event, and its one event (`input/message`) needs no other fact in its batch. |
 | §4.6 Context only from handed-off events | The output reaches the model only after InputQueue applies and Loop consumes the input; `!!` output and progress never do. |
-| §4.7 Public events and services only | ShellInput uses `Branch::input` through `S:TreeCommands`, `SessionConfig`, `SessionLifecycle`, `Diagnostics`, HostPlatform and the `sessionMethods` contract. |
+| §4.7 Public events and services only | ShellInput uses `Branch::input` through `S:TreeCommands`, `SessionConfig`, `SessionLifecycle`, `SessionIdentity`, HostPlatform and the `sessionMethods` contract. |
 | §4.8 Requirements to mechanism owners | Infrastructure is unchanged and nothing is raised to the runtime or rutis (§9). The changes needed from Rpc (per-call progress, in C1) and HostPlatform (command builder, S7) are listed in A.5; the Agents activity handle is replaced by the runtime activity hold that idle unload raised (A.5). |
-| §4.9 Only facts later decisions use enter the Timeline | Only the recorded `!` result enters, as an input the model reads. Progress is reply data of one call, not Session state, so it uses neither the Timeline nor a Session broadcast notice; run records go to diagnostics. |
+| §4.9 Only facts later decisions use enter the Timeline | Only the recorded `!` result enters, as an input the model reads. Progress is reply data of one call, not Session state, so it uses neither the Timeline nor a Session broadcast notice; run records go to the process log. |
 | §1 Capability and App Server boundary | ShellInput is a Session Capability in its own module of dim-agent-capabilities; Rpc only dispatches `sessionMethods`. |
 | ADR 002 D1 Scope | A run is Session work in the Session's working directory, so the plugin is Session scoped. |
 | ADR 002 D2 No wiring modules | Rpc reaches `shell.*` through the Session's `sessionMethods` by namespace; nothing names ShellInput. |
@@ -463,7 +463,7 @@ Dispatch errors (`unknown_method` when the process did not assemble ShellInput, 
 | A8 | A run is Session work: it ends when the Session starts closing or the ShellInput generation unloads | ADR 002 D1, D3; `SessionLifecycle::closing()` ([lifecycle §3](../../architecture/rust-agent/lifecycle.md#3-初始化与失败回滚)) | Runs need a process owner |
 | A9 | No submission identity: clients never retry `shell.run`, `duplicate_run` covers one generation, and after a restart the branch history shows whether X was written | `session.input_lookup` accepts only UUIDs; [#32](https://github.com/arcships/dim/issues/32) plans to move `submission_id` out of `input/message` | A `submissionId` that the lookup accepts |
 | A10 | A client disconnect or an Rpc reload does not stop a run | [Lifecycle §5](../../architecture/rust-agent/lifecycle.md#5-stop-与-close) (a closed connection keeps Session work); the call's token only ends the call (A.4) | Disconnects stop runs |
-| A11 | Diagnostics carry only the `runId` and outcome | Judgment: trace archives keep raw records, and `!!` output belongs to its caller | Command and output in diagnostics |
+| A11 | The `shell.run` span carries only the Session and branch ids, the `runId` and the outcome | Judgment: process logs are shared for troubleshooting ([ADR 005](../../adr/005-observability.md)), and `!!` output belongs to its caller | Command and output in the span |
 
 ## Appendix F. Decisions and deferrals
 
@@ -481,7 +481,7 @@ ShellInput is implemented in Rust as the `shell_input` module of dim-agent-capab
 
 | Neutral contract | Rust binding |
 | --- | --- |
-| Plugin | `TypedPlugin` and `Capability`; `Deps = (Arc<HostPlatform>, InSession<SessionConfig>, InSession<TreeCommands>, InSession<SessionLifecycle>, InSession<Diagnostics>)`, keys scoped to the factory's `SessionScope` |
+| Plugin | `TypedPlugin` and `Capability`; `Deps = (Arc<HostPlatform>, InSession<SessionConfig>, InSession<TreeCommands>, InSession<SessionLifecycle>, InSession<SessionIdentity>)`, keys scoped to the factory's `SessionScope` |
 | `sessionMethods` key `shell` | `SessionMethods::provide(ctx, &scope, "shell", declarations, handler)` from `dim_agent_capabilities::methods` (C1, [#83](https://github.com/arcships/dim/pull/83)), called in `apply` after ShellInput's own effects, so its unload effect runs first. `declarations` holds `MethodDecl { progress: true, ..MethodDecl::new("shell.run", true, Interruption::Report) }`, `MethodDecl::new("shell.stop", true, Interruption::Report)` and `MethodDecl::new("shell.list", false, Interruption::Report)`. The assembly records the namespace with `AgentBuilder::session_methods("shell")` |
 | Handler | A `Handler`, called with the method name, the params, the call's `CancellationToken` (A.4 Two cancellations) and its `Progress`, returning a future of `Result<Value, RpcError>`. Own errors are `RpcError::app(-32000, "shell_busy", ..)` and the like, and `RpcError::invalid` for `invalid_params`; runtime facade errors convert with `?` (`From<AgentError> for RpcError`) |
 | Progress | The handler's `Progress` argument: `progress.send(json!({"text": text}))`, with `"skipped"` added when bytes were left out. The run task holds a clone; a send after the reply is dropped |
@@ -489,7 +489,7 @@ ShellInput is implemented in Rust as the `shell_input` module of dim-agent-capab
 | Process | `HostPlatform::spawn(ProcessSpec)` returns a `ProcessTree` with `stdout`, `stderr`, `wait` and `terminate` |
 | Run tasks | ShellInput's own `TaskTracker`, separate from the calls `SessionMethods` tracks; each task owns its `ProcessTree` and watches `ctx.cancelled()` and `SessionLifecycle::closing()`; `ctx.effect` registers the disposer that waits for the tracker. The call's token, the generation token and the Session phase are read under the registry lock right before `spawn`, and the disposer closes the tracker under that lock. The `SessionHold` from `SessionLifecycle::hold()` is taken there too and kept in the run's registry entry, which the task clears after the run's last fact |
 | Recorded input (A.3) | `TreeCommands::get(branch_id)?.input(..)` |
-| Diagnostics | `Diagnostics::span("shell.run", None, None, Some(run_id.as_str()))`, with `outcome` recorded when the run ends |
+| Process log | A `tracing` span `shell.run` with `session_id`, `branch_id` and `run_id`, with `outcome` recorded when the run ends |
 
 ```rust
 // shell.run before the spawn: the build ends when the call's token fires.

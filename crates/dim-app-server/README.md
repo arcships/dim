@@ -204,9 +204,13 @@ Unix endpoint directories must be private (0700), sockets use 0600, and cleanup 
 
 ### Shutdown completion
 
-For authorized transports, v3 `hello.features` includes `daemon.shutdown.completed`. A successful `daemon.shutdown` response with `force: false` (the default) certifies that Agent work, trace writers, connections and the Rutis process tree have settled, including storage and plugin disposal. Cleanup failure returns `shutdown_failed` without exposing disposer error details. EOF alone is not success. `force: true` retains its early acknowledgement and does not promise cleanup.
+For authorized transports, v3 `hello.features` includes `daemon.shutdown.completed`. A successful `daemon.shutdown` response with `force: false` (the default) certifies that Agent work, connections and the Rutis process tree have settled, including storage and plugin disposal. Cleanup failure returns `shutdown_failed` without exposing disposer error details. EOF alone is not success. `force: true` retains its early acknowledgement and does not promise cleanup.
 
 The requesting connection hands only its final-response writer to the existing process coordinator before leaving the plugin graph. The coordinator sends successful completion after `root.shutdown()`; no graph-owned RPC task waits on its own disposal. Shutdown first stops RPC admission and joins admitted shutdown handlers, including force acknowledgement writes. If an admitted force request wins, the coordinator joins connection handoffs and returns `shutdown_failed` to pending graceful callers without waiting for business cleanup. Reply writes are bounded by the transport write deadline. Client disconnect does not cancel accepted cleanup. Clients must check the feature before relying on this completion contract from an older daemon.
+
+### Process logs
+
+The server writes `tracing` output to stderr, filtered by `RUST_LOG` (errors only by default); a daemon started by the CLI writes it to the private `daemon.log` in its native home. The runtime operations `prompt.load`, `context.prepare`, `model.invoke`, `tool.attach`, `tool.execute`, `shell.run`, `timeline.close` and `session.close` are spans carrying the Session and branch ids and the operation's own ids. Closing one logs its duration as `time.busy` plus `time.idle`, so `RUST_LOG=info` shows operation timing. Span names and fields are log output, not a compatibility contract. Committed facts are read from the Timeline, not from logs ([ADR 005](../../docs/adr/005-observability.md)).
 
 ## Optional managed provider
 
@@ -220,7 +224,7 @@ dim-app-server --product-home /absolute/product-home \
   --js-runtime /absolute/runtime/node_modules/@arcships/rutis-runtime
 ```
 
-All three plugin flags are required together. `--js-runtime` names the installed package directory, not a bootstrap script. Node is started by absolute executable path. The runtime receives no terminal stdin, stdout or stderr; business output is returned through the server protocol. The runtime and plugin are separate rutis loader rows in the existing process tree.
+All three plugin flags are required together; `--node` and `--js-runtime` are shared with `--session-rows`. `--js-runtime` names the installed package directory, not a bootstrap script. Node is started by absolute executable path. The runtime receives no terminal stdin, stdout or stderr; business output is returned through the server protocol. The runtime and plugin are separate rutis loader rows in the existing process tree.
 
 The plugin package contains `package.json`, its ESM entry and `dim-plugin.json`:
 
@@ -256,10 +260,13 @@ This fragment shows declaration and ownership; a usable account plugin implement
 
 ### Trusted plugin storage
 
-The native provider is currently installed only by the managed-plugin composition.
-Declaring `pluginFiles` in a public TypeScript process row does not yet install it.
-The [public binding proposal](../../docs/design/process-typescript.md#52-public-pluginfiles-binding-proposed)
-reuses this provider and the authorized product root; it is not implemented.
+The native provider is installed once whenever the host supplies an authorized
+product root. Public process, Session and branch rows use the same provider as
+managed plugins; a Session-only configuration needs no process row. Without
+that root, no provider or working-directory fallback is supplied. See the
+[public binding](../../docs/design/process-typescript.md#52-public-pluginfiles-binding).
+The embedding host must provision each consumer's parent directories before
+enabling it: `withLock` returns `io` for a missing parent and does not create it.
 
 A plugin declares `inject: ['pluginFiles']` and opens a fresh scope during each `apply`. Register `scope.close()` with `ctx.effect` immediately after opening, then register business cleanup. The host chooses the authorized product root; the plugin supplies relative file paths only. This is a trusted-plugin API, not a sandbox for untrusted Node code.
 
@@ -435,6 +442,23 @@ namespaces come from each row's existing `RowSchema.provides` dictionary; share 
 source between the host row and TypeScript module. See the [binding contract](../../docs/design/session-typescript.md)
 and [typed authoring example](../../docs/typescript-plugin-authoring.md#session-tools-and-client-methods).
 
+The `dim-app-server` binary builds this configuration from `--session-rows FILE` with the
+existing `--node` and `--js-runtime` flags. `FILE` is a JSON array of ordinary Session/branch
+loader rows; it is also the anchor, so package names in the rows resolve from its location.
+Rows are validated as they are for an embedding host; nothing is installed by default and
+process rows have no flag. Optional packages such as
+[SessionTitle](../../runtime/plugins/session-title/README.md) and Goal are enabled this way:
+
+```sh
+dim-app-server --product-home /absolute/product-home --home /absolute/product-home/rust \
+  --node /absolute/node-executable \
+  --js-runtime /absolute/runtime/node_modules/@arcships/rutis-runtime \
+  --session-rows /absolute/runtime/session-rows.json
+```
+
+Rows that declare Settings sources need `--product-home` or `--home`. Without the flag, their
+namespaces answer `unknown_method` and are absent from `session.methods`.
+
 Process rows can provide `managementMethods:<namespace>` with asynchronous `describe`
 and `call`. Their original row projects the foreign service to native management
 admission, progress and cancellation; Rpc still looks up each provider per call.
@@ -446,7 +470,7 @@ I/O: a hung declaration load can still block that shared gate. See the
 [authoring example](../../docs/typescript-plugin-authoring.md#process-owners-and-management-methods).
 
 The [public embedding example](examples/session_typescript.rs) starts the real server with offline
-mock model/tools, a protected Unix socket and a fresh temporary SQLite/trace home, then calls it
+mock model/tools, a protected Unix socket and a fresh temporary SQLite home, then calls it
 through JSON-RPC. It removes that home after shutdown and never uses the product home:
 
 ```sh

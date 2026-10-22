@@ -90,7 +90,7 @@ issue #4 的工作。
 
 | 插件 | 作用域 | 理由 |
 | --- | --- | --- |
-| Questions | Session（`ask_user` 工具）+ 分支（运行中 `ask_user` 调用的等待者；没有事件） | 问题属于某个分支的 turn |
+| Questions | Session（`ask_user` 工具、`session.question` 方法和运行中 `ask_user` 调用的等待者；没有事件） | 等待者就是 Session 级工具处理函数自己的调用；分支生命周期经 ToolExecutor 的取消令牌到达它 |
 | Goal | Session（`goal_update` 工具）+ 分支（目标状态、续跑） | 目标属于某个分支，续跑按序跟随其事件 |
 | ShellInput | Session | 命令在 Session 的工作区中运行并写入其输入 |
 | Attachments | Session | 附件是 Session 数据 |

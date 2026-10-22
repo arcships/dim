@@ -501,13 +501,12 @@ impl TimelineContext {
         self.lifecycle.advance(BranchPhase::Closing);
         self.close.start(self.ctx.handle(), async move {
             let _guard = this.control.lock().await;
-            // Diagnostics only observe the close: without them the branch
-            // still settles, stops its tasks and closes its Timeline.
-            let diagnostics = this.scope.service::<Diagnostics>(&this.ctx).ok();
-            let span = diagnostics
-                .as_ref()
-                .map(|diagnostics| diagnostics.span("timeline.close", None, None, None));
-
+            let span = tracing::info_span!(
+                "timeline.close",
+                session_id = %this.timeline.key().session_id,
+                branch_id = %this.id,
+                outcome = tracing::field::Empty,
+            );
             let mut errors = vec![];
             let stopped = if unloading {
                 Ok(this.timeline.sequence())
@@ -556,24 +555,14 @@ impl TimelineContext {
             errors.extend(this.timeline.close().await.err());
             this.lifecycle.advance(BranchPhase::Closed);
             this.changed.send_replace(());
-            if let Some(diagnostics) = &diagnostics {
-                crate::assembly::announce(
-                    diagnostics,
-                    &this.view,
-                    &this.children,
-                    ComponentPhase::Released,
-                );
-            }
-            if let Some(span) = &span {
-                span.record(
-                    "outcome",
-                    if errors.is_empty() {
-                        "returned"
-                    } else {
-                        "failure"
-                    },
-                );
-            }
+            span.record(
+                "outcome",
+                if errors.is_empty() {
+                    "returned"
+                } else {
+                    "failure"
+                },
+            );
             AgentError::aggregate(errors)
         })
     }

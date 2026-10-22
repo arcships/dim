@@ -63,7 +63,6 @@ rutis root
             ├─ SessionScope、TimelineTree、ToolRegistry …
             ├─ McpConnections ⟨instanced⟩         Session-local generations
             │   └─ McpServer
-            ├─ trace ⟨instanced⟩                  仅请求 trace 的 Session
             └─ branch ⟨instanced⟩                 实例 Branch（main 等）
                 └─ BranchScope（Timeline / Dispatcher）、InputQueue、Loop、
                    ContextPreparation、ModelProvider、Permission、Approval、
@@ -135,9 +134,9 @@ loader 的 `create_instance` 仍先等待行 settled；异步 apply 一直不返
 | `HostPlatformPlugin` | 平台与 exec shell 设置 | `HostPlatform` | `When<FileStorage>` |
 | `SkillsCatalogPlugin` | Skill discovery/catalog and business settings; privately supplies the reusable catalog's SkillSettingsHost | `SkillsCatalog`, Skills management contribution | `HostPlatform`, `SettingsService` |
 | `AgentDirectoryPlugin` | `AgentDirectory`：Agent 表与实例、Session 协议版本与占用、不可用记录、默认 agentId、serverInstanceId；不可重启 | `AgentDirectory` | — |
-| `rutis-loader` | 进程装配的配置行与 `agent` / `session` / `branch` / `trace` instanced 分组的实例 | `Loader` | — |
+| `rutis-loader` | 进程装配的配置行与 `agent` / `session` / `branch` instanced 分组的实例 | `Loader` | — |
 | `AgentsPlugin` | `AgentIndex`：目录逻辑、Session 准入、经 loader 创建与关闭 Agent、默认及恢复 Agent 装载入口；进程 builder | `AgentIndex` | `AgentDirectory`、`Loader`；`--database` 另注入 `SqliteStorage`、`SessionStore`，产品 profile 另注入 `SettingsService`；受保护 profile 每次调用时读取 `ModelSelectionHost`，不依赖其提供方（方法合同 §3.2） |
-| `AgentScope`（`agent` 实例中的行） | 一个 `Agent`（Session 建在同一 Agent 实例里）与承载监听的子插件 `Sessions`；`AgentHost`（agent、agentId、default、trace 归档）；apply 登记进目录 | 经 `AgentDirectory` 登记 | `AgentDirectory`、`Loader`；`TimelineStore` 由已配置的 AgentBuilder 传入 |
+| `AgentScope`（`agent` 实例中的行） | 一个 `Agent`（Session 建在同一 Agent 实例里）与承载监听的子插件 `Sessions`；`AgentHost`（agent、agentId、default、profile、承载监听的 ctx）；apply 登记进目录 | 经 `AgentDirectory` 登记 | `AgentDirectory`、`Loader`；`TimelineStore` 由已配置的 AgentBuilder 传入 |
 | `CollaborationDirectoryPlugin` | Team 关系与临时 Agent 归属的目录 | `CollaborationDirectory` | — |
 | `CollaborationPlugin` | 成员关系、临时 Agent 归属、参与 Session 的关闭观察任务 | `Collaboration` | `AgentIndex`、`CollaborationDirectory` |
 | `ConnectionPlugin` | Connection index, admission limits and transport tasks | `ConnectionHub` | `ServerControl` |
@@ -145,7 +144,7 @@ loader 的 `create_instance` 仍先等待行 settled；异步 apply 一直不返
 | Management contributions | Owner-specific declarations, wire validation, business calls and their accepted calls, provided by the business plugin itself | Named `ManagementMethods` services; an owner's unload interrupts its `Report` calls and waits for its `Drain` calls, without reloading Rpc | Each owner's existing business dependencies |
 | `TransportPlugin` | Unix/WS 监听器、socket 文件、accept 任务 | `ListenAddresses` | `ConnectionHub`、`ServerControl`；原生数据库启用时另注入 `SqliteStorage`，确保数据库独占锁就绪后才绑定端点 |
 
-`AgentsPlugin` 提供 `AgentIndex`（`agent` 分组行由 `serve` 写入）；默认 agentId 由首代固定在 `AgentDirectory`。默认 Agent 与运行时创建的 Agent 都由索引经 `create_instance("agent")` 创建，`AgentScope` 只依赖 `AgentDirectory` 与 loader，二者不重载，所以 `AgentScope` 只在其 Agent 被关闭或进程停止时卸载；`AgentsPlugin` 重载只替换目录逻辑，新一代从目录接管已有 Agent。`AgentScope` 先载入子插件 `Sessions`（监听宿主），再登记 effect：先从目录注销，再经 `Agent::close()` 完成各 Session 的业务结算，最后排空 trace 归档。业务结算不依赖树的祖先关系：显式 `agent.close` 与进程关闭第一阶段先在普通任务上下文结算并排空归档，再关闭 Agent 实例；effect 幂等重复这两步。多个 Agent 平等并存、互不串扰，hosting 不含 Agent 间关系。
+`AgentsPlugin` 提供 `AgentIndex`（`agent` 分组行由 `serve` 写入）；默认 agentId 由首代固定在 `AgentDirectory`。默认 Agent 与运行时创建的 Agent 都由索引经 `create_instance("agent")` 创建，`AgentScope` 只依赖 `AgentDirectory` 与 loader，二者不重载，所以 `AgentScope` 只在其 Agent 被关闭或进程停止时卸载；`AgentsPlugin` 重载只替换目录逻辑，新一代从目录接管已有 Agent。`AgentScope` 先载入子插件 `Sessions`（监听宿主），再登记 effect：先从目录注销，再经 `Agent::close()` 完成各 Session 的业务结算。业务结算不依赖树的祖先关系：显式 `agent.close` 与进程关闭第一阶段先在普通任务上下文结算，再关闭 Agent 实例；effect 幂等地重复结算。多个 Agent 平等并存、互不串扰，hosting 不含 Agent 间关系。
 
 开发 profile（`--mock-model`、`--model-config`）不注册产品 OAuth/Provider；产品 profile（`--product-home`）注册 Settings、Provider 及账号服务。`--database` 在 Agents 就绪前装载 SQLite 和 SessionStore，进程关闭先结算 Session，再排空 writer 并关闭连接；活跃 Session 存在时存储不可独立重载。生产工具宿主与 Prompt 来源按 Session 能力工厂接入，进程管理服务按自身资源归属接入。
 
@@ -227,17 +226,16 @@ rutis 严格读取允许自身提供的服务，也允许可见范围相同的�
 
 ## 事件
 
-Dispatcher、before、Session 广播与诊断统一使用显式 `EventKey<E>`：
+Dispatcher、before 与 Session 广播统一使用显式 `EventKey<E>`：
 
 | 事件范围 | 键与调用 |
 | --- | --- |
 | 分支已提交事件 | `EventKey::<Committed>::of().instance(branch.instance)`；`on(ctx, &key, listener)` / `serial(ctx, &key, &event).await` |
 | 分支 before | `EventKey::<BeforeCommit>::of().instance(branch.instance)`；内部事件实现 `SyncEvent`，用 `on_waterfall_sync` / `waterfall_sync` |
 | Session 活事件 | `session_channel(session_id) -> EventKey<SessionBroadcastEvent>`；`emit(ctx, &key, Arc::new(event))` / `on(ctx, &key, listener)` |
-| Session 诊断 | `diagnostics_channel(session_id) -> EventKey<DiagnosticRecord>`；使用宿主 Ctx，结束后由归档方退订 |
 | 进程通知 | 所属 Plugin 导出的 `EventKey<E>::of()`、静态 `named` 键或动态键构造函数 |
 
-服务键使用 `TypeKey`，事件键不代替服务依赖。事件键的身份含载荷类型、可选名字与可选实例；静态与动态同名等值，默认类型通道不等于命名通道。内部事件键不作为 wire 字段或持久身份。Session/诊断键由各自模块导出，调用方不拼接名字。Session 级能力不注册分支实例事件；需要结束记录的监听在比 Session 更晚卸载的宿主 Ctx 注册。`emit` 返回接纳结果，不证明监听器或出站写入完成，错误进入所属诊断/故障出口；Fence 输出屏障按[Session 广播](event-driven-flows.md#6-session-广播)执行。
+服务键使用 `TypeKey`，事件键不代替服务依赖。事件键的身份含载荷类型、可选名字与可选实例；静态与动态同名等值，默认类型通道不等于命名通道。内部事件键不作为 wire 字段或持久身份。Session 键由所属模块导出，调用方不拼接名字。Session 级能力不注册分支实例事件；需要结束记录的监听在比 Session 更晚卸载的宿主 Ctx 注册。`emit` 返回接纳结果，不证明监听器或出站写入完成，错误进入所属故障出口；Fence 输出屏障按[Session 广播](event-driven-flows.md#6-session-广播)执行。
 
 Dispatcher 与 before 的精确名称、`*`、`领域/*` 只过滤同一分支通道内的业务 `EventKind`，匹配由 runtime 完成。rutis `EventPattern` 仅匹配同类型、显式命名、无实例的通道，不能覆盖分支实例；也不提供跨名字全序。
 
@@ -280,7 +278,7 @@ Dispatcher 与 before 的精确名称、`*`、`领域/*` 只过滤同一分支�
 正常关闭由 `daemon.shutdown`、进程信号、`RunningServer::shutdown` 或 `RunningServer` 被丢弃触发，由 `serve` 建立的协调任务执行；等待方放弃不取消该任务：
 
 1. `ServerControl` 停止 RPC 准入并等待已受理的 shutdown 处理器（含强制应答写出）；停止新连接、请求与 Session 创建，accept 任务退出并关闭监听器。发起非强制 `daemon.shutdown` 的连接只把最终应答的写端交给协调任务，自身离开插件图。
-2. 全部 `Agent::close()`（并行，错误汇总）：等待已受理的构建、Session、分支及模型/工具操作结算；随后排空命令任务，再排空全部 trace 写入。
+2. 全部 `Agent::close()`（并行，错误汇总）：等待已受理的构建、Session、分支及模型/工具操作结算；随后排空命令任务。
 3. `ConnectionHub` 通知连接关闭并等待读写任务退出。
 4. 协调任务执行 `Ctx::shutdown()`（含存储与插件释放）；`RunningServer::join` 返回该结果。此后才向非强制 `daemon.shutdown` 写出成功应答（v3 `hello.features` 含 `daemon.shutdown.completed`）；清理失败返回 `shutdown_failed`，不暴露释放错误细节；连接 EOF 不代表成功。
 
@@ -385,10 +383,10 @@ Dispatcher 与 before 的精确名称、`*`、`领域/*` 只过滤同一分支�
 | 重载 | 进程服务重载后，各 Session 中依赖它的能力重新装载并使用新一代服务；历史与无关能力不变；各进程 Plugin 的重载结果符合上表 |
 | 在途结算 | 重载时进行中的模型与工具调用留下终态事实；重新装载后状态与历史一致 |
 | 窗口期 | 重载期间的 RPC 得到 `-32000` / `service_reloading`，模型请求得到可重试错误；重载完成后同一请求成功 |
-| 正常关闭 | 停止准入、Agent 结算、命令与 trace 排空、连接退出、root 释放均完成；重复关闭共享结果 |
+| 正常关闭 | 停止准入、Agent 结算、命令排空、连接退出、root 释放均完成；重复关闭共享结果 |
 | 正常关闭应答 | 非强制 `daemon.shutdown` 在 root 清理完成后才返回成功，清理失败返回 `shutdown_failed` |
 | 强制关闭 | 响应先写出，进程及时退出；结果只标记 `Forced` |
 | 关闭回收 | 关闭 Session/分支后子树 driver、注册、索引与父级清理记录归零；多轮创建与关闭不增长 |
 | 规模 | 测 0/100/1000 空 Session、并发创建与关闭、多分支派发延迟；存活申请与创建耗时与原型基线（每空 Session 约 139.3 KiB、16 个任务）同一量级 |
-| 兼容 | 事件序列、Unix/WS 上的 v1/v2 流程（以 [Session 广播](event-driven-flows.md#6-session-广播)修订后的合同为准）、审批、trace 与错误码不变；v1/v2 仅增加 `service_reloading` |
+| 兼容 | 事件序列、Unix/WS 上的 v1/v2 流程（以 [Session 广播](event-driven-flows.md#6-session-广播)修订后的合同为准）、审批与错误码不变；v1/v2 仅增加 `service_reloading`。`session.create` 不再接受 `trace`，结果不再含 `tracePath`（[ADR 005](../../adr/005-observability.md) D5） |
 | 框架合同 | 严格读取在 release 同样拒绝漏声明（含命名工具贡献）；实例事件和 before 不越界；卸载等待同步回调退出；作用域清理期间终态原样提交，Timeline 关闭后拒绝写入；广播接纳失败不被误认为交付成功；生成图取自真实装配 |

@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     defaults::mock_hosts(&mut builder);
     let server = serve(builder, ServerConfig {
         unix_path: Some(socket.clone()), websocket_address: None,
-        database_path: Some(home.join("sessions.sqlite")), trace_directory: home.join("trace"),
+        database_path: Some(home.join("sessions.sqlite")),
         session_typescript: Some(SessionTypeScriptConfig {
         process_rows: Vec::new(),
             node, js_runtime, anchor: workspace.join("runtime/package.json"),

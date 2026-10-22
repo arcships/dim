@@ -96,7 +96,7 @@ sequenceDiagram
 
 ## 4. v1 兼容
 
-原 22 类事件字段不变。本文的停止控制事件、Loop 写入的 `input/consumed` 与[审批控制事件](event-driven-flows.md#7-v1-兼容与装配)均保留在 Rust Timeline 与 trace；v1 App Server 的 session.event 过滤这些事件，保留原 Timeline sequence，不重编号；过滤后可跳号。JSON-RPC 方法、hello 版本和时间格式不变。已有样本兼容与新增过滤/续读分别验收，不声称新增控制事件属于冻结的 v1 事件集合。
+原 22 类事件字段不变。本文的停止控制事件、Loop 写入的 `input/consumed` 与[审批控制事件](event-driven-flows.md#7-v1-兼容与装配)均保留在 Rust Timeline；v1 App Server 的 session.event 过滤这些事件，保留原 Timeline sequence，不重编号；过滤后可跳号。JSON-RPC 方法、hello 版本和时间格式不变。已有样本兼容与新增过滤/续读分别验收，不声称新增控制事件属于冻结的 v1 事件集合。
 
 ## 5. 验收
 

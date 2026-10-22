@@ -10,8 +10,7 @@ registry, exposing snapshots and rutis change events for branch adoption and pin
 | --- | --- |
 | `S:ToolHost` | Host definitions and execution handlers. |
 | `S:SessionConfig` | Select enabled fixed tool names. |
-| `S:SessionIdentity` | Supply the owning Session id in a foreign tool's neutral call. |
-| `S:Diagnostics` | Report configured optional tools that are unavailable at attachment. |
+| `S:SessionIdentity` | Supply the owning Session id in a foreign tool's neutral call and the `tool.attach` span. |
 | `S:SessionLifecycle` | `activated()` starts the background refresh task once the Session is published. |
 
 ## Events and lifetime
@@ -30,7 +29,7 @@ or a service binding changes (`ServiceChanged`); the listeners only wake that
 task. A contributor's set version changes only when its provider object changes
 and is never reused; a missing provider, or a foreign generation that is
 unloading, withdraws the set. Missing or Pending providers produce a `tool.attach`
-diagnostic and are offered from the request after they become active, without a
+span in the process log and are offered from the request after they become active, without a
 Session reload. Selected duplicate tools and unknown host tools still fail
 initialization. Generic source providers emit `tools.provider_changed` on the
 Session instance's rutis channel after updating their state. The registry
@@ -59,7 +58,7 @@ published under the same tool service name and Session instance as a typed nativ
 key. Row cancellation rejects later executions through that handler and ends its
 in-flight native wait; an old set never selects a replacement generation.
 TypeScript effects still own settlement of the JavaScript work.
-Malformed declarations are omitted with an attach diagnostic. Execution maps the
+Malformed declarations are omitted with a `tool.attach` span and warning. Execution maps the
 native call/context and Session configuration to the neutral A.5 request, then
 decodes `ToolResult` once. Each call's cancellation Promise uses a child of the
 batch token, so finishing its lease cannot cancel another call in that batch.
@@ -107,7 +106,7 @@ and results, and cancellation without cancelling sibling tools in the same batch
 | §4 rule 6 | Declarations reach model context through Prompt adoption; results use ToolExecutor. |
 | §4 rule 7 | Contributions use the existing public scoped service; private provider state is not read. |
 | §4 rule 8 | No infrastructure change: first-read collection uses existing scoped lookup, ToolBinding initialization and BranchOpening. |
-| §4 rule 9 | Registry availability stays in memory and diagnostics, not new Timeline facts. |
+| §4 rule 9 | Registry availability stays in memory and process logs, not new Timeline facts. |
 | §1 | ToolRegistry owns attachment and rutis subscriptions; App Server remains assembly only. |
 | ADR 002 D1 | The registry and contributions belong to one Session. |
 | ADR 002 D2 | No new registry, registration port or adapter plugin is added. |
@@ -127,7 +126,7 @@ contracts.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `S:Diagnostics`、`S:SessionConfig`、`S:SessionIdentity`、`S:SessionLifecycle`、`S:ToolHost` |
+| 注入 | `S:SessionConfig`、`S:SessionIdentity`、`S:SessionLifecycle`、`S:ToolHost` |
 | 提供 | `S:ToolRegistry`、`S:ToolSourcesView` |
 | 被注入于 | `PrepareModelHost`、`ToolBinding` |
 <!-- /generated -->

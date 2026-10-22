@@ -7,6 +7,7 @@ use crate::{
     export,
     input::Input,
     mcp, permission, permission_command,
+    question::line::Questions,
 };
 use dim_agent_types::{
     ApprovalCallData, ContentBlock, ModelCapabilities, ModelId, ModelReasoning, ModelServiceTier,
@@ -34,11 +35,40 @@ enum Submission {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct History {
-    events: Vec<Value>,
-    through: u64,
+pub struct History {
+    pub events: Vec<Value>,
+    pub through: u64,
     next_after: u64,
     done: bool,
+}
+impl History {
+    /// Checks a page read from `after` against the read's fixed watermark
+    /// and returns the next cursor, or `None` when the read is complete.
+    pub fn next(&self, after: u64, through: Option<u64>) -> Result<Option<u64>> {
+        if through.is_some_and(|through| through != self.through)
+            || self.through > dim_agent_types::JS_MAX_SAFE_INTEGER
+            || self.next_after < after
+            || self.next_after > self.through
+            || !self.done && self.next_after == after
+        {
+            return Err("Invalid history page cursor".into());
+        }
+        for event in &self.events {
+            let sequence = event["sequence"]
+                .as_u64()
+                .ok_or("Invalid history event sequence")?;
+            if sequence <= after || sequence > self.next_after {
+                return Err("History event is outside its page".into());
+            }
+        }
+        if !self.done {
+            return Ok(Some(self.next_after));
+        }
+        if self.next_after != self.through {
+            return Err("History ended before its fixed watermark".into());
+        }
+        Ok(None)
+    }
 }
 
 #[derive(Deserialize)]
@@ -265,21 +295,23 @@ pub async fn chat(
     client
         .rpc("session.attach", json!({"sessionId":session_id}))
         .await?;
+    let mut questions = Questions::default();
     let result = async {
         display.muted = !interactive;
         display.cursor = read_history(client, &session_id, 0, |value| {
+            questions.history("main", &value);
             if options.json { Ok(()) } else { display.event(serde_json::from_value(value)?, true) }
         }).await?;
         display.failed = false;
         display.muted = false;
-        let mut code = wait_turn(client, &session_id, None, &mut display, &mut input, &mut interrupts, None).await?;
+        let mut code = wait_turn(client, &session_id, None, &mut display, &mut input, &mut interrupts, &mut questions, None).await?;
         if code != 0 || interactive && input.is_none() {
             return Ok(code);
         }
         if options.prompt.is_some() || !images.is_empty() {
             let content = options.prompt.iter().filter(|text| !text.trim().is_empty()).map(|text| ContentBlock::Text { text: text.clone() })
                 .chain(images).collect();
-            return wait_turn(client, &session_id, Some(Submission::Message(UserInput { content })), &mut display, &mut input, &mut interrupts, None).await;
+            return wait_turn(client, &session_id, Some(Submission::Message(UserInput { content })), &mut display, &mut input, &mut interrupts, &mut questions, None).await;
         }
         let mut draft = Draft::default();
         let mut notice = None;
@@ -384,7 +416,7 @@ pub async fn chat(
                 }
             };
             display.failed = false;
-            code = match wait_turn(client, &session_id, Some(submission), &mut display, &mut input, &mut interrupts, Some(&mut draft)).await {
+            code = match wait_turn(client, &session_id, Some(submission), &mut display, &mut input, &mut interrupts, &mut questions, Some(&mut draft)).await {
                 Ok(code) => code,
                 Err(error) if error.is::<RequestTooLarge>() => {
                     notice = Some(format!("{error}. Draft retained"));
@@ -430,30 +462,14 @@ pub async fn read_history(
             params["through"] = json!(through);
         }
         let page: History = client.typed("session.history", params).await?;
-        if through.is_some_and(|through| through != page.through)
-            || page.through > dim_agent_types::JS_MAX_SAFE_INTEGER
-            || page.next_after < after
-            || page.next_after > page.through
-            || !page.done && page.next_after == after
-        {
-            return Err("Invalid history page cursor".into());
-        }
+        let next = page.next(after, through)?;
         through = Some(page.through);
         for event in page.events {
-            let sequence = event["sequence"]
-                .as_u64()
-                .ok_or("Invalid history event sequence")?;
-            if sequence <= after || sequence > page.next_after {
-                return Err("History event is outside its page".into());
-            }
             consume(event)?;
         }
-        after = page.next_after;
-        if page.done {
-            if after != page.through {
-                return Err("History ended before its fixed watermark".into());
-            }
-            return Ok(after);
+        match next {
+            Some(next) => after = next,
+            None => return Ok(page.through),
         }
     }
 }
@@ -620,6 +636,7 @@ async fn configure(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn wait_turn(
     client: &mut Client,
     session_id: &str,
@@ -628,6 +645,7 @@ async fn wait_turn(
     input: &mut Option<Input>,
     #[cfg(unix)] interrupts: &mut tokio::signal::unix::Signal,
     #[cfg(windows)] interrupts: &mut tokio::signal::windows::CtrlC,
+    questions: &mut Questions,
     mut draft: Option<&mut Draft>,
 ) -> Result<i32> {
     let mut shell = None;
@@ -681,6 +699,7 @@ async fn wait_turn(
             && shell.is_none()
             && deferred.is_empty()
             && rule_write.is_none()
+            && questions.idle(input.is_none() || code == 0)
         {
             display.cursor = display.cursor.max(sequence);
             display.finish_text()?;
@@ -692,7 +711,12 @@ async fn wait_turn(
                 0
             });
         }
-        if !approvals.is_empty() && input.is_some() && !prompted && rule_write.is_none() {
+        if !approvals.is_empty()
+            && input.is_some()
+            && !prompted
+            && rule_write.is_none()
+            && !questions.asking()
+        {
             let approval = approvals.front().expect("pending approval");
             display.record(&format!(
                 "[approval] {}: {}",
@@ -719,17 +743,59 @@ async fn wait_turn(
             prompted = true;
             rule_stage = false;
         }
-        let event = if !prompted && let Some(event) = deferred.pop_front() {
+        if let Some(reader) = input.as_mut() {
+            if !prompted && rule_write.is_none() && code == 0 {
+                questions.open(display, reader)?;
+            }
+        } else {
+            // Without terminal input every question read is given up (A8).
+            let branches = questions.unanswerable();
+            if !branches.is_empty() {
+                let reason = "Interactive answer required";
+                if code == 0 {
+                    display.record(
+                        "Interactive answer required; stopping. Rerun in a terminal to answer it",
+                    )?;
+                    code = 3;
+                }
+                for branch_id in &branches {
+                    questions
+                        .stop(client, session_id, branch_id, reason)
+                        .await?;
+                }
+                if stop.is_none() && settled.is_none() {
+                    stop = Some(
+                        client
+                            .send(
+                                "session.stop",
+                                json!({"sessionId":session_id,"branchId":"main","reason":reason}),
+                            )
+                            .await?,
+                    );
+                }
+            }
+        }
+        let event = if !prompted
+            && !questions.asking()
+            && let Some(event) = deferred.pop_front()
+        {
             event
         } else {
             tokio::select! {
                 _ = interrupts.recv() => {
+                    // A question of another branch after `main` settled.
+                    if settled.is_some() && stop.is_none() && questions.asking() {
+                        if !display.json { println!(); }
+                        questions.interrupt(client, session_id).await?;
+                        code = 130;
+                        continue;
+                    }
                     if (stop.is_some() || settled.is_some()) && shell.is_none() {
                         display.record("[stopping] Still waiting for resource settlement")?;
                         continue;
                     }
                     if !display.json { println!(); }
-                    if let Some(run) = shell.as_mut().filter(|run| !prompted && !run.stopping) {
+                    if let Some(run) = shell.as_mut().filter(|run| !prompted && !questions.asking() && !run.stopping) {
                         run.stop = Some(client.send("shell.stop", json!({"sessionId":session_id,"runId":run.run_id})).await?);
                         run.stopping = true;
                         display.record("[shell stopping] Waiting for command settlement")?;
@@ -742,6 +808,7 @@ async fn wait_turn(
                     display.record("[stopping] Waiting for resource settlement")?;
                     code = 130;
                     approvals.clear(); prompted = false;
+                    questions.interrupt(client, session_id).await?;
                     stop = Some(client.send("session.stop", json!({"sessionId":session_id,"branchId":"main","reason":"CLI interrupted"})).await?);
                     continue;
                 }
@@ -749,6 +816,10 @@ async fn wait_turn(
                     match input.as_mut() { Some(reader) if stop.is_none() && rule_write.is_none() => reader.line().await, _ => pending().await }
                 } => {
                     let line = line?;
+                    if let (Some(text), Some(reader)) = (&line, input.as_mut()) && questions.asking() {
+                        questions.line(client, session_id, text, display, reader).await?;
+                        continue;
+                    }
                     // The prompted approval's simple command when "always" is offered.
                     let always = approvals
                         .front()
@@ -787,6 +858,9 @@ async fn wait_turn(
                     }
                     if line.is_none() {
                         *input = None;
+                        if questions.interrupt(client, session_id).await? {
+                            code = 130;
+                        }
                         if let Some(run) = shell.as_mut().filter(|run| !run.stopping) {
                             run.stop = Some(client.send("shell.stop", json!({"sessionId":session_id,"runId":run.run_id})).await?);
                             run.stopping = true;
@@ -813,9 +887,16 @@ async fn wait_turn(
             writeln!(output)?;
             output.flush()?;
         }
+        if let Message::Notice { method, params } = &event
+            && params["sessionId"].as_str() == Some(session_id)
+        {
+            questions
+                .notice(client, session_id, method, params, display)
+                .await?;
+        }
         match event {
             event @ Message::Response { id, .. }
-                if prompted
+                if (prompted || questions.asking())
                     && shell
                         .as_ref()
                         .is_some_and(|run| run.request == Some(id) || run.stop == Some(id)) =>
@@ -974,6 +1055,11 @@ async fn wait_turn(
                     result?;
                 }
             }
+            Message::Response { id, result } if questions.owns(id) => {
+                questions
+                    .response(client, session_id, id, result, display, input)
+                    .await?;
+            }
             Message::Response { .. } => return Err("Unexpected session response identity".into()),
             Message::Notice { method, params } if method == "approval.request" => {
                 let approval: Approval = decode(params, &method)?;
@@ -1006,7 +1092,9 @@ async fn wait_turn(
                     }
                 }
             }
-            notice @ Message::Notice { .. } if prompted => deferred.push_back(notice),
+            notice @ Message::Notice { .. } if prompted || questions.asking() => {
+                deferred.push_back(notice)
+            }
             Message::Notice { method, params }
                 if method == "management.progress"
                     && params["id"].as_u64().is_some_and(|id| {

@@ -269,8 +269,7 @@ async fn launch_with_plugin<P: Capability>(
     serve(builder, config).await.unwrap()
 }
 
-/// A session.close racing an agent.close waits for the existing settlement:
-/// its reply still implies a complete trace archive.
+/// A session.close racing an agent.close waits for the existing settlement.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_close_waits_for_a_concurrent_agent_close_settlement() {
     let gate = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -291,11 +290,9 @@ async fn session_close_waits_for_a_concurrent_agent_close_settlement() {
     let agent = agent["result"]["agentId"].as_str().unwrap().to_owned();
     let mut params = create(json!([]));
     params["agentId"] = json!(agent);
-    params["trace"] = json!(true);
     let created = client.rpc("session.create", params).await;
     assert_ok(&created);
     let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();
-    let trace_path = created["result"]["tracePath"].as_str().unwrap().to_owned();
 
     // agent.close settles through the gated cleanup; session.close races it
     // from inside the closing window, after the Agent left the live index.
@@ -330,9 +327,6 @@ async fn session_close_waits_for_a_concurrent_agent_close_settlement() {
     assert_ok(&session_reply);
     assert_ok(&client.response(closing).await);
 
-    // The reply implies a complete archive, exactly like the direct path.
-    read_trace(&trace_path).await;
-
     server.shutdown();
     server.join().await.unwrap();
 }
@@ -354,10 +348,7 @@ async fn agent_close_cleanup_failure_returns_a_fixed_outbound_message() {
     let agent = agent["result"]["agentId"].as_str().unwrap().to_owned();
     let mut params = create(json!([]));
     params["agentId"] = json!(agent);
-    params["trace"] = json!(true);
-    let created = client.rpc("session.create", params).await;
-    assert_ok(&created);
-    let trace_path = created["result"]["tracePath"].as_str().unwrap().to_owned();
+    assert_ok(&client.rpc("session.create", params).await);
 
     let failed = client.rpc("agent.close", json!({"agentId":agent})).await;
     assert_eq!(failed["error"]["code"], -32000);
@@ -365,11 +356,10 @@ async fn agent_close_cleanup_failure_returns_a_fixed_outbound_message() {
     assert_eq!(failed["error"]["message"], "Agent unload failed");
     assert!(failed["error"].get("data").is_none());
 
-    // The Agent is gone and its archive still completes.
+    // The Agent is gone.
     let listed = client.rpc("agent.list", json!({})).await;
     let agents = listed["result"].as_array().unwrap();
     assert!(agents.iter().all(|info| info["agentId"] != agent.as_str()));
-    read_trace(&trace_path).await;
 
     // A healthy Agent closes cleanly afterwards.
     fail.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -443,11 +433,9 @@ async fn session_close_reports_the_settlement_failure_of_a_concurrent_agent_clos
     let agent = agent["result"]["agentId"].as_str().unwrap().to_owned();
     let mut params = create(json!([]));
     params["agentId"] = json!(agent);
-    params["trace"] = json!(true);
     let created = client.rpc("session.create", params).await;
     assert_ok(&created);
     let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();
-    let trace_path = created["result"]["tracePath"].as_str().unwrap().to_owned();
 
     let closing = client.send("agent.close", json!({"agentId":agent})).await;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -482,9 +470,6 @@ async fn session_close_reports_the_settlement_failure_of_a_concurrent_agent_clos
     assert_eq!(session_reply["error"]["message"], "Session cleanup failed");
     let agent_reply = client.response(closing).await;
     assert_eq!(agent_reply["error"]["message"], "Agent unload failed");
-
-    // The Agent is gone and its archive still completes.
-    read_trace(&trace_path).await;
 
     server.shutdown();
     server.join().await.unwrap();

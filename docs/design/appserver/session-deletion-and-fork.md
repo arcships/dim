@@ -89,7 +89,7 @@ are Rust methods over the native store, not services: only Agents calls them.
   |             | 1 take S's admission gate    |                     |                          |
   |             | 2 loaded? close() ---------->| settle accepted work, write terminal facts,
   |             |                              | release processes, leases, member requests;
-  |             |<-------------- closed -------| trace archive ends   |                          |
+  |             |<-------------- closed -------|                      |                          |
   |             | delete_session(S) ------------------------------->|                          |
   |             |                              |  3 remove command-output/S, parent synced ---->|
   |             |                              |    absent counts as removed <------------------|
@@ -106,9 +106,9 @@ are Rust methods over the native store, not services: only Agents calls them.
    request that already holds a use of S keeps it, and the close in step 2 ends its work.
 2. **Close.** If S is loaded, Agents closes it as `session.close` does: a business close, not an unload. Its
    capabilities settle their accepted work, write their terminal facts and release processes, FileStorage leases and
-   member requests, and the delete waits for the trace archive as `session.close` does. A close that reports cleanup
-   errors is logged and the delete continues: the facts it could not write are removed with the rest. From the close
-   on, S's slot is closed: S does not load again in this process, whether or not its rows go (step 6).
+   member requests. A close that reports cleanup errors is logged and the delete continues: the facts it could not
+   write are removed with the rest. From the close on, S's slot is closed: S does not load again in this process,
+   whether or not its rows go (step 6).
 3. **Command output.** SessionStore removes `<database directory>/command-output/<S>/`, where WorkspaceTools keeps
    exec output and oversized `read` results ([read.rs](../../../crates/dim-agent-capabilities/src/workspace_tools/files/read.rs)
    `offload`), through the FileStorage of S's resource node, looked up per call as in S5a. An absent directory counts
@@ -144,8 +144,6 @@ are Rust methods over the native store, not services: only Agents calls them.
 
 A delete does not remove:
 
-- **Trace archives.** They are written where `session.create {trace}` asked, and their path goes to that client; the
-  client owns them. Step 2 waits for the archive to finish.
 - **Other owners' records that name S**, such as Scheduler and Workflow run records in `pluginFiles`. When their
   owners use the id, they get `session_closed`, as for a closed Session.
 - **Other Sessions.** Members of a deleted leader and forks of S are Sessions with their own rows. A delete does not
@@ -257,7 +255,7 @@ partial failure would still need per-id results.
 | Protocol and callers | As for `session.delete` (§3.1). The source must belong to the connection's protocol version, and the fork gets that version |
 | `at` | The last `main` sequence the fork inherits. 0 inherits no event |
 | Reply | The fork's id and its `main` head once it is published. The client then attaches |
-| No other params | No `branchId`, configuration fields or `trace`. The fork's configuration is the source's (§6.3). A client changes it afterwards with `session.permission.update` or `session.model.update`, as [#26](https://github.com/arcships/dim/issues/26) decided for the preset |
+| No other params | No `branchId` or configuration fields. The fork's configuration is the source's (§6.3). A client changes it afterwards with `session.permission.update` or `session.model.update`, as [#26](https://github.com/arcships/dim/issues/26) decided for the preset |
 
 A fork is not idempotent: a retry after an uncertain reply can create a second fork, which the client finds in
 `session.summaries`.

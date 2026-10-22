@@ -9,8 +9,8 @@ use crate::{
     steer::{REPLACED_BY_STEER, SteerMark},
 };
 use dim_agent_runtime::{
-    AgentError, BranchScope, CAPABILITY_RELOADING, Capability, Diagnostics, Dispatcher, InBranch,
-    InSession, KeysOf, ModelProgress, StateCell, Timeline, When,
+    AgentError, BranchScope, CAPABILITY_RELOADING, Capability, Dispatcher, InBranch, InSession,
+    KeysOf, ModelProgress, StateCell, Timeline, TimelineIdentity, When,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
@@ -54,7 +54,7 @@ pub struct ModelProvider {
     host: Arc<ModelHost>,
     resolver: Option<Arc<ProviderConnectionResolver>>,
     timeline: Arc<Timeline>,
-    diagnostics: Arc<Diagnostics>,
+    identity: Arc<TimelineIdentity>,
     progress: Arc<StateCell<ModelProgress>>,
 }
 impl ModelProvider {
@@ -152,11 +152,13 @@ impl ModelProvider {
         gate: Arc<OutputGate>,
         generation: CancellationToken,
     ) -> dim_agent_runtime::Result<()> {
-        let span = self.diagnostics.span(
+        let span = tracing::info_span!(
             "model.invoke",
-            Some(&call.turn_id),
-            Some(&call.request_id),
-            None,
+            session_id = %self.identity.session_id,
+            branch_id = %self.identity.branch_id,
+            turn_id = %call.turn_id,
+            request_id = %call.request_id,
+            outcome = tracing::field::Empty,
         );
         let mut output = Output::new(
             self.timeline.clone(),
@@ -287,7 +289,7 @@ impl TypedPlugin for ModelProviderPlugin {
         InBranch<ContextPreparation>,
         When<InSession<ModelHost>>,
         When<(Arc<ModelHost>, Arc<ProviderConnectionResolver>)>,
-        InBranch<Diagnostics>,
+        InBranch<TimelineIdentity>,
     );
     fn name(&self) -> &str {
         "ModelProvider"
@@ -301,7 +303,7 @@ impl TypedPlugin for ModelProviderPlugin {
             InBranch(context),
             When(session_model),
             When(process_model),
-            InBranch(diagnostics),
+            InBranch(identity),
         ): Self::Deps,
     ) -> BoxFuture<'a, Result<Effect, CordisError>> {
         Box::pin(async move {
@@ -318,7 +320,7 @@ impl TypedPlugin for ModelProviderPlugin {
                 host,
                 resolver,
                 timeline,
-                diagnostics,
+                identity,
                 progress: Arc::new(StateCell::new(ModelProgress::default())),
             });
             let owner = service.clone();

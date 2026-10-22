@@ -14,7 +14,7 @@ working directory, through the Session methods `shell.run`, `shell.stop` and
 | `S:SessionConfig` | The Session working directory. |
 | `S:TreeCommands` | Check `branchId` at start; write a recorded run's input on that branch. |
 | `S:SessionLifecycle` | `closing()` ends a run without writing; `hold()` keeps the Session from an idle unload while a run is registered. |
-| `S:Diagnostics` | One `shell.run` span per started run. |
+| `S:SessionIdentity` | Session id of the `shell.run` span, one per started run. |
 
 ## Methods
 
@@ -90,8 +90,9 @@ after the reply or under backpressure.
 
 A root that exits on its own releases its tree: background processes it left
 (`!cmd &`) keep running outside ShellInput, and their pipes close after the
-grace. Diagnostics carry the `runId` and the outcome (`completed:<exit>`,
-`stopped`, `failed`, `interrupted`), never the command or its output.
+grace. The run's `shell.run` span in the process log carries the Session and
+branch ids, the `runId` and the outcome (`completed:<exit>`, `stopped`,
+`failed`, `interrupted`), never the command or its output.
 
 ## Rule check
 
@@ -105,7 +106,7 @@ grace. Diagnostics carry the `runId` and the outcome (`completed:<exit>`,
   recorded result enters the Timeline, while progress is reply data of one call.
 - §4 rules 6 and 7: the output reaches the model only through the consumed
   input; ShellInput uses only public services (`Branch::input` through
-  `TreeCommands`, `SessionConfig`, `SessionLifecycle`, `Diagnostics`,
+  `TreeCommands`, `SessionConfig`, `SessionLifecycle`, `SessionIdentity`,
   HostPlatform and `sessionMethods`).
 - ADR 002 D4–D5: no configuration of its own; the exec shell is HostPlatform's.
   The commands are the user's, not an agent's tool calls, so no Approval or
@@ -132,7 +133,6 @@ the command builder.
 `a_run_recorded_during_a_tool_batch_follows_its_result`,
 `a_closed_branch_refuses_the_write_but_not_the_run`,
 `reloading_shell_input_alone_ends_its_run`,
-`diagnostics_carry_only_the_run_id_and_outcome`,
 `the_caller_receives_progress_before_the_reply`,
 `progress_items_are_capped_and_count_what_they_leave_out`. Feature `testing`
 adds `shell_input::testing::hold_start`, which holds a run's command build open
@@ -142,7 +142,7 @@ for the race flows; production builds have no hook.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `P:HostPlatform`、`S:Diagnostics`、`S:SessionConfig`、`S:SessionLifecycle`、`S:TreeCommands` |
+| 注入 | `P:HostPlatform`、`S:SessionConfig`、`S:SessionIdentity`、`S:SessionLifecycle`、`S:TreeCommands` |
 | 提供 | `S:SessionMethods#shell` |
 | 被注入于 | — |
 <!-- /generated -->

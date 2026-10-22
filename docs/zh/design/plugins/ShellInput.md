@@ -16,7 +16,7 @@ flowchart LR
   subgraph S["Session 作用域"]
     SI["ShellInputPlugin（运行注册表，sessionMethods shell）"]:::new
     TC["TreeCommands"]
-    SS["SessionConfig、SessionLifecycle、Diagnostics"]
+    SS["SessionConfig、SessionLifecycle、SessionIdentity"]
   end
   subgraph B["分支"]
     IQ["Timeline、InputQueue、Loop"]
@@ -32,7 +32,7 @@ flowchart LR
 
 | 部分 | 作用域 | 依赖 | 提供 |
 | --- | --- | --- | --- |
-| `ShellInputPlugin` | Session | `P:HostPlatform`（与 WorkspaceTools 的用法相同）、`S:SessionConfig`（`cwd`）、`S:TreeCommands`、`S:SessionLifecycle`、`S:Diagnostics` | `sessionMethods` key `shell` |
+| `ShellInputPlugin` | Session | `P:HostPlatform`（与 WorkspaceTools 的用法相同）、`S:SessionConfig`（`cwd`）、`S:TreeCommands`、`S:SessionLifecycle`、`S:SessionIdentity` | `sessionMethods` key `shell` |
 
 依赖的契约：
 
@@ -57,7 +57,7 @@ flowchart LR
     IM["input/message（Append，标记 dim-shell-input）"]
     IA["input/applied、input/consumed（InputQueue、Loop）"]
   end
-  DG["诊断：每次已启动的运行一个 shell.run span"]
+  DG["进程日志：每次已启动的运行一个 shell.run span"]
   RR -- "record 模式：进程结束后写入一次" --> IM
   IM --> IA
   RR -- "runId 与结果" --> DG
@@ -66,7 +66,7 @@ flowchart LR
 
 运行注册表是插件代的内存，从不重建：Session 部分结束时，正在运行的命令被终止。它还记录本代已用过的 run id，因此重复的 `runId` 会被拒绝（`duplicate_run`），发出一次的命令绝不会运行两次；并记录 `shell.stop` 先于其运行到达的 run id，这样那次运行什么都不启动（A.4）。唯一持久的结果是记录运行的 `input/message`，随 Session 一起恢复。
 
-事件：无。运行由用户而非轮次启动，因此轮次或分支中断不会结束它。`!command` 唯一与后续相关的结果是该输入；`!!command` 不影响任何后续内容。诊断中每次已启动的运行一个 `shell.run` span，带 `runId` 和结果（状态与退出），从不包含命令文本或输出（A11）。
+事件：无。运行由用户而非轮次启动，因此轮次或分支中断不会结束它。`!command` 唯一与后续相关的结果是该输入；`!!command` 不影响任何后续内容。进程日志中每次已启动的运行一个 `shell.run` span，带 Session 与分支 id、`runId` 和结果（状态与退出），从不包含命令文本或输出（A11）。
 
 ## 3. 流程
 
@@ -171,7 +171,7 @@ sequenceDiagram
 | `!command` | `<dim-shell-input kind="command" status="completed" exit="0" truncated="false">`，然后是 `$ <command>` 与有界输出，最后是 `</dim-shell-input>` | 一个无 key 的 raw 块（用户角色消息），位于输入的消费位置 |
 | `!!command` | 无 | — |
 
-没有工具声明、提示词来源或 key：每次运行都是一次性观察。压缩之后结果只通过摘要保留。子分支只在它于切点之前被消费时继承它。模型从不看到 `runId`、耗时或诊断。
+没有工具声明、提示词来源或 key：每次运行都是一次性观察。压缩之后结果只通过摘要保留。子分支只在它于切点之前被消费时继承它。模型从不看到 `runId`、耗时或进程日志。
 
 ## 6. 接口（摘要）
 
@@ -185,7 +185,7 @@ sequenceDiagram
 
 ## 7. 安全
 
-`!` 和 `!!` 以服务用户身份执行任意命令，无需 Approval：Approval 与 Permission 只管 agent 决策的动作，而这些命令是用户的（[ADR 003](../../adr/003-approval-scope.md) D1）。`!` 也不拒绝后台 `&`，而 `exec` 在 POSIX shell 中拒绝它：那是 agent 工具的策略，用来把 agent 的后台工作引向 BackgroundExec，而 `!` 命令由用户输入（D1）。它留在后台的进程以服务用户身份运行，在运行、Session 和 App Server 结束后继续存在，Dim 中没有任何部件跟踪它们（A.2）。`shell.*` 是普通 Session 方法：任何被提供 Session 方法的连接，都可以对它能寻址的任何 Session 调用它们。目前这只是本地受保护连接；有了 RemoteGateway（P3）后还包括已配对设备（决定 E3，[overview §6.2](../overview.md#62-约束) 第 10 条），因此配对设备就是授予在宿主上执行命令的能力。Session 方法没有级别；只有管理方法不提供给已配对设备（[session-boundary](../contracts/session-boundary.md)）。HostPlatform 的进程隔离在实现后适用（Q4）；Permission 预设从不放宽它。对于 `!`，命令文本和输出会写入 Timeline 并重放给模型；用户应避免打印机密。环境与 `exec` 一样是服务的环境，从不使用客户端的环境。诊断不包含命令文本或输出（A11）。
+`!` 和 `!!` 以服务用户身份执行任意命令，无需 Approval：Approval 与 Permission 只管 agent 决策的动作，而这些命令是用户的（[ADR 003](../../adr/003-approval-scope.md) D1）。`!` 也不拒绝后台 `&`，而 `exec` 在 POSIX shell 中拒绝它：那是 agent 工具的策略，用来把 agent 的后台工作引向 BackgroundExec，而 `!` 命令由用户输入（D1）。它留在后台的进程以服务用户身份运行，在运行、Session 和 App Server 结束后继续存在，Dim 中没有任何部件跟踪它们（A.2）。`shell.*` 是普通 Session 方法：任何被提供 Session 方法的连接，都可以对它能寻址的任何 Session 调用它们。目前这只是本地受保护连接；有了 RemoteGateway（P3）后还包括已配对设备（决定 E3，[overview §6.2](../overview.md#62-约束) 第 10 条），因此配对设备就是授予在宿主上执行命令的能力。Session 方法没有级别；只有管理方法不提供给已配对设备（[session-boundary](../contracts/session-boundary.md)）。HostPlatform 的进程隔离在实现后适用（Q4）；Permission 预设从不放宽它。对于 `!`，命令文本和输出会写入 Timeline 并重放给模型；用户应避免打印机密。环境与 `exec` 一样是服务的环境，从不使用客户端的环境。进程日志不包含命令文本或输出（A11）。
 
 ## 8. 规则检查
 
@@ -199,9 +199,9 @@ sequenceDiagram
 | §4.4 核心机制不带业务含义 | Rpc、InputQueue 与 Loop 不为 ShellInput 增加处理：Rpc 按命名空间找到它，标记是普通 raw 块。 |
 | §4.5 决定前读完整个批次 | 不适用：ShellInput 不读任何 Timeline 事件，它唯一的事件（`input/message`）不需要同批次的其他事实。 |
 | §4.6 模型上下文只含交接后被读取的事件 | 输出只在 InputQueue 应用、Loop 消费该输入后进入模型；`!!` 的输出和进度从不进入。 |
-| §4.7 插件之间只通过公开事件和服务交互 | ShellInput 经 `S:TreeCommands` 使用 `Branch::input`，并使用 `SessionConfig`、`SessionLifecycle`、`Diagnostics`、HostPlatform 与 `sessionMethods` 契约。 |
+| §4.7 插件之间只通过公开事件和服务交互 | ShellInput 经 `S:TreeCommands` 使用 `Branch::input`，并使用 `SessionConfig`、`SessionLifecycle`、`SessionIdentity`、HostPlatform 与 `sessionMethods` 契约。 |
 | §4.8 基础设施默认不变 | 基础设施不变，不向运行时或 rutis 提需求（§9）。需要 Rpc（逐次调用的进度，在 C1 中）和 HostPlatform（命令构造器，S7）做的改动列在 A.5；Agents 活动句柄由空闲卸载提出的运行时活动持有取代（A.5）。 |
-| §4.9 只有后续决定要用的事实进入 Timeline | 只有 `!` 的记录结果进入，作为模型会读取的输入。进度是一次调用的回复数据，不是 Session 状态，因此既不进 Timeline，也不走 Session 广播通知；运行记录进入诊断。 |
+| §4.9 只有后续决定要用的事实进入 Timeline | 只有 `!` 的记录结果进入，作为模型会读取的输入。进度是一次调用的回复数据，不是 Session 状态，因此既不进 Timeline，也不走 Session 广播通知；运行记录进入进程日志。 |
 | §1 Capability 与 App Server 边界 | ShellInput 是 dim-agent-capabilities 中自成模块的 Session Capability；Rpc 只分派 `sessionMethods`。 |
 | ADR 002 D1 作用域跟随状态所有者 | 运行是 Session 工作目录中的 Session 工作，因此插件是 Session 作用域。 |
 | ADR 002 D2 不设接线模块 | Rpc 经 Session 的 `sessionMethods` 按命名空间找到 `shell.*`；没有模块指名 ShellInput。 |
@@ -463,7 +463,7 @@ ShellInput 自己的错误（除注明外为 `-32000`）：
 | A8 | 运行是 Session 工作：Session 开始关闭或 ShellInput 代卸载时结束 | ADR 002 D1、D3；`SessionLifecycle::closing()`（[生命周期 §3](../../../architecture/rust-agent/lifecycle.md#3-初始化与失败回滚)） | 运行需要一个进程级拥有者 |
 | A9 | 没有提交标识：客户端从不重试 `shell.run`，`duplicate_run` 覆盖一代，重启后由分支历史判断 X 是否已写入 | `session.input_lookup` 只接受 UUID；[#32](https://github.com/arcships/dim/issues/32) 计划把 `submission_id` 移出 `input/message` | 需要查找能接受的 `submissionId` |
 | A10 | 客户端断开或 Rpc 重载不会停止运行 | [生命周期 §5](../../../architecture/rust-agent/lifecycle.md#5-stop-与-close)（连接断开保留 Session 工作）；调用的令牌只结束调用（A.4） | 断开会停止运行 |
-| A11 | 诊断只携带 `runId` 和结果 | 判断：trace 归档保留原始记录，且 `!!` 的输出只属于调用方 | 诊断中包含命令和输出 |
+| A11 | `shell.run` span 只携带 Session 与分支 id、`runId` 和结果 | 判断：进程日志会被分享用于排查（[ADR 005](../../../adr/005-observability.md)），且 `!!` 的输出只属于调用方 | span 中包含命令和输出 |
 
 ## 附录 F. 决定与推迟
 
@@ -481,7 +481,7 @@ ShellInput 用 Rust 实现，为 dim-agent-capabilities 的 `shell_input` 模块
 
 | 中立契约 | Rust 绑定 |
 | --- | --- |
-| 插件 | `TypedPlugin` 与 `Capability`；`Deps = (Arc<HostPlatform>, InSession<SessionConfig>, InSession<TreeCommands>, InSession<SessionLifecycle>, InSession<Diagnostics>)`，key 按工厂的 `SessionScope` 限定 |
+| 插件 | `TypedPlugin` 与 `Capability`；`Deps = (Arc<HostPlatform>, InSession<SessionConfig>, InSession<TreeCommands>, InSession<SessionLifecycle>, InSession<SessionIdentity>)`，key 按工厂的 `SessionScope` 限定 |
 | `sessionMethods` key `shell` | `dim_agent_capabilities::methods` 的 `SessionMethods::provide(ctx, &scope, "shell", declarations, handler)`（C1，[#83](https://github.com/arcships/dim/pull/83)），在 `apply` 中于 ShellInput 自己的 effect 之后调用，因此它的卸载 effect 先运行。`declarations` 为 `MethodDecl { progress: true, ..MethodDecl::new("shell.run", true, Interruption::Report) }`、`MethodDecl::new("shell.stop", true, Interruption::Report)` 和 `MethodDecl::new("shell.list", false, Interruption::Report)`。装配用 `AgentBuilder::session_methods("shell")` 登记命名空间 |
 | 处理函数 | 一个 `Handler`，以方法名、参数、调用的 `CancellationToken`（A.4 两种取消）和它的 `Progress` 调用，返回 `Result<Value, RpcError>` 的 future。自己的错误用 `RpcError::app(-32000, "shell_busy", ..)` 等，`invalid_params` 用 `RpcError::invalid`；运行时门面的错误用 `?` 转换（`From<AgentError> for RpcError`） |
 | 进度 | 处理函数的 `Progress` 参数：`progress.send(json!({"text": text}))`，有略去的字节时加上 `"skipped"`。运行任务持有它的克隆；回复之后的发送被丢弃 |
@@ -489,7 +489,7 @@ ShellInput 用 Rust 实现，为 dim-agent-capabilities 的 `shell_input` 模块
 | 进程 | `HostPlatform::spawn(ProcessSpec)` 返回带 `stdout`、`stderr`、`wait` 和 `terminate` 的 `ProcessTree` |
 | 运行任务 | ShellInput 自己的 `TaskTracker`，与 `SessionMethods` 跟踪的调用分开；每个任务持有自己的 `ProcessTree`，观察 `ctx.cancelled()` 和 `SessionLifecycle::closing()`；`ctx.effect` 登记等待该跟踪器的卸载清理函数。`spawn` 之前在登记表的锁内读取调用的取消令牌、本代的取消令牌和 Session 阶段，卸载清理函数在同一把锁内关闭跟踪器。`SessionLifecycle::hold()` 返回的 `SessionHold` 也在那里取得，保存在运行的登记项中，任务在运行的最后一个事实之后清除该登记项 |
 | 记录的输入（A.3） | `TreeCommands::get(branch_id)?.input(..)` |
-| 诊断 | `Diagnostics::span("shell.run", None, None, Some(run_id.as_str()))`，运行结束时记录 `outcome` |
+| 进程日志 | `tracing` span `shell.run`，带 `session_id`、`branch_id` 与 `run_id`，运行结束时记录 `outcome` |
 
 ```rust
 // shell.run before the spawn: the build ends when the call's token fires.

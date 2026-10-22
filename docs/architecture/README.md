@@ -94,7 +94,6 @@ Detailed contracts live under [`rust-agent/`](rust-agent/) and are written in Ch
 | [timeline-storage](rust-agent/timeline-storage.md) | Timeline write, publish and read contract |
 | [tool-contributions](rust-agent/tool-contributions.md) | Tool contributions, registry and binding |
 | [prompt](rust-agent/prompt.md) | Prompt lifecycle and configuration adoption |
-| [trace](rust-agent/trace.md) | Diagnostics channel and trace archives; removal proposed in [ADR 005](../adr/005-observability.md) |
 | [plugins](rust-agent/plugins/README.md) | Per-capability dependencies, events and state, checked by `xtask check` |
 
 ## Generated architecture

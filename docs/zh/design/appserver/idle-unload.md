@@ -18,8 +18,8 @@ Session，已装载的 Session 因此无限增长（§2）。本设计让 Agents
 - **规则。** 一个已装载的 Session 在至少宽限期 `G` 内没有任何租约（`SessionUse`）持有，并且
   `Session::unload_if_idle()` 释放了它，Agents 就卸载它。下一次 `acquire` 恢复它。卸载不是关闭：卸载本身不写事件（恢复时按重启后的做法用
   `branch/resume` 打开各分支），Session 的每个使用者看到的都与卸载前一样。
-- **什么持有 Session。** 只有租约（§4）：attach 的客户端、进行中的 Rpc 或 `sessions` 调用、Collaboration 的操作或对成员未结束的请求，以及
-  被追踪 Session 的归档。Agents 不解读其他任何东西。
+- **什么持有 Session。** 只有租约（§4）：attach 的客户端、进行中的 Rpc 或 `sessions` 调用，以及 Collaboration 的操作或对成员未结束的
+  请求。Agents 不解读其他任何东西。
 - **脱离工作**（开放问题 1）。运行中的 `!` 命令、BackgroundExec 任务或未结束的 Collaboration 请求阻止卸载。工作的所有者在工作运行期间取得一个运行时
   **活动持有**，只要还有持有，`unload_if_idle()` 就拒绝（§5，向运行时提出的需求 R1，由 R2 到 R4 采用）。自动卸载从不取消已接纳的工作。
 - **何时检查**（开放问题 2）。每隔 `G` 运行一轮检查（§6）。它按状态触发：最后一个租约刚释放的 Session，以及没有租约、之后才变为空闲的 Session，
@@ -79,7 +79,7 @@ Session，卸载并恢复七次；创建在同一存储上测量以便对比；�
 | D6 | 宽限期 `G` = 60 s，`ServerConfig.idle_unload_after` | 没有宽限期；按数量约束（保留最近 N 个没有租约的 Session）；用户设置 | 没有宽限期时，一次 S2 运行几乎每次调用都要恢复它的 Session（§6.2）。按数量约束会让 N 个 Session 永远装载，而 N 和时间一样是随意选的。没有已知的用户需求（ADR 002 D4）；测试需要短的取值，所以作为宿主配置放在 `startup_timeout` 旁边 |
 | D7 | 卸载在该 Session 的准入闸门下进行；检查从不等待闸门 | 单独的卸载锁，或 `acquire` 检查的“正在卸载”标志 | 闸门已经为 `acquire` 的恢复、预备创建和删除排序（S5c §7）。第二把锁容易与它们产生锁顺序问题，标志又需要自己的等待 |
 | D8 | 不取租约的读取（`session.list`、`session.summaries`、Collaboration 经 `AgentIndex::read_page` 对成员的 `agent` 读取）在找到的已装载 Session 被卸载时，改读存储 | 为列出的每个 Session 取租约 | 租约会恢复并钉住每个列出的 Session。存储中的记录包含每个已发布的事件 |
-| D9 | 被追踪的 Session（`session.create {trace}`）在其归档打开期间持有租约 | 让卸载结束归档 | 归档在 Session 实例结束时完成，而恢复出来的 Session 不再被追踪，调试记录会无声地中断。追踪需要显式开启，`launch` 也没有追踪选项 |
+| D9 | 由 [ADR 005](../../../adr/005-observability.md) 撤销：它删除了 trace 归档，不再有 Session 为观测而持有租约 | — | 运行事后经 Timeline 与进程日志读取，卸载与恢复都不会打断它们 |
 | D10 | SessionTitle 的生成和 S5b 的 `setTitle` 不取持有 | 持有到标题写入 | SessionTitle 的设计接受卸载在交给存储之前取消生成，并在下一个被采纳的输入时重试（[SessionTitle §4](../plugins/SessionTitle.md#4-时序与冲突)）。它的 30 s 预算低于 `G`，所以提交后离开的 Session 在卸载可能开始之前就已生成完标题。已受理的 `setTitle` 是 SessionStore 的进程级操作，无论 Session 是否装载都会结算 |
 | D11 | 不加客户端接口，不加指标；每次卸载记一行 debug 日志，每次失败记一条警告 | `session.unload` 方法、卸载事件或计数器 | 没有使用方。`agent.list` 已经报告每个 Agent 的已装载 Session 数 |
 
@@ -97,7 +97,6 @@ Session，卸载并恢复七次；创建在同一存储上测量以便对比；�
 | 没有未结束请求的 Collaboration 关系 | 进程内存；卸载后仍在 | 否（D2） |
 | `session.fork` 的源 | 创建分叉期间的租约 | 是，期间 |
 | `session.delete`、`sessions.delete` | 准入闸门 | 与卸载串行（§7） |
-| 被追踪 Session 的归档 | 今天没有 | 是，本设计起（D9） |
 | 未闭合的 turn：模型或工具调用运行中、审批或问题待处理、输入未发布或未分发 | 运行时状态 | 阻止 `unload_if_idle()` |
 | 运行中的 `!` 命令、BackgroundExec 任务、未结束 Collaboration 请求的 leader 一侧 | 今天没有 | 通过持有阻止（§5） |
 | C4 leaf 观察者（`sessionEvents` 转发） | 不恢复的查找；跳过正在卸载的 Session；恢复后使用新通道（[C4 设计](../../../design/session-typescript.md)） | 否：它们只观察 |
@@ -283,12 +282,11 @@ R1 之后 `unload_if_idle()` 内部：
 | `SessionSlot` | [agents.rs](../../../../crates/dim-app-server/src/agents.rs) | 在 `uses` 旁增加 acquire 计数器，每次 `acquire` 加一 |
 | 卸载检查 | agents.rs | 有原生存储时由 `AgentsPlugin` 为本代索引启动；本代的清理停止它并等待其完成（§6.1） |
 | 不取租约的读取 | agents.rs `session_directory`、`session_summary`、`read_page` | 已装载的 Session 在读取过程中被释放时，改读存储（D8） |
-| 被追踪的 Session | [trace.rs](../../../../crates/dim-app-server/src/trace.rs) | 归档任务持有租约，直到 Session 关闭（D9） |
 | `ServerConfig.idle_unload_after` | App Server `lib.rs` | 一个字段及其默认值，属于装配负责线（zerob13），与 S2 在那里加的一行相同 |
 
 ## 9. 可观测性
 
-释放会发出运行时现有的 `session.close` 诊断 span。Agents 为每次卸载记一行 debug 日志，为每次失败记一条警告，都带 Session id。`agent.list`
+释放会在进程日志中发出运行时现有的 `session.close` span（[ADR 005](../../../adr/005-observability.md) D4）。Agents 为每次卸载记一行 debug 日志，为每次失败记一条警告，都带 Session id。`agent.list`
 已经报告每个 Agent 的已装载 Session 数，验收测的就是它。客户端看不到任何新东西。
 
 ## 10. 规则检查
@@ -371,7 +369,7 @@ C4、SessionTitle、Scheduler 和 Workflow 不需要改动。不向 rutis 提需
 ```
 
 每一步都能单独合入。只有 R1 时，改变的只是显式调用 `unload_if_idle()` 的地方，而它们都是测试。只有 R2 到 R4 时，加入的持有还没有人据此行动。
-检查最后上线，连同 D8、D9 和配置字段一起，并且必须在 R2 到 R4 之后，因为在那之前自动卸载会取消脱离工作。工作在 P6 或 P7 进入 Ready 后开始（路线图 §2 第 5 条）。
+检查最后上线，连同 D8 和配置字段一起，并且必须在 R2 到 R4 之后，因为在那之前自动卸载会取消脱离工作。工作在 P6 或 P7 进入 Ready 后开始（路线图 §2 第 5 条）。
 
 ## 13. 验收
 
@@ -393,8 +391,7 @@ C4、SessionTitle、Scheduler 和 Workflow 不需要改动。不向 rutis 提需
 8. **卸载期间的读取。** Session 卸载期间反复调用 `session.list`、`session.summaries` 以及 leader 对成员的 `agent` 读取，从不失败，也从不漏掉存储中的 Session 或事件。
 9. **索引重载。** 在按第 3 项扣住释放的同时重载 Agents 索引：释放完成，没有丢失 Session，新一代卸载其余没有租约的 Session，重载之后的 `acquire` 能恢复。
 10. **删除与分叉。** 对已卸载 Session 的 `sessions.delete` 删除其行而不恢复它。分叉一个已卸载的源会恢复源；宽限期之后两者都被卸载。
-11. **被追踪的 Session。** 被追踪的 Session 一直装载到被关闭，其归档覆盖整个 Session。
-12. **没有原生存储。** 使用内存存储时不卸载任何 Session。
+11. **没有原生存储。** 使用内存存储时不卸载任何 Session。
 
 R1 到 R4 各自带有测试（§11）。
 

@@ -19,8 +19,8 @@ per run or stage, so loaded Sessions grow without bound (§2). This design makes
   `G`, and `Session::unload_if_idle()` releases it. The next `acquire` restores it. Unloading is not closing: the
   unload writes no event (the restore opens the branches with `branch/resume`, as after a restart), and every user of
   the Session finds it as it was.
-- **What holds a Session.** Only leases (§4): an attached client, an Rpc or `sessions` call in flight, a Collaboration
-  operation or open request on a member, and a traced Session's archive. Agents interprets nothing else.
+- **What holds a Session.** Only leases (§4): an attached client, an Rpc or `sessions` call in flight, and a
+  Collaboration operation or open request on a member. Agents interprets nothing else.
 - **Detached work** (open question 1). A running `!` command, BackgroundExec task or open Collaboration request blocks
   the unload. Its owner takes a runtime **activity hold** while the work runs, and `unload_if_idle()` refuses while
   any hold exists (§5, requirement R1 to the runtime, adopted by R2 to R4). An automatic unload never cancels
@@ -92,7 +92,7 @@ question for its owners, not a prerequisite of this design.
 | D6 | Grace `G` = 60 s, `ServerConfig.idle_unload_after` | No grace; a count bound (keep the N most recent lease-free Sessions); a user setting | Without a grace an S2 run restores its Session for nearly every call (§6.2). A count bound keeps N Sessions loaded forever and picks N as arbitrarily as a time. No user need is known for a setting (ADR 002 D4); tests need a short value, so it is host configuration beside `startup_timeout` |
 | D7 | The unload runs under the Session's admission gate; the pass never waits for a gate | A separate unload lock, or an "unloading" flag `acquire` checks | The gate already orders `acquire`'s restore, prepared creation and delete (S5c §7). A second lock invites lock-order bugs with them, and a flag needs its own wait |
 | D8 | Reads that do not take a lease (`session.list`, `session.summaries`, Collaboration's `agent` read of a member through `AgentIndex::read_page`) fall back to the store when the loaded Session they found unloads under them | Take a lease for each listed Session | A lease would restore and pin every listed Session. Stored records hold every published event |
-| D9 | A traced Session (`session.create {trace}`) holds a lease while its archive is open | Let the unload finish the archive | The archive finishes when the Session's instance ends, and a restored Session is not traced, so the debugging record would stop silently. Tracing is opt-in, and `launch` has no trace option |
+| D9 | Withdrawn by [ADR 005](../../adr/005-observability.md), which removed the trace archive: no Session holds a lease for observation | — | A run is read afterwards through the Timeline and process logs, which an unload and restore do not interrupt |
 | D10 | SessionTitle's generation and an S5b `setTitle` take no hold | Holding until the title is written | SessionTitle's design accepts that an unload cancels generation before the store handover and retries on the next adopted input ([SessionTitle §4](../plugins/SessionTitle.md#4-timing-and-conflicts)). Its 30 s budget is below `G`, so a submit-and-leave Session finishes its title before an unload can start. An admitted `setTitle` is SessionStore's process-scope operation and settles whether or not the Session is loaded |
 | D11 | No client API and no metric; a debug log line per unload and a warning per failed one | A `session.unload` method, an unload event or counter | No consumer. `agent.list` already reports each Agent's loaded Session count |
 
@@ -110,7 +110,6 @@ A holder takes a lease with `AgentIndex::acquire`, which restores the Session if
 | Collaboration relation, no open request | Process memory; survives an unload | No (D2) |
 | `session.fork` source | A lease while the fork is created | Yes, while it runs |
 | `session.delete`, `sessions.delete` | The admission gate | Serialized with the unload (§7) |
-| Traced Session's archive | Nothing today | Yes, from this design (D9) |
 | Open turn: model or tool call running, pending approval or question, input unpublished or undispatched | Runtime state | Blocks `unload_if_idle()` |
 | Running `!` run, BackgroundExec task, the leader side of an open Collaboration request | Nothing today | Blocks through a hold (§5) |
 | C4 leaf observers (`sessionEvents` forwarding) | Non-restoring lookup; skip an unloading Session; fresh channel after a restore ([C4 design](../session-typescript.md)) | No: they observe |
@@ -315,14 +314,14 @@ run.
 | `SessionSlot` | [agents.rs](../../../crates/dim-app-server/src/agents.rs) | An acquire counter beside `uses`, incremented by `acquire` |
 | Unload pass | agents.rs | Started by `AgentsPlugin` for its index generation when a native store is present; stopped and drained by the generation's cleanup (§6.1) |
 | Lease-free reads | agents.rs `session_directory`, `session_summary`, `read_page` | Fall back to the store when the loaded Session is released under them (D8) |
-| Traced Session | [trace.rs](../../../crates/dim-app-server/src/trace.rs) | The archive task holds a lease until the Session closes (D9) |
 | `ServerConfig.idle_unload_after` | App Server `lib.rs` | One field with its default, in the assembly lane (zerob13), as S2 added one line there |
 
 ## 9. Observability
 
-The release emits the runtime's existing `session.close` diagnostics span. Agents logs each unload at debug level and
-each failed one as a warning, with the Session id. `agent.list` already reports each Agent's loaded Session count,
-which is what the acceptance measures. Nothing new reaches clients.
+The release emits the runtime's existing `session.close` span in the process log
+([ADR 005](../../adr/005-observability.md) D4). Agents logs each unload at debug level and each failed one as a warning,
+with the Session id. `agent.list` already reports each Agent's loaded Session count, which is what the acceptance
+measures. Nothing new reaches clients.
 
 ## 10. Rule check
 
@@ -407,7 +406,7 @@ C4, SessionTitle, Scheduler and Workflow need no change. Nothing is raised to ru
 ```
 
 Each step merges on its own. R1 alone changes only explicit `unload_if_idle()` callers, which are tests. R2 to R4
-alone add holds that nothing acts on yet. The pass ships last, with D8, D9 and the configuration field, and only after
+alone add holds that nothing acts on yet. The pass ships last, with D8 and the configuration field, and only after
 R2 to R4, because before them an automatic unload would cancel detached work. The work starts once P6 or P7 is Ready
 (roadmap §2, rule 5).
 
@@ -442,8 +441,7 @@ milliseconds. Each waits on an observed transition (`Session::closed()` of the r
    lost, the next generation unloads the remaining lease-free Sessions, and an `acquire` after the reload restores.
 10. **Delete and fork.** `sessions.delete` of an unloaded Session removes its rows without restoring it. A fork of an
     unloaded source restores the source; both are unloaded after the grace.
-11. **Traced Session.** A traced Session stays loaded until it is closed, and its archive covers the whole Session.
-12. **No native store.** With an in-memory store nothing is unloaded.
+11. **No native store.** With an in-memory store nothing is unloaded.
 
 R1 to R4 carry their own tests (§11).
 

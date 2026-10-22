@@ -888,6 +888,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dim-agent-questions"
+version = "0.1.0"
+dependencies = [
+ "dim-agent-capabilities",
+ "dim-agent-runtime",
+ "dim-agent-types",
+ "futures-util",
+ "rutis",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "dim-agent-runtime"
 version = "0.1.0"
 dependencies = [
@@ -903,7 +918,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
@@ -925,6 +939,7 @@ dependencies = [
  "dim-agent-aimux",
  "dim-agent-attachments",
  "dim-agent-capabilities",
+ "dim-agent-questions",
  "dim-agent-runtime",
  "dim-agent-types",
  "dim-app-server",
@@ -4310,6 +4325,7 @@ dependencies = [
  "dim-agent-aimux",
  "dim-agent-attachments",
  "dim-agent-capabilities",
+ "dim-agent-questions",
  "dim-agent-runtime",
  "dim-agent-types",
  "dim-app-server",

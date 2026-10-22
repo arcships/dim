@@ -4,8 +4,8 @@ use crate::{
     tool_binding::ToolBinding,
 };
 use dim_agent_runtime::{
-    AgentError, BranchScope, CAPABILITY_RELOADING, Capability, Diagnostics, Dispatcher, InBranch,
-    KeysOf, Timeline, TimelineIdentity, scoped,
+    AgentError, BranchScope, CAPABILITY_RELOADING, Capability, Dispatcher, InBranch, KeysOf,
+    Timeline, TimelineIdentity, scoped,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
@@ -51,7 +51,6 @@ impl TypedPlugin for ToolExecutorPlugin {
         InBranch<ToolBinding>,
         InBranch<Approval>,
         InBranch<TimelineIdentity>,
-        InBranch<Diagnostics>,
     );
     fn name(&self) -> &str {
         "ToolExecutor"
@@ -65,7 +64,6 @@ impl TypedPlugin for ToolExecutorPlugin {
             InBranch(binding),
             InBranch(approval),
             InBranch(identity),
-            InBranch(diagnostics),
         ): Self::Deps,
     ) -> BoxFuture<'a, Result<Effect, CordisError>> {
         Box::pin(async move {
@@ -115,7 +113,6 @@ impl TypedPlugin for ToolExecutorPlugin {
                     let binding = binding.clone();
                     let approval = approval.clone();
                     let identity = identity.clone();
-                    let diagnostics = diagnostics.clone();
                     Box::pin(async move {
                     let _ready = gate.lock().await;
                     (|| {
@@ -178,7 +175,6 @@ impl TypedPlugin for ToolExecutorPlugin {
                         let binding = binding.clone();
                         let approval = approval.clone();
                         let identity = identity.clone();
-                        let diagnostics = diagnostics.clone();
                         owner.tasks.spawn(async move {
                             let outcome = AssertUnwindSafe(async {
                                 if cancel.is_cancelled() {
@@ -195,7 +191,7 @@ impl TypedPlugin for ToolExecutorPlugin {
                                     let timeline = timeline.clone();
                                     let cancel = cancel.clone();
                                     let event_id = call_event_id.clone();
-                                    let diagnostics = diagnostics.clone();
+                                    let session_id = identity.session_id.clone();
                                     let context = ToolExecutionContext {
                                         turn_id: batch.turn_id.clone(),
                                         request_id: batch.request_id.clone(),
@@ -232,7 +228,7 @@ impl TypedPlugin for ToolExecutorPlugin {
                                                 vec![error],
                                             );
                                         }
-                                        let span = diagnostics.span("tool.execute", Some(&context.turn_id), Some(&context.request_id), Some(&call.id));
+                                        let span = tracing::info_span!("tool.execute", session_id = %session_id, branch_id = %context.branch_id, turn_id = %context.turn_id, request_id = %context.request_id, call_id = %call.id, outcome = tracing::field::Empty);
                                         let (result, outcome) = if cancel.is_cancelled() {
                                             (ToolResult::error("Tool cancelled before execution"), "interrupted")
                                         } else {

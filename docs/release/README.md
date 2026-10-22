@@ -15,6 +15,7 @@ Workflows use GitHub's [default self-hosted OS and architecture labels](https://
 | Job or target | Rust target | Runner labels | Build mode |
 | --- | --- | --- | --- |
 | PR checks | Host default | `self-hosted`, `macOS`, `ARM64` | Native workspace build and tests |
+| PR Windows CLI checks | Host default | `self-hosted`, `windows`, `x64` | Native CLI tests |
 | macOS ARM64 | `aarch64-apple-darwin` | `self-hosted`, `macOS`, `ARM64` | Native |
 | macOS Intel | `x86_64-apple-darwin` | `self-hosted`, `macOS`, `ARM64` | Cross compile with Apple Clang |
 | Linux x64 | `x86_64-unknown-linux-gnu` | `self-hosted`, `linux`, `x64` | Native |

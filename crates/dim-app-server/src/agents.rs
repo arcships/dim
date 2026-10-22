@@ -4,7 +4,6 @@ use crate::{
     protocol::AgentInfo,
     settings::SettingsService,
     storage::{SessionStore, SqliteStorage},
-    trace::Traces,
 };
 use dim_agent_capabilities::host::ModelSelectionHost;
 use dim_agent_runtime::{
@@ -65,7 +64,7 @@ pub(crate) fn session_config(profile: &AgentProfile, defaults: &SessionConfig) -
     config
 }
 
-/// One protocol instance: the Agent, its Sessions, their trace archives.
+/// One protocol instance: the Agent and its Sessions.
 /// Agents are peers: hosting knows no relationship between them.
 pub struct AgentHost {
     pub agent: Agent,
@@ -73,9 +72,8 @@ pub struct AgentHost {
     pub default: bool,
     pub profile: AgentProfile,
     /// Host of the Agent's Session listeners. It unloads after the Agent scope
-    /// has closed every Session and drained archives.
+    /// has closed every Session.
     pub(crate) ctx: Ctx,
-    pub(crate) traces: Traces,
 }
 
 /// A new loaded incarnation of a stored Session, before its caller receives it.
@@ -871,14 +869,13 @@ impl AgentIndex {
         // process, whether or not its rows go.
         let loaded = self
             .host_by_session(id)
-            .and_then(|host| Some((host.agent.get_session(id)?, host)));
-        if let Some((session, host)) = &loaded {
+            .and_then(|host| host.agent.get_session(id));
+        if let Some(session) = &loaded {
             slot.closed.store(true, Ordering::Release);
             if let Err(error) = session.close().await {
                 // The facts the close could not write go with the rest.
                 tracing::error!(%error, session_id = id, "Session cleanup failed before its delete");
             }
-            host.traces.wait_session(id).await;
         }
         let stored = match &self.session_store {
             Some(store) => store.delete_session(id).await?,
@@ -978,9 +975,8 @@ impl AgentIndex {
         };
         // Business settlement first, from a plain task context: Session close
         // awaits its own subtree, which a finalizer must not. The scope effect
-        // repeats both steps idempotently when rutis releases the subtree.
+        // repeats it idempotently when rutis releases the subtree.
         let closed = entry.host.agent.close().await;
-        entry.host.traces.finish().await;
         let unloaded = entry.view.shutdown().await;
         self.directory
             .inner
@@ -1017,13 +1013,6 @@ impl AgentIndex {
             }
         }
         errors
-    }
-    /// Process shutdown phase two, after Rpc commands drained: archives
-    /// finish after their Sessions close so they keep the final diagnostics.
-    pub async fn finish_traces(&self) {
-        for host in self.hosts() {
-            host.traces.finish().await;
-        }
     }
 
     async fn load(
@@ -1117,7 +1106,6 @@ impl AgentIndex {
         {
             self.forget(&agent_id);
             let settled = host.agent.close().await;
-            host.traces.finish().await;
             let unloaded = view.shutdown().await;
             self.directory
                 .inner
@@ -1390,11 +1378,11 @@ impl TypedPluginFactory<NoConfig> for AgentScopeFactory {
 }
 
 /// One Agent: the plugin of its loader instance. Its Sessions are instances
-/// created beside it; it owns their protocol identity and archives. It
-/// depends only on the directory and the loader, which do not reload, so it
-/// unloads only when its Agent is closed or the process stops; both settle
-/// the Sessions first. Its own cleanup repeats that settlement idempotently,
-/// then drains the archives; effects unload in reverse order.
+/// created beside it; it owns their protocol identity. It depends only on the
+/// directory and the loader, which do not reload, so it unloads only when its
+/// Agent is closed or the process stops; both settle the Sessions first. Its
+/// own cleanup repeats that settlement idempotently; effects unload in
+/// reverse order.
 struct AgentScopePlugin(Arc<AgentSpec>);
 impl TypedPlugin for AgentScopePlugin {
     type Deps = (Arc<AgentDirectory>, Arc<Loader>);
@@ -1426,8 +1414,7 @@ impl TypedPlugin for AgentScopePlugin {
                 agent_id: spec.agent_id.clone(),
                 default: spec.default,
                 profile: spec.profile.clone(),
-                ctx: sessions.clone(),
-                traces: Traces::new(sessions.clone()),
+                ctx: sessions,
             });
             let owner = host.clone();
             let unloading = directory.clone();
@@ -1436,10 +1423,7 @@ impl TypedPlugin for AgentScopePlugin {
                 Effect::AsyncDisposer(Box::new(move || {
                     Box::pin(async move {
                         unloading.forget(&agent_id);
-                        // Cleanup failures are exactly what archives must keep.
-                        let closed = owner.agent.close().await;
-                        owner.traces.finish().await;
-                        closed.map_err(Into::into)
+                        owner.agent.close().await.map_err(Into::into)
                     })
                 }))
             })?;

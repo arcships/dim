@@ -76,7 +76,7 @@ impl SessionService for ToolContribution {}
 | 提供 | 贡献方能力在自身状态就绪后，于 `apply` 中以上述键提供；`definition` 可按本 Session 配置生成，`definition.name` 等于登记名称 |
 | 宿主工具名 | 宿主工具名经 `AgentBuilder::host_tools` 登记：产品根由 `workspace_tools::install` 登记，测试与开发宿主由 `defaults::tool_host` 登记；其他提供 `ToolHost` 的装配须自行登记，否则显式 profile 不能列出这些工具 |
 | 收集 | `ToolRegistryPlugin` 经 `AgentBuilder::session_tool_registry` 装配，工厂取得全部登记名称；`apply` 校验配置（含已登记来源名须满足工具名语法）；分支 ToolBinding 首次读取时按名称读取本 Session 已 Active 的贡献，之后由注册表在 Session 发布后的自有任务中随贡献方的激活与退役重读，不建立对可选贡献方的硬依赖 |
-| 启用 | 只有 `SessionConfig.tools` 列出的工具进入注册表；未列出的贡献不读取。已登记但未就绪的贡献省略，并记录 `tool.attach` 诊断；稍后才 Active 的贡献从其 Active 后的下一个请求起提供 |
+| 启用 | 只有 `SessionConfig.tools` 列出的工具进入注册表；未列出的贡献不读取。已登记但未就绪的贡献省略，并记录 `tool.attach` 进程日志 span；稍后才 Active 的贡献从其 Active 后的下一个请求起提供 |
 
 固定表只含配置的宿主工具，在 `apply` 时构建。每个配置的贡献工具是注册表自有的带版本集合，键为 `#contributed:<tool>`；已登记来源名满足 `[A-Za-z0-9_-]{1,64}`，不含 `#`，所以二者的键不会相同。声明按 `SessionConfig.tools` 顺序列出宿主与贡献工具，其后是其他来源的工具。
 
@@ -84,7 +84,7 @@ impl SessionService for ToolContribution {}
 
 | 方向 | 规定 |
 | --- | --- |
-| `ToolRegistry` → 贡献方 | 按登记名读取当前 Active 的贡献方并跟随其换代，不注入贡献方；保留 `ToolHost`、`SessionConfig`、`Diagnostics`、`SessionLifecycle` 和既有动态来源的真实依赖 |
+| `ToolRegistry` → 贡献方 | 按登记名读取当前 Active 的贡献方并跟随其换代，不注入贡献方；保留 `ToolHost`、`SessionConfig`、`SessionIdentity`、`SessionLifecycle` 和既有动态来源的真实依赖 |
 | 贡献方 → `ToolRegistry` | 不注入；贡献方不读取、不修改注册表 |
 | 贡献方状态 | 不因 `ToolRegistry` 或其上游重载而卸载 |
 
@@ -102,7 +102,7 @@ impl SessionService for ToolContribution {}
 
 | 情况 | 结果 |
 | --- | --- |
-| 已登记的可选贡献无 Active 提供方 | 该工具不进入声明，提供方 Active 后再提供；记录诊断，ToolRegistry 与 Loop 正常工作 |
+| 已登记的可选贡献无 Active 提供方 | 该工具不进入声明，提供方 Active 后再提供；记录进程日志 span，ToolRegistry 与 Loop 正常工作 |
 | 已登记来源名不满足工具名语法 | Session 构建失败：`tool source name <name> must match [A-Za-z0-9_-]{1,64}` |
 | 贡献名称与宿主工具重名 | 注册时重复，Session 构建失败 |
 | `SessionConfig.tools` 含未登记且宿主未提供的名称 | 沿用现有错误：`tool <name> is not provided by the host` |

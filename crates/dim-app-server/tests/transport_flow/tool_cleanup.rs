@@ -293,11 +293,9 @@ async fn running_tool_stop_and_close_survive_disconnect_during_cleanup() {
             let mut observer = Client::new(&server, !ws).await;
             let mut params = create(json!(["process"]));
             params["permissionPolicy"] = json!({"allowedTools":["process"]});
-            params["trace"] = json!(true);
             let created = origin.rpc("session.create", params).await;
             assert_ok(&created);
             let sid = created["result"]["sessionId"].clone();
-            let trace = created["result"]["tracePath"].as_str().unwrap();
             assert_ok(
                 &observer
                     .rpc("session.attach", json!({"sessionId":sid}))
@@ -445,36 +443,30 @@ async fn running_tool_stop_and_close_survive_disconnect_during_cleanup() {
                 .rpc("session.submit", json!({"sessionId":sid,"text":"late"}))
                 .await;
             assert_eq!(rejected["error"]["data"]["appError"], "session_closed");
-            let records = trace_payloads(&read_trace(trace).await);
-            for (index, record) in records.iter().enumerate() {
-                assert_eq!(record["event"]["sequence"], index + 1);
-            }
-            let results: Vec<_> = records
+            // The close settled the third call before the Session ended.
+            let events: Vec<_> = session
+                .history("main", None)
+                .await
+                .unwrap()
                 .iter()
-                .filter(|r| r["event"]["name"] == "tool-result")
+                .map(|event| serde_json::to_value(&**event).unwrap())
+                .collect();
+            let results: Vec<_> = events
+                .iter()
+                .filter(|e| e["name"] == "tool-result")
                 .collect();
             assert_eq!(results.len(), 3);
-            let calls: Vec<_> = records
-                .iter()
-                .filter(|r| r["event"]["name"] == "tool-call")
-                .collect();
+            let calls: Vec<_> = events.iter().filter(|e| e["name"] == "tool-call").collect();
             assert_eq!(calls.len(), 3);
             for (call, result) in calls.iter().zip(&results) {
-                assert_eq!(call["event"]["data"]["calls"].as_array().unwrap().len(), 1);
+                assert_eq!(call["data"]["calls"].as_array().unwrap().len(), 1);
+                assert_eq!(result["data"]["results"].as_array().unwrap().len(), 1);
                 assert_eq!(
-                    result["event"]["data"]["results"].as_array().unwrap().len(),
-                    1
-                );
-                assert_eq!(
-                    call["event"]["data"]["calls"][0]["id"],
-                    result["event"]["data"]["results"][0]["call_id"]
+                    call["data"]["calls"][0]["id"],
+                    result["data"]["results"][0]["call_id"]
                 );
             }
-            assert_eq!(
-                results[2]["event"]["data"]["results"][0]["result"]["isError"],
-                true
-            );
-            eprintln!("trace -> {trace}");
+            assert_eq!(results[2]["data"]["results"][0]["result"]["isError"], true);
             assert_ok(
                 &observer
                     .rpc("daemon.shutdown", json!({"force":false}))

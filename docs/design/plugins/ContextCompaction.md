@@ -314,7 +314,6 @@ back to full fact replay.
 Readers update with the struct:
 
 - ContextPolicy's retry filter compares `turn_id` with `Some(turn)`.
-- Trace reads optional ids.
 - Native storage indexes completions by `through` only.
 - The frozen v1 samples are not changed. They decode only as v1 events; the native record does
   not accept the old `cursor`/`summary` form, and v1 connections no longer receive

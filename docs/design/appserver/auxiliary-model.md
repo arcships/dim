@@ -172,10 +172,9 @@ written anywhere.
   `complete`, never returned or serialized. Consumers see text, stop reason and usage only.
 - Error messages carry no secrets: `failed` uses the existing `HostError` message, which
   carries no credential values; Provider never formats a connection into a message.
-- Diagnostics: `complete` records one process `tracing` event, target `auxiliary.complete`, with provider
+- Process log: `complete` records one `tracing` event, target `auxiliary.complete`, with provider
   id, model id, outcome, duration and token usage, never request or reply content. Consumers
-  record outcomes in their own Session diagnostics. Auxiliary calls are not Session facts
-  and enter no Timeline.
+  log their own outcomes. Auxiliary calls are not Session facts and enter no Timeline.
 
 ## 8. Relationship to existing parts
 
@@ -219,8 +218,8 @@ takes it as a request parameter. It is decided with the `/settings` design, not 
    call with `cancelled`.
 5. A managed account whose recovered credential is rejected again is settled (signed out)
    and the call fails with `failed`; the endpoint received exactly two requests.
-6. No API key appears in the reply, errors or the trace event; the Session's Timeline has no
-   new event after a call.
+6. No API key appears in the reply, errors or the `auxiliary.complete` log event; the Session's
+   Timeline has no new event after a call.
 7. A real Node Session row injects the process service by name and makes the HTTP call through
    `complete({model, request})`; reply fields and thrown error codes cross unchanged. Invalid
    requests and unknown models send no HTTP request, and no call writes Session history. With

@@ -52,7 +52,7 @@ impl Capability for FailChildBuild {
 // The failure comes from the debug-build assembly check.
 #[cfg_attr(not(debug_assertions), ignore)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn failed_branch_build_keeps_diagnostics_off_both_transports() {
+async fn failed_branch_build_keeps_private_details_off_both_transports() {
     for ws in [false, true] {
         let mut builder = AgentBuilder::new(AgentConfig::default());
         builder.timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()));
@@ -73,12 +73,10 @@ async fn failed_branch_build_keeps_diagnostics_off_both_transports() {
         .await
         .unwrap();
         let mut client = Client::new_version(&server, ws, 2).await;
-        let mut params = v2_create();
-        params["trace"] = json!(true);
-        let created = client.rpc("session.create", params).await;
+        let created = client.rpc("session.create", v2_create()).await;
         assert_ok(&created);
         let sid = created["result"]["sessionId"].as_str().unwrap();
-        let path = created["result"]["tracePath"].as_str().unwrap();
+        let session = server.agent().unwrap().get_session(sid).unwrap();
         let attached = client.rpc("session.attach", json!({"sessionId":sid})).await;
         assert_eq!(attached["result"], json!({}));
         let failed = client
@@ -110,29 +108,19 @@ async fn failed_branch_build_keeps_diagnostics_off_both_transports() {
                 assert!(!encoded.contains(private), "{encoded}");
             }
         }
-        let listed = server.agent().unwrap().get_session(sid).unwrap().branches();
-        assert_eq!(listed.len(), 1, "a failed candidate is not listed");
+        assert_eq!(
+            session.branches().len(),
+            1,
+            "a failed candidate is not listed"
+        );
         assert_ok(&client.rpc("session.close", json!({"sessionId":sid})).await);
-        let records = read_trace(path).await;
-        let failure = records
-            .iter()
-            .find(|r| r["record"]["event"]["key"] == "branch/create-failed")
-            .unwrap();
-        assert_eq!(failure["record"]["event"]["outcome"], "failed");
-        assert_eq!(
-            failure["record"]["event"]["branch"],
-            failures[0]["event"]["data"]["branch"]
-        );
-        assert_eq!(
-            failure["record"]["event"]["create_event"],
-            failures[0]["event"]["data"]["createEvent"]
-        );
-        assert!(failure["record"]["event"].get("error").is_none());
-        let rejected_branch = failure["record"]["event"]["branch"].as_str().unwrap();
-        assert!(records.iter().any(|r| r["branch_id"] == rejected_branch
-            && r["record"]["kind"] == "component"
-            && r["record"]["phase"] == "released"));
-        std::fs::remove_file(path).unwrap();
+        // The Timeline fact names the rejected branch and its anchor.
+        let history = session.history("main", None).await.unwrap();
+        assert!(history.iter().any(|event| matches!(&event.kind,
+            dim_agent_types::EventKind::BranchCreateFailed(
+                dim_agent_types::BranchCreateFailedData::Failed { branch, create_event, .. }
+            ) if *branch == failures[0]["event"]["data"]["branch"]
+                && *create_event == failures[0]["event"]["data"]["createEvent"])));
         server.shutdown();
         server.join().await.unwrap();
     }
@@ -170,12 +158,9 @@ async fn v2_tree_history_resume_and_protocol_isolation_work_on_both_transports()
         assert!(agent.get_session(unbound.id()).is_some());
         unbound.close().await.unwrap();
 
-        let mut params = v2_create();
-        params["trace"] = json!(true);
-        let created = tree.rpc("session.create", params).await;
+        let created = tree.rpc("session.create", v2_create()).await;
         assert_ok(&created);
         let sid = created["result"]["sessionId"].as_str().unwrap();
-        let path = created["result"]["tracePath"].as_str().unwrap();
         let session = agent.get_session(sid).unwrap();
 
         // A v2 request may never silently select main, and a v1 connection may
@@ -291,86 +276,12 @@ async fn v2_tree_history_resume_and_protocol_isolation_work_on_both_transports()
         }
 
         assert_ok(&tree.rpc("session.close", json!({"sessionId":sid})).await);
-        let records = read_trace(path).await;
-        assert!(records.iter().all(|r| r["session_id"] == sid));
-        for branch in ["main", child_id] {
-            let branch_records: Vec<_> = records
-                .iter()
-                .filter(|r| r["branch_id"] == branch)
-                .collect();
-            let actual: Vec<dim_agent_types::AgentEvent> = branch_records
-                .iter()
-                .filter(|r| r["record"]["kind"] == "timeline")
-                .map(|r| serde_json::from_value(r["record"]["payload"]["event"].clone()).unwrap())
-                .collect();
-            let expected: Vec<_> = session
-                .local(branch, ..)
-                .await
-                .unwrap()
-                .iter()
-                .map(|e| (**e).clone())
-                .collect();
-            assert!(!actual.is_empty());
-            assert_eq!(
-                actual, expected,
-                "all original events, including hidden model requests and shutdown, must be archived per branch"
-            );
-            assert!(
-                branch_records
-                    .iter()
-                    .any(|r| r["record"]["kind"] == "component" && r["record"]["phase"] == "ready")
-            );
-            assert!(
-                branch_records
-                    .iter()
-                    .any(|r| r["record"]["kind"] == "component"
-                        && r["record"]["phase"] == "released")
-            );
-            assert!(
-                branch_records
-                    .iter()
-                    .any(|r| r["record"]["kind"] == "span" && r["record"]["phase"] == "end")
-            );
-        }
-        let create_record = records
-            .iter()
-            .find(|r| r["record"]["event"]["key"] == "branch/create")
-            .unwrap();
-        assert_eq!(create_record["record"]["event"]["source"]["kind"], "host");
-        assert!(create_record["record"]["event"]["source"]["operation_id"].is_string());
-        assert_eq!(
-            create_record["record"]["event"]["source"],
-            create_record["record"]["payload"]["event"]["data"]["source"]
-        );
-        assert!(
-            records
-                .iter()
-                .any(|r| r["record"]["fields"]["operation"] == "session.close"
-                    && r["record"]["phase"] == "end")
-        );
-        // Per-create installation must not enable tracing on later Sessions.
-        let plain = agent
-            .create_session(dim_agent_runtime::SessionConfig::default())
-            .await
-            .unwrap();
-        assert!(
-            plain
-                .diagnostics()
-                .unwrap()
-                .plugins
-                .iter()
-                .all(|p| p.name != "Trace")
-        );
-        plain.close().await.unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
-        std::fs::remove_file(path).unwrap();
+        // An Rpc branch creation records a host source with its operation id.
+        let history = session.history("main", None).await.unwrap();
+        assert!(history.iter().any(|event| matches!(&event.kind,
+            dim_agent_types::EventKind::BranchCreate(data) if data.branch == child_id
+                && matches!(&data.source,
+                    dim_agent_types::BranchSource::Host { operation_id } if !operation_id.is_empty()))));
         server.shutdown();
         server.join().await.unwrap();
     }

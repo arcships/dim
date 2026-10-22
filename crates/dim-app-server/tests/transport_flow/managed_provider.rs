@@ -108,6 +108,7 @@ async fn node_managed_provider_recovers_credentials_and_failure_is_local() {
             node,
             js_runtime,
         }),
+        session_typescript: Some(process_typescript::file_parts()),
         session_defaults: dim_agent_runtime::SessionConfig {
             tools: [
                 "read", "write", "edit", "glob", "grep", "exec", "wait", "skill",
@@ -124,6 +125,10 @@ async fn node_managed_provider_recovers_credentials_and_failure_is_local() {
     };
     let server = serve(builder, config.clone()).await.unwrap();
     let mut client = Client::new_version(&server, false, 3).await;
+    assert_eq!(
+        process_typescript::files_available(&mut client, "files.missing", json!({})).await,
+        json!({"ok":false,"error":"io"})
+    );
     assert_eq!(
         client.rpc("account.providers", json!({})).await["result"][0]["providerId"],
         "managed-fixture"

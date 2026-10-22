@@ -35,7 +35,6 @@ pub mod timeline_tree;
 pub mod tool_binding;
 pub mod tool_executor;
 pub mod tool_registry;
-pub mod trace;
 pub mod wait;
 pub mod workspace_tools;
 

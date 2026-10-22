@@ -213,7 +213,6 @@ Session 值不持有状态。解析出的连接只存在于一次策略调用内
 读取方随结构体更新：
 
 - ContextPolicy 的重试过滤改为把 `turn_id` 与 `Some(turn)` 比较。
-- Trace 读取可选 id。
 - 原生存储只按 `through` 索引已完成的压缩。
 - 冻结的 v1 样本不改。它们只按 v1 事件解码；原生记录不接受旧的 `cursor`/`summary` 形式，v1 连接也不再收到 `context/compaction`（§12）。
 

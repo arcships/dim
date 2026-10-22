@@ -124,7 +124,6 @@ async fn node_branch_typescript_part_follows_events_and_writes_input() {
     let config = ServerConfig {
         unix_path: Some(home.join("server.sock")),
         database_path: Some(home.join("sessions.sqlite")),
-        trace_directory: home.join("trace"),
         session_typescript: Some(branch_part()),
         ..Default::default()
     };
@@ -408,7 +407,6 @@ async fn node_branch_typescript_writes_and_follows_extension_events() {
     let config = ServerConfig {
         unix_path: Some(home.join("server.sock")),
         database_path: Some(home.join("sessions.sqlite")),
-        trace_directory: home.join("trace"),
         session_typescript: Some(part),
         ..Default::default()
     };

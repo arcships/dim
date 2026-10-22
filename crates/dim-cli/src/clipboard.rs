@@ -458,33 +458,14 @@ mod windows_flow {
     use windows_sys::Win32::{
         Foundation::*,
         Graphics::Gdi::*,
-        System::{
-            DataExchange::*, Memory::*, Ole::*, StationsAndDesktops::*,
-            Threading::GetCurrentThreadId,
-        },
+        System::{DataExchange::*, Memory::*, Ole::*},
         UI::{Shell::DROPFILES, WindowsAndMessaging::*},
     };
 
-    struct Desktop {
-        old_station: HWINSTA,
-        old_desktop: HDESK,
-        station: HWINSTA,
-        desktop: HDESK,
-        window: HWND,
-    }
-    impl Drop for Desktop {
+    struct Window(HWND);
+    impl Drop for Window {
         fn drop(&mut self) {
-            unsafe {
-                if !self.window.is_null() {
-                    DestroyWindow(self.window);
-                }
-                SetProcessWindowStation(self.old_station);
-                SetThreadDesktop(self.old_desktop);
-                if !self.desktop.is_null() {
-                    CloseDesktop(self.desktop);
-                }
-                CloseWindowStation(self.station);
-            }
+            unsafe { DestroyWindow(self.0) };
         }
     }
     fn wide(value: &str) -> Vec<u16> {
@@ -519,56 +500,9 @@ mod windows_flow {
     }
 
     #[test]
-    fn private_window_station_preserves_files_images_text_and_rejects_invalid_data() {
-        if std::env::var_os("DIM_CLIPBOARD_ISOLATED_TEST").is_none() {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "clipboard::windows_flow::private_window_station_preserves_files_images_text_and_rejects_invalid_data", "--nocapture"])
-                .env("DIM_CLIPBOARD_ISOLATED_TEST", "1").output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return;
-        }
-        // Window stations own separate clipboards; the child never opens the desktop clipboard.
-        let old_station = unsafe { GetProcessWindowStation() };
-        let old_desktop = unsafe { GetThreadDesktop(GetCurrentThreadId()) };
-        let station = unsafe {
-            CreateWindowStationW(
-                wide(&format!("dim-clipboard-{}", uuid::Uuid::new_v4())).as_ptr(),
-                0,
-                GENERIC_ALL,
-                ptr::null(),
-            )
-        };
-        assert!(!station.is_null(), "{}", std::io::Error::last_os_error());
-        let mut desktop = Desktop {
-            old_station,
-            old_desktop,
-            station,
-            desktop: ptr::null_mut(),
-            window: ptr::null_mut(),
-        };
-        assert_ne!(unsafe { SetProcessWindowStation(station) }, 0);
-        desktop.desktop = unsafe {
-            CreateDesktopW(
-                wide("clipboard").as_ptr(),
-                ptr::null(),
-                ptr::null(),
-                0,
-                GENERIC_ALL,
-                ptr::null(),
-            )
-        };
-        assert!(
-            !desktop.desktop.is_null(),
-            "{}",
-            std::io::Error::last_os_error()
-        );
-        assert_ne!(unsafe { SetThreadDesktop(desktop.desktop) }, 0);
-        desktop.window = unsafe {
+    fn clipboard_preserves_files_images_text_and_rejects_invalid_data() {
+        // Uses the current clipboard; the message-only window owns the fixture data.
+        let window = Window(unsafe {
             CreateWindowExW(
                 0,
                 wide("STATIC").as_ptr(),
@@ -583,12 +517,8 @@ mod windows_flow {
                 ptr::null_mut(),
                 ptr::null(),
             )
-        };
-        assert!(
-            !desktop.window.is_null(),
-            "{}",
-            std::io::Error::last_os_error()
-        );
+        });
+        assert!(!window.0.is_null(), "{}", std::io::Error::last_os_error());
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -598,10 +528,7 @@ mod windows_flow {
             .into_iter()
             .flat_map(u16::to_le_bytes)
             .collect::<Vec<_>>();
-        install(
-            desktop.window,
-            &[(CF_UNICODETEXT as u32, text_bytes.clone())],
-        );
+        install(window.0, &[(CF_UNICODETEXT as u32, text_bytes.clone())]);
         let Source::Text(value) = runtime.block_on(read()).unwrap() else {
             panic!("Expected text")
         };
@@ -614,7 +541,7 @@ mod windows_flow {
         let format = unsafe { RegisterClipboardFormatW(wide("PNG").as_ptr()) };
         assert_ne!(format, 0);
         let delivered = install(
-            desktop.window,
+            window.0,
             &[(format, png), (CF_UNICODETEXT as u32, text_bytes.clone())],
         );
         let Source::Image(source) = runtime.block_on(read()).unwrap() else {
@@ -638,10 +565,7 @@ mod windows_flow {
             list.extend(wide(path).into_iter().flat_map(u16::to_le_bytes));
         }
         list.extend(0u16.to_le_bytes());
-        install(
-            desktop.window,
-            &[(CF_HDROP as u32, list), (format, vec![0])],
-        );
+        install(window.0, &[(CF_HDROP as u32, list), (format, vec![0])]);
         let Source::Files(files) = runtime.block_on(read()).unwrap() else {
             panic!("Expected files before image")
         };
@@ -671,7 +595,7 @@ mod windows_flow {
             .to_vec();
             bitmap.extend([6, 5, 4].repeat(width as usize));
             bitmap.resize(size_of::<BITMAPINFOHEADER>() + row, 0);
-            install(desktop.window, &[(CF_DIB as u32, bitmap)]);
+            install(window.0, &[(CF_DIB as u32, bitmap)]);
             let result = runtime.block_on(read());
             if width > 8000 {
                 assert!(result.is_err());
@@ -686,12 +610,12 @@ mod windows_flow {
             assert_eq!(pixels.get_pixel(0, 0), &image::Rgb([4, 5, 6]));
         }
         install(
-            desktop.window,
+            window.0,
             &[(format, vec![0]), (CF_UNICODETEXT as u32, text_bytes)],
         );
         assert!(runtime.block_on(read()).is_err());
         install(
-            desktop.window,
+            window.0,
             &[(
                 CF_UNICODETEXT as u32,
                 [0xd800u16, 0]

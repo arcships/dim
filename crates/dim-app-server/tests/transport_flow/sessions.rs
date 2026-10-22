@@ -11,6 +11,9 @@ use rutis::{DepKey, Keyed};
 use rutis_bridge::session::HostDispatch;
 use std::sync::OnceLock;
 
+#[path = "workflow_reports.rs"]
+mod workflow_reports;
+
 /// The `sessions` service as a consumer injects it. `serve` takes no extra
 /// process rows, so a Session part injects it by name for the test.
 #[derive(Clone, Default)]
@@ -1705,24 +1708,13 @@ async fn rust_named_input_keeps_its_outcome_across_reload_and_a_dropped_result()
         .await
         .unwrap()
         .unwrap();
-    let (restarted, ()) = tokio::join!(server.restart("Agents"), async {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let probe = sessions
-                    .call("idle", json!({"sessionId":"missing","branchId":"main"}))
-                    .await;
-                if probe["error"]["code"] == "reloading" {
-                    break;
-                }
-                assert_eq!(probe["error"]["code"], "session_closed");
-                tokio::task::yield_now().await;
-            }
-        })
+    // No C1 call holds Rpc's drain here; wait for the complete index reload.
+    tokio::time::timeout(Duration::from_secs(5), server.restart("Agents"))
         .await
+        .expect("index reload must finish while the admitted writer awaits publication")
         .unwrap();
-        waiting.release.send(()).unwrap();
-    });
-    restarted.unwrap();
+    assert!(target.publication("main").unwrap().sequence() < waiting.sequence);
+    waiting.release.send(()).unwrap();
     let receipt = call.await.unwrap();
     assert!(
         target.publication("main").unwrap().sequence() >= receipt["sequence"].as_u64().unwrap()

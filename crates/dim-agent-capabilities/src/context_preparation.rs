@@ -6,8 +6,8 @@ use crate::{
     steer::{REPLACED_BY_STEER, SteerMark},
 };
 use dim_agent_runtime::{
-    AgentError, BranchScope, CAPABILITY_RELOADING, Capability, Diagnostics, Dispatcher, InBranch,
-    InSession, KeysOf, Timeline, TimelineIdentity, scoped,
+    AgentError, BranchScope, CAPABILITY_RELOADING, Capability, Dispatcher, InBranch, InSession,
+    KeysOf, Timeline, TimelineIdentity, scoped,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
@@ -270,7 +270,7 @@ pub struct ContextPreparation {
     policy: Option<ContextPolicy>,
     history: Arc<HistoryRenderer>,
     timeline: Arc<Timeline>,
-    diagnostics: Arc<Diagnostics>,
+    identity: Arc<TimelineIdentity>,
 }
 impl ContextPreparation {
     /// Rebuilds the interrupt mark; a committed preparation with neither a
@@ -365,11 +365,13 @@ impl ContextPreparation {
         cancel: CancellationToken,
         generation: CancellationToken,
     ) -> dim_agent_runtime::Result<()> {
-        let span = self.diagnostics.span(
+        let span = tracing::info_span!(
             "context.prepare",
-            Some(&source.turn_id),
-            Some(&source.request_id),
-            None,
+            session_id = %self.identity.session_id,
+            branch_id = %self.identity.branch_id,
+            turn_id = %source.turn_id,
+            request_id = %source.request_id,
+            outcome = tracing::field::Empty,
         );
         let (result, fault) = if cancel.is_cancelled() {
             let reason = self
@@ -587,7 +589,6 @@ impl TypedPlugin for ContextPreparationPlugin {
         InSession<ContextModelHost>,
         InSession<CompactionStrategyHost>,
         InSession<HistoryRenderer>,
-        InBranch<Diagnostics>,
         InBranch<TimelineIdentity>,
     );
     fn name(&self) -> &str {
@@ -603,7 +604,6 @@ impl TypedPlugin for ContextPreparationPlugin {
             InSession(context),
             InSession(strategy),
             InSession(history),
-            InBranch(diagnostics),
             InBranch(identity),
         ): Self::Deps,
     ) -> BoxFuture<'a, std::result::Result<Effect, CordisError>> {
@@ -623,7 +623,7 @@ impl TypedPlugin for ContextPreparationPlugin {
                     .map_err(|error| CordisError::PluginFailed(error.into()))?,
                 timeline,
                 history,
-                diagnostics,
+                identity,
             });
             let owner = service.clone();
             ctx.effect(move || {

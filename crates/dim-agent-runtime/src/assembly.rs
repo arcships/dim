@@ -722,7 +722,6 @@ pub(crate) struct SessionAssembly {
     pub faults: FaultReporter,
     pub closing: CancellationToken,
     pub lifecycle: SessionLifecycle,
-    pub diagnostics: Diagnostics,
     pub loaded: Mutex<Option<Arc<Loaded<SessionScope>>>>,
 }
 impl SessionAssembly {
@@ -751,10 +750,6 @@ impl TypedPlugin for SessionScopePlugin {
             ctx.provide_as(
                 scope.key::<crate::SessionLoader>(),
                 Arc::new(crate::SessionLoader::new(owner.loader.clone())),
-            )?;
-            ctx.provide_as(
-                scope.key::<Diagnostics>(),
-                Arc::new(owner.diagnostics.clone()),
             )?;
             ctx.provide_as(scope.key::<SessionConfig>(), Arc::new(owner.config.clone()))?;
             ctx.provide_as(
@@ -899,7 +894,6 @@ pub(crate) struct BranchAssembly {
 }
 struct LoadedBranch {
     scope: Loaded<BranchScope>,
-    diagnostics: Diagnostics,
     timeline: Timeline,
     dispatcher: Dispatcher,
     lifecycle: BranchLifecycle,
@@ -925,8 +919,7 @@ impl TypedPlugin for BranchScopePlugin {
                 .unwrap()
                 .take()
                 .ok_or_else(|| CordisError::PluginFailed("Branch scope reloaded".into()))?;
-            let diagnostics = session.diagnostics.branch(owner.id.clone());
-            let timeline = Timeline::with_diagnostics(
+            let timeline = Timeline::branch(
                 scope.instance,
                 ctx.clone(),
                 TimelineKey {
@@ -936,19 +929,12 @@ impl TypedPlugin for BranchScopePlugin {
                 ancestors,
                 session.assembly.store.clone(),
                 owner.sequence,
-                diagnostics.clone(),
                 session.faults.clone(),
             );
             // The Timeline is closed by its handle or by build rollback.
-            let dispatcher = Dispatcher::new(
-                diagnostics.clone(),
-                scope.instance,
-                owner.sequence,
-                timeline.clone(),
-            );
+            let dispatcher = Dispatcher::new(scope.instance, owner.sequence, timeline.clone());
             ctx.provide_as(scope.key::<Timeline>(), Arc::new(timeline.clone()))?;
             ctx.provide_as(scope.key::<Dispatcher>(), Arc::new(dispatcher.clone()))?;
-            ctx.provide_as(scope.key::<Diagnostics>(), Arc::new(diagnostics.clone()))?;
             let lifecycle = BranchLifecycle::new();
             // Its capabilities rebuild from the history it is built with,
             // while the branch is `Loading`.
@@ -970,7 +956,6 @@ impl TypedPlugin for BranchScopePlugin {
                     children: vec![],
                     required: self.2.clone(),
                 },
-                diagnostics,
                 timeline,
                 dispatcher,
                 lifecycle,
@@ -1079,7 +1064,6 @@ impl TimelineFactory {
                             children: created.children.clone(),
                             required: current.scope.required.clone(),
                         },
-                        diagnostics: current.diagnostics.clone(),
                         timeline: current.timeline.clone(),
                         dispatcher: current.dispatcher.clone(),
                         lifecycle: current.lifecycle.clone(),
@@ -1088,12 +1072,6 @@ impl TimelineFactory {
                     *loaded = Some(branch.clone());
                     branch
                 };
-                announce(
-                    &branch.diagnostics,
-                    &created.view,
-                    &branch.scope.children,
-                    ComponentPhase::Ready,
-                );
                 if parent.closing.is_cancelled() {
                     return Err(AgentError::Closed(parent.id.clone()));
                 }
@@ -1138,14 +1116,6 @@ impl TimelineFactory {
                     if let Some(branch) = &branch {
                         let _ = branch.timeline.close().await;
                         branch.lifecycle.advance(BranchPhase::Closed);
-                    }
-                    if let (Some(branch), Some(created)) = (branch, &created) {
-                        announce(
-                            &branch.diagnostics,
-                            &created.view,
-                            &created.children,
-                            ComponentPhase::Released,
-                        );
                     }
                     Err(TimelineBuildError {
                         cause: error,
@@ -1248,7 +1218,7 @@ async fn create_instance(
     let ready = wait_active(ctx, &waiting, remaining, cancel).await;
     // A launcher may still be Pending when the loader returns. Once it is
     // Active its nested rows exist, but those rows may themselves be Pending.
-    // Refresh on failure too, so rollback diagnostics cover everything built.
+    // Refresh on failure too, so the rollback covers everything built.
     created.children = rows(loader, &created.view, None);
     if let Err(error) = ready {
         return Err((error, Some(created)));
@@ -1342,7 +1312,6 @@ pub(crate) async fn build_session(
         )));
     }
     let host = &placement.anchor;
-    let diagnostics = Diagnostics::session(id.clone(), host.clone());
     let owner = Arc::new(SessionAssembly {
         assembly,
         extension: Mutex::new(ExtensionRequest::Pending(extension)),
@@ -1355,7 +1324,6 @@ pub(crate) async fn build_session(
         unloading: CancellationToken::new(),
         lifecycle: SessionLifecycle::new(closing.clone()),
         closing,
-        diagnostics,
         loaded: Mutex::new(None),
     });
     let startup_timeout = owner.assembly.startup_timeout;
@@ -1396,12 +1364,6 @@ pub(crate) async fn build_session(
             required: current.required.clone(),
         });
         *owner.loaded.lock().unwrap() = Some(session.clone());
-        announce(
-            &owner.diagnostics,
-            &created.view,
-            &session.children,
-            ComponentPhase::Ready,
-        );
         let tree = required::<dyn TimelineTreeControl>(
             &session.ctx,
             session.scope.key::<dyn TimelineTreeControl>(),
@@ -1451,20 +1413,12 @@ pub(crate) async fn build_session(
                 Ok(created) => Some(created),
                 Err((_, created)) => created,
             };
-            let session = owner.loaded.lock().unwrap().take();
+            // Unpublished from here on; released once the rollback ends.
+            let _session = owner.loaded.lock().unwrap().take();
             let cleanup = match &rollback {
                 Some(created) => shutdown_scope(&created.view, &created.children).await,
                 None => Ok(()),
             };
-            if let (Some(_), Some(created)) = (&session, &rollback) {
-                announce(
-                    &owner.diagnostics,
-                    &created.view,
-                    &created.children,
-                    ComponentPhase::Released,
-                );
-            }
-            owner.diagnostics.close();
             match cleanup {
                 Ok(()) => Err(error),
                 Err(cleanup) => Err(error.with_cleanup(cleanup)),
@@ -1615,21 +1569,6 @@ pub(crate) fn subtree(snapshot: &rutis::RuntimeDiagnostics, root: PluginId) -> H
         }
     }
     members
-}
-
-/// Records the lifecycle of a scope plugin and the capabilities it installed.
-pub(crate) fn announce(
-    diagnostics: &Diagnostics,
-    scope: &FiberView,
-    children: &[FiberView],
-    phase: ComponentPhase,
-) {
-    for view in std::iter::once(scope).chain(children) {
-        if phase == ComponentPhase::Ready && view.state().state != FiberState::Active {
-            continue;
-        }
-        diagnostics.component(view.name(), phase);
-    }
 }
 
 /// The snapshot restricted to one scope plugin and the capabilities it installed.

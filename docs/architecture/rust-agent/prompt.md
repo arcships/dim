@@ -17,7 +17,6 @@
 | ContextPolicy | 预算、压缩结果验收与可丢弃恢复快照的写入；不加载提示词或选择配置 |
 | Loop | 推进 turn，在请求边界固定历史、配置和提示词版本 |
 | Timeline / Dispatcher | 原子保存事实、分配序号、按序分发；不解释提示词业务规则 |
-| Trace | 观察加载、采用与请求来源；不参与业务决定或充当恢复数据库 |
 
 Prompt 是 Timeline 级 rutis Plugin，依赖通过 `Deps` 声明。来源 I/O 使用能力宿主端口；任务使用 Tokio、CancellationToken、TaskTracker，不申请执行许可，资源取得后立即登记 rutis effect 清理。Session 只路由分支控制和只读状态，不管理提示词可变状态。
 
@@ -55,14 +54,14 @@ system 只保存静态内容。Context 与 State 投递的提示词变化由 Pro
 
 任务作用域由创建任务的业务 Capability 定义，不等同于脱离工作的执行句柄。父分支 turn 范围不延续到子分支；分支与业务任务范围从祖先链历史恢复，在子分支独立演进。继承只做纯投影，不重放加载、工具或通知。
 
-## 协议与诊断
+## 协议与日志
 
 内部统一类型在 `dim-agent-types` 定义。App Server v1 的固定事件样本保持不变，新事件和扩展字段由出站适配处理，保留真实 sequence。内部演进不以旧 wire 格式限制职责分工。
 
-采用与请求关联属于业务事实，来源加载耗时、失败和未改变内容的刷新属于 diagnostics。默认归档不保存正文、路径、凭据或任意宿主错误文本；敏感内容仍需宿主显式开启。归档失败只标记 incomplete，不改变业务结果。诊断归档格式见 [Trace](trace.md)。
+采用与请求关联属于业务事实，记录在 Timeline。来源加载的耗时与结果属于进程日志：每次实际加载一个 `prompt.load` span，带 Session、分支、来源名与作用域，加载出条目时记录其版本；不记录正文。日志不参与业务决定，也不是恢复数据（[ADR 005](../../adr/005-observability.md) D1、D4）。
 
 ## 验收
 
-公开流程检查关联更新不混版、任一加载或提交失败不半发布、重叠刷新乱序完成不覆盖新版本、取消和初始化回滚等待真实清理、请求与恢复固定来源、分支截点与隔离、工具正文不重复交付、撤销及作用域结束在压缩后仍有效、默认 trace 脱敏与 recorder 失败隔离。
+公开流程检查关联更新不混版、任一加载或提交失败不半发布、重叠刷新乱序完成不覆盖新版本、取消和初始化回滚等待真实清理、请求与恢复固定来源、分支截点与隔离、工具正文不重复交付、撤销及作用域结束在压缩后仍有效。
 
 在仓库根目录运行 `cargo test --workspace --locked`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、格式检查、`cargo run -p xtask -- check` 和 `cargo run -p xtask -- graph`。固定 v1 样本位于 `crates/dim-agent-types/tests/fixtures`，由 `dim-agent-types` 的 wire 合同测试校验。

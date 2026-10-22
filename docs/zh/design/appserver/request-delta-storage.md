@@ -58,7 +58,7 @@ release 构建，Apple M4，一次性数据库上的 `SqliteTimelineStore`，`de
 | 事件以原类型写入与读出；编码只存在于存储内部 | [timeline-storage §2](../../../architecture/rust-agent/timeline-storage.md#2-存储编码) | 读取由请求行及其能到达的内容行还原完整的 `ModelRequest`（`messages`、`tools`、`system` 照旧以 `Arc` 持有）；列表格式只存在于 `codec.rs` 与存储的 JSON 中 |
 | 请求内容按内容哈希存入 Session 内的内容表，每种内容一份；事件正文只保存内容编号（“请求内容”行） | [timeline-storage §2](../../../architecture/rust-agent/timeline-storage.md#2-存储编码) | 消息成为 `timeline_content` 中的列表节点，按 v16 的 `SHA-256(kind NUL body)` 规则寻址，每个 Session 只存一份；事件行保存最后一个节点的地址、长度，以及 `tools` 与 `system` 的地址。共享的单位由一条消息变为“某个前缀之后的一条消息”；§19 在实现时改写该行措辞 |
 | 每次读取或每轮校验一个解码内容缓存，至多 64 MiB，调用结束即释放（“读取”行） | [timeline-storage §2](../../../architecture/rust-agent/timeline-storage.md#2-存储编码) | 节点经该缓存加载。此外一次读取只保留一个已还原的请求及其节点地址（§7.1） |
-| 请求留在事件里：`model/call` 携带交给模型的最终请求 | [trace.md](../../../architecture/rust-agent/trace.md#本地归档)（“`model/call` 中的 request 是交给模型能力的最终请求”） | 请求既不推导，也不延迟加载 |
+| 请求留在事件里：`model/call` 携带交给模型的最终请求 | [ADR 005 D1](../../../adr/005-observability.md#d1-two-observation-layers)（Timeline 保存“final model requests (`model/call`)”） | 请求既不推导，也不延迟加载 |
 | ContextPolicy 读取最近一个精确请求 | [context_policy.rs](../../../../crates/dim-agent-capabilities/src/context_policy.rs) 的 `ContextPolicy::estimate` 把 provider、model、能力快照、tools、system、config 与 metadata 同上一个 `model/call` 比较，并要求 `messages.starts_with` 其消息 | 解码出的请求与写入的相等（§18 验收 1） |
 | 事件类型与冻结样本 `crates/dim-agent-types/tests/fixtures/events.json`、`events.ts` 及 `*_contract.rs` 测试 | [设计规则 §6](../../../architecture/rust-agent/principles.md#6-验证)，AGENTS.md 规则 6 | 不动 |
 | Timeline（序号、原子批次、提交与发布、before）、Dispatcher（只有热窗口）、`TimelineStore` trait 及其读取语义、能力从 `local(..=S)` 重建 | [timeline-storage §1、§3、§4](../../../architecture/rust-agent/timeline-storage.md)、[时间总线](../../../architecture/rust-agent/time-bus.md)、[单树](../../../architecture/rust-agent/single-tree.md) | 存储之外的代码不变。对完好的数据，每次读取返回相同的事件、相同的顺序与批次、相同的错误；只有请求内容损坏时的存储错误换了文字（§8） |
@@ -486,7 +486,7 @@ node body      = { parent: string | null, message: Message }                    
 ## 17. 否决的方案
 
 - **请求行之间的增量**（本页初稿：行保存其 base 行的位置、保留长度，其余消息内联）。还原一个请求要读回上一次压缩以来每个更早的请求行，所以从 `resume` 起的检查点读取会读 `resume` 之前的请求行（timeline-storage §4），一次递归查询还在整条链期间持有连接。从最旧开始解码时单个请求为二次方；向回解码时与链长成线性，但链随历史增长：没有新增内容的行和后来被改写的消息都要计入（§7.4）。
-- **推导请求而不保存**：`model/call` 是交给模型的最终请求（trace.md），ContextPolicy 读取精确的最近请求；推导是同一事实的第二个生产方。
+- **推导请求而不保存**：`model/call` 是交给模型的最终请求（ADR 005 D1），ContextPolicy 读取精确的最近请求；推导是同一事实的第二个生产方。
 - **事件中的惰性请求句柄**：改变事件类型和所有使用方，并把存储错误带进期待已校验数据的读取方（AGENTS.md 数据约定）。
 - **按种类过滤的读取**（为不关心请求事件的能力跳过它们）：改变读取 API 与各能力的重建，且二次方的存储依然存在。
 - **能力快照**用于重建：在每个插件里为优化增加业务状态（timeline-storage §4）。

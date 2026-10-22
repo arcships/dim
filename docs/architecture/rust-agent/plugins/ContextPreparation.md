@@ -13,10 +13,9 @@ atomic ConfigurationPublisher used by Prompt.
 | `S:ContextModelHost` | Optional window facts for context policy and recovery. |
 | `S:CompactionStrategyHost` | Optional compaction strategy; the policy exists when both hosts are bound. |
 | `S:PrepareContextHost` | Host preparation hook. |
-| `B:TimelineIdentity` | Identify configuration publication scope. |
+| `B:TimelineIdentity` | Identify configuration publication scope; Session and branch ids of the `context.prepare` span. |
 | `B:Dispatcher` | Receive preparation/steer/interrupt transitions and report faults. |
 | `B:Timeline` | Read fixed context, publish handoff and configuration facts. |
-| `B:Diagnostics` | Preparation diagnostics. |
 
 ## Events and lifetime
 
@@ -49,7 +48,7 @@ proof of semantic correctness or authorization.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:Diagnostics`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:HistoryRenderer`、`S:PrepareContextHost` |
+| 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:HistoryRenderer`、`S:PrepareContextHost` |
 | 提供 | `B:ConfigurationPublisher`、`B:ContextPreparation` |
 | 被注入于 | `ModelProvider`、`Prompt` |
 <!-- /generated -->

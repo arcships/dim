@@ -14,7 +14,7 @@ settlement and bounded retry/recovery.
 | `S:ModelHost` | Scripted model driver in this local graph. |
 | `B:Dispatcher` | Receive calls/steers/interrupts and report faults. |
 | `B:Timeline` | Commit output and reconstruct unsettled calls. |
-| `B:Diagnostics` | Model-operation diagnostics. |
+| `B:TimelineIdentity` | Session and branch ids of the `model.invoke` span. |
 
 ## Events and lifetime
 
@@ -40,7 +40,7 @@ process ModelHost/resolver dependencies; those are not injected in this profile.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:ContextPreparation`、`B:Diagnostics`、`B:Dispatcher`、`B:Timeline`、`S:ModelHost` |
+| 注入 | `B:ContextPreparation`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:ModelHost` |
 | 提供 | `B:ModelProvider`、`B:StateCell<ModelProgress>` |
 | 被注入于 | — |
 <!-- /generated -->

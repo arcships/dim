@@ -153,8 +153,8 @@ Provider 的 `apply` 提供 `AuxiliaryModelHost`；其 `Deps` 增加 `Arc<ModelH
   使用者只看到文本、停止原因和用量。
 - 错误消息不含秘密：`failed` 使用现有 `HostError` 的消息，它不包含凭据值；Provider 从不把连接
   格式化进消息。
-- 诊断：`complete` 记录一条进程级 `tracing` 事件（target 为 `auxiliary.complete`），含 provider id、model id、
-  结果、耗时和 token 用量，从不包含请求或回复内容。使用者在自己的 Session 诊断中记录结果。辅助
+- 进程日志：`complete` 记录一条 `tracing` 事件（target 为 `auxiliary.complete`），含 provider id、model id、
+  结果、耗时和 token 用量，从不包含请求或回复内容。使用者自行记录自己的结果日志。辅助
   调用不是 Session 事实，不进入任何 Timeline。
 
 ## 8. 与现有部件的关系
@@ -196,7 +196,7 @@ Provider 的 `apply` 提供 `AuxiliaryModelHost`；其 `Deps` 增加 `Arc<ModelH
 3. 删除模型所属的 Provider：下一次调用返回 `model_unavailable`。
 4. 流进行中丢弃调用会取消请求；卸载 Provider 会以 `cancelled` 结束进行中的调用。
 5. 托管账号恢复后的凭据再次被拒：账号被结算（登出），调用以 `failed` 失败；端点恰好收到两次请求。
-6. 回复、错误和 trace 事件都不含 API key；调用后 Session 的 Timeline 没有新事件。
+6. 回复、错误和 `auxiliary.complete` 日志事件都不含 API key；调用后 Session 的 Timeline 没有新事件。
 7. 真实 Node Session 行按名称注入进程服务，经 `complete({model, request})` 发起 HTTP 调用；
    回复字段和抛出的错误码保持不变。非法请求、未知模型不发送 HTTP 请求，调用不写 Session 历史。
    将模型请求停在 HTTP 端点后，关闭调用方会完成取消引用，在 Provider 保持装载时关闭 HTTP 流。

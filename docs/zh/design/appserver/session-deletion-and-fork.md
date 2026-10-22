@@ -68,7 +68,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
   |             | 1 取得 S 的准入门            |                     |                          |
   |             | 2 已加载？close() ---------->| 结算已接受的工作，写终态事实，
   |             |                              | 释放进程、租约、成员请求；
-  |             |<-------------- 已关闭 -------| trace 归档结束      |                          |
+  |             |<-------------- 已关闭 -------|                     |                          |
   |             | delete_session(S) ------------------------------->|                          |
   |             |                              |  3 移除 command-output/S，同步父目录 --------->|
   |             |                              |    不存在视为已移除 <--------------------------|
@@ -80,7 +80,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 ```
 
 1. **准入。** Agents 检查 id（D3），并取得 S 的准入门，即 `acquire` 恢复 Session 时持有、创建在其构建的 Session 发布之前一直持有的 `SessionSlot` 门（§7）。删除进行期间没有请求、订阅或分叉能加载 S，删除仍在构建的 Session 时会等构建结束。已经持有 S 使用权的请求继续持有，由第 2 步的关闭结束其工作。
-2. **关闭。** 若 S 已加载，Agents 像 `session.close` 那样关闭它：业务关闭，不是卸载。各能力结算已接受的工作，写出终态事实，释放进程、FileStorage 租约和成员请求；删除也像 `session.close` 那样等待 trace 归档结束。关闭报告清理错误时记日志并继续删除：未能写出的事实会随其余部分一起删除。从关闭起 S 的槽位即关闭：无论行最终是否删除，S 在本进程内都不再加载（第 6 步）。
+2. **关闭。** 若 S 已加载，Agents 像 `session.close` 那样关闭它：业务关闭，不是卸载。各能力结算已接受的工作，写出终态事实，释放进程、FileStorage 租约和成员请求。关闭报告清理错误时记日志并继续删除：未能写出的事实会随其余部分一起删除。从关闭起 S 的槽位即关闭：无论行最终是否删除，S 在本进程内都不再加载（第 6 步）。
 3. **命令输出。** SessionStore 通过 S 的资源节点上的 FileStorage（与 S5a 一样每次调用时查找）移除 `<数据库目录>/command-output/<S>/`，WorkspaceTools 在这里保存 exec 输出和过大的 `read` 结果（[read.rs](../../../../crates/dim-agent-capabilities/src/workspace_tools/files/read.rs) 的 `offload`）。目录不存在视为已移除。移除必须在第 4 步之前落盘（§4），因此 FileStorage 的 `remove` 要同步被移除条目的父目录（§14）。失败时删除在改动任何行之前结束（§3.5）。只有本数据库有 S 的行时，SessionStore 才移除这个目录：`command-output/` 由同一目录下的所有数据库共用，本库没有行的 id，其目录可能属于另一个数据库的 Session（§4）。
 4. **行。** 一个 `IMMEDIATE` 事务删除 S 的全部行：`session_file_owners`、`timeline_snapshots`、`timeline_events`、`timeline_branches`、`timeline_content`、`session_owners` 和 `agent_sessions`，因外键按此顺序，另加 S5b 的标题元数据（§14）。这就是如今创建回滚执行的操作（[timeline.rs](../../../../crates/dim-app-server/src/storage/timeline.rs) 的 `rollback_creation`），S5a 为它加上所有者行；删除与回滚共用它。它像回滚一样在 Timeline 写线程上执行，因此排在已为 S 排队的所有追加之后，并清除 S 记下的写入失败。
 5. **清扫。** SessionStore 安排 S5a 的清扫（[Session 文件 §5.4](session-files.md#54-清扫)）。最后一个所有者是 S 的文件在清扫中移除；仍有分叉拥有的文件保留。
@@ -100,7 +100,6 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 
 删除不移除：
 
-- **trace 归档。** 它写在 `session.create {trace}` 指定的位置，路径交给那个客户端，归客户端所有。第 2 步等待归档写完。
 - **其他所有者记录中指向 S 的内容**，例如 Scheduler 与 Workflow 存在 `pluginFiles` 中的运行记录。这些所有者使用该 id 时会得到 `session_closed`，与 Session 已关闭时相同。
 - **其他 Session。** 被删除的 leader 的成员、S 的分叉都是有自己行的 Session。删除不级联。
 - **宿主配置**（按工作区的 Provider 选择、MCP 项目启用），不属于任何 Session。
@@ -187,7 +186,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 | 协议与调用方 | 与 `session.delete` 相同（§3.1）。源必须属于连接的协议版本，分叉也采用该版本 |
 | `at` | 分叉继承的最后一个 `main` 序号。0 表示不继承任何事件 |
 | 回复 | 分叉发布后的 id 及其 `main` 头部。客户端随后附着 |
-| 没有其他参数 | 没有 `branchId`、配置字段或 `trace`。分叉的配置就是源的配置（§6.3）。客户端之后用 `session.permission.update` 或 `session.model.update` 修改，与 [#26](https://github.com/arcships/dim/issues/26) 对预设的决定相同 |
+| 没有其他参数 | 没有 `branchId` 或配置字段。分叉的配置就是源的配置（§6.3）。客户端之后用 `session.permission.update` 或 `session.model.update` 修改，与 [#26](https://github.com/arcships/dim/issues/26) 对预设的决定相同 |
 
 分叉不是幂等的：回复不确定后重试可能再建一个分叉，客户端可在 `session.summaries` 中找到它。
 

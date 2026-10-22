@@ -36,7 +36,7 @@ flowchart TB
     store["FileStorage, SqliteStorage, SessionStore"]:::changed
     cfg["Settings, rutis-loader"]:::changed
     models["Provider, ManagedProviders, Aimux ModelHost, ConfiguredModels"]:::changed
-    cat["Mcp, SkillsCatalog, HostPlatform, Trace"]:::changed
+    cat["Mcp, SkillsCatalog, HostPlatform"]:::changed
     agents["Agents, Collaboration"]:::changed
     pnew["Scheduler 任务, Workflow 运行"]:::new
     pext["ExternalAgent, Modality, PluginManager, RemoteGateway"]:::new
@@ -49,7 +49,7 @@ flowchart TB
   end
   subgraph BR["分支"]
     bexist["Loop, InputQueue, Approval, Permission, ModelProvider, Prompt, ContextPreparation, ToolBinding, ToolExecutor, BackgroundExec, CollaborationTimeline, SessionBroadcast"]:::changed
-    bnew["Questions 待答, Goal 状态与续跑, Hooks 工具建议、提示词暂扣、工具后与 Stop"]:::new
+    bnew["Goal 状态与续跑, Hooks 工具建议、提示词暂扣、工具后与 Stop"]:::new
   end
   rn["资源节点：FileStorage, HostPlatform, WorkspaceTools 宿主侧"]
 
@@ -67,7 +67,7 @@ flowchart TB
 
 | 插件 | 进程 | Session | 分支 | 理由 |
 | --- | --- | --- | --- | --- |
-| Questions | — | `ask_user` 工具；`session.question.*` 方法；非交互 Session 中 `ask_user` 回答当前没有可以回答的对象 | 运行中 `ask_user` 调用的等待者；没有事件（回答就是工具结果） | 问题属于某个分支的 turn |
+| Questions | — | `ask_user` 工具；`session.question.*` 方法；非交互 Session 中 `ask_user` 回答当前没有可以回答的对象 | —（运行中 `ask_user` 调用的等待者在 Session 部分；没有事件，回答就是工具结果） | 等待者就是 Session 级工具处理函数自己的调用 |
 | Goal | — | `goal_update` 工具与 `session.goal.*` 方法，只写一条带 `goal:objective` 和/或 `goal:status` 块的 `input/message` | 目标状态由已消费的目标变更块按序号折叠得出；Goal 经 Dispatcher 消费 `turn/end`、`stop/interrupt` 或 `input/deleted` 时自己决定续跑 | 一个目标只属于一个分支：折叠只用该分支自己的事件，因此子分支和分叉 Session 从没有目标开始；续跑按序跟随其事件 |
 | Hooks | — | Hook 文档（用户、导入的 Claude/Codex、项目来源）；执行器；`hooks.catalog` | 供 Permission 使用的 `toolAdvice`（`PreToolUse`）；经 Approval 回答 `PermissionRequest`；与 InputQueue 的提示词暂扣与放行（`UserPromptSubmit`）；从 Dispatcher 运行 `PostToolUse`、`Stop`、`SessionStart`、`Notification` | 规则属于 Session；执行发生在分支 |
 | ShellInput | — | `shell.*` Session 方法；在 Session 的工作区中运行并写入其输入 | — | 命令属于 Session |
@@ -94,7 +94,7 @@ flowchart TB
 | 向 Session 提供工具 | Session 级 `toolContribution`（[方法 A.5](contracts/session-boundary.md#a5-工具贡献)）或 `SessionToolSource`（[工具贡献](../../architecture/rust-agent/tool-contributions.md)） | Questions, Goal, Web, Scheduler, Workflow |
 | 提供指令 | PromptRegistry 提示词来源 | 现有 |
 | 观察 Session 的事件 | 现有的 Session 广播（`session/<id>` 通道），由 Session 级插件监听 | SessionTitle, Hooks Session 启动 |
-| 按序观察并响应分支事件 | 分支 Dispatcher，由分支级插件订阅 | Goal, Questions, Hooks 工具后与 turn 结束 |
+| 按序观察并响应分支事件 | 分支 Dispatcher，由分支级插件订阅 | Goal, Hooks 工具后与 turn 结束 |
 | 把内容放入模型上下文 | 分支输入（raw 块、带 key 的块）或工具结果（[Session 访问](contracts/session-access.md#a2-来源输入约定)） | Goal, Hooks, ShellInput, Scheduler, Workflow |
 | 在写入提交前对其作出处理 | 由分支级插件注册的同步 Timeline before 回调（[single-tree](../../architecture/rust-agent/single-tree.md)）：在提交锁内变换草稿，不阻止写入，不等待外部工作，失败时提交原草稿（[原则 §4 第 3 条](../../architecture/rust-agent/principles.md)） | 暂无（Hooks 待设计，#21） |
 | 关于某个 Session 的客户端方法 | `sessionMethods`，由 Rpc 经该 Session 分发（[A.1](contracts/session-boundary.md#a1-方法贡献)） | Questions, Goal, SessionTitle, Attachments, ShellInput, Hooks, InputQueue（`session.input.withdraw`） |
@@ -157,7 +157,7 @@ flowchart LR
 
 | 插件 | 作用域 | 职责 | 阶段 | 语言 | 文档 |
 | --- | --- | --- | --- | --- | --- |
-| Questions | Session + 分支 | `ask_user`；回答就是工具结果；`session.question.respond` | P1 | Rust | [Questions](plugins/Questions.md) |
+| Questions | Session | `ask_user`；回答就是工具结果；`session.question.respond` | P1 | Rust | [Questions](plugins/Questions.md) |
 | ShellInput | Session | `!command` / `!!command`，作为 Session 方法 `shell.run/stop/list` | P1 | Rust | [ShellInput](plugins/ShellInput.md) |
 | Attachments | Session | 大段文本的 `attachment.put`；Session 文件 | P1 | Rust | [Attachments](plugins/Attachments.md) |
 | SessionTitle | Session | 由首条被采纳的用户输入生成标题；`session.rename` | P1 | TypeScript 优先 | [SessionTitle](plugins/SessionTitle.md) |
@@ -256,19 +256,17 @@ sequenceDiagram
   participant Rpc as Rpc
   participant S as Session
   participant QS as Questions sessionMethods
-  participant QB as Questions（分支）
   participant H as ask_user 处理函数
-  CL->>Rpc: session.question.respond {sessionId, branchId, callId, answers}
+  CL->>Rpc: session.question.respond {sessionId, branchId, requestId, callId, answers}
   Rpc->>S: acquire，sessionMethods session.question
   Rpc->>QS: call
-  QS->>QB: branchId 上的分支服务，respond
-  QB->>H: 把回答交给等待中的调用（调用已取消则拒绝）
+  QS->>H: 把回答交给等待中的调用 (branchId, requestId, callId)（没有等待中的调用则 question_not_pending）
   QS-->>CL: 结果
 ```
 
 ### 5.5 经 Agents 的定时运行
 
-[Scheduler](plugins/Scheduler.md) 仍为 Draft/未实现。图示为其自持的 create 模式运行流程。S2、Settings 已交付；pluginFiles API 已存在，但[公开装配](../../design/process-typescript.md#52-public-pluginfiles-binding-proposed)尚未安装。完整 Ready 与包绑定条件仍以所有者文档为准。
+[Scheduler](plugins/Scheduler.md) 的设计状态以其所有者文档为准，包尚未实现。图示为其自持的 create 模式运行流程。S2、Settings 与 pluginFiles 的[公开装配](../../design/process-typescript.md#52-public-pluginfiles-binding)已提供。交付仍须通过所有者文档 Appendix D 的业务验收，并在重复创建 Session 的发布前满足 Agents 空闲卸载要求。
 
 ```mermaid
 sequenceDiagram
@@ -409,8 +407,8 @@ ADR 002 中记录的 HostPlatform exec shell 变更（作为业务配置在每�
 | 事件如何进入上下文 | 已决定：只有被采纳的输入和工具结果（ADR 001）。#2 已于 2026-10-15 修订为同一口径 |
 | MCP stdio 隔离 | 待定：MCP stdio 进程是否默认隔离 |
 | 远程访问取舍 | 待定：认证、断连与 TLS 部署，与 [#5](https://github.com/arcships/dim/issues/5) 相关（[RemoteGateway](plugins/RemoteGateway.md)） |
-| TypeScript Session 部分 | C4 工具、Session 方法/事件及 C5 已发布分支合同已交付（[C4](../../design/session-typescript.md)、[C5](../../design/branch-typescript.md)）。Provider 的具名 [auxiliaryModel](appserver/auxiliary-model.md#43-具名绑定) 已可供 SessionTitle 使用；Scheduler/Workflow 的进程/包/管理绑定仍是各自所有者文档中的 Ready 条件。其他服务类别以各自所有者已发布的绑定为准。 |
-| 定时运行结果路由 | 由 [Scheduler A.6](plugins/Scheduler.md#a6-运行结果投递) 定义：运行所有者保存历史，经现有 Session 输入报告。Scheduler 仍为 Draft/未实现，其 Ready 条件保留。 |
+| TypeScript Session 部分 | C4 工具、Session 方法/事件及 C5 已发布分支合同已交付（[C4](../../design/session-typescript.md)、[C5](../../design/branch-typescript.md)）。Provider 的具名 [auxiliaryModel](appserver/auxiliary-model.md#43-具名绑定) 已可供 SessionTitle 使用；Scheduler/Workflow 的进程/包/管理绑定及 Ready 状态以各自所有者文档（§1.3）为准。其他服务类别以各自所有者已发布的绑定为准。 |
+| 定时运行结果路由 | 由 [Scheduler A.6](plugins/Scheduler.md#a6-运行结果投递) 明确：运行所有者保存历史，经现有 Session 输入报告。设计状态见 Scheduler 的所有者文档；包实现与业务验收仍须完成。 |
 | 定时任务存活 | 已决定：守护进程必须存活（[Scheduler](plugins/Scheduler.md)） |
 | FullAccess 与新类别 | 已决定：自动允许（约束 7） |
 | 外部 Agent 权限 | 提议（#145）：在模型流之外询问调用方 Session 的交互对方：Collaboration leader 的模型经一条输入和一个决定工具（工具调用经过 leader 的 Approval 与 Permission），否则由用户经 Session 方法回答（[ExternalAgent §3.2](plugins/ExternalAgent.md#32-外部权限请求)） |
@@ -433,7 +431,7 @@ ADR 002 中记录的 HostPlatform exec shell 变更（作为业务配置在每�
 | Session | `/timeline`、`/export` | CLI |
 | Session | Session 标题 | 新增：SessionTitle |
 | Session | fork、删除、清理 | 扩展：SessionStore、Agents |
-| Session | 请求快照导出 | 扩展：Trace |
+| Session | 请求快照导出 | Timeline 导出（[ADR 005](../../adr/005-observability.md) D3）；最终请求是 `model/call` 事实 |
 | Session | 文件与对话回滚 | 不在范围内（仅全屏 TUI） |
 | 交互 | 发送、排队、自动发送、Steer、中断 | 现有：InputQueue、Loop |
 | 交互 | `Ctrl+S`、`/queue`、召回、删除排队消息 | 扩展：InputQueue（撤回） |
@@ -449,7 +447,7 @@ ADR 002 中记录的 HostPlatform exec shell 变更（作为业务配置在每�
 | 系统 | `/settings` | 每项属于各自插件；由 CLI 汇总 |
 | 系统 | `/usage` | 扩展：ContextPreparation、ManagedProviders |
 | 系统 | `/language` | CLI；扩展：PromptSources |
-| 系统 | `/debug`、调试日志 | 现有：Trace 诊断 |
+| 系统 | `/debug`、调试日志 | 现有：进程日志（`daemon.log`、`RUST_LOG`，[ADR 005](../../adr/005-observability.md) D1） |
 | 系统 | `/stats`、鼠标设置 | 不在范围内 |
 | Agent 行为 | `/agent` | 扩展：Agents、Prompt、PromptSources |
 | Agent 行为 | `/goal`、续跑、Goal 模式 | 新增：Goal（模式由目标状态覆盖） |
@@ -522,7 +520,6 @@ ADR 002 中记录的 HostPlatform exec shell 变更（作为业务配置在每�
 | ManagedProviders | 补充 | 套餐用量查询 | `/usage` |
 | Mcp | 补充 | HTTP/SSE OAuth（[MCP OAuth](appserver/mcp-oauth.md)）；通过自己的类型化操作从 PluginManager 接收插件包中的 MCP 配置（#36） | MCP；PluginManager |
 | SkillsCatalog | 补充 | 通过自己的类型化操作从 PluginManager 接收插件包中的 Skill 根目录（#36） | PluginManager |
-| Trace | 补充 | 模型请求快照导出 | 快照导出 |
 
 ## 附录 C. 实现语言
 

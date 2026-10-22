@@ -19,6 +19,8 @@ Pass the complete [session-title.json](session-title.json) row to
 `package.json` (`runtime/package.json` here). The package name resolves through its export.
 The module and host use the same `inject`/`provides` declaration and Settings source.
 This is an explicit optional installation, separate from the default CLI profile and release payload.
+The `dim-app-server` binary takes such rows with `--session-rows FILE` (a JSON array whose
+file location is the anchor); see the [App Server README](../../../crates/dim-app-server/README.md#session-typescript-embedding).
 
 Required named dependencies are `sessions`, `settings`, `sessionMetadata` and `auxiliaryModel`.
 An unavailable provider keeps this optional row Pending, including rename. Native Sessions

@@ -107,6 +107,9 @@ mod titles;
 #[path = "transport_flow/session_title.rs"]
 mod session_title;
 
+#[path = "transport_flow/questions.rs"]
+mod questions;
+
 enum Transport {
     Unix(BufReader<UnixStream>),
     Ws(Box<WebSocketStream<MaybeTlsStream<TcpStream>>>),
@@ -376,37 +379,11 @@ fn assert_ok(value: &Value) {
     assert!(value.get("error").is_none(), "{value}");
 }
 
-async fn read_trace(path: &str) -> Vec<Value> {
-    let text = tokio::fs::read_to_string(path).await.unwrap();
-    let mut rows: Vec<Value> = text
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    assert!(rows.iter().all(|row| row["version"] == 2));
-    assert_eq!(rows[0]["kind"], "archive_start");
-    assert_eq!(rows[0]["content"], "sensitive_content");
-    let end = rows.pop().unwrap();
-    assert_eq!(end["kind"], "archive_end");
-    assert_eq!(end["incomplete"], false);
-    rows.remove(0);
-    assert_eq!(end["records"], rows.len());
-    assert!(!rows.is_empty());
-    rows
-}
-
-fn trace_payloads(rows: &[Value]) -> Vec<Value> {
-    rows.iter()
-        .filter(|row| row["record"]["kind"] == "timeline")
-        .map(|row| row["record"]["payload"].clone())
-        .collect()
-}
-
+/// ADR 005 D5: `session.create` no longer has a `trace` option, and a
+/// failed main branch build rolls the whole creation back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn trace_preserves_initialization_rollback_and_never_overwrites_evidence() {
+async fn session_create_rejects_trace_and_rolls_back_a_failed_main_branch() {
     for ws in [false, true] {
-        let directory =
-            std::env::temp_dir().join(format!("dim-trace-rollback-{}", uuid::Uuid::new_v4()));
-        let path = directory.join("failed.jsonl");
         // Session services become ready before a missing branch dependency rolls them back.
         let mut builder = AgentBuilder::new(AgentConfig::default());
         defaults::install(&mut builder);
@@ -418,7 +395,7 @@ async fn trace_preserves_initialization_rollback_and_never_overwrites_evidence()
             ServerConfig {
                 unix_path: Some(
                     std::path::PathBuf::from("/tmp")
-                        .join(format!("dim-trace-{}/server.sock", uuid::Uuid::new_v4())),
+                        .join(format!("dim-rollback-{}/server.sock", uuid::Uuid::new_v4())),
                 ),
                 ..Default::default()
             },
@@ -427,39 +404,25 @@ async fn trace_preserves_initialization_rollback_and_never_overwrites_evidence()
         .unwrap();
         let agent = server.agent().unwrap();
         let mut client = Client::new_version(&server, ws, 2).await;
-        for invalid in [json!(false), json!("")] {
+        for trace in [json!(true), json!("trace.jsonl"), json!(false)] {
             let mut params = create(json!([]));
-            params["trace"] = invalid;
+            params["trace"] = trace;
             assert_eq!(
                 client.rpc("session.create", params).await["error"]["code"],
                 -32602
             );
             assert!(agent.sessions().is_empty());
         }
-        let mut params = create(json!([]));
-        params["trace"] = json!(path);
-        let failed = client.rpc("session.create", params.clone()).await;
+        let failed = client.rpc("session.create", create(json!([]))).await;
         assert_eq!(failed["error"]["data"]["appError"], "session_build_failed");
-        assert!(agent.sessions().is_empty());
-        let rows = read_trace(path.to_str().unwrap()).await;
-        for phase in ["ready", "released"] {
-            assert!(rows.iter().any(|r| r["record"]["kind"] == "component"
-                && r["record"]["name"] == "Trace"
-                && r["record"]["phase"] == phase));
-        }
-        let bytes = tokio::fs::read(&path).await.unwrap();
-        let conflict = client.rpc("session.create", params).await;
-        assert_eq!(conflict["error"]["message"], "Cannot create trace file");
-        assert_eq!(tokio::fs::read(&path).await.unwrap(), bytes);
         assert!(agent.sessions().is_empty());
         server.shutdown();
         server.join().await.unwrap();
-        std::fs::remove_dir_all(directory).unwrap();
     }
 }
 
 /// Exercises both loader Waiting (missing dependency) and Loading (apply
-/// has not returned); neither may prevent the trace extension from starting.
+/// has not returned).
 struct UnreadyCapability(bool);
 impl Capability for UnreadyCapability {
     fn keys(&self) -> KeysOf<Self> {
@@ -484,7 +447,7 @@ impl TypedPlugin for UnreadyCapability {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn trace_records_session_initialization_timeout_and_rollback() {
+async fn session_initialization_timeout_and_missing_dependency_fail_the_creation() {
     for missing_dependency in [false, true] {
         let (server, agent) =
             launch_with(Arc::new(MockTools), ServerConfig::default(), |builder| {
@@ -492,26 +455,14 @@ async fn trace_records_session_initialization_timeout_and_rollback() {
                 builder.session_plugin(move |_| UnreadyCapability(missing_dependency));
             })
             .await;
-        let directory =
-            std::env::temp_dir().join(format!("dim-trace-init-{}", uuid::Uuid::new_v4()));
-        let path = directory.join("failed.jsonl");
         let mut client = Client::new_version(&server, false, 2).await;
-        let mut params = create(json!([]));
-        params["trace"] = json!(path);
         assert_eq!(
-            client.rpc("session.create", params).await["error"]["data"]["appError"],
+            client.rpc("session.create", create(json!([]))).await["error"]["data"]["appError"],
             "session_build_failed"
         );
         assert!(agent.sessions().is_empty());
-        let rows = read_trace(path.to_str().unwrap()).await;
-        assert!(rows.iter().any(|row| row["record"]["kind"] == "component"
-            && row["record"]["name"] == "Trace"
-            && row["record"]["phase"] == "released"));
-        // read_trace checks archive_end and incomplete=false. Closed is the
-        // archive's control record, consumed rather than written to the file.
         server.shutdown();
         server.join().await.unwrap();
-        std::fs::remove_dir_all(directory).unwrap();
     }
 }
 
@@ -644,12 +595,9 @@ async fn both_transports_filter_controls_and_keep_real_timeline_sequences() {
     for ws in [false, true] {
         let (server, agent) = launch_with_agent(Arc::new(MockTools), ServerConfig::default()).await;
         let mut client = Client::new(&server, ws).await;
-        let mut params = create(json!(["wait"]));
-        params["trace"] = json!(true);
-        let created = client.rpc("session.create", params).await;
+        let created = client.rpc("session.create", create(json!(["wait"]))).await;
         assert_ok(&created);
         let sid = created["result"]["sessionId"].as_str().unwrap();
-        let trace_path = created["result"]["tracePath"].as_str().unwrap();
         let session = agent.get_session(sid).unwrap();
         assert_ok(&client.rpc("session.attach", json!({"sessionId":sid})).await);
 
@@ -742,29 +690,6 @@ async fn both_transports_filter_controls_and_keep_real_timeline_sequences() {
                 .filter(|notice| notice["method"] == "session.event")
                 .all(|notice| notice["params"]["event"]["type"] != "stop")
         );
-
-        let records = trace_payloads(&read_trace(trace_path).await);
-        let traced: Vec<dim_agent_types::AgentEvent> = records
-            .iter()
-            .map(|record| serde_json::from_value(record["event"].clone()).unwrap())
-            .collect();
-        for (index, event) in traced.iter().enumerate() {
-            assert_eq!(event.sequence, (index + 1) as u64);
-        }
-        assert_eq!(
-            &traced[..final_events.len()],
-            final_events
-                .iter()
-                .map(AsRef::as_ref)
-                .cloned()
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            traced
-                .iter()
-                .any(|event| matches!(event.kind, EventKind::StopInterrupt(_)))
-        );
-        std::fs::remove_file(trace_path).unwrap();
         server.shutdown();
         server.join().await.unwrap();
     }
@@ -1159,8 +1084,8 @@ async fn approvals_survive_disconnect_compete_and_cancel_before_execution() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn handshake_errors_and_trace_are_real_transport_boundaries() {
-    let server = launch(
+async fn handshake_errors_and_a_busy_close_are_real_transport_boundaries() {
+    let (server, agent) = launch_with_agent(
         Arc::new(MockTools),
         ServerConfig {
             hello_timeout: Duration::from_millis(100),
@@ -1231,12 +1156,10 @@ async fn handshake_errors_and_trace_are_real_transport_boundaries() {
     assert_ok(&negative_id);
     let unknown = client.rpc("unknown", json!({})).await;
     assert_eq!(unknown["error"]["code"], -32601);
-    let mut params = create(json!(["wait"]));
-    params["trace"] = json!(true);
-    let created = client.rpc("session.create", params).await;
+    let created = client.rpc("session.create", create(json!(["wait"]))).await;
     assert_ok(&created);
     let sid = created["result"]["sessionId"].clone();
-    let path = created["result"]["tracePath"].as_str().unwrap();
+    let session = agent.get_session(sid.as_str().unwrap()).unwrap();
     assert_ok(&client.rpc("session.attach", json!({"sessionId":sid})).await);
     assert_ok(
         &client
@@ -1254,7 +1177,7 @@ async fn handshake_errors_and_trace_are_real_transport_boundaries() {
             break;
         }
     }
-    // Close immediately while execution and trace writing are active; do not idle first.
+    // Close immediately while execution is active; do not idle first.
     assert_ok(&client.rpc("session.close", json!({"sessionId":sid})).await);
     client.notice("session.closed").await;
     observed.extend(
@@ -1264,29 +1187,21 @@ async fn handshake_errors_and_trace_are_real_transport_boundaries() {
             .filter(|notice| notice["method"] == "session.event")
             .map(|notice| notice["params"]["event"].clone()),
     );
-    let records = trace_payloads(&read_trace(path).await);
-    assert!(records.len() > 5);
+    // Every committed event the close wrote reached the client before
+    // `session.closed`, except the v1-filtered stop controls.
+    let history = session.history("main", None).await.unwrap();
     assert!(observed.iter().all(|event| event["type"] != "stop"));
-    let native_events: Vec<_> = records
+    let business: Vec<_> = history
         .iter()
-        .filter(|record| record["event"]["type"] != "stop")
-        .map(|record| {
-            Arc::new(
-                serde_json::from_value::<dim_agent_types::AgentEvent>(record["event"].clone())
-                    .unwrap(),
-            )
-        })
+        .filter(|event| !event.kind.key().starts_with("stop/"))
+        .cloned()
         .collect();
-    assert_eq!(v1_events(&native_events, 0), observed);
-    for (index, record) in records.iter().enumerate() {
-        assert_eq!(record["event"]["sequence"], index + 1);
-    }
+    assert_eq!(v1_events(&business, 0), observed);
     assert!(
-        records
+        history
             .iter()
-            .any(|r| r["event"]["type"] == "turn" && r["event"]["name"] == "end")
+            .any(|event| matches!(event.kind, EventKind::TurnEnd(_)))
     );
-    std::fs::remove_file(path).unwrap();
     server.shutdown();
     server.join().await.unwrap();
 }
@@ -2170,7 +2085,7 @@ async fn configured_binary_shares_public_execution_and_persists_settings() {
             assert_eq!(pair[1]["model"], "alternate");
             assert_eq!(pair[1]["max_tokens"], 1536);
             let names: Vec<_> = pair[1]["tools"].as_array().unwrap().iter().map(|tool| tool["function"]["name"].as_str().unwrap()).collect();
-            for name in ["read", "write", "edit", "glob", "grep", "exec", "wait", "skill", "branch", "agent"] {
+            for name in ["read", "write", "edit", "glob", "grep", "exec", "wait", "skill", "branch", "agent", "ask_user"] {
                 assert!(names.contains(&name), "{names:?}");
             }
             let tool = pair[2]["messages"].as_array().unwrap().iter().find(|message| message["role"] == "tool").unwrap();

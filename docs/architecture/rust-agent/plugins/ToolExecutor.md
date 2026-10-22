@@ -10,10 +10,9 @@ individual call failures and publishes correlated results.
 | --- | --- |
 | `B:Approval` | Admit each call under permission/approval policy. |
 | `B:ToolBinding` | Resolve the request's pinned tools. |
-| `B:TimelineIdentity` | Construct the calling branch execution context. |
+| `B:TimelineIdentity` | Construct the calling branch execution context; Session and branch ids of the `tool.execute` span. |
 | `B:Dispatcher` | Receive batches/interrupts and report faults. |
 | `B:Timeline` | Replay batches and commit progress/results. |
-| `B:Diagnostics` | Record execution diagnostics. |
 
 ## Events and lifetime
 
@@ -37,7 +36,7 @@ Cancellation is not rollback of a tool's completed side effect.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:Approval`、`B:Diagnostics`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`B:ToolBinding` |
+| 注入 | `B:Approval`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`B:ToolBinding` |
 | 提供 | `B:ToolExecutor` |
 | 被注入于 | — |
 <!-- /generated -->

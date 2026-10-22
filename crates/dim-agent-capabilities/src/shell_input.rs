@@ -19,7 +19,7 @@ use crate::{
     },
 };
 use dim_agent_runtime::{
-    AgentBuilder, Capability, Diagnostics, InSession, KeysOf, SessionConfig, SessionHold,
+    AgentBuilder, Capability, InSession, KeysOf, SessionConfig, SessionHold, SessionIdentity,
     SessionLifecycle, SessionPhase, SessionScope, scoped,
 };
 use dim_agent_types::{InputMessageData, InputMode};
@@ -132,7 +132,7 @@ struct ShellInput {
     cwd: PathBuf,
     tree: Arc<TreeCommands>,
     lifecycle: Arc<SessionLifecycle>,
-    diagnostics: Arc<Diagnostics>,
+    identity: Arc<SessionIdentity>,
     /// This generation's cancellation: with the Session's closing, it ends
     /// every run.
     generation: CancellationToken,
@@ -308,9 +308,13 @@ impl ShellInput {
         progress: Progress,
         reply: oneshot::Sender<Result<Value, RpcError>>,
     ) {
-        let span = self
-            .diagnostics
-            .span("shell.run", None, None, Some(&run.run_id));
+        let span = tracing::info_span!(
+            "shell.run",
+            session_id = %self.identity.session_id,
+            branch_id = %run.branch_id,
+            run_id = %run.run_id,
+            outcome = tracing::field::Empty,
+        );
         let started = Instant::now();
         let output = Arc::new(RunOutput::default());
         let stop_pumps = CancellationToken::new();
@@ -565,7 +569,7 @@ impl TypedPlugin for ShellInputPlugin {
         InSession<SessionConfig>,
         InSession<TreeCommands>,
         InSession<SessionLifecycle>,
-        InSession<Diagnostics>,
+        InSession<SessionIdentity>,
     );
     fn name(&self) -> &str {
         "ShellInput"
@@ -578,7 +582,7 @@ impl TypedPlugin for ShellInputPlugin {
             InSession(config),
             InSession(tree),
             InSession(lifecycle),
-            InSession(diagnostics),
+            InSession(identity),
         ): Self::Deps,
     ) -> BoxFuture<'a, Result<Effect, CordisError>> {
         Box::pin(async move {
@@ -588,7 +592,7 @@ impl TypedPlugin for ShellInputPlugin {
                 cwd: PathBuf::from(&config.cwd),
                 tree,
                 lifecycle,
-                diagnostics,
+                identity,
                 generation: ctx.cancellation_token(),
                 runs: TaskTracker::new(),
                 registry: Mutex::default(),

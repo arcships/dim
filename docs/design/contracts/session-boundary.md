@@ -36,7 +36,7 @@ flowchart LR
     TC2["toolContribution[tool]: Web, Questions, ..."]
   end
   subgraph BR["Branch"]
-    BS["Branch services: Questions, Goal, InputQueue"]
+    BS["Branch services: Goal, InputQueue"]
   end
   Local --> Rpc
   Remote --> Rpc
@@ -71,7 +71,6 @@ sequenceDiagram
   participant AI as Agents
   participant S as Session
   participant Q as sessionMethods session.question
-  participant QB as Questions branch service
   participant H as ask_user handler
   CL->>Rpc: session.question.respond {sessionId, branchId, ...}
   Rpc->>Rpc: not a built-in, not in a configured management namespace, sessionId in params, authorize Session access
@@ -80,8 +79,7 @@ sequenceDiagram
   Rpc->>S: sessionMethods by namespace "session.question"
   S-->>Rpc: provider
   Rpc->>Q: call(MethodCall)
-  Q->>QB: respond(callId, answers) on branchId
-  QB->>H: hand the answer to the waiting call
+  Q->>H: hand the answer to the waiting call (branchId, requestId, callId)
   Q-->>Rpc: MethodReply
   Rpc-->>CL: result
 ```
@@ -512,7 +510,7 @@ None. `FiberStatusChanged`, keyed reads and Prompt adoption already exist; rutis
 
 | Scenario | Sequence order | Outcome | Owner of the decision |
 | --- | --- | --- | --- |
-| Session method during branch `stop/interrupt` | per owner's facts | Decided by the owner (for example, a Questions answer after ToolExecutor cancelled the call replies `question_cancelled`) | Owning plugin |
+| Session method during branch `stop/interrupt` | per owner's facts | Decided by the owner (for example, a Questions answer after ToolExecutor cancelled the call replies `question_not_pending`) | Owning plugin |
 | Session method on a closed branch | — | Owner's `BranchMissing` error | Owning plugin |
 | Session method on an unloaded Session | — | Rpc restores it through `index.acquire`, then dispatches (unlike `approval.respond`, which returns `session_closed`) | Rpc |
 | Session-scoped provider reloads mid-call | admitted < reload | `report`: `operation_interrupted`; `drain`: the call's own result; the unload waits for both | Provider |

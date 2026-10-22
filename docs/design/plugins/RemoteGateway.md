@@ -317,7 +317,7 @@ RemoteGateway has no start or stop method and never writes its own `enabled` fie
 | Remote `session.exec.stop` vs exec completion | sequence | Earlier terminal fact wins | WorkspaceTools exec owner |
 | Compaction or child cut around a remote input | — | As any input ([session access](../contracts/session-access.md)) | ContextPreparation, InputQueue |
 | Fork after a remote permission change | — | The fork copies the preset with the facts (E4, #26) | SessionStore |
-| Question answered from two devices | first accepted `session.question.respond` | First accepted; second `question_already_answered` | Questions |
+| Question answered from two devices | first accepted `session.question.respond` | First accepted; second `question_not_pending` | Questions |
 | Disconnect while an approval is pending | — | Stays pending; replayed on re-attach (A14) | Approval |
 | Disconnect after `session.submit` admitted, reply lost | input committed | Reconnect, `session.input_lookup` by `submissionId` | Client |
 | Revocation while a device's request runs | admitted < revoke | Connection closed; command continues; reply lost | Rpc |

@@ -157,7 +157,6 @@ async fn node_web_settings_permission_cancellation_and_restore() {
     let config = ServerConfig {
         product_home: Some(home.clone()),
         target_home: Some(home.join("rust")),
-        trace_directory: home.join("trace"),
         session_typescript: Some(rows()),
         ..Default::default()
     };

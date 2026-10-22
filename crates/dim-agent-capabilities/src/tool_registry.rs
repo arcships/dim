@@ -4,8 +4,8 @@
 //! `docs/architecture/rust-agent/plugins/ToolRegistry.md`.
 use crate::host::*;
 use dim_agent_runtime::{
-    AgentError, Capability, Contributions, Diagnostics, InSession, KeysOf, SessionConfig,
-    SessionIdentity, SessionLifecycle, SessionScope, SessionService, ToolNames,
+    AgentError, Capability, Contributions, InSession, KeysOf, SessionConfig, SessionIdentity,
+    SessionLifecycle, SessionScope, SessionService, ToolNames,
 };
 use dim_agent_types::*;
 use rutis::{
@@ -431,7 +431,6 @@ struct Contributed {
     names: Vec<String>,
     identity: Arc<SessionIdentity>,
     config: Arc<SessionConfig>,
-    diagnostics: Arc<Diagnostics>,
     attached: Mutex<HashMap<String, Attached>>,
     versions: AtomicU64,
     /// Set by the first snapshot, after the registry's own `apply`: it may
@@ -475,9 +474,14 @@ impl Contributed {
             ) {
                 Ok(tool) => tool,
                 Err(error) => {
-                    let span = self.diagnostics.span("tool.attach", None, None, None);
-                    span.record("outcome", format!("invalid-declaration:{name}"));
-                    tracing::warn!(tool = name, %error, "optional tool declaration rejected");
+                    tracing::info_span!(
+                        "tool.attach",
+                        session_id = %self.identity.session_id,
+                        outcome = %format_args!("invalid-declaration:{name}"),
+                    )
+                    .in_scope(|| {
+                        tracing::warn!(tool = name, %error, "optional tool declaration rejected")
+                    });
                     return None;
                 }
             },
@@ -511,9 +515,14 @@ impl ToolProvider for Contributed {
                 let set = match &contributor {
                     Some(contributor) => self.attach(name, contributor),
                     None => {
-                        let span = self.diagnostics.span("tool.attach", None, None, None);
-                        span.record("outcome", format!("unavailable:{name}"));
-                        tracing::debug!(tool = name, "contributed tool provider is not active");
+                        tracing::info_span!(
+                            "tool.attach",
+                            session_id = %self.identity.session_id,
+                            outcome = %format_args!("unavailable:{name}"),
+                        )
+                        .in_scope(|| {
+                            tracing::debug!(tool = name, "contributed tool provider is not active")
+                        });
                         None
                     }
                 };
@@ -686,7 +695,6 @@ impl TypedPlugin for ToolRegistryPlugin {
         InSession<ToolHost>,
         InSession<SessionConfig>,
         Contributions<SessionToolSource>,
-        InSession<Diagnostics>,
         InSession<SessionIdentity>,
         InSession<SessionLifecycle>,
     );
@@ -700,7 +708,6 @@ impl TypedPlugin for ToolRegistryPlugin {
             InSession(host),
             InSession(config),
             Contributions(sources),
-            InSession(diagnostics),
             InSession(identity),
             InSession(lifecycle),
         ): Self::Deps,
@@ -772,7 +779,6 @@ impl TypedPlugin for ToolRegistryPlugin {
                     .collect(),
                 identity,
                 config: config.clone(),
-                diagnostics,
                 attached: Mutex::default(),
                 versions: AtomicU64::new(1),
                 reading: AtomicBool::new(false),
@@ -842,13 +848,6 @@ impl TypedPlugin for ToolRegistryPlugin {
 impl Capability for ToolRegistryPlugin {
     fn keys(&self) -> KeysOf<Self> {
         let scope = self.scope;
-        (
-            scope,
-            scope,
-            (scope, self.sources.clone()),
-            scope,
-            scope,
-            scope,
-        )
+        (scope, scope, (scope, self.sources.clone()), scope, scope)
     }
 }

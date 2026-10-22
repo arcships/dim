@@ -1,8 +1,8 @@
 # 005: Observe runs through the Timeline and process logs
 
-Decision status: Proposed. Supersedes the [diagnostics channel and trace archives](../architecture/rust-agent/trace.md)
-and decision D9 of [idle unload](../design/appserver/idle-unload.md). The architecture pages keep describing the
-implemented archive until the removal lands (D6).
+Decision status: Proposed. Supersedes the diagnostics channel and trace archives (formerly
+`docs/architecture/rust-agent/trace.md`) and decision D9 of [idle unload](../design/appserver/idle-unload.md). Their
+removal (D6 step 2) has landed; the Timeline export (D6 step 3) follows.
 
 ## Context
 
@@ -143,7 +143,7 @@ subscription lifecycle records are not replaced: a failed assembly is returned t
 ### D6. Order
 
 1. This decision.
-2. The removal (D2, D4, D5) with its documentation: delete [trace](../architecture/rust-agent/trace.md) and its
+2. The removal (D2, D4, D5) with its documentation: delete `trace.md` and its
    index entry; update idle unload (D9, the lease table, the member list, §13 acceptance item 11), Session deletion
    and fork (the archive wait, the trace archive note, the fork parameters row), single-tree (the `trace` instanced
    group, `AgentHost`, the shutdown drain, the compatibility row), prompt (the Trace row, the diagnostics paragraph,

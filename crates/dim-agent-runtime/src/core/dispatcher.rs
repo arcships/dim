@@ -1,8 +1,5 @@
 use super::keys::KeyFilter;
-use crate::{
-    AgentError, BoxFuture, DiagnosticEvent, Diagnostics, Result, SubscriptionPhase, Timeline,
-    panic_message,
-};
+use crate::{AgentError, BoxFuture, Result, Timeline, panic_message};
 use dim_agent_types::AgentEvent;
 use futures_util::FutureExt;
 use rutis::{CordisError, Ctx, Event, EventKey, InstanceId, Listener};
@@ -27,22 +24,9 @@ type Handler = dyn Fn(Arc<AgentEvent>) -> BoxFuture<'static, Result<()>> + Send 
 /// are attributed to the subscriber before the defect stops the branch.
 struct SubscriptionListener {
     name: String,
-    id: String,
     keys: KeyFilter,
     handler: Arc<Handler>,
     failures: Dispatcher,
-}
-impl Drop for SubscriptionListener {
-    fn drop(&mut self) {
-        self.failures
-            .diagnostics
-            .emit(DiagnosticEvent::Subscription {
-                name: self.name.clone(),
-                id: self.id.clone(),
-                keys: self.keys.keys(),
-                phase: SubscriptionPhase::Released,
-            });
-    }
 }
 impl Listener<Committed> for SubscriptionListener {
     fn call<'a>(
@@ -87,17 +71,11 @@ pub struct DispatchState {
 #[derive(Clone)]
 pub struct Dispatcher {
     state: Arc<watch::Sender<DispatchState>>,
-    diagnostics: Diagnostics,
     instance: InstanceId,
     timeline: Timeline,
 }
 impl Dispatcher {
-    pub(crate) fn new(
-        diagnostics: Diagnostics,
-        instance: InstanceId,
-        sequence: u64,
-        timeline: Timeline,
-    ) -> Self {
+    pub(crate) fn new(instance: InstanceId, sequence: u64, timeline: Timeline) -> Self {
         Self {
             state: Arc::new(
                 watch::channel(DispatchState {
@@ -106,7 +84,6 @@ impl Dispatcher {
                 })
                 .0,
             ),
-            diagnostics,
             instance,
             timeline,
         }
@@ -130,27 +107,18 @@ impl Dispatcher {
     ) -> Result<()> {
         let keys = KeyFilter::new(keys)?;
         let handler: Arc<Handler> = Arc::new(handler);
-        let name = name.into();
-        let id = uuid::Uuid::new_v4().to_string();
         ctx.events()
             .on(
                 ctx,
                 &EventKey::<Committed>::of().instance(self.instance),
                 SubscriptionListener {
-                    name: name.clone(),
-                    id: id.clone(),
-                    keys: keys.clone(),
+                    name: name.into(),
+                    keys,
                     handler,
                     failures: self.clone(),
                 },
             )
             .map_err(AgentError::from)?;
-        self.diagnostics.emit(DiagnosticEvent::Subscription {
-            name,
-            id,
-            keys: keys.keys(),
-            phase: SubscriptionPhase::Registered,
-        });
         Ok(())
     }
     /// Registers a bus listener for every committed event of this branch;
@@ -211,10 +179,6 @@ impl Dispatcher {
         self.state.send_modify(|_| {});
     }
     pub fn fail(&self, error: AgentError) {
-        let span = self
-            .diagnostics
-            .span("dispatcher.failure", None, None, None);
-        span.record("outcome", "defect");
         self.state.send_modify(|s| {
             if s.failure.is_none() {
                 s.failure = Some(error);

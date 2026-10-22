@@ -21,7 +21,6 @@ pub mod settings;
 pub mod settings_methods;
 mod skills_management;
 pub mod storage;
-mod trace;
 mod transport;
 mod tree_protocol;
 
@@ -49,7 +48,6 @@ pub struct ServerConfig {
     pub unix_path: Option<PathBuf>,
     pub pipe_name: Option<String>,
     pub websocket_address: Option<SocketAddr>,
-    pub trace_directory: PathBuf,
     pub database_path: Option<PathBuf>,
     pub target_home: Option<PathBuf>,
     pub product_home: Option<PathBuf>,
@@ -71,7 +69,6 @@ impl Default for ServerConfig {
             unix_path: None,
             pipe_name: None,
             websocket_address: Some(([127, 0, 0, 1], 0).into()),
-            trace_directory: std::env::temp_dir().join("dim-agent-traces"),
             database_path: None,
             target_home: None,
             product_home: None,
@@ -337,7 +334,6 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     if config.product_home.is_some() {
         config.daemon_profile = protocol::DaemonProfile::Product;
     }
-    trace::install(&mut builder);
     builder
         .session_plugin(agents::AgentsSessionPlugin::new)
         .session_methods(agents::SESSION_NAMESPACE);
@@ -519,14 +515,14 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         row
     };
     if let Some(home_root) = product_root {
+        rows.push(register_capability(&mut builtins, move || {
+            plugin_files::PluginFilesPlugin(home_root)
+        }));
         rows.push(owner(
             "account",
             register_capability(&mut builtins, || managed_provider::ManagedProvidersPlugin),
         ));
         if let Some(plugin) = &config.managed_plugin {
-            rows.push(register_capability(&mut builtins, move || {
-                plugin_files::PluginFilesPlugin(home_root)
-            }));
             let plugin = plugin.clone();
             let manifest: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(plugin.plugin_dir.join("dim-plugin.json"))?)
@@ -997,8 +993,8 @@ impl dim_agent_runtime::Capability for NodeRows {
     }
 }
 
-/// Graceful shutdown: stop admission, settle Agent work, drain commands and
-/// trace writers, close connections, then release the process tree.
+/// Graceful shutdown: stop admission, settle Agent work, drain commands,
+/// close connections, then release the process tree.
 async fn coordinate(root: Ctx, control: Arc<ServerControl>) -> Result<ShutdownReason> {
     control.shutdown().cancelled().await;
     let hub = root.get::<ConnectionHub>();
@@ -1021,9 +1017,7 @@ async fn coordinate(root: Ctx, control: Arc<ServerControl>) -> Result<ShutdownRe
     if let Some(providers) = root.get::<managed_provider::ManagedProviders>() {
         providers.quiesce().await;
     }
-    // One generation throughout: its archives finish after its Sessions close.
-    let index = root.get::<AgentIndex>();
-    if let Some(index) = &index {
+    if let Some(index) = root.get::<AgentIndex>() {
         for error in index.settle_all().await {
             errors.push(error);
         }
@@ -1032,9 +1026,6 @@ async fn coordinate(root: Ctx, control: Arc<ServerControl>) -> Result<ShutdownRe
         rpc.unloading.cancel();
         rpc.commands.close();
         rpc.commands.wait().await;
-    }
-    if let Some(index) = index {
-        index.finish_traces().await;
     }
     if let Some(hub) = hub {
         hub.close().await;

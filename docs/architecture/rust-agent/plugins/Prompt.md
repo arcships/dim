@@ -15,10 +15,9 @@ replaying history; rebuilding restores it from checkpoint configuration and fact
 | `S:PromptHost` | Load named prompt sources. |
 | `S:InitialPromptConfiguration` | Initial source/model selection. |
 | `B:BranchLifecycle` | Coordinate opening and closing. |
-| `B:TimelineIdentity` | Scoped dependency/lifecycle gate. |
+| `B:TimelineIdentity` | Session and branch ids of the `prompt.load` span. |
 | `B:Dispatcher` | Order configuration adoption and state projection. |
 | `B:Timeline` | Write controls and rebuild adopted context. |
-| `B:Diagnostics` | Record prompt-loading diagnostics. |
 | `S:FaultReporter` | Report owned work failures. |
 | `B:BranchOpening` | Register initial prompt completion receipt. |
 
@@ -54,7 +53,7 @@ owners, rule check and complete-candidate concurrency limit.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:BranchLifecycle`、`B:BranchOpening`、`B:ConfigurationPublisher`、`B:Diagnostics`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:FaultReporter`、`S:InitialPromptConfiguration`、`S:PromptHost` |
+| 注入 | `B:BranchLifecycle`、`B:BranchOpening`、`B:ConfigurationPublisher`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:FaultReporter`、`S:InitialPromptConfiguration`、`S:PromptHost` |
 | 提供 | `B:Prompt`、`B:StateCell<PromptSnapshot>`、`B:dyn ConfigureControl` |
 | 被注入于 | `PromptSourcesBranch`、`SkillsBranch`、`ToolBinding` |
 <!-- /generated -->

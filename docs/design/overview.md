@@ -36,7 +36,7 @@ flowchart TB
     store["FileStorage, SqliteStorage, SessionStore"]:::changed
     cfg["Settings, rutis-loader"]:::changed
     models["Provider, ManagedProviders, Aimux ModelHost, ConfiguredModels"]:::changed
-    cat["Mcp, SkillsCatalog, HostPlatform, Trace"]:::changed
+    cat["Mcp, SkillsCatalog, HostPlatform"]:::changed
     agents["Agents, Collaboration"]:::changed
     pnew["Scheduler jobs, Workflow runs"]:::new
     pext["ExternalAgent, Modality, PluginManager, RemoteGateway"]:::new
@@ -49,7 +49,7 @@ flowchart TB
   end
   subgraph BR["Branch"]
     bexist["Loop, InputQueue, Approval, Permission, ModelProvider, Prompt, ContextPreparation, ToolBinding, ToolExecutor, BackgroundExec, CollaborationTimeline, SessionBroadcast"]:::changed
-    bnew["Questions pending, Goal state and continuation, Hooks tool advice, prompt holds, post-tool and Stop"]:::new
+    bnew["Goal state and continuation, Hooks tool advice, prompt holds, post-tool and Stop"]:::new
   end
   rn["Resource node: FileStorage, HostPlatform, WorkspaceTools host side"]
 
@@ -67,7 +67,7 @@ Green parts are new and orange-bordered parts are changed. Each new plugin part 
 
 | Plugin | Process | Session | Branch | Reason |
 | --- | --- | --- | --- | --- |
-| Questions | — | `ask_user` tool; `session.question.*` methods; in non-interactive Sessions `ask_user` answers that no one is available to answer | Waiters of running `ask_user` calls; no events (the answer is the tool result) | A question belongs to a branch's turn |
+| Questions | — | `ask_user` tool; `session.question.*` methods; in non-interactive Sessions `ask_user` answers that no one is available to answer | — (waiters of running `ask_user` calls live in the Session part; no events, the answer is the tool result) | The waiter is the Session-scoped tool handler's own call |
 | Goal | — | `goal_update` tool and `session.goal.*` methods, which only write one `input/message` with `goal:objective` and/or `goal:status` keyed blocks | Goal state folded in sequence order from consumed goal change blocks; continuation decided by Goal when it consumes `turn/end`, `stop/interrupt` or `input/deleted` through the Dispatcher | A goal belongs to exactly one branch: the fold uses only that branch's own events, so child branches and forked Sessions start with no goal; continuation follows its events in order |
 | Hooks | — | Hook documents (user, imported Claude/Codex, project sources); runner; `hooks.catalog` | `toolAdvice` for Permission (`PreToolUse`); `PermissionRequest` answered through Approval; prompt hold and release with InputQueue (`UserPromptSubmit`); `PostToolUse`, `Stop`, `SessionStart`, `Notification` from the Dispatcher | Rules apply to a Session; execution happens in a branch |
 | ShellInput | — | `shell.*` Session methods; runs in the Session's workspace and writes its input | — | Commands belong to the Session |
@@ -94,7 +94,7 @@ Plugins never add wiring plugins (ADR 002 D2). Each need maps to a mechanism tha
 | Offer a tool to a Session | Session-scoped `toolContribution` ([methods A.5](contracts/session-boundary.md#a5-tool-contribution)) or `SessionToolSource` ([tool contributions](../architecture/rust-agent/tool-contributions.md)) | Questions, Goal, Web, Scheduler, Workflow |
 | Offer instructions | PromptRegistry prompt sources | Existing |
 | Observe a Session's events | The existing Session broadcast (`session/<id>` channel), from a Session-scoped plugin | SessionTitle, Hooks Session-start |
-| Observe and act on a branch's events in order | The branch Dispatcher, from a branch-scoped plugin | Goal, Questions, Hooks post-tool and turn-end |
+| Observe and act on a branch's events in order | The branch Dispatcher, from a branch-scoped plugin | Goal, Hooks post-tool and turn-end |
 | Put content into the model context | Branch input (raw blocks, keyed blocks) or tool results ([session access](contracts/session-access.md#a2-source-input-conventions)) | Goal, Hooks, ShellInput, Scheduler, Workflow |
 | Act on a write before it is committed | A synchronous Timeline before callback registered by a branch-scoped plugin ([single-tree](../architecture/rust-agent/single-tree.md)): it transforms the draft inside the commit lock, never blocks the write and never waits for external work; the original draft commits on failure ([principles §4 rule 3](../architecture/rust-agent/principles.md)) | None planned (Hooks is to be designed, #21) |
 | Client method about a Session | `sessionMethods`, which Rpc dispatches through the Session ([A.1](contracts/session-boundary.md#a1-method-contributions)) | Questions, Goal, SessionTitle, Attachments, ShellInput, Hooks, InputQueue (`session.input.withdraw`) |
@@ -157,7 +157,7 @@ Index of plugin design documents: [plugins/README.md](plugins/README.md).
 
 | Plugin | Scopes | Role | Phase | Language | Document |
 | --- | --- | --- | --- | --- | --- |
-| Questions | Session + branch | `ask_user`; the answer is the tool result; `session.question.respond` | P1 | Rust | [Questions](plugins/Questions.md) |
+| Questions | Session | `ask_user`; the answer is the tool result; `session.question.respond` | P1 | Rust | [Questions](plugins/Questions.md) |
 | ShellInput | Session | `!command` / `!!command` as `shell.run/stop/list` Session methods | P1 | Rust | [ShellInput](plugins/ShellInput.md) |
 | Attachments | Session | `attachment.put` for large text; Session files | P1 | Rust | [Attachments](plugins/Attachments.md) |
 | SessionTitle | Session | Title from the first adopted user input; `session.rename` | P1 | TypeScript first | [SessionTitle](plugins/SessionTitle.md) |
@@ -256,19 +256,17 @@ sequenceDiagram
   participant Rpc as Rpc
   participant S as Session
   participant QS as Questions sessionMethods
-  participant QB as Questions (branch)
   participant H as ask_user handler
-  CL->>Rpc: session.question.respond {sessionId, branchId, callId, answers}
+  CL->>Rpc: session.question.respond {sessionId, branchId, requestId, callId, answers}
   Rpc->>S: acquire, sessionMethods "session.question"
   Rpc->>QS: call
-  QS->>QB: branch service on branchId, respond
-  QB->>H: hand the answer to the waiting call (rejected if the call was cancelled)
+  QS->>H: hand the answer to the waiting call (branchId, requestId, callId) (question_not_pending if none waits)
   QS-->>CL: result
 ```
 
 ### 5.5 Scheduled run through Agents
 
-[Scheduler](plugins/Scheduler.md) remains Draft/unimplemented. The diagram shows its owned create-mode run flow. S2 and Settings are delivered; the pluginFiles API exists, but its [public composition](process-typescript.md#52-public-pluginfiles-binding-proposed) is not installed yet. Full Ready and package-binding conditions remain in the owner document.
+[Scheduler](plugins/Scheduler.md) defines its own design status; its package is unimplemented. The diagram shows its owned create-mode run flow. S2, Settings and pluginFiles' [public composition](process-typescript.md#52-public-pluginfiles-binding) are available. Delivery requires the owner document's Appendix D business acceptance and Agents idle unloading before repeated-Session shipping.
 
 ```mermaid
 sequenceDiagram
@@ -409,8 +407,8 @@ The HostPlatform exec-shell change recorded in ADR 002 (business configuration r
 | How events enter context | Decided: only adopted input and tool results (ADR 001). #2 was revised on 2026-10-15 to match |
 | MCP stdio isolation | Open: whether MCP stdio processes are isolated by default |
 | Remote access trade-offs | Open: authentication, disconnection and TLS deployment, related to [#5](https://github.com/arcships/dim/issues/5) ([RemoteGateway](plugins/RemoteGateway.md)) |
-| TypeScript Session parts | C4 tools, Session methods/events and C5 published branch contracts are delivered ([C4](session-typescript.md), [C5](branch-typescript.md)). Provider's named [auxiliaryModel](appserver/auxiliary-model.md#43-named-binding) is available to SessionTitle; Scheduler/Workflow's process/package/management bindings remain their owner documents' Ready gates. Other service families follow their owners' published bindings. |
-| Scheduled run outcome routing | Designed in [Scheduler A.6](plugins/Scheduler.md#a6-run-outcome-delivery): the run owner persists history and reports through existing Session input. Scheduler remains Draft/unimplemented; its Ready gates remain. |
+| TypeScript Session parts | C4 tools, Session methods/events and C5 published branch contracts are delivered ([C4](session-typescript.md), [C5](branch-typescript.md)). Provider's named [auxiliaryModel](appserver/auxiliary-model.md#43-named-binding) is available to SessionTitle; Scheduler/Workflow's process/package/management bindings and readiness follow their owner documents (§1.3). Other service families follow their owners' published bindings. |
+| Scheduled run outcome routing | Specified in [Scheduler A.6](plugins/Scheduler.md#a6-run-outcome-delivery): the run owner persists history and reports through existing Session input. Design readiness follows Scheduler's owner document; package implementation and business acceptance remain. |
 | Scheduled task liveness | Decided: the daemon must be alive ([Scheduler](plugins/Scheduler.md)) |
 | FullAccess and new categories | Decided: allowed automatically (constraint 7) |
 | External agent permissions | Proposed (#145): asked outside the model stream of the calling Session's counterpart: a Collaboration leader's model through an input and a decision tool that passes the leader's Approval and Permission, else the user through a Session method ([ExternalAgent §3.2](plugins/ExternalAgent.md#32-external-permission-request)) |
@@ -433,7 +431,7 @@ The HostPlatform exec-shell change recorded in ADR 002 (business configuration r
 | Sessions | `/timeline`, `/export` | CLI |
 | Sessions | Session titles | New: SessionTitle |
 | Sessions | Fork, deletion, cleanup | Extension: SessionStore, Agents |
-| Sessions | Request snapshot export | Extension: Trace |
+| Sessions | Request snapshot export | Timeline export ([ADR 005](../adr/005-observability.md) D3); final requests are `model/call` facts |
 | Sessions | File and conversation rollback | Out of scope (full-screen TUI only) |
 | Interaction | Send, queue, auto-send, Steer, interrupt | Existing: InputQueue, Loop |
 | Interaction | `Ctrl+S`, `/queue`, recall, delete queued messages | Extension: InputQueue (withdrawal) |
@@ -449,7 +447,7 @@ The HostPlatform exec-shell change recorded in ADR 002 (business configuration r
 | System | `/settings` | Each item belongs to its plugin; the CLI aggregates |
 | System | `/usage` | Extension: ContextPreparation, ManagedProviders |
 | System | `/language` | CLI; Extension: PromptSources |
-| System | `/debug`, debug logs | Existing: Trace diagnostics |
+| System | `/debug`, debug logs | Existing: process logs (`daemon.log`, `RUST_LOG`, [ADR 005](../adr/005-observability.md) D1) |
 | System | `/stats`, mouse settings | Out of scope |
 | Agent behaviour | `/agent` | Extension: Agents, Prompt, PromptSources |
 | Agent behaviour | `/goal`, continuation, Goal mode | New: Goal (mode is covered by goal state) |
@@ -522,7 +520,6 @@ A **supplement** adds services, methods or configuration. A **change** alters ex
 | ManagedProviders | Supplement | Plan usage query | `/usage` |
 | Mcp | Supplement | HTTP/SSE OAuth ([MCP OAuth](appserver/mcp-oauth.md)); receives package MCP configuration from PluginManager through its typed operations (#36) | MCP; PluginManager |
 | SkillsCatalog | Supplement | Receives package Skill roots from PluginManager through its typed operations (#36) | PluginManager |
-| Trace | Supplement | Model request snapshot export | Snapshot export |
 
 ## Appendix C. Implementation language
 

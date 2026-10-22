@@ -771,8 +771,7 @@ impl Connection {
                         }),
                     None => {
                         // The owning Agent may be closing: wait for its existing
-                        // settlement so this reply still implies a complete
-                        // archive, and report a cleanup failure exactly like
+                        // settlement, and report a cleanup failure exactly like
                         // the direct close path does.
                         if let Some(host) = rpc.index.host_by_session(&params.session_id)
                             && let Some(session) = host.agent.get_session(&params.session_id)
@@ -790,10 +789,6 @@ impl Connection {
                         }
                     }
                 };
-                // The owning Agent may still be finishing this Session's archive.
-                if let Some(host) = rpc.index.host_by_session(&params.session_id) {
-                    host.traces.wait_session(&params.session_id).await;
-                }
                 rpc.index.remove_version(&params.session_id);
                 result.map(|_| Reply::empty())
             }
@@ -1144,28 +1139,11 @@ impl Connection {
         if let Some(interactive) = params.interactive {
             config.interactive = interactive;
         }
-        let (session, trace_path) = if let Some(trace) = params.trace {
-            let (session, path) = host
-                .traces
-                .create(
-                    &rpc.index,
-                    &host,
-                    config,
-                    self.protocol_version(),
-                    trace,
-                    &rpc.config.trace_directory,
-                )
-                .await?;
-            (session, Some(path))
-        } else {
-            (
-                rpc.index
-                    .create_session(&host, config, self.protocol_version())
-                    .await
-                    .map_err(RpcError::from)?,
-                None,
-            )
-        };
+        let session = rpc
+            .index
+            .create_session(&host, config, self.protocol_version())
+            .await
+            .map_err(RpcError::from)?;
         rpc.index.retain_versions();
         Ok(Reply::Create(CreateResult {
             session_id: session.id().to_owned(),
@@ -1174,7 +1152,6 @@ impl Connection {
                 model_id: session.config().model.model_id.clone(),
             },
             sequence: session.sequence("main").map_err(RpcError::from)?,
-            trace_path,
         }))
     }
 }

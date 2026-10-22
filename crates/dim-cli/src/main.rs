@@ -10,6 +10,7 @@ mod login;
 mod mcp;
 mod permission;
 mod permission_command;
+mod question;
 mod session;
 
 use args::{Action, Options};

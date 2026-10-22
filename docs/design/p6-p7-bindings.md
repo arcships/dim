@@ -4,15 +4,16 @@ Status: Accepted in [#256](https://github.com/arcships/dim/pull/256).
 Read-only permission access (§2), native Workflow file access (§3.1) and native
 input settlement (§4) are implemented. Applies to
 [Scheduler #70](https://github.com/arcships/dim/issues/70) and
-[Workflow #71](https://github.com/arcships/dim/issues/71). Their full designs stay
-Draft. This document specifies repository-local bindings and the evidence needed
-before implementation can claim Ready.
+[Workflow #71](https://github.com/arcships/dim/issues/71). Readiness follows each
+owner's design document; neither business package is implemented. This document
+specifies repository-local bindings and their acceptance.
 
-The run-store API is implemented, but current serve registers its pluginFiles
-provider only for a managed plugin. Ordinary public process rows cannot obtain
-it even with a product home. The [public composition proposal](process-typescript.md#52-public-pluginfiles-binding-proposed)
-reuses the existing provider/root and must be delivered before public package or
-report-recovery acceptance. Neither complete feature is Ready.
+The run-store API and its [public composition](process-typescript.md#52-public-pluginfiles-binding)
+use the existing native provider with the authorized product root. Actual Node
+flows cover public process and Session-only storage, missing roots/parents and
+scope drain. Workflow owns its report-specific evidence and remaining package
+acceptance in [§3.4 and Appendix D](plugins/Workflow.md). Readiness follows each
+owner's design; the storage binding does not implement either business package.
 
 ## 1. Problem and existing mechanisms
 
@@ -424,17 +425,12 @@ one committed input. Rust named-service calls retain admitted work when
 their result is dropped; a native full-server flow also directly drops the typed
 Rust future after admission and verifies its input still publishes once. Completed-call effects are removed.
 
-The tests hold the public TimelineStore I/O port and existing Session restore
-assembly; they add no production hook. Workflow's persisted attempt marker,
-host-process restart and failed run-store
-replacement remain acceptance work. Do not infer those business guarantees from
-the binding fixtures.
-
-The remaining items are acceptance requirements, not tests claimed to have passed. Existing
-#234/#237 flows establish process placement and dependency behavior, not the
-report-specific cases. Keep P6/P7 Draft until the remaining Appendix F choices
-and this evidence reach Ready. #126 remains a shipping prerequisite after Ready;
-#248/#255 optional-tool work is independent of these source and authority reads.
+The native input tests hold the public TimelineStore I/O port and existing Session
+restore assembly, with no production hook. Workflow records its report-specific
+evidence and remaining real-package acceptance in [§3.4 and Appendix D](plugins/Workflow.md);
+#234/#237 alone establish process placement and dependency behavior. Readiness
+follows each owner's design document. #126 remains a shipping prerequisite after
+Ready; #248/#255 optional-tool work is independent of these source and authority reads.
 
 ## 6. Rule check and ablation
 
@@ -478,8 +474,8 @@ they guard actual uncertain writes and are already the agreed format.
 
 | Item | Problem, existing alternatives and requested change | Ordering / owner |
 | --- | --- | --- |
-| Public run-store binding | The existing S10 API is registered only with a managed plugin, so public process rows lack its provider. Reuse that provider and the existing authorized product root through process-typescript §5.2; preserve the API and FileStorage authority. | Before P6/P7 Ready and durable public recovery acceptance; App Server assembly/storage review, #70/#71 |
-| Permission reads | Config/history do not provide dispatched Permission; launch-only capture does not meet Scheduler save/reuse. Agents supplies `SessionPermissions` through generated exports (§2). | Before P6 Ready; Agents owner review, #70 |
+| Public run-store binding | Process-typescript §5.2 supplies the existing provider at the authorized product root, preserving the API and FileStorage authority. Public Node storage acceptance is implemented; report-specific evidence and package acceptance follow Workflow §3.4/Appendix D. | App Server binding delivered; business acceptance remains under #70/#71 |
+| Permission reads | Config/history do not provide dispatched Permission; launch-only capture does not meet Scheduler save/reuse. Agents supplies `SessionPermissions` through generated exports (§2). | Binding delivered by #259; Scheduler save/reuse acceptance remains under #70 |
 | Workflow file export | Private `pluginFiles` cannot read raw project/package YAML; exposing native roots allows writes to other owners' state. Settings supplies generated `WorkflowFiles` scoped to project definitions and the calling row's read-only packages (§3). | Before P7 source acceptance; Settings/FileStorage and TS binding owners, #71 |
 | Native input settlement | An early index-unload reply or dropped bridge result is not a writer-termination proof. Retain admitted native input and join it on its original row using existing caller context/effects, then verify §5. | Before P7 report acceptance; Agents and TS binding owners, #71 |
 

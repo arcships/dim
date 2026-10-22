@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dim-agent-types", "crates/dim-agent-runtime", "crates/dim-agent-capabilities", "crates/dim-agent-aimux", "crates/dim-agent-attachments", "crates/dim-app-server", "crates/dim-cli", "xtask", "tests/extension-a", "tests/extension-b", "tests/integration"]
+members = ["crates/dim-agent-types", "crates/dim-agent-runtime", "crates/dim-agent-capabilities", "crates/dim-agent-aimux", "crates/dim-agent-attachments", "crates/dim-agent-questions", "crates/dim-app-server", "crates/dim-cli", "xtask", "tests/extension-a", "tests/extension-b", "tests/integration"]
 exclude = ["vendor/aimux"]
 
 [workspace.package]
@@ -20,6 +20,7 @@ dim-agent-runtime = { path = "crates/dim-agent-runtime" }
 dim-agent-capabilities = { path = "crates/dim-agent-capabilities" }
 dim-agent-aimux = { path = "crates/dim-agent-aimux" }
 dim-agent-attachments = { path = "crates/dim-agent-attachments" }
+dim-agent-questions = { path = "crates/dim-agent-questions" }
 aimux-core = { path = "vendor/aimux/aimux-core" }
 aimux-provider-utils = { path = "vendor/aimux/aimux-provider-utils" }
 aimux-providers = { path = "vendor/aimux/aimux-providers", default-features = false }

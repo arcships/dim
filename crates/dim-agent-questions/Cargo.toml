@@ -1,0 +1,18 @@
+[package]
+name = "dim-agent-questions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dim-agent-capabilities.workspace = true
+dim-agent-runtime.workspace = true
+dim-agent-types.workspace = true
+rutis.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+futures-util.workspace = true

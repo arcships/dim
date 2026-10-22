@@ -5,7 +5,7 @@ use crate::{
     host::{HostError, PromptHost},
     prompt_state::PromptSnapshot,
 };
-use dim_agent_runtime::{BranchGate, Capability, InBranch, InSession, KeysOf, scoped, *};
+use dim_agent_runtime::{Capability, InBranch, InSession, KeysOf, scoped, *};
 use dim_agent_types::*;
 use futures_util::FutureExt;
 use rutis::{BoxFuture, CordisError, Ctx, Effect, TypedPlugin};
@@ -96,7 +96,7 @@ pub struct Prompt {
     publisher: Arc<ConfigurationPublisher>,
     timeline: Arc<Timeline>,
     faults: Arc<FaultReporter>,
-    diagnostics: Arc<Diagnostics>,
+    identity: Arc<TimelineIdentity>,
     lifecycle: CancellationToken,
     branch_phase: Arc<BranchLifecycle>,
     opening: Arc<BranchOpening>,
@@ -191,24 +191,32 @@ impl Prompt {
             if cancel.is_cancelled() {
                 return Ok(loaded);
             }
-            let span = self.diagnostics.prompt_load_span(
-                &target.source,
-                match target.scope {
+            let span = tracing::info_span!(
+                "prompt.load",
+                session_id = %self.identity.session_id,
+                branch_id = %self.identity.branch_id,
+                prompt_source = %target.source,
+                prompt_scope = match target.scope {
                     PromptScope::Branch { .. } => "branch",
                     PromptScope::Turn { .. } => "turn",
                     PromptScope::Task { .. } => "task",
                 },
+                prompt_version = tracing::field::Empty,
+                outcome = tracing::field::Empty,
             );
-            span.record("outcome", "defect");
+            let defect = |panic| {
+                span.record("outcome", "defect");
+                self.report_panic(panic)
+            };
             let future = catch_unwind(AssertUnwindSafe(|| {
                 self.host.0.load(target.clone(), cancel.clone())
             }))
-            .map_err(|panic| self.report_panic(panic))?;
+            .map_err(defect)?;
             // Cancellation only signals the host. Once constructed, its future is always joined.
             let value = AssertUnwindSafe(future)
                 .catch_unwind()
                 .await
-                .map_err(|panic| self.report_panic(panic))?;
+                .map_err(defect)?;
             span.record(
                 "outcome",
                 match &value {
@@ -598,13 +606,9 @@ impl TypedPlugin for PromptPlugin {
         InSession<PromptHost>,
         InSession<InitialPromptConfiguration>,
         InBranch<ConfigurationPublisher>,
-        BranchGate<TimelineIdentity>,
+        InBranch<TimelineIdentity>,
         InSession<FaultReporter>,
-        (
-            InBranch<Diagnostics>,
-            InBranch<BranchLifecycle>,
-            InBranch<BranchOpening>,
-        ),
+        (InBranch<BranchLifecycle>, InBranch<BranchOpening>),
     );
     fn name(&self) -> &str {
         "Prompt"
@@ -618,9 +622,9 @@ impl TypedPlugin for PromptPlugin {
             InSession(host),
             InSession(initial),
             InBranch(publisher),
-            _,
+            InBranch(identity),
             InSession(faults),
-            (InBranch(diagnostics), InBranch(branch_phase), InBranch(opening)),
+            (InBranch(branch_phase), InBranch(opening)),
         ): Self::Deps,
     ) -> BoxFuture<'a, std::result::Result<Effect, CordisError>> {
         Box::pin(async move {
@@ -634,7 +638,7 @@ impl TypedPlugin for PromptPlugin {
                 publisher,
                 timeline: timeline.clone(),
                 faults,
-                diagnostics,
+                identity,
                 lifecycle: ctx.cancellation_token(),
                 branch_phase,
                 opening,

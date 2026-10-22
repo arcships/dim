@@ -56,6 +56,22 @@
     "to": "rutis"
   },
   {
+    "from": "dim-agent-questions",
+    "to": "dim-agent-capabilities"
+  },
+  {
+    "from": "dim-agent-questions",
+    "to": "dim-agent-runtime"
+  },
+  {
+    "from": "dim-agent-questions",
+    "to": "dim-agent-types"
+  },
+  {
+    "from": "dim-agent-questions",
+    "to": "rutis"
+  },
+  {
     "from": "dim-app-server",
     "to": "dim-agent-aimux"
   },
@@ -66,6 +82,10 @@
   {
     "from": "dim-app-server",
     "to": "dim-agent-capabilities"
+  },
+  {
+    "from": "dim-app-server",
+    "to": "dim-agent-questions"
   },
   {
     "from": "dim-app-server",
@@ -106,6 +126,10 @@
   {
     "from": "xtask",
     "to": "dim-agent-capabilities"
+  },
+  {
+    "from": "xtask",
+    "to": "dim-agent-questions"
   },
   {
     "from": "xtask",

@@ -50,8 +50,10 @@ PATH is relative to the CLI current directory; ~ is literal.\n\
   PRESET, allow|deny exact|prefix COMMAND, or remove N.\n\
 Approval accepts only y/yes; empty input denies. For a simple exec command, a/always\n\
   also saves a command rule. Noninteractive approval exits 3.\n\
+Questions take option numbers (comma separated for several) or 0 to type your\n\
+  own; empty input on the first question declines. Noninteractive questions exit 3.\n\
 Exit codes: 0 success, 1 configuration/transport error, 2 model/turn failure,\n\
-            3 interactive approval required, 130 interrupted.\n";
+            3 interactive approval or answer required, 130 interrupted.\n";
 
 #[derive(Debug)]
 pub enum Action {

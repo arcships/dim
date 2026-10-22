@@ -1,7 +1,7 @@
 //! Version 2 product views of the Session broadcast; positions are branch sequences.
 use dim_agent_capabilities::session_broadcast::SessionNotice;
 use dim_agent_runtime::{BranchStatus, ModelProgress, TimelineInfo};
-use dim_agent_types::{AgentEvent, ApprovalCallData, BranchSource, EventKind};
+use dim_agent_types::{AgentEvent, ApprovalCallData, ApprovalDecision, BranchSource, EventKind};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -233,4 +233,16 @@ pub struct ApprovalCancelled {
     pub branch_id: String,
     pub request_id: String,
     pub reason: String,
+}
+/// A committed `approval/respond`. Approval accepts the first response it
+/// consumes, in sequence order, so the first notice per `requestId` carries the
+/// accepted decision; a later one was answered `Unknown`. A following
+/// `approval.cancelled` means the call did not start.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalResolved {
+    pub session_id: String,
+    pub branch_id: String,
+    pub request_id: String,
+    pub decision: ApprovalDecision,
 }

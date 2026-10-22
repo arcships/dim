@@ -100,8 +100,6 @@ struct Shell {
     server: RunningServer,
     client: Client,
     sid: String,
-    /// The Session's trace archive, when its creation asked for one.
-    trace: Option<String>,
     probe: Probe,
     close_gate: Arc<CloseGate>,
     home: PathBuf,
@@ -195,12 +193,10 @@ impl Shell {
             .as_str()
             .unwrap_or_else(|| panic!("{created}"))
             .to_owned();
-        let trace = created["result"]["tracePath"].as_str().map(str::to_owned);
         Self {
             server,
             client,
             sid,
-            trace,
             probe,
             close_gate,
             home,
@@ -982,56 +978,6 @@ async fn reloading_shell_input_alone_ends_its_run() {
     let reply = shell.run("next", "echo next", "private").await;
     assert_eq!(reply["result"]["output"], "next\n");
     assert!(shell.unload().await);
-    shell.shutdown().await;
-}
-
-/// Design A11: diagnostics carry one `shell.run` span per run with its runId
-/// and outcome, never the command or its output; only a recorded run's input
-/// holds them, as Timeline data.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn diagnostics_carry_only_the_run_id_and_outcome() {
-    let mut shell = Shell::launch_with(json!({"trace": true})).await;
-    let sid = shell.sid.clone();
-    let path = shell.trace.clone().unwrap();
-    for (run_id, mode) in [("one", "private"), ("two", "record")] {
-        // Markers no id or hex digest can contain.
-        let command = format!("echo {mode}-output-zqxw # {mode}-command-zqxw");
-        let reply = shell.run(run_id, &command, mode).await;
-        assert_eq!(reply["result"]["status"], "completed", "{reply}");
-    }
-    assert_ok(
-        &shell
-            .client
-            .rpc("session.close", json!({"sessionId": sid}))
-            .await,
-    );
-    let rows = read_trace(&path).await;
-    let spans: Vec<_> = rows
-        .iter()
-        .filter(|row| {
-            row["record"]["kind"] == "span" && row["record"]["fields"]["operation"] == "shell.run"
-        })
-        .map(|row| &row["record"])
-        .collect();
-    for run_id in ["one", "two"] {
-        let ended = spans
-            .iter()
-            .find(|span| span["phase"] == "end" && span["fields"]["call_id"] == run_id)
-            .unwrap_or_else(|| panic!("{run_id}: {spans:?}"));
-        assert_eq!(ended["fields"]["outcome"], "completed:0");
-    }
-    for row in &rows {
-        let text = row.to_string();
-        let timeline = row["record"]["kind"] == "timeline";
-        assert!(
-            !text.contains("private-output-zqxw")
-                && !text.contains("private-command-zqxw")
-                && (timeline || !text.contains("zqxw")),
-            "{text}"
-        );
-    }
-    let recorded = |marker: &str| rows.iter().any(|row| row.to_string().contains(marker));
-    assert!(recorded("record-command-zqxw") && recorded("record-output-zqxw"));
     shell.shutdown().await;
 }
 

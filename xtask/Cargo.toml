@@ -8,6 +8,7 @@ dim-agent-runtime.workspace = true
 dim-agent-capabilities.workspace = true
 dim-agent-aimux.workspace = true
 dim-agent-attachments.workspace = true
+dim-agent-questions.workspace = true
 dim-app-server.workspace = true
 dim-agent-types.workspace = true
 rutis.workspace = true
