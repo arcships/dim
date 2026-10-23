@@ -14,6 +14,9 @@
 //! - `append` never drives a turn, it only joins the next request built.
 import { definePlugin } from '@arcships/rutis'
 import { execFile } from 'node:child_process'
+import { readFile, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import type { Sessions, ToolCall, ToolContribution, ToolResult } from '../../../npm/plugin.d.ts'
 
 export type InputMode = 'queue' | 'steer' | 'append'
@@ -35,6 +38,12 @@ export interface GithubWatchConfig {
   targets?: { repo: string; number: number; branchId?: string }[]
   /** Branch for configured targets; the tool uses the calling branch. */
   branchId?: string
+  /**
+   * A control file this plugin re-reads every poll: `{watch:[{repo,number}],
+   * unwatch:[{repo,number}], poll:true}`. It is how the model changes
+   * subscriptions when its host does not offer the `github_watch` tool.
+   */
+  controlPath?: string
 }
 
 interface Subscription {
@@ -193,6 +202,10 @@ export function githubWatch(options: { runGh?: RunGh } = {}) {
       let timer: ReturnType<typeof setTimeout> | undefined
       let lastError: string | null = null
       let bound: { sessionId: string; branchId: string } | undefined
+      const controlPath = rawConfig.controlPath ?? join(homedir(), '.dimcode/github-watch/control.json')
+      const statusPath = join(dirname(controlPath), 'status.json')
+      let controlSeen = ''
+      let delivered: string[] = []
 
       /** Registers one target and records its baseline; throws if unreadable. */
       const watchOne = async (repo: string, number: number, sessionId: string, branchId: string, report: boolean) => {
@@ -238,26 +251,79 @@ export function githubWatch(options: { runGh?: RunGh } = {}) {
         return deliver(sub, after, kinds)
       }
 
-      const poll = async () => {
-        const delivered: string[] = []
-        for (const sub of [...subs.values()]) {
-          if (closed) return delivered
+      /** Applies the control file when it changed; safe to call every poll. */
+      const applyControl = async () => {
+        if (!bound) return
+        let text: string
+        try {
+          text = await readFile(controlPath, 'utf8')
+        } catch {
+          return
+        }
+        if (text === controlSeen) return
+        controlSeen = text
+        let control: { watch?: { repo: string; number: number; branchId?: string }[]; unwatch?: { repo: string; number: number }[]; poll?: boolean }
+        try {
+          control = JSON.parse(text)
+        } catch (error) {
+          lastError = `control file: ${message(error)}`
+          console.error('github-watch', lastError)
+          return
+        }
+        for (const target of control.unwatch ?? []) subs.delete(`${target.repo}#${target.number}`)
+        for (const target of control.watch ?? []) {
+          if (subs.has(`${target.repo}#${target.number}`)) continue
+          if (!validRepo(target.repo) || !Number.isInteger(target.number) || target.number < 1) {
+            lastError = `invalid target ${JSON.stringify(target)}`
+            continue
+          }
           try {
-            if (await pollOne(sub)) delivered.push(key(sub))
+            await watchOne(target.repo, target.number, bound.sessionId, target.branchId ?? bound.branchId, false)
+            lastError = null
+          } catch (error) {
+            lastError = `${target.repo}#${target.number}: ${message(error)}`
+            console.error('github-watch', lastError)
+          }
+        }
+        if (control.poll) await poll()
+      }
+
+      const writeStatus = async () => {
+        try {
+          await writeFile(statusPath, JSON.stringify({
+            updatedAt: new Date().toISOString(),
+            subscriptions: describe(),
+            delivered,
+            lastError,
+          }, null, 2))
+        } catch (error) {
+          console.error('github-watch: status write failed', message(error))
+        }
+      }
+
+      const poll = async () => {
+        const out: string[] = []
+        for (const sub of [...subs.values()]) {
+          if (closed) break
+          try {
+            if (await pollOne(sub)) out.push(key(sub))
             lastError = null
           } catch (error) {
             lastError = `${key(sub)}: ${error instanceof Error ? error.message : String(error)}`
             console.error('github-watch', lastError)
           }
         }
-        return delivered
+        delivered = out
+        await writeStatus()
+        return out
       }
 
       const schedule = () => {
         const seconds = Math.max(1, rawConfig.intervalSeconds ?? 60)
         timer = setTimeout(async () => {
           if (closed) return
-          await poll()
+          await applyControl()
+          if (!closed) await poll()
           if (!closed) schedule()
         }, seconds * 1000)
         timer.unref?.()
@@ -308,6 +374,7 @@ export function githubWatch(options: { runGh?: RunGh } = {}) {
           }
           if (action === 'poll') {
             try {
+              await applyControl()
               const delivered = await poll()
               return {
                 content: delivered.length === 0
@@ -355,6 +422,8 @@ export function githubWatch(options: { runGh?: RunGh } = {}) {
         bind(binding: { sessionId: string }) {
           bound = { sessionId: binding.sessionId, branchId: rawConfig.branchId ?? 'main' }
           void (async () => {
+            await applyControl()
+            await writeStatus()
             for (const target of rawConfig.targets ?? []) {
               if (!validRepo(target.repo) || !Number.isInteger(target.number) || target.number < 1) {
                 lastError = `invalid target ${JSON.stringify(target)}`

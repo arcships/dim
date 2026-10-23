@@ -23,11 +23,23 @@ to steer), a **state** change queues, and other metadata is only appended. One
 poll delivers at most one input per watched item, with the highest mode of the
 changes it found.
 
-## Two ways to subscribe
+## Three ways to subscribe
 
-**Configured targets (no tool needed).** The row's `config.targets` subscribe as
-soon as the Session binds, which is the only path on a host whose tool list does
-not include `github_watch`:
+**A control file the model writes.** A host exposes a contributed tool only when
+its Session tool list names it; when it does not, the model still needs an active
+surface. Bring-your-own `controlPath`:
+
+```json
+{ "watch": [{ "repo": "arcships/dim", "number": 361 }], "unwatch": [], "poll": true }
+```
+
+The plugin re-reads that file on every poll (and on bind), applies `watch` /
+`unwatch`, and writes `status.json` next to it with the current subscriptions,
+the last delivered targets and `lastError`. The model changes subscriptions by
+rewriting the file; the change lands within one `intervalSeconds`.
+
+**Configured targets.** The row's `config.targets` subscribe as soon as the
+Session binds:
 
 ```json
 {
@@ -47,8 +59,9 @@ not include `github_watch`:
 
 A Session row cannot see its own Session id, so the row provides
 `sessionEvents:github-watch`; the host binds it with `{sessionId}` and the
-plugin subscribes from there. Editing `targets` needs a daemon restart, because
-the rows file is read at startup.
+plugin subscribes from there (control file and targets alike). Editing `targets`
+needs a daemon restart, because the rows file is read at startup; the control
+file does not.
 
 **The `github_watch` tool** (when the host's Session tool list names it):
 

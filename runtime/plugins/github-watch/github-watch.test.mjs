@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import { load } from '@arcships/rutis/testing'
 import { githubWatch } from './index.ts'
@@ -174,6 +177,36 @@ test('configured targets subscribe when the Session binds, without the tool', as
   assert.match(polled.content, /Delivered changes for: arcships\/dim#361/)
   assert.equal(sessions.inputs.length, 1)
   assert.equal(sessions.inputs[0].sessionId, 'bound-session')
+})
+
+test('a control file is how the model adds and removes subscriptions', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'github-watch-'))
+  const control = join(dir, 'control.json')
+  const sessions = fakeSessions()
+  const state = { ghCalls: 0 }
+  const loaded = await load(githubWatch({ runGh: fakeGh(state) }), {
+    config: { intervalSeconds: 3600, controlPath: control },
+    services: { sessions: sessions.service },
+  })
+  t.after(() => loaded.unload())
+  loaded.service('sessionEvents:github-watch').bind({ sessionId: 'bound', config: {} }, new Promise(() => {}))
+
+  writeFileSync(control, JSON.stringify({ watch: [{ repo: 'arcships/dim', number: 361 }] }))
+  const tool = loaded.service('toolContribution:githubWatch')
+  await tool.execute(toolCall({ action: 'poll' }), new Promise(() => {}))
+  const status = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8'))
+  assert.equal(status.subscriptions[0].target, 'arcships/dim#361')
+
+  state.comment = { id: 4, user: { login: 'dan' }, body: 'one more' }
+  state.comments = 1
+  await tool.execute(toolCall({ action: 'poll' }), new Promise(() => {}))
+  assert.equal(sessions.inputs.length, 1)
+  assert.equal(sessions.inputs[0].sessionId, 'bound')
+
+  writeFileSync(control, JSON.stringify({ unwatch: [{ repo: 'arcships/dim', number: 361 }] }))
+  await tool.execute(toolCall({ action: 'poll' }), new Promise(() => {}))
+  const after = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8'))
+  assert.deepEqual(after.subscriptions, [])
 })
 
 test('unloading stops the poller', async (t) => {
