@@ -31,6 +31,10 @@ export interface GithubWatchConfig {
   modes?: Partial<Record<ChangeKind, InputMode>>
   /** `owner/repo#number` whose comments steer instead of queue. */
   urgent?: string[]
+  /** Watched from `apply` once the Session binds; no tool call is needed. */
+  targets?: { repo: string; number: number; branchId?: string }[]
+  /** Branch for configured targets; the tool uses the calling branch. */
+  branchId?: string
 }
 
 interface Subscription {
@@ -176,7 +180,10 @@ export function githubWatch(options: { runGh?: RunGh } = {}) {
   return definePlugin({
     name: 'GithubWatch',
     inject: ['sessions'],
-    provides: { 'toolContribution:githubWatch': { declaration: 'sync', execute: 'async' } },
+    provides: {
+      'toolContribution:githubWatch': { declaration: 'sync', execute: 'async' },
+      'sessionEvents:github-watch': { bind: 'sync' },
+    },
     apply(ctx, rawConfig: GithubWatchConfig = {}) {
       const sessions = ctx.use<Sessions>('sessions')
       const modes = { ...DEFAULT_MODES, ...(rawConfig.modes ?? {}) }
@@ -185,6 +192,22 @@ export function githubWatch(options: { runGh?: RunGh } = {}) {
       let closed = false
       let timer: ReturnType<typeof setTimeout> | undefined
       let lastError: string | null = null
+      let bound: { sessionId: string; branchId: string } | undefined
+
+      /** Registers one target and records its baseline; throws if unreadable. */
+      const watchOne = async (repo: string, number: number, sessionId: string, branchId: string, report: boolean) => {
+        const sub: Subscription = { repo, number, sessionId, branchId }
+        subs.set(key(sub), sub)
+        try {
+          const after = await snapshot(run, sub)
+          sub.last = after
+          if (report) await deliver(sub, after, [])
+          return sub
+        } catch (error) {
+          subs.delete(key(sub))
+          throw error
+        }
+      }
 
       const modeFor = (sub: Subscription, kinds: ChangeKind[]) =>
         highest(kinds.map((kind) => (kind === 'comment' && urgent.has(key(sub)) ? 'steer' : modes[kind])))
@@ -301,13 +324,7 @@ export function githubWatch(options: { runGh?: RunGh } = {}) {
           if (!validRepo(repo) || !Number.isInteger(number) || number < 1) {
             return { content: 'github_watch needs repo "owner/name" and a positive issue/PR number.', isError: true }
           }
-          const sub: Subscription = {
-            repo,
-            number,
-            sessionId: call.sessionId,
-            branchId: call.branchId,
-          }
-          const id = key(sub)
+          const id = `${repo}#${number}`
           if (action === 'unwatch') {
             const removed = subs.delete(id)
             return {
@@ -318,23 +335,44 @@ export function githubWatch(options: { runGh?: RunGh } = {}) {
           if (action !== 'watch') {
             return { content: `Unknown action ${action}.`, isError: true }
           }
-          subs.set(id, sub)
           try {
-            const after = await snapshot(run, sub)
-            sub.last = after
-            if (args.report_initial === true) await deliver(sub, after, [])
+            const sub = await watchOne(repo, number, call.sessionId, call.branchId, args.report_initial === true)
+            const after = sub.last
             return {
-              content: `Watching ${id} (${after.isPullRequest ? 'PR' : 'issue'}, ${after.state}). Polling every ${Math.max(1, rawConfig.intervalSeconds ?? 60)}s; changes arrive as input messages.`,
+              content: `Watching ${id} (${after?.isPullRequest ? 'PR' : 'issue'}, ${after?.state}). Polling every ${Math.max(1, rawConfig.intervalSeconds ?? 60)}s; changes arrive as input messages.`,
               structuredContent: { subscriptions: describe() },
             }
           } catch (error) {
-            subs.delete(id)
             return { content: `github_watch could not read ${id}: ${message(error)}`, isError: true }
           }
         },
       }
 
       ctx.provide('toolContribution:githubWatch', tool)
+      // A Session row cannot see its own Session id, and the tool may not be in
+      // the host's tool list, so the configured targets subscribe on bind.
+      ctx.provide('sessionEvents:github-watch', {
+        bind(binding: { sessionId: string }) {
+          bound = { sessionId: binding.sessionId, branchId: rawConfig.branchId ?? 'main' }
+          void (async () => {
+            for (const target of rawConfig.targets ?? []) {
+              if (!validRepo(target.repo) || !Number.isInteger(target.number) || target.number < 1) {
+                lastError = `invalid target ${JSON.stringify(target)}`
+                console.error('github-watch', lastError)
+                continue
+              }
+              try {
+                await watchOne(target.repo, target.number, bound.sessionId, target.branchId ?? bound.branchId, rawConfig.initial === 'report')
+                lastError = null
+              } catch (error) {
+                lastError = `${target.repo}#${target.number}: ${message(error)}`
+                console.error('github-watch', lastError)
+              }
+            }
+          })()
+          return null
+        },
+      })
       ctx.effect(() => {
         closed = true
         if (timer !== undefined) clearTimeout(timer)

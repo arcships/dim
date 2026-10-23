@@ -154,6 +154,28 @@ test('unwatch and list reflect the subscriptions; invalid targets are refused', 
   assert.equal(invalid.isError, true)
 })
 
+test('configured targets subscribe when the Session binds, without the tool', async (t) => {
+  const sessions = fakeSessions()
+  const state = { ghCalls: 0 }
+  const loaded = await load(githubWatch({ runGh: fakeGh(state) }), {
+    config: { intervalSeconds: 3600, targets: [{ repo: 'arcships/dim', number: 361 }] },
+    services: { sessions: sessions.service },
+  })
+  t.after(() => loaded.unload())
+
+  // The host binds the observer with the Session id; the plugin subscribes then.
+  loaded.service('sessionEvents:github-watch').bind({ sessionId: 'bound-session', config: {} }, new Promise(() => {}))
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(state.ghCalls > 0, true)
+
+  state.comment = { id: 9, user: { login: 'carol' }, body: 'fyi' }
+  state.comments = 1
+  const polled = await loaded.service('toolContribution:githubWatch').execute(toolCall({ action: 'poll' }), new Promise(() => {}))
+  assert.match(polled.content, /Delivered changes for: arcships\/dim#361/)
+  assert.equal(sessions.inputs.length, 1)
+  assert.equal(sessions.inputs[0].sessionId, 'bound-session')
+})
+
 test('unloading stops the poller', async (t) => {
   const { loaded, sessions, state, tool } = await open({ intervalSeconds: 1 })
   await execute(tool, { action: 'watch', repo: 'arcships/dim', number: 361 })

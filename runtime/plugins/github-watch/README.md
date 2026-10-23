@@ -23,9 +23,34 @@ to steer), a **state** change queues, and other metadata is only appended. One
 poll delivers at most one input per watched item, with the highest mode of the
 changes it found.
 
-## Tool
+## Two ways to subscribe
 
-The model controls subscriptions with the `github_watch` tool:
+**Configured targets (no tool needed).** The row's `config.targets` subscribe as
+soon as the Session binds, which is the only path on a host whose tool list does
+not include `github_watch`:
+
+```json
+{
+  "id": "github-watch",
+  "name": "@dimcode/github-watch",
+  "config": {
+    "intervalSeconds": 60,
+    "targets": [{ "repo": "arcships/dim", "number": 361 }]
+  },
+  "inject": ["sessions"],
+  "provides": {
+    "toolContribution:githubWatch": { "declaration": "sync", "execute": "async" },
+    "sessionEvents:github-watch": { "bind": "sync" }
+  }
+}
+```
+
+A Session row cannot see its own Session id, so the row provides
+`sessionEvents:github-watch`; the host binds it with `{sessionId}` and the
+plugin subscribes from there. Editing `targets` needs a daemon restart, because
+the rows file is read at startup.
+
+**The `github_watch` tool** (when the host's Session tool list names it):
 
 ```json
 {"action": "watch", "repo": "arcships/dim", "number": 361}

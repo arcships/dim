@@ -5,11 +5,16 @@
     "intervalSeconds": 60,
     "initial": "baseline"
   },
-  "inject": ["sessions"],
+  "inject": [
+    "sessions"
+  ],
   "provides": {
     "toolContribution:githubWatch": {
       "declaration": "sync",
       "execute": "async"
+    },
+    "sessionEvents:github-watch": {
+      "bind": "sync"
     }
   }
 }
