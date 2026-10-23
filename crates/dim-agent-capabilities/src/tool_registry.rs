@@ -149,8 +149,17 @@ impl ToolRegistry {
         self.snapshot().0
     }
     fn declared(&self, sources: &Sources) -> Vec<ToolDefinition> {
-        let configured = self.configured.iter().filter_map(|name| {
-            self.fixed
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        let mut push = |tool: &Arc<ToolContribution>| {
+            if seen.insert(tool.definition.name.clone()) {
+                out.push(tool.definition.clone());
+            }
+        };
+        // Host and contributed tools the Session configured, in its order.
+        for name in &self.configured {
+            if let Some(tool) = self
+                .fixed
                 .iter()
                 .find(|tool| tool.definition.name == *name)
                 .or_else(|| {
@@ -159,16 +168,30 @@ impl ToolRegistry {
                         .get(&format!("{CONTRIBUTED}:{name}"))
                         .and_then(|set| set.tools.first())
                 })
-        });
-        let other = sources
+            {
+                push(tool);
+            }
+        }
+        // Every other contributed tool whose provider is active now, by name.
+        for set in sources
+            .current
+            .values()
+            .filter(|set| is_contributed(&set.key))
+        {
+            for tool in &set.tools {
+                push(tool);
+            }
+        }
+        for set in sources
             .current
             .values()
             .filter(|set| !is_contributed(&set.key))
-            .flat_map(|set| set.tools.iter());
-        configured
-            .chain(other)
-            .map(|tool| tool.definition.clone())
-            .collect()
+        {
+            for tool in &set.tools {
+                push(tool);
+            }
+        }
+        out
     }
     /// Declarations and the source sets they were built from, read together,
     /// after taking in every contributor active now: the read that serves a
@@ -866,12 +889,11 @@ impl TypedPlugin for ToolRegistryPlugin {
             let contributed = Arc::new(Contributed {
                 ctx: ctx.clone(),
                 scope,
-                names: config
-                    .tools
-                    .iter()
-                    .filter(|name| self.contributed.contains(*name))
-                    .cloned()
-                    .collect(),
+                // Every contributed name the assembly provides: a tool is
+                // offered while its provider is active, whether or not
+                // `SessionConfig.tools` names it (the row being loaded is the
+                // opt-in; Permission still gates the call).
+                names: self.contributed.to_vec(),
                 identity,
                 config: config.clone(),
                 attached: Mutex::default(),
