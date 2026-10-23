@@ -139,7 +139,7 @@ sequenceDiagram
 
 | 模型看到的内容 | 形式 | 位置 |
 | --- | --- | --- |
-| `web_search`、`web_fetch` 的名称、描述、输入 schema | 工具声明 | 列于 `SessionConfig.tools` 时，位于被采用的 `context/configured.tools` |
+| `web_search`、`web_fetch` 的名称、描述、输入 schema | 工具声明 | Web Active 期间位于被采用的 `context/configured.tools`（`SessionConfig.tools` 可点名以固定位置） |
 | 搜索结果、抓取文本、错误、重定向提示 | `ToolResult.content`（仅文本） | 该调用所在批次的工具结果位置 |
 
 - 压缩：声明作为配置保留；结果只经摘要保留。
@@ -367,7 +367,7 @@ Fake-IP DNS 答案同样受此策略约束。合成的基准测试地址默认�
 
 | 步骤 | 路径 |
 | --- | --- |
-| 提供 | Web 的 `provides` 声明 `toolContribution` `web_search` 与 `web_fetch`；ToolRegistry 登记列于 `SessionConfig.tools` 中的那些；ToolBinding 采用它们。Web 不写入任何内容 |
+| 提供 | Web 的 `provides` 声明 `toolContribution` `web_search` 与 `web_fetch`；Web Active 期间 ToolRegistry 提供它们；ToolBinding 采用它们。Web 不写入任何内容 |
 | 调用 | ToolExecutor 在 Dispatcher 上消费 `step/tool-call`，登记批次任务后返回；每次调用依次为 `step/tool-start`、准入、在执行器任务上运行 handler、`step/tool-completed`，然后每个批次一个 `step/tool-result` |
 | Dispatcher | Web 没有订阅 |
 | 状态与复检 | 无 `StateCell`；不消费事实；决定使用参数与调用开始时读取的配置 |

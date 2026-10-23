@@ -164,7 +164,7 @@ sequenceDiagram
 
 | 模型看到的内容 | 形式与位置 |
 | --- | --- |
-| `notify` 声明 | 名称、描述 `Send a short message to one of the user's configured notification channels.`、`channel` 为字符串的 schema，列于 `SessionConfig.tools` 时位于被采用的 `context/configured` 中 |
+| `notify` 声明 | 名称、描述 `Send a short message to one of the user's configured notification channels.`、`channel` 为字符串的 schema，Notifications Active 期间位于被采用的 `context/configured` 中 |
 | `notify` 结果 | `ToolResult.content`，位于其批次的工具结果位置；只经摘要在压缩后保留；子分支继承其切分点之前的结果 |
 | 非交互 Session | 相同的声明与结果 |
 | 从不可见 | 渠道目标、凭据、投递记录、重试状态、诊断 |

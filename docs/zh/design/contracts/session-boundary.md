@@ -359,7 +359,7 @@ reply ----------> 回复与通知额度 ----------------+
 
 ToolRegistry 接受具名工具服务，不硬依赖其提供方（C3，ADR 002 D3，#34）。固定表只含配置的宿主工具。每个配置的贡献工具是注册表自有的带版本集合，键为 `#contributed:<tool>`（#241）：提供方 Active 时提供；提供方缺失或其代次正在卸载时撤下；新一代 Active 后以新版本替换。版本是新的 UUID，跨注册表实例与进程也不复用，因此 `tool_sources` 中持久化的版本只指一个代次。注册表在分支 ToolBinding 初始化首次读取时读取贡献方（它在自身 apply 期间不能读取未声明的服务），之后每当有提供方进入或离开 Active、或服务绑定变化时，在自己的任务中再次读取；Session 开始关闭时该任务结束。该任务与 ToolBinding 的后台采用从不调用外部提供方（其声明是对另一个运行时的同步调用）：它们撤下被替换的外部集合，由下一个请求的读取在不持有注册表锁的情况下接入新的代次；带工具部分的配置为之后的请求采用它。尚未激活的贡献方被省略并记录诊断；它 Active 之后的下一个请求起即被提供，不需要重载 Session。必需依赖的等待规则不变，可选提供方仍不阻塞 Session 就绪（#132）。
 
-ToolBinding 沿既有 Prompt / BranchOpening 流程完成匹配与必要的采用，随后 Session 才接受输入。已有模型配置的分支在工具部分不匹配时使用 `Prompt::adopt_tools`；配置不含工具部分的分支在每个请求经 PrepareModelHost / `bind_current` 声明并绑定注册表当前的宿主与贡献工具，因此贡献工具的变化在这里无需采用。不新增 core 就绪阶段。来源变化，包括带工具部分的配置中的贡献工具，沿既有注册表通知和 Prompt 采用路径传播（带 `tool_sources` 的 `context/configured`），请求保留其前缀选定的处理器。在 #4 提供基于 `provides` 的登记之前，工具名来自宿主侧 `AgentBuilder::session_tool`。名称唯一性、与宿主工具冲突以及通过 `SessionConfig.tools` 启用的规则不变（[工具贡献](../../../architecture/rust-agent/tool-contributions.md)）。
+ToolBinding 沿既有 Prompt / BranchOpening 流程完成匹配与必要的采用，随后 Session 才接受输入。已有模型配置的分支在工具部分不匹配时使用 `Prompt::adopt_tools`；配置不含工具部分的分支在每个请求经 PrepareModelHost / `bind_current` 声明并绑定注册表当前的宿主与贡献工具，因此贡献工具的变化在这里无需采用。不新增 core 就绪阶段。来源变化，包括带工具部分的配置中的贡献工具，沿既有注册表通知和 Prompt 采用路径传播（带 `tool_sources` 的 `context/configured`），请求保留其前缀选定的处理器。在 #4 提供基于 `provides` 的登记之前，工具名来自宿主侧 `AgentBuilder::session_tool`。名称唯一性与宿主工具冲突的规则不变。贡献工具在其提供方 Active 期间提供；`SessionConfig.tools` 选择并排序宿主工具，也可以点名某个贡献工具以固定其位置（[工具贡献](../../../architecture/rust-agent/tool-contributions.md)）。
 
 | 方法 | 模式 | 请求 | 回复 |
 | --- | --- | --- | --- |
@@ -419,7 +419,7 @@ ToolBinding 沿既有 Prompt / BranchOpening 流程完成匹配与必要的采�
 2. 管理方法在本地入口上可达，在 RemoteGateway 上返回 `unknown_method`，只在导出时经链接可达。`shell.*` Session 方法与所有 Session 方法一样可在 RemoteGateway 上调用。
 3. 每个迁移后的管理方法的录制记录与迁移前的记录一致，且 v3 本地 profile 的 `hello.features` 不变。
 4. 在 RemoteGateway 测试入口上，`session.permission.update` 与 `session.exec.stop` 成功。
-5. 由非 Rust 插件以 `toolContribution` 提供的工具，会像 Rust 工具一样被声明给模型，并经 ToolExecutor 执行。`SessionConfig.tools` 中提供方缺失的工具被省略并在诊断中报告，Session 照常启动。
+5. 由非 Rust 插件以 `toolContribution` 提供的工具，会像 Rust 工具一样被声明给模型，并经 ToolExecutor 执行。提供方缺失的贡献工具被省略并在诊断中报告，Session 照常启动——与它是否出现在 `SessionConfig.tools` 无关。
 6. 进度先于响应；连接收不下的进度被丢弃，不关闭连接，也不丢失响应；断开后 `notify` 报告 `gone`。
 7. 某个已启用的管理方法提供方处于 Pending 时，`hello` 成功，其他命名空间都正常，该提供方的命名空间返回 `service_reloading`；处于 Failed 或 Unresolved 时返回 `service_unavailable`；已禁用时返回 `unknown_method`。PluginManager 提供 `plugin.set_enabled`（未实现）之后，除非该提供方就是 PluginManager 本身，否则可以用它禁用该提供方。管理方法提供方重载既不会让 Rpc 重载，也不会关闭连接。
 

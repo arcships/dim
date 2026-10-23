@@ -113,8 +113,8 @@ conflicting structural declarations valid.
 At this external configuration boundary reject empty event-part suffixes, malformed identities, unsupported method modes,
 duplicate tools, duplicate namespaces, host-tool collisions and the C1 reserved-name/namespace
 collisions. Disabled rows are not instantiated and contribute no callable methods. Their declared
-tool identities remain known to ToolRegistry, so a stored `SessionConfig.tools` can omit a disabled
-provider rather than fail as an unknown host tool. New model requests never declare that missing
+tool identities remain known to ToolRegistry, and only an active provider offers them, so a
+disabled row contributes nothing and a stored `SessionConfig.tools` naming it stays valid. New model requests never declare that missing
 tool. Enabled rows alone determine C1's known namespace list: a disabled namespace is
 `unknown_method`, not an indefinitely reloading service. A declaration changing structurally
 requires rebuilding the host assembly; business settings do not change it. Missing dependencies

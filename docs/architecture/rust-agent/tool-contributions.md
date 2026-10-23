@@ -79,9 +79,9 @@ impl SessionService for ToolContribution {}
 | 提供 | 贡献方能力在自身状态就绪后，于 `apply` 中以上述键提供；`definition` 可按本 Session 配置生成，`definition.name` 等于登记名称 |
 | 宿主工具名 | 宿主工具名经 `AgentBuilder::host_tools` 登记：产品根由 `workspace_tools::install` 登记，测试与开发宿主由 `defaults::tool_host` 登记；其他提供 `ToolHost` 的装配须自行登记，否则显式 profile 不能列出这些工具 |
 | 收集 | `ToolRegistryPlugin` 经 `AgentBuilder::session_tool_registry` 装配，工厂取得全部登记名称；`apply` 校验配置（含已登记来源名须满足工具名语法）；分支 ToolBinding 首次读取时按名称读取本 Session 已 Active 的贡献，之后由注册表在 Session 发布后的自有任务中随贡献方的激活与退役重读，Session 开始关闭时该任务结束；不建立对可选贡献方的硬依赖 |
-| 启用 | 只有 `SessionConfig.tools` 列出的工具进入注册表；未列出的贡献不读取。已登记但未就绪的贡献省略，并记录 `tool.attach` 进程日志 span；稍后才 Active 的贡献从其 Active 后的下一个请求起提供 |
+| 启用 | 贡献方 Active 即进入注册表：已登记的贡献不依赖 `SessionConfig.tools` 点名；该列表只选择宿主工具，并可把某个贡献工具提前到声明的顺序中。已登记但未就绪的贡献省略，并记录 `tool.attach` 进程日志 span；稍后才 Active 的贡献从其 Active 后的下一个请求起提供 |
 
-固定表只含配置的宿主工具，在 `apply` 时构建。每个配置的贡献工具是注册表自有的带版本集合，键为 `#contributed:<tool>`；已登记来源名满足 `[A-Za-z0-9_-]{1,64}`，不含 `#`，所以二者的键不会相同。声明按 `SessionConfig.tools` 顺序列出宿主与贡献工具，其后是其他来源的工具。
+固定表只含配置的宿主工具，在 `apply` 时构建。每个配置的贡献工具是注册表自有的带版本集合，键为 `#contributed:<tool>`；已登记来源名满足 `[A-Za-z0-9_-]{1,64}`，不含 `#`，所以二者的键不会相同。声明按 `SessionConfig.tools` 顺序列出其中点名的宿主与贡献工具，其后是其余 Active 的贡献工具（按登记名排序），最后是其他来源的工具。
 
 ## 3. 依赖方向
 
@@ -131,7 +131,7 @@ remain. Replacements retain old connections for existing bindings; disabling or
 removing an entry closes its instances across Sessions, even with bindings.
 New bindings automatically adopt the replacement through the existing flow below.
 
-- **收集来源**：宿主工具（`S:ToolHost`）、固定贡献（`S:ToolContribution[name]`，如 `skill`、`branch`、`wait`）、动态来源（`S:SessionToolSource[name]`；当前只有 App Server 的 McpSession：登记名 `mcp`，键 `mcp:<serverId>`，版本随连接代次与工具列表变化且不复用，工具名带 server 前缀避免跨来源重名，连接失败时撤销该键）。`SessionConfig.tools` 只列固定工具；动态来源的可见性由来源方自己的配置决定。
+- **收集来源**：宿主工具（`S:ToolHost`）、固定贡献（`S:ToolContribution[name]`，如 `skill`、`branch`、`wait`）、动态来源（`S:SessionToolSource[name]`；当前只有 App Server 的 McpSession：登记名 `mcp`，键 `mcp:<serverId>`，版本随连接代次与工具列表变化且不复用，工具名带 server 前缀避免跨来源重名，连接失败时撤销该键）。`SessionConfig.tools` 只选择宿主工具并给贡献工具排序；贡献工具的可见性取决于贡献方是否 Active，动态来源的可见性由来源方自己的配置决定。
 - **MCP 启用**：已配置的服务器启用即运行，没有宿主本地批准（[ADR 003](../../adr/003-approval-scope.md)）；项目 `.mcp.json` 的条目默认禁用，只由用户的本地记录启用。已禁用或删除的服务器不发现、不连接，McpSession 不提供其集合（状态 `Disabled`）；配置或启用变化时立即撤销旧集合（仅刷新时保留旧集合至替换就绪）。配置替换时，已绑定请求所持的旧版本 handler 保留其代次直到释放；停用、删除或显式断开会在所有 Session 中关闭它，包括已绑定的请求；停用在来源文件不可读时也生效，被撤回的条目报告为 `Disabled` 而非连接失败。协调者的应用状态变化时各 McpSession 重读选择，外部编辑经目录读取或连接操作被发现后到达每个 Session；Session 开始关闭后不再发现或创建连接。文件根授权、工具权限预设与 Session 回放都不启用条目。
 - **维护变化**：动态来源按整组校验、原子替换；分支采用新的工具集合，作为 `context/configured` 的工具部分写入 Timeline（工具声明属于模型上下文）。
 - **请求一致**：在 Loop 构造请求时固定本请求的声明与实现（同一版本），供 ToolExecutor 按名取实现；本请求结算后释放。Loop 在 `turn/end` 统一 `retain_only(None)`，不在每种结束路径各自释放。
@@ -175,7 +175,7 @@ pub struct ToolSourceSet {
 
 | 状态 | 所有者 | 内容 |
 | --- | --- | --- |
-| 固定表 | ToolRegistry | 按 `SessionConfig.tools` 构建（第 2 节规则），本代注册表内不变；宿主工具包装为 `HostTool` 条目 |
+| 固定表 | ToolRegistry | 按 `SessionConfig.tools` 选择宿主工具（第 2 节规则），本代注册表内不变；宿主工具包装为 `HostTool` 条目 |
 | 当前来源集合 | ToolRegistry | 每个键一个 `Arc<ToolSourceSet>`（强引用）；旧版本只登记弱引用；已持有过的版本集合（用于拒绝复用） |
 | `ToolSourcesState` | ToolRegistry（`StateCell`，外部经 `S:ToolSourcesView` 读，供 MCP 管理界面） | `BTreeMap<key, ToolSourceStatus { adopted: Option<version>, rejected: Option<ToolSourceRejection { version, reason }> }>` |
 | pin 列表 | ToolBinding | `[(sequence, Vec<Arc<ToolSourceSet>>)]`：本分支已采用、可能仍被请求前缀引用的集合；外加在途采用持有的待采用集合 |
@@ -190,7 +190,7 @@ pub struct ToolSourceSet {
 
 | 事件 | 写入方 | 规定 |
 | --- | --- | --- |
-| `context/configured` | Prompt，由 ToolBinding 经 `adopt_tools` 发起 | `ModelConfiguration` 增加 `tool_sources: Vec<ToolSourceVersion { key, version }>`，为空时不序列化；`tools` 为完整声明：固定工具在前（按 `SessionConfig.tools` 顺序），来源工具按键排序、键内按集合顺序。`tool_sources` 为空表示全部是固定工具 |
+| `context/configured` | Prompt，由 ToolBinding 经 `adopt_tools` 发起 | `ModelConfiguration` 增加 `tool_sources: Vec<ToolSourceVersion { key, version }>`，为空时不序列化；`tools` 为完整声明：配置的宿主与贡献工具在前（按 `SessionConfig.tools` 顺序），随后是其余 Active 贡献工具（按登记名），来源工具按键排序、键内按集合顺序。`tool_sources` 为空表示全部是固定工具 |
 
 模型选择与工具集合是同一配置的两部分，分别更新：公开的 `ConfigureUpdate.model: Option<ModelSelection { provider_id, model_id, config, metadata }>` 不含工具，外部调用方无法给出 handler。`SessionConfig.model` 使用同一类型，创建时固定完整模型参数；`AgentConfig` 与 Agent profile 的默认身份仍为 `ModelId`。旧 Session 中只含模型身份的记录可读取，缺失参数表示没有显式参数，不沿用另一模型的默认值。Prompt 在其串行采用队列中以前缀里最后一个已采用配置为基础合成：模型更新只替换模型字段，工具采用只替换 `tools/tool_sources`，二者互不淘汰。前缀尚无模型部分时工具采用返回 `InvalidInput("tool set adoption requires a model configuration")`，该分支走 `PrepareModelHost` 路径。只更新模型或工具部分时，`context/configured.system` 沿用上一次已采用的值。
 

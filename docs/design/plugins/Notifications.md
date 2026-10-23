@@ -164,7 +164,7 @@ Event-triggered notifications have no model-visible effect.
 
 | What the model sees | Form and position |
 | --- | --- |
-| `notify` declaration | Name, description `Send a short message to one of the user's configured notification channels.`, schema with `channel` as a string, in the adopted `context/configured` when listed in `SessionConfig.tools` |
+| `notify` declaration | Name, description `Send a short message to one of the user's configured notification channels.`, schema with `channel` as a string, in the adopted `context/configured` while Notifications is active |
 | `notify` outcome | `ToolResult.content` at the tool-result position of its batch; survives compaction only through the summary; child branches inherit results before their cut |
 | Non-interactive Sessions | Same declaration and results |
 | Never visible | Channel targets, credentials, delivery records, retry state, diagnostics |

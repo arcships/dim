@@ -283,7 +283,14 @@ async fn adopted(session: &Session, branch: &str, sources: &[(&str, &str)]) {
                     EventKind::ContextConfigured(data) => Some(data.settings.tool_sources.clone()),
                     _ => None,
                 });
-            if current.as_ref() == Some(&expected) {
+            let registered = current.as_ref().map(|sources| {
+                sources
+                    .iter()
+                    .filter(|source| !source.key.starts_with("#contributed:"))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            });
+            if registered.as_ref() == Some(&expected) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -475,7 +482,11 @@ async fn optional_contributors_do_not_gate_the_loop_and_follow_new_generations()
         .await
         .unwrap();
     session.idle("main").await.unwrap();
-    assert_eq!(declared(&requests(&session).await[0]), ["optional", "echo"]);
+    assert_eq!(
+        declared(&requests(&session).await[0]),
+        // `branch` is an active contribution, so it is offered unlisted.
+        ["optional", "echo", "branch"]
+    );
     assert_eq!(last_result(&session, "main").await, "generation 1");
     let snapshot = session.diagnostics().unwrap();
     let registry = snapshot
@@ -666,7 +677,10 @@ async fn contributors_are_current_for_the_first_request_without_initial_configur
     session.idle("main").await.unwrap();
     // Without a tool part each request declares the current contributors, so
     // the first request already reaches the provider's second generation.
-    assert_eq!(declared(&requests(&session).await[0]), ["optional", "echo"]);
+    assert_eq!(
+        declared(&requests(&session).await[0]),
+        ["optional", "echo", "branch"]
+    );
     assert_eq!(last_result(&session, "main").await, "generation 2");
     let id = session.id().to_owned();
     agent.close().await.unwrap();
@@ -680,7 +694,7 @@ async fn contributors_are_current_for_the_first_request_without_initial_configur
     restored.idle("main").await.unwrap();
     assert_eq!(
         declared(requests(&restored).await.last().unwrap()),
-        ["optional", "echo"]
+        ["optional", "echo", "branch"]
     );
     assert_eq!(last_result(&restored, "main").await, "generation 3");
     agent.close().await.unwrap();
@@ -806,7 +820,10 @@ async fn a_call_runs_the_version_its_request_declared_and_old_versions_are_relea
     hold.release.notify_one();
     session.idle("main").await.unwrap();
     assert_eq!(last_result(&session, "main").await, "v1 ran lookup");
-    assert_eq!(declared(&requests(&session).await[0]), ["gate", "lookup"]);
+    assert_eq!(
+        declared(&requests(&session).await[0]),
+        ["gate", "branch", "lookup"]
+    );
 
     // The next request declares and runs v2; binding it releases v1.
     env.turn(&session, "main", &["lookup"]).await;
@@ -820,7 +837,10 @@ async fn a_call_runs_the_version_its_request_declared_and_old_versions_are_relea
     let calls = log.calls.lock().unwrap().len();
     env.turn(&session, "main", &[]).await;
     assert_eq!(log.calls.lock().unwrap().len(), calls);
-    assert_eq!(declared(requests(&session).await.last().unwrap()), ["gate"]);
+    assert_eq!(
+        declared(requests(&session).await.last().unwrap()),
+        ["gate", "branch"]
+    );
     env.agent.close().await.unwrap();
 }
 
@@ -845,7 +865,10 @@ async fn conflicting_sets_are_rejected_whole_and_recover_once_the_name_is_free()
     assert!(state.0["mcp:c"].rejected.is_some());
     assert!(state.0["mcp:d"].rejected.is_some());
     env.turn(&session, "main", &[]).await;
-    assert_eq!(declared(&requests(&session).await[0]), ["gate", "find"]);
+    assert_eq!(
+        declared(&requests(&session).await[0]),
+        ["gate", "branch", "find"]
+    );
 
     // Withdrawing `a` frees the name: `b` is adopted as a whole.
     source.offer(vec![set("mcp:b", "b1", &["find", "other"], &log, None)]);
@@ -854,7 +877,7 @@ async fn conflicting_sets_are_rejected_whole_and_recover_once_the_name_is_free()
     assert_eq!(last_result(&session, "main").await, "b1 ran other");
     assert_eq!(
         declared(requests(&session).await.last().unwrap()),
-        ["gate", "find", "other"]
+        ["gate", "branch", "find", "other"]
     );
     env.agent.close().await.unwrap();
 }
@@ -896,6 +919,28 @@ async fn a_name_freed_in_the_same_refresh_admits_the_rejected_set() {
     env.turn(&session, "main", &["lookup"]).await;
     assert_eq!(last_result(&session, "main").await, "a1 ran lookup");
     env.agent.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_contributed_tool_is_offered_without_being_listed() {
+    // `branch` is contributed by a Session capability and is not named in the
+    // Session's tool list; the row being active is the opt-in (#364).
+    let (source, log) = (TestSource::new(), Arc::new(Log::default()));
+    source.seed(vec![set("mcp:a", "v1", &["lookup"], &log, None)]);
+    let env = env(source, None);
+    let session = env
+        .agent
+        .create_session(SessionConfig {
+            tools: vec!["gate".into()],
+            ..SessionConfig::default()
+        })
+        .await
+        .unwrap();
+    adopted(&session, "main", &[("mcp:a", "v1")]).await;
+    env.turn(&session, "main", &[]).await;
+    let declared = declared(&requests(&session).await[0]);
+    assert!(declared.contains(&"branch".to_owned()), "{declared:?}");
+    assert!(declared.contains(&"gate".to_owned()), "{declared:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -977,7 +1022,7 @@ async fn a_model_update_and_a_tool_adoption_both_take_effect() {
             .context_window,
         98765
     );
-    assert_eq!(declared(&request), ["gate", "lookup"]);
+    assert_eq!(declared(&request), ["gate", "branch", "lookup"]);
     assert_eq!(last_result(&session, "main").await, "v1 ran lookup");
     env.agent.close().await.unwrap();
 }
