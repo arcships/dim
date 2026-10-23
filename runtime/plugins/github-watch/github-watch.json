@@ -1,0 +1,15 @@
+{
+  "id": "github-watch",
+  "name": "@dimcode/github-watch",
+  "config": {
+    "intervalSeconds": 60,
+    "initial": "baseline"
+  },
+  "inject": ["sessions"],
+  "provides": {
+    "toolContribution:githubWatch": {
+      "declaration": "sync",
+      "execute": "async"
+    }
+  }
+}
