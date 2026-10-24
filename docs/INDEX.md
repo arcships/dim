@@ -9,7 +9,7 @@
 - [ADR 003 — Approval scope](adr/003-approval-scope.md)（[中文](zh/adr/003-approval-scope.md)）
 - [ADR 004 — Session-owned MCP and business configuration](adr/004-loader-plugin-management.md)
 - [ADR 005 — Observe runs through the Timeline and process logs](adr/005-observability.md)
-- [Instance-based plugin mounting](design/instance-plugin-mounting.md) (proposed, #370)
+- [Instance-based plugin mounting](design/instance-plugin-mounting.md) (proposed, targets rutis 0.16, #370)
 - [Architecture and ownership](architecture/README.md)
 - [Architecture decisions and implementation status](adr/README.md)
 - [Rust agent design documents](architecture/README.md#design-documents)
@@ -25,7 +25,7 @@
 - [Workflows in the CLI task view](design/workflow-task-view.md) (proposal, #264; existing management reads/stops)
 - [App Server and public provider bridge](../crates/dim-app-server/README.md)
 - [TypeScript plugin authoring and named-service types](typescript-plugin-authoring.md)
-- [Upgrading to rutis 0.15.0](design/rutis-0.15-upgrade.md) (design, not implemented)（[中文](zh/design/rutis-0.15-upgrade.md)）
+- [Upgrading to rutis 0.15.0](design/rutis-0.15-upgrade.md) (historical; superseded by the 0.16 assessment in the instance-mounting design)（[中文](zh/design/rutis-0.15-upgrade.md)）
 - [C4 Session TypeScript spike and measurements](design/session-typescript-spike.md)
 - [C4 Session TypeScript binding design](design/session-typescript.md)
 - [TypeScript process rows and management binding](design/process-typescript.md)

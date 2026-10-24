@@ -1,10 +1,18 @@
 # Upgrading to rutis 0.15.0
 
-Status: design, not implemented. This document is the upgrade contract for the
-`rutis`, `rutis-loader`, `rutis-bridge` and bundled Node runtime packages, from
-0.12.1 to 0.15.0. It replaces no other document; where a design describes rutis
-behaviour that changes here, that design is updated in the same change.
-[中文](../../zh/design/rutis-0.15-upgrade.md).
+> **Historical (2026-10-24).** Do not implement this document as written. It
+> assumes rutis 0.15.0's scope-filtered event delivery. rutis 0.15.1 changed
+> events to one flat bus, and 0.16.0 keeps that rule while removing the scope
+> compatibility shims. §4 (upward-only delivery), D2 (scopes replace instance
+> keys), D3 (downward events cannot work) and D4 (dispatch host events inside
+> the agent scope) no longer apply. The current assessment is in
+> [instance-plugin-mounting.md](instance-plugin-mounting.md#rutis-016-评估);
+> a 0.16 upgrade design must replace this one. The scoped implementation plan
+> and #362 are obsolete.
+
+Status: historical, not implemented. This document was the upgrade contract for
+the `rutis`, `rutis-loader`, `rutis-bridge` and bundled Node runtime packages,
+from 0.12.1 to 0.15.0. [中文](../../zh/design/rutis-0.15-upgrade.md).
 
 ## 1. Scope and why it is one step
 
