@@ -1019,6 +1019,17 @@ async fn node_session_typescript_creation_config_and_misplaced_rows() {
             "{:?}",
             entry.status
         );
+        // The row records only what it sees after it starts listening, and a
+        // Session is published without waiting for its optional rows: wait
+        // until it serves before the input it is asked about.
+        assert_ok(
+            &when_served(
+                &mut client,
+                "session.second.status",
+                json!({"sessionId":id}),
+            )
+            .await,
+        );
         submit(&mut client, &id, "native continues after a misplaced row").await;
         assert!(requests.recv().await.unwrap().contains(&"echo".into()));
         let sequence = server
