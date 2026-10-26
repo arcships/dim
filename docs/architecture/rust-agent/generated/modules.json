@@ -1722,6 +1722,49 @@
       ]
     },
     {
+      "id": "dim_app_server::plugins",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server",
+      "file": "crates/dim-app-server/src/plugins/mod.rs",
+      "unexpandedMacros": [
+        "json",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_app_server::plugins::directory",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::plugins",
+      "file": "crates/dim-app-server/src/plugins/directory.rs",
+      "unexpandedMacros": [
+        "format",
+        "json"
+      ]
+    },
+    {
+      "id": "dim_app_server::plugins::manager",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::plugins",
+      "file": "crates/dim-app-server/src/plugins/manager.rs",
+      "unexpandedMacros": [
+        "format",
+        "matches",
+        "serde_json::json",
+        "unreachable",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_app_server::plugins::persist",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::plugins",
+      "file": "crates/dim-app-server/src/plugins/persist.rs",
+      "unexpandedMacros": [
+        "format",
+        "vec"
+      ]
+    },
+    {
       "id": "dim_app_server::protocol",
       "crate": "dim_app_server",
       "parent": "dim_app_server",
@@ -11560,6 +11603,33 @@
     },
     {
       "from": "dim_app_server",
+      "to": "dim_app_server::plugins",
+      "references": [
+        "mod plugins",
+        "path plugins",
+        "path plugins::PluginDefaults",
+        "path plugins::PluginDefaults::default",
+        "path plugins::USER",
+        "path plugins::code_rows",
+        "path plugins::inserted"
+      ]
+    },
+    {
+      "from": "dim_app_server",
+      "to": "dim_app_server::plugins::manager",
+      "references": [
+        "path plugins::PluginManagerPlugin::new"
+      ]
+    },
+    {
+      "from": "dim_app_server",
+      "to": "dim_app_server::plugins::persist",
+      "references": [
+        "path plugins::UserLayer::new"
+      ]
+    },
+    {
+      "from": "dim_app_server",
       "to": "dim_app_server::protocol",
       "references": [
         "mod protocol",
@@ -12514,6 +12584,7 @@
       "from": "dim_app_server::cli",
       "to": "dim_agent_capabilities::defaults",
       "references": [
+        "path defaults",
         "path defaults::install",
         "path defaults::install_local_execution",
         "path defaults::mock_model_hosts",
@@ -12651,6 +12722,13 @@
       "to": "dim_app_server::pipe_client",
       "references": [
         "path crate::pipe_client::run"
+      ]
+    },
+    {
+      "from": "dim_app_server::cli",
+      "to": "dim_app_server::plugins::directory",
+      "references": [
+        "path crate::plugins::DefaultsFile::read"
       ]
     },
     {
@@ -15394,6 +15472,80 @@
       ]
     },
     {
+      "from": "dim_app_server::plugins",
+      "to": "dim_app_server::plugins::directory",
+      "references": [
+        "mod directory",
+        "use directory::DefaultsFile",
+        "use directory::read_plugin"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins",
+      "to": "dim_app_server::plugins::manager",
+      "references": [
+        "mod manager",
+        "use manager::PluginManagerPlugin"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins",
+      "to": "dim_app_server::plugins::persist",
+      "references": [
+        "mod persist",
+        "use persist::UserLayer"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::directory",
+      "to": "dim_app_server::plugins",
+      "references": [
+        "path PluginDefaults",
+        "use super::PluginDefaults"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::manager",
+      "to": "dim_agent_capabilities::methods",
+      "references": [
+        "path RpcError",
+        "path RpcError::app",
+        "path params",
+        "path reply",
+        "use dim_agent_capabilities::methods::Interruption",
+        "use dim_agent_capabilities::methods::MethodDecl",
+        "use dim_agent_capabilities::methods::RpcError",
+        "use dim_agent_capabilities::methods::params",
+        "use dim_agent_capabilities::methods::reply"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::manager",
+      "to": "dim_agent_runtime::names",
+      "references": [
+        "path Names",
+        "use dim_agent_runtime::Names"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::manager",
+      "to": "dim_app_server::methods",
+      "references": [
+        "path ManagementMethods",
+        "use crate::methods::ManagementMethods"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::manager",
+      "to": "dim_app_server::plugins",
+      "references": [
+        "path super::ASSEMBLY",
+        "path super::DEFAULTS",
+        "path super::LOCKED",
+        "path super::inserted"
+      ]
+    },
+    {
       "from": "dim_app_server::protocol",
       "to": "dim_agent_capabilities::methods",
       "references": [
@@ -16630,6 +16782,13 @@
       "to": "dim_app_server::agents::sessions",
       "references": [
         "path crate::agents::SessionPermissions"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_typescript::tests",
+      "to": "dim_app_server::plugins",
+      "references": [
+        "path crate::plugins::code_rows"
       ]
     },
     {

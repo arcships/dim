@@ -83,7 +83,7 @@ pub fn run_with(
     let mut mock_model = false;
     let mut node = None;
     let mut js_runtime = None;
-    let mut session_rows = None;
+    let mut plugin_defaults = None;
     let mut python = None;
     let mut args = argv.into_iter();
     while let Some(arg) = args.next() {
@@ -132,9 +132,9 @@ pub fn run_with(
                     args.next().ok_or("--js-runtime requires a path")?,
                 ))
             }
-            "--session-rows" => {
-                session_rows = Some(PathBuf::from(
-                    args.next().ok_or("--session-rows requires a path")?,
+            "--plugin-defaults" => {
+                plugin_defaults = Some(PathBuf::from(
+                    args.next().ok_or("--plugin-defaults requires a path")?,
                 ))
             }
             "--python" => {
@@ -144,7 +144,7 @@ pub fn run_with(
             }
             "--help" => {
                 println!(
-                    "dim-app-server (--product-home PATH | --model-config PATH | --mock-model) [--unix PATH | --pipe NAME] [--ws HOST:PORT | --no-ws] [--threads COUNT] [--home PATH | --database PATH] [--session-rows FILE] [--node PATH --js-runtime PATH] [--python PATH] [--web-assets PATH]\n\
+                    "dim-app-server (--product-home PATH | --model-config PATH | --mock-model) [--unix PATH | --pipe NAME] [--ws HOST:PORT | --no-ws] [--threads COUNT] [--home PATH | --database PATH] [--plugin-defaults FILE] [--node PATH --js-runtime PATH] [--python PATH] [--web-assets PATH]\n\
                      dim-app-server --export-timeline SESSION_ID --database PATH"
                 );
                 return Ok(());
@@ -152,11 +152,11 @@ pub fn run_with(
             _ => return Err(format!("Unknown argument: {arg}").into()),
         }
     }
-    if (node.is_some() || js_runtime.is_some()) && session_rows.is_none() {
-        return Err("--node and --js-runtime need --session-rows".into());
+    if node.is_some() != js_runtime.is_some() {
+        return Err("--node and --js-runtime go together".into());
     }
-    if python.is_some() && session_rows.is_none() {
-        return Err("--python needs --session-rows".into());
+    if python.is_some() && node.is_none() {
+        return Err("--python needs --node and --js-runtime".into());
     }
     if config.product_home.is_some() {
         config.managed_provider = managed_provider;
@@ -167,24 +167,22 @@ pub fn run_with(
     if config.web_assets.is_none() {
         config.web_assets = config.product_home.as_ref().map(|home| home.join("web"));
     }
-    if let Some(path) = session_rows {
-        let (Some(node), Some(js_runtime)) = (node, js_runtime) else {
-            return Err("--session-rows requires --node and --js-runtime".into());
+    // The default config file: its plugins' rows and which rows start
+    // disabled or are locked (PluginManager §7).
+    let (rows, defaults) = match &plugin_defaults {
+        Some(path) => crate::plugins::DefaultsFile::read(path)?,
+        None => (vec![], Default::default()),
+    };
+    config.plugin_defaults = defaults;
+    if let (Some(node), Some(js_runtime)) = (node, js_runtime) {
+        // Package names in rows resolve from the default config file; the
+        // rows of installed plugins name absolute entries.
+        let anchor = match &plugin_defaults {
+            Some(path) => std::fs::canonicalize(path)?,
+            None => std::fs::canonicalize(js_runtime.join("package.json"))?,
         };
-        // Package names in the rows resolve from the file's own location.
-        let unreadable =
-            |error: std::io::Error| format!("Cannot read Session rows {}: {error}", path.display());
-        let anchor = std::fs::canonicalize(&path).map_err(unreadable)?;
-        let bytes = std::fs::read(&anchor).map_err(unreadable)?;
-        let rows: Vec<serde_json::Value> = serde_json::from_slice(&bytes).map_err(|error| {
-            format!(
-                "Invalid Session rows {} at line {}, column {}",
-                path.display(),
-                error.line(),
-                error.column()
-            )
-        })?;
-        // `py:` modules are imported from the file's directory.
+        // `py:` modules are imported from the anchor's directory and from
+        // each Python plugin's directory.
         let python = python.map(|interpreter| PythonConfig {
             interpreter,
             project: anchor.parent().expect("a file has a directory").to_owned(),
@@ -196,6 +194,8 @@ pub fn run_with(
             python,
             rows,
         });
+    } else if !rows.is_empty() {
+        return Err("plugins with code need --node and --js-runtime".into());
     }
     if threads == 0 {
         return Err("--threads must be positive".into());

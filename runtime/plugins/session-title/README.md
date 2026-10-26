@@ -22,8 +22,9 @@ Pass the complete [session-title.json](session-title.json) row to
 The module and host use the same `inject`/`provides` declaration and Settings source; the row
 injects only `partRegistry` and provides nothing.
 This is an explicit optional installation, separate from the default CLI profile and release payload.
-The `dim-app-server` binary takes such rows with `--session-rows FILE` (a JSON array whose
-file location is the anchor); see the [App Server README](../../../crates/dim-app-server/README.md#session-typescript-embedding).
+The `dim-app-server` binary loads plugin directories listed in its default config file
+(`--plugin-defaults FILE`), each with a `plugin.json` row file; see the
+[App Server README](../../../crates/dim-app-server/README.md#session-typescript-embedding).
 
 The Session part's required named dependencies are `sessions`, `settings`, `sessionMetadata` and
 `auxiliaryModel`. An unavailable provider keeps the part Pending, including rename. Native Sessions

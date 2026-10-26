@@ -99,9 +99,9 @@ pub struct PythonConfig {
 /// The rows' `settings` entries (settings-service §3.1, §5.4): a row's
 /// package declares its sources next to `provides`, and the row id is their
 /// owner. Settings checks and compiles each declaration when it applies.
-pub(crate) fn settings_sources(config: &SessionTypeScriptConfig) -> Result<Vec<SourceDeclaration>> {
+pub(crate) fn settings_sources(rows: &[&Value]) -> Result<Vec<SourceDeclaration>> {
     let mut sources = Vec::new();
-    for row in &config.rows {
+    for row in rows {
         let Some(entries) = row.get("settings") else {
             continue;
         };
@@ -138,13 +138,16 @@ pub(crate) struct Parts {
     pub node: ForeignRuntime,
     pub python: Option<ForeignRuntime>,
     pub resolver: Arc<SessionResolver>,
-    /// The rows, without the host's fields.
-    pub rows: Vec<Value>,
 }
 
 impl Parts {
+    /// `rows` are the code rows of every layer: the embedder's, the default
+    /// plugins' and the installed ones. Their host fields (`settings`,
+    /// `instanceNames`, `root`) stay in the layers; the loader reads only
+    /// its own fields.
     pub fn new(
         config: &SessionTypeScriptConfig,
+        rows: &[&Value],
         builder: &mut AgentBuilder,
         file_roots: &[PathBuf],
     ) -> Result<Self> {
@@ -163,12 +166,12 @@ impl Parts {
         }
         let mut ids = HashSet::new();
         let mut snapshots = HashMap::new();
-        let mut rows = Vec::new();
+        let mut python_roots = Vec::new();
         // Before the rows register their names and the resolvers take the
         // catalog. Parts register their tools and method namespaces with
         // their owners, which provide their own dispatchers.
         share_names(builder.catalog_mut());
-        for row in &config.rows {
+        for row in rows {
             let id = row
                 .get("id")
                 .and_then(Value::as_str)
@@ -182,8 +185,14 @@ impl Parts {
             if !ids.insert(id) {
                 return Err(invalid("duplicate TypeScript row id"));
             }
-            if name.starts_with("py:") && config.python.is_none() {
-                return Err(invalid("a py: row needs the Python runtime"));
+            if name.starts_with("py:") {
+                if config.python.is_none() {
+                    return Err(invalid("a py: row needs the Python runtime"));
+                }
+                // A plugin directory is its module's import root.
+                if let Some(root) = row.get("root").and_then(Value::as_str) {
+                    python_roots.push(PathBuf::from(root));
+                }
             }
             if !matches!(row.get("disabled"), None | Some(Value::Bool(_))) {
                 return Err(invalid("row disabled must be boolean"));
@@ -263,14 +272,6 @@ impl Parts {
                 }
             }
             snapshots.insert(name.to_owned(), provides.clone());
-            // `settings` is the host's input to Settings and `instanceNames`
-            // went to the catalog: neither is a loader field.
-            let mut row = row.clone();
-            if let Value::Object(fields) = &mut row {
-                fields.remove("settings");
-                fields.remove("instanceNames");
-            }
-            rows.push(row);
         }
         let node = LocalRuntime::node(&config.js_runtime, &config.anchor)
             .interpreter(config.node.clone())
@@ -278,8 +279,10 @@ impl Parts {
         let node = ForeignRuntime::new("session-node", node, RuntimeResolver::node, builder);
         // Named `py`, so its rows are named `py:<module>`.
         let python = config.python.as_ref().map(|python| {
-            let runtime =
-                LocalRuntime::python(&python.project).interpreter(python.interpreter.clone());
+            let runtime = python_roots.iter().fold(
+                LocalRuntime::python(&python.project).interpreter(python.interpreter.clone()),
+                |runtime, root| runtime.python_path(root),
+            );
             ForeignRuntime::new("py", runtime, RuntimeResolver::modules, builder)
         });
         let resolver = Arc::new(SessionResolver {
@@ -292,7 +295,6 @@ impl Parts {
             node,
             python,
             resolver,
-            rows,
         })
     }
     /// The runtimes the rows run in: Node, then Python if configured.
@@ -484,7 +486,8 @@ mod tests {
                 "provides": {"toolContribution:ask_user": {}},
             })],
         };
-        let error = match Parts::new(&config, &mut builder, &[]) {
+        let rows = crate::plugins::code_rows(&config.rows);
+        let error = match Parts::new(&config, &rows, &mut builder, &[]) {
             Ok(_) => panic!("a removed contribution family must be refused"),
             Err(error) => error,
         };

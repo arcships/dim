@@ -462,19 +462,39 @@ and Session method namespaces from its own `apply`, with the `toolRegistry` and 
 services it injects; the row's `RowSchema.provides` lists only the process services it provides by name. See the [binding contract](../../docs/design/session-typescript.md)
 and [typed authoring example](../../docs/typescript-plugin-authoring.md#session-tools-and-client-methods).
 
-The `dim-app-server` binary builds this configuration from `--session-rows FILE` with the
-existing `--node` and `--js-runtime` flags, and `--python PATH` for `py:` rows. `FILE` is a JSON
-array of ordinary loader rows, one per plugin; it is also the anchor, so package names in the
-rows resolve from its location and `py:` modules are imported from its directory. Rows are
-validated as they are for an embedding host; nothing is installed by default. Optional packages such as
-[SessionTitle](../../runtime/plugins/session-title/README.md) and Goal are enabled this way:
+The rows of `SessionTypeScriptConfig` are the loader's `defaults` layer: a plugin directory's
+group row (`plugins::read_plugin`) or an ordinary process row. The `dim-app-server` binary builds
+this configuration from `--node` and `--js-runtime`, `--python PATH` for `py:` rows, and
+`--plugin-defaults FILE`, the default config file
+([PluginManager §7](../../docs/design/plugins/PluginManager.md#7-built-in-plugins-and-the-default-config-file)):
+
+```json
+{ "plugins": ["./session-title", "./goal"], "disabled": [], "locked": ["Rpc", "Transport"] }
+```
+
+`plugins` are plugin directories relative to the file, each with a `plugin.json` row file
+(`entry`, `inject`, `provides`, `instanceNames`, `config`, and `settings` until sources register in
+code); `disabled` rows start off; `locked` rows cannot be disabled and are the rows startup waits
+for (without a `locked` list every host row is). The file is the Node runtime's anchor, and `py:`
+modules are imported from its directory and from each Python plugin's directory. With `--node`
+and `--js-runtime` alone the Node runtime runs with no default plugin.
 
 ```sh
 dim-app-server --product-home /absolute/product-home --home /absolute/product-home/rust \
   --node /absolute/node-executable \
   --js-runtime /absolute/runtime/node_modules/@arcships/rutis-runtime \
-  --session-rows /absolute/runtime/session-rows.json
+  --plugin-defaults /absolute/plugins.default.json
 ```
+
+### Plugin management
+
+The loader composes four layers: `assembly` (host rows), `defaults` (above), `user` and `locked`.
+`user` is the only editable layer; with `--home` it is persisted as `plugins.json` in that
+directory (a JSON array of the layer's patches, replaced atomically), otherwise it lives in
+memory. The management namespace `plugin` maps onto loader operations: `plugin.list` projects the
+top-level rows (`{id, kind: builtin|default|installed, enabled, locked, status, waitingFor?, error?}`)
+and `plugin.set_enabled {id, enabled}` sets a row's `disabled` flag in the `user` layer
+(`plugin_not_found`, `plugin_locked`). A disabled plugin stays disabled after a restart.
 
 Rows that declare Settings sources need `--product-home` or `--home`. Without the flag, their
 namespaces answer `unknown_method` and are absent from `session.methods`.

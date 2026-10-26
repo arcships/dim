@@ -2182,17 +2182,32 @@ async fn node_session_typescript_row_reload_settles_tools_and_rejects_retained_h
     server.join().await.unwrap();
 }
 
-/// `dim-app-server --session-rows` installs the file's rows as the
-/// Session TypeScript parts; without it the namespace is unknown.
+/// `dim-app-server --plugin-defaults` loads the default config file's
+/// plugin directories; without it the namespace is unknown.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
-async fn node_session_rows_flag_installs_session_methods() {
+async fn node_plugin_defaults_flag_loads_default_plugins() {
     use std::process::Stdio;
     let parts = fixture();
     let directory = PathBuf::from("/tmp").join(format!("dim-rows-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&directory).unwrap();
-    let rows = directory.join("session-rows.json");
-    std::fs::write(&rows, serde_json::to_vec(&parts.rows).unwrap()).unwrap();
+    // A plugin directory whose entry is the fixture, and the file naming it.
+    let plugin = directory.join("example");
+    std::fs::create_dir_all(&plugin).unwrap();
+    std::fs::write(
+        plugin.join("index.ts"),
+        format!(
+            "export {{ default }} from {:?}\n",
+            parts.rows[0]["name"].as_str().unwrap()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        plugin.join("plugin.json"),
+        json!({"entry": "index.ts", "provides": {}}).to_string(),
+    )
+    .unwrap();
+    let rows = directory.join("plugins.default.json");
+    std::fs::write(&rows, json!({"plugins": ["./example"]}).to_string()).unwrap();
     for installed in [true, false] {
         let socket = directory.join(format!("ipc-{installed}/server.sock"));
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_dim-app-server"));
@@ -2205,7 +2220,7 @@ async fn node_session_rows_flag_installs_session_methods() {
         if installed {
             command.arg("--node").arg(&parts.node);
             command.arg("--js-runtime").arg(&parts.js_runtime);
-            command.arg("--session-rows").arg(&rows);
+            command.arg("--plugin-defaults").arg(&rows);
         }
         let mut child = command
             .stdout(Stdio::piped())

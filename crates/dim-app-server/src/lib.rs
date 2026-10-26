@@ -18,6 +18,7 @@ pub mod permission_rules;
 #[cfg(windows)]
 mod pipe_client;
 pub mod plugin_files;
+pub mod plugins;
 pub mod protocol;
 pub mod provider;
 pub mod session_typescript;
@@ -63,6 +64,9 @@ pub struct ServerConfig {
     /// A managed provider plugin built outside this repository.
     pub managed_provider: Option<managed_provider::ManagedProviderRow>,
     pub session_typescript: Option<session_typescript::SessionTypeScriptConfig>,
+    /// What the default config file decides besides its plugins' rows,
+    /// which are in `session_typescript.rows` (PluginManager §7).
+    pub plugin_defaults: plugins::PluginDefaults,
     pub daemon_profile: protocol::DaemonProfile,
     /// Admission is disabled until the product execution profile is installed.
     pub session_execution: bool,
@@ -90,6 +94,7 @@ impl Default for ServerConfig {
             product_home: None,
             managed_provider: None,
             session_typescript: None,
+            plugin_defaults: plugins::PluginDefaults::default(),
             daemon_profile: protocol::DaemonProfile::Mock,
             session_execution: true,
             model_catalog: None,
@@ -395,6 +400,26 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         }
     }
     config.file_roots = file_roots;
+    // The loader's editable layer, persisted in the App Server home; without
+    // a home it lives in memory (PluginManager §3.1).
+    let user_layer = config
+        .target_home
+        .as_deref()
+        .map(plugins::UserLayer::new)
+        .map(Arc::new);
+    let (user_patches, user_version) = match &user_layer {
+        Some(layer) => layer.read().map_err(ServerError::Configuration)?,
+        None => (vec![], rutis_loader::edit::Version::default()),
+    };
+    // Every plugin row of the `defaults` and `user` layers, and their code
+    // rows, which the catalog and Settings take before the loader is built.
+    let mut plugin_rows = config
+        .session_typescript
+        .as_ref()
+        .map(|parts| parts.rows.clone())
+        .unwrap_or_default();
+    let default_count = plugin_rows.len();
+    plugin_rows.extend(plugins::inserted(&user_patches));
     let product_root = if let Some(home) = &config.product_home {
         std::fs::create_dir_all(home)?;
         let home = std::fs::canonicalize(home)?;
@@ -593,12 +618,8 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             Ok(Box::new(provider::ProviderPlugin::new(names)?))
         })?);
     }
-    let settings_sources = config
-        .session_typescript
-        .as_ref()
-        .map(session_typescript::settings_sources)
-        .transpose()?
-        .unwrap_or_default();
+    let code_rows = plugins::code_rows(&plugin_rows);
+    let settings_sources = session_typescript::settings_sources(&code_rows)?;
     let settings_root = execution_root.or(product_root);
     if settings_root.is_none() && !settings_sources.is_empty() {
         return Err(ServerError::Configuration(
@@ -688,7 +709,9 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     let session_parts = config
         .session_typescript
         .as_ref()
-        .map(|parts| session_typescript::Parts::new(parts, &mut builder, &config.file_roots))
+        .map(|parts| {
+            session_typescript::Parts::new(parts, &code_rows, &mut builder, &config.file_roots)
+        })
         .transpose()?;
     if let Some(parts) = &session_parts {
         let runtimes = parts.runtimes().zip([
@@ -717,6 +740,9 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             )?);
         }
     }
+    rows.push(register_part(&mut builtins, builder.catalog(), |names| {
+        Ok(Box::new(plugins::PluginManagerPlugin::new(names)?))
+    })?);
     agents::register(&mut builtins);
     rows.push(register_part(&mut builtins, builder.catalog(), |_| {
         Ok(Box::new(agents::AgentDirectoryPlugin))
@@ -802,9 +828,9 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     }
     // Register every host module before allocating scoped module names.
     // Agents, Sessions and branches are instances of this same loader.
-    let reserved_names = session_parts
+    let reserved_names = plugin_rows
         .iter()
-        .flat_map(|parts| &parts.rows)
+        .chain(code_rows.iter().copied())
         .flat_map(|row| [&row["id"], &row["name"]])
         .filter_map(serde_json::Value::as_str);
     let session_row = match builder.install(&mut builtins, reserved_names).await {
@@ -824,22 +850,27 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         .map(|name| serde_json::json!({ "id": name, "name": name }))
         .collect();
     rows.push(agents::group_row(&builder, session_row));
+    // The rows startup waits for and fails on: the locked ones (PluginManager
+    // §3.3); every other row is optional. An embedder that locks nothing
+    // requires every host row.
+    let locked = &config.plugin_defaults.locked;
     let required = rows
         .iter()
         .map(|row| row["id"].as_str().expect("host row id").to_owned())
+        .filter(|id| locked.is_empty() || locked.contains(id))
         .collect();
-    if let Some(parts) = &session_parts {
-        for row in &parts.rows {
-            if rows
-                .iter()
-                .any(|host| row["id"] == host["id"] || row["name"] == host["name"])
-            {
-                return Err(ServerError::Configuration(
-                    "TypeScript row collides with a host row".into(),
-                ));
-            }
+    for row in plugin_rows.iter().chain(code_rows.iter().copied()) {
+        let named =
+            |host: &serde_json::Value| row["name"].is_string() && row["name"] == host["name"];
+        if rows
+            .iter()
+            .any(|host| row["id"] == host["id"] || named(host))
+        {
+            return Err(ServerError::Configuration(format!(
+                "plugin row {} collides with a host row",
+                row["id"]
+            )));
         }
-        rows.extend(parts.rows.clone());
     }
     let runtime_rows = session_parts
         .iter()
@@ -854,6 +885,10 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         resolver,
         rutis_loader::LoaderOptions {
             catalog: builder.catalog().clone(),
+            persist: match user_layer {
+                Some(layer) => layer,
+                None => Arc::new(rutis_loader::edit::NoPersist),
+            },
             ..Default::default()
         },
     );
@@ -865,13 +900,21 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         runtime_rows,
         required,
     };
-    let assembly = rutis_loader::Layer::new(
-        "assembly",
-        vec![rutis_loader::Patch {
-            insert: Some(rows),
-            ..Default::default()
-        }],
-    );
+    let layers = vec![
+        rutis_loader::Layer::new(
+            plugins::ASSEMBLY,
+            vec![rutis_loader::Patch {
+                insert: Some(rows),
+                ..Default::default()
+            }],
+        ),
+        plugins::defaults_layer(
+            plugin_rows[..default_count].to_vec(),
+            &config.plugin_defaults,
+        ),
+        rutis_loader::Layer::new(plugins::USER, user_patches),
+        plugins::locked_layer(&config.plugin_defaults),
+    ];
     // One deadline covers the loader, the reconcile and the rows: reconcile
     // waits while a row is Loading, so a hung `apply` must not outlive it.
     let deadline = tokio::time::Instant::now() + config.startup_timeout;
@@ -884,7 +927,13 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             &CancellationToken::new(),
         )
         .await?;
-        let reconcile = processes.loader.reconcile(vec![assembly.clone()], None);
+        let reconcile = processes.loader.reconcile(
+            layers,
+            Some(rutis_loader::edit::Editable::new(
+                plugins::USER,
+                user_version,
+            )),
+        );
         let report = match tokio::time::timeout_at(deadline, reconcile).await {
             Ok(report) => report.map_err(|error| AgentError::Build(error.to_string()))?,
             // The deadline has passed: this names the rows not yet Active.
