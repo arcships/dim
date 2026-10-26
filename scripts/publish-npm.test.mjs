@@ -18,8 +18,8 @@ const platforms = [
 function fixture(t, version = '1.2.3', shipped = platforms) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'dim-npm-release-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  // The Web workspace package ships with every release, before the wrapper.
-  const names = [...shipped.map(([platform]) => `dimcode-${platform}`), 'dimcode-web', 'dimcode'];
+  // The Web workspace and plugins packages ship with every release, before the wrapper.
+  const names = [...shipped.map(([platform]) => `dimcode-${platform}`), 'dimcode-web', 'dimcode-plugins', 'dimcode'];
   const manifest = { sourceCommit, version, npmPackages: [] };
   for (const name of names) {
     const directory = path.join(root, name);
@@ -30,7 +30,7 @@ function fixture(t, version = '1.2.3', shipped = platforms) {
     if (name === 'dimcode') {
       metadata.optionalDependencies = Object.fromEntries(names.slice(0, -1).map((name) => [name, version]));
       metadata.bin = { dim: 'bin/dim.mjs', dimcode: 'bin/dim.mjs' };
-    } else if (name === 'dimcode-web') {
+    } else if (name === 'dimcode-web' || name === 'dimcode-plugins') {
       // Platform-independent: no os or cpu.
     } else {
       const [, os, cpu] = platforms.find(([platform]) => name === `dimcode-${platform}`);
@@ -99,7 +99,7 @@ test('validates without publishing and publishes the wrapper after every platfor
   const published = release.run({ publish: true });
   assert.equal(published.status, 0, published.stderr);
   const calls = readFileSync(release.log, 'utf8').trim().split('\n');
-  assert.equal(calls.length, 8);
+  assert.equal(calls.length, 9);
   for (const [index, name] of release.names.entries()) {
     assert.equal(calls[index], `publish ${path.join(release.root, `${name}-1.2.3.tgz`)} --access public --tag latest --ignore-scripts --registry https://registry.npmjs.org`);
   }
@@ -111,7 +111,7 @@ test('only an alpha ships a subset of platforms, with a wrapper referencing exac
   const published = alpha.run({ local: true, versions: ['1.2.3-beta.0'] });
   assert.equal(published.status, 0, published.stderr);
   assert.deepEqual(readFileSync(alpha.log, 'utf8').trim().split('\n').map((call) => path.basename(call.split(' ')[1])),
-    ['dimcode-darwin-arm64-1.2.3-alpha.0.tgz', 'dimcode-web-1.2.3-alpha.0.tgz', 'dimcode-1.2.3-alpha.0.tgz']);
+    ['dimcode-darwin-arm64-1.2.3-alpha.0.tgz', 'dimcode-web-1.2.3-alpha.0.tgz', 'dimcode-plugins-1.2.3-alpha.0.tgz', 'dimcode-1.2.3-alpha.0.tgz']);
   const stable = fixture(t, '1.2.3', darwin);
   assert.notEqual(stable.run().status, 0);
   assert.equal(readFileSync(stable.log, 'utf8'), '');
@@ -149,7 +149,7 @@ test('each channel publishes to its own dist-tag', (t) => {
     const published = release.run({ publish: true });
     assert.equal(published.status, 0, published.stderr);
     const calls = readFileSync(release.log, 'utf8').trim().split('\n');
-    assert.equal(calls.length, 8);
+    assert.equal(calls.length, 9);
     for (const call of calls) assert(call.endsWith(`--tag ${tag} --ignore-scripts --registry https://registry.npmjs.org`));
   }
   assert.notEqual(fixture(t, '1.2.3-rc.1').run().status, 0);
@@ -163,7 +163,7 @@ test('publishes only alphas from a local build', (t) => {
   const published = alpha.run({ local: true });
   assert.equal(published.status, 0, published.stderr);
   const calls = readFileSync(alpha.log, 'utf8').trim().split('\n');
-  assert.equal(calls.length, 8);
+  assert.equal(calls.length, 9);
   for (const call of calls) assert(call.includes('--tag alpha'));
 });
 
@@ -181,7 +181,7 @@ test('rejects an alpha that would outrank the newest beta before registry writes
   const resumed = release.run({publish:true,registry:'existing'});
   assert.equal(resumed.status,0,resumed.stderr);
   const calls = readFileSync(release.log,'utf8').trim().split('\n');
-  assert.equal(calls.length,7);
+  assert.equal(calls.length,8);
   assert(calls[0].includes('dimcode-darwin-x64-1.2.3.tgz'));
   writeFileSync(release.log,'');
   assert.notEqual(release.run({publish:true,registry:'mismatch'}).status,0);

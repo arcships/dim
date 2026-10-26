@@ -137,6 +137,44 @@ test('stages the Web workspace as one native archive and npm package with its pr
   assert.equal(existsSync(path.join(temporary,'again')),false);
 });
 
+test('stages the default plugins as one npm package of JavaScript with pinned dependencies', {skip:process.platform==='win32'}, (t)=>{
+  const temporary=fixture(t);
+  const output=path.join(temporary,'plugins');
+  const staged=run('stage-plugins.mjs',[output,version,commit]);
+  assert.equal(staged.status,0,staged.stderr);
+  const manifest=JSON.parse(readFileSync(path.join(output,'release-manifest.json')));
+  assert.equal(manifest.platform,'plugins');
+  assert.deepEqual(manifest.npmPackages.map(({name,file})=>[name,file]),[['dimcode-plugins',`dimcode-plugins-${version}.tgz`]]);
+  assert.deepEqual(manifest.nativeArchives,[]);
+  const defaults=JSON.parse(readFileSync(path.join(root,'runtime/plugins.default.json')));
+  const files=Object.keys(manifest.files);
+  assert(files.includes('plugins.default.json'));
+  for(const plugin of defaults.plugins.map((relative)=>relative.slice('./plugins/'.length))) {
+    assert(files.includes(`plugins/${plugin}/index.js`),plugin);
+    assert(files.includes(`plugins/${plugin}/plugin.json`),plugin);
+  }
+  // Node does not strip types under node_modules: only JavaScript ships.
+  assert.deepEqual(files.filter((file)=>file.endsWith('.ts')),[]);
+  const read=(file)=>spawnSync('tar',['-xOzf',path.join(output,`dimcode-plugins-${version}.tgz`),`package/${file}`],{encoding:'utf8'});
+  assert.equal(JSON.parse(read('plugins/web/plugin.json').stdout).entry,'index.js');
+  assert.doesNotMatch(read('plugins/goal/index.js').stdout,/\.ts['"]/);
+  const metadata=JSON.parse(read('package.json').stdout);
+  assert.equal(metadata.name,'dimcode-plugins');
+  assert.equal(metadata.os,undefined);
+  const runtime=JSON.parse(readFileSync(path.join(root,'runtime/package.json')));
+  assert.equal(metadata.dependencies['@arcships/rutis-runtime'],runtime.dependencies['@arcships/rutis-runtime']);
+  assert(Object.values(metadata.dependencies).every((wanted)=>/^\d+\.\d+\.\d+$/.test(wanted)));
+  // Every compiled module parses.
+  const unpacked=path.join(temporary,'unpacked');
+  mkdirSync(unpacked);
+  assert.equal(spawnSync('tar',['-xzf',path.join(output,`dimcode-plugins-${version}.tgz`),'-C',unpacked]).status,0);
+  for(const file of files.filter((file)=>file.endsWith('.js'))) {
+    const checked=spawnSync(process.execPath,['--check',path.join(unpacked,'package',file)],{encoding:'utf8'});
+    assert.equal(checked.status,0,`${file}: ${checked.stderr}`);
+  }
+  assert.notEqual(run('stage-plugins.mjs',[output,version,commit]).status,0,'an existing destination is refused');
+});
+
 test('an account build records the account and stages only its executable', {skip:process.platform==='win32'}, (t)=>{
   const temporary=fixture(t);
   const bin=path.join(temporary,'bin');
@@ -220,12 +258,16 @@ test('collects exact platform packages, installs wrapper offline and rejects inc
   writeFileSync(path.join(dist,'index.html'),'<!doctype html>');
   const web=run('stage-web.mjs',[path.join(temporary,'release-web'),version,commit,'--dist',dist]);
   assert.equal(web.status,0,web.stderr);
+  const plugins=run('stage-plugins.mjs',[path.join(temporary,'release-plugins'),version,commit]);
+  assert.equal(plugins.status,0,plugins.stderr);
   const complete=path.join(temporary,'complete');
   const collected=run('collect-release.mjs',[temporary,complete]);
   assert.equal(collected.status,0,collected.stderr);
   assert.equal(run('check-native.mjs',[path.join(complete,'native'),version,commit]).status,0);
   const wrapper=JSON.parse(spawnSync('tar',['-xOzf',path.join(complete,'npm',`dimcode-${version}.tgz`),'package/package.json'],{encoding:'utf8'}).stdout);
   assert.equal(wrapper.optionalDependencies['dimcode-web'],version);
+  assert.equal(wrapper.optionalDependencies['dimcode-plugins'],version);
+  assert.equal(existsSync(path.join(complete,'npm',`dimcode-plugins-${version}.tgz`)),true);
   if(process.platform!=='win32') {
     const current=`dimcode-${process.platform}-${process.arch}`;
     const installed=path.join(temporary,'installation');

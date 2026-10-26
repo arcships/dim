@@ -220,6 +220,8 @@ jobs:
           set -euo pipefail
           # The frontend is one artifact for every platform, built here once.
           node scripts/stage-web.mjs staging/platforms/release-web "$RELEASE_VERSION" "$SOURCE_SHA"
+          # The TypeScript plugins are one platform-independent package.
+          node scripts/stage-plugins.mjs staging/platforms/release-plugins "$RELEASE_VERSION" "$SOURCE_SHA"
           node scripts/collect-release.mjs staging/platforms staging/complete
           node scripts/check-native.mjs staging/complete/native "$RELEASE_VERSION" "$SOURCE_SHA"
       - uses: actions/upload-artifact@v7

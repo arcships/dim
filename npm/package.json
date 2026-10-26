@@ -3,16 +3,43 @@
   "version": "0.1.0-alpha.6",
   "description": "Dim Rust coding agent CLI",
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/arcships/dim.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arcships/dim.git"
+  },
   "type": "module",
-  "bin": { "dim": "bin/dimcode.mjs", "dimcode": "bin/dimcode.mjs" },
-  "files": ["bin", "README.md", "LICENSE", "plugin.d.ts", "branch-services.d.ts"],
-  "typesVersions": { "*": { "plugin": ["plugin.d.ts"] } },
-  "engines": { "node": "^22.19.0 || >=23.11.0" },
-  "peerDependencies": { "@arcships/rutis": "~0.17.0" },
-  "peerDependenciesMeta": { "@arcships/rutis": { "optional": true } },
+  "bin": {
+    "dim": "bin/dimcode.mjs",
+    "dimcode": "bin/dimcode.mjs"
+  },
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE",
+    "plugin.d.ts",
+    "branch-services.d.ts"
+  ],
+  "typesVersions": {
+    "*": {
+      "plugin": [
+        "plugin.d.ts"
+      ]
+    }
+  },
+  "engines": {
+    "node": "^22.19.0 || >=23.11.0"
+  },
+  "peerDependencies": {
+    "@arcships/rutis": "~0.17.0"
+  },
+  "peerDependenciesMeta": {
+    "@arcships/rutis": {
+      "optional": true
+    }
+  },
   "optionalDependencies": {
     "dimcode-web": "0.1.0-alpha.6",
+    "dimcode-plugins": "0.1.0-alpha.6",
     "dimcode-darwin-arm64": "0.1.0-alpha.6",
     "dimcode-darwin-x64": "0.1.0-alpha.6",
     "dimcode-linux-arm64": "0.1.0-alpha.6",

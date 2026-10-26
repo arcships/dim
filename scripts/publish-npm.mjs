@@ -42,9 +42,9 @@ const shipped = platforms.filter(([platform]) => manifest.npmPackages.some(({ na
 assert(shipped.length === platforms.length || (tag === 'alpha' && shipped.length > 0),
   'Release must contain all six platform packages and one wrapper');
 // The Web workspace is one package for every platform.
-const names = [...shipped.map(([platform]) => `dimcode-${platform}`), 'dimcode-web', 'dimcode'];
+const names = [...shipped.map(([platform]) => `dimcode-${platform}`), 'dimcode-web', 'dimcode-plugins', 'dimcode'];
 assert.deepEqual(manifest.npmPackages.map(({ name }) => name).sort(), [...names].sort(),
-  'Release must contain exactly its platform packages, the Web workspace and one wrapper');
+  'Release must contain exactly its platform packages, the Web workspace, the plugins and one wrapper');
 
 if (mode === '--publish') {
   const release = JSON.parse(readFileSync(releasePath, 'utf8'));
@@ -81,7 +81,7 @@ for (const name of names) {
     assert.equal(typeof metadata.bin?.dim, 'string', 'Missing dim command');
     assert(metadata.bin.dim.length > 0 && metadata.bin.dimcode === metadata.bin.dim,
       'dim and dimcode must use the same wrapper');
-  } else if (name === 'dimcode-web') {
+  } else if (name === 'dimcode-web' || name === 'dimcode-plugins') {
     assert.equal(metadata.os, undefined, 'The Web workspace package is platform-independent');
     assert.equal(metadata.cpu, undefined, 'The Web workspace package is platform-independent');
   } else {

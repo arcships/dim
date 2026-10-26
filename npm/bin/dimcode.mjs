@@ -29,6 +29,18 @@ if (env.DIMCODE_WEB_ASSETS === undefined) {
     // Not installed: `dimcode web` says how to get it.
   }
 }
+// The repository's TypeScript plugins are the optional dimcode-plugins package:
+// its default config file, the rutis runtime it depends on, and this Node.
+if (env.DIMCODE_PLUGIN_DEFAULTS === undefined) {
+  try {
+    const plugins = path.dirname(createRequire(import.meta.url).resolve('dimcode-plugins/package.json'));
+    env.DIMCODE_PLUGIN_DEFAULTS = path.join(plugins, 'plugins.default.json');
+    env.DIMCODE_JS_RUNTIME ??= path.dirname(createRequire(path.join(plugins, 'package.json')).resolve('@arcships/rutis-runtime/package.json'));
+    env.DIMCODE_NODE ??= process.execPath;
+  } catch {
+    // Not installed: the App Server runs only the plugins compiled into it.
+  }
+}
 // `process.execve` came with Node 22.15 and 23.11; an older Node, which npm
 // installs under with only an engines warning, spawns like Windows does.
 if (process.platform !== 'win32' && typeof process.execve === 'function') {

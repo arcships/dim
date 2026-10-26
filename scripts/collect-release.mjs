@@ -57,26 +57,45 @@ const web = (() => {
   }
   return {directory,manifest};
 })();
+// The TypeScript plugins: one platform-independent package, from stage-plugins.mjs.
+const plugins = (() => {
+  const directory = path.resolve(source,'release-plugins');
+  const manifest = JSON.parse(readFileSync(path.join(directory,'release-manifest.json')));
+  assert.equal(manifest.schemaVersion,1,'Unknown plugins release schema');
+  assert.equal(manifest.platform,'plugins','Plugins artifact platform mismatch');
+  assert.equal(manifest.version,first.version,'Plugins artifact version mismatch');
+  assert.equal(manifest.sourceCommit,first.sourceCommit,'Plugins artifact source mismatch');
+  assert.equal(manifest.npmPackages.length,1,'Unexpected plugins package count');
+  assert.equal(manifest.nativeArchives.length,0,'The plugins have no native archive');
+  const [entry] = manifest.npmPackages;
+  assert.equal(entry.file,`dimcode-plugins-${manifest.version}.tgz`,'Unexpected plugins artifact filename');
+  assert(/^[a-f0-9]{64}$/.test(entry.sha256),'Invalid plugins artifact digest');
+  const archive = path.join(directory,entry.file);
+  assert(lstatSync(archive).isFile(),'Plugins artifact must be a regular file');
+  assert.equal(createHash('sha256').update(readFileSync(archive)).digest('hex'),entry.sha256,'Plugins artifact digest mismatch');
+  return {directory,manifest};
+})();
 const metadata = JSON.parse(readFileSync(path.join(repo,'npm/package.json')));
 assert.equal(metadata.version,first.version,'Wrapper version mismatch');
 assert(Object.values(metadata.optionalDependencies).every((version) => version === first.version),'Wrapper dependency version mismatch');
 assert.equal(metadata.optionalDependencies['dimcode-web'],first.version,'Wrapper must list dimcode-web');
+assert.equal(metadata.optionalDependencies['dimcode-plugins'],first.version,'Wrapper must list dimcode-plugins');
 const scratch = mkdtempSync(path.join(os.tmpdir(),'dimcode-collect-'));
 try {
   const npm = path.join(output,'npm');
   const native = path.join(output,'native');
   mkdirSync(npm,{recursive:true});
   mkdirSync(native);
-  for (const {directory,manifest} of [...manifests, web]) {
+  for (const {directory,manifest} of [...manifests, web, plugins]) {
     copyFileSync(path.join(directory,manifest.npmPackages[0].file),path.join(npm,manifest.npmPackages[0].file));
-    copyFileSync(path.join(directory,manifest.nativeArchives[0].file),path.join(native,manifest.nativeArchives[0].file));
+    for (const {file} of manifest.nativeArchives) copyFileSync(path.join(directory,file),path.join(native,file));
   }
   cpSync(path.join(repo,'npm'),path.join(scratch,'package'),{recursive:true});
   if (platforms.length < all.length) {
     // The wrapper references only the platform packages this release ships.
     const wrapper = path.join(scratch,'package/package.json');
     const data = JSON.parse(readFileSync(wrapper));
-    data.optionalDependencies = Object.fromEntries([['dimcode-web', first.version], ...platforms.map((platform) => [`dimcode-${platform}`, first.version])]);
+    data.optionalDependencies = Object.fromEntries([['dimcode-web', first.version], ['dimcode-plugins', first.version], ...platforms.map((platform) => [`dimcode-${platform}`, first.version])]);
     writeFileSync(wrapper,`${JSON.stringify(data,null,2)}\n`);
   }
   copyFileSync(path.join(repo,'LICENSE'),path.join(scratch,'package/LICENSE'));
@@ -86,7 +105,7 @@ try {
   assert.ifError(packed.error);
   assert.equal(packed.status,0,'Wrapper archive creation failed');
   const result = {schemaVersion:1,...common(first),
-    npmPackages:[...manifests.flatMap(({manifest}) => manifest.npmPackages), ...web.manifest.npmPackages,
+    npmPackages:[...manifests.flatMap(({manifest}) => manifest.npmPackages), ...web.manifest.npmPackages, ...plugins.manifest.npmPackages,
       {name:'dimcode',file:archive,sha256:createHash('sha256').update(readFileSync(path.join(npm,archive))).digest('hex')}],
     nativeArchives:[...manifests.flatMap(({manifest}) => manifest.nativeArchives), ...web.manifest.nativeArchives],
   };
@@ -96,7 +115,7 @@ try {
   const checked = spawnSync(process.execPath,[path.join(repo,'scripts/publish-npm.mjs'),npm,first.version,first.sourceCommit],{stdio:'inherit'});
   assert.ifError(checked.error);
   assert.equal(checked.status,0,'Combined npm package validation failed');
-  console.log(`Collected ${platforms.length} verified platform artifacts and the Web workspace.`);
+  console.log(`Collected ${platforms.length} verified platform artifacts, the Web workspace and the plugins.`);
 } catch (error) {
   rmSync(output,{recursive:true,force:true});
   throw error;

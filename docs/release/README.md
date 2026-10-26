@@ -113,7 +113,7 @@ gh workflow run release.yml --ref main -f tag=vVERSION
 
 Preflight checks the exact tag commit is reachable from `origin/main`, and verifies the tag, Cargo workspace, npm wrapper/optional dependencies and runtime metadata have the same version. Every build checks out the resolved commit SHA. Six target jobs stage and pack their payloads. Assembly requires every target, matching toolchain/plugin provenance and valid artifact digests before creating a draft GitHub Release. Prerelease tags mark the draft as a prerelease. Release notes are generated from GitHub history and should be reviewed before publishing.
 
-The draft receives seven native archives (six platforms and the Web workspace), eight original npm tarballs (six platform packages, `dimcode-web` and the wrapper), `release-manifest.json` and `SHA256SUMS`: seventeen attachments in total. `SHA256SUMS` covers the native archives; the manifest records digests for both native and npm archives. npm tarballs are not published to a registry by this workflow. Existing releases, including drafts, are rejected to avoid replacing attachments. If an upload leaves an incomplete draft, inspect it and remove that draft only when authorized before retrying; keep its tag.
+The draft receives seven native archives (six platforms and the Web workspace), nine original npm tarballs (six platform packages, `dimcode-web`, `dimcode-plugins` and the wrapper), `release-manifest.json` and `SHA256SUMS`: eighteen attachments in total. `SHA256SUMS` covers the native archives; the manifest records digests for both native and npm archives. npm tarballs are not published to a registry by this workflow. Existing releases, including drafts, are rejected to avoid replacing attachments. If an upload leaves an incomplete draft, inspect it and remove that draft only when authorized before retrying; keep its tag.
 
 All Actions artifacts, including the disabled npm publication receipt, use `retention-days: 1`. GitHub Release attachments persist independently of Actions retention. A retry after artifacts expire must rebuild all targets.
 
@@ -126,9 +126,12 @@ cargo build --release --locked -p dimcode
 node scripts/stage-release.mjs target/release staging/local 0.1.0 FULL_SOURCE_COMMIT
 node scripts/pack-release.mjs staging/local release/local
 node scripts/stage-web.mjs release/web 0.1.0 FULL_SOURCE_COMMIT
+node scripts/stage-plugins.mjs release/plugins 0.1.0 FULL_SOURCE_COMMIT
 ```
 
 The executable carries no frontend. `stage-web.mjs` builds `web/` once (`npm ci`, `npm run build`), records `web/dimcode-web.json` (`version`, `protocolVersion`, `sourceCommit`) beside it and packs the tree as `dimcode-web-VERSION.tar.gz` and the npm package `dimcode-web`, which the wrapper lists as an optional dependency and names to the executable through `DIMCODE_WEB_ASSETS`. A native-archive user unpacks `dimcode-web-VERSION.tar.gz` so that `web/index.html` sits beside the executable's `bin/` or in `<product home>/web`. A build that must carry the frontend uses `cargo build --features embedded-web`, which needs npm on the build host.
+
+`stage-plugins.mjs` packs the default config file's TypeScript plugins as the platform-independent npm package `dimcode-plugins`, with no native archive. Node does not strip types under `node_modules`, so each plugin ships as JavaScript (its TypeScript with the types stripped and relative `.ts` imports renamed `.js`). The package's own pinned dependencies are the plugins' npm dependencies and `@arcships/rutis-runtime`, which npm installs for the user's platform. The wrapper lists it as an optional dependency and names its `plugins.default.json`, the rutis runtime and its own Node to the executable (`DIMCODE_PLUGIN_DEFAULTS`, `DIMCODE_JS_RUNTIME`, `DIMCODE_NODE`), so the daemon loads Goal, Web, SessionTitle, Workflow and Scheduler by default ([PluginManager §7](../design/plugins/PluginManager.md#7-built-in-plugins-and-the-default-config-file)).
 
 For a cross build, set `DIM_BUILD_PLATFORM` to the intended platform, build with the matching Rust `--target`, and stage from `target/TARGET/release`. The runner must use the same OS as the target. The six platform names are listed in the workflow matrix.
 
@@ -148,7 +151,7 @@ NOTICE
 release-manifest.json         # `account` records whether this is the account build
 ```
 
-`pack-release.mjs` rejects changed staged files, then creates a native tar.gz (Windows zip) and a platform npm tgz from the same payload. It records SHA-256 for both. `collect-release.mjs` requires `release-<platform>` directories for all six targets and `release-web` from `stage-web.mjs`, checks identical source/version/toolchain/account provenance and artifact digests, creates the thin npm wrapper, then validates all seven npm archives without publishing.
+`pack-release.mjs` rejects changed staged files, then creates a native tar.gz (Windows zip) and a platform npm tgz from the same payload. It records SHA-256 for both. `collect-release.mjs` requires `release-<platform>` directories for all six targets and `release-web` from `stage-web.mjs` and `release-plugins` from `stage-plugins.mjs`, checks identical source/version/toolchain/account provenance and artifact digests, creates the thin npm wrapper, then validates all nine npm archives without publishing.
 
 ```sh
 node scripts/collect-release.mjs staging/platforms staging/complete
@@ -162,7 +165,7 @@ The wrapper resolves the installed platform optional dependency and forwards arg
 
 `.github/workflows/npm-publish.yml.disabled` is not registered and cannot run. Do not activate it until package ownership and npm trusted publishing are configured and activation is explicitly requested. It is the only workflow intended to use a GitHub-hosted `ubuntu-latest` runner. No npm token is injected into self-hosted build jobs.
 
-Future activation needs one trusted publisher for `dimcode`, `dimcode-web` and each of the six platform packages, bound to `arcships/dim`, `npm-publish.yml` and `npm-release`. [npm trusted publishing documentation](https://docs.npmjs.com/trusted-publishers/).
+Future activation needs one trusted publisher for `dimcode`, `dimcode-web`, `dimcode-plugins` and each of the six platform packages, bound to `arcships/dim`, `npm-publish.yml` and `npm-release`. [npm trusted publishing documentation](https://docs.npmjs.com/trusted-publishers/).
 
 Release construction and npm publication are separate operations. Review and publish the GitHub draft first. The npm workflow has only `workflow_dispatch`; it takes the tag of an existing **non-draft** GitHub Release and can run from `main` regardless of that release's age:
 
@@ -170,11 +173,11 @@ Release construction and npm publication are separate operations. Review and pub
 gh workflow run npm-publish.yml --ref main -f release_tag=vVERSION
 ```
 
-This command becomes available only after explicit workflow activation. Publication downloads the original eight `.tgz` attachments and manifest from the specified Release, resolves the tag's commit, and verifies published status, exact package names, versions, source commit and digests before any registry write. It rechecks Release status and tag identity immediately before publishing. It does not rebuild packages or consume expiring Actions artifacts. [Release attachment download](https://cli.github.com/manual/gh_release_download).
+This command becomes available only after explicit workflow activation. Publication downloads the original nine `.tgz` attachments and manifest from the specified Release, resolves the tag's commit, and verifies published status, exact package names, versions, source commit and digests before any registry write. It rechecks Release status and tag identity immediately before publishing. It does not rebuild packages or consume expiring Actions artifacts. [Release attachment download](https://cli.github.com/manual/gh_release_download).
 
 Publication validates every package before the first registry write. A retry compares an already published version's SHA-512 integrity with the original local archive and skips an exact match. A different archive, authentication error or network error fails; only an explicit registry E404 permits publication. All platform packages precede `dimcode`; versions are `X.Y.Z`, `X.Y.Z-beta.N` or `X.Y.Z-alpha.N` and publish to `latest`, `beta` or `alpha` respectively, so each channel upgrades only within itself. An alpha must stay below the newest `dimcode` beta on the registry, because installed TypeScript betas upgrade to the highest prerelease of any identifier; publication checks this before any write.
 
-`npm-packages` contains eight tgz files and a release manifest; `native-packages` contains seven native archives, the matching manifest and `SHA256SUMS`. The GitHub Release retains all fifteen original archives and the shared metadata independently of Actions retention. Future npm publication uploads an Actions receipt containing the Release ID, tag and package digests; that receipt also expires after one day.
+`npm-packages` contains nine tgz files and a release manifest; `native-packages` contains seven native archives, the matching manifest and `SHA256SUMS`. The GitHub Release retains all sixteen original archives and the shared metadata independently of Actions retention. Future npm publication uploads an Actions receipt containing the Release ID, tag and package digests; that receipt also expires after one day.
 
 ## Public source export
 

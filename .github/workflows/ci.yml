@@ -103,7 +103,12 @@ jobs:
         run: cargo run --locked -p xtask -- check
       - name: Test development and release scripts
         if: needs.changes.outputs.scripts == 'true'
-        run: node --test scripts/*.test.mjs
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test scripts/*.test.mjs
+          # The plugins package compiles every default plugin.
+          node scripts/stage-plugins.mjs staging/release-plugins "$(node -p "require('./npm/package.json').version")" "$GITHUB_SHA"
       - name: Build the Web workspace
         if: needs.changes.outputs.web == 'true'
         shell: bash

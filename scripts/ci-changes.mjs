@@ -21,6 +21,8 @@ const rules=[
   [/^scripts\//,['scripts','web']],
   // The Windows job tests dim-cli, which depends only on dim-agent-types in this workspace.
   [/^crates\/(dim-cli|dim-agent-types)\//,['rust','windows']],
+  // stage-plugins.mjs packs runtime/plugins/ and its default config file.
+  [/^runtime\/(plugins\/|plugins\.default\.json$)/,['rust','scripts']],
   // Rust tests read runtime/ fixtures, and the Node flows exercise npm/ and runtime/.
   [/^(crates|tests|xtask|vendor|runtime|npm)\//,['rust']],
 ];
