@@ -10,8 +10,8 @@ before the migration and says which of its mechanisms the migration removed, and
 removal as done; the notes on the layer-typed API and on `sessionLifecycle` state the current fact.
 D3 amended the same day: a foreign plugin registers its parts as rutis plugin definitions, which
 rutis 0.17 delivered for rutis#642. D3 amended on 2026-10-26 by the plugin management design: an
-installed plugin directory is one group row with a code and a content row. Implementation: P1, P2, P3, R6 and P4 done; R5's second form
-with #403. The phases are in the
+installed plugin directory is one group row with at most two children, its code row and its content
+row. Implementation: P1, P2, P3, R6 and P4 done; R5's second form with #403. The phases are in the
 [plugin contract design](../design/plugin-contract.md#10-migration).
 [中文](../zh/adr/006-plugin-contract.md)
 

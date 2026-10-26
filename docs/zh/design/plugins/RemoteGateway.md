@@ -17,7 +17,7 @@ flowchart LR
     CONN["Connection<br/>ConnectionEntry 记录"]
     RPC["Rpc<br/>内置方法、sessionMethods、<br/>managementMethods"]
     SET["Settings<br/>remote 业务来源"]
-    LDR["rutis Loader<br/>enabled 行字段（x-volatile），<br/>只由 PluginManager 写入"]
+    LDR["rutis Loader<br/>它自己的行，由 PluginManager<br/>启用或停用"]
     PST["pluginFiles（扩展）<br/>remote-devices.json"]:::contract
   end
   DEV["手机或 Web 工作区"]
@@ -28,7 +28,7 @@ flowchart LR
   CONN --> RPC
   RPC -->|"分发 remote.*（managementMethods）"| RG
   RG --> SET
-  LDR -->|"VolatileUpdate"| RG
+  LDR -->|"启用时加载，<br/>停用时卸载"| RG
   RG --> PST
   classDef new fill:#d3f9d8,stroke:#2b8a3e,color:#000
   classDef contract stroke-dasharray:4 3
@@ -38,18 +38,18 @@ RemoteGateway 只认证升级请求，并在连接上记录设备；此后的每
 
 | 部分 | 作用域 | 依赖 | 提供 |
 | --- | --- | --- | --- |
-| `RemoteGatewayPlugin` | 进程，控制节点 | `entryHost`（Transport）、`pluginFiles`（扩展）、Settings 业务来源 `remote`、它自己的 loader 行（`VolatileUpdate`） | 把 `remote`（`remote.*`）注册到 `managementMethods`；回答其打开的入口在调用内发来的 `authenticate` 与 `handle` 请求 |
+| `RemoteGatewayPlugin` | 进程，控制节点 | `entryHost`（Transport）、`pluginFiles`（扩展）、Settings 业务来源 `remote` | 把 `remote`（`remote.*`）注册到 `managementMethods`；回答其打开的入口在调用内发来的 `authenticate` 与 `handle` 请求 |
 | `TransportPlugin`（变更） | 进程 | 现有；不依赖 RemoteGateway 的任何内容 | 现有 `ListenAddresses`；新增 `entryHost` |
 | `ConnectionPlugin` / `RpcPlugin`（变更） | 进程 | 现有 | `ConnectionEntry {name, deviceId}`；Rpc 从不向带 `deviceId` 的连接提供管理方法 |
 
-此处定义的契约：设备记录与令牌、配对与轮换 HTTP 端点、`remote.*` 方法、`remote-devices.json` 格式。依赖的契约：Transport 的 `entryHost` 服务及其调用内的 `authenticate` 与 `handle` 请求（拟议的 Transport 变更，[语言中立](../../adr/002-plugin-scope.md)形式见 A.1，Rust 绑定见附录 G；依赖是单向的，RemoteGateway 依赖 Transport）、Connection 的入口记录、[方法](../contracts/session-boundary.md)契约（注册到 `managementMethods` 的命名空间，从不提供给已配对设备）、`pluginFiles`（扩展）（[App Server README](../../../../crates/dim-app-server/README.md#trusted-plugin-storage)）、它自己 loader 行上的结构性 `enabled` 字段（`x-volatile`），只由 PluginManager 写入（[PluginManager](PluginManager.md)，[#3](https://github.com/arcships/dim/issues/3) 的 loader 类型化操作），以 rutis-loader 0.10 的 `VolatileUpdate` 送达 RemoteGateway，以及对业务来源 `remote` 的 Settings 类型化操作，用于监听设置，其 schema 由 RemoteGateway 声明（ADR 002 D4）。RemoteGateway 不了解任何 Session 方法的含义，也不了解任何其他插件。
+此处定义的契约：设备记录与令牌、配对与轮换 HTTP 端点、`remote.*` 方法、`remote-devices.json` 格式。依赖的契约：Transport 的 `entryHost` 服务及其调用内的 `authenticate` 与 `handle` 请求（拟议的 Transport 变更，[语言中立](../../adr/002-plugin-scope.md)形式见 A.1，Rust 绑定见附录 G；依赖是单向的，RemoteGateway 依赖 Transport）、Connection 的入口记录、[方法](../contracts/session-boundary.md)契约（注册到 `managementMethods` 的命名空间，从不提供给已配对设备）、`pluginFiles`（扩展）（[App Server README](../../../../crates/dim-app-server/README.md#trusted-plugin-storage)）、它自己的 loader 行，由 PluginManager 启用和停用（[PluginManager §4](PluginManager.md#4-操作384)），以及对业务来源 `remote` 的 Settings 类型化操作，用于监听设置，其 schema 由 RemoteGateway 声明（ADR 002 D4）。RemoteGateway 不了解任何 Session 方法的含义，也不了解任何其他插件。
 
 ## 2. 数据与状态
 
 ```mermaid
 flowchart TB
-  subgraph LEL["Loader 可编辑层，只由 PluginManager 写入（#3）"]
-    CFG["结构性：enabled、x-volatile"]
+  subgraph LEL["Loader 各层，只由 PluginManager 编辑"]
+    CFG["结构性：它的行的 disabled 标志"]
   end
   subgraph BS["Settings 业务来源 remote"]
     RS["运行时设置：bind、tls、plaintext<br/>revision、变更通知"]
@@ -71,7 +71,7 @@ flowchart TB
   classDef new fill:#d3f9d8,stroke:#2b8a3e,color:#000
 ```
 
-`enabled` 是结构性插件配置，只由 PluginManager 写入（RemoteGateway 从不写它）；`bind`、`tls` 和 `plaintext` 是业务配置（[ADR 002 D4](../../adr/002-plugin-scope.md)），在入口打开时读取；变更是带通知的数据更新，RemoteGateway 据此重新绑定监听器（关闭并重新打开入口），从不触发插件重载（A16）。设备记录是位于 `pluginFiles`（扩展）中的宿主本地安全材料（原子替换、锁、格式版本、仅所有者可访问的文件）；文件损坏或不可读时失败即拒绝。邀约和活动连接位于内存中，重载或重启时丢失。Timeline 只保存 Session 所有者为远程调用写入的事实，不含设备归属（A2）。
+RemoteGateway 是否运行是结构性插件配置：它的行的 `disabled` 标志，只由 PluginManager 改动（RemoteGateway 从不改它）。入口恰在插件运行期间打开；`bind`、`tls` 和 `plaintext` 是业务配置（[ADR 002 D4](../../adr/002-plugin-scope.md)），在入口打开时读取；变更是带通知的数据更新，RemoteGateway 据此重新绑定监听器（关闭并重新打开入口），从不触发插件重载（A16）。设备记录是位于 `pluginFiles`（扩展）中的宿主本地安全材料（原子替换、锁、格式版本、仅所有者可访问的文件）；文件损坏或不可读时失败即拒绝。邀约和活动连接位于内存中，重载或重启时丢失。Timeline 只保存 Session 所有者为远程调用写入的事实，不含设备归属（A2）。
 
 ## 3. 流程
 
@@ -179,7 +179,7 @@ sequenceDiagram
 | `GET /`、`/assets/*` | HTTP | Web 工作区静态资源 |
 | `POST /api/pair`、`POST /api/token/rotate` | HTTP | 配对、设备令牌轮换 |
 | `GET /ws` | WebSocket | 面向已配对设备的 App Server 协议 v3：全部 Session 方法 |
-| `remote.status/pair/devices/revoke/rotate_token` | 管理方法 | 入口与设备的本地管理；入口由 PluginManager 的 `plugin.set_enabled` 开关 |
+| `remote.status/pair/devices/revoke/rotate_token` | 管理方法 | RemoteGateway 运行期间对入口与设备的本地管理；入口随插件开关，由 PluginManager 的 `plugin.set_enabled` 控制 |
 | `entryHost`（调用内的 `authenticate`、`handle`）、`ConnectionEntry` | Transport/Connection 变更（进程服务、数据记录） | 经认证的入口；设备连接从不获得管理方法 |
 | CLI | `/remote`、`/web`、`dimcode remote`、`dimcode web` | 用户入口 |
 
@@ -195,20 +195,20 @@ sequenceDiagram
 
 | 规则 | 本文如何符合 |
 | --- | --- |
-| §4.1 改别的模块拥有的状态时写指令事件 | RemoteGateway 不写 Timeline 事件；远程调用到达所有者自己的方法，由所有者写指令与结果，RemoteGateway 只改动自己的设备记录，并经 Settings 类型化操作改动它的业务来源 `remote`；它从不写自己的结构性 `enabled` 字段。 |
+| §4.1 改别的模块拥有的状态时写指令事件 | RemoteGateway 不写 Timeline 事件；远程调用到达所有者自己的方法，由所有者写指令与结果，RemoteGateway 只改动自己的设备记录，并经 Settings 类型化操作改动它的业务来源 `remote`；它从不改动自己的行。 |
 | §4.2 交接后不能撤回 | 远程撤回是 InputQueue 的 `input/withdraw`，在 `input/applied` 之后不生效（`notHeld`）；之后只能用 `stop/interrupt`。 |
 | §4.3 只用 before 回调在写入前干预 | RemoteGateway 不在 Session 入口加检查；它只认证传输层升级，Rpc 保留其外部边界检查。 |
 | §4.4 核心机制不带业务含义 | `entryHost` 与 `ConnectionEntry` 是通用的传输记录；Rpc 只对设备连接拒绝管理方法。 |
 | §4.5 决定前读完整个批次 | 不适用：RemoteGateway 不依据 Timeline 事件做决定；远程调用由所有者按自己已消费的事实决定。 |
 | §4.6 模型上下文只含交接后被读取的事件 | 远程内容只作为被消费的普通 Session 输入进入模型。 |
 | §4.7 插件之间只通过公开事件和服务交互 | RemoteGateway 不了解任何 Session 方法的含义，只使用 Transport、Settings、`pluginFiles` 与 Rpc 的方法表。 |
-| §4.8 向机制所有者提通用需求 | 中立服务协议中提供方在调用内向调用方发请求的需求见 §9.1；loader 类型化操作（#3）见 PluginManager §9.1；Transport 与 Connection 变更列在 overview 附录 B.2。 |
+| §4.8 向机制所有者提通用需求 | 中立服务协议中提供方在调用内向调用方发请求的需求见 §9.1；启用与停用它是 PluginManager 的操作（PluginManager §4），不向 rutis 提需求；Transport 与 Connection 变更列在 overview 附录 B.2。 |
 | §4.9 只有后续决定要用的事实才进 Timeline | RemoteGateway 不写 Timeline 事件；设备记录、邀约和连接留在 `pluginFiles` 和内存中，远程调用只写所有者自己的事实，不含设备归属。 |
 | §1 Capability 与 App Server 边界 | RemoteGateway 是位于自己 crate 的进程插件，不是 Capability；Transport、Connection 与 Rpc 只做通用的入口变更。 |
 | ADR 002 D1 作用域跟随状态所有者 | 设备与监听器按宿主存在，因此 RemoteGateway 是进程作用域。 |
 | ADR 002 D2 不设接线模块 | RemoteGateway 把 `remote` 注册到 `managementMethods`，由 Rpc 读取；没有接线模块。 |
 | ADR 002 D3 依赖跟随作用域 | RemoteGateway 单向依赖 Transport 的 `entryHost`；Rpc 不依赖 RemoteGateway，它的重载不会重载 Rpc。 |
-| ADR 002 D4 结构性配置与业务配置分离 | 只有 `enabled` 是结构性的，且只由 PluginManager 写入；`bind`、`tls`、`plaintext` 是来源 `remote` 中的业务配置，变更时重新绑定监听器而不重载。 |
+| ADR 002 D4 结构性配置与业务配置分离 | 只有行是否启用是结构性的，且只由 PluginManager 改动；`bind`、`tls`、`plaintext` 是来源 `remote` 中的业务配置，变更时重新绑定监听器而不重载。 |
 | ADR 002 D5 合同语言中立 | `entryHost`、HTTP 接口与各方法以中立形式给出；附录 G 只是绑定。 |
 
 ## 9. 向机制所有者提出的需求
@@ -229,7 +229,7 @@ sequenceDiagram
 
 | 需求 | 所有者 | 五项内容 |
 | --- | --- | --- |
-| 已撤回：loader 可编辑层上的类型化操作。rutis-loader 0.17.1 自己编辑可编辑层，`Loader::update` 把 `x-volatile` 字段的变化作为 `VolatileUpdate` 送达；PluginManager 的 `plugin.set_enabled` 切换行的 `disabled`，会重载该行。RemoteGateway 的开关是否仍用 volatile 字段，复核本设计时再定 | rutis-loader，[#3](https://github.com/arcships/dim/issues/3) | 见 [PluginManager](PluginManager.md) §9 |
+| 已撤回：loader 可编辑层上的类型化操作。rutis-loader 0.17.1 自己编辑可编辑层；PluginManager 的 `plugin.set_enabled` 设置 RemoteGateway 行的 `disabled` 标志，由此加载或卸载插件，因此不需要 `enabled` 字段 | rutis-loader，[#3](https://github.com/arcships/dim/issues/3) | 见 [PluginManager](PluginManager.md) §9 |
 
 `entryHost`、`ConnectionEntry {name, deviceId}` 以及 Rpc 不向设备连接提供管理方法，是对 Transport、Connection 与 Rpc 的改动，列在 [overview 附录 B.2](../overview.md)。
 
@@ -284,13 +284,13 @@ sequenceDiagram
 
 | 方法 | 参数 | 结果 | 中断 |
 | --- | --- | --- | --- |
-| `remote.status` | `{}` | `{enabled, running, address?, tls, error?, devices, connections}` | Drain |
+| `remote.status` | `{}` | `{running, address?, tls, error?, devices, connections}` | Drain |
 | `remote.pair` | `{ttlSeconds?}`（默认 300，最大 900） | `{code, url, expiresAt}`；`url` 为 `<origin>/pair#code=<code>` | Drain |
 | `remote.devices` | `{}` | `[{deviceId, name, pairedAt, lastSeenAt, connections, rotationRequired}]` | Drain |
 | `remote.revoke` | `{deviceId}` | 记录删除且连接关闭后返回 `{}` | Report |
 | `remote.rotate_token` | `{deviceId?}`（缺省：全部） | 标记持久化且连接关闭后返回 `{}` | Report |
 
-RemoteGateway 没有启动或停止方法，也从不写自己的 `enabled` 字段。入口由 PluginManager 的 `plugin.set_enabled {id: "remote-gateway", enabled}` 开关（[PluginManager](PluginManager.md) A.5），它经 loader 类型化操作（#3）写入该字段；loader 投递 `VolatileUpdate` 而不重载插件，RemoteGateway 随之调用 `entryHost.open` 或 `close`。监听设置 `bind`、`tls`、`plaintext` 经 Settings 类型化操作写入业务来源 `remote`，遵循 RemoteGateway 声明的 schema（该 schema 拒绝没有 `tls` 或 `plaintext: true` 的非 loopback `bind`）。CLI `/remote` 和 `dimcode remote start` 先写设置，再调用 `plugin.set_enabled`，然后读取 `remote.status`。入口运行期间业务来源变更时，RemoteGateway 重新绑定监听器：以新设置关闭并重新打开入口（连接脱离），而不重载插件（A16）。
+RemoteGateway 没有启动或停止方法，也从不改动自己的行。入口随插件开关：PluginManager 的 `plugin.set_enabled {id: "remote-gateway", enabled}`（[PluginManager §8.1](PluginManager.md#81-管理方法命名空间-plugin)）设置该行的 `disabled` 标志；启用时加载 RemoteGateway，它读取设置并调用 `entryHost.open`；停用时卸载它，入口随之关闭（连接脱离）。`remote.*` 命名空间只在 RemoteGateway 运行时提供；停用期间 `plugin.list` 显示它为 `disabled`，`remote.*` 返回 `unknown_method`，设备记录保留在磁盘上。监听设置 `bind`、`tls`、`plaintext` 经 Settings 类型化操作写入业务来源 `remote`，遵循 RemoteGateway 声明的 schema（该 schema 拒绝没有 `tls` 或 `plaintext: true` 的非 loopback `bind`）。CLI `/remote` 和 `dimcode remote start` 先写设置，再调用 `plugin.set_enabled`，然后读取 `remote.status`。入口运行期间业务来源变更时，RemoteGateway 重新绑定监听器：以新设置关闭并重新打开入口（连接脱离），而不重载插件（A16）。
 
 ### A.5 Capability 机制
 
@@ -300,7 +300,7 @@ RemoteGateway 没有启动或停止方法，也从不写自己的 `enabled` 字�
 | Dispatcher | 不订阅；设备通过其每连接的 Session 附着接收事件 |
 | 并发附着方 | 无独占所有者（A13）；全部以每分支顺序收到相同事件 |
 | 重载 | 关闭入口：监听器与远程连接关闭（脱离）；记录保留；邀约丢失；RemoteGateway 重新激活前 `remote.*` 返回 `unknown_method`，Rpc 不重载；在途的 `remote.*` 调用按其 `interruption` 处理。Transport 重载会重载 RemoteGateway（它依赖 `entryHost`）；运行时设置变更从不重载它 |
-| 进程重启 | 若 `enabled` 则重新打开入口；设备重连并重新附着；已提交的输入与待处理审批在附着时重放 |
+| 进程重启 | 若该行已启用则重新打开入口；设备重连并重新附着；已提交的输入与待处理审批在附着时重放 |
 
 ## 附录 B. 完整冲突表
 
@@ -325,7 +325,7 @@ RemoteGateway 没有启动或停止方法，也从不写自己的 `enabled` 字�
 | 两部手机使用同一配对码 | 第一个 `POST /api/pair` | 第二个失败，计为一次尝试 | RemoteGateway |
 | 轮换响应丢失 | — | 上一个令牌在宽限窗口内有效；设备重试 | RemoteGateway |
 | 设备轮换期间 `remote.rotate_token` | 持久化标记的顺序 | 标记之前完成的轮换也会被标记 | RemoteGateway |
-| 有附着设备时 `enabled` 被设为 false（`plugin.set_enabled`） | `VolatileUpdate` | 连接关闭（脱离）；Session 继续 | RemoteGateway、Transport |
+| 有附着设备时停用 RemoteGateway（`plugin.set_enabled`） | 行停用 < 卸载 | 插件卸载：入口及其连接关闭（脱离）；Session 继续 | Loader、RemoteGateway、Transport |
 | Rpc 重载 | — | 受影响的调用 `service_reloading`；除非协议实例改变，否则连接保留 | Rpc |
 | 贡献 Session 方法的 Session 插件重载 | — | 其名称在重载期间 `service_reloading`，之后恢复提供；在途调用遵循[方法](../contracts/session-boundary.md)契约；连接保留 | Rpc、贡献方 |
 | 设备已连接时运行时设置变更 | 业务来源 revision | 入口以新设置重新打开；连接脱离并重连 | RemoteGateway |
@@ -338,20 +338,20 @@ RemoteGateway 没有启动或停止方法，也从不写自己的 `enabled` 字�
 
 | 情况 | 结果 |
 | --- | --- |
-| `enabled` 设置后绑定失败 | `remote.status.error` = `remote_bind_failed`；入口未打开；`enabled` 不变（RemoteGateway 从不写它）；由 CLI 报告 |
+| RemoteGateway 启用后绑定失败 | `remote.status.error` = `remote_bind_failed`；入口未打开；该行保持启用（RemoteGateway 从不改它）；由 CLI 报告 |
 | TLS 文件不可读 | `remote.status.error` = `remote_tls_invalid`；入口未打开 |
 | 无 TLS 或 `plaintext` 的非 loopback 绑定 | 对 `remote` 的 Settings 类型化写入以 `invalid_params` 失败（schema 由 RemoteGateway 声明）；不写入任何内容 |
 | 设备文件损坏或不可读 | `remote.status.error`；拒绝所有升级请求；`remote.devices` 以 `remote_storage_failed` 失败；保留文件以供修复 |
 | 配对/吊销/轮换时 `pluginFiles` 加锁或写入失败 | `-32000 remote_storage_failed`；内存状态不变；吊销不报告为完成 |
 | 未知设备 id | `-32602 invalid_params` |
 | 令牌错误的升级请求 | HTTP 401，无细节；计入诊断，不含令牌 |
-| 运行中监听器失败 | 入口关闭，设置 `remote.status.error`，`enabled` 不变；守护进程继续运行（A15） |
+| 运行中监听器失败 | 入口关闭，设置 `remote.status.error`，该行保持启用；守护进程继续运行（A15） |
 
 ## 附录 D. 验收
 
 在 App Server 测试套件中基于真实 WebSocket 入口进行流程测试：
 
-1. 对 RemoteGateway 的行调用 `plugin.set_enabled` 会打开和关闭入口而不重载，可由 `remote.status` 看到；RemoteGateway 自己从不写 `enabled`；没有 TLS 的非 loopback `bind` 被业务来源 schema 拒绝；`enabled` 时重启会重新打开；在业务来源中修改 `bind` 会重新打开入口而不重载插件。
+1. 对 RemoteGateway 的行调用 `plugin.set_enabled` 会打开入口（可由 `remote.status` 看到），并通过卸载插件关闭入口（此后 `remote.*` 返回 `unknown_method`，设备记录保留）；RemoteGateway 自己从不改动它的行；没有 TLS 的非 loopback `bind` 被业务来源 schema 拒绝；该行启用时重启会重新打开；在业务来源中修改 `bind` 会重新打开入口而不重载插件。
 2. 使用有效、过期、重复使用的配对码以及尝试次数过多时的配对；`remote.devices` 列出该设备。
 3. 已配对设备调用 Session 方法，包括 `session.permission.update`、`session.exec.stop`、`session.model.update` 和 `session.input.withdraw`；每个管理方法（包括 `remote.*` 和 `daemon.shutdown`）返回 `unknown_method`；v1 被拒绝。
 4. 两个附着的客户端：都收到事件；竞争的 `approval.respond`；远程响应之前和之后的中断；远程撤回与应用竞争（`input/deleted` 或 `notHeld`）。
@@ -378,7 +378,7 @@ RemoteGateway 没有启动或停止方法，也从不写自己的 `enabled` 字�
 | A13 | 无独占的 Session 所有权；“接管”指附着并操作 | 功能清单“collaborate with or take over” | 控制锁协议 |
 | A14 | 无客户端附着时待处理审批无超时 | 现有 Approval 行为 | 在 Approval 中加入超时 |
 | A15 | 监听器失败只停止远程入口 | 判断 | 远程失败时守护进程关闭 |
-| A16 | `bind`、`tls`、`plaintext` 是 Settings 业务来源中的业务配置；只有 `enabled` 是结构性的，且只由 PluginManager 写入 | ADR 002 D4（监听设置是业务配置） | 监听设置成为结构性 loader 字段 |
+| A16 | `bind`、`tls`、`plaintext` 是 Settings 业务来源中的业务配置；只有行是否启用是结构性的，且只由 PluginManager 改动 | ADR 002 D4（监听设置是业务配置） | 监听设置成为结构性 loader 字段 |
 
 ## 附录 F. 待对齐问题
 

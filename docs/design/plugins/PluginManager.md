@@ -20,11 +20,12 @@ the editable layer, refuses edits a higher layer locks, and reloads a row.
 
 ## 1. What exists and what this adds
 
-**Today.** The App Server's loader has one layer, `assembly`, built in code at startup: the built-in
+**Before this design (the implemented state it replaces).** The App Server's loader has one layer, `assembly`, built in code at startup: the built-in
 Rust plugins, the Agent builder's plugins and the Agents group, plus the rows of
 `dim-app-server --session-rows FILE` for TypeScript and Python plugins. Nothing is editable or
 persisted. `dimcode` starts the App Server without `--session-rows`, so the default CLI loads no
 TypeScript plugin, not even the repository's own (Goal, Web, SessionTitle, Workflow, Scheduler).
+This design removes `--session-rows` (§3.3); it stays only until M1 implements the layers.
 
 **This design adds:**
 
@@ -105,9 +106,9 @@ at most two rows ([ADR 006 D3](../../adr/006-plugin-contract.md#d3-a-plugin-is-o
 {
   "id": "acme-review",
   "group": true,
-  "source": {"git": "https://example.com/acme/review.git", "ref": "main"},
   "config": [
     {"id": "acme-review.code", "name": "/home/u/.dimcode/rust/plugins/acme-review/index.ts",
+     "root": "/home/u/.dimcode/rust/plugins/acme-review",
      "inject": ["partRegistry", "settings"], "provides": {}, "instanceNames": {}, "config": {}},
     {"id": "acme-review.content", "name": "pluginContent",
      "config": {"root": "/home/u/.dimcode/rust/plugins/acme-review"}}
@@ -115,17 +116,22 @@ at most two rows ([ADR 006 D3](../../adr/006-plugin-contract.md#d3-a-plugin-is-o
 }
 ```
 
-- `source` is `{"path": "<absolute directory>"}` or `{"git", "ref"}`, written when the row is created
-  and never edited (rutis-loader edits only a row's config and flags); the commit a Git plugin is at is
-  the clone's own. The row's package path is structural configuration ([ADR 002 D4](../../adr/002-plugin-scope.md#d4-structural-configuration-and-business-configuration-are-separate)).
+- The group row is what `Loader::create` builds from `NewEntry` (`id`, `group`, `disabled` and its
+  children as `config`); it carries nothing else. Each child is raw JSON in that `config` and
+  records the plugin's directory: the code row in a `root` field next to `provides` and
+  `instanceNames`, the content row in its `config`. The directory is the package path, structural
+  configuration ([ADR 002 D4](../../adr/002-plugin-scope.md#d4-structural-configuration-and-business-configuration-are-separate)).
 - The code row's `name` is the absolute entry path (Node) or `py:<module>` (Python).
 - A plugin from a local path is referenced where it is; one from Git is cloned to
-  `<home>/plugins/<id>/`, which PluginManager owns.
+  `<home>/plugins/<id>/`, which PluginManager owns. A plugin whose directory is under that root came
+  from Git, and its origin is the clone's own: the URL is its `origin` remote and the ref the branch
+  it tracks, as `git clone --branch` left them, so they survive a restart with the clone. A clone of a
+  tag or a commit tracks no branch: it is pinned, and `update` reports it unchanged.
 
 ### 3.3 Startup
 
 The App Server composes the four layers before it builds the loader. From every code row in them it
-registers, as today from `--session-rows`, the names the catalog needs before the runtimes start
+registers the names the catalog needs before the runtimes start
 (`instanceNames`, and `provides` names shared across languages), and puts each Python plugin's
 directory on the Python runtime's `PYTHONPATH`. The Node runtime is configured whenever the App Server
 knows a Node executable and the rutis runtime package, even with no TypeScript row, so the first
@@ -147,9 +153,9 @@ own.
 | Install from Git | Clones into `<home>/plugins/<id>/`, then as from a path; deletes the clone if `create` fails | `create` |
 | Enable, disable | — | `set_disabled` on the group |
 | Reload | Re-reads `plugin.json`: changed row fields become edits of the code row; then reloads the code row and restarts the content row | `update`/`set_inject` if changed; `RuntimeResolver::invalidate` and `reload` (code); `restart` (content) |
-| Update (Git) | Fetches the ref and checks out its new commit in the clone, then reloads | as reload |
+| Update (Git) | Fetches the clone's tracked branch from `origin` and checks out its new commit, then reloads | as reload |
 | Remove | Removes the group; then deletes the clone of a Git plugin. A path plugin's directory is never touched | `remove` |
-| List | Projects the composed rows: id, source (with a Git clone's commit), kind (built-in, default, installed), enabled, locked, status | `entries`, `waiting_for` |
+| List | Projects the composed rows: id, source (the directory; for a clone, its `origin`, branch and commit), kind (built-in, default, installed), enabled, locked, status | `entries`, `waiting_for` |
 
 - **Install means enabled.** An installed plugin runs at once. Disabling keeps it installed.
 - **Built-in and default plugins** are disabled, not removed: rutis refuses to remove a row a lower

@@ -86,7 +86,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | `SessionTitle` | Session | Session 服务 `sessionIdentity`、`sessionConfig`、`sessionLifecycle` 和 `sessionMethods`；进程 sessions 历史、Settings、标题元数据 `sessionMetadata`（S5b）和必需的 `auxiliaryModel`（提供者缺失使整行 Pending） | 把 session.rename 注册到 sessionMethods；Settings 来源 session-title |
 
-依赖位于 Session 或外层进程。C4/S2/Settings 已提供观察、前缀读取和配置；S5b 提供标题元数据，C6 提供通知；Provider 提供具名辅助模型操作。包在普通行的 settings 成员中声明来源，与 provides 并列。真实提供者重载会取消该行工作（ADR 002 D3），S2 索引重载不会。业务数据更新不重载包（D4）。
+依赖位于 Session 或外层进程。C4/S2/Settings 已提供观察、前缀读取和配置；S5b 提供标题元数据，C6 提供通知；Provider 提供具名辅助模型操作。包在普通行的 settings 成员中声明来源，与 provides 并列；M1 起改为在 `apply` 中用 `settings.register` 登记同样的声明（[PluginManager §6](PluginManager.md#6-settings-来源在代码中登记)）。真实提供者重载会取消该行工作（ADR 002 D3），S2 索引重载不会。业务数据更新不重载包（D4）。
 
 ## 2. 数据与状态
 

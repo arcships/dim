@@ -406,8 +406,8 @@ than drop them.
 | Permission rules (F2) | Unchanged; see §8.1 |
 | Provider | Unchanged. Its inline credentials and its own optional `ProviderSecretHost` stay (§1.2) |
 | ADR 004 D4 | It says Settings publishes no management methods until S8b. S8b adds the `settings` namespace, limited to declared sources. ADR 004 is updated with the implementation |
-| C4 (TypeScript bridge) | Its rows are the structural input; S8b adds their `settings` member next to `provides` (§3.1). Its rows listen to the Settings channels themselves (§4.4) |
-| PluginManager (P3) | When it produces C4 rows from its package boundary, it produces their `settings` member too |
+| C4 (TypeScript bridge) | Its rows are the structural input; S8b adds their `settings` member next to `provides` (§3.1), which M1 replaces with `settings.register` from the plugin's code (§3.1 note). Its rows listen to the Settings channels themselves (§4.4) |
+| PluginManager (M1) | Produces no `settings` member: an installed plugin registers its sources from its own code ([PluginManager §6](../plugins/PluginManager.md#6-settings-sources-register-in-code)) |
 | Rpc | Unchanged; it dispatches the new namespace like any owner's |
 | Timeline, Dispatcher, rutis, loader | Unchanged |
 
@@ -458,10 +458,9 @@ question 2); that is no new requirement on dim runtime or rutis.
    row's `settings` member, next to `provides` (§3.1).
 2. ~~**How a TypeScript part listens to rutis events.**~~ Settled: a part listens to the Settings
    channels on rutis's one bus (§4.4). The Session broadcast does not carry them.
-3. **Packages installed while running.** Declarations are Settings factory configuration, so a
-   runtime install (PluginManager, P3) would reload Settings and its dependents (MCP, Skills).
-   ADR 002 D3 accepts reloads after structural operations, but whether this one is acceptable is
-   decided with PluginManager. Today TypeScript packages are loaded only at startup.
+3. ~~**Packages installed while running.**~~ Settled by [PluginManager §6](../plugins/PluginManager.md#6-settings-sources-register-in-code):
+   a plugin registers its sources with `settings.register` from its `apply`, so installing one while
+   the App Server runs reloads neither Settings nor its dependents.
 4. ~~**Which plugin provides `credentials` in the product.**~~ Withdrawn with the service: each
    owner handles its own secrets (§1.2).
 5. **Source discovery for a settings UI.** A generic `/settings` page would need the declared

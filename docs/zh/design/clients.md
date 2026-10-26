@@ -152,7 +152,7 @@ Desktop 在独立仓库里。本仓库负责 Desktop 使用的 App Server 契约
 | Desktop 的需要 | 结论 |
 | --- | --- |
 | 当前轮次、分支头部、实时 Session 列表 | 从历史推出，轮询 `session.summaries`（[#276](https://github.com/arcships/dim/issues/276)） |
-| 在标准 daemon 上重命名和设置目标 | `--session-rows` 安装 SessionTitle 和 Goal（[#277](https://github.com/arcships/dim/issues/277)、#290） |
+| 在标准 daemon 上重命名和设置目标 | 目前由 `--session-rows` 安装 SessionTitle 和 Goal（[#277](https://github.com/arcships/dim/issues/277)、#290）；M1 起默认配置文件让标准 CLI 加载它们（[PluginManager §7](plugins/PluginManager.md#7-内置插件与默认配置文件)） |
 | 审批结果、待回答的提问 | `approval.resolved`（#289）；待回答的提问从历史中读取（[#278](https://github.com/arcships/dim/issues/278)） |
 | 读取附件、归档、文件历史 | 附件路径来自 `attachment.put`；归档在客户端本地；回退用 `session.fork`（[#279](https://github.com/arcships/dim/issues/279)） |
 | 分支元数据、重命名、按分支设置模型 | 来自 `branch/*` 事实；重命名在客户端本地；按分支设置模型不做（[#280](https://github.com/arcships/dim/issues/280)） |

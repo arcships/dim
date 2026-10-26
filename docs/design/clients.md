@@ -152,7 +152,7 @@ Desktop lives in its own repository. This repository owns the App Server contrac
 | Desktop need | Answer |
 | --- | --- |
 | Current turn, branch head, live Session list | Derived from history and polling `session.summaries` ([#276](https://github.com/arcships/dim/issues/276)) |
-| Rename and goal on the stock daemon | `--session-rows` installs SessionTitle and Goal ([#277](https://github.com/arcships/dim/issues/277), #290) |
+| Rename and goal on the stock daemon | Today `--session-rows` installs SessionTitle and Goal ([#277](https://github.com/arcships/dim/issues/277), #290); for M1 the default config file loads them in the stock CLI ([PluginManager §7](plugins/PluginManager.md#7-built-in-plugins-and-the-default-config-file)) |
 | Approval outcome, pending question | `approval.resolved` (#289); a pending question is read from history ([#278](https://github.com/arcships/dim/issues/278)) |
 | Attachment read, archive, file history | Attachment path from `attachment.put`; archive is client-local; rewind is `session.fork` ([#279](https://github.com/arcships/dim/issues/279)) |
 | Branch metadata, rename, per-branch model | From `branch/*` facts; rename client-local; per-branch model not built ([#280](https://github.com/arcships/dim/issues/280)) |

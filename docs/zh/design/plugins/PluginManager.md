@@ -17,10 +17,11 @@ PluginManager 是一个进程插件，它把安装、启用、停用、移除、
 
 ## 1. 现有部分与本设计新增的部分
 
-**现状。** App Server 的加载器只有一层 `assembly`，在启动时由代码构建：内置 Rust 插件、Agent builder 的插件和
+**本设计之前（它取代的已实现状态）。** App Server 的加载器只有一层 `assembly`，在启动时由代码构建：内置 Rust 插件、Agent builder 的插件和
 Agents 分组，再加上 `dim-app-server --session-rows FILE` 中供 TypeScript 和 Python 插件使用的行。没有任何部分可编辑或被持久化。
 `dimcode` 启动 App Server 时不带 `--session-rows`，因此默认 CLI 不加载任何 TypeScript 插件，连仓库自己的插件
 （Goal、Web、SessionTitle、Workflow、Scheduler）也不加载。
+本设计移除 `--session-rows`（§3.3）；它只保留到 M1 实现各层为止。
 
 **本设计新增：**
 
@@ -92,9 +93,9 @@ rutis 停用或移除整个子树。对用户来说它是一个插件；对 ruti
 {
   "id": "acme-review",
   "group": true,
-  "source": {"git": "https://example.com/acme/review.git", "ref": "main"},
   "config": [
     {"id": "acme-review.code", "name": "/home/u/.dimcode/rust/plugins/acme-review/index.ts",
+     "root": "/home/u/.dimcode/rust/plugins/acme-review",
      "inject": ["partRegistry", "settings"], "provides": {}, "instanceNames": {}, "config": {}},
     {"id": "acme-review.content", "name": "pluginContent",
      "config": {"root": "/home/u/.dimcode/rust/plugins/acme-review"}}
@@ -102,15 +103,19 @@ rutis 停用或移除整个子树。对用户来说它是一个插件；对 ruti
 }
 ```
 
-- `source` 是 `{"path": "<absolute directory>"}` 或 `{"git", "ref"}`，在创建行时写入，之后不再编辑（rutis-loader
-  只编辑行的 config 和开关字段）；Git 插件当前所在的 commit 以克隆本身为准。行的包路径属于结构性配置
+- 分组行就是 `Loader::create` 用 `NewEntry` 构建的那一行（`id`、`group`、`disabled`，子行作为 `config`），
+  不带别的字段。每个子行是该 `config` 里的原始 JSON，记录插件目录：代码行写在与 `provides`、`instanceNames`
+  并列的 `root` 字段里，内容行写在它的 `config` 里。这个目录就是包路径，属于结构性配置
   （[ADR 002 D4](../../adr/002-plugin-scope.md#d4-结构性配置与业务配置分离)）。
 - 代码行的 `name` 是入口的绝对路径（Node）或 `py:<module>`（Python）。
 - 从本地路径安装的插件就地引用；从 Git 安装的插件克隆到 `<home>/plugins/<id>/`，该目录归 PluginManager 所有。
+  目录在这个根下的插件来自 Git，它的来源以克隆本身为准：URL 是它的 `origin` 远端，ref 是它跟踪的分支，
+  即 `git clone --branch` 留下的状态，所以随克隆一起在重启后仍在。克隆的是标签或 commit 时不跟踪分支：
+  它是固定的，`update` 报告没有变化。
 
 ### 3.3 启动
 
-App Server 在构建加载器之前组合这四层。对其中的每个代码行，它像今天处理 `--session-rows` 一样，登记服务目录在各运行时启动前需要的名字
+App Server 在构建加载器之前组合这四层。对其中的每个代码行，它登记服务目录在各运行时启动前需要的名字
 （`instanceNames`，以及跨语言共享的 `provides` 名字），并把每个 Python 插件的目录加入 Python 运行时的 `PYTHONPATH`。
 只要 App Server 知道 Node 可执行文件和 rutis 运行时包，就配置 Node 运行时，即使没有 TypeScript 行也如此，因此第一个 TypeScript 插件
 无需重启即可安装。`--session-rows` 被移除；`--plugin-defaults FILE` 指定默认配置文件（§7），该文件所在目录是 Node 运行时的锚点。
@@ -129,9 +134,9 @@ PluginManager 自己不增加锁、队列或复查。
 | 从 Git 安装 | 克隆到 `<home>/plugins/<id>/`，然后与从路径安装相同；若 `create` 失败则删除克隆 | `create` |
 | 启用、停用 | — | 对分组调用 `set_disabled` |
 | 重载 | 重新读取 `plugin.json`：变化的行字段成为对代码行的编辑；然后重载代码行并重启内容行 | 有变化时 `update`/`set_inject`；`RuntimeResolver::invalidate` 和 `reload`（代码）；`restart`（内容） |
-| 更新（Git） | 拉取 ref，在克隆里检出它的新 commit，然后重载 | 同重载 |
+| 更新（Git） | 从 `origin` 拉取克隆跟踪的分支并检出它的新 commit，然后重载 | 同重载 |
 | 移除 | 移除分组；然后删除 Git 插件的克隆。路径插件的目录从不被触碰 | `remove` |
-| 列出 | 投影组合后的行：id、来源（Git 插件附带克隆当前的 commit）、类别（内置、默认、已安装）、是否启用、是否锁定、状态 | `entries`、`waiting_for` |
+| 列出 | 投影组合后的行：id、来源（目录；克隆还附带它的 `origin`、分支和 commit）、类别（内置、默认、已安装）、是否启用、是否锁定、状态 | `entries`、`waiting_for` |
 
 - **安装即启用。** 已安装的插件立即运行。停用后它仍保持已安装。
 - **内置插件和默认插件**只能停用，不能移除：rutis 拒绝移除较低层插入的行（`not_removable`）。`locked` 中的行拒绝 `set_disabled`

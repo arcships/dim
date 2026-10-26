@@ -89,6 +89,11 @@ Settings 不赋予任何字段特殊含义。密钥是所有者文档中的普�
 
 ### 3.1 来源声明
 
+> **已决定、尚未实现的变更（M1，[PluginManager §6](../plugins/PluginManager.md#6-settings-来源在代码中登记)）。**
+> 插件在自己的 `apply` 里调用 `settings.register(declaration)` 登记每个来源，字段和检查与下文相同，
+> 不再写在行的 `settings` 成员里；所有者是发起调用的行，该行卸载时登记撤回。这样 App Server 运行中
+> 安装的插件也能拥有来源。在该变更落地之前，本节和 §5.3 描述的是已实现的形式。
+
 拥有来源的 TypeScript 包在 C4 结构化输入（`ServerConfig.session_typescript.rows`，
 [Session TypeScript 部分](../../../design/session-typescript.md#host-input-and-declaration-discovery)）中自己那一行的
 `settings` 成员里列出它们，与 `provides` 并列。和 `provides` 一样，包只维护一份 JSON 声明，把同一个
@@ -364,8 +369,8 @@ target home；没有时装配失败，而不是丢弃它们。
 | 权限规则（F2） | 不变；见 §8.1 |
 | Provider | 不变。保留内联凭据和自己可选的 `ProviderSecretHost`（§1.2） |
 | ADR 004 D4 | 它写明 S8b 之前 Settings 不发布管理方法。S8b 新增 `settings` 命名空间，仅限声明的来源。ADR 004 随实现更新 |
-| C4（TypeScript 桥接） | 它的行就是结构化输入；S8b 在 `provides` 旁加上 `settings` 成员（§3.1）。它的行自己监听 Settings 通道（§4.4） |
-| PluginManager（P3） | 它从自己的包边界生成 C4 行时，同时生成行的 `settings` 成员 |
+| C4（TypeScript 桥接） | 它的行就是结构化输入；S8b 在 `provides` 旁加上 `settings` 成员（§3.1），M1 改为由插件代码调用 `settings.register`（§3.1 的说明）。它的行自己监听 Settings 通道（§4.4） |
+| PluginManager（M1） | 不生成 `settings` 成员：安装的插件在自己的代码里登记来源（[PluginManager §6](../plugins/PluginManager.md#6-settings-来源在代码中登记)） |
 | Rpc | 不变；像分派任何所有者的命名空间一样分派新命名空间 |
 | Timeline、Dispatcher、rutis、loader | 不变 |
 
@@ -413,9 +418,9 @@ F2 留待决定是否把它的方法并入 `settings.read/update`。决定保留
    结构化声明。条目就是行的 `settings` 成员，与 `provides` 并列（§3.1）。
 2. ~~**TypeScript 部分如何监听 rutis 事件。**~~ 已定下：部分在 rutis 唯一的总线上监听 Settings
    通道（§4.4）。Session 广播不承载它们。
-3. **运行中安装的包。** 声明是 Settings 的工厂配置，因此运行时安装（PluginManager，P3）会重载
-   Settings 及其依赖方（MCP、Skills）。ADR 002 D3 接受结构性操作后的重载，但这一次是否可接受
-   随 PluginManager 决定。目前 TypeScript 包只在启动时加载。
+3. ~~**运行中安装的包。**~~ 已由 [PluginManager §6](../plugins/PluginManager.md#6-settings-来源在代码中登记) 解决：
+   插件在 `apply` 里用 `settings.register` 登记来源，因此 App Server 运行中安装插件既不重载 Settings，
+   也不重载其依赖方。
 4. ~~**产品中由哪个插件提供 `credentials`。**~~ 随该服务一并撤销：每个所有者自己处理密钥（§1.2）。
 5. **设置界面的来源发现。** 通用的 `/settings` 页面需要声明的来源及其 schema（例如一个
    `settings.sources` 方法）。S8b 没有需求要求它；随 CLI 设置设计决定。
