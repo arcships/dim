@@ -1,6 +1,6 @@
 # Hooks
 
-状态：Ready（[#143](https://github.com/arcships/dim/issues/143)），2026-10-26 与维护者对齐（§10）；尚未实现。**依赖 [#466](https://github.com/arcships/dim/pull/466)：** 插件来源使用 #466 定义的 PluginManager 内容登记（§5），它取代了旧版 PluginManager 草案中的 `pluginContents` 发布，这是已定的[插件管理需求](../../../design/plugin-management.md)所要求的；下文指向 PluginManager 的链接以 #466 的版本为准，本文在它之后落地。总体设计：[overview](../overview.md)（Hooks）。阶段：M2（用户、项目与插件来源；插件来源经 [PluginManager](PluginManager.md) §5 登记）。语言：Rust。作用域：[ADR 002](../../adr/002-plugin-scope.md)（进程 + Session + 分支）。
+状态：Ready（[#143](https://github.com/arcships/dim/issues/143)），2026-10-26 与维护者对齐（§10）；尚未实现。**依赖 [#466](https://github.com/arcships/dim/pull/466)：** 插件来源使用 #466 定义的 PluginManager 内容登记（§5）：PluginManager 把已启用插件的 `hooks.json` 向 Hooks 登记；这取代了旧版 PluginManager 草案中的 `pluginContents` 发布，这是已定的[插件管理需求](../../../design/plugin-management.md)所要求的；下文指向 PluginManager 的链接以 #466 的版本为准，本文在它之后落地。总体设计：[overview](../overview.md)（Hooks）。阶段：M2（用户、项目与插件来源；插件来源经 [PluginManager](PluginManager.md) §5 登记）。语言：Rust。作用域：[ADR 002](../../adr/002-plugin-scope.md)（进程 + Session + 分支）。
 
 Hooks 在 Session **业务操作**的固定节点运行用户配置的命令，并把每个命令的决定交给该操作的所有者。Dim 只读取自己的 Hook 配置，不加载 Claude Code 或 Codex 的 Hook 文件。为便于迁移，文档形状（事件名、匹配组、命令处理器、`timeout`、`onFailure`）与脚本协议（stdin JSON、退出码、决定与输出字段）沿用 Claude Code 与 Codex，所以现有脚本和粘贴过来的配置都能工作（附录 G）。
 
@@ -30,7 +30,7 @@ Hooks 从不挂在基础设施上。已撤回的设计（[#21](https://github.co
 | `SessionStart` | 没有 Session 启动事实；有 `branch/start`，以及 `main` 上没有 `turn/start` | 无需 | 由历史推导（§3.4） |
 | `Notification` | `approval/request` | 无 | Dispatcher 订阅 |
 | `PreCompact`、`PostCompact` | `context/compaction-start {trigger}`（策略已被调用）、`context/compaction {outcome}` | 阻止需要 ContextCompaction 中的压缩准入端口 | 暂不支持（决定 6） |
-| 插件来源 | PluginManager 的内容行（`pluginContent`，[PluginManager §5](PluginManager.md#5-内容登记)）读取插件目录的 `hooks.json` 并向 Hooks 登记；该行卸载（停用、移除、重载）时登记撤回。所有者从不去找插件 | Hooks 没有可供登记的地方 | `HooksSettings` 提供进程服务 `hooks` 及其 `register`（A.2）；`HookSources` 把已登记的插件来源与用户、项目来源一起返回 |
+| 插件来源 | PluginManager（[PluginManager §5](PluginManager.md#5-内容登记)）把已启用插件的 `hooks.json` 向 Hooks 登记，同时传入插件 id 与目录，并在插件停用、移除或重载时撤回。所有者从不去找插件 | Hooks 没有可供登记的地方 | `HooksSettings` 提供进程服务 `hooks` 及其 `register`（A.2）；`HookSources` 把已登记的插件来源与用户、项目来源一起返回 |
 | `SessionEnd` | Session 关闭是生命周期，不是 Timeline 事实；工作必须在服务移除前结算（AGENTS 规则 8） | 关闭时运行命令会拖延关闭 | 暂不支持（决定 6） |
 | 配置 | Settings 的 `BusinessDocument` 来源，带用户文件和可选项目文件；两者都是单纯的文件名（`validate_file` 拒绝任何路径分隔符），所以项目文件位于已授权的项目根下（MCP：`mcp` 配 `.mcp.json`，启用状态在 `mcp-projects`）。目录中的项目文件，例如 Workflow 的 `.dimcode/workflows/*.yaml`，不是 Settings 来源：其所有者在 Settings 授权的根下经 FileStorage 读取（[总览](../overview.md)，配置）。Rust 来源没有通用的客户端写入，所以每个 Rust 所有者保留自己的管理方法 | `.dimcode/hooks.json` 不能作为 Settings 来源的项目文件 | App Server 中的 `HooksSettings`，仿照 MCP（决定 5；§1、A.7）：用户文档是 Settings 来源 `hooks`，`HooksSettings` 在 Settings 为该 `cwd` 授权的项目根下经 FileStorage 读取 `.dimcode/hooks.json`（A.2） |
 
@@ -42,7 +42,7 @@ flowchart LR
     HSet["HooksSettings：来源 hooks、hooks-projects；hooks.* 方法；服务 hooks（register）；HookSources 端口"]:::new
     Settings["Settings"]
     FS["FileStorage"]
-    PC["PluginManager 内容行（pluginContent），每个插件一行"]
+    PC["PluginManager（进程）"]
     Rpc["Rpc session.submit、session.branch_create"]
     HP["HostPlatform（资源节点）"]
   end
@@ -59,7 +59,7 @@ flowchart LR
   end
   HSet --> Settings
   HSet -->|"已授权根下的 .dimcode/hooks.json"| FS
-  PC -->|"hooks.register(document)"| HSet
+  PC -->|"hooks.register(document)，附插件 id 与目录"| HSet
   HS -->|"HookSources.read(cwd)"| HSet
   HS -->|"启动、终止"| HP
   HS -->|"submitChecks.register(hooks)"| IM
@@ -77,17 +77,17 @@ flowchart LR
 
 | 部件 | 作用域 | 依赖 | 提供 |
 | --- | --- | --- | --- |
-| `HooksSettings` | 进程，App Server（Settings 与 MCP 的管理所在之处） | Settings（`BusinessDocument` 来源 `hooks`，仅用户作用域，以及 `hooks-projects`；它为某个 `cwd` 授权的项目根）；FileStorage（在该根下读取 `<project>/.dimcode/hooks.json`） | 管理方法 `hooks.catalog`、`hooks.save`、`hooks.set_enabled`（A.7）；进程服务 `hooks`，插件的内容行用它登记插件的 Hook 文档（A.2）；返回某个 `cwd` 生效来源的 Session 端口 `HookSources`（A.2） |
+| `HooksSettings` | 进程，App Server（Settings 与 MCP 的管理所在之处） | Settings（`BusinessDocument` 来源 `hooks`，仅用户作用域，以及 `hooks-projects`；它为某个 `cwd` 授权的项目根）；FileStorage（在该根下读取 `<project>/.dimcode/hooks.json`） | 管理方法 `hooks.catalog`、`hooks.save`、`hooks.set_enabled`（A.7）；进程服务 `hooks`，PluginManager 用它登记每个已启用插件的 Hook 文档（A.2）；返回某个 `cwd` 生效来源的 Session 端口 `HookSources`（A.2） |
 | `HooksSession` | Session（可选；由 Hooks 插件在启用期间登记） | `HookSources`；HostPlatform；`SessionConfig.cwd`；`submitChecks`（InputQueue 的 Session 部件） | 向 `submitChecks` 登记提交检查 `hooks`，由操作者输入入口调用（A.6.2）；供 `HooksBranch` 使用的私有目录与命令执行器 |
 | `HooksBranch` | 分支（可选；由 Hooks 插件在启用期间登记） | `HooksSession` 的执行器；`Dispatcher`、`Approval`、`Permission`、`Branch::input` | 向分支的 Permission 登记建议方 `hooks`（A.6.1）；观察与上下文类 Hook |
 
-`HookSources` 沿用 `CommandRulesHost` 与 `SkillSettingsHost` 的现有宿主端口模式：agent 侧部件从不提及 Settings 或 App Server。Hooks 的部件向各自的所有者登记：`HooksBranch` 向 Permission，`HooksSession` 向 `submitChecks`。反方向上，插件向 Hooks 登记自己的 Hook 文档：PluginManager 的内容行调用 `hooks.register`，Hooks 从不去找插件（[插件管理](../../../design/plugin-management.md)）。Permission 与入口不依赖任何建议方或检查（[ADR 002 D3](../../adr/002-plugin-scope.md#d3-依赖跟随作用域并从扩展指向核心)）：没有登记时，Permission 只按策略与命令规则决定，入口不经检查直接写入操作者输入。
+`HookSources` 沿用 `CommandRulesHost` 与 `SkillSettingsHost` 的现有宿主端口模式：agent 侧部件从不提及 Settings 或 App Server。Hooks 的部件向各自的所有者登记：`HooksBranch` 向 Permission，`HooksSession` 向 `submitChecks`。反方向上，PluginManager 经 `hooks.register` 向 Hooks 登记每个已启用插件的 Hook 文档，Hooks 从不去找插件（[插件管理](../../../design/plugin-management.md)）。Permission 与入口不依赖任何建议方或检查（[ADR 002 D3](../../adr/002-plugin-scope.md#d3-依赖跟随作用域并从扩展指向核心)）：没有登记时，Permission 只按策略与命令规则决定，入口不经检查直接写入操作者输入。
 
-**重载。** 启用、停用或升级 Hooks 只重载 Hooks 插件（D3）。已打开的 Session 与分支随它的登记变化挂载或卸下它的部件（[ADR 006 D3](../../adr/006-plugin-contract.md#d3-插件是一行每个实例挂载为它登记的部件)）。在它的部件卸载前，它们结算已接受的工作（AGENTS 规则 8）：终止运行中的命令，并按当时运行的 Hook 的 `onFailure` 回答每个未决的提交检查（A.5）。它们的登记随之撤下。建议尚未返回的调用会看到该建议被丢弃，视为 none，Permission 在没有它的情况下决定；Hooks 正在回答的审批留给用户。Hooks 的部件未挂载期间的提交与调用不经过 Hooks（A9）。插件的 Hook 文档随它的登记出现和消失：启用、停用、移除或重载插件改变的是已登记的内容，不重载 Hooks 的任何部件；`HooksSettings` 重载时它的表从空开始；只在 `hooks` 存在时才使用它的内容行（A.2）下次向它登记时，插件文档重新登记，时机按 PluginManager 对负责方回来时的规则（[PluginManager §5](PluginManager.md#5-内容登记)，§10.2）。编辑 Hook 文档、启用状态或 `disableAllHooks` 是业务配置，在下一个 Hook 点读取，从不重载（[D4](../../adr/002-plugin-scope.md#d4-结构性配置与业务配置分离)）。
+**重载。** 启用、停用或升级 Hooks 只重载 Hooks 插件（D3）。已打开的 Session 与分支随它的登记变化挂载或卸下它的部件（[ADR 006 D3](../../adr/006-plugin-contract.md#d3-插件是一行每个实例挂载为它登记的部件)）。在它的部件卸载前，它们结算已接受的工作（AGENTS 规则 8）：终止运行中的命令，并按当时运行的 Hook 的 `onFailure` 回答每个未决的提交检查（A.5）。它们的登记随之撤下。建议尚未返回的调用会看到该建议被丢弃，视为 none，Permission 在没有它的情况下决定；Hooks 正在回答的审批留给用户。Hooks 的部件未挂载期间的提交与调用不经过 Hooks（A9）。插件的 Hook 文档随它的登记出现和消失：启用、停用、移除或重载插件改变的是 PluginManager 已登记的内容，不重载 Hooks 的任何部件。`HooksSettings` 重载时它的表从空开始，PluginManager 像每次 Hooks 出现时那样，重新登记已启用插件的文档（[PluginManager §5](PluginManager.md#5-内容登记)）。编辑 Hook 文档、启用状态或 `disableAllHooks` 是业务配置，在下一个 Hook 点读取，从不重载（[D4](../../adr/002-plugin-scope.md#d4-结构性配置与业务配置分离)）。
 
 **节点。** 资源节点离线时，启动进程以 `node_unavailable` 失败；每个 Hook 点把它当作 Hook 失败处理（附录 C）。
 
-**依赖的契约：** `Approval::admit` 与 `AdmitCall.source`、`Permission::decide` 与提议的 `permission.registerAdvice`（A.6.1）；Approval 的 `respond` 与 `approval/request`、`approval/respond`、`approval/cancelled` 事实；Rpc `session.submit` 与 `session.branch_create`，以及 InputQueue 的 `session.input.withdraw {steer}`，和提议的 Session 表 `submitChecks`（A.6.2）；`InputMessageData.user`（上下文追加在操作者自己的内容之后）；`step/tool-result`、`turn/start`、`turn/end`、`stop/interrupt`、`context/configured`（只读）；来源输入约定（[Session 访问 A.2](../contracts/session-access.md#a2-来源输入约定)）；Settings 的 `BusinessDocument`、`settings.changed` 与已授权的项目根；FileStorage 读取；App Server 的 `ManagementMethods`；HostPlatform 的 `build_process_spec` 与进程监管；PluginManager 的内容行，它调用 `hooks.register`（[PluginManager §5](PluginManager.md#5-内容登记)）。**本文定义的契约：** Hook 文档格式、命令协议、Hooks 的 `hooks` 登记给出的建议与检查回复、进程服务 `hooks` 及其 `register`、`hooks.*` 方法、`HookSources`、来源名 `hooks`（标记 `dim-hooks`，键命名空间 `hooks:`）。Hooks 不声明任何事件。
+**依赖的契约：** `Approval::admit` 与 `AdmitCall.source`、`Permission::decide` 与提议的 `permission.registerAdvice`（A.6.1）；Approval 的 `respond` 与 `approval/request`、`approval/respond`、`approval/cancelled` 事实；Rpc `session.submit` 与 `session.branch_create`，以及 InputQueue 的 `session.input.withdraw {steer}`，和提议的 Session 表 `submitChecks`（A.6.2）；`InputMessageData.user`（上下文追加在操作者自己的内容之后）；`step/tool-result`、`turn/start`、`turn/end`、`stop/interrupt`、`context/configured`（只读）；来源输入约定（[Session 访问 A.2](../contracts/session-access.md#a2-来源输入约定)）；Settings 的 `BusinessDocument`、`settings.changed` 与已授权的项目根；FileStorage 读取；App Server 的 `ManagementMethods`；HostPlatform 的 `build_process_spec` 与进程监管；PluginManager，它调用 `hooks.register`（[PluginManager §5](PluginManager.md#5-内容登记)）。**本文定义的契约：** Hook 文档格式、命令协议、Hooks 的 `hooks` 登记给出的建议与检查回复、进程服务 `hooks` 及其 `register`、`hooks.*` 方法、`HookSources`、来源名 `hooks`（标记 `dim-hooks`，键命名空间 `hooks:`）。Hooks 不声明任何事件。
 
 ## 2. 数据与状态
 
@@ -245,7 +245,7 @@ sequenceDiagram
 | `Approval.respond` | 现有分支服务 | `PermissionRequest` 结果 |
 | `input_blocked` | `session.submit`、`session.branch_create` 与 `session.input.withdraw` 的 Rpc 应用错误；消息 `Hook <source>: <reason>` | 被阻止的提交 |
 | `hooks.catalog`、`hooks.save`、`hooks.set_enabled` | App Server 管理方法（命名空间 `hooks`），与 `mcp.*` 类似 | 生效的 Hook、用户文档写入、项目启用（A.7） |
-| `hooks.register` | `HooksSettings` 的进程服务 `hooks`；PluginManager 的内容行调用它，该行卸载时登记撤回 | 插件的 Hook 文档（A.2） |
+| `hooks.register` | `HooksSettings` 的进程服务 `hooks`；PluginManager 为每个已启用插件调用它，并在插件停用、移除或重载时撤回登记 | 插件的 Hook 文档（A.2） |
 | `HookSources` | App Server 绑定的 Session 端口 | 某个 `cwd` 的生效来源（A.2） |
 | `hooks`（用户作用域）、`hooks-projects` | Settings 来源（`BusinessDocument`） | 用户的 Hook 文档；用户本地的项目启用（A.1、A.2） |
 | `.dimcode/hooks.json` | 由 `HooksSettings` 经 FileStorage 读取的项目文件 | 项目的 Hook 文档（A.1、A.2） |
@@ -278,9 +278,9 @@ agent 只能经 PluginManager 的工具安装或重载插件、从而增加 Hook
 | §4.9 只有决定所需事实进 Timeline | Hooks 不新增事件，也不新增字段；配置在 Settings 中，诊断在目录中。 |
 | §1 Capability 与 App Server 边界 | `HooksSession` 与 `HooksBranch` 是位于独立 crate 的 Capability；`HooksSettings` 与 Settings 并列位于 App Server，与 MCP 的管理类似，并绑定 `HookSources`。 |
 | ADR 002 D1 作用域 | 配置及其方法按宿主（进程）；目录、执行器与提交检查随 Session；建议与观察随其所用事实所在的分支。 |
-| ADR 002 D2 不设接线模块 | Hooks 经所有者自己的登记与服务挂接；`HookSources` 是 Hooks 自己的配置所有者的 agent 侧端口，不是为他人写的适配器。插件也以同样方式到达 Hooks：它们的内容行调用 `hooks.register`，Hooks 既不发现也不读取插件。 |
+| ADR 002 D2 不设接线模块 | Hooks 经所有者自己的登记与服务挂接；`HookSources` 是 Hooks 自己的配置所有者的 agent 侧端口，不是为他人写的适配器。插件也以同样方式到达 Hooks：PluginManager 调用 `hooks.register`，Hooks 既不发现也不读取插件。 |
 | ADR 002 D3 依赖 | Hooks 依赖核心部件（Approval、Permission、InputQueue 的 `submitChecks`、Timeline）并向它们登记；Permission 与入口不依赖任何建议方或检查，没有 Hooks 也能工作。 |
-| ADR 002 D4 配置 | Hook 文档与启用是 Settings 来源中使用时读取的业务数据；不重载。插件的文档是插件这一行的内容：它随该行换代（PluginManager 的 reload）而变，从不靠重载 Hooks。 |
+| ADR 002 D4 配置 | Hook 文档与启用是 Settings 来源中使用时读取的业务数据；不重载。插件的文档是插件内容：它在 PluginManager 重新登记时（插件重载）变化，从不靠重载 Hooks。 |
 | ADR 002 D5 语言中立契约 | 文档格式、命令协议、`permission.registerAdvice`、`submitChecks`、`hooks.register`、`HookSources` 与 `hooks.*` 都是中立的；Rust 绑定见附录 H。 |
 | AGENTS 11 / ADR 003 | Hook 命令无需批准，启用即运行；项目来源默认停用，只有用户本地的 `hooks-projects` 能启用它；Approval 与 Permission 仍只管辖工具调用，而 `allow` 建议是来自用户启用配置的权限（§7）。 |
 
@@ -290,7 +290,7 @@ agent 只能经 PluginManager 的工具安装或重载插件、从而增加 Hook
 
 - Permission 与 Approval：向分支的 Permission 登记（`permission.registerAdvice`）并在准入决定中调用的建议方，由 Approval 传入调用的 `source`（A.6.1）。
 - InputQueue（Session 表 `submitChecks`，以及负责 `session.input.withdraw {steer}` 的 `InputMethods`）、Rpc（`session.submit`、`session.branch_create`）与原生 CLI：向 `submitChecks` 登记并在写入操作者输入之前调用的检查、`input_blocked` 错误，以及它在保证未提交任何东西的 `session.submit` 错误中的位置（A.6.2）。
-AcpGateway 已经把 `session.submit` 的 `input_blocked` 映射为停止原因 `refusal`，消息作为文本（决定 9）。不属于需求的：Settings 来源 `hooks`（仅用户作用域）与 `hooks-projects` 是 `BusinessDocument` 来源（现有机制，v13 中新增 `user/<source>` 行）；`.dimcode/hooks.json` 是目录中的项目文件，由其所有者在 Settings 授权的根下经 FileStorage 读取，与 Workflow 的定义文件相同（[总览](../overview.md)，配置）；`hooks.*` 方法使用现有的 `ManagementMethods`；HostPlatform 的 shell 形式 `build_process_spec` 已覆盖 `command`（不支持 exec 形式的 `args`，附录 G）；PluginManager 的内容行已经向 Hooks 登记 `hooks.json`（[PluginManager §5、§9](PluginManager.md#5-内容登记)），所以插件来源除了这次调用不再需要 PluginManager 做什么。
+AcpGateway 已经把 `session.submit` 的 `input_blocked` 映射为停止原因 `refusal`，消息作为文本（决定 9）。不属于需求的：Settings 来源 `hooks`（仅用户作用域）与 `hooks-projects` 是 `BusinessDocument` 来源（现有机制，v13 中新增 `user/<source>` 行）；`.dimcode/hooks.json` 是目录中的项目文件，由其所有者在 Settings 授权的根下经 FileStorage 读取，与 Workflow 的定义文件相同（[总览](../overview.md)，配置）；`hooks.*` 方法使用现有的 `ManagementMethods`；HostPlatform 的 shell 形式 `build_process_spec` 已覆盖 `command`（不支持 exec 形式的 `args`，附录 G）；PluginManager 已经向 Hooks 登记 `hooks.json`（[PluginManager §5、§9](PluginManager.md#5-内容登记)），所以插件来源除了这次调用不再需要 PluginManager 做什么。
 
 ## 10. 决定
 
@@ -317,15 +317,15 @@ AcpGateway 已经把 `session.submit` 的 `input_blocked` 映射为停止原因 
 | --- | --- | --- | --- |
 | A.6.1 向 Permission 登记的建议方 | `Approval::admit` 调用 `Permission::decide(call, risk, cancel)`，它读取策略与命令规则端口；调用 id 只在 `AdmitCall.source` 中；允许之后的复核调用同一个 `decide`。运行时的 `Registrations` 表已被 ToolRegistry、PromptRegistry 与 SessionMethods 使用，提供按调用方登记、卸载时撤回 | Permission 持有一张建议方的 `Registrations` 表并提供 `register_advice`；新增接收 `source` 的准入决定，在策略与命令规则之后、结果不是 Deny 时询问建议方；`admit` 使用它，复核仍用 `decide`。ToolExecutor 不变 | Permission、Approval（`dim-agent-capabilities`）；本设计合并后开 issue |
 | A.6.2 操作者输入入口的提交检查 | Rpc `session.submit` 与 `session.branch_create` 经 `Session::input` 与分支树写入；`session.input.withdraw {steer}` 由 InputQueue 的 Session 部件 `InputMethods` 提供；分支对每个 `submissionId` 只接受一次（#467）；App Server README 与 CLI 维护未提交错误集合（`invalid_params`、`session_invalid_input`、`session_closed`、`session_build_failed`、`service_reloading`、`unknown_method`） | `InputMethods` 提供 Session 服务 `submitChecks`（一张 `Registrations` 表，Rpc 经 Session 门面读取的 `PublicService`）；三个入口在写入前调用它；`input_blocked` 加入 Rpc 错误、README 的集合与 CLI 的列表。分支侧去重保持不变：分支已持有的 `submissionId` 被重试时再次运行检查，放行时分支以已有输入作答；`input_blocked` 仍表示这一次请求没有写入任何东西 | Rpc（`dim-app-server`）、InputQueue（`dim-agent-capabilities`）、CLI（`dim-cli`）；本设计合并后开 issue |
-| 插件来源 | PluginManager 的内容行向 Hooks 登记 `hooks.json`（[PluginManager §5、§9](PluginManager.md#5-内容登记)） | Hooks：服务 `hooks` 及其 `register`（A.2），随 Hooks 交付。PluginManager：§5 写明 Hooks 要用、但不由 Hooks 定义的三件事：(1) 内容行只在负责方存在时才使用它，负责方不在（Hooks 停用或未随产品提供）时只跳过该负责方的内容；(2) 负责方原先不在或已重载时，内容何时向它登记；(3) 负责方经 `register(document)` 除文档外还得到什么：插件 id（`plugin:<id>`）与插件目录（`DIM_PLUGIN_ROOT`） | Hooks；PluginManager（[#466](https://github.com/arcships/dim/pull/466)） |
+| 插件来源 | PluginManager 把已启用插件的 `hooks.json` 连同插件 id 与目录向 Hooks 登记；Hooks 不在时跳过，Hooks 出现或重载时重新登记（[PluginManager §5、§9](PluginManager.md#5-内容登记)） | 无：服务 `hooks` 及其 `register` 属于 Hooks 自己（A.2），随 Hooks 交付 | Hooks |
 
-Hooks 在 PluginManager 的 M1 交付之后实现；内容行中 `hooks.json` 这一项随 Hooks 落地（[PluginManager §13](PluginManager.md#13-交付m1-及之后)）。本文中没有等待维护者回答的问题。
+Hooks 在 PluginManager 的 M1 交付之后实现；PluginManager 对 `hooks.json` 的登记随 Hooks 落地（[PluginManager §13](PluginManager.md#13-交付m1-及之后)）。本文中没有等待维护者回答的问题。
 
 ## 附录 A. 接口细节
 
 ### A.1 Hook 文档格式
 
-用户文档是 Settings 来源 `hooks`（仅用户作用域）；项目文档是 `<workspace>/.dimcode/hooks.json`，由 `HooksSettings` 在 Settings 授权的项目根下经 FileStorage 读取，并以同一文档类型校验；插件的文档是其目录根下的 `hooks.json`，由它的内容行登记（A.2）。三者都使用 Claude Code / Codex 的形状：一个按事件名作键的对象，每个事件包含带命令处理器的匹配组。
+用户文档是 Settings 来源 `hooks`（仅用户作用域）；项目文档是 `<workspace>/.dimcode/hooks.json`，由 `HooksSettings` 在 Settings 授权的项目根下经 FileStorage 读取，并以同一文档类型校验；插件的文档是其目录根下的 `hooks.json`，由 PluginManager 登记（A.2）。三者都使用 Claude Code / Codex 的形状：一个按事件名作键的对象，每个事件包含带命令处理器的匹配组。
 
 ```json
 {
@@ -363,7 +363,7 @@ Hooks 在 PluginManager 的 M1 交付之后实现；内容行中 `hooks.json` �
 | `project` | `<workspace>/.dimcode/hooks.json`，经 FileStorage 读取 | `hooks-projects` 列出该工作区时 |
 | `plugin:<id>` | 已安装插件的 `hooks.json`，经 `hooks.register` 登记 | 登记期间，即插件启用时（[PluginManager §5](PluginManager.md#5-内容登记)） |
 
-**登记。** `HooksSettings` 提供进程服务 `hooks` 及 `register(document)`，与 [PluginManager §5](PluginManager.md#5-内容登记) 为 `hooks.json` 定义的登记完全相同：内容行传入解析后的插件 `hooks.json`，Hooks 不加任何参数。为来源命名 `plugin:<id>` 的插件 id，以及插件命令以 `DIM_PLUGIN_ROOT` 得到的插件目录（A.3），是 PluginManager §5 随登记交给负责方的（§10.2）。登记属于调用它的行，在该行卸载时撤回（[How Dim uses rutis R6](../rutis-usage.md#r6-贡献向所有者登记)）；同一行第二次登记会失败，如同同一名字的第二个提供方。**对插件内容而言 Hooks 是可选的：** 内容行只在 `hooks` 存在时才使用它（可选查找，不是注入的依赖，[How Dim uses rutis A.3](../rutis-usage.md#a3-已定的问题)），所以 Hooks 停用或未随产品提供时，插件的 `hooks.json` 不登记，它的 skills、MCP 服务器等其他内容照常登记；负责方之后出现时内容行何时向它登记，按 PluginManager §5 的规则（§10.2）。内容行在 `apply` 中调用 `register`；停用、移除或重载插件会卸载该行并撤回登记，重载时按文件当前内容重新登记。`register` 用与用户来源相同的文档类型校验文档：无效的文档仍保持登记并列为 `invalid`，其中的 Hook 都不运行，回复带上校验错误，由内容行写进插件状态。Hooks 从不去找插件，也从不读取插件目录。
+**登记。** `HooksSettings` 提供进程服务 `hooks` 及 `register(document)`，即 [PluginManager §5](PluginManager.md#5-内容登记) 为 `hooks.json` 定义的登记。PluginManager 为每个目录中带 `hooks.json` 的已启用插件调用它，传入解析后的文档，以及为来源命名 `plugin:<id>` 的插件 id 和插件命令以 `DIM_PLUGIN_ROOT` 得到的插件目录（A.3）。插件停用、移除或重载时 PluginManager 撤回登记，重载时按文件当前内容重新登记；PluginManager 自身卸载时登记也随之撤回（[How Dim uses rutis R6](../rutis-usage.md#r6-贡献向所有者登记)）。同一插件 id 第二次登记会失败，如同同一名字的第二个提供方。**对插件内容而言 Hooks 是可选的：** Hooks 停用或未随产品提供时，PluginManager 跳过 `hooks.json`，插件的其他内容照常登记；Hooks 出现或重载时，PluginManager 把已启用插件的文档重新向它登记（PluginManager §5）。`register` 用与用户来源相同的文档类型校验文档：无效的文档仍保持登记并列为 `invalid`，其中的 Hook 都不运行，回复带上校验错误，由 PluginManager 写进插件状态。Hooks 从不去找插件，也从不读取插件目录。
 
 `HookSources.read(cwd, cancel)` 按来源返回其 id、路径、启用状态与文档或错误。工作区是 Settings 为 `cwd` 授权的项目根，如同 `mcp.catalog` 的解析方式；没有项目的 `cwd` 没有项目来源。插件来源不依赖 `cwd`：每个已登记的插件文档都适用于宿主上的每个 Session，与用户 Hook 相同。目录顺序为表中顺序（插件来源按 id），再按文档顺序。同一 Hook 点上 `command` 字符串相同的处理器只运行一次。用户与项目文档在每个 Hook 点读取；插件文档就是已登记的那份。缺失的项目文件视为空，无法读取或无效的文件列为 `invalid` 并记诊断，其中的 Hook 都不运行。
 
@@ -372,7 +372,7 @@ Hooks 在 PluginManager 的 M1 交付之后实现；内容行中 `hooks.json` �
 | 通道 | 内容 |
 | --- | --- |
 | stdin | 一个 UTF-8 JSON 对象，然后 EOF。公共字段：`hook_event_name`、`session_id`、`cwd`、`permission_mode`（Dim 预设：`read-only`、`workspace-write`、`full-access`）、turn 范围内时的 `turn_id`，以及 Dim 字段 `branch_id`、`dim_source`（`user`、`project` 或 `plugin:<id>`）。没有 `transcript_path` |
-| 环境 | HostPlatform 的基础环境，加 `DIM_PROJECT_DIR`、`DIM_HOOK_EVENT`、`DIM_SESSION_ID`；插件的 Hook 另有 `DIM_PLUGIN_ROOT`（插件目录，由 PluginManager §5 随登记给出，命令可借此找到插件自带的脚本）。无论来源，每个命令都在 Session 的资源节点上运行；路径在那里不存在时，与任何启动失败一样处理 |
+| 环境 | HostPlatform 的基础环境，加 `DIM_PROJECT_DIR`、`DIM_HOOK_EVENT`、`DIM_SESSION_ID`；插件的 Hook 另有 `DIM_PLUGIN_ROOT`（插件目录，由 PluginManager 随登记传入，命令可借此找到插件自带的脚本）。无论来源，每个命令都在 Session 的资源节点上运行；路径在那里不存在时，与任何启动失败一样处理 |
 | 退出 0 | stdout 为空、一个 JSON 对象（A.4），或纯文本（对 `SessionStart` 与 `UserPromptSubmit` 为上下文，其他忽略） |
 | 退出 2 | 该事件的阻止结果（A.4）；stderr（前 2 KiB）为原因 |
 | 其他退出码、信号、超时、启动失败、stdout 超过 64 KiB、`node_unavailable` | 失败：记诊断，然后按处理器的 `onFailure`（A.5） |
@@ -523,7 +523,7 @@ Hooks 在 PluginManager 的 M1 交付之后实现；内容行中 `hooks.json` �
 9. 粘贴过来的匹配器为 `Bash` 的 Claude `PreToolUse` 组对 `exec` 运行，并读取 `tool_input.command`。
 10. 两个都拒绝的 `PreToolUse` 处理器若以相反的目录顺序完成，得到第一个处理器的原因。
 11. Timeline、Dispatcher、before 机制与事件格式不变；没有写入等待 Hook 命令。
-12. 安装一个目录中带 `hooks.json` 的插件后，它的 Hook 在每个 Session 中运行，`DIM_PLUGIN_ROOT` 为该目录，`dim_source` 为 `plugin:<id>`，并列在 `hooks.catalog` 中；停用或移除插件后，从下一个 Hook 点起不再运行；编辑该文件后，`plugin.reload` 使其生效；无效的 `hooks.json` 显示在 `hooks.catalog` 与插件状态中，插件的其他内容照常工作。Hooks 停用时，同一插件的 skills 与 MCP 服务器仍然登记，只缺它的 Hook。
+12. 安装一个目录中带 `hooks.json` 的插件后，它的 Hook 在每个 Session 中运行，`DIM_PLUGIN_ROOT` 为该目录，`dim_source` 为 `plugin:<id>`，并列在 `hooks.catalog` 中；停用或移除插件后，从下一个 Hook 点起不再运行；编辑该文件后，`plugin.reload` 使其生效；无效的 `hooks.json` 显示在 `hooks.catalog` 与插件状态中，插件的其他内容照常工作。Hooks 停用时，同一插件的 skills 与 MCP 服务器仍然登记，只缺它的 Hook；重新启用 Hooks 后，不必重载插件，它的 Hook 就会回来。
 
 ## 附录 E. 假设
 
@@ -608,7 +608,7 @@ Codex 的 `apply_patch` 没有别名：它的输入是补丁，而 Dim 的 `writ
 | `submitChecks` | 提议的 Session 服务 `SubmitChecks`，是登记在 Session 组中的名字，也是 `PublicService`，所以 Rpc 经 `Session::session_service::<SubmitChecks>()` 读取它；由 InputQueue 的 Session 部件提供；`SubmitChecks::register(ctx, name, Arc<dyn CheckSubmission>)`，含 `check(SubmitCheckRequest, CancellationToken) -> HostFuture<SubmitCheckReply>`，保存在一张 `Registrations` 表中，随调用方撤下；`HooksSession` 经 `Keyed<SubmitChecks>` 登记 `hooks`；`Connection::submit`、`Connection::create_branch` 与 `InputMethods` 在 `Session::input`、`Session::branch` / steer 批次之前调用已登记的检查（A.6.2） |
 | `input_blocked` | `RpcError::app(-32000, "input_blocked", message)`；`data` 只有 `{appError}` |
 | `Approval.respond` | 经 `Keyed<Approval>` 调用 `Approval::respond(approval_id, ApprovalDecision)` |
-| `hooks.register` | 进程服务 `HooksRegistry`，由 `HooksSettings` 以进程名 `hooks` 提供；`HooksRegistry::register(ctx, document)`（`ctx` 是内容行的）维护一张按插件 id 作键的 `Registrations` 表并返回文档的校验结果；插件 id 与目录如何到达它按 PluginManager §5。内容行用 `get_at` 读取 `HooksRegistry`，不列入 `injects`，所以 Hooks 不在时只跳过 `hooks.json` |
+| `hooks.register` | 进程服务 `HooksRegistry`，由 `HooksSettings` 以进程名 `hooks` 提供；`HooksRegistry::register` 接收文档，以及按 PluginManager §5 的形式传入的插件 id 与目录，维护一张按插件 id 作键的 `Registrations` 表并返回文档的校验结果；登记由 PluginManager 持有并撤回。PluginManager 只在 `HooksRegistry` 存在时才读取它（`get_at`，不列入 `injects`），所以 Hooks 不在时只跳过 `hooks.json` |
 | `HookSources` | Session 端口 `HookSourcesHost(Arc<dyn ReadHookSources>)`，由 App Server 绑定，如同 `CommandRulesHost` 与 `SkillSettingsHost` |
 | `hooks`、`hooks-projects` | App Server 中的 `BusinessDocument` 类型（`hooks`：`USER_FILE` 为 `hooks.json`，没有 `PROJECT_FILE`；`hooks-projects`：`USER_FILE` 为 `hooks-projects.json`） |
 | `.dimcode/hooks.json` | 由 `HooksSettings` 经 `FileStorage::path(root, ".dimcode/hooks.json")` 与 `read_limited` 读取，`root` 来自 `SettingsService::project_root(cwd)`，解析为 `hooks` 文档类型 |

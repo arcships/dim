@@ -46,7 +46,7 @@
 - [PluginManager](plugins/PluginManager.md)：草案、P3，写于插件契约迁移之前。安全与信任部分已经符合 ADR 003；过时的是把内容发布为 `pluginContents` 服务、由负责方读取的做法，要按上面的方向重写。其中的市场部分推迟到 M1 之后。
 - [#3](https://github.com/arcships/dim/issues/3)：loader 的可编辑层，作为启用状态的唯一来源；安装、启用、reload、移除写到这一层。
 - [#384](https://github.com/arcships/dim/issues/384)：安装和启用插件，在 #3 之上。
-- [Hooks](plugins/Hooks.md)：Ready；插件里的 `hooks.json` 由插件的内容行向 Hooks 登记（[PluginManager §5](plugins/PluginManager.md)）。
+- [Hooks](plugins/Hooks.md)：Ready；插件里的 `hooks.json` 由 PluginManager 向 Hooks 登记（[PluginManager §5](plugins/PluginManager.md)）。
 - [ADR 004](../adr/004-loader-plugin-management.md)、[插件契约](plugin-contract.md)、[How Dim uses rutis](rutis-usage.md)。
 
 需求跟踪：[#432](https://github.com/arcships/dim/issues/432)。
