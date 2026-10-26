@@ -229,7 +229,7 @@ Withdrawn: rutis is an external dependency, so no requirement is raised to it. R
 
 | Requirement | Owner | Five items |
 | --- | --- | --- |
-| Typed operations on the loader editable layer, used by PluginManager to write RemoteGateway's `enabled` field | rutis-loader, [#3](https://github.com/arcships/dim/issues/3) | [PluginManager §9.1](PluginManager.md#9-requirements-raised-to-mechanism-owners) |
+| Withdrawn: typed operations on the loader editable layer. rutis-loader 0.17.1 edits the editable layer itself, and `Loader::update` delivers a change of an `x-volatile` field as `VolatileUpdate`; PluginManager's `plugin.set_enabled` toggles a row's `disabled` flag, which reloads it. Whether RemoteGateway's on/off stays a volatile field is settled when this design is reviewed | rutis-loader, [#3](https://github.com/arcships/dim/issues/3) | [PluginManager §9](PluginManager.md#9-requirements-raised-to-mechanism-owners) |
 
 `entryHost`, `ConnectionEntry {name, deviceId}` and Rpc serving no management method to device connections are changes to Transport, Connection and Rpc, listed in [overview Appendix B.2](../overview.md#b2-app-server-process-plugins).
 
@@ -290,7 +290,7 @@ Compatibility (sources: `LOCAL_EXECUTION_METHODS`, `Call::is_management` in [pro
 | `remote.revoke` | `{deviceId}` | `{}` after record removed and connections closed | Report |
 | `remote.rotate_token` | `{deviceId?}` (absent: all) | `{}` after flag persisted and connections closed | Report |
 
-RemoteGateway has no start or stop method and never writes its own `enabled` field. The entry is switched on and off by PluginManager's `plugin.set_enabled {id: "remote-gateway", enabled}` ([PluginManager A.5](PluginManager.md#a5-methods-managementmethods-namespace-plugin)), which writes the field through the typed loader operations (#3); the loader delivers a `VolatileUpdate` without reloading the plugin, and RemoteGateway calls `entryHost.open` or `close`. Listener settings `bind`, `tls`, `plaintext` are written through Settings typed operations into the business source `remote`, under the schema RemoteGateway declares (which rejects a non-loopback `bind` without `tls` or `plaintext: true`). The CLI `/remote` and `dimcode remote start` write the settings first, then call `plugin.set_enabled`, then read `remote.status`. A business-source change while the entry runs rebinds the listener: RemoteGateway closes and reopens the entry with the new settings (connections detach) without reloading the plugin (A16).
+RemoteGateway has no start or stop method and never writes its own `enabled` field. The entry is switched on and off by PluginManager's `plugin.set_enabled {id: "remote-gateway", enabled}` ([PluginManager §8.1](PluginManager.md#81-management-methods-namespace-plugin)), which writes the field through the typed loader operations (#3); the loader delivers a `VolatileUpdate` without reloading the plugin, and RemoteGateway calls `entryHost.open` or `close`. Listener settings `bind`, `tls`, `plaintext` are written through Settings typed operations into the business source `remote`, under the schema RemoteGateway declares (which rejects a non-loopback `bind` without `tls` or `plaintext: true`). The CLI `/remote` and `dimcode remote start` write the settings first, then call `plugin.set_enabled`, then read `remote.status`. A business-source change while the entry runs rebinds the listener: RemoteGateway closes and reopens the entry with the new settings (connections detach) without reloading the plugin (A16).
 
 ### A.5 Capability mechanics
 

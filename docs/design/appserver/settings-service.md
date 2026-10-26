@@ -102,6 +102,13 @@ owner depends on `settings`.
 
 ### 3.1 Source declaration
 
+> **Decided change, not implemented (M1, [PluginManager §6](../plugins/PluginManager.md#6-settings-sources-register-in-code)).**
+> A plugin registers each source with `settings.register(declaration)` from its `apply`, with the
+> fields and checks below, instead of listing it in its row's `settings` member; the owner is the
+> calling row, and the registration is withdrawn when that row unloads. A plugin installed while the
+> App Server runs can then own sources. This section and §5.3 describe the implemented form until
+> that change lands.
+
 Each TypeScript package that owns sources lists them in the `settings` member of its row in
 C4's structural input (`ServerConfig.session_typescript.rows`,
 [Session TypeScript parts](../session-typescript.md#host-input-and-declaration-discovery)),

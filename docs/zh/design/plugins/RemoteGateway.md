@@ -229,7 +229,7 @@ sequenceDiagram
 
 | 需求 | 所有者 | 五项内容 |
 | --- | --- | --- |
-| loader 可编辑层上的类型化操作，PluginManager 用它写 RemoteGateway 的 `enabled` 字段 | rutis-loader，[#3](https://github.com/arcships/dim/issues/3) | 见 [PluginManager](PluginManager.md) §9.1 |
+| 已撤回：loader 可编辑层上的类型化操作。rutis-loader 0.17.1 自己编辑可编辑层，`Loader::update` 把 `x-volatile` 字段的变化作为 `VolatileUpdate` 送达；PluginManager 的 `plugin.set_enabled` 切换行的 `disabled`，会重载该行。RemoteGateway 的开关是否仍用 volatile 字段，复核本设计时再定 | rutis-loader，[#3](https://github.com/arcships/dim/issues/3) | 见 [PluginManager](PluginManager.md) §9 |
 
 `entryHost`、`ConnectionEntry {name, deviceId}` 以及 Rpc 不向设备连接提供管理方法，是对 Transport、Connection 与 Rpc 的改动，列在 [overview 附录 B.2](../overview.md)。
 

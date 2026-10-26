@@ -26,12 +26,12 @@
 | [AcpGateway](AcpGateway.md) | —（CLI 进程中的客户端，不是守护进程插件） | — | — | P3 |
 | [RemoteGateway](RemoteGateway.md) | 远程入口、设备 | — | — | P3 |
 | [Modality](Modality.md) | 任务、实时连接 | — | — | P3 |
-| [PluginManager](PluginManager.md) | 插件市场、插件包 | — | — | P3 |
+| [PluginManager](PluginManager.md) | 安装、启用、reload、移除插件；loader 的可编辑层 | `plugin_*` 工具 | — | M1（设计已对齐） |
 
 ## 按作用域
 
 | 作用域 | 部分 |
 | --- | --- |
 | 进程部件 | Provider（管理补充提案）、Scheduler、Workflow、ExternalAgent、Modality、PluginManager、RemoteGateway；AcpGateway 不是进程插件，而是 CLI 进程中的客户端 |
-| Session 部件 | Questions、ShellInput、Attachments、SessionTitle、Goal、Web、Recall、Hooks、Scheduler、Workflow |
+| Session 部件 | Questions、ShellInput、Attachments、SessionTitle、Goal、Web、Recall、Hooks、Scheduler、Workflow、PluginManager（`plugin_*` 工具） |
 | 分支部件 | Goal（含 Pursuit）、Hooks |

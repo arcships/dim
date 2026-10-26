@@ -526,7 +526,7 @@ AcpGateway 已经把 `session.submit` 的 `input_blocked` 映射为停止原因 
 
 | 问题 | 说明 |
 | --- | --- |
-| 插件来源 | 插件包中的 Hook 文档依赖 [#3](https://github.com/arcships/dim/issues/3) 与 PluginManager 的 `pluginContents`；随插件启用，且只来自 Session 资源节点上的来源 |
+| 插件来源 | 插件的 `hooks.json` 由插件的内容行向 Hooks 登记（[PluginManager §5](PluginManager.md#5-内容登记)），该行卸载时撤回；Hooks 实现后增加 `register(document)` |
 | 把 Questions 作为通知 | Questions 经 `ask_user` 工具调用提问（[Questions](Questions.md)）；Claude `Notification` 的 `elicitation_dialog` 对应物将观察该调用。Questions 已达到 Ready；该对应物尚未设计，仍不支持 |
 | pi 扩展 | pi 的 Hook 是 TypeScript 扩展处理器，不是命令；运行它们需要 TypeScript 插件运行时（#4），不属于本机制 |
 

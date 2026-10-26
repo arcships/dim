@@ -27,12 +27,12 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [Tui](Tui.md) | — (client tree in the CLI process: `DaemonLink`, `Tui`, `WebHold`; not daemon plugins) | — | — | P1 (implemented) |
 | [RemoteGateway](RemoteGateway.md) | remote entry, devices | — | — | P3 |
 | [Modality](Modality.md) | tasks, realtime connections | — | — | P3 |
-| [PluginManager](PluginManager.md) | marketplaces, packages | — | — | P3 |
+| [PluginManager](PluginManager.md) | install, enable, reload and remove plugins; the loader's editable layer | `plugin_*` tools | — | M1 (design aligned) |
 
 ## By scope
 
 | Scope | Parts |
 | --- | --- |
 | Process parts | Provider (management supplement proposed), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RemoteGateway; AcpGateway is not a process plugin: it is a client in the CLI process |
-| Session parts | Questions, ShellInput, Attachments, SessionTitle, Goal, Web, Recall, Hooks, Scheduler, Workflow |
+| Session parts | Questions, ShellInput, Attachments, SessionTitle, Goal, Web, Recall, Hooks, Scheduler, Workflow, PluginManager (`plugin_*` tools) |
 | Branch parts | Goal (with Pursuit), Hooks |

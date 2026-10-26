@@ -1,6 +1,6 @@
 # 插件管理：需求
 
-状态：需求已定，不是设计。本文写插件管理要达到什么目的、已经定下的方向和需求；设计按这些需求修订或重写 [PluginManager](plugins/PluginManager.md) 等文档（[#3](https://github.com/arcships/dim/issues/3)、[#384](https://github.com/arcships/dim/issues/384)）。现有机制只给出入口链接。
+状态：需求已定，不是设计。本文写插件管理要达到什么目的、已经定下的方向和需求。设计见 [PluginManager](plugins/PluginManager.md)（2026-10-26 与维护者对齐，[#3](https://github.com/arcships/dim/issues/3)、[#384](https://github.com/arcships/dim/issues/384)）。现有机制只给出入口链接。
 
 ## 目的
 
@@ -43,7 +43,7 @@
 
 ## 现有基础
 
-- [PluginManager](plugins/PluginManager.md)：草案、P3，写于插件契约迁移之前。安全与信任部分已经符合 ADR 003；过时的是把内容发布为 `pluginContents` 服务、由负责方读取的做法，要按上面的方向重写。其中的市场部分推迟到 M1 之后。
+- [PluginManager](plugins/PluginManager.md)：按本文需求重写的设计。插件目录、loader 的四层与可编辑层、安装/启用/停用/移除/reload/更新、内容向负责方登记、Settings 来源在代码里登记、默认配置文件，以及 M1 与之后的划分。原先的 `pluginContents` 发布和插件包清单已删除；市场在 M1 之后。
 - [#3](https://github.com/arcships/dim/issues/3)：loader 的可编辑层，作为启用状态的唯一来源；安装、启用、reload、移除写到这一层。
 - [#384](https://github.com/arcships/dim/issues/384)：安装和启用插件，在 #3 之上。
 - [Hooks](plugins/Hooks.md)：草案、Ready 候选；包来源的 hooks 留到 #3 之后。

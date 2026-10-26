@@ -9,7 +9,8 @@ waiting for rutis#642. Context and D4 amended on 2026-10-26: the Context is mark
 before the migration and says which of its mechanisms the migration removed, and D4 states that
 removal as done; the notes on the layer-typed API and on `sessionLifecycle` state the current fact.
 D3 amended the same day: a foreign plugin registers its parts as rutis plugin definitions, which
-rutis 0.17 delivered for rutis#642. Implementation: P1, P2, P3, R6 and P4 done; R5's second form
+rutis 0.17 delivered for rutis#642. D3 amended on 2026-10-26 by the plugin management design: an
+installed plugin directory is one group row with a code and a content row. Implementation: P1, P2, P3, R6 and P4 done; R5's second form
 with #403. The phases are in the
 [plugin contract design](../design/plugin-contract.md#10-migration).
 [中文](../zh/adr/006-plugin-contract.md)
@@ -184,6 +185,10 @@ an external dependency.
   there once the instance is published; one that is Pending or Failed affects only its own features.
   A part mounted after publication does not publish the instance again. A plugin does not declare
   that it is required.
+- **An installed plugin directory.** A plugin installed from a directory is one group row whose
+  children are at most its code row and its content row, which registers the directory's content
+  with each owner. Enablement, reload and removal are the group's, so the user still sees one
+  plugin ([PluginManager §3.2](../design/plugins/PluginManager.md#32-a-plugins-rows)).
 - **Inside a part.** A part may still create children in its own subtree, as McpSession does for each
   server and Skills for each content. They are the part's business.
 - **Where plugins run.** The App Server places plugins as process rows of its loader. A library
