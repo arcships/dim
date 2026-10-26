@@ -16,6 +16,7 @@ mod mcp_command;
 mod model;
 mod permission;
 mod permission_command;
+mod plugin_command;
 mod plugins;
 mod projection;
 mod question;
@@ -539,6 +540,7 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
             mcp_command::list(&mut client, &options).await?;
             Ok(0)
         }
+        Action::Plugin(command) => plugin_command::run(&mut client, &options, command).await,
         Action::McpLogin(id) => {
             let mut input = input::Input::new()?;
             mcp_command::sign_in(

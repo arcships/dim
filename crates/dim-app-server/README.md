@@ -496,6 +496,21 @@ top-level rows (`{id, kind: builtin|default|installed, enabled, locked, status, 
 and `plugin.set_enabled {id, enabled}` sets a row's `disabled` flag in the `user` layer
 (`plugin_not_found`, `plugin_locked`). A disabled plugin stays disabled after a restart.
 
+`plugin.install {source: {path} | {git, ref?}, id?}` creates the plugin's group row in the
+`user` layer: a local path is used in place, a Git URL is cloned into `<home>/plugins/<id>`
+(no repository hooks run). `plugin.reload {id}` reads the plugin's `plugin.json` again, edits
+changed row fields, forgets the module's resolution and reloads its code row, so the rutis runtime
+imports the changed entry module again; other plugins in the runtime keep their generation.
+`plugin.update {id}` fast-forwards a Git plugin's clone to its tracked branch, then reloads.
+`plugin.remove {id}` removes an installed plugin's rows and deletes its clone; built-in and
+default plugins answer `not_removable`. Results carry the settled `status`; `restartRequired`
+says that names the running catalog lacks (`instanceNames`, cross-language `provides`, Settings
+sources, a new Python module) work from the next start. Errors: `invalid_plugin`,
+`plugin_exists`, `plugin_not_found`, `plugin_locked`, `not_reloadable`, `not_removable`,
+`source_unavailable`, `runtime_unavailable`. Every Session has the agent's `plugin_list`,
+`plugin_install`, `plugin_reload`, `plugin_set_enabled`, `plugin_update` and `plugin_remove`
+tools, which Permission decides like any tool (`plugin_list` reads; the others start processes).
+
 Rows that declare Settings sources need `--product-home` or `--home`. Without the flag, their
 namespaces answer `unknown_method` and are absent from `session.methods`.
 

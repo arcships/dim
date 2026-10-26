@@ -26,6 +26,14 @@ Commands:\n\
   mcp enable ID                    Enable an MCP server shown by mcp list\n\
   mcp disable ID                   Disable it; an unlisted ID withdraws only\n\
                                    this workspace's stored enablement\n\
+  plugin list                      List plugins: built-in, default and installed\n\
+  plugin install PATH|GIT-URL [--ref REF] [--id ID]\n\
+                                   Install a plugin directory; it runs at once.\n\
+                                   A local path is used in place\n\
+  plugin enable ID | plugin disable ID\n\
+  plugin reload ID                 Bring in a plugin's edited code and content\n\
+  plugin update ID [--yes]         Move a Git plugin to its branch's newest commit\n\
+  plugin remove ID                 Remove an installed plugin\n\
   daemon stop                      Gracefully stop an existing daemon\n\
   web [--port N] [--no-open]       Hold the Web workspace until Ctrl+C
 web --off                        Turn off the daemon-owned Web switch
@@ -92,6 +100,7 @@ pub enum Action {
         id: String,
         enabled: bool,
     },
+    Plugin(Plugin),
     DaemonStop,
     /// `web`: hold the daemon's local web entry open in the foreground.
     Web {
@@ -116,6 +125,27 @@ pub enum Action {
 pub struct UiIdentity {
     pub ui_id: String,
     pub token: String,
+}
+
+/// A `plugin` subcommand (PluginManager §8.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Plugin {
+    List,
+    Install {
+        source: String,
+        reference: Option<String>,
+        id: Option<String>,
+    },
+    SetEnabled {
+        id: String,
+        enabled: bool,
+    },
+    Reload(String),
+    Update {
+        id: String,
+        confirmed: bool,
+    },
+    Remove(String),
 }
 
 #[derive(Clone)]
@@ -332,6 +362,47 @@ impl Options {
                             return Err("Use mcp list, mcp login ID, mcp logout ID, mcp enable ID or mcp disable ID".into());
                         }
                     };
+                }
+                "plugin" if matches!(options.action, Action::Chat) => {
+                    let command = match value(&mut args)?.as_str() {
+                        "list" => Plugin::List,
+                        "install" => {
+                            let source = value(&mut args)?;
+                            let (mut reference, mut id) = (None, None);
+                            while let Some(flag) =
+                                args.next_if(|next| next == "--ref" || next == "--id")
+                            {
+                                let slot = if flag == "--ref" {
+                                    &mut reference
+                                } else {
+                                    &mut id
+                                };
+                                if slot.replace(value(&mut args)?).is_some() {
+                                    return Err(format!("Supply {flag} only once").into());
+                                }
+                            }
+                            Plugin::Install {
+                                source,
+                                reference,
+                                id,
+                            }
+                        }
+                        command @ ("enable" | "disable") => Plugin::SetEnabled {
+                            id: value(&mut args)?,
+                            enabled: command == "enable",
+                        },
+                        "reload" => Plugin::Reload(value(&mut args)?),
+                        "update" => {
+                            let id = value(&mut args)?;
+                            let confirmed = args.next_if(|next| next == "--yes").is_some();
+                            Plugin::Update { id, confirmed }
+                        }
+                        "remove" => Plugin::Remove(value(&mut args)?),
+                        _ => {
+                            return Err("Use plugin list, plugin install PATH|GIT-URL [--ref REF] [--id ID], or plugin enable|disable|reload|update|remove ID".into());
+                        }
+                    };
+                    options.action = Action::Plugin(command);
                 }
                 "web" if matches!(options.action, Action::Chat) => {
                     options.action = Action::Web {

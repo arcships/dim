@@ -288,7 +288,8 @@ impl Parts {
         let resolver = Arc::new(SessionResolver {
             node: node.rows.clone(),
             python: python.as_ref().map(|python| python.rows.clone()),
-            snapshots,
+            started: snapshots.keys().cloned().collect(),
+            snapshots: std::sync::Mutex::new(snapshots),
             file_roots: file_roots.to_vec().into(),
         });
         Ok(Self {
@@ -329,8 +330,26 @@ impl ForeignRuntime {
 pub(crate) struct SessionResolver {
     node: Arc<RuntimeResolver>,
     python: Option<Arc<RuntimeResolver>>,
-    snapshots: HashMap<String, Map<String, Value>>,
+    /// Each module's `provides`, from its row: the startup rows', and those
+    /// of plugins installed or reloaded since (`admit`).
+    snapshots: std::sync::Mutex<HashMap<String, Map<String, Value>>>,
+    /// The modules of the startup rows, whose catalog names and Settings
+    /// sources the App Server registered before the loader was built.
+    started: HashSet<String>,
     file_roots: Arc<[PathBuf]>,
+}
+impl SessionResolver {
+    /// Lets the module `name` resolve with these `provides`.
+    pub fn admit(&self, name: &str, provides: Map<String, Value>) {
+        self.snapshots
+            .lock()
+            .unwrap()
+            .insert(name.to_owned(), provides);
+    }
+    /// Whether the App Server registered `name`'s row before it started.
+    pub fn known(&self, name: &str) -> bool {
+        self.started.contains(name)
+    }
 }
 impl Resolver for SessionResolver {
     fn resolve<'a>(
@@ -340,7 +359,10 @@ impl Resolver for SessionResolver {
         Box::pin(async move {
             let snapshot = self
                 .snapshots
+                .lock()
+                .unwrap()
                 .get(name)
+                .cloned()
                 .ok_or_else(|| LoaderError::NotFound { name: name.into() })?;
             let runtime = match &self.python {
                 Some(python) if name.starts_with("py:") => python,
@@ -348,7 +370,7 @@ impl Resolver for SessionResolver {
             };
             let original = runtime.resolve(name).await?;
             match original.meta.get("provides") {
-                Some(Value::Object(actual)) if actual == snapshot => {}
+                Some(Value::Object(actual)) if *actual == snapshot => {}
                 // The pinned SDK resolves this placeholder again before releasing RuntimeRows.
                 None if original.meta["source"] == "runtime"
                     && original.meta["schema"]

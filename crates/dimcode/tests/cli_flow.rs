@@ -3488,8 +3488,23 @@ fn configured_api_key_model_uses_production_tools_and_restores_the_same_session(
             assert_eq!(
                 names,
                 [
-                    "agent", "ask_user", "branch", "edit", "exec", "glob", "grep", "read", "skill",
-                    "wait", "write"
+                    "agent",
+                    "ask_user",
+                    "branch",
+                    "edit",
+                    "exec",
+                    "glob",
+                    "grep",
+                    "plugin_install",
+                    "plugin_list",
+                    "plugin_reload",
+                    "plugin_remove",
+                    "plugin_set_enabled",
+                    "plugin_update",
+                    "read",
+                    "skill",
+                    "wait",
+                    "write"
                 ]
             );
             let frame = |delta, finish| {
@@ -6257,4 +6272,71 @@ fn tui_models_picker_edits_only_the_subagent_model_policy() {
             &json!({"expectedRevision":"3","policy":{"mode":"fixed","model":{"providerId":"test","modelId":"other"}}}),
         ]
     );
+}
+
+#[test]
+#[ignore = "requires DIM_TEST_APP_SERVER pointing to the built production App Server"]
+fn plugin_commands_list_disable_and_enable_through_the_daemon() {
+    let binary = std::env::var("DIM_TEST_APP_SERVER").unwrap();
+    let home = Home::new();
+    let _daemon = OwnedDaemon(home.0.join("rust/daemon.sock"));
+    let config = home.0.join("model.json");
+    fs::write(
+        &config,
+        include_str!("../../dim-agent-aimux/examples/offline.json"),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        home.command()
+            .arg("--server")
+            .arg(&binary)
+            .arg("--model-config")
+            .arg(&config)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let stdout = |args: &[&str]| {
+        let output = run(args);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let list = stdout(&["plugin", "list"]);
+    assert!(list.contains("PluginManager\tbuiltin\trunning\n"), "{list}");
+    assert!(list.contains("SkillsCatalog\tbuiltin\trunning\n"), "{list}");
+    assert_eq!(
+        stdout(&["plugin", "disable", "SkillsCatalog"]),
+        "SkillsCatalog: disabled\n"
+    );
+    // The choice is in the home's editable layer and survives the daemon.
+    assert!(run(&["daemon", "stop"]).status.success());
+    assert!(
+        stdout(&["plugin", "list"]).contains("SkillsCatalog\tbuiltin\tdisabled\n"),
+        "restart lost the choice"
+    );
+    assert_eq!(
+        stdout(&["plugin", "enable", "SkillsCatalog"]),
+        "SkillsCatalog: running\n"
+    );
+    // Without a Node runtime, a plugin with code cannot be installed.
+    let plugin = home.0.join("greeter");
+    fs::create_dir(&plugin).unwrap();
+    fs::write(plugin.join("index.ts"), "export default {}\n").unwrap();
+    fs::write(plugin.join("plugin.json"), r#"{"entry":"index.ts"}"#).unwrap();
+    let refused = run(&["plugin", "install", plugin.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("Node runtime"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    // Updating needs the user's confirmation.
+    let unconfirmed = run(&["plugin", "update", "greeter"]);
+    assert!(!unconfirmed.status.success());
+    assert!(String::from_utf8_lossy(&unconfirmed.stderr).contains("--yes"));
+    assert!(run(&["daemon", "stop"]).status.success());
 }

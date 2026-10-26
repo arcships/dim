@@ -2,15 +2,19 @@
 //! Each operation is a call to the running loader, which serializes
 //! operations, persists the editable layer and returns once the tree has
 //! settled.
+use super::operations::{Failure, Operations, Runtimes, Source};
+use super::tools::PluginTools;
 use crate::methods::ManagementMethods;
 use dim_agent_capabilities::methods::{Interruption, MethodDecl, RpcError, params, reply};
-use dim_agent_runtime::Names;
+use dim_agent_runtime::{Names, PartRegistry, PartScope};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, Key, TypeKey};
 use rutis_loader::report::{EntryInfo, EntryStatus};
-use rutis_loader::{Loader, LoaderError};
+use rutis_loader::{Loader, ServiceCatalog};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Which layer put a row in place, read from the loader's layers.
@@ -50,31 +54,46 @@ impl Origins {
     }
 }
 
-pub struct PluginManagerPlugin {
+pub(crate) struct PluginManagerPlugin {
     loader: Key<Loader>,
     methods: Key<ManagementMethods>,
+    parts: Key<PartRegistry>,
+    clones: Option<PathBuf>,
+    runtimes: Option<Arc<Runtimes>>,
+    catalog: ServiceCatalog,
 }
 impl PluginManagerPlugin {
-    pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
+    /// `clones` is where Git plugins are cloned; `runtimes` the foreign
+    /// runtimes, absent without Node; `catalog` the loader's.
+    pub fn new(
+        names: &Names<'_>,
+        clones: Option<PathBuf>,
+        runtimes: Option<Arc<Runtimes>>,
+        catalog: ServiceCatalog,
+    ) -> rutis::Result<Self> {
         Ok(Self {
             loader: names.key()?,
             methods: names.key()?,
+            parts: names.key()?,
+            clones,
+            runtimes,
+            catalog,
         })
     }
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Plugin {
-    id: String,
-    kind: &'static str,
+pub(super) struct Plugin {
+    pub id: String,
+    pub kind: &'static str,
     enabled: bool,
-    locked: bool,
-    status: &'static str,
+    pub locked: bool,
+    pub status: &'static str,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     waiting_for: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -82,6 +101,19 @@ struct Plugin {
 struct SetEnabled {
     id: String,
     enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Install {
+    source: Source,
+    id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ById {
+    id: String,
 }
 
 /// A row's status, and its error when it has one.
@@ -110,7 +142,7 @@ fn status(entry: &EntryInfo) -> (&'static str, Option<String>) {
 
 /// The plugins: the top-level rows. A plugin group's status is the worst of
 /// its own and its children's.
-fn list(loader: &Loader) -> Vec<Plugin> {
+pub(super) fn list(loader: &Loader) -> Vec<Plugin> {
     let origins = Origins::of(loader);
     let entries: Vec<EntryInfo> = loader
         .entries()
@@ -163,14 +195,22 @@ fn list(loader: &Loader) -> Vec<Plugin> {
         .collect()
 }
 
-fn wire(error: LoaderError) -> RpcError {
-    let kind = match &error {
-        LoaderError::UnknownEntry(_) => "plugin_not_found",
-        LoaderError::OverriddenByLayer { .. } => "plugin_locked",
-        LoaderError::NotOwned { .. } => "not_removable",
-        _ => "plugin_failed",
-    };
-    RpcError::app(-32000, kind, error.to_string())
+/// An operation's result with the plugin's settled status.
+fn settled(loader: &Loader, id: &str, mut result: Value) -> Value {
+    let plugin = list(loader).into_iter().find(|plugin| plugin.id == id);
+    result["id"] = json!(id);
+    result["status"] = json!(plugin.as_ref().map_or("removed", |plugin| plugin.status));
+    if let Some(error) = plugin.and_then(|plugin| plugin.error) {
+        result["error"] = json!(error);
+    }
+    result
+}
+
+fn wire(failure: Failure) -> RpcError {
+    match failure.code {
+        "invalid_params" => RpcError::invalid(failure.message),
+        code => RpcError::app(-32000, code, failure.message),
+    }
 }
 
 impl DynPlugin for PluginManagerPlugin {
@@ -178,43 +218,71 @@ impl DynPlugin for PluginManagerPlugin {
         "PluginManager"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.loader.erase(), self.methods.erase()]
+        vec![
+            self.loader.erase(),
+            self.methods.erase(),
+            self.parts.erase(),
+        ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let loader = ctx.require_at(&self.loader)?;
             let methods = ctx.require_at(&self.methods)?;
+            let parts = ctx.require_at(&self.parts)?;
+            let operations = Arc::new(Operations {
+                loader: ctx.require_at(&self.loader)?,
+                clones: self.clones.clone(),
+                runtimes: self.runtimes.clone(),
+                catalog: self.catalog.clone(),
+            });
+            // The agent's tools, in every Session (§8.3).
+            let tools = operations.clone();
+            parts.register(ctx, PartScope::Session, "PluginTools", move |mount| {
+                Ok(Some(Box::new(PluginTools::new(
+                    mount.names,
+                    tools.clone(),
+                )?)))
+            })?;
             methods.register(
                 ctx,
                 "plugin",
                 vec![
                     MethodDecl::new("plugin.list", false, Interruption::Drain),
+                    MethodDecl::new("plugin.install", true, Interruption::Report),
                     MethodDecl::new("plugin.set_enabled", true, Interruption::Report),
+                    MethodDecl::new("plugin.reload", true, Interruption::Report),
+                    MethodDecl::new("plugin.update", true, Interruption::Report),
+                    MethodDecl::new("plugin.remove", true, Interruption::Report),
                 ],
                 Arc::new(move |method, value, _stopping, _| {
-                    let loader = loader.clone();
+                    let operations = operations.clone();
                     Box::pin(async move {
-                        match method.as_str() {
-                            "plugin.list" => reply(list(&loader)),
+                        let loader = &operations.loader;
+                        let (id, result) = match method.as_str() {
+                            "plugin.list" => return reply(list(loader)),
+                            "plugin.install" => {
+                                let Install { source, id } = params(value)?;
+                                let result = operations.install(source, id).await.map_err(wire)?;
+                                (result["id"].as_str().unwrap_or_default().to_owned(), result)
+                            }
                             "plugin.set_enabled" => {
                                 let SetEnabled { id, enabled } = params(value)?;
-                                // Only top-level rows are plugins.
-                                if loader.get(&id).is_none_or(|entry| entry.parent.is_some()) {
-                                    return Err(RpcError::app(
-                                        -32000,
-                                        "plugin_not_found",
-                                        format!("no plugin {id:?}"),
-                                    ));
-                                }
-                                loader.set_disabled(&id, !enabled).await.map_err(wire)?;
-                                let plugin =
-                                    list(&loader).into_iter().find(|plugin| plugin.id == id);
-                                reply(serde_json::json!({
-                                    "status": plugin.map_or("inactive", |plugin| plugin.status)
-                                }))
+                                let result =
+                                    operations.set_enabled(&id, enabled).await.map_err(wire)?;
+                                (id, result)
                             }
-                            _ => unreachable!("registered plugin management method"),
-                        }
+                            method => {
+                                let ById { id } = params(value)?;
+                                let result = match method {
+                                    "plugin.reload" => operations.reload(&id).await,
+                                    "plugin.update" => operations.update(&id).await,
+                                    "plugin.remove" => operations.remove(&id).await,
+                                    _ => unreachable!("registered plugin management method"),
+                                }
+                                .map_err(wire)?;
+                                (id, result)
+                            }
+                        };
+                        reply(settled(loader, &id, result))
                     })
                 }),
             )?;

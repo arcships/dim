@@ -9,10 +9,13 @@
 //! only from the composed layers.
 mod directory;
 mod manager;
+mod operations;
 mod persist;
+mod tools;
 
 pub use directory::{DefaultsFile, read_plugin};
-pub use manager::PluginManagerPlugin;
+pub(crate) use manager::PluginManagerPlugin;
+pub(crate) use operations::Runtimes;
 pub use persist::UserLayer;
 
 use rutis_loader::{Layer, Patch};
@@ -67,9 +70,9 @@ fn set(id: &str, disabled: bool) -> Patch {
 }
 
 /// Whether `row` is a plugin directory's group row: `{id, group: true,
-/// config: [children]}`, with no module of its own (§3.2).
+/// config: [children]}` (§3.2). `Loader::create` also gives it a `name`.
 fn is_plugin_group(row: &Value) -> bool {
-    row["group"] == true && row.get("name").is_none() && row["config"].is_array()
+    row["group"] == true && row["instanced"] != true && row["config"].is_array()
 }
 
 /// The rows of other languages among `rows`: a plugin group's children, or

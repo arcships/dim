@@ -96,6 +96,7 @@ flowchart LR
   p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p25
   p7 -->|"dim_app_server::storage::timeline::SessionStore"| p25
   p2 -->|"rutis_loader::loader::Loader"| p25
+  p31 -->|"dim_agent_runtime::parts::PartRegistry"| p22
   p8 -->|"dim_app_server::methods::ManagementMethods"| p22
   p2 -->|"rutis_loader::loader::Loader"| p22
   p8 -->|"dim_app_server::methods::ManagementMethods"| p21

@@ -1747,10 +1747,20 @@
       "parent": "dim_app_server::plugins",
       "file": "crates/dim-app-server/src/plugins/manager.rs",
       "unexpandedMacros": [
-        "format",
+        "json",
         "matches",
-        "serde_json::json",
         "unreachable",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_app_server::plugins::operations",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::plugins",
+      "file": "crates/dim-app-server/src/plugins/operations.rs",
+      "unexpandedMacros": [
+        "format",
+        "json",
         "vec"
       ]
     },
@@ -1761,6 +1771,17 @@
       "file": "crates/dim-app-server/src/plugins/persist.rs",
       "unexpandedMacros": [
         "format",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_app_server::plugins::tools",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::plugins",
+      "file": "crates/dim-app-server/src/plugins/tools.rs",
+      "unexpandedMacros": [
+        "format",
+        "json",
         "vec"
       ]
     },
@@ -2481,6 +2502,20 @@
         "matches",
         "tokio::pin",
         "tokio::select"
+      ]
+    },
+    {
+      "id": "dim_cli::plugin_command",
+      "crate": "dim_cli",
+      "parent": "dim_cli",
+      "file": "crates/dim-cli/src/plugin_command.rs",
+      "unexpandedMacros": [
+        "eprint",
+        "eprintln",
+        "format",
+        "json",
+        "matches",
+        "println"
       ]
     },
     {
@@ -11623,6 +11658,13 @@
     },
     {
       "from": "dim_app_server",
+      "to": "dim_app_server::plugins::operations",
+      "references": [
+        "path plugins::Runtimes"
+      ]
+    },
+    {
+      "from": "dim_app_server",
       "to": "dim_app_server::plugins::persist",
       "references": [
         "path plugins::UserLayer::new"
@@ -15490,10 +15532,25 @@
     },
     {
       "from": "dim_app_server::plugins",
+      "to": "dim_app_server::plugins::operations",
+      "references": [
+        "mod operations",
+        "use operations::Runtimes"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins",
       "to": "dim_app_server::plugins::persist",
       "references": [
         "mod persist",
         "use persist::UserLayer"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins",
+      "to": "dim_app_server::plugins::tools",
+      "references": [
+        "mod tools"
       ]
     },
     {
@@ -15510,6 +15567,7 @@
       "references": [
         "path RpcError",
         "path RpcError::app",
+        "path RpcError::invalid",
         "path params",
         "path reply",
         "use dim_agent_capabilities::methods::Interruption",
@@ -15529,6 +15587,16 @@
     },
     {
       "from": "dim_app_server::plugins::manager",
+      "to": "dim_agent_runtime::parts",
+      "references": [
+        "path PartRegistry",
+        "path PartScope::Session",
+        "use dim_agent_runtime::PartRegistry",
+        "use dim_agent_runtime::PartScope"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::manager",
       "to": "dim_app_server::methods",
       "references": [
         "path ManagementMethods",
@@ -15543,6 +15611,111 @@
         "path super::DEFAULTS",
         "path super::LOCKED",
         "path super::inserted"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::manager",
+      "to": "dim_app_server::plugins::operations",
+      "references": [
+        "path Failure",
+        "path Operations",
+        "path Runtimes",
+        "path Source",
+        "use super::operations::Failure",
+        "use super::operations::Operations",
+        "use super::operations::Runtimes",
+        "use super::operations::Source"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::manager",
+      "to": "dim_app_server::plugins::tools",
+      "references": [
+        "path PluginTools::new",
+        "use super::tools::PluginTools"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::operations",
+      "to": "dim_app_server::plugins::directory",
+      "references": [
+        "path read_plugin",
+        "use super::read_plugin"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::operations",
+      "to": "dim_app_server::session_typescript",
+      "references": [
+        "path SessionResolver",
+        "use crate::session_typescript::SessionResolver"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::tools",
+      "to": "dim_agent_capabilities::host",
+      "references": [
+        "path HostFuture",
+        "path ToolExecutionContext",
+        "use dim_agent_capabilities::host::HostFuture",
+        "use dim_agent_capabilities::host::ToolExecutionContext"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::tools",
+      "to": "dim_agent_capabilities::tool_registry",
+      "references": [
+        "path ToolContribution",
+        "path ToolHandler",
+        "path ToolRegistry",
+        "path definition",
+        "use dim_agent_capabilities::tool_registry::ToolContribution",
+        "use dim_agent_capabilities::tool_registry::ToolHandler",
+        "use dim_agent_capabilities::tool_registry::ToolRegistry",
+        "use dim_agent_capabilities::tool_registry::definition"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::tools",
+      "to": "dim_agent_runtime::names",
+      "references": [
+        "path Names",
+        "use dim_agent_runtime::Names"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::tools",
+      "to": "dim_agent_types::tool",
+      "references": [
+        "path ToolCall",
+        "path ToolResult",
+        "path ToolResult::error",
+        "path ToolResult::text",
+        "path ToolSource::Extension",
+        "path dim_agent_types::ToolDefinition",
+        "use dim_agent_types::ToolCall",
+        "use dim_agent_types::ToolResult",
+        "use dim_agent_types::ToolSource"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::tools",
+      "to": "dim_app_server::plugins::manager",
+      "references": [
+        "path super::manager::list"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::tools",
+      "to": "dim_app_server::plugins::operations",
+      "references": [
+        "path Failure",
+        "path Operations",
+        "path Source::Git",
+        "path Source::Path",
+        "use super::operations::Failure",
+        "use super::operations::Operations",
+        "use super::operations::Source"
       ]
     },
     {
@@ -18098,6 +18271,7 @@
         "path Action::McpLogin",
         "path Action::McpLogout",
         "path Action::Models",
+        "path Action::Plugin",
         "path Action::Timeline",
         "path Action::Tui",
         "path Action::Version",
@@ -18248,6 +18422,14 @@
       "to": "dim_cli::permission_command",
       "references": [
         "mod permission_command"
+      ]
+    },
+    {
+      "from": "dim_cli",
+      "to": "dim_cli::plugin_command",
+      "references": [
+        "mod plugin_command",
+        "path plugin_command::run"
       ]
     },
     {
@@ -19246,6 +19428,46 @@
         "use crate::permission::Rules",
         "use crate::permission::State",
         "use crate::permission::Switch"
+      ]
+    },
+    {
+      "from": "dim_cli::plugin_command",
+      "to": "dim_cli",
+      "references": [
+        "path Result",
+        "use crate::Result"
+      ]
+    },
+    {
+      "from": "dim_cli::plugin_command",
+      "to": "dim_cli::args",
+      "references": [
+        "path Options",
+        "path Plugin",
+        "path Plugin::Install",
+        "path Plugin::List",
+        "path Plugin::Reload",
+        "path Plugin::Remove",
+        "path Plugin::SetEnabled",
+        "path Plugin::Update",
+        "use crate::args::Options",
+        "use crate::args::Plugin"
+      ]
+    },
+    {
+      "from": "dim_cli::plugin_command",
+      "to": "dim_cli::client",
+      "references": [
+        "path Client",
+        "use crate::client::Client"
+      ]
+    },
+    {
+      "from": "dim_cli::plugin_command",
+      "to": "dim_cli::sanitize",
+      "references": [
+        "path safe",
+        "use crate::sanitize::safe"
       ]
     },
     {

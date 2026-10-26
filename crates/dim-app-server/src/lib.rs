@@ -740,9 +740,29 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             )?);
         }
     }
-    rows.push(register_part(&mut builtins, builder.catalog(), |names| {
-        Ok(Box::new(plugins::PluginManagerPlugin::new(names)?))
-    })?);
+    {
+        let clones = config.target_home.as_ref().map(|home| home.join("plugins"));
+        let runtimes = session_parts.as_ref().map(|parts| {
+            Arc::new(plugins::Runtimes {
+                resolver: parts.resolver.clone(),
+                node: parts.node.rows.clone(),
+                python: parts.python.as_ref().map(|python| python.rows.clone()),
+            })
+        });
+        let catalog = builder.catalog().clone();
+        rows.push(register_part(
+            &mut builtins,
+            builder.catalog(),
+            move |names| {
+                Ok(Box::new(plugins::PluginManagerPlugin::new(
+                    names,
+                    clones.clone(),
+                    runtimes.clone(),
+                    catalog.clone(),
+                )?))
+            },
+        )?);
+    }
     agents::register(&mut builtins);
     rows.push(register_part(&mut builtins, builder.catalog(), |_| {
         Ok(Box::new(agents::AgentDirectoryPlugin))
