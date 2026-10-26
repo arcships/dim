@@ -69,7 +69,7 @@ flowchart TB
 | --- | --- | --- | --- | --- |
 | Questions | — | `ask_user` 工具；`session.question.*` 方法；非交互 Session 中 `ask_user` 回答当前没有可以回答的对象 | —（运行中 `ask_user` 调用的等待者在 Session 部分；没有事件，回答就是工具结果） | 等待者就是 Session 级工具处理函数自己的调用 |
 | Goal | — | `goal_update` 工具与 `session.goal.*` 方法，只写一条带 `goal:objective` 和/或 `goal:status` 块的 `input/message` | 目标状态由已消费的目标变更块按序号折叠得出；Goal 经 Dispatcher 消费 `turn/end`、`stop/interrupt` 或 `input/deleted` 时自己决定续跑 | 一个目标只属于一个分支：折叠只用该分支自己的事件，因此子分支和分叉 Session 从没有目标开始；续跑按序跟随其事件 |
-| Hooks | App Server 中的配置（Settings 来源 `hooks`、`hooks-projects`，管理方法 `hooks.*`，`HookSources` 端口） | Hook 文档（用户与项目）；执行器；向 Session 的 `submitChecks` 登记、由操作者输入入口调用的提交检查（`UserPromptSubmit`） | 向 Permission 登记的建议（`PreToolUse`）；经 Approval 回答 `PermissionRequest`；从 Dispatcher 运行 `PostToolUse`、`PostToolUseFailure`、`Stop`、`SessionStart`、`Notification` | 规则属于 Session；执行发生在分支 |
+| Hooks | App Server 中的配置（Settings 来源 `hooks`、`hooks-projects`，管理方法 `hooks.*`，供插件内容行登记其 `hooks.json` 的服务 `hooks`，`HookSources` 端口） | Hook 文档（用户、项目与已登记的插件）；执行器；向 Session 的 `submitChecks` 登记、由操作者输入入口调用的提交检查（`UserPromptSubmit`） | 向 Permission 登记的建议（`PreToolUse`）；经 Approval 回答 `PermissionRequest`；从 Dispatcher 运行 `PostToolUse`、`PostToolUseFailure`、`Stop`、`SessionStart`、`Notification` | 规则属于 Session；执行发生在分支 |
 | ShellInput | — | `shell.*` Session 方法；在 Session 的工作区中运行并写入其输入 | — | 命令属于 Session |
 | Attachments | — | `attachment.put`；通过 SessionStore 管理 Session 文件 | — | 附件是 Session 数据 |
 | Web | — | `web_search`、`web_fetch` 工具 | — | 没有跨 Session 共享的状态 |
@@ -162,7 +162,7 @@ flowchart LR
 | SessionTitle | Session | 由首条被采纳的用户输入生成标题；`session.rename` | P1 | TypeScript 优先 | [SessionTitle](plugins/SessionTitle.md) |
 | Goal | Session + 分支 | 目标状态由 `goal:objective` 与 `goal:status` 输入块折叠得出；续跑；`goal_update`；`session.goal.*` | P2 | TypeScript 优先 | [Goal](plugins/Goal.md) |
 | Web | Session | `web_search`、`web_fetch` | P2 | TypeScript 优先 | [Web](plugins/Web.md) |
-| Hooks | 进程 + Session + 分支 | 使用 Dim 自有配置的命令 Hook，文档形状与脚本协议兼容 Claude Code / Codex，挂在业务所有者上：Permission（工具前建议）、Approval（权限请求）、操作者输入入口（提示词检查）、分支输入（工具后、Stop、Session 启动） | M2 | Rust | [Hooks](plugins/Hooks.md)（草案） |
+| Hooks | 进程 + Session + 分支 | 使用 Dim 自有配置的命令 Hook，文档形状与脚本协议兼容 Claude Code / Codex，挂在业务所有者上：Permission（工具前建议）、Approval（权限请求）、操作者输入入口（提示词检查）、分支输入（工具后、Stop、Session 启动） | M2 | Rust | [Hooks](plugins/Hooks.md)（Ready） |
 | Scheduler | 进程 + Session | 定时任务；`schedule` 工具；运行结果报告 | P2 | TypeScript 优先 | [Scheduler](plugins/Scheduler.md) |
 | Workflow | 进程 + Session | 跨 Session 的多阶段运行；`workflow` 工具 | P2 | TypeScript 优先 | [Workflow](plugins/Workflow.md) |
 | Notifications | Session | 投递到渠道；`notify` 工具 | P2 | TypeScript 优先 | [Notifications](plugins/Notifications.md)（已撤回） |

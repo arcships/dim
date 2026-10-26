@@ -18,7 +18,7 @@
 | [Web](Web.md) | — | `web_search`、`web_fetch` 工具 | — | P2（已实现，可选包） |
 | [ContextCompaction](ContextCompaction.md)（Loop 与 ContextPreparation 的补充） | — | `ContextModelHost`、摘要 `CompactionStrategyHost`、`session.context.*` | Loop 中的 `context/compact` 指令与压缩步骤；ContextPreparation 中的 K 轮切点与用量查询 | P2 |
 | [Recall](Recall.md) | — | `recall` 工具（把分支历史讲给模型：轮次、一轮、一件事的全文、检索） | — | M2（#129，Ready） |
-| [Hooks](Hooks.md) | App Server 中的 `HooksSettings`：来源 `hooks`（用户）与 `hooks-projects`，经 FileStorage 读取的项目文件 `.dimcode/hooks.json`，`hooks.*` 方法 | Hook 目录、执行器、向 `submitChecks` 登记供用户输入入口使用的提交检查（`UserPromptSubmit`） | 工具建议、权限请求、工具后（`PostToolUse`、`PostToolUseFailure`）、Stop 与 Session 启动 Hook | M2 |
+| [Hooks](Hooks.md) | App Server 中的 `HooksSettings`：来源 `hooks`（用户）与 `hooks-projects`，经 FileStorage 读取的项目文件 `.dimcode/hooks.json`，`hooks.*` 方法，供插件登记 `hooks.json` 的服务 `hooks` | Hook 目录、执行器、向 `submitChecks` 登记供用户输入入口使用的提交检查（`UserPromptSubmit`） | 工具建议、权限请求、工具后（`PostToolUse`、`PostToolUseFailure`）、Stop 与 Session 启动 Hook | M2 |
 | [Notifications](Notifications.md) | — | Session 观察、`notify` 工具 | — | 已撤回 |
 | [Scheduler](Scheduler.md) | 触发、运行历史（任务在 Settings 中） | `schedule` 工具 | — | P2 |
 | [Workflow](Workflow.md) | 运行（定义在 Settings 或项目文件中） | `workflow` 工具 | — | P2 |
