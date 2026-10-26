@@ -611,6 +611,7 @@ async fn node_typescript_row_reads_and_sets_the_title_through_session_metadata()
             "config": {},
         })],
     };
+    let row = rows.rows[0].clone();
     let (server, _) = launch_with(
         Arc::new(MockTools),
         ServerConfig {
@@ -620,6 +621,7 @@ async fn node_typescript_row_reads_and_sets_the_title_through_session_metadata()
         |_| {},
     )
     .await;
+    super::session_typescript::plugin_active(&server, &row).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let sid = session(&mut client).await;
     attach(&mut client, &sid).await;

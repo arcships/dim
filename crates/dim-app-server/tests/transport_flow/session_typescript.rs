@@ -1211,6 +1211,38 @@ pub(super) fn setup() -> (
     (builder, recv, release)
 }
 
+/// Waits until the configured plugin row `row` is Active, so the parts its
+/// `apply` registers exist. A plugin row is an optional extension: `serve`
+/// returns while it may still be loading, and a Session that opens before its
+/// parts are registered mounts them only after it is published (process
+/// TypeScript §2.1, ADR 006 D3).
+pub(super) async fn plugin_active(server: &RunningServer, row: &Value) {
+    let name = row["name"].as_str().unwrap();
+    // The process loader, whose children are the plugin rows; it is Active
+    // once `serve` returns.
+    let loader = server
+        .diagnostics()
+        .plugins
+        .into_iter()
+        .find(|plugin| plugin.name == "rutis-loader")
+        .expect("the process loader")
+        .id;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if server.diagnostics().plugins.iter().any(|plugin| {
+                plugin.name == name
+                    && plugin.parent == Some(loader)
+                    && plugin.state == rutis::host::FiberState::Active
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("plugin row {name} is not Active"));
+}
+
 /// The reply of `method` once the optional row that serves it has registered
 /// it: a Session is published without waiting for its optional rows, and a
 /// namespace is `unknown_method` until its row registers it.
@@ -1322,6 +1354,7 @@ async fn node_session_typescript_tools_methods_and_generation_lifetimes() {
         ..Default::default()
     })
     .await;
+    plugin_active(&server, &fixture().rows[0]).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let first = new_session(&mut client, json!(["ts_echo", "native_slow", "echo"])).await;
     let second = new_session(&mut client, json!(["ts_echo", "echo"])).await;
@@ -1529,6 +1562,7 @@ async fn node_session_typescript_restore_fork_delete_and_disabled_parts() {
     server.join().await.unwrap();
 
     let (server, mut requests, _) = start(config.clone()).await;
+    plugin_active(&server, &fixture().rows[0]).await;
     assert!(server.agent().unwrap().get_session(&session_id).is_none());
     let mut client = Client::new_version(&server, false, 3).await;
     submit(
@@ -2036,10 +2070,15 @@ async fn node_session_typescript_tool_only_first_request_on_create_and_restore()
     };
     let mut saved: Option<String> = None;
     for text in ["created", "restored"] {
-        // The part registered when the Session opens settles before it is
-        // published (ADR 006 D3, Publication), so its tool is in the first
-        // request.
+        // Once the plugin row has registered its part, the part settles
+        // before a Session that opens is published (ADR 006 D3,
+        // Publication), so its tool is in the first request.
         let (server, mut requests, _) = start(config.clone()).await;
+        plugin_active(
+            &server,
+            &config.session_typescript.as_ref().unwrap().rows[0],
+        )
+        .await;
         let mut client = Client::new_version(&server, false, 3).await;
         let session_id = match &saved {
             Some(id) => {
@@ -2100,6 +2139,7 @@ async fn node_session_typescript_row_reload_settles_tools_and_rejects_retained_h
     )
     .await
     .unwrap();
+    plugin_active(&server, &fixture().rows[0]).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let session_id = new_session(&mut client, json!(["ts_echo", "echo"])).await;
     let (session_instance, ctx, _, registry) = controls.recv().await.unwrap();

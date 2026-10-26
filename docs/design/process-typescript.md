@@ -104,6 +104,14 @@ startup. Merely enabling a package does not make its rows required infrastructur
 This isolates row availability after declaration discovery; it does not remove
 the shared module-loading limit below.
 
+The same holds for the Session and branch parts such a row registers: `serve`
+can return while the row's `apply` has not registered them yet. A Session that
+opens before the registration does not wait for it; it mounts the part after it
+is published ([ADR 006 D3](../adr/006-plugin-contract.md#d3-a-plugin-is-one-row-each-instance-mounts-the-parts-registered-for-it),
+Publication), so the
+part's tools are offered from the first request after it is mounted. A Session
+opened once the row is Active has them in its first request.
+
 Keep one initial reconcile in the existing assembly layer. Record the required
 host row ids from the host's composition, before adding the extension rows.
 `Processes::views` / `wait_active` use those required ids, rather than treating
