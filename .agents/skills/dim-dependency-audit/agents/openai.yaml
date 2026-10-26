@@ -1,0 +1,6 @@
+interface:
+  display_name: "Dim dependency audit"
+  short_description: "Manually review Dim dependencies and license notices"
+  default_prompt: "Use $dim-dependency-audit to review this Dim checkout for dependency advisories and license metadata issues."
+policy:
+  allow_implicit_invocation: false
