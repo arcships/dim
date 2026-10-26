@@ -619,6 +619,9 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         })?);
     }
     let code_rows = plugins::code_rows(&plugin_rows);
+    if let Some(product) = &config.product_home {
+        plugins::provision(&code_rows, product)?;
+    }
     let settings_sources = session_typescript::settings_sources(&code_rows)?;
     let settings_root = execution_root.or(product_root);
     if settings_root.is_none() && !settings_sources.is_empty() {
@@ -742,6 +745,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     }
     {
         let clones = config.target_home.as_ref().map(|home| home.join("plugins"));
+        let product = config.product_home.clone();
         let runtimes = session_parts.as_ref().map(|parts| {
             Arc::new(plugins::Runtimes {
                 resolver: parts.resolver.clone(),
@@ -757,6 +761,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                 Ok(Box::new(plugins::PluginManagerPlugin::new(
                     names,
                     clones.clone(),
+                    product.clone(),
                     runtimes.clone(),
                     catalog.clone(),
                 )?))

@@ -378,6 +378,19 @@ impl Plugin for ToolHostPlugin {
         Ok(())
     }
 }
+/// A repository plugin's row as an embedder gives it: its `plugin.json`
+/// with the module `name` in place of `entry`.
+fn package_row(plugin: &str, name: impl serde::Serialize) -> Value {
+    let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../runtime/plugins")
+        .join(plugin)
+        .join("plugin.json");
+    let mut row: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+    let fields = row.as_object_mut().unwrap();
+    fields.remove("entry");
+    fields.insert("name".into(), json!(name));
+    row
+}
 fn create(tools: Value) -> Value {
     json!({"cwd":std::env::temp_dir(),"tools":tools,"permissionPolicy":{"allowedTools":["echo","wait"]}})
 }

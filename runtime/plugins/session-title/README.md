@@ -16,12 +16,13 @@ npm ci --prefix runtime/plugins/session-title --ignore-scripts
 (cd runtime && npm install --no-save --package-lock=false --ignore-scripts --install-links ./plugins/session-title)
 ```
 
-Pass the complete [session-title.json](session-title.json) row to
-`ServerConfig.session_typescript.rows`, with `anchor` pointing to the embedding host's
+Its row file is [plugin.json](plugin.json); the repository's default config file
+([plugins.default.json](../../plugins.default.json)) loads the directory. An embedder can pass the
+same row to `ServerConfig.session_typescript.rows`, with `anchor` pointing to the embedding host's
 `package.json` (`runtime/package.json` here). The package name resolves through its export.
 The module and host use the same `inject`/`provides` declaration and Settings source; the row
 injects only `partRegistry` and provides nothing.
-This is an explicit optional installation, separate from the default CLI profile and release payload.
+The default CLI loads it from the default config file; `dimcode plugin disable session-title` turns it off.
 The `dim-app-server` binary loads plugin directories listed in its default config file
 (`--plugin-defaults FILE`), each with a `plugin.json` row file; see the
 [App Server README](../../../crates/dim-app-server/README.md#session-typescript-embedding).

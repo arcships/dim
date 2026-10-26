@@ -1,9 +1,6 @@
 {
   "id": "workflow",
-  "name": "@dimcode/workflow",
-  "config": {
-    "packages": []
-  },
+  "entry": "index.ts",
   "inject": [
     "sessions",
     "settings",
@@ -16,6 +13,9 @@
     "workflowRuns": {
       "call": "async"
     }
+  },
+  "config": {
+    "packages": []
   },
   "settings": [
     {
@@ -233,5 +233,8 @@
         "additionalProperties": false
       }
     }
+  ],
+  "directories": [
+    "workflow"
   ]
 }

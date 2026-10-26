@@ -286,7 +286,7 @@ TypeScript, in `runtime/plugins/goal`, one row whose `index.ts` registers `sessi
 | File | Part | Declaration |
 | --- | --- | --- |
 | `goal.ts` | Shared: change and continuation inputs (A.5), marker parsing, the fold (§2) and the decisions (A.4) | — |
-| `index.ts` | The row: registers the two definitions | `inject: ["partRegistry"]`, `provides: {}`, `settings` from `settings.json` |
+| `index.ts` | The row: registers the two definitions | `inject: ["partRegistry"]`, `provides: {}`, `settings`, in its row file `plugin.json` |
 | `session.ts` | `GoalPlugin`: registers `goal_update` with `toolRegistry`, registers `session.goal` with `sessionMethods`; writes with `treeCommands.input` | Session definition, `inject: ["treeCommands", "toolRegistry", "sessionMethods"]` |
 | `branch.ts` | `GoalBranchPlugin`: registers with `dispatcher.consume`, folds the replay, decides on live events, and writes owned tasks; reads `maxContinuations` from the `goal` source. Under [Pursuit](Pursuit.md)'s evaluator judge it also creates the evaluator and takes the evaluator role | Branch definition, `inject: ["dispatcher", "timelineIdentity", "treeCommands", "settings", "branchLifecycle"]` |
 

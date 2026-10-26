@@ -14,8 +14,9 @@ npm ci --prefix runtime/plugins/workflow --ignore-scripts
 (cd runtime && npm install --no-save --package-lock=false --ignore-scripts --install-links ./plugins/workflow)
 ```
 
-Pass the complete [process.json](process.json) row to `ServerConfig.session_typescript.rows`, with
-`anchor` pointing to the host's `package.json` (`runtime/package.json` here). A Session without a
+Its row file is [plugin.json](plugin.json); the repository's default config file
+([plugins.default.json](../../plugins.default.json)) loads the directory, and an embedder can pass
+the same row to `ServerConfig.session_typescript.rows`. A Session without a
 mount list (`SessionConfig.tools`) declares `workflow` once its Session part registers it; a Session with one
 declares it when the list names it. The host must authorize and provision the product-root `workflow/`
 directory before enabling the process row. A stage Session takes the stage agent's or default

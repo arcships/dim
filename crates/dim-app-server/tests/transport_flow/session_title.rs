@@ -41,12 +41,7 @@ pub(super) fn rows() -> SessionTypeScriptConfig {
             .expect("DIM_TEST_JS_RUNTIME")
             .into(),
         anchor: root.join("runtime/package.json"),
-        rows: vec![
-            serde_json::from_str(include_str!(
-                "../../../../runtime/plugins/session-title/session-title.json"
-            ))
-            .unwrap(),
-        ],
+        rows: vec![package_row("session-title", "@dimcode/session-title")],
     }
 }
 

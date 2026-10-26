@@ -59,6 +59,7 @@ pub(crate) struct PluginManagerPlugin {
     methods: Key<ManagementMethods>,
     parts: Key<PartRegistry>,
     clones: Option<PathBuf>,
+    product: Option<PathBuf>,
     runtimes: Option<Arc<Runtimes>>,
     catalog: ServiceCatalog,
 }
@@ -68,6 +69,7 @@ impl PluginManagerPlugin {
     pub fn new(
         names: &Names<'_>,
         clones: Option<PathBuf>,
+        product: Option<PathBuf>,
         runtimes: Option<Arc<Runtimes>>,
         catalog: ServiceCatalog,
     ) -> rutis::Result<Self> {
@@ -76,6 +78,7 @@ impl PluginManagerPlugin {
             methods: names.key()?,
             parts: names.key()?,
             clones,
+            product,
             runtimes,
             catalog,
         })
@@ -231,6 +234,7 @@ impl DynPlugin for PluginManagerPlugin {
             let operations = Arc::new(Operations {
                 loader: ctx.require_at(&self.loader)?,
                 clones: self.clones.clone(),
+                product: self.product.clone(),
                 runtimes: self.runtimes.clone(),
                 catalog: self.catalog.clone(),
             });

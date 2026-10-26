@@ -375,6 +375,40 @@ pub fn server(options: &Options) -> Result<Server> {
 /// own), else `web/` beside the executable's `bin/` (a native archive
 /// unpacked next to it), else `web/` in the product home. A directory
 /// counts when it holds `index.html`.
+/// What the daemon runs TypeScript plugins with.
+struct PluginRuntime {
+    node: PathBuf,
+    js_runtime: PathBuf,
+    defaults: PathBuf,
+}
+
+/// The default config file in `DIMCODE_PLUGIN_DEFAULTS` (the npm wrapper sets
+/// it to the one it ships; a source checkout names `runtime/plugins.default.json`),
+/// the rutis runtime package in `DIMCODE_JS_RUNTIME` or beside that file, and
+/// Node in `DIMCODE_NODE` (the wrapper's own) or on `PATH`. Without a default
+/// config file the daemon runs only the plugins compiled into it.
+fn plugin_runtime() -> Option<PluginRuntime> {
+    let defaults = PathBuf::from(std::env::var_os("DIMCODE_PLUGIN_DEFAULTS")?);
+    let defaults = std::fs::canonicalize(defaults).ok()?;
+    let js_runtime = match std::env::var_os("DIMCODE_JS_RUNTIME") {
+        Some(path) => PathBuf::from(path),
+        None => defaults
+            .parent()?
+            .join("node_modules/@arcships/rutis-runtime"),
+    };
+    let node = match std::env::var_os("DIMCODE_NODE") {
+        Some(path) => PathBuf::from(path),
+        None => std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|directory| directory.join(if cfg!(windows) { "node.exe" } else { "node" }))
+            .find(|candidate| candidate.is_file())?,
+    };
+    Some(PluginRuntime {
+        node: std::fs::canonicalize(node).ok()?,
+        js_runtime: std::fs::canonicalize(js_runtime).ok()?,
+        defaults,
+    })
+}
+
 pub fn web_assets(executable: &Path, home: &Path) -> Option<PathBuf> {
     web_assets_in(std::env::var_os("DIMCODE_WEB_ASSETS"), executable, home)
 }
@@ -626,6 +660,17 @@ pub async fn connect_inner(options: &Options, start: bool) -> Result<Option<Clie
     } else {
         let product_home = std::fs::canonicalize(&options.home)?;
         command.arg("--product-home").arg(&product_home);
+    }
+    // The plugin runtime: Node, the rutis runtime package and the default
+    // config file whose plugins load by default (PluginManager §7).
+    if let Some(runtime) = plugin_runtime() {
+        command
+            .arg("--node")
+            .arg(&runtime.node)
+            .arg("--js-runtime")
+            .arg(&runtime.js_runtime)
+            .arg("--plugin-defaults")
+            .arg(&runtime.defaults);
     }
     // The Web workspace is a separate artifact the daemon serves from a
     // directory (web-workspace.md §2.4).

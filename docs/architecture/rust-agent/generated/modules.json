@@ -1738,7 +1738,8 @@
       "file": "crates/dim-app-server/src/plugins/directory.rs",
       "unexpandedMacros": [
         "format",
-        "json"
+        "json",
+        "matches"
       ]
     },
     {
@@ -11646,7 +11647,8 @@
         "path plugins::PluginDefaults::default",
         "path plugins::USER",
         "path plugins::code_rows",
-        "path plugins::inserted"
+        "path plugins::inserted",
+        "path plugins::provision"
       ]
     },
     {
@@ -15518,6 +15520,7 @@
       "to": "dim_app_server::plugins::directory",
       "references": [
         "mod directory",
+        "path directory",
         "use directory::DefaultsFile",
         "use directory::read_plugin"
       ]
@@ -15633,6 +15636,14 @@
       "references": [
         "path PluginTools::new",
         "use super::tools::PluginTools"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugins::operations",
+      "to": "dim_app_server::plugins",
+      "references": [
+        "path super::code_rows",
+        "path super::provision"
       ]
     },
     {

@@ -303,6 +303,27 @@ removing their entry through the existing configuration API; the CLI has no entr
 
 See the [MCP OAuth contract](../../docs/design/appserver/mcp-oauth.md#13-requirements-raised-to-mechanism-owners).
 
+## Plugins
+
+`dimcode plugin list` shows the daemon's plugins: built-in, default (from the default config
+file) and installed, with their status (`running`, `pending` and what it waits for, `failed` and
+why, `disabled`) and whether a plugin is locked. `dimcode plugin install PATH|GIT-URL [--ref REF]
+[--id ID]` installs a plugin directory, which runs at once; a local path is used where it is, so
+`dimcode plugin reload ID` brings in edits without restarting the daemon. `dimcode plugin
+enable|disable ID` switches a plugin, which stays installed; `dimcode plugin update ID` asks, then
+moves a Git plugin to its branch's newest commit (`--yes` when not on a terminal); `dimcode
+plugin remove ID` removes an installed plugin. Built-in and default plugins can be disabled, not
+removed, and locked ones not at all. When a result says some names take effect after a restart,
+run `dimcode daemon stop`. The choices are kept in `<home>/rust/plugins.json`. See the
+[PluginManager design](../../docs/design/plugins/PluginManager.md).
+
+The daemon the CLI starts runs TypeScript plugins when the CLI finds a default config file in
+`DIMCODE_PLUGIN_DEFAULTS` (a source checkout names `runtime/plugins.default.json`, which loads
+the repository's Goal, Web, SessionTitle, Workflow and Scheduler), the rutis runtime package in
+`DIMCODE_JS_RUNTIME` or beside that file under `node_modules/@arcships/rutis-runtime`, and Node
+in `DIMCODE_NODE` or on `PATH`. Without them it runs only the plugins compiled into it, and
+installing a plugin with code answers `runtime_unavailable`.
+
 ## Permission presets and approvals
 
 The App Server decides each tool call by the branch's preset and the user's command rules; the

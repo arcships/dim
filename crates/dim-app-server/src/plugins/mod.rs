@@ -87,6 +87,27 @@ pub(crate) fn code_rows(rows: &[Value]) -> Vec<&Value> {
         .collect()
 }
 
+/// Creates the directories the plugins' code rows declare under the product
+/// root, owner-only: installing a plugin provisions them.
+pub(crate) fn provision(rows: &[&Value], product: &std::path::Path) -> std::io::Result<()> {
+    for directory in rows
+        .iter()
+        .filter_map(|row| row["directories"].as_array())
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(product.join(directory))?;
+    }
+    Ok(())
+}
+
 /// The rows the `user` layer inserts at the top level.
 pub(crate) fn inserted(patches: &[Patch]) -> Vec<Value> {
     patches

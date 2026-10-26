@@ -1,0 +1,26 @@
+{
+  "id": "goal",
+  "entry": "index.ts",
+  "inject": [
+    "partRegistry"
+  ],
+  "provides": {},
+  "settings": [
+    {
+      "source": "goal",
+      "userFile": "goal.json",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "maxContinuations": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 20
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

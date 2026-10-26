@@ -1,7 +1,7 @@
 import { definePlugin, type Plugin } from '@arcships/rutis'
 import { validateHeaderValue, STATUS_CODES } from 'node:http'
 import type { JsonObject, PartRegistry, Settings, ToolCall, ToolDefinition, ToolRegistry, ToolResult } from '../../../npm/plugin.d.ts'
-import row from './web.json' with { type: 'json' }
+import row from './plugin.json' with { type: 'json' }
 import { convert, plainText, redact } from './content.ts'
 import { DOWNLOAD_LIMIT, WebError, domain, get, hostname, parseUrl, proxyUrl, type Diagnostic, type NetworkConfig } from './network.ts'
 

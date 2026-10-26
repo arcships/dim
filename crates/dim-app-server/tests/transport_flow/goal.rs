@@ -33,13 +33,7 @@ fn goal_rows() -> SessionTypeScriptConfig {
             .expect("DIM_TEST_JS_RUNTIME")
             .into(),
         anchor: repository().join("runtime/package.json"),
-        rows: vec![json!({
-            "id": "goal",
-            "name": goal.join("index.ts"),
-            "provides": {},
-            "settings": serde_json::from_str::<Value>(include_str!("../../../../runtime/plugins/goal/settings.json")).unwrap(),
-            "config": {},
-        })],
+        rows: vec![package_row("goal", goal.join("index.ts"))],
     }
 }
 fn product_home() -> PathBuf {

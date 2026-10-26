@@ -4,7 +4,7 @@ import type {
   PartRegistry, SessionMethods, SessionMethodReply, Sessions, Settings, SettingsResult,
 } from '../../../npm/plugin.d.ts'
 import type { UserInput } from '../../../npm/branch-services.d.ts'
-import row from './session-title.json' with { type: 'json' }
+import row from './plugin.json' with { type: 'json' }
 
 type Document = { enabled: boolean; maxLength: number; model: ModelId | null }
 type TitleSettings = { read(request: Parameters<Settings['read']>[0]): Promise<SettingsResult<{ document: Document }>> }

@@ -67,6 +67,9 @@ pub(crate) struct Operations {
     pub loader: Arc<Loader>,
     /// `<home>/plugins`, where Git plugins are cloned; absent without a home.
     pub clones: Option<PathBuf>,
+    /// The product root, where installation provisions the directories a
+    /// plugin declares.
+    pub product: Option<PathBuf>,
     pub runtimes: Option<Arc<Runtimes>>,
     /// The catalog the loader was built with: names a new plugin needs that
     /// it lacks work from the next start.
@@ -117,6 +120,10 @@ impl Operations {
             }
         };
         let id = row["id"].as_str().expect("plugin id").to_owned();
+        if let Some(product) = &self.product {
+            super::provision(&super::code_rows(std::slice::from_ref(&row)), product)
+                .map_err(|error| Failure::new("plugin_failed", error.to_string()))?;
+        }
         let restart = self.admit(&row)?;
         let created = self
             .loader

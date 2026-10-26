@@ -9,8 +9,7 @@ fn rows() -> SessionTypeScriptConfig {
         .join("../..")
         .canonicalize()
         .unwrap();
-    let row: Value =
-        serde_json::from_str(include_str!("../../../../runtime/plugins/web/web.json")).unwrap();
+    let row = package_row("web", "@dimcode/web");
     SessionTypeScriptConfig {
         python: None,
         node: std::env::var_os("DIM_TEST_NODE")

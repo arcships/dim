@@ -429,3 +429,37 @@ async fn node_install_reload_update_and_remove_plugins() {
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
+
+/// The repository's default config file loads its five TypeScript plugins,
+/// as the default CLI does (PluginManager §7, §14 8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE, DIM_TEST_JS_RUNTIME and npm ci in each runtime/plugins package"]
+async fn node_the_repository_default_config_loads_its_plugins() {
+    let home = home();
+    let file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/plugins.default.json");
+    let (rows, defaults) = dim_app_server::plugins::DefaultsFile::read(&file).unwrap();
+    let mut parts = super::session_typescript::fixture();
+    parts.anchor = file.canonicalize().unwrap();
+    parts.rows = rows;
+    let server = launch(
+        Arc::new(MockTools),
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            session_typescript: Some(parts),
+            plugin_defaults: defaults,
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    for id in ["goal", "web", "session-title", "workflow", "scheduler"] {
+        let plugin = running(&mut client, id).await;
+        assert_eq!(plugin["kind"], "default", "{plugin}");
+    }
+    assert_eq!(plugin(&mut client, "Rpc").await["locked"], true);
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}

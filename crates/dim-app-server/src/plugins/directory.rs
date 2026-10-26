@@ -20,6 +20,10 @@ struct RowFile {
     instance_names: Map<String, Value>,
     #[serde(default = "empty")]
     config: Value,
+    /// Directories under the product root its code keeps files in, which
+    /// installation provisions (process-typescript §5.2).
+    #[serde(default)]
+    directories: Vec<PathBuf>,
     /// Business configuration sources, until they register in code (§6).
     settings: Option<Value>,
 }
@@ -75,6 +79,18 @@ pub fn read_plugin(directory: &Path, id: Option<&str>) -> Result<Value, String> 
             path.to_string_lossy().into_owned()
         }
     };
+    if let Some(directory) = row.directories.iter().find(|directory| {
+        directory.is_absolute()
+            || directory
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    }) {
+        return Err(format!(
+            "{}: directory {} must be relative, inside the product root",
+            file.display(),
+            directory.display()
+        ));
+    }
     let mut code = json!({
         "id": format!("{id}.code"),
         "name": entry,
@@ -84,6 +100,9 @@ pub fn read_plugin(directory: &Path, id: Option<&str>) -> Result<Value, String> 
         "instanceNames": row.instance_names,
         "config": row.config,
     });
+    if !row.directories.is_empty() {
+        code["directories"] = json!(row.directories);
+    }
     if let Some(settings) = row.settings {
         code["settings"] = settings;
     }
