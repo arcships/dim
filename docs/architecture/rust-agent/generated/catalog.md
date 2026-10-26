@@ -41,7 +41,7 @@ Each catalog name a part of the assembly provides or injects. A name that crosse
 | `sessionPermissions` | process | AgentDirectory | yes | `permission` async, `permissionDefaults` async |
 | `sessionStore` | process | SessionStore | Rust-only | — |
 | `sessions` | process | AgentDirectory | yes | `delete` async, `history` async, `idle` async, `input` async, `launch` async, `lookup` async, `stop` async, `withdraw` async |
-| `settings` | process | Settings | yes | `projects` sync, `read` async, `update` async |
+| `settings` | process | Settings | yes | `projects` sync, `read` async, `register` async, `update` async |
 | `settingsService` | process | Settings | Rust-only | — |
 | `skillsCatalog` | process | SkillsCatalog | Rust-only | — |
 | `sqliteStorage` | process | SqliteStorage | Rust-only | — |

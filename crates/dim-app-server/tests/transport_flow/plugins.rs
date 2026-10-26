@@ -463,3 +463,95 @@ async fn node_the_repository_default_config_loads_its_plugins() {
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
+
+/// A plugin installed while the App Server runs registers its business
+/// configuration source from its code: `settings.*` serves it at once, with
+/// no restart, and a reload keeps its document (PluginManager §6, §14 4).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE, DIM_TEST_JS_RUNTIME and DIM_TEST_RUTIS_SDK"]
+async fn node_an_installed_plugin_registers_its_settings_source() {
+    let home = home();
+    let sdk = std::env::var("DIM_TEST_RUTIS_SDK").expect("DIM_TEST_RUTIS_SDK");
+    let plugin = home.join("src/configured");
+    std::fs::create_dir_all(&plugin).unwrap();
+    std::fs::write(
+        plugin.join("plugin.json"),
+        json!({"entry": "index.ts", "inject": ["settings"], "provides": {}}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        plugin.join("index.ts"),
+        format!(
+            r#"import {{ definePlugin }} from {sdk:?}
+export default definePlugin({{
+  name: 'Configured', inject: ['settings'], provides: {{}},
+  async apply(ctx) {{
+    await ctx.use('settings').register({{
+      source: 'configured', userFile: 'configured.json',
+      schema: {{ type: 'object', properties: {{ greeting: {{ type: 'string', default: 'hello' }} }}, additionalProperties: false }},
+    }})
+  }},
+}})
+"#
+        ),
+    )
+    .unwrap();
+    let mut config = config(&home, LOCKED);
+    config.session_typescript = Some(super::session_typescript::fixture());
+    let server = launch(Arc::new(MockTools), config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let unknown = client
+        .rpc(
+            "settings.read",
+            json!({"source": "configured", "scope": "user"}),
+        )
+        .await;
+    assert_eq!(
+        unknown["error"]["data"]["appError"], "settings_unknown_source",
+        "{unknown}"
+    );
+    let installed = client
+        .rpc("plugin.install", json!({"source": {"path": plugin}}))
+        .await;
+    assert_eq!(installed["result"]["status"], "running", "{installed}");
+    assert_eq!(installed["result"]["restartRequired"], false, "{installed}");
+    let read = client
+        .rpc(
+            "settings.read",
+            json!({"source": "configured", "scope": "user"}),
+        )
+        .await;
+    assert_eq!(
+        read["result"]["document"],
+        json!({"greeting": "hello"}),
+        "{read}"
+    );
+    let updated = client
+        .rpc(
+            "settings.update",
+            json!({"source": "configured", "scope": "user",
+                "expectedRevision": read["result"]["revision"], "document": {"greeting": "hi"}}),
+        )
+        .await;
+    assert_ok(&updated);
+    assert_ok(
+        &client
+            .rpc("plugin.reload", json!({"id": "configured"}))
+            .await,
+    );
+    let kept = client
+        .rpc(
+            "settings.read",
+            json!({"source": "configured", "scope": "user"}),
+        )
+        .await;
+    assert_eq!(
+        kept["result"]["document"],
+        json!({"greeting": "hi"}),
+        "{kept}"
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}

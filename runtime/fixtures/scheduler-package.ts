@@ -91,6 +91,7 @@ export default definePlugin({
         return reply
       },
       projects: request => settings.projects(request),
+      register: declaration => settings.register(declaration),
     }
     const observedFiles: PluginFiles = {
       async open() {

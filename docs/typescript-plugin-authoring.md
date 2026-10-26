@@ -292,41 +292,42 @@ before retrying. Full semantics and fixed storage error codes are in
 
 Declare `inject: ['settings']` and obtain `ctx.use<Settings>('settings')`.
 Settings owns business documents; loader rows hold structural configuration.
-Declare each source in the `settings` member of its row, next to `provides`,
-through `ServerConfig.session_typescript.rows`. The package keeps one JSON source
-declaration and hands that same file to the host; the TypeScript module does not
-repeat it. There is no separate package manifest or `ServerConfig.settings_sources`.
+The plugin's row registers each source it owns from its `apply`, before it
+registers its parts; the registration belongs to the row and is withdrawn when it
+unloads, and the next generation registers again. Keep the declaration in the
+plugin's own data file and import it, as the repository plugins do with
+`settings.json`. The host reads no declaration, so a plugin installed while the
+App Server runs can own sources.
 
-For example, this row declares a user-scoped Web source:
+```ts
+import { definePlugin } from '@arcships/rutis'
+import type { Settings } from 'dimcode/plugin'
 
-```json
-{
-  "id": "web",
-  "name": "/absolute/path/to/web.ts",
-  "inject": ["settings", "toolRegistry"],
-  "provides": {},
-  "settings": [{
-    "source": "web",
-    "userFile": "web.json",
-    "schema": {
-      "type": "object",
-      "properties": {
-        "maxResults": { "type": "integer", "minimum": 1, "default": 5 }
+export default definePlugin({
+  name: 'Example', inject: ['settings', 'partRegistry'], provides: {},
+  async apply(ctx) {
+    await ctx.use<Settings>('settings').register({
+      source: 'example',
+      userFile: 'example.json',
+      schema: {
+        type: 'object',
+        properties: { maxResults: { type: 'integer', minimum: 1, default: 5 } },
+        additionalProperties: false,
       },
-      "additionalProperties": false
-    }
-  }]
-}
+    })
+    // …register the plugin's parts.
+  },
+})
 ```
 
-Each entry requires `source`, `userFile` and `schema`; optional `projectFile`
-adds project scope and `userOnly` lists protected member JSON Pointers. The row's
-`id` supplies the owner; do not put `owner` in the entry. Unknown fields, malformed
-entries, duplicate source claims and claims on Rust sources fail assembly. Rust
-sources such as `mcp` are not served by this named API. See the
+Each declaration requires `source`, `userFile` and `schema`; optional `projectFile`
+adds project scope and `userOnly` lists protected member JSON Pointers. The
+registering row's `id` is the owner; do not put `owner` in the declaration. Unknown
+fields, malformed entries, a source another plugin registered and Rust sources are
+refused, and the refusal fails the registering row. Rust sources such as `mcp` are
+not served by this named API. See the
 [source declaration contract](design/appserver/settings-service.md#31-source-declaration)
-and the working [owner fixture](../runtime/fixtures/settings-owner.ts) and its
-[Settings declaration](../runtime/fixtures/settings-owner.settings.json).
+and the working [owner fixture](../runtime/fixtures/settings-owner.ts).
 
 `read` and `update` are asynchronous and return `SettingsResult<SettingsSnapshot>`.
 `projects({})` is synchronous and returns the same envelope around

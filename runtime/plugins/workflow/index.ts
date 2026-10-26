@@ -1,6 +1,7 @@
 import { definePlugin } from '@arcships/rutis'
 import { z } from 'zod'
-import type { ManagementMethods, MethodReply, PartRegistry, PluginFiles, Sessions, Settings, WorkflowFiles } from '../../../npm/plugin.js'
+import type { ManagementMethods, MethodReply, PartRegistry, PluginFiles, Sessions, Settings, WorkflowFiles, SourceDeclaration } from '../../../npm/plugin.js'
+import declarations from './settings.json' with { type: 'json' }
 import { Catalog, type DefinitionEntry } from './catalog.ts'
 import { WorkflowError } from './definition.ts'
 import { Workflow } from './engine.ts'
@@ -25,6 +26,9 @@ export default definePlugin({
   inject: ['sessions', 'settings', 'pluginFiles', 'workflowFiles', 'managementMethods', 'partRegistry'],
   provides,
   async apply(ctx, config: z.infer<typeof options>) {
+    for (const declaration of declarations as SourceDeclaration[]) {
+      await ctx.use<Settings>('settings').register(declaration)
+    }
     const catalog = new Catalog(ctx.use<Settings>('settings'), ctx.use<WorkflowFiles>('workflowFiles'), config.packages)
     const scope = await ctx.use<PluginFiles>('pluginFiles').open()
     const workflow = new Workflow(catalog, ctx.use<Sessions>('sessions'), new RunStore(scope))

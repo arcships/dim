@@ -473,8 +473,7 @@ this configuration from `--node` and `--js-runtime`, `--python PATH` for `py:` r
 ```
 
 `plugins` are plugin directories relative to the file, each with a `plugin.json` row file
-(`entry`, `inject`, `provides`, `instanceNames`, `config`, and `settings` until sources register in
-code); `disabled` rows start off; `locked` rows cannot be disabled and are the rows startup waits
+(`entry`, `inject`, `provides`, `instanceNames`, `config`, `directories`); `disabled` rows start off; `locked` rows cannot be disabled and are the rows startup waits
 for (without a `locked` list every host row is). The file is the Node runtime's anchor, and `py:`
 modules are imported from its directory and from each Python plugin's directory. With `--node`
 and `--js-runtime` alone the Node runtime runs with no default plugin.
@@ -504,14 +503,15 @@ imports the changed entry module again; other plugins in the runtime keep their 
 `plugin.update {id}` fast-forwards a Git plugin's clone to its tracked branch, then reloads.
 `plugin.remove {id}` removes an installed plugin's rows and deletes its clone; built-in and
 default plugins answer `not_removable`. Results carry the settled `status`; `restartRequired`
-says that names the running catalog lacks (`instanceNames`, cross-language `provides`, Settings
-sources, a new Python module) work from the next start. Errors: `invalid_plugin`,
+says that names the running catalog lacks (`instanceNames`, cross-language `provides`, a new
+Python module) work from the next start. Errors: `invalid_plugin`,
 `plugin_exists`, `plugin_not_found`, `plugin_locked`, `not_reloadable`, `not_removable`,
 `source_unavailable`, `runtime_unavailable`. Every Session has the agent's `plugin_list`,
 `plugin_install`, `plugin_reload`, `plugin_set_enabled`, `plugin_update` and `plugin_remove`
 tools, which Permission decides like any tool (`plugin_list` reads; the others start processes).
 
-Rows that declare Settings sources need `--product-home` or `--home`. Without the flag, their
+Rows that register Settings sources (`settings.register` from their `apply`) need
+`--product-home` or `--home`, which provide Settings; without them such a row stays Pending, its
 namespaces answer `unknown_method` and are absent from `session.methods`.
 
 Process rows inject `managementMethods` and register their namespaces from their own

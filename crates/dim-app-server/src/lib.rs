@@ -622,13 +622,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     if let Some(product) = &config.product_home {
         plugins::provision(&code_rows, product)?;
     }
-    let settings_sources = session_typescript::settings_sources(&code_rows)?;
     let settings_root = execution_root.or(product_root);
-    if settings_root.is_none() && !settings_sources.is_empty() {
-        return Err(ServerError::Configuration(
-            "settings sources need a product or target home".into(),
-        ));
-    }
     if let Some(home_root) = settings_root {
         // One template, cloned for each load: its copies share the authorized
         // projects. Its dependencies are process names, the same for every copy.
@@ -649,8 +643,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             settings.reserve::<collaboration_model_policy::ModelPolicy>()
         } else {
             settings
-        }
-        .declare(settings_sources);
+        };
         rows.push(register_part(
             &mut builtins,
             builder.catalog(),

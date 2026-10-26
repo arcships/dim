@@ -855,12 +855,14 @@ async fn declared_source_owner_and_client_writes_in_both_profiles() {
         if native {
             views.push(root.plugin(SqliteStoragePlugin::new(home.join("settings.sqlite"))));
         }
-        views.push(root.plugin(settings_plugin.declare(vec![declaration("example")])));
+        views.push(root.plugin(settings_plugin));
         let cancel = CancellationToken::new();
         wait_active(&root, &views, Duration::from_secs(5), &cancel)
             .await
             .unwrap();
         let settings = root.get::<SettingsService>().unwrap();
+        // The owner registers its source (settings-service §3.1).
+        settings.register(&root, declaration("example")).unwrap();
         let owner = root
             .get_at::<dyn HostDispatch>(&host_key("settings"))
             .unwrap();
@@ -1017,40 +1019,81 @@ async fn declared_source_owner_and_client_writes_in_both_profiles() {
 }
 
 #[tokio::test]
-async fn invalid_or_conflicting_declarations_fail_assembly() {
+async fn invalid_or_conflicting_registrations_are_refused_and_withdrawn_ones_return() {
     let mut unreachable = declaration("example");
     unreachable.user_only = vec!["/searchService/missing".into()];
     let mut invalid_default = declaration("example");
     invalid_default.schema["properties"]["maxResults"]["default"] = json!(0);
     let mut escaping = declaration("example");
     escaping.user_file = "../example.json".into();
-    let cases = [
-        settings_part(0, vec![])
-            .reserve::<dim_app_server::mcp::config::McpSettings>()
-            .declare(vec![declaration("mcp")]),
-        settings_part(0, vec![]).declare(vec![declaration("example"), declaration("example")]),
-        settings_part(0, vec![]).declare(vec![unreachable]),
-        settings_part(0, vec![]).declare(vec![invalid_default]),
-        settings_part(0, vec![]).declare(vec![escaping]),
-    ];
     let home = home();
-    for plugin in cases {
-        let root = Ctx::root().unwrap();
-        let views = vec![
-            root.plugin(FileStoragePlugin::new(vec![home.clone()])),
-            root.plugin(plugin),
-        ];
-        let error = wait_active(
-            &root,
-            &views,
-            Duration::from_secs(5),
-            &CancellationToken::new(),
-        )
-        .await
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("example-package"), "{error}");
-        root.shutdown().await.unwrap();
+    let root = Ctx::root().unwrap();
+    let views = vec![
+        root.plugin(FileStoragePlugin::new(vec![home.clone()])),
+        root.plugin(settings_part(0, vec![]).reserve::<dim_app_server::mcp::config::McpSettings>()),
+    ];
+    wait_active(
+        &root,
+        &views,
+        Duration::from_secs(5),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let settings = root.get::<SettingsService>().unwrap();
+    for (declaration, reason) in [
+        (declaration("mcp"), "another document type"),
+        (unreachable, "does not name a declared member"),
+        (invalid_default, "default document is invalid"),
+        (escaping, ""),
+    ] {
+        let error = settings.register(&root, declaration).unwrap_err();
+        assert!(error.contains(reason), "{error}");
     }
+    // A source is one registration's; it returns once that one is withdrawn.
+    let first = root.plugin(Registrant(settings.clone()));
+    wait_active(
+        &root,
+        std::slice::from_ref(&first),
+        Duration::from_secs(5),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let duplicate = settings
+        .register(&root, declaration("example"))
+        .unwrap_err();
+    assert!(duplicate.contains("already registered"), "{duplicate}");
+    first.dispose().await.unwrap();
+    let cancel = CancellationToken::new();
+    assert!(matches!(
+        settings
+            .read_declared("example", SettingsScope::User, &cancel)
+            .await,
+        Err(SettingsError::UnknownSource)
+    ));
+    settings.register(&root, declaration("example")).unwrap();
+    root.shutdown().await.unwrap();
     fs::remove_dir_all(home).unwrap();
+}
+
+/// A plugin that registers the source `example` while it runs.
+struct Registrant(Arc<SettingsService>);
+impl rutis::host::DynPlugin for Registrant {
+    fn name(&self) -> &str {
+        "test.settings-registrant"
+    }
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+    ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
+        Box::pin(async move {
+            self.0
+                .register(ctx, declaration("example"))
+                .map_err(|error| {
+                    rutis::Error::from(rutis::host::ErrorKind::PluginFailed(error.into()))
+                })?;
+            Ok(rutis::host::Effect::Done)
+        })
+    }
 }

@@ -1,5 +1,5 @@
 import { definePlugin } from '@arcships/rutis'
-import type { ManagementMethods, MethodReply, WorkflowFiles, WorkflowRoot, WorkflowFilesErrorThrown, Settings, JsonObject } from '../../npm/plugin.js'
+import type { ManagementMethods, MethodReply, WorkflowFiles, WorkflowRoot, WorkflowFilesErrorThrown, Settings, JsonObject, SourceDeclaration } from '../../npm/plugin.js'
 
 let generation = 0
 export function fixture(namespace: string) {
@@ -7,10 +7,12 @@ export function fixture(namespace: string) {
     name: `WorkflowFilesFixture:${namespace}`,
     inject: ['workflowFiles', 'settings', 'managementMethods'],
     provides: {},
-    async apply(ctx) {
+    async apply(ctx, config: { declarations?: SourceDeclaration[] }) {
       const applied = ++generation
       const files = ctx.use<WorkflowFiles>('workflowFiles')
       const settings = ctx.use<Settings>('settings')
+      // The sources the row's config names, registered as a plugin's are.
+      for (const declaration of config.declarations ?? []) await settings.register(declaration)
       await ctx.use<ManagementMethods>('managementMethods').register(
         namespace,
         ['read', 'list', 'replace', 'create_directory', 'settings_read', 'settings_update', 'status'].map(name => ({

@@ -401,8 +401,8 @@ Writing the user's full document is an operator action that can change all jobs 
 
 ### 7.1 Settings source
 
-The Scheduler process row declares one source through the ordinary row `settings` member
-([Settings §3.1](../appserver/settings-service.md#31-source-declaration)); the Session definition does not declare it.
+The Scheduler process row registers one source with `settings.register` from its `apply`
+([Settings §3.1](../appserver/settings-service.md#31-source-declaration)); the Session definition does not register it.
 
 | Declaration | Value |
 | --- | --- |

@@ -1,7 +1,8 @@
 import { definePlugin, type Plugin } from '@arcships/rutis'
 import { validateHeaderValue, STATUS_CODES } from 'node:http'
-import type { JsonObject, PartRegistry, Settings, ToolCall, ToolDefinition, ToolRegistry, ToolResult } from '../../../npm/plugin.d.ts'
+import type { JsonObject, PartRegistry, Settings, SourceDeclaration, ToolCall, ToolDefinition, ToolRegistry, ToolResult } from '../../../npm/plugin.d.ts'
 import row from './plugin.json' with { type: 'json' }
+import declarations from './settings.json' with { type: 'json' }
 import { convert, plainText, redact } from './content.ts'
 import { DOWNLOAD_LIMIT, WebError, domain, get, hostname, parseUrl, proxyUrl, type Diagnostic, type NetworkConfig } from './network.ts'
 
@@ -245,6 +246,9 @@ export const part = definePlugin({
 export default definePlugin({
   name: 'Web', inject: row.inject, provides: row.provides as Plugin['provides'],
   async apply(ctx) {
+    for (const declaration of declarations as SourceDeclaration[]) {
+      await ctx.use<Settings>('settings').register(declaration)
+    }
     await ctx.use<PartRegistry>('partRegistry').registerDefinition('session', 'Web', part)
   },
 })

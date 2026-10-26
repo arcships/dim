@@ -1,5 +1,6 @@
 import { definePlugin } from '@arcships/rutis'
-import type { PartRegistry } from '../../../npm/plugin.js'
+import type { PartRegistry, Settings, SourceDeclaration } from '../../../npm/plugin.js'
+import declarations from './settings.json' with { type: 'json' }
 import branch from './branch.ts'
 import session from './session.ts'
 
@@ -8,9 +9,12 @@ import session from './session.ts'
 // events and decides continuation. Each Session and branch mounts a copy.
 export default definePlugin({
   name: 'Goal',
-  inject: ['partRegistry'],
+  inject: ['partRegistry', 'settings'],
   provides: {},
   async apply(ctx) {
+    for (const declaration of declarations as SourceDeclaration[]) {
+      await ctx.use<Settings>('settings').register(declaration)
+    }
     const parts = ctx.use<PartRegistry>('partRegistry')
     await parts.registerDefinition('session', 'GoalSession', session)
     await parts.registerDefinition('branch', 'GoalBranch', branch)

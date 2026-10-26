@@ -102,12 +102,13 @@ owner depends on `settings`.
 
 ### 3.1 Source declaration
 
-Each TypeScript package that owns sources lists them in the `settings` member of its row in
-C4's structural input (`ServerConfig.session_typescript.rows`,
-[Session TypeScript parts](../session-typescript.md#host-input-and-declaration-discovery)),
-next to `provides`. As with `provides`, the package keeps one JSON declaration and hands that
-same file to the host; it is not maintained twice. C4 adds no package manifest, so there is no
-other place for it.
+A plugin that owns sources registers each one with Settings from its process row's `apply`:
+`settings.register(declaration)` ([PluginManager §6](../plugins/PluginManager.md#6-settings-sources-register-in-code)).
+The registration belongs to the calling row (a Rust caller passes its ctx; another language's
+call is tied to its row by the bridge) and is withdrawn when that row unloads; the row registers
+again in its next generation. A plugin installed while the App Server runs can therefore own
+sources, and nothing reloads Settings. A plugin keeps its declarations in its own code or data
+file (the repository plugins' `settings.json`); the host does not read them.
 
 ```json
 "settings": [
@@ -138,17 +139,17 @@ other place for it.
 ]
 ```
 
-| Field | Rule (checked once, where the host assembles the rows) |
+| Field | Rule (checked when it registers) |
 | --- | --- |
-| `source` | `[a-z0-9_-]`, as for Rust sources. Unique among all sources of the process: a second declaration, or a declaration naming a Rust source, fails assembly |
+| `source` | `[a-z0-9_-]`, as for Rust sources. Unique among all sources of the process: a second registration of one source, or one naming a Rust source, is refused and fails the registering row |
 | `userFile` | Same rule as `BusinessDocument::USER_FILE` (a plain filename in the home root) |
 | `projectFile` | Optional, same rule as `PROJECT_FILE`. Present means the source also has project scope. This is the "allowed scopes" declaration |
 | `schema` | JSON Schema (draft 2020-12). It must compile, and its root must be `type: object` |
 | `userOnly` | JSON Pointers (RFC 6901) to object members. Each must name a member reachable through `properties` |
-| owner | The `id` of the row that declares it. Not written in the entry |
+| owner | The `id` of the row that registers it. Not written in the entry |
 
 The default document is `{}` with defaults applied (§3.2). It must be valid against the schema,
-or assembly fails. So a missing file always reads as a valid document.
+or the registration is refused. So a missing file always reads as a valid document.
 
 ### 3.2 Documents, validation and defaults
 
@@ -192,6 +193,7 @@ Process scope, no instance key, provided by Settings.
 
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
+| `register` | async | a declaration (§3.1) | nothing; refused with a message; the registration belongs to the calling row |
 | `read` | async | `{source, scope: Scope}` | `Snapshot` |
 | `update` | async | `{source, scope: Scope, expectedRevision, document}` | `Snapshot` (the stored document) |
 | `projects` | sync | `{}` | `{projects: [{root, cwd}]}`: the authorized project roots now |
@@ -345,20 +347,20 @@ document it replaces.
    | update {web, "user", r3, doc with another searchService} -> user_only_field, nothing written
 ```
 
-### 5.3 Declaration boundary
+### 5.3 Registration boundary
 
 ```
- assembly reads each Session TypeScript row's `settings` (owner = row id)
-   -> parse entries (unknown fields rejected), drop `settings` from the loader row
-   -> check names, files, pointers
-   -> compile schema; check that {} with defaults is valid
-   -> SettingsPlugin factory configuration (declarations)
- Settings apply: claims each declared name; provides `settings`, `settings.*`
+ a plugin row's apply: settings.register(declaration)   (owner = calling row's id)
+   -> parse the entry (unknown fields rejected)
+   -> check names, files, pointers; compile schema; check that {} with defaults is valid
+   -> claim the source's namespace and files (a Rust source or another registration's: refused)
+   -> served by `settings` and `settings.*` while the row's generation runs
+ the row unloads: the source is withdrawn; its documents stay
 ```
 
-An invalid declaration fails assembly with the row id and source in the message, like an invalid
-row today. Declared sources need a product or target home; without one, assembly fails rather
-than drop them.
+A refused registration fails the registering row with the source in the message; other plugins
+and the App Server are unaffected. Settings exists only with a product or target home; without
+one, a row that injects `settings` stays Pending.
 
 ## 6. Errors
 
@@ -480,8 +482,8 @@ through C4's path):
    the §4.4 JSON shape.
 4. Native profile: the user scope persists in row `user/example`; existing v13 rows are unchanged.
    Project scope on an unauthorized root fails with `invalid_scope`.
-5. `settings.read` of `mcp` returns `settings_unknown_source`. A row declaring `mcp`, two
-   packages declaring the same source, or a malformed entry fails assembly.
+5. `settings.read` of `mcp` returns `settings_unknown_source`. A registration of `mcp`, two
+   plugins registering the same source, or a malformed entry fails the registering row.
 6. ~~Credential references through a shared `credentials` store.~~ Withdrawn (§1.2).
 7. A paired-device connection is not served `settings.read`.
 
@@ -499,7 +501,7 @@ Corrections made against the code (reflected in §4.3 and §4.5):
   (methods contract §3.2; ADR 004 D4 boundary). This is the only new plugin row; the §2 diagram's
   `managementMethods settings` sits in that part, and §9's ADR 002 D2 answer holds for it as for
   PermissionRules: it is the client path of the Settings data, not a wiring module.
-- Rust sources are reserved at assembly so that a declaration naming one fails assembly (§11
+- Rust sources are reserved at assembly so that a registration naming one is refused (§11
   item 5); Settings alone only learns Rust names on first use.
 - `SettingsError` has `InvalidScope` and `Document(message)` besides the two named variants, so
   the client path can tell invalid params from a persisted failure.
@@ -527,3 +529,11 @@ owner calling the `settings` service through its `HostDispatch`: items 1–5 and
 authorization of a project created after the part loaded.
 
 Nothing remains open for S8b.
+
+**Part 4 (registration in code, plugin management M1).** A plugin registers its sources with
+`settings.register` from its process row's `apply` (§3.1, §5.3); the row's `settings` member, the
+host's reading of it and `SettingsPlugin::declare` are removed, so a plugin installed while the App
+Server runs owns sources without a restart. The repository plugins keep their declarations in
+`settings.json` and register them. Covered by `settings_flow`
+(`invalid_or_conflicting_registrations_are_refused_and_withdrawn_ones_return`) and the Node flows
+`settings_methods` and `plugins::node_an_installed_plugin_registers_its_settings_source`.

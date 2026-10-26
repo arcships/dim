@@ -3,11 +3,7 @@
 //! definitions, and the row lists the names those parts provide in their
 //! instances (`instanceNames`), which the catalog needs before the runtime
 //! starts (rutis usage §2).
-use crate::{
-    Result, ServerError,
-    methods::ManagementMethods,
-    settings::{SourceDeclaration, WorkflowPackages},
-};
+use crate::{Result, ServerError, methods::ManagementMethods, settings::WorkflowPackages};
 use dim_agent_capabilities::{methods::SessionMethods, tool_registry::ToolRegistry};
 use dim_agent_runtime::{AgentBuilder, BRANCH_GROUP, PartRegistry, SESSION_GROUP, names::name_of};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, PluginFactory, TypeKey};
@@ -96,36 +92,6 @@ pub struct PythonConfig {
     pub project: PathBuf,
 }
 
-/// The rows' `settings` entries (settings-service §3.1, §5.4): a row's
-/// package declares its sources next to `provides`, and the row id is their
-/// owner. Settings checks and compiles each declaration when it applies.
-pub(crate) fn settings_sources(rows: &[&Value]) -> Result<Vec<SourceDeclaration>> {
-    let mut sources = Vec::new();
-    for row in rows {
-        let Some(entries) = row.get("settings") else {
-            continue;
-        };
-        let owner = row
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| {
-                ServerError::Configuration("Session TypeScript row requires id".into())
-            })?;
-        let entries: Vec<SourceDeclaration> =
-            serde_json::from_value(entries.clone()).map_err(|error| {
-                ServerError::Configuration(format!(
-                    "settings of Session TypeScript row {owner}: {error}"
-                ))
-            })?;
-        sources.extend(entries.into_iter().map(|mut entry| {
-            entry.owner = owner.to_owned();
-            entry
-        }));
-    }
-    Ok(sources)
-}
-
 /// A runtime of other languages and the resolver of its rows.
 pub(crate) struct ForeignRuntime {
     /// Its name, which its rows gate on.
@@ -142,9 +108,9 @@ pub(crate) struct Parts {
 
 impl Parts {
     /// `rows` are the code rows of every layer: the embedder's, the default
-    /// plugins' and the installed ones. Their host fields (`settings`,
-    /// `instanceNames`, `root`) stay in the layers; the loader reads only
-    /// its own fields.
+    /// plugins' and the installed ones. Their host fields (`instanceNames`,
+    /// `root`, `directories`) stay in the layers; the loader reads only its
+    /// own fields.
     pub fn new(
         config: &SessionTypeScriptConfig,
         rows: &[&Value],

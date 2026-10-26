@@ -5,12 +5,11 @@ use super::*;
 use rutis_bridge::session::{Error, HostDispatch, Reply, Value as RpcValue, host_key};
 use serde_json::{Value, json};
 
-/// One `settings` entry of a TypeScript row (§3.1), declared by the row's
-/// package next to its `provides`.
+/// A source a plugin registers with Settings (§3.1).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceDeclaration {
-    /// The id of the row that declares it; not written in the entry.
+    /// The id of the row that registers it; not written in the entry.
     #[serde(skip)]
     pub owner: String,
     pub source: String,
@@ -140,11 +139,58 @@ fn reachable(schema: &Value, pointer: &str) -> bool {
 }
 
 impl SettingsService {
+    /// Registers a declared source on behalf of the plugin that owns `ctx`:
+    /// checked and compiled now, served while that plugin's generation runs,
+    /// withdrawn when it unloads. Its documents stay where they are.
+    pub fn register(
+        self: &Arc<Self>,
+        ctx: &Ctx,
+        declaration: SourceDeclaration,
+    ) -> std::result::Result<(), String> {
+        let source = declaration.source.clone();
+        let names = claim_names(
+            &declaration.source,
+            &declaration.user_file,
+            declaration.project_file.as_deref(),
+        );
+        let compiled = Arc::new(Declared::compile(declaration)?);
+        let id = self
+            .registrations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut declared = self.declared.lock().unwrap();
+            if declared.contains_key(&source) {
+                return Err(format!("settings source {source} is already registered"));
+            }
+            self.claim(Claimant::Declared(id), names)
+                .map_err(|error| format!("settings source {source}: {error}"))?;
+            declared.insert(source.clone(), (id, compiled));
+        }
+        let owner = self.clone();
+        ctx.effect(move || async move {
+            let mut declared = owner.declared.lock().unwrap();
+            if declared.get(&source).is_some_and(|(held, _)| *held == id) {
+                declared.remove(&source);
+            }
+            drop(declared);
+            owner
+                .claims
+                .lock()
+                .unwrap()
+                .retain(|_, claimant| *claimant != Claimant::Declared(id));
+            Ok(())
+        })
+        .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
     fn declared(&self, source: &str, scope: SettingsScope) -> Result<(Arc<Declared>, FilePath)> {
         let declared = self
             .declared
+            .lock()
+            .unwrap()
             .get(source)
-            .cloned()
+            .map(|(_, declared)| declared.clone())
             .ok_or(SettingsError::UnknownSource)?;
         if let SettingsScope::Project(root) = scope {
             if declared.declaration.project_file.is_none() {
@@ -264,13 +310,26 @@ fn request<T: DeserializeOwned>(args: RpcValue) -> std::result::Result<T, Error>
 struct Dispatch(Arc<SettingsService>);
 impl HostDispatch for Dispatch {
     fn methods(&self) -> Option<Value> {
-        Some(json!({"read": "async", "update": "async", "projects": "sync"}))
+        Some(json!({"register": "async", "read": "async", "update": "async", "projects": "sync"}))
     }
     fn invoke(&self, method: &str, args: RpcValue) -> Reply {
         let service = self.0.clone();
         // Dropping the call cancels it; a committed write stays committed.
         let cancel = CancellationToken::new();
         match method {
+            "register" => {
+                // The registration belongs to the calling row.
+                let caller = rutis_bridge::session::caller_row().ok_or_else(|| {
+                    Error::Value("register needs the calling row: call it from a plugin row".into())
+                })?;
+                let mut declaration: SourceDeclaration = request(args)?;
+                declaration.owner = caller.id().to_owned();
+                let registered = service
+                    .register(caller.ctx(), declaration)
+                    .map(|()| RpcValue::Undefined)
+                    .map_err(Error::Value);
+                Ok(RpcValue::future(async move { registered }))
+            }
             "projects" => {
                 let Projects {} = request(args)?;
                 let projects: Vec<_> = service

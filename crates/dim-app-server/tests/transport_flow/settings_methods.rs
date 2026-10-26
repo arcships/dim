@@ -25,7 +25,7 @@ fn owner_row(id: &str) -> Value {
         "id": id,
         "name": repository().join("runtime/fixtures/settings-owner.ts"),
         "provides": {},
-        "settings": serde_json::from_str::<Value>(include_str!("../../../../runtime/fixtures/settings-owner.settings.json")).unwrap(),
+        "config": {"declarations": serde_json::from_str::<Value>(include_str!("../../../../runtime/fixtures/settings-owner.settings.json")).unwrap()},
     })
 }
 fn rows(rows: Vec<Value>) -> SessionTypeScriptConfig {
@@ -284,10 +284,15 @@ async fn node_settings_clients_and_declaration_boundaries() {
             .await["error"]["data"]["appError"],
         "local_transport_required"
     );
-    let read = client
-        .rpc("settings.read", json!({"source":"example","scope":"user"}))
-        .await;
-    assert_ok(&read);
+    // The owner's row registers the source when it loads, after startup.
+    let read = json!({
+        "result": super::process_typescript::files_available(
+            &mut client,
+            "settings.read",
+            json!({"source":"example","scope":"user"}),
+        )
+        .await
+    });
     assert_eq!(read["result"]["document"], json!({"maxResults": 5}));
     let first = read["result"]["revision"].clone();
     let service = json!({"kind":"web","apiKey":"web-search"});
@@ -341,35 +346,56 @@ async fn node_settings_clients_and_declaration_boundaries() {
     server.shutdown();
     server.join().await.unwrap();
 
-    // A declaration naming a Rust source, a second declaration of one source
-    // by another package, and a malformed entry each fail assembly.
+    // A declaration naming a Rust source, a second registration of one
+    // source by another plugin, and a malformed entry each fail the plugin
+    // that registers it; the App Server starts.
     let mut rust = owner_row(OWNER);
-    rust["settings"][0]["source"] = json!("mcp");
-    let mut copy = owner_row("tool-only");
-    copy["name"] = json!(repository().join("runtime/fixtures/session-tool-only.ts"));
-    copy["provides"] = serde_json::from_str::<Value>(include_str!(
-        "../../../../runtime/fixtures/session-tool-only.json"
-    ))
-    .unwrap();
+    rust["config"]["declarations"][0]["source"] = json!("mcp");
+    let mut copy = owner_row("second-owner");
+    copy["name"] = json!(repository().join("runtime/fixtures/settings-owner-second.ts"));
     let mut malformed = owner_row(OWNER);
-    malformed["settings"][0]["userfile"] = json!("example.json");
-    for (failing, reason) in [
-        (vec![rust], "settings source mcp of example-owner"),
+    malformed["config"]["declarations"][0]["userfile"] = json!("example.json");
+    // Of two plugins registering one source, whichever loads second fails.
+    for (failing, plugins, reason) in [
+        (vec![rust], &[OWNER][..], "belongs to another document type"),
         (
             vec![owner_row(OWNER), copy],
-            "settings source example of tool-only",
+            &[OWNER, "second-owner"][..],
+            "settings source example is already registered",
         ),
-        (
-            vec![malformed],
-            "settings of Session TypeScript row example-owner",
-        ),
+        (vec![malformed], &[OWNER][..], "settings"),
     ] {
-        let Err(error) =
-            try_launch_with(Arc::new(MockTools), config(&home, rows(failing)), |_| {}).await
-        else {
-            panic!("{reason}: assembly succeeded");
+        let server = launch(Arc::new(MockTools), config(&home, rows(failing))).await;
+        let mut client = Client::new_version(&server, false, 3).await;
+        let failed = loop {
+            let listed = client.rpc("plugin.list", json!({})).await;
+            let entries: Vec<Value> = listed["result"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|entry| plugins.contains(&entry["id"].as_str().unwrap()))
+                .cloned()
+                .collect();
+            let settled = entries
+                .iter()
+                .all(|entry| entry["status"] == "failed" || entry["status"] == "running");
+            if settled {
+                let failed: Vec<Value> = entries
+                    .into_iter()
+                    .filter(|entry| entry["status"] == "failed")
+                    .collect();
+                break failed;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         };
-        assert!(error.to_string().contains(reason), "{error}");
+        assert_eq!(failed.len(), 1, "{reason}: {failed:?}");
+        assert!(
+            failed[0]["error"].as_str().unwrap().contains(reason),
+            "{reason}: {failed:?}"
+        );
+        drop(client);
+        server.shutdown();
+        server.join().await.unwrap();
     }
     let _ = std::fs::remove_dir_all(&home);
 }

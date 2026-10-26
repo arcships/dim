@@ -135,7 +135,8 @@ fn typed<D: BusinessDocument>() -> Arc<Typed<D>> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Claimant {
     Rust(TypeId),
-    Declared(usize),
+    /// One registration of a declared source.
+    Declared(u64),
 }
 fn claim_names(source: &str, user_file: &str, project_file: Option<&str>) -> Vec<String> {
     [format!("namespace {source}"), format!("user {user_file}")]
@@ -157,8 +158,10 @@ pub struct SettingsService {
     /// The claimant of each namespace and file; another claimant naming one
     /// of them would share its persisted source.
     claims: Mutex<BTreeMap<String, Claimant>>,
-    /// The declared sources, compiled once at apply.
-    declared: BTreeMap<String, Arc<Declared>>,
+    /// The declared sources plugins registered, each compiled when it
+    /// registered (§3.1), with the registration that holds it.
+    declared: Mutex<BTreeMap<String, (u64, Arc<Declared>)>>,
+    registrations: std::sync::atomic::AtomicU64,
 }
 impl SettingsService {
     pub async fn authorize_project(
@@ -464,7 +467,6 @@ pub struct SettingsPlugin {
     /// Rust sources the composition root registers, claimed before any
     /// declaration so a declaration cannot take one of their names.
     reserved: Vec<(TypeId, Vec<String>)>,
-    declarations: Vec<SourceDeclaration>,
 }
 impl SettingsPlugin {
     pub fn new(
@@ -479,7 +481,6 @@ impl SettingsPlugin {
             files: names.key()?,
             database: None,
             reserved: Vec::new(),
-            declarations: Vec::new(),
         })
     }
     pub fn native(
@@ -498,12 +499,6 @@ impl SettingsPlugin {
             TypeId::of::<D>(),
             claim_names(D::NAMESPACE, D::USER_FILE, D::PROJECT_FILE),
         ));
-        self
-    }
-    /// The declared sources this Settings serves. Each is checked and compiled
-    /// in `apply`; an invalid or duplicate declaration fails assembly.
-    pub fn declare(mut self, declarations: Vec<SourceDeclaration>) -> Self {
-        self.declarations.extend(declarations);
         self
     }
 }
@@ -529,30 +524,6 @@ impl DynPlugin for SettingsPlugin {
                     rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
                 })?;
             }
-            let mut declared = BTreeMap::new();
-            for (index, declaration) in self.declarations.iter().enumerate() {
-                let failed = |reason: String| {
-                    rutis::Error::from(ErrorKind::PluginFailed(
-                        format!(
-                            "settings source {} of {}: {reason}",
-                            declaration.source, declaration.owner
-                        )
-                        .into(),
-                    ))
-                };
-                let compiled = Declared::compile(declaration.clone()).map_err(failed)?;
-                claim(
-                    &mut claims,
-                    Claimant::Declared(index),
-                    claim_names(
-                        &declaration.source,
-                        &declaration.user_file,
-                        declaration.project_file.as_deref(),
-                    ),
-                )
-                .map_err(|error| failed(error.to_string()))?;
-                declared.insert(declaration.source.clone(), Arc::new(compiled));
-            }
             for root in &self.project_roots {
                 let path = files
                     .root_path(*root)
@@ -569,7 +540,8 @@ impl DynPlugin for SettingsPlugin {
                 updates: TaskTracker::new(),
                 events: ctx.clone(),
                 claims: Mutex::new(claims),
-                declared,
+                declared: Mutex::new(BTreeMap::new()),
+                registrations: Default::default(),
             });
             let owner = service.clone();
             ctx.effect(move || async move {

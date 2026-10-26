@@ -11705,8 +11705,7 @@
       "references": [
         "mod session_typescript",
         "path session_typescript::Parts::new",
-        "path session_typescript::SessionTypeScriptConfig",
-        "path session_typescript::settings_sources"
+        "path session_typescript::SessionTypeScriptConfig"
       ]
     },
     {
@@ -16915,14 +16914,6 @@
     },
     {
       "from": "dim_app_server::session_typescript",
-      "to": "dim_app_server::settings::declared",
-      "references": [
-        "path SourceDeclaration",
-        "use crate::settings::SourceDeclaration"
-      ]
-    },
-    {
-      "from": "dim_app_server::session_typescript",
       "to": "dim_app_server::settings::workflow_files",
       "references": [
         "path WorkflowPackages",
@@ -17040,9 +17031,6 @@
       "references": [
         "mod declared",
         "path Declared",
-        "path Declared::compile",
-        "path SourceDeclaration",
-        "path declared",
         "path declared::provide",
         "use declared::Declared",
         "use declared::Read",
@@ -17096,6 +17084,7 @@
       "from": "dim_app_server::settings::declared",
       "to": "dim_app_server::settings",
       "references": [
+        "path Claimant::Declared",
         "path Format",
         "path ProjectAuthorized",
         "path Result",
@@ -17113,6 +17102,7 @@
         "path SettingsError::Worker",
         "path SettingsService",
         "path SettingsSnapshot",
+        "path claim_names",
         "path project_authorizations",
         "path validate_file",
         "path validate_namespace"

@@ -24,8 +24,6 @@ struct RowFile {
     /// installation provisions (process-typescript §5.2).
     #[serde(default)]
     directories: Vec<PathBuf>,
-    /// Business configuration sources, until they register in code (§6).
-    settings: Option<Value>,
 }
 fn empty() -> Value {
     json!({})
@@ -102,9 +100,6 @@ pub fn read_plugin(directory: &Path, id: Option<&str>) -> Result<Value, String> 
     });
     if !row.directories.is_empty() {
         code["directories"] = json!(row.directories);
-    }
-    if let Some(settings) = row.settings {
-        code["settings"] = settings;
     }
     Ok(json!({ "id": id, "group": true, "config": [code] }))
 }

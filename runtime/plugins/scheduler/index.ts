@@ -1,6 +1,7 @@
 import { definePlugin } from '@arcships/rutis'
 import { z } from 'zod'
-import type { JsonObject, ManagementMethods, PartRegistry, PluginFiles, SessionPermissions, Sessions, Settings } from '../../../npm/plugin.js'
+import type { JsonObject, ManagementMethods, PartRegistry, PluginFiles, SessionPermissions, Sessions, Settings, SourceDeclaration } from '../../../npm/plugin.js'
+import declarations from './settings.json' with { type: 'json' }
 import { ScheduleError, type Job } from './data.ts'
 import { Scheduler } from './engine.ts'
 import { Jobs } from './jobs.ts'
@@ -21,6 +22,9 @@ export default definePlugin({
   inject: ['sessions', 'sessionPermissions', 'settings', 'pluginFiles', 'managementMethods', 'partRegistry'],
   provides: { scheduleJobs: { call: 'async' } },
   async apply(ctx) {
+    for (const declaration of declarations as SourceDeclaration[]) {
+      await ctx.use<Settings>('settings').register(declaration)
+    }
     const jobs = new Jobs(ctx.use<Settings>('settings'), ctx.use<SessionPermissions>('sessionPermissions'))
     const scope = await ctx.use<PluginFiles>('pluginFiles').open()
     const scheduler = new Scheduler(jobs, ctx.use<Sessions>('sessions'), new RunStore(scope))

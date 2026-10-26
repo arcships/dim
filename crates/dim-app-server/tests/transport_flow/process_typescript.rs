@@ -7,8 +7,7 @@ fn parts() -> SessionTypeScriptConfig {
     parts.rows.push(json!({
         "id":"process-example", "name":parts.anchor.parent().unwrap().join("fixtures/process-part.ts"),
         "provides":serde_json::from_str::<Value>(include_str!("../../../../runtime/fixtures/process-part.json")).unwrap(),
-        "settings":serde_json::from_str::<Value>(include_str!("../../../../runtime/fixtures/settings-owner.settings.json")).unwrap(),
-        "config":{},
+        "config":{"declarations":serde_json::from_str::<Value>(include_str!("../../../../runtime/fixtures/settings-owner.settings.json")).unwrap()},
     }));
     parts
 }
@@ -591,7 +590,7 @@ async fn node_process_typescript_dependency_reload_settles_calls_and_keeps_failu
     }
     let home = home();
     let mut parts = parts();
-    parts.rows[1]["config"] = json!({"failAfter":2});
+    parts.rows[1]["config"]["failAfter"] = json!(2);
     let (mut builder, _, _) = session_typescript::setup();
     let (send, mut controls) = tokio::sync::mpsc::unbounded_channel();
     builder.require_feature(session_typescript::ControlledGate::feature(send));
@@ -752,8 +751,8 @@ async fn node_process_typescript_held_apply_does_not_hold_native_startup() {
     let home = home();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut parts = parts();
-    parts.rows[1]["config"] =
-        json!({"holdApply":{"host":"127.0.0.1","port":listener.local_addr().unwrap().port()}});
+    parts.rows[1]["config"]["holdApply"] =
+        json!({"host":"127.0.0.1","port":listener.local_addr().unwrap().port()});
     let (server, _, _) = tokio::time::timeout(
         Duration::from_secs(10),
         session_typescript::start(config(&home, parts)),
@@ -829,7 +828,7 @@ async fn node_workflow_files_enforces_project_and_original_row_package_authority
         })
     };
     let mut first = row("workflow-reader", "workflow-files", "installed", &package);
-    first["settings"] = json!([{
+    first["config"]["declarations"] = json!([{
         "source":"workflow", "userFile":"workflow.json", "projectFile":null,
         "schema":{"type":"object","properties":{
             "definitions":{"type":"object","default":{}},

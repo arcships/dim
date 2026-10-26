@@ -1,10 +1,11 @@
 import { definePlugin, type Plugin } from '@arcships/rutis'
 import type {
   AgentEvent, AuxiliaryModel, ModelId, Services, SessionBroadcast, SessionMetadata,
-  PartRegistry, SessionMethods, SessionMethodReply, Sessions, Settings, SettingsResult,
+  PartRegistry, SessionMethods, SessionMethodReply, Sessions, Settings, SettingsResult, SourceDeclaration,
 } from '../../../npm/plugin.d.ts'
 import type { UserInput } from '../../../npm/branch-services.d.ts'
 import row from './plugin.json' with { type: 'json' }
+import declarations from './settings.json' with { type: 'json' }
 
 type Document = { enabled: boolean; maxLength: number; model: ModelId | null }
 type TitleSettings = { read(request: Parameters<Settings['read']>[0]): Promise<SettingsResult<{ document: Document }>> }
@@ -177,6 +178,9 @@ export const part = definePlugin({
 export default definePlugin({
   name: 'SessionTitle', inject: row.inject, provides: row.provides as Plugin['provides'],
   async apply(ctx) {
+    for (const declaration of declarations as SourceDeclaration[]) {
+      await ctx.use<Settings>('settings').register(declaration)
+    }
     await ctx.use<PartRegistry>('partRegistry').registerDefinition('session', 'SessionTitle', part)
   },
 })

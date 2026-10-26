@@ -30,8 +30,15 @@ export type SettingsErrorCode = 'unknown_source' | 'invalid_scope' | 'invalid_do
 export type SettingsResult<T> = { ok: true; value: T } |
   { ok: false; error: { code: SettingsErrorCode; message: string } };
 
-/** Process service `settings`; TypeScript sources are declared in their C4 row. */
+/** A business configuration source a plugin registers (settings-service §3.1). */
+export interface SourceDeclaration {
+  source: string; userFile: string; projectFile?: string | null;
+  schema: object; userOnly?: string[];
+}
+/** Process service `settings`. A process row registers its sources from its `apply`; each
+ * registration belongs to that row and is withdrawn when it unloads. */
 export interface Settings {
+  register(declaration: SourceDeclaration): Promise<void>;
   read(request: { source: string; scope: SettingsScope }): Promise<SettingsResult<SettingsSnapshot>>;
   update(request: { source: string; scope: SettingsScope; expectedRevision: string; document: JsonObject }): Promise<SettingsResult<SettingsSnapshot>>;
   projects(request: Record<string, never>): SettingsResult<{ projects: { root: number; cwd: string }[] }>;

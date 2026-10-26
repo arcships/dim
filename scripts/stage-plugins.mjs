@@ -74,8 +74,9 @@ try {
         const row = json(path.join(source, file));
         row.entry = row.entry.replace(/\.ts$/, '.js');
         writeFileSync(path.join(target, file), `${JSON.stringify(row, null, 2)}\n`);
-      } else if (file === 'package.json') {
-        // Its code may read it (Web's user agent); it names no entry to load.
+      } else if (file.endsWith('.json') && !['tsconfig.json', 'package-lock.json'].includes(file)) {
+        // Data its code imports: its Settings declarations, Web's own
+        // package.json (its user agent).
         copyFileSync(path.join(source, file), path.join(target, file));
       }
     }

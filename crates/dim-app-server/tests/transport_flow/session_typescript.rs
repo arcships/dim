@@ -1229,8 +1229,15 @@ pub(super) async fn when_served(client: &mut Client, method: &str, params: Value
 }
 
 /// Whether `reply` says the row that serves its method is not serving yet.
+/// A plugin has not registered what the call needs yet: its namespace, or
+/// the Settings source its row registers from its `apply`.
 pub(super) fn waiting(reply: &Value) -> bool {
-    ["unknown_method", "service_reloading"].contains(
+    [
+        "unknown_method",
+        "service_reloading",
+        "settings_unknown_source",
+    ]
+    .contains(
         &reply["error"]["data"]["appError"]
             .as_str()
             .unwrap_or_default(),

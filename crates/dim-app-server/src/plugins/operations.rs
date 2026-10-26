@@ -304,7 +304,6 @@ impl Operations {
                 .as_object()
                 .is_some_and(|names| !names.is_empty())
                 && !runtimes.resolver.known(name);
-            restart |= child.get("settings").is_some() && !runtimes.resolver.known(name);
             runtimes.resolver.admit(name, provides);
         }
         Ok(restart)

@@ -62,6 +62,8 @@ async function host(t, initial = {}) {
     // The row registers its Session part; the test mounts that copy.
     partRegistry: { async registerDefinition(scope, name, definition) { h.part = { scope, name, definition } } },
     settings: {
+      // The row registers its source; the test serves it.
+      async register() {},
       async read() {
         h.settingsReads++
         const snapshot = { revision: String(h.revision), document: copy(h.document) }
