@@ -26,9 +26,9 @@ node scripts/publish-alpha.mjs --platform darwin-arm64  # only these platforms (
 
 In order, it:
 
-1. Reads the registry and picks the version: an unpublished alpha already in `Cargo.toml` (resume), else the highest alpha published under `dimcode-alpha` or the older `dimcode` plus one, else `<Cargo version>-alpha.0`.
+1. Reads the registry and picks the version: the highest alpha of any of `dimcode-alpha`, `dimcode-web`, the six platform packages or the older `dimcode`, plus one, else `<Cargo version>-alpha.0`. A version that was only partly published is therefore never reused.
 2. Refuses an alpha above the newest beta (see below), a version already on npm, local changes (except in a dry run) and less than 8 GiB free disk.
-3. Sets every version field (`Cargo.toml`, `Cargo.lock`, `npm/package.json` and its optional dependencies, `runtime/package.json`, `runtime/package-lock.json`) and commits `chore: release vVERSION` on the current branch. A dry run restores them instead.
+3. Sets every version field (`Cargo.toml`, `Cargo.lock`, `npm/package.json` and its optional dependencies, `runtime/package.json`, `runtime/package-lock.json`) for the build only and restores them when the run ends, successful or not. Nothing is committed; the packages record `HEAD` as their source commit.
 4. Builds all six platforms: macOS with cargo, Linux (glibc 2.28) and Windows (`*-windows-gnu`/`gnullvm`) with cargo-zigbuild. With `DIM_OAUTH_CLIENT_ID_CN` and `DIM_OAUTH_CLIENT_ID_GLOBAL` set, each target is the account build; each platform package holds one executable. Each is staged and packed with `stage-release.mjs` / `pack-release.mjs`, then collected and validated with `collect-release.mjs`.
 5. Publishes with `publish-npm.mjs --publish-local`: platform packages first, `dimcode-alpha` last, all on `alpha`. It then prints the dist-tags of `dimcode-alpha`.
 
@@ -37,7 +37,7 @@ In order, it:
 - Run `--dry-run` yourself when asked to check a release; it builds for a long time, so run it in the background. It needs no credentials and writes nothing to npm or git.
 - The real publish writes to npm with the user's login and per-package OTP prompts. Hand the user the command to run in their own terminal rather than running it yourself, unless they explicitly ask you to and are already logged in (`npm whoami`).
 - Without the two client IDs the alpha has no Dim account and supports API-key providers only. Say so when it matters to the user.
-- The release commit stays local. Pushing it is a separate step for the user.
+- A run leaves the checkout as it found it: `git status` is clean afterwards and there is nothing to push.
 
 ## Constraint: stay below the newest beta
 
@@ -45,10 +45,10 @@ Installed TypeScript betas offer an upgrade to the highest prerelease of any ide
 
 ## Disk space
 
-The disk is small. The script keeps one target's build at a time: it deletes `target/<triple>` after packing each platform, drops staging intermediates as soon as they are consumed, deletes `staging/alpha-*` of earlier versions, and removes `staging/alpha-VERSION` after a successful publish. Only `staging/alpha-VERSION/complete/npm` survives a failure, for resume. At the end of every run, successful or not, it runs `mbx gc` when mbx is installed (`target/` is then an mbx-managed link), trimming the shared compile cache and stale targets to mbx's budgets. The script removes nothing else from the host `target/debug` and `target/release`; suggest `cargo clean` to the user when space is still short instead of deleting them yourself.
+The disk is small. The script keeps one target's build at a time: it deletes `target/<triple>` after packing each platform, drops staging intermediates as soon as they are consumed, deletes every `staging/alpha-*` at start, and at the end, successful or not, removes `staging/alpha-VERSION`, each `target/<triple>` it built and an empty `staging/`. Only a dry run keeps its packages, for inspection. At the end of every run, successful or not, it runs `mbx gc` when mbx is installed (`target/` is then an mbx-managed link), trimming the shared compile cache and stale targets to mbx's budgets. The script removes nothing else from the host `target/debug` and `target/release`; suggest `cargo clean` to the user when space is still short instead of deleting them yourself.
 
 ## Recovery
 
-- Any failure: rerun the same command. Before publishing, it resumes from the bumped version in `Cargo.toml`. After a partial publish, it reuses the packages in `staging/alpha-VERSION/complete/npm` built from the same commit, so packages already on npm match byte for byte and are skipped.
-- "must stay below the newest dimcode beta": pick a lower alpha explicitly. If the commit was already made, the user can drop it with `git reset --hard HEAD~1` once nothing else depends on it; ask first.
+- Any failure: rerun the same command. It rebuilds from scratch under the next version; a partly published version is abandoned.
+- "must stay below the newest dimcode beta": pick a lower alpha explicitly.
 - A platform fails to build: fix the cause and rerun. Publish a subset only when the user asks for it with `--platform`: the wrapper then references exactly those platform packages, and other platforms get the launcher's missing-package error. `publish-npm.mjs` requires all six for beta and stable.

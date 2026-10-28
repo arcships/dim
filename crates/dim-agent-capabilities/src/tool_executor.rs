@@ -340,8 +340,7 @@ async fn execute(
         Ok(tool) => tool,
         Err(message) => return Ok(ToolResult::error(message)),
     };
-    let risk = tool.handler.risk(&call).or(tool.definition.risk.as_deref());
-    let call = if risk == Some("write_filesystem") {
+    let call = if tool.definition.risk.as_deref() == Some("write_filesystem") {
         tool.handler.resolve_write(call, cancel.clone()).await?
     } else {
         call
@@ -359,7 +358,7 @@ async fn execute(
                     input: call.input.clone(),
                 },
             },
-            risk,
+            tool.definition.risk.as_deref(),
             cancel.clone(),
         )
         .await?;

@@ -18,8 +18,7 @@ try {
   for (const [name, relative] of Object.entries(plugins)) {
     const source = path.join(path.dirname(defaults), relative);
     const target = path.join(output, relative);
-    const code = existsSync(path.join(source, 'package.json'));
-    assert(!code || existsSync(path.join(source, 'package-lock.json')), `${name} has no package-lock.json`);
+    assert(existsSync(path.join(source, 'package-lock.json')), `${name} has no package-lock.json`);
     cpSync(source, target, {
       recursive: true,
       filter: (file) => {
@@ -27,7 +26,6 @@ try {
         return base !== 'node_modules' && base !== 'tsconfig.json' && !base.endsWith('.test.mjs');
       },
     });
-    if (!code) continue;
     const result = spawnSync(npm, ['ci', '--omit=dev', '--ignore-scripts', '--no-bin-links',
       '--no-audit', '--no-fund', '--registry', registry], { cwd: target, stdio: 'inherit', shell: process.platform === 'win32' });
     assert.ifError(result.error);

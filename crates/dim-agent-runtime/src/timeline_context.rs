@@ -6,7 +6,7 @@ use rutis::Ctx;
 use rutis::host::{CtxHost, FiberView};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
 };
 use tokio::{
     sync::{Mutex as AsyncMutex, watch},
@@ -41,7 +41,6 @@ pub struct TimelineContext {
     failure: Mutex<Option<String>>,
     stop: CancellationToken,
     tasks: Mutex<Option<(JoinHandle<()>, JoinHandle<()>)>>,
-    ended: AtomicBool,
     /// Serializes stop and close.
     control: AsyncMutex<()>,
     close: CloseOnce,
@@ -145,7 +144,6 @@ impl TimelineContext {
             opening,
             changed: watch::channel(()).0,
             failure: Mutex::new(None),
-            ended: AtomicBool::new(false),
             stop: CancellationToken::new(),
             tasks: Mutex::new(None),
             control: AsyncMutex::new(()),
@@ -222,13 +220,6 @@ impl TimelineContext {
     }
     pub fn is_closing(&self) -> bool {
         self.close.started()
-    }
-    pub fn mark_ended(&self) {
-        self.ended.store(true, Ordering::Release);
-    }
-    /// Whether this line's `branch/end` has committed.
-    pub fn ended(&self) -> bool {
-        self.ended.load(Ordering::Acquire)
     }
     /// True once the close has settled: its Timeline is closed, so nothing is
     /// committed to it any more, and its subtree is released.
@@ -325,13 +316,7 @@ impl TimelineContext {
         }
         data.validate()
             .map_err(|reason| AgentError::InvalidInput(reason.into()))?;
-        let result = self.timeline.input_checked(data, || {
-            if self.ended() {
-                return Err(AgentError::BranchEnded(self.id.clone()));
-            }
-            Ok(())
-        })?;
-        match result {
+        match self.timeline.input(data)? {
             crate::core::Appended::Written(event) => Ok(event),
             crate::core::Appended::Existing(sequence) => self.committed_input(sequence).await,
         }

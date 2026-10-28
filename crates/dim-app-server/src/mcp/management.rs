@@ -1,7 +1,7 @@
 //! MCP management wire boundary over the MCP and Settings owners.
 use super::auth::{AuthState, McpAuth, McpAuthError, credential_key, stored_key};
 use super::config::{McpServerSettings, RemoteTransport};
-use super::{McpChange, McpError, McpService, McpSource};
+use super::{McpChange, McpError, McpService};
 use crate::{
     methods::{ManagementMethods, SelectionScope},
     protocol::{canonical_cwd, optional_non_null},
@@ -18,8 +18,6 @@ use tokio_util::sync::CancellationToken;
 pub enum McpScope {
     User,
     Project,
-    /// Entries registered by plugins; they change only through their plugin.
-    Plugin,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,7 +108,6 @@ pub struct McpCatalogResult {
     pub user_revision: String,
     pub project_revision: Option<String>,
     pub user_application: crate::mcp::McpApplication,
-    pub plugin_application: crate::mcp::McpApplication,
     pub project_application: Option<crate::mcp::McpApplication>,
     pub servers: Vec<McpCatalogEntry>,
 }
@@ -169,27 +166,19 @@ async fn project(
         .map_err(|e| error(e.into()))
 }
 
-fn source(scope: McpScope, project: Option<usize>) -> Result<McpSource, RpcError> {
+fn source(scope: McpScope, project: Option<usize>) -> Result<SettingsScope, RpcError> {
     match scope {
-        McpScope::User => Ok(McpSource::User),
-        McpScope::Plugin => Ok(McpSource::Plugins),
+        McpScope::User => Ok(SettingsScope::User),
         McpScope::Project => project
-            .map(McpSource::Project)
+            .map(SettingsScope::Project)
             .ok_or_else(|| RpcError::invalid("Project MCP operations require cwd")),
     }
-}
-
-/// The Settings source a write goes to; plugin entries are not written here.
-fn writable(source: McpSource) -> Result<SettingsScope, RpcError> {
-    source
-        .scope()
-        .ok_or_else(|| RpcError::invalid("plugin MCP entries change through their plugin"))
 }
 
 /// One source's entry, for the `mcp.auth.*` targets.
 async fn target(
     directory: &Arc<McpService>,
-    source: McpSource,
+    source: SettingsScope,
     id: String,
     cancel: &CancellationToken,
 ) -> Result<super::McpServerEntry, RpcError> {
@@ -238,10 +227,9 @@ pub(super) fn provide(
                         return reply(McpCatalogResult {
                             user_revision: catalog.user_revision,
                             project_revision: catalog.project_revision,
-                            user_application: directory.application(McpSource::User),
-                            plugin_application: directory.application(McpSource::Plugins),
+                            user_application: directory.application(SettingsScope::User),
                             project_application: project
-                                .map(|root| directory.application(McpSource::Project(root))),
+                                .map(|root| directory.application(SettingsScope::Project(root))),
                             servers: catalog
                                 .servers
                                 .into_iter()
@@ -267,9 +255,8 @@ pub(super) fn provide(
                                         }),
                                     id,
                                     source: match entry.source {
-                                        McpSource::User => McpScope::User,
-                                        McpSource::Plugins => McpScope::Plugin,
-                                        McpSource::Project(_) => McpScope::Project,
+                                        SettingsScope::User => McpScope::User,
+                                        SettingsScope::Project(_) => McpScope::Project,
                                     },
                                     enabled: entry.enabled(),
                                     transport: match entry.configuration {
@@ -289,10 +276,7 @@ pub(super) fn provide(
                     }
                     "mcp.save" => {
                         let p: SaveMcp = params(value)?;
-                        let source = writable(source(
-                            p.source,
-                            project(&settings, p.cwd, &stopping).await?,
-                        )?)?;
+                        let source = source(p.source, project(&settings, p.cwd, &stopping).await?)?;
                         directory
                             .update(
                                 source,
@@ -306,10 +290,7 @@ pub(super) fn provide(
                     }
                     "mcp.remove" => {
                         let p: RemoveMcp = params(value)?;
-                        let source = writable(source(
-                            p.source,
-                            project(&settings, p.cwd, &stopping).await?,
-                        )?)?;
+                        let source = source(p.source, project(&settings, p.cwd, &stopping).await?)?;
                         directory
                             .update(
                                 source,
@@ -323,10 +304,7 @@ pub(super) fn provide(
                     }
                     "mcp.set_enabled" => {
                         let p: SetMcpEnabled = params(value)?;
-                        let source = writable(source(
-                            p.source,
-                            project(&settings, p.cwd, &stopping).await?,
-                        )?)?;
+                        let source = source(p.source, project(&settings, p.cwd, &stopping).await?)?;
                         directory
                             .update(
                                 source,

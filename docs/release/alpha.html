@@ -91,20 +91,20 @@
 <pre><code>npm login --registry https://registry.npmjs.org   # 第一次
 node scripts/publish-alpha.mjs                       # 自动取下一个 alpha
 node scripts/publish-alpha.mjs 0.1.0-alpha.3         # 指定版本
-node scripts/publish-alpha.mjs --dry-run             # 只编译和校验，不提交、不发布
+node scripts/publish-alpha.mjs --dry-run             # 只编译和校验，不发布
 node scripts/publish-alpha.mjs --platform darwin-arm64  # 只发指定平台（可重复），主包只引用这些平台</code></pre>
   <div class="flow">
-    <span>选版本</span><i>→</i><span>改版本号并 commit</span><i>→</i><span>编译 6 个平台</span><i>→</i><span>打包校验</span><i>→</i><span>发布 npm @alpha</span><i>→</i><span>清理</span>
+    <span>选版本</span><i>→</i><span>临时改版本号</span><i>→</i><span>编译 6 个平台</span><i>→</i><span>打包校验</span><i>→</i><span>发布 npm @alpha</span><i>→</i><span>清理</span>
   </div>
   <ol class="steps">
     <li>
       <strong>选版本</strong>
-      没指定版本时：<code>Cargo.toml</code> 里已有未发布的 alpha 就继续用它（续跑）；否则取 npm 上最高的 alpha 加 1；一个 alpha 都没有时，用 <code>&lt;Cargo 版本&gt;-alpha.0</code>。
+      没指定版本时，取 npm 上最高的 alpha 加 1。比较范围包括 <code>dimcode-alpha</code>、<code>dimcode-web</code>、6 个平台包和旧的 <code>dimcode</code>，所以发到一半失败的版本号不会被重复使用。一个 alpha 都没有时，用 <code>&lt;Cargo 版本&gt;-alpha.0</code>。
       以下情况直接拒绝：版本已经在 npm 上、alpha 高过最新 beta、工作区有未提交改动（<code>--dry-run</code> 除外）、磁盘剩余不足 8 GiB。
     </li>
     <li>
-      <strong>改版本号并 commit</strong>
-      一次改齐 <code>Cargo.toml</code>、<code>Cargo.lock</code>、<code>npm/package.json</code>（含 6 个 optionalDependencies）、<code>runtime/package.json</code>、<code>runtime/package-lock.json</code>，在当前分支提交 <code>chore: release vX.Y.Z-alpha.N</code>。不会自动 push。<code>--dry-run</code> 跑完后会把这些文件还原。
+      <strong>临时改版本号</strong>
+      编译前一次改齐 <code>Cargo.toml</code>、<code>Cargo.lock</code>、<code>npm/package.json</code>（含 6 个 optionalDependencies）、<code>runtime/package.json</code>、<code>runtime/package-lock.json</code>，结束时（不论成功失败）全部还原。不提交，仓库里的版本号保持不变；包里记录的源提交就是当前 <code>HEAD</code>。
     </li>
     <li>
       <strong>编译 6 个平台</strong>
@@ -113,7 +113,7 @@ node scripts/publish-alpha.mjs --platform darwin-arm64  # 只发指定平台（�
     </li>
     <li>
       <strong>打包校验</strong>
-      复用 CI 同一套脚本 <code>stage-release.mjs</code>、<code>pack-release.mjs</code>、<code>collect-release.mjs</code>，生成 6 个平台包和 <code>dimcode</code> 包，并校验版本、源提交和 sha256。
+      复用 CI 同一套脚本 <code>stage-release.mjs</code>、<code>pack-release.mjs</code>、<code>collect-release.mjs</code>，生成 6 个平台包、<code>dimcode-web</code> 和 <code>dimcode-alpha</code> 包，并校验版本、源提交和 sha256。
     </li>
     <li>
       <strong>发布 npm</strong>
@@ -131,8 +131,7 @@ node scripts/publish-alpha.mjs --platform darwin-arm64  # 只发指定平台（�
   <ul>
     <li>每个平台打完包就删除 <code>target/&lt;triple&gt;</code>。代价是下次发版要从头编译。</li>
     <li>中间产物用完即删（<code>stage/</code>、<code>platforms/</code>、原生包）。</li>
-    <li>启动时删除旧版本的 <code>staging/alpha-*</code>；发布成功后删除本次的 <code>staging/alpha-版本号</code>。</li>
-    <li>失败时只保留 <code>staging/alpha-版本号/complete/npm</code>，供续跑使用。</li>
+    <li>启动时删除所有 <code>staging/alpha-*</code>；结束时（不论成功失败）删除本次的 <code>staging/alpha-版本号</code> 和各目标的 <code>target/&lt;triple&gt;</code>，<code>staging/</code> 空了也一并删掉。只有 <code>--dry-run</code> 保留打好的包供检查。</li>
   </ul>
   <p>每次运行结束（不论成功还是失败），只要本机装了 mbx，就会自动执行一次 <code>mbx gc</code>。<code>target/</code> 由 mbx 管理时，它会按 mbx 自己的预算回收共享编译缓存和长期不用的 target，清理失败也不影响发布结果。脚本本身不会去删开发用的 <code>target/debug</code>、<code>target/release</code>。</p>
 
@@ -143,14 +142,14 @@ node scripts/publish-alpha.mjs --platform darwin-arm64  # 只发指定平台（�
   <h2>验证</h2>
 <pre><code>npm view dimcode-alpha dist-tags
 npm i -g dimcode-alpha@alpha &amp;&amp; dima --version
-git push   # 推送版本号提交</code></pre>
+git status # 应该是干净的</code></pre>
   <p>应看到 <code>dimcode-alpha</code> 的 <code>alpha</code> 指向新版本，<code>dimcode</code> 的 dist-tag 没有变化，<code>dim</code> 仍是原来的版本。以前装过 <code>dimcode@alpha</code> 的用户不会再收到 alpha 升级，需要手动装一次 <code>dimcode-alpha@alpha</code>。</p>
 
   <h2>出错时</h2>
   <ul>
-    <li><strong>任何一步失败：</strong>修好后原样重跑同一条命令。发布前失败会沿用 <code>Cargo.toml</code> 里已经改好的版本；发布到一半失败会复用同一提交编出的包，已上 npm 的包字节一致，会被跳过。</li>
+    <li><strong>任何一步失败：</strong>修好后原样重跑同一条命令。重跑会从头编译，并取下一个版本号；发到一半的那个版本号作废，不会再用。</li>
     <li><strong>alpha 版本号高过 beta 被拦：</strong>显式指定一个更低的版本。不要去改这条检查。</li>
-    <li><strong>某个平台编译失败：</strong>修好后重跑。不会只发一部分平台，6 个平台包缺一个都不发。</li>
+    <li><strong>某个平台编译失败：</strong>修好后重跑。没加 <code>--platform</code> 时，6 个平台包缺一个都不发。</li>
   </ul>
   <p>也可以走 CI：打 <code>vX.Y.Z-alpha.N</code> tag，由 release CI 生成 GitHub Release，再用 <code>publish-npm.mjs --publish</code> 发布，流程同 <a href="../../.agents/skills/dim-release/SKILL.md">dim-release</a>。</p>
   <p>完整的发布约束见 <a href="README.md">docs/release/README.md</a> 和 <a href="../../.agents/skills/dim-release/SKILL.md">dim-release skill</a>。</p>

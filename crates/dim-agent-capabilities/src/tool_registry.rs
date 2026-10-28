@@ -51,11 +51,6 @@ pub trait ToolHandler: Send + Sync + 'static {
     fn resolve_write(&self, call: ToolCall, _: CancellationToken) -> HostFuture<'_, ToolCall> {
         Box::pin(async move { Ok(call) })
     }
-    /// The risk Approval admits this call under; `None` admits it under the
-    /// definition's risk.
-    fn risk(&self, _: &ToolCall) -> Option<&'static str> {
-        None
-    }
     fn execute(
         &self,
         call: ToolCall,

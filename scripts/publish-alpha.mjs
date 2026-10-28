@@ -56,14 +56,14 @@ const versions = (name) => {
   return [];
 };
 const published = versions('dimcode');
-const released = [...published, ...versions('dimcode-alpha')];
+const released = [...published, ...['dimcode-alpha', 'dimcode-web', ...Object.keys(targets).map((platform) => `dimcode-${platform}`)]
+  .flatMap(versions)];
 const current = readFileSync(path.join(repo, 'Cargo.toml'), 'utf8')
   .match(/\[workspace\.package\]\s+version = "([^"]+)"/)[1];
 const alphas = released.filter((value) => /^\d+\.\d+\.\d+-alpha\.\d+$/.test(value)).sort(compare);
 let version = requested[0];
 if (!version) {
-  if (/-alpha\.\d+$/.test(current) && !released.includes(current)) version = current;
-  else if (alphas.length === 0) version = `${current.split('-')[0]}-alpha.0`;
+  if (alphas.length === 0) version = `${current.split('-')[0]}-alpha.0`;
   else version = alphas.at(-1).replace(/\d+$/, (number) => String(Number(number) + 1));
 }
 assert(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-alpha\.(0|[1-9]\d*)$/.test(version),
@@ -82,13 +82,14 @@ const staging = path.join(repo, 'staging', `alpha-${version}`);
 const remove = (directory) => rmSync(directory, { recursive: true, force: true });
 mkdirSync(path.join(repo, 'staging'), { recursive: true });
 for (const entry of readdirSync(path.join(repo, 'staging'), { withFileTypes: true }).filter((entry) => entry.isDirectory())) {
-  if (entry.name.startsWith('alpha-') && entry.name !== `alpha-${version}`) remove(path.join(repo, 'staging', entry.name));
+  if (entry.name.startsWith('alpha-')) remove(path.join(repo, 'staging', entry.name));
 }
 const ids = [process.env.DIM_OAUTH_CLIENT_ID_CN, process.env.DIM_OAUTH_CLIENT_ID_GLOBAL].filter(Boolean).length;
 assert(ids !== 1, 'Set DIM_OAUTH_CLIENT_ID_CN and DIM_OAUTH_CLIENT_ID_GLOBAL together');
 const account = ids === 2;
 console.log(`\ndimcode ${current} → ${version} (dimcode-alpha on npm tag alpha${dryRun ? ', dry run' : ''}, ${account ? 'with' : 'without'} Dim account, ${platforms.join(' ')})\n`);
 
+const sourceCommit = output('git', ['rev-parse', 'HEAD']).stdout.trim();
 const bumped = version !== current;
 try {
   if (bumped) {
@@ -103,20 +104,12 @@ try {
     json('runtime/package.json', (data) => { data.version = version; });
     json('runtime/package-lock.json', (data) => { data.version = version; data.packages[''].version = version; });
     run('cargo', ['metadata', '--format-version', '1'], { stdio: ['ignore', 'ignore', 'inherit'] });
-    if (!dryRun) run('git', ['commit', '-m', `chore: release v${version}`, '--', ...versionFiles]);
   }
-  const sourceCommit = output('git', ['rev-parse', 'HEAD']).stdout.trim();
   const packages = path.join(staging, 'complete', 'npm');
-
-  let reused = false;
-  try { reused = !dryRun && JSON.parse(readFileSync(path.join(packages, 'release-manifest.json'), 'utf8')).sourceCommit === sourceCommit; }
-  catch {}
-  if (reused) console.log(`Reusing packages built from ${sourceCommit} in ${path.relative(repo, packages)}`);
-  else remove(staging);
   const { bavail, bsize } = statfsSync(repo);
-  assert(reused || bavail * bsize >= 8 * 2 ** 30,
+  assert(bavail * bsize >= 8 * 2 ** 30,
     `Only ${(bavail * bsize / 2 ** 30).toFixed(1)} GiB free; a release build needs about 8 GiB`);
-  for (const platform of reused ? [] : platforms) {
+  for (const platform of platforms) {
     const { triple, zig } = targets[platform];
     console.log(`\n▸ ${platform}`);
     run('rustup', ['target', 'add', triple], { stdio: ['ignore', 'ignore', 'inherit'] });
@@ -130,24 +123,25 @@ try {
     remove(path.join(repo, 'target', triple));
     remove(path.join(staging, 'stage', platform));
   }
-  if (!reused) {
-    run('node', ['scripts/stage-web.mjs', path.join(staging, 'platforms', 'release-web'), version, sourceCommit]);
-    run('node', ['scripts/collect-release.mjs', path.join(staging, 'platforms'), path.join(staging, 'complete'),
-      ...(platforms.length < Object.keys(targets).length ? ['--platforms', platforms.join(',')] : [])]);
-    remove(path.join(staging, 'platforms'));
-    remove(path.join(staging, 'complete', 'native'));
-  }
+  run('node', ['scripts/stage-web.mjs', path.join(staging, 'platforms', 'release-web'), version, sourceCommit]);
+  run('node', ['scripts/collect-release.mjs', path.join(staging, 'platforms'), path.join(staging, 'complete'),
+    ...(platforms.length < Object.keys(targets).length ? ['--platforms', platforms.join(',')] : [])]);
+  remove(path.join(staging, 'platforms'));
+  remove(path.join(staging, 'complete', 'native'));
   if (dryRun) {
-    console.log(`\nDry run complete: packages in ${path.relative(repo, packages)}; nothing committed or published.`);
+    console.log(`\nDry run complete: packages in ${path.relative(repo, packages)}; nothing published.`);
   } else {
     run('node', ['scripts/publish-npm.mjs', packages, version, sourceCommit, '--publish-local']);
     spawnSync('npm', ['view', 'dimcode-alpha', 'dist-tags', '--registry', 'https://registry.npmjs.org'], { cwd: repo, stdio: 'inherit' });
-    remove(staging);
-    console.log(`\nPublished dimcode-alpha@${version}. Install with: npm i -g dimcode-alpha@alpha, then run dima`);
-    console.log(`Push the release commit when ready: git push`);
+    console.log(`\nPublished dimcode-alpha@${version} from ${sourceCommit}. Install with: npm i -g dimcode-alpha@alpha, then run dima`);
   }
 } finally {
-  if (dryRun && bumped) run('git', ['checkout', '--', ...versionFiles]);
+  if (bumped) run('git', ['checkout', '--', ...versionFiles]);
+  if (!dryRun) {
+    remove(staging);
+    for (const platform of platforms) remove(path.join(repo, 'target', targets[platform].triple));
+    if (readdirSync(path.join(repo, 'staging')).length === 0) remove(path.join(repo, 'staging'));
+  }
   if (spawnSync('mbx', ['--version'], { stdio: 'ignore' }).status === 0) {
     console.log('\n$ mbx gc');
     spawnSync('mbx', ['gc'], { cwd: repo, stdio: 'inherit' });

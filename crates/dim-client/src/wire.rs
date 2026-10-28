@@ -25,8 +25,6 @@ pub enum EventContent {
     BranchCreate(BranchCreateData),
     BranchStart(BranchStartData),
     BranchCreateFailed(BranchCreateFailedData),
-    BranchEnd(BranchEndData),
-    BranchEnded(BranchEndedData),
     Configuration(Configuration),
     Input(InputMessageData),
     /// InputQueue released the input to the turn.
@@ -93,12 +91,6 @@ impl<'de> Deserialize<'de> for Event {
                 serde_json::from_value(wire.data).map_err(serde::de::Error::custom)?,
             ),
             ("branch", "create-failed") => EventContent::BranchCreateFailed(
-                serde_json::from_value(wire.data).map_err(serde::de::Error::custom)?,
-            ),
-            ("branch", "end") => EventContent::BranchEnd(
-                serde_json::from_value(wire.data).map_err(serde::de::Error::custom)?,
-            ),
-            ("branch", "ended") => EventContent::BranchEnded(
                 serde_json::from_value(wire.data).map_err(serde::de::Error::custom)?,
             ),
             ("context", "configured") => EventContent::Configuration(

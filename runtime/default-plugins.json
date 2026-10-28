@@ -4,8 +4,7 @@
     "web": "plugins/web",
     "session-title": "plugins/session-title",
     "workflow": "plugins/workflow",
-    "scheduler": "plugins/scheduler",
-    "plugin-authoring": "plugins/plugin-authoring"
+    "scheduler": "plugins/scheduler"
   },
   "locked": ["PluginManager", "Rpc", "Transport"],
   "runtimes": {

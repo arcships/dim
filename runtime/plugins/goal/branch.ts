@@ -3,8 +3,7 @@ import type { SettingsResult } from '../../../npm/plugin.d.ts'
 import {
   type AgentEvent, type Conclusion, type InputMessage, Fold, OBJECTIVE_KEY, STATUS_KEY, conclusionOf,
   decideConclusion, decideEvaluatedContinuation, decideEvaluation, decideInterrupt, decideTurnEnd,
-  evaluationOfOperation, evaluationOperation, evaluatorPrompt, isOpening, marker, replyConclusion,
-  truncate, writes,
+  evaluationOperation, evaluatorPrompt, isOpening, marker, replyConclusion, truncate, writes,
 } from './goal.ts'
 
 type Delivery = { replay: AgentEvent[] } | { live: AgentEvent }
@@ -16,27 +15,15 @@ type Dispatcher = {
   committed(): Promise<number | bigint>
 }
 type BranchOptions = { prompt: string; source: { kind: 'host'; operation_id: string } }
-type TimelineInfo = {
-  id: string
-  parent?: string | null
-  source?: { kind: string; operation_id?: string } | null
-}
 type TreeCommands = {
   input(id: string, input: InputMessage): Promise<AgentEvent>
   create(parent: string, at: number | bigint, options: BranchOptions, cancelled: () => void | Promise<void>): Promise<string>
-  end(id: string, source: { kind: 'host'; operation_id: string }): Promise<void>
-  info(id: string): Promise<TimelineInfo>
 }
 type Settings = {
   read(request: { source: string; scope: 'user' }): Promise<SettingsResult<{ document: { maxContinuations: number } }>>
 }
 
-const KEYS = ['branch/start', 'session/forked', 'branch/create', 'branch/create-failed', 'branch/ended', 'input/message', 'input/consumed', 'input/deleted', 'turn/start', 'turn/end', 'stop/interrupt']
-
-const codeOf = (error: unknown): string =>
-  typeof error === 'object' && error !== null && 'code' in error
-    ? String((error as { code: unknown }).code)
-    : String(error)
+const KEYS = ['branch/start', 'session/forked', 'branch/create', 'branch/create-failed', 'input/message', 'input/consumed', 'input/deleted', 'turn/start', 'turn/end', 'stop/interrupt']
 
 // GoalBranchPlugin (Goal.md §1, A.6): owns the branch's fold, decides
 // continuation from consumed state only, and writes through owned tasks. On a
@@ -45,14 +32,13 @@ const codeOf = (error: unknown): string =>
 export default definePlugin({
   name: 'GoalBranch',
   provides: {},
-  inject: ['dispatcher', 'timelineIdentity', 'treeCommands', 'settings', 'branchLifecycle', 'sessionLifecycle'],
+  inject: ['dispatcher', 'timelineIdentity', 'treeCommands', 'settings', 'branchLifecycle'],
   async apply(ctx) {
     const dispatcher = ctx.use<Dispatcher>('dispatcher')
     const tree = ctx.use<TreeCommands>('treeCommands')
     const settings = ctx.use<Settings>('settings')
     const { branchId } = await ctx.use<{ get(): Promise<{ branchId: string }> }>('timelineIdentity').get()
     const lifecycle = ctx.use<{ activated(): Promise<boolean>; closing(): Promise<void> }>('branchLifecycle')
-    const session = ctx.use<{ activated(): Promise<boolean> }>('sessionLifecycle')
     let cancel = () => {}
     const cancellation = new Promise<void>(resolve => { cancel = resolve })
     let stopped = false
@@ -61,20 +47,6 @@ export default definePlugin({
 
     const fold = new Fold()
     let start: bigint | undefined
-    let role: { branch: string; evaluation: string } | undefined
-    const resolved = Promise.withResolvers<void>()
-    void (async () => {
-      try {
-        if (!(await lifecycle.activated()) || stopped) return
-        const info = await tree.info(branchId)
-        const parent = typeof info.parent === 'string' ? info.parent : undefined
-        const evaluation = info.source?.kind === 'host' ? evaluationOfOperation(info.source.operation_id) : undefined
-        if (parent !== undefined && evaluation !== undefined) role = { branch: parent, evaluation }
-      } catch {
-      } finally {
-        resolved.resolve()
-      }
-    })()
     const inFlight = new Set<string>()
     const task = (key: string, work: () => Promise<void>) => {
       if (stopped || inFlight.has(key)) return
@@ -83,8 +55,6 @@ export default definePlugin({
         try {
           if (!(await lifecycle.activated()) || stopped) return
           await work()
-        } catch (error) {
-          console.warn(`Goal write failed (${key}):`, codeOf(error))
         } finally {
           inFlight.delete(key)
         }
@@ -107,7 +77,7 @@ export default definePlugin({
         && event.data.source?.kind === 'host'
         && event.data.source.operation_id === operation)
     }
-    const doTurnEnd = async (after: bigint) => {
+    const turnEnd = (after: bigint) => task(`end:${after}`, async () => {
       if (fold.turnEnd?.sequence !== after) return
       const request = fold.requestInTurn(after)
       if (request && decideEvaluation(fold, after)) {
@@ -122,7 +92,6 @@ export default definePlugin({
             await tree.input(branchId, writes.pause(branchId, 'evaluation_failed', after))
           }
         }
-        settle()
         return
       }
       const read = await settings.read({ source: 'goal', scope: 'user' })
@@ -137,7 +106,7 @@ export default definePlugin({
       await tree.input(branchId, decision.write === 'continuation'
         ? writes.continuation(branchId, decision.count, limit, after)
         : writes.pause(branchId, decision.reason, after))
-    }
+    })
     const evaluationFailed = (evaluation: string) => task(`failed:${evaluation}`, async () => {
       if (!fold.isCurrent(evaluation)) return
       await tree.input(branchId, writes.pause(branchId, 'evaluation_failed', BigInt(evaluation)))
@@ -184,6 +153,7 @@ export default definePlugin({
     }
     const evaluated = (sequence: bigint, turnStart: bigint, end: TurnEnd) =>
       task(`evaluate:${sequence}`, async () => {
+        const role = fold.evaluate
         if (!role || fold.turnEnd?.sequence !== sequence) return
         const report = (result: 'done' | 'continue' | 'blocked' | 'failed', text: string) =>
           tree.input(role.branch, writes.conclusion(role.branch, branchId, role.evaluation, result, text))
@@ -221,38 +191,7 @@ export default definePlugin({
     }
     const decideEnd = () => {
       const end = fold.turnEnd
-      if (!end || !fold.running || fold.isDecided(end.sequence)) return
-      const sequence = end.sequence
-      task(`turn:${sequence}`, async () => {
-        await resolved.promise
-        if (stopped || role || fold.turnEnd?.sequence !== sequence) return
-        await doTurnEnd(sequence)
-      })
-    }
-    const turnDecision = (sequence: bigint, turnStart: bigint, end: TurnEnd) =>
-      task(`turn:${sequence}`, async () => {
-        await resolved.promise
-        if (stopped) return
-        if (role) return evaluated(sequence, turnStart, end)
-        if (fold.running && !fold.isDecided(sequence)) await doTurnEnd(sequence)
-      })
-    const decided = (evaluation: string) =>
-      fold.conclusions.has(evaluation) || !fold.isCurrent(evaluation)
-    // Pursuit §13 E2.
-    const settle = () => {
-      for (const [evaluation, evaluator] of fold.evaluations) {
-        if (fold.ended.has(evaluator) || fold.failed.has(evaluator) || !decided(evaluation)) continue
-        task(`settle:${evaluation}`, async () => {
-          await resolved.promise
-          if (!(await session.activated())) return
-          if (stopped || fold.ended.has(evaluator) || !decided(evaluation)) return
-          try {
-            await tree.end(evaluator, { kind: 'host', operation_id: evaluationOperation(evaluation) })
-          } catch (error) {
-            if (codeOf(error) !== 'BranchEnded') throw error
-          }
-        })
-      }
+      if (end && fold.running && !fold.isDecided(end.sequence)) turnEnd(end.sequence)
     }
     const consume = (event: AgentEvent, live: boolean) => {
       const turnStart = fold.turnStart
@@ -267,22 +206,16 @@ export default definePlugin({
       if (event.type === 'branch' && event.name === 'create-failed') {
         const evaluation = fold.evaluationOf(event.data.branch)
         if (evaluation !== undefined) evaluationFailed(evaluation)
-      } else if (event.type === 'branch' && event.name === 'create') {
-        settle()
-      } else if (event.type === 'branch' && event.name === 'ended') {
-        const evaluation = fold.evaluationOf(event.data.branch)
-        if (evaluation !== undefined && fold.isCurrent(evaluation) && !fold.conclusions.has(evaluation)) {
-          evaluationFailed(evaluation)
-        }
+      } else if (fold.evaluate) {
+        if (event.type === 'turn' && event.name === 'end') evaluated(sequence, turnStart, event.data as TurnEnd)
       } else if (event.type === 'turn' && event.name === 'end') {
-        turnDecision(sequence, turnStart, event.data as TurnEnd)
+        decideEnd()
       } else if (event.type === 'stop' && event.name === 'interrupt' && event.data.scope === 'turn') {
         interrupted(sequence)
       } else if (event.type === 'input' && event.name === 'message') {
         const first = event.data.blocks?.[0]
         const conclusion = first && conclusionOf(first.text)
         if (conclusion) concluded(sequence, conclusion)
-        settle()
       } else if (event.type === 'input' && event.name === 'deleted') {
         decideEnd()
       }
@@ -294,7 +227,6 @@ export default definePlugin({
       if ('live' in delivery) return consume(delivery.live, true)
       for (const event of delivery.replay) consume(event, false)
       decideEnd()
-      settle()
       if (start !== undefined) decideStart(start)
     })
   },

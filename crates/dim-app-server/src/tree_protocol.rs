@@ -39,7 +39,6 @@ impl ProductEvent {
             EventKind::ContextCompact(_)
             | EventKind::ContextCompactionStart(_)
             | EventKind::ContextCompaction(_) => version >= 3,
-            EventKind::BranchEnd(_) | EventKind::BranchEnded(_) => version >= 3,
             EventKind::InputMessage(_)
             | EventKind::InputApplied(_)
             | EventKind::InputConsumed(_)
