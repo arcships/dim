@@ -1068,11 +1068,24 @@ impl AgentIndex {
             .ok_or_else(|| AgentError::InvalidInput("a fork needs the native store".into()))?;
         let usage = self.acquire(source).await?;
         let session = &usage.session;
-        session.local_page("main", at, 1, at).await?;
-        let prefix = session.context("main", at).await?;
-        dim_agent_capabilities::history::validate_context_boundary(&prefix)
-            .and_then(|()| rest_point(&prefix.events))
-            .map_err(AgentError::InvalidInput)?;
+        let checked = async {
+            session.local_page("main", at, 1, at).await?;
+            let prefix = session.context("main", at).await?;
+            dim_agent_capabilities::history::validate_context_boundary(&prefix)
+                .and_then(|()| rest_point(&prefix.events))
+                .map_err(AgentError::InvalidInput)
+        }
+        .await;
+        if let Err(error) = checked {
+            // A delete that closed the source during the check removed the
+            // rows it read (S5c §7, "the delete's close during the fork's cut
+            // check"): the fork answers session_closed.
+            return Err(if usage.slot.closed.load(Ordering::Acquire) {
+                AgentError::Closed(source.into())
+            } else {
+                error
+            });
+        }
         let version = self
             .version_of(source)
             .ok_or_else(|| AgentError::Closed(source.into()))?;
