@@ -269,7 +269,7 @@ impl DynPlugin for McpSessionPlugin {
 /// the publisher applied (including external file edits), or a refresh.
 struct Changes {
     settings: watch::Receiver<()>,
-    applied: watch::Receiver<BTreeMap<crate::settings::SettingsScope, super::McpApplication>>,
+    applied: watch::Receiver<BTreeMap<super::McpSource, super::McpApplication>>,
     refresh: watch::Receiver<()>,
 }
 

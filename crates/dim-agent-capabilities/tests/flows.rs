@@ -119,7 +119,7 @@ async fn branch_tool_reuses_capabilities_without_replaying_ancestor_inputs() {
         let prefix = session.history("main", None).await.unwrap();
         session
             .submit(
-                "tool:branch {\"prompt\":\"child\"}".into(),
+                "tool:branch {\"action\":\"create\",\"prompt\":\"child\"}".into(),
                 InputMode::Queue,
                 "main",
             )
@@ -144,7 +144,10 @@ async fn branch_tool_reuses_capabilities_without_replaying_ancestor_inputs() {
         assert!(
             child_events
                 .iter()
-                .any(|e| matches!(&e.kind, EventKind::Text(d) if d.delta.starts_with("Echo: <dim-branch-task parent=\"main\">") && d.delta.contains("delegated this task to you:\nchild")))
+                .any(|e| matches!(&e.kind, EventKind::Text(d)
+                    if d.delta.starts_with("Echo: <dim-branch-line branch=\"")
+                        && d.delta.contains("parent=\"main\" source=\"tool\">")
+                        && d.delta.contains("Your purpose, as main wrote it:\nchild")))
         );
         let history = session.history(&child.id, None).await.unwrap();
         assert!(history.starts_with(&prefix));

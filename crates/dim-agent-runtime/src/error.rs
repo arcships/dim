@@ -10,6 +10,9 @@ pub enum AgentError {
     Closed(String),
     #[error("unknown branch: {0}")]
     UnknownBranch(String),
+    /// The line has ended: it accepts no input and no new operation.
+    #[error("branch has ended: {0}")]
+    BranchEnded(String),
     #[error("storage: {0}")]
     Storage(String),
     #[error("initialization failed: {0}")]

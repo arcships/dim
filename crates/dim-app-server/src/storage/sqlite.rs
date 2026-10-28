@@ -10,11 +10,11 @@ use std::{
 };
 
 /// The native store format this daemon creates and opens.
-const FORMAT: u32 = 19;
+const FORMAT: u32 = 20;
 pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "agent_store_format",
-        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 19))",
+        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 20))",
     ),
     (
         "settings_documents",
@@ -100,7 +100,7 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
-const UPGRADES: [(u32, &[&str]); 5] = [
+const UPGRADES: [(u32, &[&str]); 6] = [
     (
         13,
         &[
@@ -119,6 +119,7 @@ const UPGRADES: [(u32, &[&str]); 5] = [
     // #364: Session configurations and Agent profiles without a mount list
     // omit `tools`, which a v18 daemon cannot decode; the marker only.
     (18, &[]),
+    (19, &[]),
 ];
 
 fn format_table(version: u32) -> String {

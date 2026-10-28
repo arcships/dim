@@ -1,5 +1,6 @@
 //! `dimcode plugin`: PluginManager's `plugin.*` methods (PluginManager §6).
 
+use crate::model::session::PluginAction;
 use crate::{Result, client::Client, sanitize::safe};
 use dim_client::Message;
 use serde_json::{Value, json};
@@ -60,6 +61,16 @@ pub fn parse(
         _ => return Err(USAGE.into()),
     };
     Ok((format!("plugin.{command}"), strip_nulls(params)))
+}
+
+/// The method and params of a `/plugins` panel change.
+pub fn call(action: &PluginAction) -> (&'static str, Value) {
+    match action {
+        PluginAction::Enable(name) => ("plugin.enable", json!({"name": name})),
+        PluginAction::Disable(name) => ("plugin.disable", json!({"name": name})),
+        PluginAction::Reload(name) => ("plugin.reload", json!({"name": name})),
+        PluginAction::Install(path) => ("plugin.install", json!({"source": {"path": path}})),
+    }
 }
 
 fn strip_nulls(mut value: Value) -> Value {
@@ -158,6 +169,39 @@ mod tests {
     }
 
     /// Each form in the usage string maps to its `plugin.*` method and params.
+    /// Each `/plugins` panel change calls its `plugin.*` method; install
+    /// takes the plugin as it is (enable defaults to on).
+    #[test]
+    fn panel_changes_call_their_plugin_methods() {
+        use super::call;
+        use crate::model::session::PluginAction;
+        let cases = [
+            (
+                PluginAction::Enable("web".into()),
+                "plugin.enable",
+                json!({"name": "web"}),
+            ),
+            (
+                PluginAction::Disable("web".into()),
+                "plugin.disable",
+                json!({"name": "web"}),
+            ),
+            (
+                PluginAction::Reload("web".into()),
+                "plugin.reload",
+                json!({"name": "web"}),
+            ),
+            (
+                PluginAction::Install("/p/my-tool".into()),
+                "plugin.install",
+                json!({"source": {"path": "/p/my-tool"}}),
+            ),
+        ];
+        for (action, method, params) in cases {
+            assert_eq!(call(&action), (method, params), "{action:?}");
+        }
+    }
+
     #[test]
     fn usage_forms_map_to_plugin_methods() {
         let cwd = std::env::current_dir().unwrap();

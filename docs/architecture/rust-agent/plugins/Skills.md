@@ -7,8 +7,9 @@ The Skills plugin is SkillsCatalog at the process. It registers Skills in every 
 Owner: [skills/catalog.rs](../../../../crates/dim-agent-capabilities/src/skills/catalog.rs)
 and [discovery.rs](../../../../crates/dim-agent-capabilities/src/skills/discovery.rs).
 The Skills plugin. It owns process-wide skill discovery caches and enablement,
-combining user and project `.agents/skills` roots into queryable views with
-issues, and registers the Skills parts that read them:
+combining the user `.agents/skills` root, the skills roots plugins registered
+and the project `.agents/skills` root, in that order of precedence, into
+queryable views with issues, and registers the Skills parts that read them:
 [Skills](Skills.md#skills) in every Session and [SkillsBranch](Skills.md#skillsbranch)
 in every branch. The App Server's
 plugin of the same name mounts this catalog, adds its management methods and
@@ -38,6 +39,13 @@ storage changes outside the catalog announces those writes there; the catalog
 reads back its own writes, so `MemorySkillSettings` (xtask, tests) announces
 nothing.
 
+A plugin's skills root is registered with `register_plugin(plugin, root)` and
+withdrawn with `withdraw_plugin(plugin)` ([PluginManager §3.7](../../../design/plugins/PluginManager.md#37-content-registration)).
+The catalog keeps the roots in its settings (`pluginSkills`), so they come back
+after its reload; registering scans the root at once and returns its issues, and
+`plugin_issues(plugin)` reads them later. Its Skills have ids
+`plugin:<plugin id>:<path>`.
+
 First use scans roots via blocking work; explicit refresh updates cached
 discovery. Cancellation closes the catalog; cleanup joins its reader. Reload
 creates fresh discovery caches. Read failures remain explicit and queries can
@@ -50,7 +58,9 @@ settings mutation was durably saved.
 `discovery_precedence_and_list_injection`,
 `enablement_changes_the_list_and_loading`,
 `a_late_update_response_does_not_overwrite_a_newer_setting`,
-`a_failed_read_back_is_reported_and_recovered_by_the_next_query`.
+`a_failed_read_back_is_reported_and_recovered_by_the_next_query`;
+[plugin_manager.rs](../../../../crates/dim-app-server/tests/transport_flow/plugin_manager.rs):
+`plugin_content_reaches_sessions_through_its_owners`.
 
 <!-- generated:plugin SkillsCatalog — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |

@@ -1,7 +1,7 @@
 {
   "name": "dimcode-plugin-runtime",
   "private": true,
-  "version": "0.1.0-alpha.6",
+  "version": "0.1.0-alpha.8",
   "type": "module",
   "dependencies": {
     "@arcships/rutis-runtime": "0.17.1"

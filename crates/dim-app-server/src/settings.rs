@@ -10,7 +10,7 @@ pub(crate) use workflow_files::WorkflowPackages;
 use crate::storage::SqliteStorage;
 use dim_agent_capabilities::file_storage::{FilePath, FileStorage, FileStorageError};
 use dim_agent_runtime::{Names, Registrations};
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, InstanceId, Key, TypeKey};
 use rutis::{Ctx, Event};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -25,7 +25,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use declared::Declared;
 pub(crate) use declared::{Read, Update};
-pub use declared::{SourceDeclaration, Writer};
+pub use declared::{SourceDeclaration, Writer, holds_write_only, without_write_only};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SettingsError {
@@ -131,8 +131,10 @@ fn typed<D: BusinessDocument>() -> Arc<Typed<D>> {
     Arc::new(Typed(PhantomData))
 }
 
-/// A registered source: its files and how its documents are checked.
+/// A registered source: the fiber that registered it, its files and how its
+/// documents are checked.
 struct Source {
+    owner: InstanceId,
     user_file: String,
     project_file: Option<String>,
     kind: Kind,
@@ -172,6 +174,7 @@ impl SettingsService {
             ctx,
             D::NAMESPACE,
             Source {
+                owner: ctx.instance(),
                 user_file: D::USER_FILE.into(),
                 project_file: D::PROJECT_FILE.map(Into::into),
                 kind: Kind::Rust(TypeId::of::<D>()),
@@ -194,11 +197,25 @@ impl SettingsService {
             ctx,
             &source,
             Source {
+                owner: ctx.instance(),
                 user_file,
                 project_file,
                 kind: Kind::Declared(Arc::new(declared)),
             },
         )
+    }
+    /// The declarations of the JSON Schema sources the fiber `owner`
+    /// registered and still holds, by source name.
+    pub fn declared_by(&self, owner: InstanceId) -> Vec<SourceDeclaration> {
+        self.sources
+            .all()
+            .iter()
+            .filter(|registered| registered.value.owner == owner)
+            .filter_map(|registered| match &registered.value.kind {
+                Kind::Declared(declared) => Some(declared.declaration().clone()),
+                Kind::Rust(_) => None,
+            })
+            .collect()
     }
     /// Two sources sharing a name or a file would share a persisted document.
     fn insert(&self, ctx: &Ctx, name: &str, source: Source) -> rutis::Result<()> {

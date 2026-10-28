@@ -436,6 +436,7 @@ mod tests {
                 "resume",
                 "new",
                 "web",
+                "lines",
                 "models",
                 "effort",
                 "fast",

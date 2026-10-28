@@ -702,6 +702,7 @@ async fn run_connection(
                                             "session.delete",
                                             "session.model.progress",
                                             "session.methods",
+                                            "session.branch_end",
                                         ]);
                                         if hub.config().database_path.is_some() {
                                             features.push("session.fork");

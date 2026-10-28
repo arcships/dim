@@ -27,8 +27,10 @@ There are two write paths. A client write (`settings.update`) may change any fie
 (the `settings` service) may not change a user-only field. A write the owner makes on behalf of
 its tool is an owner write, so it is rejected when it changes a user-only field.
 
-Settings gives no field a meaning. A secret is an ordinary field of its owner's document, and
-the owner decides whether and how to store, encrypt or look it up (§1.2).
+Settings gives no field a meaning, with one exception: a member whose schema has the JSON Schema
+annotation `writeOnly: true` is a secret toward the agent (§1.2). A secret is otherwise an ordinary
+field of its owner's document, and the owner decides whether and how to store, encrypt or look it
+up.
 
 `BusinessDocument` stays the Rust binding; a Rust owner registers its document types the same
 way (§4.5). Rust sources keep their owners' management methods. F2's `permission.rules`/`permission.set_rules` stay (§8.1).
@@ -44,10 +46,11 @@ root indices. See the [native definition-file contract](../p6-p7-bindings.md#3-w
 
 - No `subscribe(source)`. The issue text lists it, but S8a moved change notification to the rutis
   event bus (issue comment). Settings keeps no watch channel of its own.
-- No generic client access to Rust sources (`mcp`, `mcp-projects`, `skills`, `permission`).
+- No generic client access to Rust sources (`mcp`, `mcp-projects`, `mcp-plugins`, `skills`, `permission`).
   Their validation is Rust code that Settings cannot run on client JSON.
 - No source discovery method and no settings UI. See §10.
-- No secret store, credential service or field-name rule (§1.2).
+- No secret store, credential service or field-name rule (§1.2). The one marker is the schema's
+  `writeOnly` annotation.
 - MCP's inline tokens, `env` and `headers` stay where they are (ADR 004 D4).
 
 ### 1.2 Decision: secrets belong to their owner
@@ -72,6 +75,13 @@ depended on a store nobody owned. That service and the `*Ref` rule are withdrawn
   and existing directory permissions are preserved. `settings.read` serves local connections
   only (§7), so local clients can read the secret; remote and paired clients cannot. The owner
   never places it in tool definitions, results, events, diagnostics, errors or logs.
+- `writeOnly: true` on a member reachable through `properties` marks a secret. It does not
+  change validation. The agent's path to a document, the `plugin` tool's `config` command
+  ([PluginManager §6](../plugins/PluginManager.md#6-interfaces-summary)), never returns its value:
+  the member is left out and its JSON Pointer is listed as set when it holds a value; and that
+  command refuses to write a member that is, or contains, a `writeOnly` member. Clients are
+  unchanged: local `settings.read` and `settings.update` read and write it as any field (§7). An
+  owner declares `writeOnly` on every credential in its schema, in addition to `userOnly`.
 - An owner that wants a keychain or encryption implements it inside its own plugin and keeps
   only what it chooses in its document.
 - Provider keeps its own `ProviderSecretHost` / `ResolveProviderSecret` (`provider/secrets.rs`),
@@ -302,7 +312,7 @@ impl SettingsService {
 
 - Both registrations are effects of the plugin owning `ctx`, withdrawn when it unloads, and are
   checked under one registry state (§3.1). `register_declared` compiles the schema with
-  `jsonschema`. The process owners register in their `apply`: Mcp (`mcp`, `mcp-projects`),
+  `jsonschema`. The process owners register in their `apply`: Mcp (`mcp`, `mcp-projects`, `mcp-plugins`),
   SkillsCatalog (`skills`), PermissionRules (`permission`) and CollaborationModelPolicy
   (`collaboration`). Readers in other plugins only read; `read::<D>`/`update::<D>` of a type that
   is not the registered one for its name is `UnknownSource`. The `settings` service's

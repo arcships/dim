@@ -17,6 +17,30 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Histórico do branch incompleto; parar tudo indisponível"
         }
         "Running" => "Executando",
+        "Lines" => "Linhas",
+        "Enter show the line · x end it · Esc close" => {
+            "Enter ver a linha · x encerrá-la · Esc fechar"
+        }
+        "This session has no lines." => "Esta sessão não tem linhas.",
+        "No matching lines." => "Nenhuma linha correspondente.",
+        "the session itself" => "a própria sessão",
+        "working" => "trabalhando",
+        "ended itself" => "encerrou-se",
+        "ended by an operation" => "encerrada por uma operação",
+        "ended with {id}" => "encerrada com {id}",
+        "creation failed" => "criação falhou",
+        "shown" => "exibida",
+        "line" => "linha",
+        "line {id}" => "linha {id}",
+        "follow, talk to and end this session's lines" => {
+            "acompanhar, conversar e encerrar as linhas desta sessão"
+        }
+        "End line" => "Encerrar linha",
+        "y/N" => "y/N",
+        "main is the session itself; a line ends, main does not" => {
+            "main é a própria sessão; uma linha encerra, main não"
+        }
+        "Line has ended:" => "A linha foi encerrada:",
         "Starting" => "Iniciando",
         "Delegation result" => "Resultado da delegação",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {

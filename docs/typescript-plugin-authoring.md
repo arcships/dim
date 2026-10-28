@@ -375,7 +375,8 @@ subscription service or polling loop is needed.
 Dim provides no credential service. A secret such as an API key is your
 plugin's business: keep it as an ordinary field of your source, or store and
 encrypt it yourself. A field the user fills in belongs in `userFile` (not
-`projectFile`) and in `userOnly`; state its rules in the schema (for example
+`projectFile`) and in `userOnly`; mark a credential `writeOnly: true` in its schema, so the
+agent's `plugin config` never shows its value or writes it; state its rules in the schema (for example
 `minLength`). Settings writes the user file with mode 0600, and local clients
 can read the value back through `settings.read`, which never serves remote or
 paired clients. Keep values out of tool results, terminal replies, history and

@@ -79,7 +79,7 @@ flowchart TB
 | Workflow | 运行；定义位于 Settings 业务来源 `workflow` 或项目文件 | `workflow` 工具 | — | 一次运行跨越多个 Session |
 | ExternalAgent | 在用外部会话、Collaboration 成员类型 | — | — | 外部 Agent 会话与进程是共享的宿主资源 |
 | Modality | 任务、实时连接 | — | — | 任务与 provider 连接是共享的 |
-| PluginManager | 插件配置（`plugins.json`） | `PluginTools`（插件工具） | — | 安装以宿主为单位 |
+| PluginManager | 插件配置（`plugins.json`） | `PluginTools`（`plugin` 工具） | — | 安装以宿主为单位 |
 | RemoteGateway | 远程入口、设备 | — | — | 一个外部入口 |
 | AcpGateway | 接入方宿主进程 | — | — | 可复用客户端进程插件，位于 daemon 外 |
 

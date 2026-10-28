@@ -113,6 +113,7 @@ impl RpcError {
                 "submission_ambiguous",
                 "Submission identity belongs to multiple inputs",
             ),
+            "BranchEnded" => Self::app(-32000, "branch_ended", message),
             _ => Self::wire(-32603, "Session operation failed"),
         }
     }
@@ -126,6 +127,7 @@ impl From<AgentError> for RpcError {
             AgentError::Build(_) => "Build",
             AgentError::Reloading(_) => "Reloading",
             AgentError::AmbiguousSubmission(_) => "AmbiguousSubmission",
+            AgentError::BranchEnded(_) => "BranchEnded",
             _ => "",
         };
         Self::agent(variant, error.to_string())

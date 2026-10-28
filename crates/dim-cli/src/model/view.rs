@@ -90,6 +90,36 @@ pub struct MemberCard {
     pub observation: Option<MemberConversationState>,
 }
 
+/// One line of the Session, as the lines panel lists it (design §14).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineView {
+    pub id: String,
+    /// The line it was opened from; `None` for `main`.
+    pub parent: Option<String>,
+    /// The first line of the purpose it was opened with.
+    pub purpose: String,
+    pub state: LineState,
+}
+
+/// How a line stands (design §14).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LineState {
+    /// `main`: the interaction surface, never ended.
+    Main,
+    /// A turn runs on the line.
+    Working,
+    /// Open, with no turn running.
+    Waiting,
+    /// It ended itself through the branch tool.
+    EndedItself,
+    /// Another issuer ended it: a host operation or the user.
+    EndedByOperation,
+    /// An ancestor's end ended it; the ancestor's id.
+    EndedWith(String),
+    /// The tree could not build it.
+    CreationFailed,
+}
+
 /// A tool call that asks the user for permission.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalView {
@@ -223,6 +253,10 @@ pub struct ViewSnapshot {
     /// Shared with the worker's projection: publishing copies pointers.
     pub rows: Vec<std::sync::Arc<ViewRow>>,
     pub running: bool,
+    pub main_running: bool,
+    /// The first message the user sent on `main`: the window title's topic
+    /// (`ui::title`), whichever line is shown.
+    pub main_topic: Option<String>,
     pub approvals: Vec<ApprovalView>,
     pub questions: Vec<crate::question::Call>,
     /// Oldest first.
@@ -236,4 +270,7 @@ pub struct ViewSnapshot {
     pub workflow_stop: bool,
     /// The newest turn that ended on main: its sequence and how it ended.
     pub ended: Option<(u64, TurnEnd)>,
+    /// `main` followed by this Session's lines, as the lines panel lists them.
+    pub lines: Vec<LineView>,
+    pub focus: String,
 }

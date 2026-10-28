@@ -718,7 +718,7 @@ test('report settlement joins cleanup and recovery never repeats an accepted rep
 })
 
 test('terminal and uncertain report replies follow the persisted recovery contract', async t => {
-  for (const code of ['rejected', 'failed', 'ambiguous', 'publication_unknown', 'reloading']) await t.test(code, async t => {
+  for (const code of ['rejected', 'branch_ended', 'failed', 'ambiguous', 'publication_unknown', 'reloading']) await t.test(code, async t => {
     const f = await fixture(t)
     await f.method('save', { source: 'user', document: definition('reply', [{ stage: { id: 'one', prompt: 'done' } }]) })
     const input = f.services.sessions.input
@@ -735,12 +735,12 @@ test('terminal and uncertain report replies follow the persisted recovery contra
     const started = await f.execute({ action: 'start', name: 'reply' })
     const id = started.structuredContent.run_id
     const status = () => f.method('status', { run_id: id }).then(reply => reply.value)
-    if (code === 'rejected') {
+    if (code === 'rejected' || code === 'branch_ended') {
       const run = await until(async () => { const run = await status(); return run.report.state === 'undeliverable' && run })
-      assert.equal(run.report.reason, 'rejected')
-      assert.ok(run.log.some(entry => entry.message.includes('Invalid report rejected')))
+      assert.equal(run.report.reason, code)
+      if (code === 'rejected') assert.ok(run.log.some(entry => entry.message.includes('Invalid report rejected')))
       await f.reload()
-      assert.deepEqual(calls, ['input'])
+      assert.deepEqual(calls, ['input'], 'an undone report is not resubmitted')
     } else if (code === 'ambiguous') {
       const run = await until(async () => { const run = await status(); return run.report.state === 'delivered' && run })
       assert.ok(run.log.some(entry => entry.message.includes('Duplicate report violation')))

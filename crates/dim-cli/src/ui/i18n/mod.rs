@@ -161,6 +161,30 @@ pub fn tf(english: &'static str, args: &[(&str, &str)]) -> String {
 mod tests {
     use super::*;
 
+    /// Every string `/plugins` draws has a translation in every locale.
+    #[test]
+    fn every_locale_translates_the_plugins_strings() {
+        type Lookup = fn(&str) -> Option<&'static str>;
+        let tables: [(&str, Lookup); 10] = [
+            ("zh-CN", zh_cn::lookup),
+            ("ja", ja::lookup),
+            ("ko", ko::lookup),
+            ("zh-Hant", zh_hant::lookup),
+            ("id", id::lookup),
+            ("de", de::lookup),
+            ("fr", fr::lookup),
+            ("es", es::lookup),
+            ("pt-BR", pt_br::lookup),
+            ("pt-PT", pt_pt::lookup),
+        ];
+        assert_eq!(tables.len() + 1, LOCALES.len());
+        for (code, lookup) in tables {
+            for key in crate::ui::plugins_panel::STRINGS {
+                assert!(lookup(key).is_some(), "{code} lacks {key:?}");
+            }
+        }
+    }
+
     #[test]
     fn environment_values_map_as_the_ts_build_does() {
         let of = Locale::from_env_value;

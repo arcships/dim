@@ -1,6 +1,6 @@
 # Timeline 分支
 
-状态：提议，未实现（[#427](https://github.com/arcships/dim/issues/427)）。本文同时是需求与设计：§1–§3 回答 #427 的问题，§4 起是设计。范围：TimelineTree 插件（TimelineTree、TreeTimeline、BranchTool，BranchTool 新增一个分支部件）、一个 App Server 内置方法、两种核心事件、CLI TUI，以及[设计规则 §2](../../architecture/rust-agent/principles.md#2-作用域的含义) 的改写。语言：Rust。English: [English](../../design/timeline-branches.md)。
+状态：已采纳（[#427](https://github.com/arcships/dim/issues/427)）。本文同时是需求与设计：§1–§3 回答 #427 的问题，§4 起是设计。范围：TimelineTree 插件（TimelineTree、TreeTimeline、BranchTool，BranchTool 新增一个分支部件）、一个 App Server 内置方法、两种核心事件、CLI TUI，以及[设计规则 §2](../../architecture/rust-agent/principles.md#2-作用域的含义) 的改写。语言：Rust。English: [English](../../design/timeline-branches.md)。
 
 ## 1. 分支用来做什么
 
@@ -89,7 +89,7 @@
 
 BranchLine 注入 `B:Dispatcher`、`B:TimelineIdentity`、`B:BranchLifecycle` 和 `S:TreeCommands`，提供 `B:BranchLine`。
 
-它的决定方式与 Goal 相同：依据已消费的状态，通过一个写入前会复核的自有写任务，并且只对加载截点之后的实时事件作决定。所以重载时什么都不会写两次。
+它的决定方式与 Goal 相同：依据已消费的状态，通过一个写入前会复核的自有写任务，并且只对加载截点之后的实时事件作决定。所以重载时什么都不会写两次，只有一个例外：如果加载时自己的历史里最后有一个仍在生效的名册键，而与折叠出的名册不一致，它就把名册写一次——因为补完一条已结束线的重启（§20.7）在 `main` 重放之前就记下了 `branch/ended`，之后没有实时事件跟随（§6.2）。
 
 **线的来源。** TimelineTree 依据父分支的 `branch/create` 填写 `TimelineInfo.source`：
 
@@ -159,6 +159,7 @@ BranchLine 注入 `B:Dispatcher`、`B:TimelineIdentity`、`B:BranchLifecycle` �
 ### 6.2 已知代价
 
 - **重启可能丢掉一条空闲通知。** 如果进程停在一条工具线一轮结束之后、它的空闲通知写出之前，这条通知就永远不会写出，因为 BranchLine 只对加载之后的实时事件作决定。Pursuit §4.2 也留着同样的窗口。`main` 的名册上仍有这条线，可以 `read` 它，用户也能看到它处于空闲。
+- **重启可能丢掉结束通知。** `branch/ended` 与名册输入之间同样有窗口，一条线被外部结束时本该写出的结束通知会丢掉。加载时的补写只写名册，所以 `main` 是从名册的退场得知，而不是从通知。
 - **压缩后的名册很短。** `main` 压缩之后，名册只保留每条线的 id 和目的的第一行。`main` 告诉过一条线什么，只留在压缩摘要里，或只能经 `read` 看到；而 `read` 会把那条线的原始事件一页一页带进 main 的上下文。
 
 ## 7. 身份与上下文
@@ -219,15 +220,15 @@ key 与模式互不相关（[history.rs](../../../crates/dim-agent-capabilities/
 
 在本设计之前，host 线的开启输入（创建者的 prompt 作为 `user`，没有块）算操作者输入。工具线的不算：它带 `dim-branch-task` 块，没有 `user`。现在两者都是有来源的输入。
 
-为什么这不改变 Goal 的任何行为（已在 main 上核实，`runtime/plugins/goal/goal.ts`）：
+为什么这不改变 Goal 的任何行为：
 
 | Goal 的决定 | 身份块的影响 |
 | --- | --- |
-| 基于块的决定：已决定集合（`first?.after`，:386）、续跑列表（:387）、`conclusionOf`（:390），以及带 key 的目标和状态折叠（:394-396） | 没有影响。`marker()` 只匹配 `^<dim-goal `（:251），折叠还要求 `goal:*` key，所以这些决定都看不到身份块 |
-| 操作者判断（:373） | 它唯一改变的字段：开启输入不再设置 `lastOperator` |
-| `count`（:460-461） | `lastOperator` 只在这里使用：`since = max(active, lastOperator)` |
-| 计数窗口 | 折叠只看本线的事件，并在这条线自己的开启处从头开始（:282、:335）。子分支开始时没有目标，Goal 会写入开始时的 `clear`（[Goal §3.4](plugins/Goal.md#34-新分支清除继承的目标)）。`active` 只在之后的本地 `set` 或 `resume` 时移动，而这两者总在开启输入之后。所以开启输入从不改变 `since`，计数保持不变 |
-| 评审者识别（:376-384） | 不变。Goal 读取第一条 Queue 输入 `user` 文本的第一行。身份放在 `blocks` 里，`render_input` 先渲染原始块，再渲染操作者的话（[history.rs:181](../../../crates/dim-agent-capabilities/src/history.rs)），所以模型先看到身份，再看到 prompt。[Pursuit 修订](plugins/Pursuit.md#13-结束评审者随-427)之后，Goal 从 `TimelineInfo.source` 和 `parent` 识别评审者，不再读 `user` 文本。上面的 A5 规则照原文不变 |
+| 基于块的决定：已决定集合、续跑列表、`conclusionOf`，以及带 key 的目标和状态折叠 | 没有影响。`marker()` 只匹配 `^<dim-goal `，折叠还要求 `goal:*` key，所以这些决定都看不到身份块 |
+| 操作者判断 | 它唯一改变的字段：开启输入不再设置 `lastOperator` |
+| `count` | `lastOperator` 只在这里使用：`since = max(active, lastOperator)` |
+| 计数窗口 | 折叠只看本线的事件，并在这条线自己的开启处从头开始。子分支开始时没有目标，Goal 会写入开始时的 `clear`（[Goal §3.4](plugins/Goal.md#34-新分支清除继承的目标)）。`active` 只在之后的本地 `set` 或 `resume` 时移动，而这两者总在开启输入之后。所以开启输入从不改变 `since`，计数保持不变 |
+| 评审者识别 | [Pursuit 修订](plugins/Pursuit.md#13-结束评审者随-427)之后，Goal 从 `TimelineInfo.source` 和 `parent` 识别评审者，不再读第一条 Queue 输入的 `user` 文本。身份放在 `blocks` 里，`render_input` 先渲染原始块，再渲染操作者的话（[history.rs:181](../../../crates/dim-agent-capabilities/src/history.rs)），所以模型先看到身份，再看到 prompt。上面的 A5 规则照原文不变 |
 
 ## 8. 工作区
 
@@ -270,11 +271,12 @@ WorkspaceTools 不变。
 | `{kind: "tool", turn_id, request_id, call_id}` | 要结束的那条线自己的一次工具调用：`branch` 工具的 `end` |
 | `{kind: "host", operation_id}` | 一次宿主操作。可以是 App Server 的 `session.branch_end`，它像 `session.branch_create` 那样生成 `operation_id`（一个 uuid，[connection/tree.rs](../../../crates/dim-app-server/src/connection/tree.rs)），也可以是带自己 id 的插件，例如 Goal 的 `goal:evaluate:N` |
 
-一条线因为某个祖先结束而结束时，带上 `ancestor`，`source` 则从那个祖先的 `branch/end` 复制。`branch/ended` 从这条线的 `branch/end` 复制 `source` 和 `ancestor`。
+`ancestor` 指向用自己那次结束发起连锁的线：也就是本身不带 `ancestor` 的那次结束。连锁结束的每条后代都带这条线，`source` 也从同一次结束复制，于是（source, ancestor）这对值指明一次结束操作：谁要求的，在哪条线上。自己要求结束的线有 `source`、没有 `ancestor`；已被连锁结束之前就提交了自己结束的后代，保留它自己的那对值。`branch/ended` 从这条线的 `branch/end` 复制 `source` 和 `ancestor`，并且总是写在结束的那条线自己的父分支上，取自目录。
 
-**一个通用操作。** `TreeCommands.end(id, source)` 和 `Session::end_branch(id)` 只检查目标：它存在、未结束、不是 `main`。结束 `main` 就等于关闭 Session，所以这是关于目标的检查，不是关于调用方的。它们从不检查是谁在调用。
+**一个通用操作。** `TreeCommands.end(id, source)` 和 `Session::end_branch(id, source)` 只检查目标：它存在、未结束、不是 `main`。结束 `main` 就等于关闭 Session，所以这是关于目标的检查，不是关于调用方的。它们从不检查是谁在调用。
 
 - 结束一条已经结束的线，什么也不写，回复 `branch_ended`。
+- 还在打开的线还不是线：它的创建仍可能失败，而一条线只能有一个终结事实，所以在它发布之前 `end` 回答 `unknown_branch`。在加载时结束一条线的开线方等 Session，而 Session 在恢复完成后才发布（§17 R1）。
 - 关闭 Session 不算结束。
 - "开线的一方管理它的线"是调用方之间的约定，不是运行时规则：
   - `branch` 工具的 `end` 不带目标，所以结束的是调用它的那条线，这是工具的设计；
@@ -282,9 +284,9 @@ WorkspaceTools 不变。
 
 顺序：
 
-1. 入口在这条线上提交 `branch/end`。此后这条线不再接受新输入，任何入口都以 `branch_ended` 失败。
+1. 入口在这条线上提交 `branch/end`。此后这条线不再接受新输入，也不再开出新线，它下面的线也不再开出新线：这些入口都以 `branch_ended` 失败。它下面的线仍可接受输入，直到它自己提交 `branch/end`（第 3 步）。
 2. 这条线上的 TreeTimeline 消费 `branch/end`，转给 TimelineTree。
-3. TimelineTree 先结束这条线的后代，每条后代都把 `ancestor` 设为这条线、带上这个 `source`，走同样的步骤。
+3. TimelineTree 先结束这条线的后代，走同样的步骤；无论多深，每条后代都复制这个 `source`，并把 `ancestor` 设为这条线。
 4. 关闭时机：
    - `tool` 来源：在 `branch/end` 之后这条线第一次结束一轮时关闭，因为这次调用就在那一轮里；线空闲时立即关闭；
    - `host` 来源，以及因祖先结束而结束的线：立即关闭，中断当前这一轮。
@@ -296,11 +298,11 @@ WorkspaceTools 不变。
 - 工具线经工具结束自己时（`tool` 来源且没有 `ancestor`），只写名册更新。这条线的最终消息已经在 `branch/end` 之前以 steer 送到 `main`。
 - 工具线的其他任何结束，写名册更新加上结束通知（§12.1），以 steer 写在同一条输入里。
 
-`tool` 来源时，客户端显示"自行结束"；其他情况显示结束它的操作。
+`tool` 来源且没有 `ancestor` 时，客户端显示"自行结束"；其他情况显示结束它的操作；由连锁结束的线还会写明它的祖先，例如"ended with X"。
 
 **恢复。** 父分支上有某个子分支的 `branch/ended` 时，这个子分支不活跃。恢复中的父分支读取历史时会报告这些事件（§5）。这条规则加入现有的几条：父分支不活跃、父分支上有这个子分支的 `branch/create-failed`、子分支的创建从未完成。
 
-一条线有 `branch/end`、但父分支上没有对应的 `branch/ended` 时，不打开它。恢复从最深的线开始补完这类结束，在父分支上补写每条缺失的 `branch/ended`，`source` 与 `ancestor` 取自 `branch/end`。
+一条线有 `branch/end`、但父分支上没有对应的 `branch/ended` 时，不打开它。恢复按最深的线优先补完这类结束：在父分支上补写每条缺失的 `branch/ended`，`source` 与 `ancestor` 取自 `branch/end`，这条线自己的结果最后写。对于它下面的线，那个父分支同样不会打开，所以记录写进它的存储历史，它的固定头部随之延长。其下自己从未开始结束的线不补写 `branch/ended`：父分支已关闭、不会再重放，写上去也没有人读。恢复把每条这样的线按它停下的头部记为已结束，`source` 取自父分支的 `branch/create`，它的历史仍可读取（§1"结束之后"）。
 
 **结束之后：**
 
@@ -334,7 +336,7 @@ WorkspaceTools 不变。
 | 向已结束的线发消息，或与结束发生竞争 | `Line C has ended. Read it to see what it did.` | `branch_ended` |
 | 在 `main` 或 host 线上 `end` | `Only a line opened with create can end itself.` | `branch_cannot_end` |
 
-这些拒绝是工具自己的规则。`TreeCommands.end` 本身只检查目标（§10）。
+这些拒绝是工具自己的规则。`TreeCommands.end` 本身只检查目标（§10）。如果线已经提交了自己的 `branch/end`，再来的 `end` 取 `branch_ended` 一行，不会再写一条最终消息：第一次调用的消息就是这条线最后的话。
 
 ## 12. 提示词
 
@@ -399,26 +401,35 @@ WorkspaceTools 不变。
 
 ## 14. 客户端
 
-**TUI。** 线有了自己的视图和操作：
+**TUI。** 线有自己的面板、视图和操作：
 
-- 任务面板已经列出子分支，它改为线的列表，每条线带状态：工作中、等待中、自行结束，或被某个操作结束。
-- 打开一条线就显示它的对话。输入框向正在查看的那条线提交。
-- 结束是对正在查看的线执行、需要确认的命令；在 `main` 上被拒绝。
-- 提问和审批保留线的标签（CLI 已经显示 `(branch NAME)`）。
-- 消息两边都显示：发送方显示为已发出，接收方显示为已收到。
+- `/lines`（别名 `/branches`）列出这个 Session 的每条线，各自缩进在打开它的那条线之下，每条带状态：工作中、等待中、自行结束、被某个操作结束、随 X 结束，或创建失败。
+- Enter 显示所选线的对话。输入框向正在显示的线提交，输入框的下边框标出这条线，用 id 的前八个字符。
+- `x` 再 `y` 结束所选线；`main` 上被拒绝。
+- 提问和审批都带线的标签，两条线问同一件事也能分辨（提问显示 `(branch NAME)`，审批显示 `Permission on branch NAME`）。
+- `main` 与一条线之间的消息，在发送方读作已发出（它的 `branch` 工具调用），在接收方读作已收到（`◂ from C`）。
+- 切换显示的线就在一条边界行（`line C`）之下换一份记录，和切换 Session 一样，因为终端的回滚缓冲只追加。一条线的记录从它的事件折叠而来，显示与否都在折叠，所以打开一条线不读历史。
+
+这个面板与任务面板分开：任务面板列后台命令、成员和 Workflow 运行，它的 `x` 是停止任务，而结束是永久的，两者不共用按键。
 
 ```
-┌ session 3f2a · line main ───────────────────────────────────────┐
-│ … main's conversation …                                         │
-│ ▸ to b-7c (steer)  Stop on parser.rs: its API changed on main.  │
-│ ◂ from b-91        Review: cache.rs:88 drops the guard on reload│
-│ ◂ b-02 ended itself  Docs updated in README and INDEX.          │
-├ lines ──────────────────────────────────────────────────────────┤
-│ ● main                                       working            │
-│   b-7c  parser race hypothesis               working            │
-│   b-91  review the cache change              waiting            │
-│   b-02  docs pass                            ended itself       │
+┌ session 3f2a · main ────────────────────────────────────────────┐
+│ … main 的对话 …                                                 │
+│ ◂ from b-7c (steer)  the leak is in cache.rs                    │
+│ ◂ from b-02 (steer), final  docs pass done                      │
+│                                                                 │
+│ ╭─────────────────────────────────────────────────────────────╮ │
+│ │ › ask anything…                                             │ │
+│ ╰───────────── ~/repo/dim (main) ────────────────────────────╯ │
 └─────────────────────────────────────────────────────────────────┘
+
+┌ lines ──────────────────────────────────────────────────────────┐
+│ ● main                          the session itself · shown      │
+│   b-7c  parser race hypothesis          working                 │
+│   b-91  review the cache change         waiting                 │
+│     b-c3  the guard in cache.rs         working                 │
+│   b-02  docs pass                       ended itself            │
+└────────── Enter show the line · x end it · Esc close ───────────┘
 ```
 
 **Web** 目前只显示 `main`，线以后再做。Desktop 得到的是协议：`session.branch_end`，以及 v3 历史里的两种事件。
@@ -431,8 +442,8 @@ WorkspaceTools 不变。
 | TimelineTree | 对每种来源都在 `first_input` 里写身份块。新增 `TreeCommands.end(id, source)` 和 `TreeCommands.page(id, after, limit)`。`TimelineInfo.source`，依据父分支的 `branch/create` 填写（§5）。结束流程、线进入结束后拒绝输入、`branch/ended`、恢复规则、读已结束的线 | 它拥有线的生命周期和开启输入 |
 | TreeTimeline | 消费 `branch/end`，以及由工具调用发出的结束时这条线的下一次轮次结束，并转给 TimelineTree | 它现在就这样转 `branch/create` |
 | BranchTool | 按动作区分的工具，加上新的 BranchLine 分支部件 | 工具的各个动作，以及一条线对自己相关各线的视图 |
-| Session 门面 | `Session::end_branch(id)`。在固定的头部从存储读已结束线的历史（`local_page`、`sequence`） | §17 |
-| App Server | `session.branch_end`（v3，host 来源，带生成的 `operation_id`；`hello.features` 在列出 `session.branch_create` 的同样条件下列出它）。对已结束的线，`session.history` 立即返回，截到它存储的头部。`ProductEvent::new` 在 v3 里带上两种事件，v1、v2 里不带 | 一个入口和一条读取路径，没有业务逻辑 |
+| Session 门面 | `Session::end_branch(id, source)`。在固定的头部从存储读已结束线的历史（`local_page`、`sequence`） | §17 |
+| App Server | `session.branch_end`（v3，host 来源，带生成的 `operation_id`；`session_execution` 打开、且连接的入口不是裸入口或守护进程 profile 未受保护时，`hello.features` 把它和其他会话方法一起列出）。对已结束的线，`session.history` 立即返回，截到它存储的头部。`ProductEvent::new` 在 v3 里带上两种事件，v1、v2 里不带 | 一个入口和一条读取路径，没有业务逻辑 |
 | dim-agent-types | 在 `EventKind` 和 v1 排除列表里加入 `branch/end` 和 `branch/ended`，并在契约测试中登记。冻结样本不变 | 两种核心事实（§16） |
 | Goal（Pursuit 修订） | 从线的来源识别它的评审者，并结束它（[Pursuit §13](plugins/Pursuit.md#13-结束评审者随-427)） | 评审者的协议归 Goal |
 | 分支 TypeScript 绑定 | 重新生成 `npm/branch-services.d.ts`：TreeCommands 新增 `end` 和 `page`，`TimelineInfo` 新增 `source`。[绑定表](../../design/branch-typescript.md)中 `treeCommands` 一行列出 `end` | TreeCommands 是导出的服务 |
@@ -458,7 +469,7 @@ BranchLine 的服务只由同一插件里的工具读取。
 | `branch/end` | `{source, ancestor?}`。`source` 是 `BranchSource`（`{kind: "tool", turn_id, request_id, call_id}` 或 `{kind: "host", operation_id}`）；`ancestor` 是一条线的 id |
 | `branch/ended` | `{branch, endEvent, source, ancestor?}`。`endEvent` 是 `branch/end` 在结束的那条线上的序号；`source` 与 `ancestor` 从它复制 |
 
-它们的格式决定记录在存储合同里：[#427 v20 格式决定](../../design/appserver/native-storage-format.md#427-v20-格式决定)，随本设计的实现生效。
+它们的格式决定记录在存储合同里：[#427 v20 格式决定](../../design/appserver/native-storage-format.md#427-v20-格式决定)。
 
 ## 17. 向机制所有者提出的需求
 
@@ -476,7 +487,7 @@ BranchLine 的服务只由同一插件里的工具读取。
   - 由 App Server 直接读存储会绕过门面。
 - **通用能力。** 不带业务含义：
   - 线上的指令 `branch/end {source, ancestor?}`，以及父分支上的结果 `branch/ended {branch, endEvent, source, ancestor?}`；
-  - `TreeCommands.end(id, source)` 和 `Session::end_branch(id)`，它们只检查目标；
+  - `TreeCommands.end(id, source)` 和 `Session::end_branch(id, source)`，它们只检查目标；
   - `TimelineInfo.source`，依据父分支的 `branch/create` 填写；
   - `branch/end` 提交后不再接受新输入；
   - 先结束后代；
@@ -485,8 +496,8 @@ BranchLine 的服务只由同一插件里的工具读取。
 - **对序号、批次、中断、重载的影响。**
   - 每个事件单独一个批次：线上的 `branch/end`，以及关闭之后父分支上的 `branch/ended`。
   - `host` 来源的结束，或因祖先而结束，经 `Branch::close()` 中断这条线。
-  - 重载时适用上面的恢复规则。
-  - Timeline、Dispatcher 和批次都不变。
+  - 重载时适用上面的恢复规则。Session 在恢复完成后才发布，所以在加载时结束一条线的部件，例如 Goal 的核对（[Pursuit §13](plugins/Pursuit.md#13-结束评审者随-427)），要等 `SessionLifecycle::activated()`，此后它看到的每条线（目录里有的）都已发布。
+  - Timeline 多一道线自己的准入检查：`Timeline::input` 变为 `input_checked(data, admit)`，在提交锁内运行 `admit`，于是 `branch/end` 之后提交的输入以 `branch_ended` 被拒绝，而不是与关闭竞争。Dispatcher 和批次都不变。
 
 ## 18. 安全
 
@@ -507,7 +518,7 @@ BranchLine 的服务只由同一插件里的工具读取。
 | §4.1 指令事件 | 结束是 `branch/end`，由 TimelineTree 决定并写 `branch/ended`。消息是输入，由接收方的 InputQueue 和 Loop 决定。结束一条已结束的线、或被拒绝的消息，什么也不写，回复说明原因 |
 | §4.2 交接后不撤回 | 已提交的消息属于接收方。`branch/end` 不撤回 |
 | §4.3 before 回调 | 无 |
-| §4.4 核心不带业务含义 | Timeline、Dispatcher、`before` 和批次不变。身份文本属于 TimelineTree 自己的领域，即一个 Session 的各条线。工具线的协议写在 `first_input` 现在写工具专用文本的地方，也就是拥有该工具的模块里 |
+| §4.4 核心不带业务含义 | Dispatcher、`before` 和批次不变；Timeline 的准入检查是通用的（§17 R1）。身份文本属于 TimelineTree 自己的领域，即一个 Session 的各条线。工具线的协议写在 `first_input` 现在写工具专用文本的地方，也就是拥有该工具的模块里 |
 | §4.5 批次 | `branch/end` 单独一个批次。`branch/ended` 在关闭之后最后写入。名册和结束通知是同一条输入 |
 | §4.6 上下文 | 身份、名册、消息和通知都是被采用的输入。`read` 返回工具结果。没有别的东西进入上下文 |
 | §4.7 公开事件与服务 | BranchLine 折叠的是它自己那条线的公开事件。工具读 BranchLine（同一插件）和 TreeCommands。`read` 像 Collaboration 的 `read` 一样，把已提交的事件作为工具结果返回，没有哪个部件折叠另一条线的事实。Goal 按它自己公开的 A5 约定判定开启输入（§7.4）。BranchLine 和 Goal 经公开服务 TreeCommands 读取 `TimelineInfo.source` |
@@ -526,7 +537,7 @@ BranchLine 的服务只由同一插件里的工具读取。
 
 1. `main` 开两条线，名册列出这两条。每个子分支的身份覆盖它继承的名册。`main` 和某个子分支各自压缩后，带 key 的基线重放名册或身份。
 2. 子分支给 `main` 发一条 Append：它不唤醒 `main`，`main` 在下一次请求时看到。Steer 唤醒 `main` 的 `wait`，或在 `main` 空闲时开启新的一轮。来自 `main` 的 Steer 唤醒空闲的子分支。
-3. 下列操作被拒绝，什么也不写：给兄弟分支发消息、在子分支上 `create`、对 host 线 `message` 或 `read`、在 `main` 上 `end`。
+3. 下列操作被拒绝，什么也不写：给兄弟分支发消息、在子分支上 `create`、对 host 线 `message` 或 `read`、工具线 `read` `main`、在 `main` 上 `end`。
 4. 子分支的一轮没有发 steer 就结束时，`main` 收到一条带这一轮状态的空闲通知。这一轮 steer 过 `main`、调用了 `end`，或留下了待处理的驱动输入时，不写通知。
 5. 工具线结束自己：写入最终消息（steer）和带 `tool` 来源的 `branch/end`，在这一轮结束时关闭，然后在 `main` 上写 `branch/ended` 并更新名册，不写结束通知。之后的消息被拒绝（`branch_ended`）。工具的 `read` 和 `session.history` 都能返回已结束线的历史。
 6. 经 `session.branch_end` 由用户结束：`branch/end` 带 App Server id 的 `host` 来源，这条线当前这一轮被中断，`main` 以 steer 收到结束通知。`main` 不能被结束。再次结束返回 `branch_ended`。向已结束的线提交返回 `branch_ended`。

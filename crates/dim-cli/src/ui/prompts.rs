@@ -61,6 +61,14 @@ pub enum Effect {
         request_id: String,
         branch_id: String,
     },
+    /// Show this line's conversation and submit to it.
+    FocusLine(String),
+    /// End this line, once the user confirmed it.
+    EndLine {
+        session_id: String,
+        projection_id: u64,
+        branch_id: String,
+    },
     /// Stop the background command on its originating branch.
     StopTask {
         session_id: String,
@@ -99,6 +107,8 @@ pub enum Effect {
     LanguageRestore(Option<crate::ui::i18n::Locale>),
     /// Flip or open a `/settings` row.
     Setting(crate::ui::settings_panel::Setting),
+    /// Change a plugin (`/plugins`).
+    Plugin(crate::model::session::PluginAction),
     /// Change a provider (`/connect`).
     Provider(crate::model::session::ProviderAction),
     /// Begin a sign-in on the worker.
@@ -448,6 +458,18 @@ impl PermissionPrompt {
             },
         );
         let mut content = vec![String::new()];
+        if self.branch_id != "main" {
+            content.push(fg(
+                &truncate_cells(
+                    &tf(
+                        "Permission on branch {branch}",
+                        &[("branch", &self.branch_id)],
+                    ),
+                    inner,
+                ),
+                &p.muted,
+            ));
+        }
         for line in self.lines() {
             let text = truncate_cells(&line, inner);
             let text = if text.is_empty() {
@@ -1387,6 +1409,26 @@ mod tests {
         assert!(rows[5].contains("Reject   "));
         assert!(rows[5].contains("Full access"));
         assert!(rows[7].ends_with("─ y allow · n reject · ←→/Tab move · Enter confirm ─╯"));
+        assert!(
+            !p.render(100, &theme.palette)
+                .iter()
+                .any(|row| strip(row).contains("Permission on branch"))
+        );
+        let line = PermissionPrompt::new(
+            "r2".into(),
+            "b-7c".into(),
+            "source: tool_rule".into(),
+            "exec".into(),
+            serde_json::json!({"command": "cargo test"}),
+            true,
+        );
+        let rows: Vec<String> = line
+            .render(100, &theme.palette)
+            .iter()
+            .map(|row| strip(row))
+            .collect();
+        assert!(rows[2].contains("Permission on branch b-7c"), "{rows:#?}");
+        assert!(rows[3].contains("# source: tool_rule"), "{rows:#?}");
     }
 
     #[test]

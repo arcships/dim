@@ -13,7 +13,11 @@ pub(super) fn settings_changes(
     ctx: &rutis::Ctx,
 ) -> std::result::Result<tokio::sync::watch::Receiver<()>, rutis::Error> {
     let wake = std::sync::Arc::new(tokio::sync::watch::Sender::new(()));
-    for source in [McpSettings::NAMESPACE, McpProjectEnablement::NAMESPACE] {
+    for source in [
+        McpSettings::NAMESPACE,
+        McpProjectEnablement::NAMESPACE,
+        McpPluginServers::NAMESPACE,
+    ] {
         let wake = wake.clone();
         ctx.listen::<crate::settings::SettingsChanged>()
             .name(crate::settings::settings_changes(source))
@@ -279,6 +283,98 @@ impl BusinessDocument for McpProjectEnablement {
             })
         {
             return Err(SettingsError::Invalid("invalid MCP project enablement"));
+        }
+        Ok(())
+    }
+}
+
+/// The MCP documents plugins registered, by plugin id (PluginManager §3.7).
+/// Mcp keeps them so they survive its reload; their entries run under the
+/// ids `<plugin>:<server>`.
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpPluginServers {
+    #[serde(default)]
+    pub plugins: BTreeMap<String, McpPluginDocument>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpPluginDocument {
+    /// The plugin directory: a stdio entry's `cwd` is resolved against it.
+    pub dir: PathBuf,
+    pub mcp_servers: BTreeMap<String, McpServerSettings>,
+}
+impl McpPluginServers {
+    /// Every entry under its run id, with its effective configuration.
+    pub(crate) fn entries(self) -> impl Iterator<Item = (String, McpServerSettings)> {
+        self.plugins.into_iter().flat_map(|(plugin, document)| {
+            let dir = document.dir;
+            document
+                .mcp_servers
+                .into_iter()
+                .map(move |(id, mut config)| {
+                    if let McpServerSettings::Stdio { cwd, .. } = &mut config {
+                        let path = cwd.as_ref().map_or(dir.clone(), |cwd| dir.join(cwd));
+                        *cwd = Some(path.to_string_lossy().into_owned());
+                    }
+                    (format!("{plugin}:{id}"), config)
+                })
+        })
+    }
+}
+impl BusinessDocument for McpPluginServers {
+    const NAMESPACE: &'static str = "mcp-plugins";
+    const USER_FILE: &'static str = "mcp-plugins.json";
+
+    fn validate(&self) -> Result<()> {
+        if self.extra.contains_key("plugins") {
+            return Err(SettingsError::Invalid("reserved MCP plugin field"));
+        }
+        for (plugin, document) in &self.plugins {
+            if plugin.trim().is_empty() || !document.dir.is_absolute() {
+                return Err(SettingsError::Invalid("invalid MCP plugin registration"));
+            }
+            McpSettings {
+                mcp_servers: document.mcp_servers.clone(),
+                extra: BTreeMap::new(),
+            }
+            .validate()?;
+            for config in document.mcp_servers.values() {
+                if let McpServerSettings::Stdio { cwd: Some(cwd), .. } = config
+                    && !Path::new(cwd).components().all(|part| {
+                        matches!(
+                            part,
+                            std::path::Component::Normal(_) | std::path::Component::CurDir
+                        )
+                    })
+                {
+                    return Err(OUTSIDE_PLUGIN);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A plugin stdio entry's `cwd` that is absolute, climbs with `..`, or
+/// resolves outside the plugin directory.
+pub(crate) const OUTSIDE_PLUGIN: SettingsError =
+    SettingsError::Invalid("MCP plugin cwd must be a directory inside the plugin");
+
+impl McpPluginDocument {
+    /// Refuses a stdio `cwd` that, after following symbolic links, is not a
+    /// directory inside the canonical plugin directory.
+    pub(crate) fn confine(&self) -> Result<()> {
+        let dir = std::fs::canonicalize(&self.dir).map_err(|_| OUTSIDE_PLUGIN)?;
+        for config in self.mcp_servers.values() {
+            if let McpServerSettings::Stdio { cwd: Some(cwd), .. } = config {
+                match std::fs::canonicalize(dir.join(cwd)) {
+                    Ok(resolved) if resolved.starts_with(&dir) && resolved.is_dir() => {}
+                    _ => return Err(OUTSIDE_PLUGIN),
+                }
+            }
         }
         Ok(())
     }

@@ -223,13 +223,13 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 
 | 方法 | 模式 | 请求 | 回复 | 错误 |
 | --- | --- | --- | --- | --- |
-| `launch` | async | `LaunchRequest` | `{sessionId, policy}` | `rejected`、`agent_unknown`、`session_closed`、`branch_missing`（启动方）、`reloading`、`failed` |
-| `input` | async | `InputWrite` | `{inputId, sequence}` | `rejected`、`ambiguous`、`session_closed`、`branch_missing`、`reloading`、`publication_unknown`、`failed` |
-| `lookup` | async | `{sessionId, branchId, submissionId}` | `LookupReply` | `ambiguous`、`session_closed`、`branch_missing`、`reloading` |
+| `launch` | async | `LaunchRequest` | `{sessionId, policy}` | `rejected`、`agent_unknown`、`session_closed`、`branch_missing`（启动方）、`branch_ended`（启动方）、`reloading`、`failed` |
+| `input` | async | `InputWrite` | `{inputId, sequence}` | `rejected`、`ambiguous`、`session_closed`、`branch_missing`、`branch_ended`、`reloading`、`publication_unknown`、`failed` |
+| `lookup` | async | `{sessionId, branchId, submissionId}` | `LookupReply` | `ambiguous`、`session_closed`、`branch_missing`、`branch_ended`、`reloading` |
 | `history` | async | `HistoryRequest` | `HistoryPage` | `rejected`、`future_sequence`、`session_closed`、`branch_missing`、`reloading` |
-| `withdraw` | async | `WithdrawRequest` | `WithdrawReply` | `rejected`、`session_closed`、`branch_missing`、`reloading`、`publication_unknown` |
-| `stop` | async | `{sessionId, branchId, reason?}` | `{sequence}` | `session_closed`、`branch_missing`、`reloading` |
-| `idle` | async | `{sessionId, branchId}` | `{sequence}` | `session_closed`、`branch_missing`、`reloading` |
+| `withdraw` | async | `WithdrawRequest` | `WithdrawReply` | `rejected`、`session_closed`、`branch_missing`、`branch_ended`、`reloading`、`publication_unknown` |
+| `stop` | async | `{sessionId, branchId, reason?}` | `{sequence}` | `session_closed`、`branch_missing`、`branch_ended`、`reloading` |
+| `idle` | async | `{sessionId, branchId}` | `{sequence}` | `session_closed`、`branch_missing`、`branch_ended`、`reloading` |
 | `delete` | async | `{sessionId}` | `{}` | `rejected`、`reloading`、`failed` |
 
 ```text
@@ -334,6 +334,7 @@ fork 复制源 Session 的整个 `SessionConfig`；权限预设随复制过来�
 | 错误码 | 含义 |
 | --- | --- |
 | `session_closed`、`branch_missing` | 未写入任何内容（对 `launch` 而言，是启动方已关闭或不存在） |
+| `branch_ended` | 分支已结束；未写入任何内容（对 `launch` 而言，是启动方） |
 | `agent_unknown` | `launch` 指定的 Agent 没有装载 |
 | `reloading` | Agents 索引、模型选择宿主或该 Session 的 Capability 未激活或正在重载；可重试（`input` 用同一 `submissionId`） |
 | `rejected` | 参数格式以及该方法的边界检查（输入校验、位于批次中间的 history 游标、撤回服务的检查）；未写入任何内容 |
@@ -402,7 +403,7 @@ fork 复制源 Session 的整个 `SessionConfig`；权限预设随复制过来�
 | `stop`、`idle` | `Session::stop`、`Session::idle`（已有） |
 | `delete` | `AgentIndex::delete(id)`（S5c，crate 内部使用）：准入闸门、关闭、`SessionStore::delete_session`、遗忘 |
 | `SessionConfig` | 下方的 Rust 结构体 |
-| 错误 | 带 A.6 错误码的 `SessionsError`，由 `AgentError` 映射：`Closed` → `session_closed`，`UnknownBranch` → `branch_missing`，`Reloading` → `reloading`，`InvalidInput` → `rejected`，其余 → `failed` |
+| 错误 | 带 A.6 错误码的 `SessionsError`，由 `AgentError` 映射：`Closed` → `session_closed`，`UnknownBranch` → `branch_missing`，`BranchEnded` → `branch_ended`，`Reloading` → `reloading`，`InvalidInput` → `rejected`，其余 → `failed` |
 
 ```rust
 pub struct LaunchRequest {

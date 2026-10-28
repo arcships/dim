@@ -44,7 +44,7 @@ enclosing instance. Its methods are the type's public `&self` methods that can c
 
 | Name | Group | Rust type | Methods used by parts |
 | --- | --- | --- | --- |
-| `treeCommands` | `session` | `TreeCommands` | `list()`, `info(id)`, `input(id, input)`, `create(parent, at, options, cancelled)` |
+| `treeCommands` | `session` | `TreeCommands` | `list()`, `info(id)`, `input(id, input)`, `create(parent, at, options, cancelled)`, `end(id, source)`, `page(id, after, limit)` |
 | `dispatcher` | `branch` | `Dispatcher` | `consume(name, keys, handler)`, `listen(name, keys, handler)`, `committed()`, `local(start, through)`, `history(through)`, `notify()`, `sequence()`, `changed()` |
 | `branchLifecycle` | `branch` | `BranchLifecycle` | `activated()`, `closing()` |
 | `timeline` | `branch` | `Timeline` | `append({type, name, data, tags?})` → the committed event; `ancestors()`, `sequence()`, `committed()`, `hasPending()` |
@@ -53,9 +53,11 @@ enclosing instance. Its methods are the type's public `&self` methods that can c
 The data methods were added for this purpose; the existing ones that return handles or take Rust
 closures stay as they are for Rust callers:
 
-- `TreeCommands::info`, `input` and `create` address branches by id and return data:
-  `TimelineInfo`, the committed `AgentEvent`, and the new branch's id. `create` takes the caller's
-  cancellation explicitly (§Cancellation).
+- `TreeCommands::info`, `input`, `create`, `end` and `page` address branches by id and return
+  data: `TimelineInfo` (with `source`, and answered for an ended line as well), the committed
+  `AgentEvent`, the new branch's id, and one page of an open or ended line's committed batches.
+  `create` takes the caller's cancellation explicitly (§Cancellation); `end` is
+  [timeline branches](timeline-branches.md#10-ending-a-line).
 - `Dispatcher::listen` is `subscribe` in data form. Its `&Ctx` parameter is the calling row's
   context, so the subscription belongs to that row and ends when it unloads or restarts. The
   handler receives the committed event by value; its throw or rejection is the subscriber's handler

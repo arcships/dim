@@ -68,7 +68,7 @@ Settings owns source persistence, not approvals or business management methods.
 There is no `configuration.*` RPC namespace.
 
 The native store keeps the v13 settings data contract unchanged in the current
-format: `settings_documents` rows keyed `user/mcp`, `user/skills`, `user/mcp-projects` and `user/permission`,
+format: `settings_documents` rows keyed `user/mcp`, `user/skills`, `user/mcp-projects`, `user/mcp-plugins` and `user/permission`,
 plain payload JSON (not `{kind, document}`), source-local versions and opaque
 `native:<source>:<version>` revision tokens. Import provenance is preserved on
 edits. Successful writes notify consumers after persistence; failed persistence
@@ -127,9 +127,17 @@ After enabling, later edits to that entry's command or arguments take effect wit
 decision (ADR 003 D4). FullAccess, file-root authorization and Session restoration enable nothing.
 An old `mcp-approvals.json` is ignored, not migrated or removed.
 
+Plugins add entries through PluginManager, which registers each plugin's MCP document with Mcp
+under the plugin id ([PluginManager §3.7](../../docs/design/plugins/PluginManager.md#37-content-registration)).
+Mcp keeps them in `mcp-plugins` and lists them with `source: "plugin"` as `<plugin id>:<server>`;
+a stdio entry runs in the plugin directory, or in the directory inside it that its `cwd` names;
+a `cwd` that is absolute, uses `..` or leaves the plugin through a symbolic link refuses the document.
+They run while the plugin is on and change only through the plugin: `mcp.save`, `mcp.remove`
+and `mcp.set_enabled` refuse them, while `mcp.disconnect` and sign-in work as for other entries.
+
 Successful configuration mutations return `{}` after persistence, not after connection/tool
 adoption; disabling or removing an entry also waits until its running generations have closed in
-every Session. The catalog also returns `userApplication` and optional `projectApplication`, each with
+every Session. The catalog also returns `userApplication`, `pluginApplication` and optional `projectApplication`, each with
 `appliedRevision`, `error` and `cleanupError`. Application describes source eligibility
 and instance creation failures; it does not confirm a network connection or tool adoption.
 An application error leaves persisted intent intact. Cleanup errors remain visible for that
@@ -244,15 +252,15 @@ and paired devices cannot read or write them. See
 
 The configured digest is SHA-256 of the same original bytes parsed and validated for that server launch. It excludes neither whitespace nor environment-variable reference names, and never prints file contents or resolved environment values. A client must refuse another profile or configuration rather than reuse, delete or terminate its daemon.
 
-`--home` and `--database` are mutually exclusive. The SQLite store uses native format v19. It holds user settings in the unchanged v13 settings data contract, normalized managed-provider records, Timeline facts with optional recovery snapshots kept separate, Session file rows (v15), Session title metadata (v16), request messages stored as content-addressed node lists (v17), extension event rows (v18) and Session configurations and Agent profiles that may omit their mount list (v19).
+`--home` and `--database` are mutually exclusive. The SQLite store uses native format v20. It holds user settings in the unchanged v13 settings data contract, normalized managed-provider records, Timeline facts with optional recovery snapshots kept separate, Session file rows (v15), Session title metadata (v16), request messages stored as content-addressed node lists (v17), extension event rows (v18), Session configurations and Agent profiles that may omit their mount list (v19) and the branch end events, which need no schema change (v20).
 
-Startup opens a store with the exact v19 schema and a single marker of 19. A store with the exact v18, v17, v16, v15 or v13 schema and its own single marker is upgraded in place to v19 inside the startup admission transaction, before any writable PRAGMA. The transaction replaces the marker table once, then applies each step from that version on:
+Startup opens a store with the exact v20 schema and a single marker of 20. A store with the exact v19, v18, v17, v16, v15 or v13 schema and its own single marker is upgraded in place to v20 inside the startup admission transaction, before any writable PRAGMA. The transaction replaces the marker table once, then applies each step from that version on:
 
 - v13 → v15 adds `session_files`, `session_file_owners` and the `session_file_owners_by_file` index.
 - v15 → v16 adds `session_metadata`.
-- v16 → v17, v17 → v18 and v18 → v19 change only the marker.
+- v16 → v17, v17 → v18, v18 → v19 and v19 → v20 change only the marker.
 
-No business row is read or rewritten. v13 settings bytes and v16 request rows stay readable as written, and a failure rolls back to the untouched store. The upgrade is one-way: the daemon writes `Upgraded native store <path> from format v<N> to v19; earlier dimcode versions cannot open it.` to stderr once, and earlier daemons refuse the upgraded store. Any other database is rejected and preserved: an older format such as v12, the removed branch-only v14, a mismatched marker, a partly upgraded schema or an unknown one. There is no migration command or startup option. [Native storage format](../../docs/design/appserver/native-storage-format.md) defines the SQL and JSON contract.
+No business row is read or rewritten. v13 settings bytes and v16 request rows stay readable as written, and a failure rolls back to the untouched store. The upgrade is one-way: the daemon writes `Upgraded native store <path> from format v<N> to v20; earlier dimcode versions cannot open it.` to stderr once, and earlier daemons refuse the upgraded store. Any other database is rejected and preserved: an older format such as v12, the removed branch-only v14, a mismatched marker, a partly upgraded schema or an unknown one. There is no migration command or startup option. [Native storage format](../../docs/design/appserver/native-storage-format.md) defines the SQL and JSON contract.
 
 ### Timeline export
 

@@ -90,6 +90,7 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<dyn exec_stop::ExecStop>(catalog, branch);
     register::<wait::Wait>(catalog, branch);
     register::<workspace_tools::file_reads::FileReads>(catalog, branch);
+    register::<timeline_tree::BranchLine>(catalog, branch);
     register::<host_platform::HostPlatform>(catalog, None);
     register::<file_storage::FileStorage>(catalog, None);
     register::<host::ModelHost>(catalog, None);
@@ -106,6 +107,7 @@ impl PublicService for workspace_tools::background::BackgroundExec {}
 impl PublicService for shell_session::ShellSession {}
 impl PublicService for dyn exec_stop::ExecStop {}
 impl PublicService for workspace_tools::file_reads::FileReads {}
+impl PublicService for timeline_tree::BranchLine {}
 impl PublicService for wait::Wait {}
 impl PublicService for skills::SkillsBranch {}
 impl PublicService for prompt::Prompt {}

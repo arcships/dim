@@ -54,6 +54,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "1-9 select · Tab next · Esc decline" => "1-9 선택 · Tab 다음 · Esc 거절",
         "Question" => "질문",
         "Question on branch {branch}" => "브랜치 {branch}의 질문",
+        "Permission on branch {branch}" => "브랜치 {branch} 권한",
         "Sending answer…" => "답변 전송 중…",
         "Question not ready; press Enter to send again" => "질문 준비 안 됨, Enter로 재전송",
         // prompts.rs: AskUser

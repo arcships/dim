@@ -54,6 +54,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "1-9 select · Tab next · Esc decline" => "1-9 選択 · Tab 次へ · Esc 断る",
         "Question" => "質問",
         "Question on branch {branch}" => "ブランチ {branch} からの質問",
+        "Permission on branch {branch}" => "ブランチ {branch} への許可",
         "Sending answer…" => "回答を送信中…",
         "Question not ready; press Enter to send again" => "質問の準備未完了。Enter で再送信",
         // prompts.rs: AskUser

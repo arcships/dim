@@ -11,15 +11,17 @@ use crate::model::session::{Command, SessionPort, SwitchKind, Update};
 #[cfg(test)]
 use crate::model::shell::Outcome as ShellOutcome;
 use crate::model::shell::ShellRun;
-use crate::model::view::{RowKind, TaskTarget, ViewRow, ViewSnapshot};
+use crate::model::view::{LineState, RowKind, TaskTarget, ViewRow, ViewSnapshot};
 use crate::ui::Env;
 use crate::ui::approvals_panel::{ApprovalsPanel, status_label};
 use crate::ui::commands::{COMMANDS, Context as CommandContext, Needs};
 use crate::ui::composer::{Composer, Outcome as ComposerOutcome, Shell, history};
 use crate::ui::i18n::{self, t, tf};
 use crate::ui::language_panel::LanguagePanel;
+use crate::ui::lines_panel::LinesPanel;
 use crate::ui::models_panel::ModelsPanel;
 use crate::ui::oauth_view::{DIM_OAUTH_ID, OauthView};
+use crate::ui::plugins_panel::PluginsPanel;
 use crate::ui::progress::ProgressBar;
 use crate::ui::prompts::{AskUserPrompt, Effect, ExitConfirm, ExitReason, PermissionPrompt};
 use crate::ui::providers_panel::ProvidersPanel;
@@ -37,6 +39,7 @@ use crate::ui::text::{display_width, truncate_cells};
 use crate::ui::theme::ansi::{Paint, fg, paint};
 use crate::ui::theme::{Palette, Theme, detect};
 use crate::ui::theme_panel::ThemePanel;
+use crate::ui::title::WindowTitle;
 use crate::ui::transcript::block::{Block, Tone, group_rows, opens_group, project_row};
 use crate::ui::transcript::blocks::{
     SHELL_PREVIEW_LINES, boundary_line, gutter_text, live_thinking, render_block, render_shell,
@@ -197,6 +200,7 @@ fn run_terminal(
         .and_then(detect::parse_background_report);
     let env = detect::env_from_process();
     let mut progress = ProgressBar::from_env(&env);
+    let mut title = WindowTitle::new(crate::ui::title::apple_terminal(), Instant::now());
     let detected = Theme::detect(&env, true, background.as_deref());
     let saved = crate::ui::theme_panel::saved_theme_id(&surroundings.home);
     let theme = match &saved {
@@ -258,6 +262,13 @@ fn run_terminal(
         }
         if let Some(bar) = progress.report(&program_status, Instant::now())
             && terminal.report_progress(bar).is_err()
+        {
+            let code = terminal.lost();
+            app.host.shutdown();
+            return code;
+        }
+        if let Some(bytes) = title.report(&program_status, app.topic().as_deref(), Instant::now())
+            && terminal.write(&bytes).is_err()
         {
             let code = terminal.lost();
             app.host.shutdown();
@@ -540,6 +551,7 @@ fn run_terminal(
                     app.request_reflow();
                     status.forget();
                     progress.forget();
+                    title.forget();
                     dirty = true;
                 }
                 Outcome::Exit(code) => break code,
@@ -687,6 +699,8 @@ struct App {
     awaiting_window: bool,
     /// What to write once the switched-to history is out.
     pending_boundary: Option<SwitchKind>,
+    /// The line the transcript switched to, until its boundary row is out.
+    pending_line: Option<String>,
     /// `(messages in the window, messages before it)` of the last switch.
     window_info: (usize, usize),
     /// Rows `[start, end)` queued to be drawn as an earlier-history page.
@@ -753,8 +767,10 @@ const HISTORY_WINDOW: usize = 100;
 enum Prompt {
     Sessions(SessionsPanel),
     Tasks(TasksPanel),
+    Lines(Box<LinesPanel>),
     Models(ModelsPanel),
     Providers(Box<ProvidersPanel>),
+    Plugins(PluginsPanel),
     Login(Box<OauthView>),
     Approvals(ApprovalsPanel),
     Theme(ThemePanel),
@@ -824,6 +840,7 @@ impl App {
             history_floor: 0,
             awaiting_window: false,
             pending_boundary: None,
+            pending_line: None,
             window_info: (0, 0),
             history_request: None,
             fullscreen: false,
@@ -944,7 +961,13 @@ impl App {
         if !snapshot.approvals.is_empty() {
             return Some(ExitReason::PermissionPending);
         }
-        snapshot.running.then_some(ExitReason::AgentRunning)
+        let working = snapshot.main_running
+            || snapshot.running
+            || snapshot
+                .lines
+                .iter()
+                .any(|line| line.state == LineState::Working);
+        working.then_some(ExitReason::AgentRunning)
     }
 
     /// Opens the prompt for the first pending approval or question, and
@@ -963,11 +986,13 @@ impl App {
             | Some(Prompt::Sessions(_))
             | Some(Prompt::Models(_))
             | Some(Prompt::Providers(_))
+            | Some(Prompt::Plugins(_))
             | Some(Prompt::Login(_))
             | Some(Prompt::Approvals(_))
             | Some(Prompt::Theme(_))
             | Some(Prompt::Language(_))
-            | Some(Prompt::Settings(_)) => {}
+            | Some(Prompt::Settings(_))
+            | Some(Prompt::Lines(_)) => {}
             Some(Prompt::Tasks(_)) if approval.is_none() && question.is_none() => {}
             Some(Prompt::Upgrade(_)) if approval.is_none() && question.is_none() => {}
             Some(Prompt::Permission(p))
@@ -1086,9 +1111,23 @@ impl App {
             }
             Update::Snapshot(snapshot) => {
                 let was_running = self.running();
+                let switched = self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|shown| shown.focus != snapshot.focus);
+                if switched {
+                    self.switch_line(snapshot.focus.clone());
+                }
                 if let Some(Prompt::Tasks(panel)) = &mut self.prompt {
                     if panel.projection_id == snapshot.projection_id {
                         panel.set_tasks(&snapshot);
+                    } else {
+                        self.prompt = None;
+                    }
+                }
+                if let Some(Prompt::Lines(panel)) = &mut self.prompt {
+                    if panel.current(&snapshot) {
+                        panel.set_lines(&snapshot);
                     } else {
                         self.prompt = None;
                     }
@@ -1105,7 +1144,7 @@ impl App {
                     self.queue_rows = 0;
                 }
                 self.sync_prompt();
-                self.queue_notification(was_running);
+                self.queue_notification(was_running && !switched);
             }
             Update::QuestionReply {
                 session_id,
@@ -1210,6 +1249,20 @@ impl App {
             Update::Providers(providers) => {
                 if let Some(Prompt::Providers(panel)) = &mut self.prompt {
                     panel.set_providers(providers);
+                }
+            }
+            Update::Plugins(plugins) => {
+                if let Some(Prompt::Plugins(panel)) = &mut self.prompt {
+                    panel.set_items(plugins);
+                }
+            }
+            Update::PluginResult {
+                action,
+                result,
+                plugins,
+            } => {
+                if let Some(Prompt::Plugins(panel)) = &mut self.prompt {
+                    panel.set_result(&action, result, plugins);
                 }
             }
             Update::Login(account) => {
@@ -1317,6 +1370,7 @@ impl App {
                     Some(Prompt::Login(view)) => view.paste(&text),
                     Some(Prompt::Sessions(panel)) => panel.paste(&text),
                     Some(Prompt::Tasks(panel)) => panel.paste(&text),
+                    Some(Prompt::Lines(panel)) => panel.paste(&text),
                     Some(Prompt::Models(panel)) => panel.paste(&text),
                     Some(Prompt::Theme(panel)) => panel.paste(&text),
                     Some(Prompt::Language(panel)) => panel.paste(&text),
@@ -1352,8 +1406,10 @@ impl App {
             let effect = match prompt {
                 Prompt::Sessions(p) => p.handle_key(key),
                 Prompt::Tasks(p) => p.handle_key(key),
+                Prompt::Lines(p) => p.handle_key(key),
                 Prompt::Models(p) => p.handle_key(key),
                 Prompt::Providers(p) => p.handle_key(key),
+                Prompt::Plugins(p) => p.handle_key(key),
                 Prompt::Login(p) => match p.handle_key(key) {
                     Effect::OauthBack => Effect::Close,
                     Effect::OauthCancel => {
@@ -1637,6 +1693,16 @@ impl App {
         self.notices.push(t(INTERRUPT_REASON).to_owned());
     }
 
+    fn place_label(&self) -> String {
+        let workspace = workspace_label(&self.branch);
+        match &self.snapshot {
+            Some(snapshot) if !snapshot.focus.is_empty() && snapshot.focus != "main" => {
+                format!("{workspace} · {} {}", t("line"), short_id(&snapshot.focus))
+            }
+            _ => workspace,
+        }
+    }
+
     fn apply_effect(&mut self, effect: Effect) -> Outcome {
         match effect {
             Effect::None => {}
@@ -1703,19 +1769,31 @@ impl App {
                 });
             }
             Effect::Notice(text) => self.set_notice(text),
+            Effect::FocusLine(line) => {
+                self.prompt = None;
+                self.host.send(Command::FocusLine(line));
+            }
+            Effect::EndLine {
+                session_id,
+                projection_id,
+                branch_id,
+            } => {
+                self.host.send(Command::EndLine {
+                    session_id,
+                    projection_id,
+                    branch_id,
+                });
+            }
             Effect::Resume(id) => {
                 self.prompt = None;
                 self.composer.clear();
                 self.host.send(Command::Resume(id));
             }
-            Effect::Refresh => {
-                self.host
-                    .send(if matches!(self.prompt, Some(Prompt::Providers(_))) {
-                        Command::ListProviders
-                    } else {
-                        Command::ListSessions
-                    })
-            }
+            Effect::Refresh => self.host.send(match self.prompt {
+                Some(Prompt::Providers(_)) => Command::ListProviders,
+                Some(Prompt::Plugins(_)) => Command::ListPlugins,
+                _ => Command::ListSessions,
+            }),
             Effect::FullAccess {
                 request_id,
                 branch_id,
@@ -1825,6 +1903,7 @@ impl App {
                 self.host.send(Command::SetApprovals(mode));
             }
             Effect::Provider(action) => self.host.send(Command::Provider(action)),
+            Effect::Plugin(action) => self.host.send(Command::Plugin(action)),
             Effect::OauthStart(start) => self.host.send(Command::OauthStart(start)),
             Effect::OauthCancel => self.host.send(Command::OauthCancel),
             Effect::OauthBack => {}
@@ -1967,6 +2046,13 @@ impl App {
         }
     }
 
+    /// The window title's topic: the session's first message on `main`
+    /// (`ui::title`), whichever line is shown.
+    fn topic(&self) -> Option<String> {
+        let snapshot = self.snapshot.as_ref()?;
+        crate::ui::title::topic(snapshot.main_topic.as_deref()?)
+    }
+
     /// Opens `/settings` with `select` picked, showing the current values.
     fn open_settings(&mut self, select: Setting) {
         let theme = self
@@ -2070,6 +2156,34 @@ impl App {
         }
     }
 
+    /// `/plugins` opens the list; `/plugins install PATH` installs the
+    /// directory at PATH (relative to the workspace) and opens the list on
+    /// the outcome.
+    fn plugins(&mut self, args: &str) {
+        let args = args.trim();
+        if args.is_empty() {
+            self.prompt = Some(Prompt::Plugins(PluginsPanel::new()));
+            self.host.send(Command::ListPlugins);
+            return;
+        }
+        let Some(path) = args
+            .strip_prefix("install")
+            .filter(|rest| rest.starts_with(char::is_whitespace))
+            .map(str::trim)
+        else {
+            self.set_notice(t("Usage: /plugins [install PATH]"));
+            return;
+        };
+        let path = match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
+            (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+            _ => PathBuf::from(&self.cwd_key).join(path),
+        };
+        self.prompt = Some(Prompt::Plugins(PluginsPanel::installing(&path)));
+        self.host.send(Command::Plugin(
+            crate::model::session::PluginAction::Install(path),
+        ));
+    }
+
     fn run_command(&mut self, name: &str, args: &str) -> Outcome {
         if let Some(command) = COMMANDS.iter().find(|c| c.name == name)
             && !command.available(self.context())
@@ -2134,6 +2248,12 @@ impl App {
                 self.host.send(Command::ListSessions);
                 Outcome::Continue
             }
+            "lines" => {
+                if let Some(snapshot) = &self.snapshot {
+                    self.prompt = Some(Prompt::Lines(Box::new(LinesPanel::new(snapshot))));
+                }
+                Outcome::Continue
+            }
             "tasks" => {
                 if let Some(snapshot) = &self.snapshot {
                     self.prompt = Some(Prompt::Tasks(TasksPanel::new(snapshot)));
@@ -2155,6 +2275,10 @@ impl App {
             }
             "approvals" => {
                 self.prompt = Some(Prompt::Approvals(ApprovalsPanel::new(&self.approvals)));
+                Outcome::Continue
+            }
+            "plugins" => {
+                self.plugins(args);
                 Outcome::Continue
             }
             "connect" => {
@@ -2268,6 +2392,14 @@ impl App {
             self.record(Block::Banner);
             frame.commits.push(text);
             self.banner_committed = true;
+        }
+        let ready = self.arm_window();
+        if ready && let Some(shown) = self.pending_line.take() {
+            let label = tf("line {id}", &[("id", short_id(&shown))]);
+            let row = boundary_line(&label, width);
+            let text = chunk(&[fg(&row, &self.palette.muted)]);
+            self.record(Block::Boundary(label));
+            frame.commits.push(text);
         }
         let (commits, sources, tail) = self.transcript(width);
         for (text, (source, placement)) in commits.into_iter().zip(sources) {
@@ -2506,7 +2638,11 @@ impl App {
             let margin = " ".repeat(MARGIN);
             let title = title.map(|(text, label)| label(text));
             let model = self.label.as_deref().map(|label| fg(label, &p.highlight));
-            let place = fg(&workspace_label(&self.branch), &p.muted);
+            let docked = self.dock_status(status.as_deref());
+            let place = fg(
+                &fit_place(self.place_label(), docked.as_deref(), outer),
+                &p.muted,
+            );
             let last = composer_box.len() - 1;
             composer_box[0] = format!(
                 "{margin}{}",
@@ -2514,13 +2650,16 @@ impl App {
             );
             composer_box[last] = format!(
                 "{margin}{}",
-                border_line(
-                    ("╰", "╯"),
-                    self.dock_status(status.as_deref()).as_deref(),
-                    Some(&place),
-                    outer,
-                    &edge
-                )
+                border_line(("╰", "╯"), docked.as_deref(), Some(&place), outer, &edge)
+            );
+        } else {
+            let outer = cols.saturating_sub(2 + MARGIN).max(4);
+            let margin = " ".repeat(MARGIN);
+            let place = fg(&fit_place(self.place_label(), None, outer), &p.muted);
+            let last = composer_box.len() - 1;
+            composer_box[last] = format!(
+                "{margin}{}",
+                border_line(("╰", "╯"), None, Some(&place), outer, &edge)
             );
         }
         let replaced = matches!(
@@ -2539,6 +2678,7 @@ impl App {
         let panel_cursor = |width: usize| match &self.prompt {
             Some(Prompt::Sessions(prompt)) => Some(prompt.cursor(width)),
             Some(Prompt::Tasks(prompt)) => Some(prompt.cursor(width)),
+            Some(Prompt::Lines(prompt)) => Some(prompt.cursor(width)),
             Some(Prompt::Models(prompt)) => Some(prompt.cursor(width)),
             Some(Prompt::Providers(prompt)) => Some(prompt.cursor(width)),
             Some(Prompt::Login(prompt)) => Some(prompt.cursor(width)),
@@ -2565,8 +2705,12 @@ impl App {
                 Some(Prompt::Tasks(prompt)) => {
                     list(prompt.render(list_width, budget, p, &self.markdown))
                 }
+                Some(Prompt::Lines(prompt)) => {
+                    list(prompt.render(list_width, budget, p, &self.markdown))
+                }
                 Some(Prompt::Models(prompt)) => list(prompt.render(list_width, budget, p)),
                 Some(Prompt::Providers(prompt)) => list(prompt.render(list_width, budget, p)),
+                Some(Prompt::Plugins(prompt)) => list(prompt.render(list_width, budget, p)),
                 Some(Prompt::Login(prompt)) => list(prompt.render(list_width, p)),
                 Some(Prompt::Approvals(prompt)) => list(prompt.render(list_width, budget, p)),
                 Some(Prompt::Theme(prompt)) => list(prompt.render(list_width, budget, p)),
@@ -2591,8 +2735,12 @@ impl App {
             Some(Prompt::Tasks(prompt)) => {
                 Some(prompt.render(outer, panel_rows, p, &self.markdown))
             }
+            Some(Prompt::Lines(prompt)) => {
+                Some(prompt.render(outer, panel_rows, p, &self.markdown))
+            }
             Some(Prompt::Models(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Providers(prompt)) => Some(prompt.render(outer, panel_rows, p)),
+            Some(Prompt::Plugins(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Login(prompt)) => Some(prompt.render(outer, p)),
             Some(Prompt::Approvals(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Theme(prompt)) => Some(prompt.render(outer, panel_rows, p)),
@@ -2632,33 +2780,44 @@ impl App {
         frame
     }
 
+    fn arm_window(&mut self) -> bool {
+        if !self.awaiting_window {
+            return true;
+        }
+        let Some(snapshot) = &self.snapshot else {
+            return false;
+        };
+        if !snapshot.main_history_complete {
+            return false;
+        }
+        self.awaiting_window = false;
+        let messages: Vec<usize> = snapshot
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.kind.is_message())
+            .map(|(i, _)| i)
+            .collect();
+        let hidden = messages.len().saturating_sub(HISTORY_WINDOW);
+        self.window_floor = if hidden > 0 { messages[hidden] } else { 0 };
+        self.history_floor = self.window_floor;
+        self.window_info = (messages.len() - hidden, hidden);
+        true
+    }
+
     /// Commits owed this frame and the live rows (unclosed streaming tail,
     /// the reasoning preview and running tools, in transcript order).
     #[allow(clippy::type_complexity)]
     fn transcript(&mut self, width: usize) -> (Vec<String>, Vec<(Block, Placement)>, Vec<String>) {
+        if !self.arm_window() {
+            return (Vec::new(), Vec::new(), Vec::new());
+        }
         let Some(snapshot) = &self.snapshot else {
             return (Vec::new(), Vec::new(), Vec::new());
         };
         let p = &self.palette;
 
         let is_message = |row: &ViewRow| row.kind.is_message();
-        if self.awaiting_window {
-            if !snapshot.main_history_complete {
-                return (Vec::new(), Vec::new(), Vec::new());
-            }
-            self.awaiting_window = false;
-            let messages: Vec<usize> = snapshot
-                .rows
-                .iter()
-                .enumerate()
-                .filter(|(_, row)| is_message(row))
-                .map(|(i, _)| i)
-                .collect();
-            let hidden = messages.len().saturating_sub(HISTORY_WINDOW);
-            self.window_floor = if hidden > 0 { messages[hidden] } else { 0 };
-            self.history_floor = self.window_floor;
-            self.window_info = (messages.len() - hidden, hidden);
-        }
         let floor = self.window_floor;
 
         enum LiveItem {
@@ -2878,6 +3037,26 @@ impl App {
         (commits, sources, tail)
     }
 
+    fn switch_line(&mut self, line: String) {
+        self.planner.reset();
+        self.commits = CommitState::default();
+        self.answered.clear();
+        self.runs = Runs::default();
+        self.window_floor = 0;
+        self.history_floor = 0;
+        self.window_info = (0, 0);
+        self.history_request = None;
+        self.awaiting_window = true;
+        self.pending_line = Some(line);
+        self.card_blocks.clear();
+        if self.fullscreen {
+            self.dropped += self.history.len();
+            self.history.clear();
+            self.stream_block = None;
+            self.jump = Some(Jump::Bottom);
+        }
+    }
+
     fn switch_session(&mut self, session_id: String, kind: SwitchKind) {
         let first = self.session_id.is_empty();
         self.session_id = session_id;
@@ -2892,6 +3071,7 @@ impl App {
         self.window_info = (0, 0);
         self.history_request = None;
         self.awaiting_window = true;
+        self.pending_line = None;
         self.pending_boundary = match kind {
             SwitchKind::New if first => None,
             kind => Some(kind),
@@ -3445,6 +3625,23 @@ fn labeled_rows(pairs: &[(&str, &str)], body_width: usize) -> Vec<String> {
     rows
 }
 
+fn fit_place(place: String, status: Option<&str>, outer: usize) -> String {
+    let room = outer.saturating_sub(2);
+    let fits =
+        |label: &str| status.map_or(0, |status| width_of(status) + 3) + width_of(label) + 3 < room;
+    if fits(&place) {
+        return place;
+    }
+    match place.rsplit_once(" · ") {
+        Some((_, line)) if fits(line) => line.to_owned(),
+        _ => place,
+    }
+}
+
+fn short_id(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
+}
+
 /// The working directory, `~` for the home, and the git branch: what the
 /// prompt box writes in its bottom border.
 fn workspace_label(branch: &str) -> String {
@@ -3737,6 +3934,90 @@ mod tests {
         fn shutdown(self: Box<Self>) {}
     }
 
+    /// A session that keeps every command the interface sends.
+    struct Recorder(std::rc::Rc<std::cell::RefCell<Vec<Command>>>);
+
+    impl SessionPort for Recorder {
+        fn send(&self, command: Command) {
+            self.0.borrow_mut().push(command);
+        }
+        fn drain(&self) -> Vec<Update> {
+            Vec::new()
+        }
+        fn shutdown(self: Box<Self>) {}
+    }
+
+    /// `/plugins` lists through the worker, the panel's changes reach it as
+    /// plugin commands, and `/plugins install PATH` installs the directory
+    /// relative to the workspace.
+    #[test]
+    fn plugins_commands_reach_the_worker() {
+        use crate::model::session::{PluginAction, PluginCandidate, PluginItem};
+        let home = tempfile::tempdir().unwrap();
+        let theme = test_theme();
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut app = App::new(
+            Box::new(Recorder(sent.clone())),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        let last = |sent: &std::cell::RefCell<Vec<Command>>| match sent.borrow().last() {
+            Some(Command::ListPlugins) => "list".to_owned(),
+            Some(Command::Plugin(action)) => format!("{action:?}"),
+            Some(_) => "other".to_owned(),
+            None => "none".to_owned(),
+        };
+        app.run_command("plugins", "");
+        assert!(matches!(app.prompt, Some(Prompt::Plugins(_))));
+        assert_eq!(last(&sent), "list");
+        app.apply(Update::Plugins(Ok(vec![PluginItem {
+            name: "web".into(),
+            in_use: None,
+            off: true,
+            locked: false,
+            candidates: vec![PluginCandidate {
+                id: "default".into(),
+            }],
+            status: Some("off".into()),
+            error: None,
+            waiting_for: Vec::new(),
+            refused: Vec::new(),
+        }])));
+        let key = |code| InputEvent::Key(crate::ui::terminal::KeyEvent::new(code, Modifiers::NONE));
+        app.handle_input(key(KeyCode::Enter));
+        assert_eq!(
+            last(&sent),
+            format!("{:?}", PluginAction::Enable("web".into()))
+        );
+        app.apply(Update::PluginResult {
+            action: PluginAction::Enable("web".into()),
+            result: Ok(Default::default()),
+            plugins: Ok(Vec::new()),
+        });
+        app.handle_input(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
+            KeyCode::Char('r'),
+            Modifiers::CTRL,
+        )));
+        assert_eq!(last(&sent), "list");
+        app.handle_input(key(KeyCode::Esc));
+        assert!(app.prompt.is_none());
+        app.run_command("plugins", "install tools/my-tool");
+        assert_eq!(
+            last(&sent),
+            format!(
+                "{:?}",
+                PluginAction::Install(std::path::Path::new("/work").join("tools/my-tool"))
+            )
+        );
+        let count = sent.borrow().len();
+        app.prompt = None;
+        app.run_command("plugins", "remove web");
+        assert_eq!(sent.borrow().len(), count, "git and remove stay in the CLI");
+        assert!(app.prompt.is_none());
+    }
+
     /// The interface drawn into an emulated terminal, frame by frame.
     struct Drawn {
         app: App,
@@ -3814,6 +4095,234 @@ mod tests {
         fn scrolled(&self) -> usize {
             self.emu.scrollback.len()
         }
+
+        /// Everything written so far: scrollback, then the screen.
+        fn transcript(&self) -> String {
+            self.emu.transcript().join("\n")
+        }
+
+        fn show(&mut self, rows: &[(&str, &str)], focus: &str, complete: bool) {
+            let rows = rows
+                .iter()
+                .map(|(id, text)| {
+                    std::sync::Arc::new(ViewRow {
+                        row_id: (*id).into(),
+                        kind: RowKind::AssistantMessage,
+                        text: (*text).into(),
+                        streaming: false,
+                        elapsed_ms: None,
+                        tone: None,
+                        tool_name: None,
+                        tool_input: None,
+                        batch: None,
+                        pending: false,
+                        parked: false,
+                        result_text: None,
+                        result_is_error: false,
+                        diff: None,
+                        exit_code: None,
+                        member: None,
+                    })
+                })
+                .collect();
+            self.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                rows,
+                focus: focus.into(),
+                main_history_complete: complete,
+                ..ViewSnapshot::default()
+            })));
+            self.draw();
+        }
+    }
+
+    #[test]
+    fn switching_lines_draws_each_transcript_under_its_boundary() {
+        let mut drawn = Drawn::new((80, 40), None, true);
+        drawn.show(&[("user-1", "main one")], "main", true);
+        drawn.show(
+            &[("user-2", "line one"), ("user-3", "line two")],
+            "b-7c",
+            true,
+        );
+        let text = drawn.transcript();
+        assert_eq!(text.matches("line one").count(), 1, "{text}");
+        assert_eq!(text.matches("line two").count(), 1, "{text}");
+        assert!(text.contains("line b-7c"), "the switch is marked: {text}");
+        let line_switch = text.find("line b-7c").unwrap();
+        let main_one_after = text[line_switch..].matches("main one").count();
+        assert_eq!(main_one_after, 0, "main's rows do not print on the line");
+        drawn.show(&[("user-1", "main one")], "main", true);
+        let text = drawn.transcript();
+        assert!(text.contains("line main"), "the return is marked: {text}");
+        assert_eq!(text.matches("main one").count(), 2, "{text}");
+        assert_eq!(text.matches("line one").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn the_scrollback_composer_names_the_shown_line() {
+        let mut drawn = Drawn::new((80, 40), None, true);
+        drawn.show(&[("user-1", "main one")], "main", true);
+        drawn.show(&[("user-2", "line one")], "b-7c", true);
+        let rows = drawn.emu.rows_text();
+        let border = rows
+            .iter()
+            .rev()
+            .find(|row| row.contains('╰'))
+            .expect("the composer's bottom border");
+        assert!(border.contains("line b-7c"), "{border}");
+        let text = drawn.transcript();
+        let boundary = text
+            .rfind("──── line b-7c ────")
+            .expect("the switch's boundary row");
+        let replay = text.rfind("line one").expect("the line's row");
+        assert!(boundary < replay, "{text}");
+    }
+
+    #[test]
+    fn a_line_switch_is_no_result_and_every_running_line_counts() {
+        let mut drawn = Drawn::new((80, 40), None, true);
+        drawn.app.notify = true;
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            running: true,
+            main_running: true,
+            focus: "main".into(),
+            ..ViewSnapshot::default()
+        })));
+        drawn.app.notifications.clear();
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            main_running: true,
+            focus: "b-7c".into(),
+            ..ViewSnapshot::default()
+        })));
+        assert!(
+            !drawn
+                .app
+                .notifications
+                .iter()
+                .any(|event| matches!(event, crate::ui::notify::Event::Complete)),
+            "{:?}",
+            drawn.app.notifications
+        );
+        assert_eq!(drawn.app.busy_reason(), Some(ExitReason::AgentRunning));
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            focus: "b-7c".into(),
+            lines: vec![
+                crate::model::view::LineView {
+                    id: "main".into(),
+                    parent: None,
+                    purpose: String::new(),
+                    state: LineState::Main,
+                },
+                crate::model::view::LineView {
+                    id: "b-91".into(),
+                    parent: Some("main".into()),
+                    purpose: "review".into(),
+                    state: LineState::Working,
+                },
+            ],
+            ..ViewSnapshot::default()
+        })));
+        assert_eq!(drawn.app.busy_reason(), Some(ExitReason::AgentRunning));
+    }
+
+    #[test]
+    fn the_window_topic_stays_mains_message_while_a_line_is_shown() {
+        let mut drawn = Drawn::new((80, 40), None, true);
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            rows: vec![std::sync::Arc::new(ViewRow {
+                row_id: "r1".into(),
+                kind: RowKind::UserMessage,
+                text: "line work".into(),
+                streaming: false,
+                elapsed_ms: None,
+                tone: None,
+                tool_name: None,
+                tool_input: None,
+                batch: None,
+                pending: false,
+                parked: false,
+                result_text: None,
+                result_is_error: false,
+                diff: None,
+                exit_code: None,
+                member: None,
+            })],
+            focus: "b-7c".into(),
+            main_topic: Some("fix the login bug".into()),
+            ..ViewSnapshot::default()
+        })));
+        assert_eq!(drawn.app.topic().as_deref(), Some("fix the login bug"));
+    }
+
+    #[test]
+    fn a_line_shows_its_own_rows_after_a_long_main_history() {
+        let mut drawn = Drawn::new((80, 40), None, true);
+        drawn
+            .app
+            .switch_session("s1".into(), crate::model::session::SwitchKind::Resumed);
+        let main: Vec<(String, String)> = (0..120)
+            .map(|n| (format!("m{n}"), format!("main row {n}")))
+            .collect();
+        let main: Vec<(&str, &str)> = main
+            .iter()
+            .map(|(id, text)| (id.as_str(), text.as_str()))
+            .collect();
+        drawn.show(&main, "main", true);
+        let text = drawn.transcript();
+        assert!(!text.contains("main row 19"), "{text}");
+        assert!(text.contains("main row 20"), "{text}");
+        drawn.show(
+            &[
+                ("l1", "line first"),
+                ("l2", "line second"),
+                ("l3", "line third"),
+            ],
+            "b-7c",
+            true,
+        );
+        let text = drawn.transcript();
+        for row in ["line first", "line second", "line third"] {
+            assert!(text.contains(row), "{row} is drawn: {text}");
+        }
+    }
+
+    #[test]
+    fn a_session_switch_drops_a_line_boundary_the_old_one_still_owed() {
+        let mut drawn = Drawn::new((80, 40), None, true);
+        drawn.show(&[("m1", "main work")], "main", true);
+        drawn.show(&[("l1", "line work")], "b-7c", true);
+        let snapshot = |session: &str, focus: &str, complete: bool| {
+            Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: session.into(),
+                focus: focus.into(),
+                main_history_complete: complete,
+                ..ViewSnapshot::default()
+            }))
+        };
+        drawn.app.apply(snapshot("s1", "main", false));
+        drawn.draw();
+        assert!(
+            !drawn.transcript().contains("line main"),
+            "the boundary of the line shown first is still owed"
+        );
+        drawn.app.apply(Update::Switched {
+            session_id: "s2".into(),
+            kind: crate::model::session::SwitchKind::Resumed,
+        });
+        drawn.app.apply(snapshot("s2", "main", true));
+        drawn.draw();
+        let text = drawn.transcript();
+        assert!(text.contains("resumed s2"), "{text}");
+        assert!(
+            !text.contains("line main"),
+            "the new session starts at main: {text}"
+        );
+        assert_eq!(text.matches("line b-7c").count(), 1, "{text}");
     }
 
     fn questions() -> crate::question::Call {

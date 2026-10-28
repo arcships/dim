@@ -10,6 +10,26 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Branch history failed; reopen to retry" => "读取分支历史失败；重新打开重试",
         "Branch history is incomplete; stop-all unavailable" => "分支历史尚未读完，暂不能停止全部",
         "Running" => "运行中",
+        "Lines" => "分支线",
+        "Enter show the line · x end it · Esc close" => "Enter 查看该线 · x 结束 · Esc 关闭",
+        "This session has no lines." => "这个会话还没有分支线。",
+        "No matching lines." => "没有匹配的分支线。",
+        "the session itself" => "会话本身",
+        "working" => "工作中",
+        "ended itself" => "自行结束",
+        "ended by an operation" => "由操作结束",
+        "ended with {id}" => "随 {id} 结束",
+        "creation failed" => "创建失败",
+        "shown" => "当前显示",
+        "line" => "分支线",
+        "line {id}" => "分支线 {id}",
+        "follow, talk to and end this session's lines" => "查看、对话并结束本会话的分支线",
+        "End line" => "结束分支线",
+        "y/N" => "y/N",
+        "main is the session itself; a line ends, main does not" => {
+            "main 就是会话本身；分支线可以结束，main 不能"
+        }
+        "Line has ended:" => "该分支线已结束：",
         "Starting" => "启动中",
         "Delegation result" => "委派结果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {

@@ -43,6 +43,8 @@ pub fn catalog_changes() -> &'static str {
 
 struct CatalogState {
     user: Option<Arc<RootSnapshot>>,
+    /// Scanned plugin roots, by plugin id, with the root they were scanned at.
+    plugins: BTreeMap<String, (PathBuf, Arc<RootSnapshot>)>,
     projects: HashMap<PathBuf, Arc<RootSnapshot>>,
     settings: Result<SkillSettingsSnapshot, SkillsError>,
     version: CatalogVersion,
@@ -109,6 +111,21 @@ impl SkillsCatalog {
         if state.user.is_none() {
             state.user = Some(Self::first_scan(self.user_root.clone(), RootKind::User).await);
         }
+        let registered = state
+            .settings
+            .as_ref()
+            .map(|settings| settings.plugins.clone())
+            .map_err(Clone::clone)?;
+        state
+            .plugins
+            .retain(|plugin, (root, _)| registered.get(plugin) == Some(root));
+        for (plugin, root) in registered {
+            if let std::collections::btree_map::Entry::Vacant(entry) = state.plugins.entry(plugin) {
+                let kind = RootKind::Plugin(entry.key().clone());
+                let snapshot = Self::first_scan(root.clone(), kind).await;
+                entry.insert((root, snapshot));
+            }
+        }
         let project_root = cwd.and_then(|cwd| self.project_root(cwd));
         if let Some(root) = &project_root
             && !state.projects.contains_key(root)
@@ -117,6 +134,7 @@ impl SkillsCatalog {
             state.projects.insert(root.clone(), snapshot);
         }
         let roots = std::iter::once(state.user.clone().expect("user root scanned"))
+            .chain(state.plugins.values().map(|(_, snapshot)| snapshot.clone()))
             .chain(project_root.and_then(|root| state.projects.get(&root).cloned()));
         let mut winners: BTreeMap<String, String> = BTreeMap::new();
         let mut entries = Vec::new();
@@ -169,8 +187,13 @@ impl SkillsCatalog {
             .await
             .map_err(|error| SkillsError::SettingsRead(error.to_string()));
         let mut state = self.state.lock().await;
-        let changed = state.settings.as_ref().map(|settings| &settings.disabled)
-            != snapshot.as_ref().map(|settings| &settings.disabled);
+        let changed = state
+            .settings
+            .as_ref()
+            .map(|settings| (&settings.disabled, &settings.plugins))
+            != snapshot
+                .as_ref()
+                .map(|settings| (&settings.disabled, &settings.plugins));
         let result = snapshot.as_ref().map(|_| ()).map_err(Clone::clone);
         state.settings = snapshot;
         if changed {
@@ -220,6 +243,61 @@ impl SkillsCatalog {
             .find(|entry| entry.definition.id == id)
             .ok_or_else(|| SkillsError::UnknownSkill(id.into()))?;
         Ok((entry, view.version))
+    }
+
+    /// Registers `root` as the skills root of `plugin`, replacing what the
+    /// plugin registered before, and scans it now. The registration is kept
+    /// in the settings and restored after the catalog reloads. Returns the
+    /// issues of the scan: Skills that do not parse, or an unreadable root.
+    pub async fn register_plugin(
+        &self,
+        plugin: &str,
+        root: PathBuf,
+    ) -> Result<Vec<SkillIssue>, SkillsError> {
+        self.check_open()?;
+        self.settings
+            .clone()
+            .set_plugin(plugin.into(), Some(root.clone()), self.closed.child_token())
+            .await
+            .map_err(|error| SkillsError::SettingsWrite(error.to_string()))?;
+        self.reload_settings().await?;
+        let snapshot = Self::first_scan(root.clone(), RootKind::Plugin(plugin.into())).await;
+        let issues = snapshot.issues.clone();
+        let mut state = self.state.lock().await;
+        state.plugins.insert(plugin.into(), (root, snapshot));
+        self.advance(&mut state);
+        Ok(issues)
+    }
+
+    /// Withdraws what `plugin` registered; nothing when it registered nothing.
+    pub async fn withdraw_plugin(&self, plugin: &str) -> Result<(), SkillsError> {
+        self.check_open()?;
+        self.settings
+            .clone()
+            .set_plugin(plugin.into(), None, self.closed.child_token())
+            .await
+            .map_err(|error| SkillsError::SettingsWrite(error.to_string()))?;
+        self.reload_settings().await
+    }
+
+    /// The plugin ids whose skills roots the catalog holds.
+    pub async fn plugins(&self) -> Result<Vec<String>, SkillsError> {
+        self.query(None).await?;
+        Ok(self.state.lock().await.plugins.keys().cloned().collect())
+    }
+
+    /// The issues of the skills root `plugin` registered, as the catalog
+    /// holds them now.
+    pub async fn plugin_issues(&self, plugin: &str) -> Result<Vec<SkillIssue>, SkillsError> {
+        self.query(None).await?;
+        Ok(self
+            .state
+            .lock()
+            .await
+            .plugins
+            .get(plugin)
+            .map(|(_, snapshot)| snapshot.issues.clone())
+            .unwrap_or_default())
     }
 
     /// Rescans whole roots; any unreadable root keeps every old snapshot.
@@ -329,6 +407,7 @@ impl SkillsCatalogPlugin {
             settings: settings.clone(),
             state: tokio::sync::Mutex::new(CatalogState {
                 user: None,
+                plugins: BTreeMap::new(),
                 projects: HashMap::new(),
                 settings: initial,
                 version: 0,
@@ -372,6 +451,7 @@ impl Default for MemorySkillSettings {
             state: Mutex::new(SkillSettingsSnapshot {
                 version: "0".into(),
                 disabled: BTreeSet::new(),
+                plugins: BTreeMap::new(),
             }),
         }
     }
@@ -401,6 +481,23 @@ impl SkillSettings for MemorySkillSettings {
             } else {
                 state.disabled.insert(id);
             }
+            let next = state.version.parse::<u64>().unwrap_or_default() + 1;
+            state.version = next.to_string();
+            Ok(state.version.clone())
+        })
+    }
+    fn set_plugin(
+        self: Arc<Self>,
+        plugin: String,
+        root: Option<PathBuf>,
+        _: CancellationToken,
+    ) -> BoxFuture<'static, Result<SettingsVersion, SkillSettingsError>> {
+        Box::pin(async move {
+            let mut state = self.state.lock().unwrap();
+            match root {
+                Some(root) => state.plugins.insert(plugin, root),
+                None => state.plugins.remove(&plugin),
+            };
             let next = state.version.parse::<u64>().unwrap_or_default() + 1;
             state.version = next.to_string();
             Ok(state.version.clone())

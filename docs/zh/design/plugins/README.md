@@ -27,7 +27,7 @@
 | [TemporaryMcp](../../../design/plugins/TemporaryMcp.md) | 由既有 MCP 功能注册 | 临时绑定、MCP server 子插件和工具；不写持久配置 | — | 已实现；#436 的客户端 MCP 接入 |
 | [RemoteGateway](RemoteGateway.md) | 远程入口、设备 | — | — | P3 |
 | [Modality](Modality.md) | 任务、实时连接 | — | — | P3 |
-| [PluginManager](PluginManager.md) | 插件配置（`plugins.json`）、安装、插件代码的 loader 行、内容登记 | `PluginTools`（插件工具） | — | M1 |
+| [PluginManager](PluginManager.md) | 插件配置（`plugins.json`）、安装、插件代码的 loader 行、内容登记 | `PluginTools`（`plugin` 工具） | — | M1 |
 | [RuntimeManager](RuntimeManager.md) | 插件代码的 Node 与 Python 运行时：固定版本下载、校验、启动；`runtime.*` | — | — | M1（#476） |
 
 ## 按作用域

@@ -80,6 +80,9 @@ async function loadGoalBranch(read, options = {}) {
   const writes = []
   const sent = []
   const creates = []
+  const ends = []
+  const info = options.info ?? { id: branchId }
+  const sessionLifecycle = options.sessionLifecycle ?? { activated: async () => true }
   const closing = Promise.withResolvers()
   let listener
   const emit = async (type, name, data) => {
@@ -100,6 +103,7 @@ async function loadGoalBranch(read, options = {}) {
   const loaded = await load(goalBranch, { services: {
     timelineIdentity: { get: async () => ({ branchId }) },
     branchLifecycle: { activated: async () => true, closing: () => closing.promise },
+    sessionLifecycle,
     dispatcher: {
       consume: async (_name, _keys, handler) => {
         await handler({ replay: [...branch.events] })
@@ -125,9 +129,15 @@ async function loadGoalBranch(read, options = {}) {
         creates.push({ parent, at, options: createOptions, branch: id })
         return create(parent, at, createOptions, id, defaultCreate)
       },
+      info: async () => info,
+      end: async (id, source) => {
+        if (options.end) return options.end(id, source)
+        ends.push({ id, source })
+        await emit('branch', 'ended', { branch: id, endEvent: Number(branch.sequence), source })
+      },
     },
   } })
-  return { unload: async () => { closing.resolve(); await loaded.unload() }, branch, emit, writes, sent, creates,
+  return { unload: async () => { closing.resolve(); await loaded.unload() }, branch, emit, writes, sent, creates, ends,
     turn: async input => {
       await emit('turn', 'start', {})
       await emit('input', 'consumed', { input_id: input.id })
@@ -187,6 +197,45 @@ test('Goal rechecks the deciding turn and consumed goal changes after Settings r
   pending[2].resolve(settingsDocument(1))
   await flush()
   assert.equal(branch.writes.length, 1, 'a consumed clear must prevent continuation after the read')
+})
+
+test('A.6: a withdrawn input during the turn-end decision gives one continuation', async t => {
+  const pending = []
+  let hold = false
+  const branch = await loadGoalBranch(() => {
+    if (!hold) return settingsDocument(20)
+    const read = Promise.withResolvers()
+    pending.push(read)
+    return read.promise
+  })
+  t.after(() => branch.unload())
+  hold = true
+  const set = await branch.emit('input', 'message', changes.set(B, 'ship it'))
+  await branch.turn(set)
+  const held = await branch.emit('input', 'message', { user: { content: [{ type: 'text', text: 'later' }] }, mode: 'queue' })
+  await branch.emit('input', 'deleted', { input_id: held.id })
+  await flush()
+  assert.equal(pending.length, 1, 'one Settings read for one turn end')
+  pending[0].resolve(settingsDocument(20))
+  await flush()
+  assert.equal(branch.writes.length, 1, 'one continuation for one turn end')
+  assert.match(branch.writes[0].data.blocks[0].text, /kind="continuation" count="1"/)
+})
+
+test('D4: a line without a goal reads no Settings at its turn ends', async t => {
+  let reads = 0
+  const branch = await loadGoalBranch(async () => {
+    reads++
+    return settingsDocument(20)
+  })
+  t.after(() => branch.unload())
+  for (let turn = 0; turn < 3; turn++) {
+    const input = await branch.emit('input', 'message', { user: { content: [{ type: 'text', text: `step ${turn}` }] }, mode: 'queue' })
+    await branch.turn(input)
+  }
+  await flush()
+  assert.equal(reads, 0, 'no goal, no limit to read')
+  assert.equal(branch.writes.length, 0)
 })
 
 test('D2: operator input resets the count; a marked input from another source does not', () => {
@@ -473,21 +522,9 @@ test('Pursuit 9: the model judge is unchanged: a completion is the status, not a
   assert.equal(decideTurnEnd(branch.fold, 20), undefined)
 })
 
-test('Pursuit 1: a steer input before the prompt takes neither the role nor its slot', () => {
-  const prompt = evaluatorPrompt(B, '7', 'ship it', 'all tests pass')
+test('Pursuit 5: an operation id that is not a sequence names no evaluator', () => {
   const branch = new Branch()
   branch.commit('branch', 'start', { parent: B })
-  branch.user(prompt, 'steer')
-  assert.equal(branch.fold.evaluate, undefined)
-  branch.user(prompt, 'queue')
-  assert.deepEqual(branch.fold.evaluate, { branch: B, evaluation: '7' })
-})
-
-test('Pursuit 1/5: an evaluation that is not a sequence names no role and no evaluator', () => {
-  const branch = new Branch()
-  branch.commit('branch', 'start', { parent: B })
-  branch.user(evaluatorPrompt(B, 'abc', 'ship it', 'all tests pass'), 'queue')
-  assert.equal(branch.fold.evaluate, undefined)
   branch.commit('branch', 'create', {
     at: { kind: 'sequence', sequence: 1 },
     source: { kind: 'host', operation_id: 'goal:evaluate:abc' },
@@ -497,12 +534,31 @@ test('Pursuit 1/5: an evaluation that is not a sequence names no role and no eva
   assert.deepEqual([...branch.fold.evaluations], [])
 })
 
-test('Pursuit 1: the evaluator role survives the refold of a deleted input', () => {
+test('Pursuit 13: the identity block changes none of the fold\'s decisions', () => {
   const branch = new Branch()
   branch.commit('branch', 'start', { parent: B })
-  branch.user(evaluatorPrompt(B, '7', 'ship it', 'all tests pass'), 'queue')
+  const identity = branch.input({
+    user: { content: [{ type: 'text', text: 'line work' }] },
+    mode: 'queue',
+    blocks: [{ type: 'raw', text: '<dim-branch-line branch="E" parent="main" source="host">\nYou are line E.', key: 'branch:line' }],
+  })
+  assert.equal(branch.fold.objective, undefined)
+  assert.equal(branch.fold.status, undefined)
+  assert.deepEqual([...branch.fold.decided], [])
+  assert.deepEqual(branch.fold.continuations, [])
+  assert.deepEqual([...branch.fold.evaluations], [])
+  const set = branch.input(changes.set(B, 'ship it'))
+  branch.turn([identity, set])
+  assert.equal(branch.fold.objective, 'ship it')
+  assert.deepEqual(decideTurnEnd(branch.fold, 20), { write: 'continuation', count: 1 })
+})
+
+test('Pursuit 13: a refold keeps the ended lines of deleted inputs', () => {
+  const branch = new Branch()
+  branch.commit('branch', 'start', { parent: B })
+  branch.commit('branch', 'ended', { branch: 'E', endEvent: 0, source: { kind: 'host', operation_id: 'goal:evaluate:7' } })
   branch.delete(branch.user('and check the logs', 'queue'))
-  assert.deepEqual(branch.fold.evaluate, { branch: B, evaluation: '7' })
+  assert.deepEqual([...branch.fold.ended], ['E'])
 })
 
 /** A branch under the evaluator judge, the worker's completion, and the evaluator created at its end. */
@@ -578,6 +634,7 @@ async function completionRequested(goal) {
 function evaluatorBranch(read, before) {
   return loadGoalBranch(read, {
     branchId: 'E',
+    info: { id: 'E', parent: B, source: { kind: 'host', operation_id: 'goal:evaluate:7' } },
     before: branch => {
       branch.commit('branch', 'start', { parent: B })
       branch.input({ user: { content: [{ type: 'text', text: evaluatorPrompt(B, '7', 'ship it', 'all tests pass') }] }, mode: 'queue' })
@@ -613,6 +670,235 @@ test('Pursuit 1: the evaluator DONE completes the goal by the evaluator', async 
   const done = goal.writes[1].data.blocks[0].text
   assert.match(done, new RegExp(`^<dim-goal kind="goal" op="completed" by="evaluator" evaluation="${end.sequence}" branch="main">`))
   assert.match(done, /\nResult:\nall 3 tests pass\n\nAn evaluator verified that the goal for branch main is completed\./)
+  assert.equal(goal.branch.fold.status.status, 'completed')
+})
+
+test('Pursuit 13 E1: the evaluator role comes from the line source, not its prompt', async t => {
+  const foreign = await loadGoalBranch(async () => settingsDocument(20), {
+    branchId: 'F',
+    info: { id: 'F', parent: B, source: { kind: 'host', operation_id: 'goal:other:7' } },
+    before: branch => {
+      branch.commit('branch', 'start', { parent: B })
+      branch.input({ user: { content: [{ type: 'text', text: evaluatorPrompt(B, '7', 'ship it', 'all tests pass') }] }, mode: 'queue' })
+      branch.commit('turn', 'start', {})
+      branch.commit('step', 'model-start', { turn_id: 't1', request_id: 'r1' })
+      branch.commit('step', 'text', { turn_id: 't1', request_id: 'r1', delta: 'DONE: everything' })
+      branch.commit('turn', 'end', { turn_id: 't1', status: 'completed' })
+    },
+  })
+  t.after(() => foreign.unload())
+  await flush()
+  assert.equal(foreign.sent.length, 0, 'a host line that is not an evaluation reports nothing')
+  assert.equal(foreign.writes.length, 0)
+  const evaluator = await evaluatorBranch(async () => settingsDocument(20))
+  t.after(() => evaluator.unload())
+  await flush()
+  await evaluator.emit('turn', 'start', { turn_id: 't2' })
+  await evaluator.emit('step', 'model-start', { turn_id: 't2', request_id: 'r2' })
+  await evaluator.emit('step', 'text', { turn_id: 't2', request_id: 'r2', delta: 'DONE: all good' })
+  await evaluator.emit('turn', 'end', { turn_id: 't2', status: 'completed' })
+  await flush()
+  assert.equal(evaluator.sent.length, 1)
+  assert.match(evaluator.sent[0].input.blocks[0].text, /result="done"/)
+})
+
+test('Pursuit 13 E2: a decided evaluation ends its evaluator once', async t => {
+  for (const result of ['done', 'blocked', 'continue', 'failed']) {
+    const goal = await loadGoalBranch(async () => settingsDocument(20))
+    const end = await completionRequested(goal)
+    const evaluator = goal.creates[0].branch
+    await goal.emit('input', 'message', writes.conclusion(B, evaluator, String(end.sequence), result, `${result} report`))
+    await flush()
+    assert.equal(goal.ends.length, 1, result)
+    assert.deepEqual(goal.ends[0], {
+      id: evaluator,
+      source: { kind: 'host', operation_id: `goal:evaluate:${end.sequence}` },
+    })
+    assert.ok(goal.branch.fold.ended.has(evaluator), result)
+    await goal.emit('input', 'message', changes.pause(B))
+    await flush()
+    assert.equal(goal.ends.length, 1, result)
+    await goal.unload()
+  }
+})
+
+test('Pursuit 13 E2: a superseded evaluation ends its evaluator', async t => {
+  const goal = await loadGoalBranch(async () => settingsDocument(20))
+  t.after(() => goal.unload())
+  await completionRequested(goal)
+  const evaluator = goal.creates[0].branch
+  await goal.emit('input', 'message', changes.pause(B))
+  await flush()
+  assert.equal(goal.ends.length, 1)
+  assert.equal(goal.ends[0].id, evaluator)
+})
+
+test('Pursuit 13 E2: a create that arrives after the supersede still ends its line', async t => {
+  const goal = await loadGoalBranch(async () => settingsDocument(20), { create: async () => 'E' })
+  t.after(() => goal.unload())
+  const end = await completionRequested(goal)
+  await goal.emit('input', 'message', changes.pause(B))
+  await flush()
+  assert.equal(goal.ends.length, 0, 'no line is recorded yet')
+  await goal.emit('branch', 'create', {
+    at: { kind: 'sequence', sequence: Number(end.sequence) },
+    source: { kind: 'host', operation_id: `goal:evaluate:${end.sequence}` },
+    branch: 'E',
+    prompt: 'x',
+  })
+  await flush()
+  assert.deepEqual(goal.ends, [{ id: 'E', source: { kind: 'host', operation_id: `goal:evaluate:${end.sequence}` } }])
+})
+
+test('Pursuit 13 E2: an end refused while the line opens is retried once it is published', async t => {
+  const published = Promise.withResolvers()
+  const attempts = []
+  const ends = []
+  const goal = await loadGoalBranch(async () => settingsDocument(20), {
+    create: async (parent, at, createOptions, id, defaultCreate) => {
+      const branch = await defaultCreate(parent, at, createOptions, id)
+      await published.promise
+      return branch
+    },
+    end: async (id, source) => {
+      attempts.push(id)
+      if (attempts.length === 1) throw new Error('UnknownBranch')
+      ends.push({ id, source })
+    },
+  })
+  t.after(() => goal.unload())
+  const end = await completionRequested(goal)
+  const evaluator = goal.creates[0].branch
+  await goal.emit('input', 'message', changes.pause(B))
+  await flush()
+  assert.deepEqual(attempts, [evaluator], 'the end reached the line before it was published')
+  assert.equal(ends.length, 0)
+  published.resolve()
+  for (let i = 0; i < 5 && ends.length === 0; i++) await flush()
+  assert.deepEqual(attempts, [evaluator, evaluator], 'the published line takes the retry')
+  assert.deepEqual(ends, [{ id: evaluator, source: { kind: 'host', operation_id: `goal:evaluate:${end.sequence}` } }])
+})
+
+test('Pursuit 13 E2: a load ends a settled evaluator once, unless its end is recorded', async t => {
+  const load = ended => loadGoalBranch(async () => settingsDocument(20), {
+    before: branch => {
+      const set = branch.input(changes.set(B, 'ship it', 'evaluator'))
+      branch.turn([set])
+      branch.commit('turn', 'start', {})
+      branch.input(changes.report(B, 'completed', 'all tests pass'))
+      const end = branch.commit('turn', 'end', { status: 'completed' })
+      branch.commit('branch', 'create', {
+        at: { kind: 'sequence', sequence: end.sequence },
+        source: { kind: 'host', operation_id: `goal:evaluate:${end.sequence}` },
+        branch: 'E',
+        prompt: 'x',
+      })
+      branch.input(changes.pause(B))
+      if (ended) {
+        branch.commit('branch', 'ended', {
+          branch: 'E',
+          endEvent: 0,
+          source: { kind: 'host', operation_id: `goal:evaluate:${end.sequence}` },
+        })
+      }
+    },
+  })
+  const missing = await load(false)
+  await flush()
+  assert.equal(missing.ends.length, 1, 'a settled evaluation with no recorded end is ended at load')
+  await missing.unload()
+  const recorded = await load(true)
+  await flush()
+  assert.equal(recorded.ends.length, 0, 'an end already in history is not written twice')
+  await recorded.unload()
+})
+
+test('Pursuit 13 E2: the load reconcile ends nothing before the Session publishes', async t => {
+  const activation = Promise.withResolvers()
+  const goal = await loadGoalBranch(async () => settingsDocument(20), {
+    sessionLifecycle: { activated: () => activation.promise },
+    before: branch => {
+      const set = branch.input(changes.set(B, 'ship it', 'evaluator'))
+      branch.turn([set])
+      branch.commit('turn', 'start', {})
+      branch.input(changes.report(B, 'completed', 'all tests pass'))
+      const end = branch.commit('turn', 'end', { status: 'completed' })
+      branch.commit('branch', 'create', {
+        at: { kind: 'sequence', sequence: end.sequence },
+        source: { kind: 'host', operation_id: `goal:evaluate:${end.sequence}` },
+        branch: 'E',
+        prompt: 'x',
+      })
+      branch.input(changes.pause(B))
+    },
+  })
+  t.after(() => goal.unload())
+  await flush()
+  assert.equal(goal.ends.length, 0, 'no end before the Session is published')
+  activation.resolve(true)
+  await flush()
+  assert.equal(goal.ends.length, 1, 'the settled evaluator ends once the Session published')
+  assert.equal(goal.ends[0].id, 'E')
+})
+
+test('Pursuit 13 E2: an evaluation whose creation failed has no evaluator to end', async t => {
+  const goal = await loadGoalBranch(async () => settingsDocument(20), {
+    before: branch => {
+      const set = branch.input(changes.set(B, 'ship it', 'evaluator'))
+      branch.turn([set])
+      branch.commit('turn', 'start', {})
+      branch.input(changes.report(B, 'completed', 'all tests pass'))
+      const end = branch.commit('turn', 'end', { status: 'completed' })
+      branch.commit('branch', 'create', {
+        at: { kind: 'sequence', sequence: end.sequence },
+        source: { kind: 'host', operation_id: `goal:evaluate:${end.sequence}` },
+        branch: 'E',
+        prompt: 'x',
+      })
+      branch.commit('branch', 'create-failed', {
+        status: 'failed',
+        branch: 'E',
+        createEvent: 1,
+        error: 'branch creation failed',
+      })
+      branch.input(changes.pause(B))
+    },
+  })
+  t.after(() => goal.unload())
+  await flush()
+  assert.equal(goal.ends.length, 0, 'a failed creation leaves no line to end')
+})
+
+test('Pursuit 13 E3: an outside end before the conclusion fails the evaluation', async t => {
+  const goal = await loadGoalBranch(async () => settingsDocument(20))
+  t.after(() => goal.unload())
+  const end = await completionRequested(goal)
+  const evaluator = goal.creates[0].branch
+  await goal.emit('branch', 'ended', {
+    branch: evaluator,
+    endEvent: 0,
+    source: { kind: 'host', operation_id: 'user' },
+  })
+  await flush()
+  assert.equal(goal.writes.length, 2)
+  assert.match(goal.writes[1].data.blocks[0].text, /op="pause" reason="evaluation_failed"/)
+  assert.equal(goal.ends.length, 0, 'an ended line is not ended twice')
+  assert.equal(goal.branch.fold.status.reason, 'evaluation_failed')
+  await goal.emit('input', 'message', writes.conclusion(B, evaluator, String(end.sequence), 'done', 'DONE: late'))
+  await flush()
+  assert.equal(goal.writes.length, 2)
+  assert.equal(goal.branch.fold.status.status, 'paused')
+})
+
+test('Pursuit 13 E3: an outside end after the conclusion decides nothing', async t => {
+  const goal = await loadGoalBranch(async () => settingsDocument(20))
+  t.after(() => goal.unload())
+  const end = await completionRequested(goal)
+  const evaluator = goal.creates[0].branch
+  await goal.emit('input', 'message', writes.conclusion(B, evaluator, String(end.sequence), 'done', 'DONE: verified'))
+  await flush()
+  assert.equal(goal.writes.length, 2)
+  assert.equal(goal.ends.length, 1)
   assert.equal(goal.branch.fold.status.status, 'completed')
 })
 

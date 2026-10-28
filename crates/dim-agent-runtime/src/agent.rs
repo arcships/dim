@@ -7,7 +7,7 @@ use crate::{
     core::TailLock,
     lifecycle::{CloseOnce, guarded},
 };
-use dim_agent_types::{AgentEvent, InputMessageData, InputMode};
+use dim_agent_types::{AgentEvent, BranchSource, InputMessageData, InputMode};
 use rutis::host::{CtxHost, FiberView};
 use std::{
     collections::BTreeMap,
@@ -407,6 +407,9 @@ impl Session {
         self.0.created_at
     }
     fn published(&self, id: &str) -> Result<Branch> {
+        if self.0.tree.ended_head(id).is_some() {
+            return Err(AgentError::BranchEnded(id.into()));
+        }
         self.0
             .tree
             .get(id)
@@ -480,7 +483,8 @@ impl Session {
     ) -> Result<Vec<Arc<AgentEvent>>> {
         self.published(branch)?.local(range).await
     }
-    /// Reads a local page of complete batches without exceeding the published head.
+    /// Reads a local page of complete batches without exceeding the line's
+    /// head: its published head while it is open, its fixed head once it ended.
     pub async fn local_page(
         &self,
         branch: &str,
@@ -507,7 +511,20 @@ impl Session {
             .collect())
     }
     pub fn sequence(&self, branch: &str) -> Result<u64> {
+        if let Some(head) = self.0.tree.ended_head(branch) {
+            return Ok(head);
+        }
         Ok(self.published(branch)?.sequence())
+    }
+    /// The fixed head of an ended line, `None` for an open or unknown one.
+    pub fn ended_head(&self, branch: &str) -> Option<u64> {
+        self.0.tree.ended_head(branch)
+    }
+    pub async fn end_branch(&self, branch: &str, source: BranchSource) -> Result<()> {
+        if self.0.owner.closing.is_cancelled() {
+            return Err(AgentError::Closed(self.id().into()));
+        }
+        self.0.tree.end(branch.to_owned(), source).await
     }
     pub fn state(&self, branch: &str) -> Result<BranchStatus> {
         self.published(branch)?.state()

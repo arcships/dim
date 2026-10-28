@@ -313,10 +313,10 @@ export class Fold {
   conclusions = new Map<string, bigint>()
   /** Sequence of the latest live keyed goal block: one after `N` supersedes `N`. */
   lastBlock = -1n
-  /** The parent of this branch's `branch/start`, the only branch an evaluator may report for. */
-  openingParent: string | undefined
-  /** This branch's evaluator role, from its first local Queue input (§4.2). */
-  evaluate: { branch: string; evaluation: string } | undefined
+  /** The lines this branch opened that ended, by the `branch/ended` it records. */
+  ended = new Set<string>()
+  /** The lines this branch could not create, by their `branch/create-failed`. */
+  failed = new Set<string>()
   /** Turn ends in this branch's local events, up to the latest. */
   turnEnds = 0
   private interrupts: bigint[] = []
@@ -325,7 +325,6 @@ export class Fold {
   private driving = new Map<string, bigint>()
   private events: AgentEvent[] = []
   private deleted = new Set<string>()
-  private firstInput = false
 
   /** Applies one consumed local event; `input/deleted` refolds without the input. */
   apply(event: AgentEvent): void {
@@ -334,10 +333,8 @@ export class Fold {
     // the event list here is what makes a refold replay from the opening.
     if (isOpening(event)) {
       const copiedLive = event.type === 'session' ? this.objective !== undefined || this.status !== undefined : undefined
-      const parent = event.type === 'branch' ? event.data.parent : undefined
       Object.assign(this, new Fold())
       this.copiedLive = copiedLive
-      this.openingParent = typeof parent === 'string' ? parent : undefined
     }
     if (event.type === 'input' && event.name === 'deleted') {
       this.deleted.add(event.data.input_id)
@@ -350,11 +347,10 @@ export class Fold {
   }
 
   private refold(): void {
-    const { events, copiedLive, openingParent } = this
+    const { events, copiedLive } = this
     Object.assign(this, new Fold())
     this.events = events
     this.copiedLive = copiedLive
-    this.openingParent = openingParent
     this.deleted = new Set(events.filter(e => e.type === 'input' && e.name === 'deleted').map(e => e.data.input_id))
     for (const event of events) this.step(event)
   }
@@ -371,18 +367,6 @@ export class Fold {
         if (mode !== 'append') this.driving.set(event.id, sequence)
         const first = blocks[0] && marker(blocks[0].text)
         if (data.user && !(blocks[0]?.text.startsWith('<dim-'))) this.lastOperator = sequence
-        // The evaluator's role is its prompt, the branch's first Queue input
-        // (§4.2): a steer or append input neither takes it nor uses its slot.
-        // The prompt's first line names the branch its own opening names.
-        if (!this.firstInput && mode === 'queue') {
-          this.firstInput = true
-          const line = data.user?.content.find(content => content.type === 'text')?.text?.split('\n')[0]
-          const role = line ? marker(line) : undefined
-          const evaluation = sequenceOf(role?.evaluation)
-          if (role?.kind === 'evaluate' && role.branch === this.openingParent && evaluation !== undefined) {
-            this.evaluate = { branch: role.branch, evaluation }
-          }
-        }
         if (first?.after) this.decided.add(first.after)
         if (first?.kind === 'continuation') this.continuations.push(sequence)
         // The validated parse the branch part decides with (§5): a report
@@ -432,6 +416,12 @@ export class Fold {
         this.decided.add(evaluation)
         return
       }
+      case 'branch/ended':
+        this.ended.add(event.data.branch)
+        return
+      case 'branch/create-failed':
+        this.failed.add(event.data.branch)
+        return
       case 'input/consumed':
         this.driving.delete(event.data.input_id)
         return

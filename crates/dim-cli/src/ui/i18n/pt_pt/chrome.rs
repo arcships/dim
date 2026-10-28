@@ -17,6 +17,30 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Histórico do ramo incompleto; parar tudo indisponível"
         }
         "Running" => "Em execução",
+        "Lines" => "Linhas",
+        "Enter show the line · x end it · Esc close" => {
+            "Enter ver a linha · x terminá-la · Esc fechar"
+        }
+        "This session has no lines." => "Esta sessão não tem linhas.",
+        "No matching lines." => "Nenhuma linha correspondente.",
+        "the session itself" => "a própria sessão",
+        "working" => "a trabalhar",
+        "ended itself" => "terminou-se",
+        "ended by an operation" => "terminada por uma operação",
+        "ended with {id}" => "terminada com {id}",
+        "creation failed" => "criação falhada",
+        "shown" => "apresentada",
+        "line" => "linha",
+        "line {id}" => "linha {id}",
+        "follow, talk to and end this session's lines" => {
+            "seguir, falar e terminar as linhas desta sessão"
+        }
+        "End line" => "Terminar linha",
+        "y/N" => "y/N",
+        "main is the session itself; a line ends, main does not" => {
+            "main é a própria sessão; uma linha termina, main não"
+        }
+        "Line has ended:" => "A linha terminou:",
         "Starting" => "A iniciar",
         "Delegation result" => "Resultado da delegação",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {

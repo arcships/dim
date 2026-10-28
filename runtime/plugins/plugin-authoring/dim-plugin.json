@@ -1,0 +1,5 @@
+{
+  "name": "plugin-authoring",
+  "description": "A Skill that teaches the agent to write and install a TypeScript Dim plugin",
+  "skills": "skills"
+}

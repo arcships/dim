@@ -90,6 +90,7 @@ pub enum Call {
     Fork(Fork),
     ApprovalRespond(ApprovalRespond),
     BranchCreate(BranchCreate),
+    BranchEnd(BranchEnd),
     AgentCreate(AgentCreate),
     AgentList,
     AgentClose(AgentClose),
@@ -412,6 +413,14 @@ pub struct ApprovalRespond {
     pub decision: ApprovalDecision,
 }
 
+/// `session.branch_end`: the line the user ends (design §10).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BranchEnd {
+    pub session_id: String,
+    pub branch_id: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BranchCreate {
@@ -425,7 +434,7 @@ pub struct BranchCreate {
 /// Methods still decoded by the built-in protocol cannot be shadowed by
 /// runtime contributions. Session-looking names not listed here remain valid
 /// contributed names (for example `session.shell`).
-const BUILTIN_METHODS: [&str; 32] = [
+const BUILTIN_METHODS: [&str; 33] = [
     "hello",
     "daemon.ping",
     "daemon.shutdown",
@@ -454,6 +463,7 @@ const BUILTIN_METHODS: [&str; 32] = [
     "session.fork",
     "approval.respond",
     "session.branch_create",
+    "session.branch_end",
     "agent.create",
     "agent.list",
     "agent.close",
@@ -532,6 +542,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
             "session.fork" => Call::Fork(params(raw_params)?),
             "approval.respond" => Call::ApprovalRespond(params(raw_params)?),
             "session.branch_create" => Call::BranchCreate(params(raw_params)?),
+            "session.branch_end" => Call::BranchEnd(params(raw_params)?),
             "agent.create" => Call::AgentCreate(params(raw_params)?),
             "agent.list" => {
                 let _: Empty = params(raw_params)?;

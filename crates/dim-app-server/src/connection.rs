@@ -395,6 +395,7 @@ impl Connection {
                     | Call::SessionMethods(_)
                     | Call::Delete(_)
                     | Call::Fork(_)
+                    | Call::BranchEnd(_)
             )
         {
             return Err(RpcError::app(
@@ -444,6 +445,12 @@ impl Connection {
                     return Err(RpcError::invalid("agentId requires protocol v3"));
                 }
                 (None, None)
+            }
+            Call::BranchEnd(p) => {
+                if p.branch_id.is_empty() {
+                    return Err(RpcError::invalid("branchId must not be empty"));
+                }
+                (Some(&p.session_id), None)
             }
             Call::BranchCreate(p) => {
                 if self.protocol_version() < 2 {
@@ -596,6 +603,7 @@ impl Connection {
             Call::SessionMcp(p) | Call::McpRefresh(p) => Some(&p.session_id),
             Call::Attach(p) => Some(&p.session_id),
             Call::BranchCreate(p) => Some(&p.session_id),
+            Call::BranchEnd(p) => Some(&p.session_id),
             Call::SessionMethods(p) => Some(&p.session_id),
             Call::Close(p) if rpc.index.session_available(&p.session_id) => Some(&p.session_id),
             _ => None,
@@ -870,6 +878,7 @@ impl Connection {
                 })
             }
             Call::BranchCreate(params) => self.create_branch(rpc, params).await,
+            Call::BranchEnd(params) => self.end_branch(rpc, params).await,
             Call::SessionMethods(_) => crate::methods::session_listed(
                 &rpc.management,
                 &usage.expect("session.methods pins its Session").session,

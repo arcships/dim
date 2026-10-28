@@ -7,7 +7,7 @@ use super::{
     sqlite::error,
     timeline::{read_range, validate_session},
 };
-use dim_agent_runtime::{Result, TimelineInfo, TimelineKey, TimelineTrace};
+use dim_agent_runtime::{BranchRecord, Result, TimelineKey, TimelineTrace};
 use dim_agent_types::AgentEvent;
 use serde::Serialize;
 use std::{io::Write, path::PathBuf, sync::Arc};
@@ -28,7 +28,7 @@ enum Line<'a> {
         sensitive: bool,
     },
     Branch {
-        info: &'a TimelineInfo,
+        info: &'a BranchRecord,
         head: u64,
     },
     Event {

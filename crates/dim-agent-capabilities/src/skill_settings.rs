@@ -1,7 +1,11 @@
 //! Product-owned Skill enablement storage. Discovery and effective Skill views
 //! belong to Skills; this port has no filesystem or app-server dependency.
 use rutis::host::BoxFuture;
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    sync::Arc,
+};
 use tokio_util::sync::CancellationToken;
 
 /// The Settings source holding Skill enablement. A host whose storage changes
@@ -16,6 +20,8 @@ pub type SettingsVersion = String;
 pub struct SkillSettingsSnapshot {
     pub version: SettingsVersion,
     pub disabled: BTreeSet<String>,
+    /// The skills roots registered by plugins, by plugin id.
+    pub plugins: BTreeMap<String, PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -45,6 +51,16 @@ pub trait SkillSettings: Send + Sync + 'static {
         expected: SettingsVersion,
         id: String,
         enabled: bool,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<SettingsVersion, SkillSettingsError>>;
+
+    /// Records `root` as the skills root of `plugin`, or forgets the plugin
+    /// when `root` is `None`, preserving every other field. It applies to
+    /// the current version, whatever it is.
+    fn set_plugin(
+        self: Arc<Self>,
+        plugin: String,
+        root: Option<PathBuf>,
         cancel: CancellationToken,
     ) -> BoxFuture<'static, Result<SettingsVersion, SkillSettingsError>>;
 }

@@ -173,7 +173,7 @@ async fn plugin_configuration_installs_switches_and_survives_a_restart() {
     .await;
     assert_eq!(installed["result"]["id"], "notes", "{installed}");
     assert_eq!(installed["result"]["enabled"], true);
-    assert_eq!(installed["result"]["skipped"], json!(["skills"]));
+    assert!(installed["result"].get("skipped").is_none(), "{installed}");
     let again = call(
         &mut client,
         "plugin.install",
@@ -427,6 +427,11 @@ export default definePlugin({{
 }
 
 async fn last_tool_text(server: &RunningServer, session: &str) -> String {
+    last_tool_result(server, session).await.0
+}
+
+/// The text of the last tool result in `session` and whether it is an error.
+async fn last_tool_result(server: &RunningServer, session: &str) -> (String, bool) {
     let session = server.agent().unwrap().get_session(session).unwrap();
     let history = session.history("main", None).await.unwrap();
     let result = history
@@ -440,7 +445,178 @@ async fn last_tool_text(server: &RunningServer, session: &str) -> String {
     let dim_agent_types::ToolContent::Text(content) = &result.result.content else {
         panic!("text result")
     };
-    content.clone()
+    (content.clone(), result.result.is_error == Some(true))
+}
+
+/// Runs `command` through the `plugin` tool in `session`.
+async fn plugin(
+    client: &mut Client,
+    server: &RunningServer,
+    session: &str,
+    command: &str,
+) -> (String, bool) {
+    let input = json!({ "command": command });
+    submit(client, session, &format!("tool:plugin {input}")).await;
+    last_tool_result(server, session).await
+}
+
+/// The JSON reply of a `plugin` command that succeeded.
+async fn plugin_reply(
+    client: &mut Client,
+    server: &RunningServer,
+    session: &str,
+    command: &str,
+) -> Value {
+    let (text, error) = plugin(client, server, session, command).await;
+    assert!(!error, "{command}: {text}");
+    serde_json::from_str(&text).unwrap_or_else(|_| panic!("{command}: {text}"))
+}
+
+fn session_with(policy: Value, cwd: &Path) -> Value {
+    json!({"cwd": cwd, "permissionPolicy": policy, "tools": ["plugin"]})
+}
+
+/// §6: the `plugin` tool routes each command to the `plugin.*` method of
+/// its name with the same result and errors; `help` and a malformed command
+/// give usage; Permission decides each call, admitting `list` and `help`
+/// under the read-only preset and not `config`, whose documents may hold
+/// secrets; the default plugin-authoring Skill
+/// is listed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plugin_tool_runs_plugin_commands() {
+    let home = home();
+    let mut config = config(&home);
+    let authoring = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../runtime/plugins/plugin-authoring")
+        .canonicalize()
+        .unwrap();
+    std::fs::write(
+        config.plugin_defaults.as_ref().unwrap(),
+        json!({"plugins": {"plugin-authoring": authoring}, "locked": ["PluginManager", "Rpc", "Transport"]})
+            .to_string(),
+    )
+    .unwrap();
+    config.unix_path = Some(home.join("ipc/server.sock"));
+    let server = serve(product_builder(), config).await.unwrap();
+    let mut client = Client::new_version(&server, false, 3).await;
+    select_fixture_model(&mut client).await;
+    let work = home.join("work");
+    plugin_dir(&work, "content");
+
+    let full = json!({"preset": "full-access", "allowedTools": [], "disallowedTools": []});
+    let created = client
+        .rpc("session.create", session_with(full, &work))
+        .await;
+    assert_ok(&created);
+    let session = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let skills = plugin_skill_ids(&mut client).await;
+    assert!(
+        skills.iter().any(|id| id.ends_with("plugin-authoring")),
+        "{skills:?}"
+    );
+
+    let (help, error) = plugin(&mut client, &server, &session, "help").await;
+    assert!(
+        !error && help.starts_with("Commands: list | install"),
+        "{help}"
+    );
+    let (help, error) = plugin(&mut client, &server, &session, "help config").await;
+    assert!(
+        !error && help.starts_with("Usage: config <name> [set <key> <value>]"),
+        "{help}"
+    );
+    let (usage, error) = plugin(&mut client, &server, &session, "enable").await;
+    assert!(
+        error && usage.starts_with("Usage: enable <name>"),
+        "{usage}"
+    );
+    let (usage, error) = plugin(&mut client, &server, &session, "install a b").await;
+    assert!(error && usage.starts_with("Usage: install"), "{usage}");
+    let (refused, error) =
+        plugin(&mut client, &server, &session, r"install C:\work\my-plugin").await;
+    assert!(
+        error && refused.starts_with("invalid_source:") && refused.contains(r"C:\work\my-plugin"),
+        "{refused}"
+    );
+    let (list, error) = plugin(&mut client, &server, &session, "frobnicate").await;
+    assert!(error && list.starts_with("Commands:"), "{list}");
+
+    let installed = plugin_reply(&mut client, &server, &session, "install content").await;
+    assert_eq!(installed["id"], "content", "{installed}");
+    let listed = plugin_reply(&mut client, &server, &session, "list").await;
+    assert_eq!(
+        listed,
+        call(&mut client, "plugin.list", json!({})).await["result"]
+    );
+    assert_eq!(
+        item(&json!({"result": listed}), "plugin-authoring")["use"],
+        "default"
+    );
+    assert_eq!(
+        plugin_reply(&mut client, &server, &session, "disable content").await,
+        json!({})
+    );
+    let list = call(&mut client, "plugin.list", json!({})).await;
+    assert_eq!(item(&list, "content")["off"], true, "{list}");
+    plugin_reply(
+        &mut client,
+        &server,
+        &session,
+        "enable content --use content",
+    )
+    .await;
+    plugin_reply(&mut client, &server, &session, "reload content").await;
+    let (refused, error) = plugin(&mut client, &server, &session, "update content").await;
+    let method = call(&mut client, "plugin.update", json!({"id": "content"})).await;
+    assert!(
+        error && refused.starts_with(&format!("{}:", app_error(&method))),
+        "{refused} {method}"
+    );
+    let (refused, error) = plugin(&mut client, &server, &session, "disable PluginManager").await;
+    assert!(error && refused.starts_with("plugin_locked:"), "{refused}");
+    assert_eq!(
+        plugin_reply(&mut client, &server, &session, "config content").await,
+        json!({"name": "content", "sources": []})
+    );
+    let (refused, error) = plugin(&mut client, &server, &session, "config content set a 1").await;
+    assert!(error && refused.contains("no Settings source"), "{refused}");
+    let (refused, error) = plugin(&mut client, &server, &session, "config missing").await;
+    assert!(
+        error && refused.starts_with("plugin_not_found:"),
+        "{refused}"
+    );
+    assert_eq!(
+        plugin_reply(&mut client, &server, &session, "remove content").await,
+        json!({})
+    );
+
+    let read_only = json!({"preset": "read-only", "allowedTools": [], "disallowedTools": []});
+    let created = client
+        .rpc("session.create", session_with(read_only, &work))
+        .await;
+    assert_ok(&created);
+    let watched = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    for command in ["list", "help"] {
+        let (text, error) = plugin(&mut client, &server, &watched, command).await;
+        assert!(!error, "{command}: {text}");
+    }
+    for command in ["install content", "config plugin-authoring"] {
+        let (denied, error) = plugin(&mut client, &server, &watched, command).await;
+        assert!(error && denied.contains("read-only"), "{command}: {denied}");
+    }
+    let list = call(&mut client, "plugin.list", json!({})).await;
+    assert!(
+        list["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["name"] != "content"),
+        "{list}"
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
 }
 
 /// Acceptance 2, 3, 5 and 6 with code: a TypeScript plugin installed from
@@ -501,35 +677,19 @@ async fn node_plugin_manager_installs_reloads_and_replaces_typescript_plugins() 
     // Acceptance 4.
     let agent_source = home.join("src/agent-tool");
     write_tool_plugin(&agent_source, "agent-tool", "agent_echo", "first");
-    let tools = json!([
-        "plugin_install",
-        "plugin_reload",
-        "plugin_list",
-        "agent_echo"
-    ]);
+    let tools = json!(["plugin", "agent_echo"]);
     let mut params = create(tools.clone());
     params["permissionPolicy"]["allowedTools"] = tools;
     let created = client.rpc("session.create", params).await;
     assert_ok(&created);
     let agent = created["result"]["sessionId"].as_str().unwrap().to_owned();
-    let install = json!({"source": {"path": agent_source}});
-    submit(
-        &mut client,
-        &agent,
-        &format!("tool:plugin_install {install}"),
-    )
-    .await;
-    let reply: Value = serde_json::from_str(&last_tool_text(&server, &agent).await).unwrap();
+    let install = format!("install {}", agent_source.display());
+    let reply = plugin_reply(&mut client, &server, &agent, &install).await;
     assert_eq!(reply["status"], "running", "{reply}");
     submit(&mut client, &agent, "tool:agent_echo {}").await;
     assert_eq!(last_tool_text(&server, &agent).await, "first");
     write_tool_plugin(&agent_source, "agent-tool", "agent_echo", "after the edit");
-    submit(
-        &mut client,
-        &agent,
-        r#"tool:plugin_reload {"name":"agent-tool"}"#,
-    )
-    .await;
+    plugin_reply(&mut client, &server, &agent, "reload agent-tool").await;
     submit(&mut client, &agent, "tool:agent_echo {}").await;
     assert_eq!(last_tool_text(&server, &agent).await, "after the edit");
     drop(client);
@@ -624,7 +784,7 @@ async fn node_default_plugins_load_and_their_settings_follow_them() {
     parts.rows.clear();
     config.plugin_defaults = Some(parts.anchor.with_file_name("default-plugins.json"));
     config.session_typescript = Some(parts);
-    let (server, _, _) = start(config).await;
+    let (server, _requests, _) = start(config).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let defaults = ["goal", "web", "session-title", "workflow", "scheduler"];
     let list = running(&mut client, &defaults).await;
@@ -655,6 +815,83 @@ async fn node_default_plugins_load_and_their_settings_follow_them() {
     );
     running(&mut client, &["session-title"]).await;
     assert_ok(&call(&mut client, "settings.read", read).await);
+
+    // §6 `config`: goal's Settings source through the `plugin` tool.
+    select_fixture_model(&mut client).await;
+    let tools = json!(["plugin"]);
+    let mut params = create(tools.clone());
+    params["permissionPolicy"]["allowedTools"] = tools;
+    let created = client.rpc("session.create", params).await;
+    assert_ok(&created);
+    let session = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let shown = plugin_reply(&mut client, &server, &session, "config goal").await;
+    let source = &shown["sources"][0];
+    assert_eq!(source["source"], "goal", "{shown}");
+    assert_eq!(source["document"]["maxContinuations"], 20, "{shown}");
+    assert_eq!(
+        source["schema"]["properties"]["maxContinuations"]["maximum"],
+        1000
+    );
+    let set = "config goal set maxContinuations 5";
+    let updated = plugin_reply(&mut client, &server, &session, set).await;
+    assert_eq!(updated["document"]["maxContinuations"], 5, "{updated}");
+    let read = json!({"source": "goal", "scope": "user"});
+    let stored = call(&mut client, "settings.read", read).await;
+    assert_eq!(
+        stored["result"]["document"]["maxContinuations"], 5,
+        "{stored}"
+    );
+    let (refused, error) = plugin(
+        &mut client,
+        &server,
+        &session,
+        "config goal set maxContinuations 0",
+    )
+    .await;
+    assert!(error && refused.contains("maxContinuations"), "{refused}");
+
+    // A `writeOnly` member (web's search key and proxy) is a secret toward
+    // the agent: never returned, never written through the tool.
+    let read = json!({"source": "web", "scope": "user"});
+    let current = call(&mut client, "settings.read", read.clone()).await;
+    let secret = "dim-test-secret-key";
+    let document = json!({"allowPrivateHosts": [], "proxy": "http://user:pass@127.0.0.1:9",
+        "searchService": {"kind": "brave", "apiKey": secret}});
+    assert_ok(
+        &call(
+            &mut client,
+            "settings.update",
+            json!({"source": "web", "scope": "user",
+                "expectedRevision": current["result"]["revision"], "document": document}),
+        )
+        .await,
+    );
+    let (shown, error) = plugin(&mut client, &server, &session, "config web").await;
+    assert!(
+        !error && !shown.contains(secret) && !shown.contains("user:pass"),
+        "{shown}"
+    );
+    let shown: Value = serde_json::from_str(&shown).unwrap();
+    let web = &shown["sources"][0];
+    assert_eq!(
+        web["document"]["searchService"],
+        json!({"kind": "brave"}),
+        "{shown}"
+    );
+    assert_eq!(
+        web["writeOnlySet"],
+        json!(["/searchService/apiKey", "/proxy"]),
+        "{shown}"
+    );
+    for set in [
+        "config web set proxy http://127.0.0.1:8",
+        r#"config web set searchService '{"kind":"brave"}'"#,
+    ] {
+        let (refused, error) = plugin(&mut client, &server, &session, set).await;
+        assert!(error && refused.contains("write-only"), "{set}: {refused}");
+    }
+    let stored = call(&mut client, "settings.read", read).await;
+    assert_eq!(stored["result"]["document"], document, "{stored}");
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
@@ -758,6 +995,407 @@ async fn node_python_plugin_installs_and_reloads_through_its_link() {
     assert_ok(&call(&mut client, "plugin.remove", json!({"id":"py-tool"})).await);
     assert!(std::fs::symlink_metadata(&link).is_err());
     assert!(source.join("plugin.py").is_file());
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The product's local execution profile with mock model hosts: Sessions
+/// mount Skills and MCP.
+fn product_builder() -> AgentBuilder {
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    defaults::install_local_execution(
+        &mut builder,
+        dim_agent_capabilities::model_provider::ModelProviderPlugin::new,
+        dim_agent_capabilities::workspace_tools::WorkspaceToolsConfig {
+            output_root: std::env::temp_dir().join("dm-pm-outputs"),
+        },
+    );
+    dim_app_server::permission_rules::install(&mut builder);
+    defaults::mock_model_hosts(&mut builder);
+    builder
+}
+
+/// Creates and selects a model, so a Session can be created; the mock
+/// model host answers its requests.
+async fn select_fixture_model(client: &mut Client) {
+    let provider = "018ec73f-0000-7000-8000-000000000493";
+    let capabilities = dim_agent_types::ModelCapabilities {
+        context_window: 32000,
+        max_output_tokens: 128,
+        ..Default::default()
+    };
+    let model = json!({"modelId": "fixture", "displayName": "fixture", "status": "active",
+        "capabilities": capabilities});
+    assert_ok(
+        &client
+            .rpc(
+                "provider.create",
+                json!({"providerId": provider, "displayName": "fixture",
+        "connection": {"driverKind": "openai-compatible", "baseUrl": "http://localhost/v1",
+            "auth": {"type": "anonymous"}},
+        "models": [model], "enabled": true}),
+            )
+            .await,
+    );
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"providerId": provider, "modelId": "fixture"}),
+            )
+            .await,
+    );
+}
+
+/// A plugin carrying `skills/<skill>/SKILL.md` for each of `skills` and an
+/// `mcp.json` with `mcp` as its `mcpServers`.
+fn write_content_plugin(dir: &Path, name: &str, skills: &[&str], mcp: Value) {
+    let _ = std::fs::remove_dir_all(dir.join("skills"));
+    for skill in skills {
+        let skill_dir = dir.join("skills").join(skill);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {skill}\ndescription: The {skill} skill\n---\nDo {skill}.\n"),
+        )
+        .unwrap();
+    }
+    std::fs::create_dir_all(dir.join("skills")).unwrap();
+    std::fs::write(dir.join("mcp.json"), json!({"mcpServers": mcp}).to_string()).unwrap();
+    std::fs::write(
+        dir.join("dim-plugin.json"),
+        json!({"name": name, "skills": "skills", "mcp": "mcp.json"}).to_string(),
+    )
+    .unwrap();
+}
+
+/// What a new Session on `work` sees: the names of its plugin Skills and its
+/// MCP server ids, once its MCP selection has settled.
+async fn new_session_content(client: &mut Client, work: &Path) -> (Vec<String>, Vec<String>) {
+    let created = client.rpc("session.create", json!({"cwd": work})).await;
+    assert_ok(&created);
+    let session = created["result"]["sessionId"].clone();
+    let skills = when_served(
+        client,
+        "session.skills",
+        json!({"sessionId": session, "branchId": "main"}),
+    )
+    .await;
+    assert_ok(&skills);
+    let mut names: Vec<String> = skills["result"]["skills"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{skills}"))
+        .iter()
+        .filter(|skill| skill["id"].as_str().unwrap().starts_with("plugin:"))
+        .map(|skill| skill["name"].as_str().unwrap().to_owned())
+        .collect();
+    names.sort();
+    let expected =
+        when_served(client, "mcp.catalog", json!({"cwd": work})).await["result"]["servers"]
+            .as_array()
+            .unwrap()
+            .len();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let mcp = when_served(client, "session.mcp", json!({"sessionId": session})).await;
+        assert_ok(&mcp);
+        let servers: Vec<String> = mcp["result"]["servers"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{mcp}"))
+            .iter()
+            .map(|server| server["id"].as_str().unwrap().to_owned())
+            .collect();
+        if servers.len() == expected {
+            return (names, servers);
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{mcp}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// §3.7 and R2: a plugin installed from a local path brings its Skills and
+/// MCP servers to a new Session without a restart; turning it off removes
+/// them and on restores them; reload picks up an edit; content an owner
+/// refuses is reported while the rest registers; an absent owner skips
+/// only its kind and gets it when turned on; owners keep it over a restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plugin_content_reaches_sessions_through_its_owners() {
+    let home = home();
+    let mut config = config(&home);
+    config.unix_path = Some(home.join("ipc/server.sock"));
+    let server = serve(product_builder(), config.clone()).await.unwrap();
+    let mut client = Client::new_version(&server, false, 3).await;
+    select_fixture_model(&mut client).await;
+    let work = home.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let absent = json!({"command": "dim-test-absent-mcp-server"});
+    let source = home.join("src/kit");
+    write_content_plugin(&source, "kit", &["review"], json!({"docs": absent}));
+
+    let installed = call(
+        &mut client,
+        "plugin.install",
+        json!({"source":{"path":source}}),
+    )
+    .await;
+    assert_eq!(installed["result"]["enabled"], true, "{installed}");
+    assert!(installed["result"].get("skipped").is_none(), "{installed}");
+    assert!(installed["result"].get("refused").is_none(), "{installed}");
+    let catalog = client.rpc("mcp.catalog", json!({})).await;
+    assert_eq!(
+        catalog["result"]["servers"],
+        json!([{"id":"kit:docs","source":"plugin","enabled":true,"transport":"stdio"}]),
+        "{catalog}"
+    );
+    assert_eq!(
+        new_session_content(&mut client, &work).await,
+        (vec!["review".into()], vec!["kit:docs".into()])
+    );
+
+    assert_ok(&call(&mut client, "plugin.disable", json!({"name":"kit"})).await);
+    assert_eq!(
+        new_session_content(&mut client, &work).await,
+        (vec![], vec![])
+    );
+    assert_ok(&call(&mut client, "plugin.enable", json!({"name":"kit"})).await);
+    assert_eq!(
+        new_session_content(&mut client, &work).await,
+        (vec!["review".into()], vec!["kit:docs".into()])
+    );
+
+    write_content_plugin(
+        &source,
+        "kit",
+        &["lint", "review"],
+        json!({"docs": absent, "search": absent}),
+    );
+    let reloaded = call(&mut client, "plugin.reload", json!({"name":"kit"})).await;
+    assert!(reloaded["result"].get("refused").is_none(), "{reloaded}");
+    assert_eq!(
+        new_session_content(&mut client, &work).await,
+        (
+            vec!["lint".into(), "review".into()],
+            vec!["kit:docs".into(), "kit:search".into()]
+        )
+    );
+
+    write_content_plugin(&source, "kit", &["lint"], json!({"docs": {"command": ""}}));
+    std::fs::create_dir_all(source.join("skills/broken")).unwrap();
+    std::fs::write(source.join("skills/broken/SKILL.md"), "no frontmatter").unwrap();
+    let reloaded = call(&mut client, "plugin.reload", json!({"name":"kit"})).await;
+    let kinds: Vec<&Value> = reloaded["result"]["refused"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{reloaded}"))
+        .iter()
+        .map(|refused| &refused["kind"])
+        .collect();
+    assert_eq!(kinds, [&json!("skills"), &json!("mcp")], "{reloaded}");
+    let list = call(&mut client, "plugin.list", json!({})).await;
+    assert_eq!(
+        item(&list, "kit")["refused"],
+        reloaded["result"]["refused"],
+        "{list}"
+    );
+    assert_eq!(
+        new_session_content(&mut client, &work).await,
+        (vec!["lint".into()], vec![])
+    );
+    write_content_plugin(&source, "kit", &["lint"], json!({"docs": absent}));
+    let reloaded = call(&mut client, "plugin.reload", json!({"name":"kit"})).await;
+    assert!(reloaded["result"].get("refused").is_none(), "{reloaded}");
+
+    assert_ok(&call(&mut client, "plugin.disable", json!({"name":"Mcp"})).await);
+    let other = home.join("src/extra");
+    write_content_plugin(&other, "extra", &["extra"], json!({"tool": absent}));
+    let installed = call(
+        &mut client,
+        "plugin.install",
+        json!({"source":{"path":other}}),
+    )
+    .await;
+    assert_eq!(
+        installed["result"]["skipped"],
+        json!(["mcp"]),
+        "{installed}"
+    );
+    assert_ok(&call(&mut client, "plugin.enable", json!({"name":"Mcp"})).await);
+    let catalog = when_served(&mut client, "mcp.catalog", json!({})).await;
+    let ids: Vec<&Value> = catalog["result"]["servers"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{catalog}"))
+        .iter()
+        .map(|server| &server["id"])
+        .collect();
+    assert_eq!(ids, [&json!("extra:tool"), &json!("kit:docs")], "{catalog}");
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let server = serve(product_builder(), config).await.unwrap();
+    let mut client = Client::new_version(&server, false, 3).await;
+    when_served(&mut client, "plugin.list", json!({})).await;
+    assert_eq!(
+        new_session_content(&mut client, &work).await,
+        (
+            vec!["extra".into(), "lint".into()],
+            vec!["extra:tool".into(), "kit:docs".into()]
+        )
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The server ids of `mcp.catalog`.
+async fn mcp_ids(client: &mut Client) -> Vec<String> {
+    let catalog = when_served(client, "mcp.catalog", json!({})).await;
+    catalog["result"]["servers"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{catalog}"))
+        .iter()
+        .map(|server| server["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// The ids of the plugin Skills `skills.catalog` lists.
+async fn plugin_skill_ids(client: &mut Client) -> Vec<String> {
+    let catalog = when_served(client, "skills.catalog", json!({})).await;
+    catalog["result"]["entries"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{catalog}"))
+        .iter()
+        .map(|entry| entry["id"].as_str().unwrap().to_owned())
+        .filter(|id| id.starts_with("plugin:"))
+        .collect()
+}
+
+/// A plugin stdio entry runs inside its plugin directory: a `cwd` that is
+/// absolute, climbs with `..`, or leaves through a symbolic link refuses
+/// the plugin's MCP document, which is reported and not published.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plugin_mcp_cwd_stays_inside_the_plugin() {
+    let home = home();
+    let config = config(&home);
+    let (server, _, _) = start(config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let source = home.join("src/paths");
+    std::fs::create_dir_all(source.join("inside")).unwrap();
+    std::fs::create_dir_all(home.join("outside")).unwrap();
+    std::os::unix::fs::symlink(home.join("outside"), source.join("link")).unwrap();
+    let entry = |cwd: &str| json!({"tool": {"command": "dim-test-absent-mcp-server", "cwd": cwd}});
+    write_content_plugin(&source, "paths", &["paths"], entry("inside"));
+    let installed = call(
+        &mut client,
+        "plugin.install",
+        json!({"source":{"path":source}}),
+    )
+    .await;
+    assert!(installed["result"].get("refused").is_none(), "{installed}");
+    assert_eq!(mcp_ids(&mut client).await, ["paths:tool"]);
+
+    let outside = home.join("outside").to_string_lossy().into_owned();
+    for cwd in [
+        outside.as_str(),
+        "../outside",
+        "inside/../../outside",
+        "link",
+    ] {
+        write_content_plugin(&source, "paths", &["paths"], entry(cwd));
+        let reloaded = call(&mut client, "plugin.reload", json!({"name":"paths"})).await;
+        assert_eq!(
+            reloaded["result"]["refused"][0]["kind"], "mcp",
+            "{cwd}: {reloaded}"
+        );
+        assert!(mcp_ids(&mut client).await.is_empty(), "{cwd}");
+        assert_eq!(plugin_skill_ids(&mut client).await, ["plugin:paths:paths"]);
+        write_content_plugin(&source, "paths", &["paths"], entry("inside"));
+        let reloaded = call(&mut client, "plugin.reload", json!({"name":"paths"})).await;
+        assert!(reloaded["result"].get("refused").is_none(), "{reloaded}");
+        assert_eq!(mcp_ids(&mut client).await, ["paths:tool"]);
+    }
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Startup brings the owners to the record (§3.7): content of a plugin
+/// removed while its owner was off, or left behind when the process stopped
+/// between writing `plugins.json` and commanding the owner, is withdrawn,
+/// and an MCP refusal is reported again after a restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plugin_content_follows_the_record_over_restarts() {
+    let home = home();
+    let config = config(&home);
+    let absent = json!({"command": "dim-test-absent-mcp-server"});
+    let gone = home.join("src/gone");
+    write_content_plugin(&gone, "gone", &["gone"], json!({"tool": absent}));
+    let stale = home.join("src/stale");
+    write_content_plugin(&stale, "stale", &["stale"], json!({"tool": absent}));
+    let broken = home.join("src/broken");
+    write_content_plugin(&broken, "broken", &[], json!({"tool": {"command": ""}}));
+
+    let (server, _, _) = start(config.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    for source in [&gone, &stale, &broken] {
+        call(
+            &mut client,
+            "plugin.install",
+            json!({"source":{"path":source}}),
+        )
+        .await;
+    }
+    assert_eq!(mcp_ids(&mut client).await, ["gone:tool", "stale:tool"]);
+    assert_ok(&call(&mut client, "plugin.disable", json!({"name":"Mcp"})).await);
+    assert_ok(
+        &call(
+            &mut client,
+            "plugin.disable",
+            json!({"name":"SkillsCatalog"}),
+        )
+        .await,
+    );
+    assert_ok(&call(&mut client, "plugin.remove", json!({"id":"gone"})).await);
+    assert_ok(
+        &call(
+            &mut client,
+            "plugin.enable",
+            json!({"name":"SkillsCatalog"}),
+        )
+        .await,
+    );
+    assert_eq!(plugin_skill_ids(&mut client).await, ["plugin:stale:stale"]);
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let (server, _, _) = start(config.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_ok(&call(&mut client, "plugin.enable", json!({"name":"Mcp"})).await);
+    assert_eq!(mcp_ids(&mut client).await, ["stale:tool"]);
+    let list = call(&mut client, "plugin.list", json!({})).await;
+    assert_eq!(item(&list, "broken")["refused"][0]["kind"], "mcp", "{list}");
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let record = home.join("plugins.json");
+    let mut written: Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+    written["installed"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|entry| entry["id"] != "stale");
+    written["names"].as_object_mut().unwrap().remove("stale");
+    std::fs::write(&record, written.to_string()).unwrap();
+    let (server, _, _) = start(config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert!(mcp_ids(&mut client).await.is_empty());
+    assert!(plugin_skill_ids(&mut client).await.is_empty());
+    let list = call(&mut client, "plugin.list", json!({})).await;
+    assert_eq!(item(&list, "broken")["refused"][0]["kind"], "mcp", "{list}");
     drop(client);
     server.shutdown();
     server.join().await.unwrap();

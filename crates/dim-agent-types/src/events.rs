@@ -678,6 +678,35 @@ pub struct BranchCreateData {
     pub prompt: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BranchEndData {
+    pub source: BranchSource,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub ancestor: Option<String>,
+}
+
+/// The result of an end, written on the ended line's parent by TimelineTree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BranchEndedData {
+    pub branch: String,
+    /// The sequence of `branch/end` on the ended line.
+    #[serde(rename = "endEvent", with = "crate::safe_integer")]
+    pub end_event: u64,
+    pub source: BranchSource,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub ancestor: Option<String>,
+}
+
 /// A branch begins: a child created from `parent` at `create_event`, or the
 /// root of a new Session, which has neither.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -950,6 +979,8 @@ pub enum EventKind {
     BranchStart(BranchStartData),
     BranchResume(BranchResumeData),
     BranchCreateFailed(BranchCreateFailedData),
+    BranchEnd(BranchEndData),
+    BranchEnded(BranchEndedData),
     CollaborationRequest(CollaborationRequestData),
     CollaborationCancel(CollaborationPeerData),
     CollaborationClose(CollaborationPeerData),
@@ -1099,6 +1130,8 @@ impl EventKind {
             Self::BranchStart(_) => "branch/start",
             Self::BranchResume(_) => "branch/resume",
             Self::BranchCreateFailed(_) => "branch/create-failed",
+            Self::BranchEnd(_) => "branch/end",
+            Self::BranchEnded(_) => "branch/ended",
             Self::CollaborationRequest(_) => "collaboration/request",
             Self::CollaborationCancel(_) => "collaboration/cancel",
             Self::CollaborationClose(_) => "collaboration/close",
@@ -1307,6 +1340,10 @@ enum BranchEvent {
     Resume(BranchResumeData),
     #[serde(rename = "create-failed")]
     CreateFailed(BranchCreateFailedData),
+    #[serde(rename = "end")]
+    End(BranchEndData),
+    #[serde(rename = "ended")]
+    Ended(BranchEndedData),
 }
 
 #[derive(Deserialize)]
@@ -1465,6 +1502,8 @@ impl From<TaggedEvent> for EventKind {
             TaggedEvent::Branch(BranchEvent::Start(data)) => Self::BranchStart(data),
             TaggedEvent::Branch(BranchEvent::Resume(data)) => Self::BranchResume(data),
             TaggedEvent::Branch(BranchEvent::CreateFailed(data)) => Self::BranchCreateFailed(data),
+            TaggedEvent::Branch(BranchEvent::End(data)) => Self::BranchEnd(data),
+            TaggedEvent::Branch(BranchEvent::Ended(data)) => Self::BranchEnded(data),
             TaggedEvent::Collaboration(CollaborationEvent::Request(data)) => {
                 Self::CollaborationRequest(data)
             }
@@ -1696,6 +1735,16 @@ impl Serialize for EventKind {
             Self::BranchCreateFailed(data) => {
                 state.serialize_field("type", "branch")?;
                 state.serialize_field("name", "create-failed")?;
+                state.serialize_field("data", data)?;
+            }
+            Self::BranchEnd(data) => {
+                state.serialize_field("type", "branch")?;
+                state.serialize_field("name", "end")?;
+                state.serialize_field("data", data)?;
+            }
+            Self::BranchEnded(data) => {
+                state.serialize_field("type", "branch")?;
+                state.serialize_field("name", "ended")?;
                 state.serialize_field("data", data)?;
             }
             Self::CollaborationRequest(data) => {

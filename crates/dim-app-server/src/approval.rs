@@ -17,6 +17,7 @@ pub(crate) async fn respond(
         .service::<Approval>(branch_id)
         .map_err(|error| match error {
             AgentError::UnknownBranch(_) => RpcError::invalid("Approval branch does not exist"),
+            AgentError::BranchEnded(_) => RpcError::invalid("Approval branch has ended"),
             error => RpcError::from(error),
         })?;
     approval

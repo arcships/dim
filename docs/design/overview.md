@@ -79,7 +79,7 @@ Green parts are new and orange-bordered parts are changed. Each new plugin part 
 | Workflow | Runs; definitions in the Settings business source `workflow` or project files | `workflow` tool | — | A run spans Sessions |
 | ExternalAgent | Live external conversations, Collaboration member kind | — | — | External agent conversations and processes are shared host resources |
 | Modality | Tasks, realtime connections | — | — | Tasks and provider connections are shared |
-| PluginManager | Plugin configuration (`plugins.json`) | `PluginTools` (plugin tools) | — | Installation is per host |
+| PluginManager | Plugin configuration (`plugins.json`) | `PluginTools` (`plugin` tool) | — | Installation is per host |
 | RemoteGateway | Remote entry, devices | — | — | An external entry |
 | AcpGateway | client host process | — | — | A reusable client-process plugin, outside the daemon |
 

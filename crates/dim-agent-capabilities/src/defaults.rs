@@ -154,11 +154,19 @@ fn install_with_prompt_capability_and_branch(
                 }),
         );
     if branch_tool {
-        builder.require_feature(Feature::new("BranchTool").session("BranchTool", |names| {
-            Ok(Box::new(crate::timeline_tree::BranchToolPlugin::new(
-                names,
-            )?))
-        }));
+        builder.require_feature(
+            Feature::new("BranchTool")
+                .session("BranchTool", |names| {
+                    Ok(Box::new(crate::timeline_tree::BranchToolPlugin::new(
+                        names,
+                    )?))
+                })
+                .branch("BranchLine", |names| {
+                    Ok(Box::new(crate::timeline_tree::BranchLinePlugin::new(
+                        names,
+                    )?))
+                }),
+        );
     }
 }
 
@@ -214,10 +222,18 @@ pub fn mock_model_hosts(builder: &mut AgentBuilder) {
 
 /// Configure a pure history renderer without installing a duplicate binding.
 pub fn mock_model_hosts_with_history(builder: &mut AgentBuilder, history: HistoryRenderer) {
+    mock_model_hosts_with_model(builder, history, Arc::new(EchoModel));
+}
+
+pub fn mock_model_hosts_with_model(
+    builder: &mut AgentBuilder,
+    history: HistoryRenderer,
+    model: Arc<dyn ModelDriver>,
+) {
     crate::register_names(builder);
     builder
         .session_value(Arc::new(history))
-        .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
+        .process_value(Arc::new(ModelHost(model)))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
@@ -228,6 +244,15 @@ pub fn mock_model_hosts_with_history(builder: &mut AgentBuilder, history: Histor
         );
 }
 pub fn mock_hosts(builder: &mut AgentBuilder) {
-    mock_model_hosts(builder);
+    mock_hosts_with_model(builder, HistoryRenderer::default(), Arc::new(EchoModel));
+}
+
+/// [`mock_hosts`] with `model` answering requests in place of [`EchoModel`].
+pub fn mock_hosts_with_model(
+    builder: &mut AgentBuilder,
+    history: HistoryRenderer,
+    model: Arc<dyn ModelDriver>,
+) {
+    mock_model_hosts_with_model(builder, history, model);
     tool_host(builder, Arc::new(MockTools));
 }

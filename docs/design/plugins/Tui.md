@@ -152,8 +152,9 @@ Unchanged. `serve` builds the daemon tree, loads the loader, reconciles the asse
 ### 3.5 Background command output and member interruption
 
 `/tasks` (`/background`) lists the Session's running commands and members from
-the existing event projection. The transcript remains on main; task identities
-retain their originating branch, with independent event cursors per branch.
+the existing event projection. The list is the Session's, whichever line's
+conversation is shown; task identities retain their originating branch, with
+independent event cursors per branch.
 Enter opens a command's output detail; `x` stops that command through the existing
 `session.exec.stop`. Both read and stop use its actual branch.
 
@@ -419,7 +420,7 @@ None. No client plugin writes to any Timeline or produces model context; user in
 | `Connection` service (client tree) | Rust: `Arc<Connection>` keyed by `TypeKey::of`, provided by `DaemonLink`: a take-once slot holding the protocol v3 `Client` (`rpc`, `typed`, notifications) after `hello`. `Client` is driven through `&mut self` by one owner, so the service hands it over (`take`) rather than sharing it: the session thread of `Tui`, the holding task of `WebHold`, or the one-shot action. `take` yields `None` once taken, or when `start: false` found no daemon (`daemon stop`). The language-neutral contract is the wire protocol itself ([protocol.rs](../../../crates/dim-app-server/src/protocol.rs)); no other language runs in the client tree, so no named binding is defined ([D5](../../adr/002-plugin-scope.md#d5-contracts-are-language-neutral) as in AcpGateway). |
 | `Tui` result | `Leave::Exit(i32)` or `Leave::Restart` delivered to the composition root through a one-shot channel the plugin is constructed with. |
 | `WebHold` input | `port: Option<u16>`, `open_browser: bool`; its result (`Ok(0)` on a signal, the error on the daemon's end) goes to the composition root through a one-shot channel, like `Tui`'s. It holds the entry open; `/web` never loads it. |
-| Daemon RPC used | Existing `hello`, `session.create/attach/submit/history`, `approval.respond`, `web.open`/`web.toggle`/`web.disable`/`web.status`, `daemon.shutdown` and the existing command/member stop paths; optional `session.exec.output` reads the command's bounded capture; `ui.open`/`ui.close`/`ui.status`/`ui.replace` for management, `ui.attach` after each `session.attach` when offered, and the `ui.shutdown` notification (§3.6). |
+| Daemon RPC used | Existing `hello`, `session.create/attach/submit/history`, `session.branch_end`, `approval.respond`, `web.open`/`web.toggle`/`web.disable`/`web.status`, `daemon.shutdown` and the existing command/member stop paths; optional `session.exec.output` reads the command's bounded capture; `ui.open`/`ui.close`/`ui.status`/`ui.replace` for management, `ui.attach` after each `session.attach` when offered, and the `ui.shutdown` notification (§3.6). |
 | Hosted `Tui` (leaf) | rutis host catalog entry `Tui` in the leaf's client tree; its config is the table in §3.6, validated by the entry's schema. Rust-only: no other language hosts it. |
 
 ## 7. Distribution

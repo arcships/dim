@@ -62,6 +62,9 @@ impl Declared {
             .map_err(|error| format!("default document is invalid: {error}"))?;
         Ok(declared)
     }
+    pub(super) fn declaration(&self) -> &SourceDeclaration {
+        &self.declaration
+    }
     pub(super) fn files(&self) -> (String, Option<String>) {
         (
             self.declaration.user_file.clone(),
@@ -108,6 +111,42 @@ impl Format for Declared {
         })
     }
 }
+/// The document an agent may read (§1.2): every member reachable through
+/// `properties` whose schema has `writeOnly: true` is removed, and the JSON
+/// Pointers of those that held a value are returned in schema order.
+pub fn without_write_only(schema: &Value, mut document: Value) -> (Value, Vec<String>) {
+    fn hide(schema: &Value, value: &mut Value, at: &str, set: &mut Vec<String>) {
+        let (Some(properties), Value::Object(members)) =
+            (schema.get("properties").and_then(Value::as_object), value)
+        else {
+            return;
+        };
+        for (name, property) in properties {
+            let path = format!("{at}/{}", name.replace('~', "~0").replace('/', "~1"));
+            if property.get("writeOnly") == Some(&Value::Bool(true)) {
+                if members.remove(name).is_some() {
+                    set.push(path);
+                }
+            } else if let Some(member) = members.get_mut(name) {
+                hide(property, member, &path, set);
+            }
+        }
+    }
+    let mut set = Vec::new();
+    hide(schema, &mut document, "", &mut set);
+    (document, set)
+}
+
+/// Whether `schema`, or a member reachable from it through `properties`, has
+/// `writeOnly: true`: an agent may not write a value there (§1.2).
+pub fn holds_write_only(schema: &Value) -> bool {
+    schema.get("writeOnly") == Some(&Value::Bool(true))
+        || schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .is_some_and(|properties| properties.values().any(holds_write_only))
+}
+
 /// Fills missing members that have a `default`, through `properties` only.
 fn fill(schema: &Value, value: &mut Value) {
     let (Some(properties), Value::Object(members)) =

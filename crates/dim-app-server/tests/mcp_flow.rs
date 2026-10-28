@@ -3,7 +3,7 @@ use dim_agent_runtime::Names;
 use dim_agent_runtime::wait_active;
 use dim_app_server::{
     mcp::{
-        McpChange, McpError, McpPlugin, McpService,
+        McpChange, McpError, McpPlugin, McpService, McpSource,
         config::{McpServerSettings, McpSettings},
     },
     settings::{
@@ -552,9 +552,9 @@ async fn directory_preserves_scope_and_cas_through_plugin_management() {
     assert!(user.servers["shared"].enabled());
     let project = mcp.catalog(Some(1), &cancel).await.unwrap();
     assert_eq!(project.servers.len(), 2);
-    assert_eq!(project.servers["shared"].source, SettingsScope::Project(1));
+    assert_eq!(project.servers["shared"].source, McpSource::Project(1));
     assert!(!project.servers["shared"].enabled());
-    assert_eq!(project.servers["user-only"].source, SettingsScope::User);
+    assert_eq!(project.servers["user-only"].source, McpSource::User);
     assert!(matches!(
         project.servers["shared"].configuration,
         McpServerSettings::Remote { .. }
@@ -597,7 +597,7 @@ async fn directory_preserves_scope_and_cas_through_plugin_management() {
         serde_json::from_slice(&fs::read(fixture.home.join("project/.mcp.json")).unwrap()).unwrap();
     assert_eq!(persisted["projectExtension"], "keep");
     let revealed = mcp.catalog(Some(1), &cancel).await.unwrap();
-    assert_eq!(revealed.servers["shared"].source, SettingsScope::User);
+    assert_eq!(revealed.servers["shared"].source, McpSource::User);
     assert!(revealed.servers["shared"].enabled());
 
     let new_server =

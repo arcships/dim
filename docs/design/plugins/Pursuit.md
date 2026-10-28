@@ -43,7 +43,7 @@ Clients read it all from the working branch's events ([Goal A.3](Goal.md#a3-read
 | `goal.ts` | The fold reads `judge` (from the `set`, kept by `edit`); under the evaluator judge a worker `completed` block is a request and leaves the status unchanged, `active` while the goal runs (the exception in Goal A16). The request is neither `set` nor `resume`, so it does not move `A`: the count stays the continuations after `max(A, last_operator)` ([Goal §2](Goal.md#2-data-and-state)). Goal's `decided` also counts the `branch/create` for `goal:evaluate:N` as `N`'s decision. The decisions and texts below |
 | `branch.ts` | Adds the Dispatcher keys `branch/create` and `branch/create-failed`; creates the evaluator; on an evaluator branch, takes the evaluator role (§4.2) |
 
-No new service, injection, Settings field or event type. The evaluator branch is an ordinary host-sourced child; its first Queue input is the prompt ([TimelineTree `first_input`](../../../crates/dim-agent-capabilities/src/timeline_tree.rs)). Goal there has no goal of its own and writes the start `clear` as on any child ([Goal §3.4](Goal.md#34-a-new-branch-clears-the-inherited-goal)), so it never continues.
+No new service, Settings field or event type, and no new injection beyond Goal's `sessionLifecycle` (§13). The evaluator branch is an ordinary host-sourced child; its first Queue input is the prompt ([TimelineTree `first_input`](../../../crates/dim-agent-capabilities/src/timeline_tree.rs)). Goal there has no goal of its own and writes the start `clear` as on any child ([Goal §3.4](Goal.md#34-a-new-branch-clears-the-inherited-goal)), so it never continues.
 
 ## 4. Decisions in Goal
 
@@ -178,6 +178,7 @@ Decided with [Timeline branches](../timeline-branches.md) ([#427](https://github
 Interfaces:
 
 - Goal's branch part adds the Dispatcher key `branch/ended`.
+- Goal's branch part injects `sessionLifecycle` (`activated()`): an end at load waits for the Session to publish the lines its restore opens (E2).
 - The branch TypeScript binding exposes `end(id, source)` and `TimelineInfo.source` in the places that expose `create` and `input` today:
   - the generated `npm/branch-services.d.ts`;
   - the `treeCommands` row of the [binding table](../branch-typescript.md);

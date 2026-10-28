@@ -1,6 +1,6 @@
 {
   "name": "dimcode",
-  "version": "0.1.0-alpha.6",
+  "version": "0.1.0-alpha.8",
   "description": "Dim Rust coding agent CLI",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/arcships/dim.git" },
@@ -12,12 +12,12 @@
   "peerDependencies": { "@arcships/rutis": "~0.17.0" },
   "peerDependenciesMeta": { "@arcships/rutis": { "optional": true } },
   "optionalDependencies": {
-    "dimcode-web": "0.1.0-alpha.6",
-    "dimcode-darwin-arm64": "0.1.0-alpha.6",
-    "dimcode-darwin-x64": "0.1.0-alpha.6",
-    "dimcode-linux-arm64": "0.1.0-alpha.6",
-    "dimcode-linux-x64": "0.1.0-alpha.6",
-    "dimcode-windows-arm64": "0.1.0-alpha.6",
-    "dimcode-windows-x64": "0.1.0-alpha.6"
+    "dimcode-web": "0.1.0-alpha.8",
+    "dimcode-darwin-arm64": "0.1.0-alpha.8",
+    "dimcode-darwin-x64": "0.1.0-alpha.8",
+    "dimcode-linux-arm64": "0.1.0-alpha.8",
+    "dimcode-linux-x64": "0.1.0-alpha.8",
+    "dimcode-windows-arm64": "0.1.0-alpha.8",
+    "dimcode-windows-x64": "0.1.0-alpha.8"
   }
 }

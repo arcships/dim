@@ -58,18 +58,17 @@ fn in_multiplexer() -> bool {
         || term.starts_with("tmux")
 }
 
-/// Names the window after the product. Apple Terminal keeps no title stack
-/// and is set with OSC 2; elsewhere the shell's title is pushed first.
+/// Names the window after the product (`ui::title`). Apple Terminal keeps
+/// no title stack; elsewhere the shell's title is pushed first.
 fn set_title() -> io::Result<()> {
-    let term = std::env::var("TERM").unwrap_or_default();
-    let apple = std::env::var("TERM_PROGRAM").is_ok_and(|v| v == "Apple_Terminal")
-        || term.starts_with("nsterm");
-    let bytes: &[u8] = if apple {
-        b"\x1b]2;DIM\x07"
+    let apple = crate::ui::title::apple_terminal();
+    let mut bytes = if apple {
+        Vec::new()
     } else {
-        b"\x1b[22;0t\x1b]0;DIM\x07"
+        b"\x1b[22;0t".to_vec()
     };
-    sys::write_all(sys::STDOUT, bytes)?;
+    bytes.extend(crate::ui::title::sequence(crate::ui::title::BASE, apple));
+    sys::write_all(sys::STDOUT, &bytes)?;
     modes::mark(Mode::Title);
     Ok(())
 }

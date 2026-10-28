@@ -54,6 +54,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "1-9 select · Tab next · Esc decline" => "1-9 elegir · Tab siguiente · Esc declinar",
         "Question" => "Pregunta",
         "Question on branch {branch}" => "Pregunta en la rama {branch}",
+        "Permission on branch {branch}" => "Permiso en la rama {branch}",
         "Sending answer…" => "Enviando respuesta…",
         "Question not ready; press Enter to send again" => "Pregunta no lista; Enter para reenviar",
         // prompts.rs: AskUser

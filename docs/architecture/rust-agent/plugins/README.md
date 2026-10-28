@@ -37,7 +37,7 @@ dependency is not necessarily a plugin with the same name.
 | [ShellInput](ShellInput.md) | — | ShellInput | — |
 | [Attachments](Attachments.md) | — | Attachments | — |
 | [Questions](Questions.md) | — | Questions | — |
-| [BranchTool](BranchTool.md) | — | BranchTool | — |
+| [BranchTool](BranchTool.md) | — | BranchTool, BranchLine | — |
 | [ContextPreparation](ContextPreparation.md) | — | — | ContextPreparation |
 | [Prompt](Prompt.md) | — | — | Prompt |
 | [Loop](Loop.md) | — | — | Loop |

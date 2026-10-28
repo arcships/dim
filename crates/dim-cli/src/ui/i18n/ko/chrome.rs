@@ -15,6 +15,26 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "브랜치 기록 불완전, 모두 중지 불가"
         }
         "Running" => "실행 중",
+        "Lines" => "라인",
+        "Enter show the line · x end it · Esc close" => "Enter 라인 보기 · x 종료 · Esc 닫기",
+        "This session has no lines." => "이 세션에는 아직 라인이 없습니다.",
+        "No matching lines." => "일치하는 라인이 없습니다.",
+        "the session itself" => "세션 자체",
+        "working" => "작업 중",
+        "ended itself" => "스스로 종료됨",
+        "ended by an operation" => "작업으로 종료됨",
+        "ended with {id}" => "{id}와 함께 종료됨",
+        "creation failed" => "생성 실패",
+        "shown" => "표시 중",
+        "line" => "라인",
+        "line {id}" => "라인 {id}",
+        "follow, talk to and end this session's lines" => "이 세션의 라인을 보고, 대화하고, 종료",
+        "End line" => "라인 종료",
+        "y/N" => "y/N",
+        "main is the session itself; a line ends, main does not" => {
+            "main은 세션 자체입니다. 라인은 종료되지만 main은 그렇지 않습니다"
+        }
+        "Line has ended:" => "라인이 종료되었습니다:",
         "Starting" => "시작 중",
         "Delegation result" => "위임 결과",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {

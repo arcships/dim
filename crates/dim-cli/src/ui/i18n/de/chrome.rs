@@ -15,6 +15,30 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Zweigverlauf unvollständig; Alle-stoppen nicht verfügbar"
         }
         "Running" => "Läuft",
+        "Lines" => "Zweige",
+        "Enter show the line · x end it · Esc close" => {
+            "Enter Zweig anzeigen · x beenden · Esc schließen"
+        }
+        "This session has no lines." => "Diese Sitzung hat keine Zweige.",
+        "No matching lines." => "Keine passenden Zweige.",
+        "the session itself" => "die Sitzung selbst",
+        "working" => "arbeitet",
+        "ended itself" => "hat sich selbst beendet",
+        "ended by an operation" => "durch einen Vorgang beendet",
+        "ended with {id}" => "mit {id} beendet",
+        "creation failed" => "Erstellung fehlgeschlagen",
+        "shown" => "angezeigt",
+        "line" => "Zweig",
+        "line {id}" => "Zweig {id}",
+        "follow, talk to and end this session's lines" => {
+            "Zweige dieser Sitzung verfolgen, ansprechen und beenden"
+        }
+        "End line" => "Zweig beenden",
+        "y/N" => "y/N",
+        "main is the session itself; a line ends, main does not" => {
+            "main ist die Sitzung selbst; ein Zweig endet, main nicht"
+        }
+        "Line has ended:" => "Zweig wurde beendet:",
         "Starting" => "Startet",
         "Delegation result" => "Delegationsergebnis",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {

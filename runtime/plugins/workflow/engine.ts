@@ -390,7 +390,7 @@ export class Workflow {
         else if (reply.error.code === 'ambiguous') {
           run.report = { state: 'delivered' }
           log(run, 'Duplicate report violation: input ambiguous')
-        } else if (['session_closed', 'branch_missing', 'rejected'].includes(reply.error.code)) {
+        } else if (['session_closed', 'branch_missing', 'branch_ended', 'rejected'].includes(reply.error.code)) {
           run.report = { state: 'undeliverable', reason: reply.error.code }
           if (reply.error.code === 'rejected') log(run, 'Invalid report rejected')
         } else {

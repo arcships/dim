@@ -15,6 +15,30 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Historique incomplet; arrêt global indisponible"
         }
         "Running" => "En cours",
+        "Lines" => "Lignes",
+        "Enter show the line · x end it · Esc close" => {
+            "Enter afficher la ligne · x la terminer · Esc fermer"
+        }
+        "This session has no lines." => "Cette session n'a aucune ligne.",
+        "No matching lines." => "Aucune ligne correspondante.",
+        "the session itself" => "la session elle-même",
+        "working" => "en travail",
+        "ended itself" => "s'est terminée",
+        "ended by an operation" => "terminée par une opération",
+        "ended with {id}" => "terminée avec {id}",
+        "creation failed" => "création échouée",
+        "shown" => "affichée",
+        "line" => "ligne",
+        "line {id}" => "ligne {id}",
+        "follow, talk to and end this session's lines" => {
+            "suivre, dialoguer et terminer les lignes de cette session"
+        }
+        "End line" => "Terminer la ligne",
+        "y/N" => "y/N",
+        "main is the session itself; a line ends, main does not" => {
+            "main est la session elle-même ; une ligne se termine, pas main"
+        }
+        "Line has ended:" => "La ligne est terminée :",
         "Starting" => "Démarrage",
         "Delegation result" => "Résultat de délégation",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {

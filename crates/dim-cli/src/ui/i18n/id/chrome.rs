@@ -15,6 +15,30 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Riwayat cabang belum lengkap; stop-semua tak tersedia"
         }
         "Running" => "Berjalan",
+        "Lines" => "Jalur",
+        "Enter show the line · x end it · Esc close" => {
+            "Enter lihat jalur · x hentikan · Esc tutup"
+        }
+        "This session has no lines." => "Sesi ini belum punya jalur.",
+        "No matching lines." => "Tidak ada jalur yang cocok.",
+        "the session itself" => "sesi itu sendiri",
+        "working" => "bekerja",
+        "ended itself" => "berakhir sendiri",
+        "ended by an operation" => "diakhiri operasi",
+        "ended with {id}" => "diakhiri bersama {id}",
+        "creation failed" => "pembuatan gagal",
+        "shown" => "ditampilkan",
+        "line" => "jalur",
+        "line {id}" => "jalur {id}",
+        "follow, talk to and end this session's lines" => {
+            "ikuti, ajak bicara, dan akhiri jalur sesi ini"
+        }
+        "End line" => "Akhiri jalur",
+        "y/N" => "y/N",
+        "main is the session itself; a line ends, main does not" => {
+            "main adalah sesi itu sendiri; jalur bisa berakhir, main tidak"
+        }
+        "Line has ended:" => "Jalur sudah berakhir:",
         "Starting" => "Memulai",
         "Delegation result" => "Hasil delegasi",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {

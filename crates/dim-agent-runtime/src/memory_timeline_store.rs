@@ -1,6 +1,6 @@
 use crate::{
-    AgentError, BoxFuture, PublishCallback, Result, SessionConfig, StoredBranch, StoredEvent,
-    TimelineInfo, TimelineKey, TimelineStore, TimelineTrace,
+    AgentError, BoxFuture, BranchRecord, PublishCallback, Result, SessionConfig, StoredBranch,
+    StoredEvent, TimelineKey, TimelineStore, TimelineTrace,
 };
 use dim_agent_types::{BranchCreateAt, EventKind, RecoverySnapshot};
 use std::{collections::BTreeMap, ops::RangeInclusive, sync::Mutex};
@@ -13,7 +13,7 @@ struct MemorySession {
     branches: BTreeMap<String, MemoryBranch>,
 }
 struct MemoryBranch {
-    info: TimelineInfo,
+    info: BranchRecord,
     events: Vec<StoredEvent>,
     snapshots: BTreeMap<(String, u64), RecoverySnapshot>,
 }
@@ -42,7 +42,7 @@ impl TimelineStore for MemoryTimelineStore {
             session.branches.insert(
                 "main".into(),
                 MemoryBranch {
-                    info: TimelineInfo {
+                    info: BranchRecord {
                         id: "main".into(),
                         parent: None,
                         branch_point: None,
@@ -125,7 +125,7 @@ impl TimelineStore for MemoryTimelineStore {
                 session.branches.insert(
                     data.branch.clone(),
                     MemoryBranch {
-                        info: TimelineInfo {
+                        info: BranchRecord {
                             id: data.branch.clone(),
                             parent: Some(key.branch_id.clone()),
                             branch_point: Some(match data.at {

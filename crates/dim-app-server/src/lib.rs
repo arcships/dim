@@ -666,6 +666,16 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         }
         None => None,
     };
+    let plugin_content = match &plugins {
+        Some(state) => {
+            let build = rutis_loader::resolve::Build::default();
+            let names = dim_agent_runtime::Names::copy(builder.catalog(), &build);
+            let owners = plugin_manager::Owners::new(root.clone(), &names)
+                .map_err(|error| ServerError::Configuration(error.to_string()))?;
+            Some((state.clone(), owners))
+        }
+        None => None,
+    };
     let session_parts = config
         .session_typescript
         .as_ref()
@@ -990,6 +1000,9 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             Err(cleanup) => error.with_cleanup(cleanup.into()),
         }
         .into());
+    }
+    if let Some((state, owners)) = &plugin_content {
+        state.startup_content(owners).await;
     }
     let addresses = root
         .get::<ListenAddresses>()

@@ -79,32 +79,51 @@ impl Connection {
     ) -> Result<Reply, RpcError> {
         let session = self.session(rpc, &params.session_id)?;
         let branch = params.branch_id.as_deref().expect("validated branchId");
-        let mut dispatched = session.dispatch_watch(branch).map_err(RpcError::from)?;
+        let mut dispatched = match session.dispatch_watch(branch) {
+            Ok(dispatched) => Some(dispatched),
+            Err(AgentError::BranchEnded(_)) => None,
+            Err(error) => return Err(RpcError::from(error)),
+        };
+        let head = session.sequence(branch).map_err(RpcError::from)?;
+        let position = dispatched
+            .as_ref()
+            .map_or(head, |dispatched| dispatched.borrow().sequence);
         let through = match params.through {
             Some(through) => {
-                if through > dispatched.borrow().sequence {
+                if through > position {
                     return Err(RpcError::invalid("Future dispatched history position"));
                 }
                 through
             }
-            None => session.sequence(branch).map_err(RpcError::from)?,
+            None => head,
         };
         if params.after > through {
             return Err(RpcError::invalid("History cursor exceeds fixed position"));
         }
-        loop {
-            let state = dispatched.borrow().clone();
-            if let Some(error) = state.failure {
-                return Err(RpcError::from(error));
-            }
-            if state.sequence >= through {
-                break;
-            }
-            tokio::select! {
-                biased;
-                _ = self.closed.cancelled() => return Err(RpcError::wire(-32000, "Connection closed")),
-                _ = rpc.unloading.cancelled() => return Err(RpcError::reloading()),
-                changed = dispatched.changed() => changed.map_err(|_| RpcError::closed())?,
+        if let Some(dispatched) = &mut dispatched {
+            loop {
+                let state = dispatched.borrow().clone();
+                if let Some(error) = state.failure {
+                    return Err(RpcError::from(error));
+                }
+                if state.sequence >= through {
+                    break;
+                }
+                tokio::select! {
+                    biased;
+                    _ = self.closed.cancelled() => return Err(RpcError::wire(-32000, "Connection closed")),
+                    _ = rpc.unloading.cancelled() => return Err(RpcError::reloading()),
+                    changed = dispatched.changed() => {
+                        if changed.is_err() {
+                            // The line ended while the call waited: its stored
+                            // head is complete and a read of it serves that.
+                            if session.ended_head(branch).is_none() {
+                                return Err(RpcError::closed());
+                            }
+                            break;
+                        }
+                    }
+                }
             }
         }
         let events = session
@@ -124,6 +143,24 @@ impl Connection {
             next_after,
             done: next_after == through,
         }))
+    }
+
+    pub(super) async fn end_branch(
+        &self,
+        rpc: &RpcService,
+        params: BranchEnd,
+    ) -> Result<Reply, RpcError> {
+        let session = self.session(rpc, &params.session_id)?;
+        session
+            .end_branch(
+                &params.branch_id,
+                BranchSource::Host {
+                    operation_id: uuid::Uuid::new_v4().to_string(),
+                },
+            )
+            .await
+            .map_err(RpcError::from)?;
+        Ok(Reply::empty())
     }
 
     pub(super) async fn create_branch(

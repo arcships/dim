@@ -126,3 +126,94 @@ fn a_fork_records_its_copy_boundary_as_an_internal_fact() {
     });
     assert!(v1::EventRef::new(&event).is_none());
 }
+
+#[test]
+fn an_end_command_and_its_result_are_internal_branch_facts() {
+    let tool = BranchSource::Tool {
+        turn_id: "turn".into(),
+        request_id: "request".into(),
+        call_id: "call".into(),
+    };
+    let host = BranchSource::Host {
+        operation_id: "goal:evaluate:9".into(),
+    };
+    let cases = [
+        (
+            EventKind::BranchEnd(BranchEndData {
+                source: tool.clone(),
+                ancestor: None,
+            }),
+            "branch/end",
+            json!({"type":"branch","name":"end","data":{"source":{"kind":"tool","turn_id":"turn","request_id":"request","call_id":"call"}}}),
+        ),
+        (
+            EventKind::BranchEnd(BranchEndData {
+                source: host.clone(),
+                ancestor: Some("parent".into()),
+            }),
+            "branch/end",
+            json!({"type":"branch","name":"end","data":{"source":{"kind":"host","operation_id":"goal:evaluate:9"},"ancestor":"parent"}}),
+        ),
+        (
+            EventKind::BranchEnded(BranchEndedData {
+                branch: "child".into(),
+                end_event: 9,
+                source: host.clone(),
+                ancestor: None,
+            }),
+            "branch/ended",
+            json!({"type":"branch","name":"ended","data":{"branch":"child","endEvent":9,"source":{"kind":"host","operation_id":"goal:evaluate:9"}}}),
+        ),
+    ];
+    for (kind, key, payload) in cases {
+        assert_eq!(kind.key(), key);
+        assert!(!kind.is_control());
+        let event = Arc::new(AgentEvent {
+            id: "end-event".into(),
+            sequence: 9,
+            create_at: 1750000000123,
+            tags: None,
+            kind,
+        });
+        assert_eq!(serde_json::to_value(&event.kind).unwrap(), payload);
+        let mut envelope = payload.clone();
+        envelope["id"] = json!(event.id);
+        envelope["sequence"] = json!(event.sequence);
+        envelope["create_at"] = json!(event.create_at);
+        assert_eq!(serde_json::to_value(&*event).unwrap(), envelope);
+        assert_eq!(
+            serde_json::from_value::<AgentEvent>(envelope).unwrap(),
+            *event
+        );
+        assert!(v1::EventRef::new(&event).is_none());
+        assert!(v1::SharedEvent::new(event.clone()).is_none());
+        assert!(
+            serde_json::from_value::<v1::AgentEvent>(serde_json::to_value(&*event).unwrap())
+                .is_err()
+        );
+    }
+    for data in [
+        json!({"source":{"kind":"tool","turn_id":"turn","request_id":"request","call_id":"call"},"ancestor":null}),
+        json!({"ancestor":"parent"}),
+        json!({"source":{"kind":"host","operation_id":"goal:evaluate:9"},"unknown":1}),
+    ] {
+        assert!(
+            serde_json::from_value::<EventKind>(json!({"type":"branch","name":"end","data":data}))
+                .is_err()
+        );
+    }
+    for data in [
+        json!({"branch":"child","endEvent":-1,"source":{"kind":"host","operation_id":"op"}}),
+        json!({"branch":"child","endEvent":JS_MAX_SAFE_INTEGER+1,"source":{"kind":"host","operation_id":"op"}}),
+        json!({"branch":"child","source":{"kind":"host","operation_id":"op"}}),
+        json!({"endEvent":9,"source":{"kind":"host","operation_id":"op"}}),
+        json!({"branch":"child","endEvent":9,"source":{"kind":"host","operation_id":"op"},"ancestor":null}),
+    ] {
+        assert!(
+            serde_json::from_value::<EventKind>(
+                json!({"type":"branch","name":"ended","data":data})
+            )
+            .is_err()
+        );
+    }
+}

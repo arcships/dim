@@ -11,10 +11,12 @@ const SKILL_FILENAME: &str = "SKILL.md";
 const MAX_SCAN_FILES: usize = 1000;
 const MAX_DEPTH: usize = 10;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RootKind {
     User,
     Project,
+    /// A plugin's skills root, registered under the plugin id.
+    Plugin(String),
 }
 
 /// One scanned root: parsed skills in traversal order and per-file issues.
@@ -91,7 +93,7 @@ impl Scan<'_> {
             match std::fs::metadata(&manifest) {
                 Ok(meta) if meta.is_file() => {
                     self.count += 1;
-                    match parse_skill(&manifest, &path, self.root, self.kind) {
+                    match parse_skill(&manifest, &path, self.root, &self.kind) {
                         Ok(skill) => self.snapshot.skills.push(Arc::new(skill)),
                         Err(issue) => self.snapshot.issues.push(issue),
                     }
@@ -104,7 +106,7 @@ impl Scan<'_> {
 }
 
 /// Mirrors TS `getSkillId`.
-fn skill_id(skill_dir: &Path, root: &Path, kind: RootKind) -> String {
+fn skill_id(skill_dir: &Path, root: &Path, kind: &RootKind) -> String {
     let rel = skill_dir
         .strip_prefix(root)
         .unwrap_or(skill_dir)
@@ -123,6 +125,7 @@ fn skill_id(skill_dir: &Path, root: &Path, kind: RootKind) -> String {
             "workspace:{}:{rel}",
             root.to_string_lossy().replace('\\', "/")
         ),
+        RootKind::Plugin(plugin) => format!("plugin:{plugin}:{rel}"),
     }
 }
 
@@ -130,7 +133,7 @@ fn parse_skill(
     manifest: &Path,
     skill_dir: &Path,
     root: &Path,
-    kind: RootKind,
+    kind: &RootKind,
 ) -> Result<SkillDefinition, SkillIssue> {
     let invalid = |reason: &str| SkillIssue::InvalidManifest {
         path: manifest.to_owned(),

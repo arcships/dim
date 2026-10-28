@@ -4,7 +4,7 @@ members = ["crates/dim-agent-types", "crates/dim-agent-runtime", "crates/dim-age
 exclude = ["vendor/aimux", "vendor/grok-build"]
 
 [workspace.package]
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.8"
 edition = "2024"
 license = "MIT"
 rust-version = "1.98"

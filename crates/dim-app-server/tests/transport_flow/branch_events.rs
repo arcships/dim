@@ -37,12 +37,20 @@ async fn both_transports_encode_the_v1_branch_create_boundary_live() {
             .unwrap();
         session.idle(&child).await.unwrap();
         let events = session.local("main", ..).await.unwrap();
-        let create = events.last().unwrap();
+        let create = events
+            .iter()
+            .find(|event| matches!(&event.kind, EventKind::BranchCreate(data) if data.branch == child))
+            .unwrap();
         assert!(
             matches!(&create.kind, EventKind::BranchCreate(data) if data.at == BranchCreateAt::Create {} && data.branch == child)
         );
+        let through_create: Vec<_> = events
+            .iter()
+            .filter(|event| event.sequence <= create.sequence)
+            .cloned()
+            .collect();
         let notices = receive_events_through(&mut live, create.sequence).await;
-        assert_eq!(notices, v1_events(&events, high));
+        assert_eq!(notices, v1_events(&through_create, high));
         assert!(notices[0]["data"].get("at").is_none());
         assert_eq!(notices[0]["sequence"], create.sequence);
         let local = session.local(&child, ..).await.unwrap();

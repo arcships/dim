@@ -22,10 +22,10 @@ use crate::args::Options;
 use crate::client::{self, Client, Message};
 use crate::model::session::{
     Account, Command, DraftPart, ModelItem, ModelList, ModelPolicyUpdate, OauthEvent, OauthStart,
-    ProviderAction, ProviderEntry, SessionItem, SessionPort, SubagentModelPolicy, SwitchKind,
-    Update,
+    PluginItem, PluginReply, ProviderAction, ProviderEntry, SessionItem, SessionPort,
+    SubagentModelPolicy, SwitchKind, Update,
 };
-use crate::model::view::{TaskOutputState, TaskTarget, WorkflowInventory};
+use crate::model::view::{LineState, LineView, TaskOutputState, TaskTarget, WorkflowInventory};
 use crate::projection::Projection;
 use crate::wire::{Configuration, Event, EventContent, Progress};
 use crate::{configure, mcp, permission, update};
@@ -165,6 +165,31 @@ impl SessionHost {
     }
 }
 
+struct LineProjection {
+    projection: Projection,
+    cursor: u64,
+}
+
+impl LineProjection {
+    fn new(branch: &str) -> Self {
+        Self {
+            projection: Projection::for_branch(branch),
+            cursor: 0,
+        }
+    }
+}
+
+fn transcript_mut<'a>(
+    main: &'a mut Projection,
+    lines: &'a mut std::collections::BTreeMap<String, LineProjection>,
+    branch: &str,
+) -> Option<&'a mut Projection> {
+    if let Some(line) = lines.get_mut(branch) {
+        return Some(&mut line.projection);
+    }
+    (branch == "main").then_some(main)
+}
+
 /// The session the worker is attached to and what the screen shows of it.
 struct Worker {
     options: Options,
@@ -176,6 +201,9 @@ struct Worker {
     /// Highest event sequence applied; replayed or duplicate events are skipped.
     cursors: std::collections::HashMap<String, u64>,
     projection_id: u64,
+    focus: String,
+    /// One transcript per line the user opened, folded from its events.
+    lines: std::collections::BTreeMap<String, LineProjection>,
     task_history: std::collections::HashMap<String, BranchHistory>,
     task_history_queue: std::collections::VecDeque<String>,
     /// A stale request still occupies this slot until its reply arrives.
@@ -271,6 +299,8 @@ async fn run(
         question_responses: Vec::new(),
         cursors: Default::default(),
         projection_id: 0,
+        focus: "main".into(),
+        lines: Default::default(),
         task_history: Default::default(),
         task_history_queue: Default::default(),
         task_history_request: None,
@@ -617,7 +647,7 @@ impl Worker {
     async fn submit(&mut self, text: String, mode: &str) {
         let params = json!({
             "sessionId": self.session_id,
-            "branchId": "main",
+            "branchId": self.focus,
             "submissionId": uuid::Uuid::new_v4().to_string(),
             "text": text,
             "mode": mode,
@@ -674,7 +704,7 @@ impl Worker {
         }
         let mut params = json!({
             "sessionId": self.session_id,
-            "branchId": "main",
+            "branchId": self.focus,
             "submissionId": uuid::Uuid::new_v4().to_string(),
             "mode": "queue",
         });
@@ -696,10 +726,38 @@ impl Worker {
         match command {
             Command::Submit(text) => self.submit(text, "queue").await,
             Command::SubmitDraft(parts) => self.submit_draft(parts).await,
+            Command::FocusLine(line) => self.focus_line(line).await,
+            Command::EndLine {
+                session_id,
+                projection_id,
+                branch_id,
+            } => {
+                if branch_id == "main" {
+                    self.send(Update::Notice(
+                        "main is the session itself; a line ends, main does not".into(),
+                    ));
+                } else if self.session_id.is_empty()
+                    || session_id != self.session_id
+                    || projection_id != self.projection_id
+                {
+                    self.send(Update::Notice(
+                        "Session attachment changed; reopen the lines before ending one".into(),
+                    ));
+                } else {
+                    let result = self
+                        .client
+                        .rpc(
+                            "session.branch_end",
+                            json!({"sessionId": self.session_id, "branchId": branch_id}),
+                        )
+                        .await;
+                    self.report_failure(result);
+                }
+            }
             Command::Stop => {
                 let params = json!({
                     "sessionId": self.session_id,
-                    "branchId": "main",
+                    "branchId": self.focus,
                     "reason": "TUI interrupted",
                 });
                 let result = self.client.rpc("session.stop", params).await;
@@ -966,7 +1024,7 @@ impl Worker {
                 }
                 let params = json!({
                     "sessionId": self.session_id,
-                    "branchId": "main",
+                    "branchId": self.focus,
                     "runId": run_id,
                     "command": command,
                     "mode": if private { "private" } else { "record" },
@@ -991,6 +1049,24 @@ impl Worker {
                 if let Err(error) = result {
                     self.report(mcp::error(error).to_string(), true);
                 }
+            }
+            Command::ListPlugins => {
+                let plugins = self.plugins().await;
+                self.send(Update::Plugins(plugins));
+            }
+            Command::Plugin(action) => {
+                let (method, params) = crate::plugin_command::call(&action);
+                let result = self
+                    .client
+                    .typed::<PluginReply>(method, params)
+                    .await
+                    .map_err(|error| error.to_string());
+                let plugins = self.plugins().await;
+                self.send(Update::PluginResult {
+                    action,
+                    result,
+                    plugins,
+                });
             }
             Command::Configure(text) => {
                 let model = self.model.clone();
@@ -1104,11 +1180,12 @@ impl Worker {
             Command::InputControl { input_id, action } => {
                 let mut params = json!({
                     "sessionId": self.session_id,
-                    "branchId": "main",
+                    "branchId": self.focus,
                     "inputId": input_id,
                 });
                 if action == "steer" {
-                    let Some(user) = self.projection.held_input(&input_id) else {
+                    let user = self.shown().held_input(&input_id).cloned();
+                    let Some(user) = user else {
                         self.send(Update::Notice(QUEUE_LEFT.into()));
                         return Ok(());
                     };
@@ -1274,8 +1351,12 @@ impl Worker {
             }
             "session.model.progress" => {
                 let notice: Progress = serde_json::from_value(params)?;
-                if notice.session_id == self.session_id && notice.branch_id == "main" {
-                    self.projection.progress(&notice);
+                if notice.session_id == self.session_id {
+                    if let Some(transcript) =
+                        transcript_mut(&mut self.projection, &mut self.lines, &notice.branch_id)
+                    {
+                        transcript.progress(&notice);
+                    }
                     self.changed();
                 } else if notice.branch_id == "main" && self.observes_member(&notice.session_id) {
                     let session_id = notice.session_id.clone();
@@ -1290,8 +1371,10 @@ impl Worker {
                         .get_mut(&notice.branch_id)
                         .expect("discovered branch")
                         .running = Some(notice.running);
-                    if notice.branch_id == "main" {
-                        self.projection.set_running(notice.running);
+                    if let Some(transcript) =
+                        transcript_mut(&mut self.projection, &mut self.lines, &notice.branch_id)
+                    {
+                        transcript.set_running(notice.running);
                     }
                     self.changed();
                 } else if notice.branch_id == "main" && self.observes_member(&notice.session_id) {
@@ -1570,6 +1653,17 @@ impl Worker {
                 self.report(mcp::error(error).to_string(), true);
             }
         }
+    }
+
+    /// The `/plugins` list: every name `plugin.list` returns.
+    async fn plugins(&mut self) -> Result<Vec<PluginItem>, String> {
+        if !self.client.supports(&["plugin.list"]) {
+            return Err("This daemon cannot manage plugins".into());
+        }
+        self.client
+            .typed("plugin.list", json!({}))
+            .await
+            .map_err(|error| error.to_string())
     }
 
     /// The `/connect` list: every static provider the App Server knows (the
@@ -2359,6 +2453,12 @@ impl Worker {
 
     fn apply(&mut self, branch_id: &str, event: Event) {
         self.discover_task_branches(&event);
+        if let Some(line) = self.lines.get_mut(branch_id)
+            && event.sequence > line.cursor
+        {
+            line.cursor = event.sequence;
+            line.projection.apply(branch_id, &event);
+        }
         let cursor = self.cursors.entry(branch_id.to_owned()).or_default();
         if event.sequence <= *cursor {
             return;
@@ -2420,6 +2520,54 @@ impl Worker {
         Ok(())
     }
 
+    fn line_views(&self) -> Vec<LineView> {
+        let mut lines = vec![LineView {
+            id: "main".into(),
+            parent: None,
+            purpose: String::new(),
+            state: LineState::Main,
+        }];
+        lines.extend(
+            self.projection
+                .line_views()
+                .iter()
+                .cloned()
+                .map(|mut line| {
+                    if line.state == LineState::Waiting
+                        && self
+                            .task_history
+                            .get(&line.id)
+                            .and_then(|history| history.running)
+                            == Some(true)
+                    {
+                        line.state = LineState::Working;
+                    }
+                    line
+                }),
+        );
+        lines
+    }
+
+    async fn focus_line(&mut self, line: String) {
+        if line != "main" && !self.task_history.contains_key(&line) {
+            self.send(Update::Notice(format!("No line {line} in this session")));
+            return;
+        }
+        if line != "main" {
+            self.line_projection(&line);
+        }
+        self.focus = line;
+        self.publish();
+    }
+
+    /// The transcript the screen shows: the focused line's, or `main`'s.
+    fn shown(&self) -> &Projection {
+        self.lines
+            .get(&self.focus)
+            .filter(|_| self.focus != "main")
+            .map_or(&self.projection, |line| &line.projection)
+    }
+
     /// Schedules a snapshot a frame interval after the first change.
     fn changed(&mut self) {
         self.publish_at
@@ -2428,7 +2576,19 @@ impl Worker {
 
     fn publish(&mut self) {
         self.publish_at = None;
-        let mut snapshot = self.projection.snapshot();
+        let mut snapshot = match self.lines.get(&self.focus).filter(|_| self.focus != "main") {
+            Some(line) => line.projection.snapshot(),
+            None => self.projection.snapshot(),
+        };
+        snapshot.lines = self.line_views();
+        snapshot.focus = self.focus.clone();
+        snapshot.main_running = self.projection.running();
+        snapshot.main_topic = self.projection.first_message();
+        if self.focus != "main" {
+            snapshot.approvals = self.projection.approvals();
+            snapshot.questions = self.projection.questions();
+            snapshot.tasks = self.projection.tasks().to_vec();
+        }
         snapshot.session_id = self.session_id.clone();
         snapshot.projection_id = self.projection_id;
         snapshot.main_history_complete = self
@@ -2577,4 +2737,29 @@ struct SessionSummary {
     updated_at: u64,
     #[serde(default)]
     preview: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_line_notice_reaches_its_own_transcript() {
+        let mut main = Projection::default();
+        let mut lines =
+            std::collections::BTreeMap::from([("b-7c".to_owned(), LineProjection::new("b-7c"))]);
+        transcript_mut(&mut main, &mut lines, "b-7c")
+            .expect("the line")
+            .set_running(true);
+        assert!(lines["b-7c"].projection.snapshot().running);
+        assert!(!main.snapshot().running, "main is not the line");
+        transcript_mut(&mut main, &mut lines, "main")
+            .expect("main")
+            .set_running(true);
+        assert!(main.snapshot().running);
+        assert!(
+            transcript_mut(&mut main, &mut lines, "unknown").is_none(),
+            "an unknown branch has no transcript"
+        );
+    }
 }

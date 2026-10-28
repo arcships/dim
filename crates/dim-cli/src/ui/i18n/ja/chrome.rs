@@ -11,6 +11,28 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Branch history failed; reopen to retry" => "ブランチ履歴の取得失敗。開き直して再試行",
         "Branch history is incomplete; stop-all unavailable" => "ブランチ履歴が不完全。全停止不可",
         "Running" => "実行中",
+        "Lines" => "ライン",
+        "Enter show the line · x end it · Esc close" => "Enter ライン表示 · x 終了 · Esc 閉じる",
+        "This session has no lines." => "このセッションにはまだラインがありません。",
+        "No matching lines." => "一致するラインがありません。",
+        "the session itself" => "セッション自体",
+        "working" => "作業中",
+        "ended itself" => "自ら終了",
+        "ended by an operation" => "操作で終了",
+        "ended with {id}" => "{id} とともに終了",
+        "creation failed" => "作成失敗",
+        "shown" => "表示中",
+        "line" => "ライン",
+        "line {id}" => "ライン {id}",
+        "follow, talk to and end this session's lines" => {
+            "このセッションのラインを追い、話しかけ、終了"
+        }
+        "End line" => "ラインを終了",
+        "y/N" => "y/N",
+        "main is the session itself; a line ends, main does not" => {
+            "main はセッション自体です。ラインは終了できますが main は終了しません"
+        }
+        "Line has ended:" => "ラインは終了しました:",
         "Starting" => "起動中",
         "Delegation result" => "委任結果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {

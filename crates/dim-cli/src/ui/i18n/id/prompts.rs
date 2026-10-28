@@ -54,6 +54,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "1-9 select · Tab next · Esc decline" => "1-9 pilih · Tab lanjut · Esc tolak",
         "Question" => "Pertanyaan",
         "Question on branch {branch}" => "Pertanyaan dari cabang {branch}",
+        "Permission on branch {branch}" => "Izin pada cabang {branch}",
         "Sending answer…" => "Mengirim jawaban…",
         "Question not ready; press Enter to send again" => {
             "Pertanyaan belum siap; Enter untuk kirim lagi"

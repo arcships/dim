@@ -65,6 +65,13 @@ pub enum Command {
         projection_id: u64,
         target: Option<TaskTarget>,
     },
+    FocusLine(String),
+    /// End a line of the displayed attachment, as the user asked.
+    EndLine {
+        session_id: String,
+        projection_id: u64,
+        branch_id: String,
+    },
     /// Observe one delivered member without selecting its Session for editing.
     WatchMember {
         projection_id: u64,
@@ -139,6 +146,10 @@ pub enum Command {
     },
     /// `/mcp ...`: the words after the command.
     Mcp(String),
+    /// List the plugins of the `/plugins` panel (`plugin.list`).
+    ListPlugins,
+    /// Change one plugin; the worker lists the plugins again after it.
+    Plugin(PluginAction),
     /// A configuration command line (`/effort high`, `/agent`, ...).
     Configure(String),
     /// Make `(provider, model)` the default and the active session's model.
@@ -155,6 +166,63 @@ pub enum Command {
     },
     /// Install the offered version (the update dialog's "Update now").
     UpgradeInstall(crate::update::Install),
+}
+
+/// One change the `/plugins` panel asks PluginManager for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PluginAction {
+    Enable(String),
+    Disable(String),
+    Reload(String),
+    /// Install from a local directory and turn it on.
+    Install(std::path::PathBuf),
+}
+
+/// One name of `plugin.list` (PluginManager A.1).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginItem {
+    pub name: String,
+    /// The candidate in use: an installed id, `builtin` or `default`.
+    #[serde(rename = "use")]
+    pub in_use: Option<String>,
+    pub off: bool,
+    pub locked: bool,
+    pub candidates: Vec<PluginCandidate>,
+    /// `running`, `pending`, `failed`, `stopped` or `off`; none when the
+    /// plugin in use has no code.
+    pub status: Option<String>,
+    pub error: Option<String>,
+    #[serde(default)]
+    pub waiting_for: Vec<String>,
+    #[serde(default)]
+    pub refused: Vec<PluginRefusal>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct PluginCandidate {
+    pub id: String,
+}
+
+/// Content an owner refused: its kind and the owner's error.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct PluginRefusal {
+    pub kind: String,
+    pub error: String,
+}
+
+/// What a `plugin.*` change replied (A.1) that `plugin.list` does not show;
+/// `install` also names the plugin.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginReply {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub skipped: Vec<String>,
+    #[serde(default)]
+    pub restart_required: bool,
 }
 
 /// What a sign-in needs to begin.
@@ -409,6 +477,13 @@ pub enum Update {
     ProviderResult {
         result: Result<String, String>,
         providers: Result<Vec<ProviderEntry>, String>,
+    },
+    Plugins(Result<Vec<PluginItem>, String>),
+    /// What a plugin change came to, and the plugins listed after it.
+    PluginResult {
+        action: PluginAction,
+        result: Result<PluginReply, String>,
+        plugins: Result<Vec<PluginItem>, String>,
     },
     /// The account of the `/login` panel, or none when signed out.
     Login(Result<Option<Account>, String>),

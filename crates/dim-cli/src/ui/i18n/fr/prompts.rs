@@ -54,6 +54,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "1-9 select · Tab next · Esc decline" => "1-9 choisir · Tab suivante · Esc décliner",
         "Question" => "Question",
         "Question on branch {branch}" => "Question de la branche {branch}",
+        "Permission on branch {branch}" => "Permission sur la branche {branch}",
         "Sending answer…" => "Envoi…",
         "Question not ready; press Enter to send again" => {
             "Question pas prête; Enter pour renvoyer"

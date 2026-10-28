@@ -182,7 +182,7 @@ the new Dim scope or catalog placement proposed here.
 
 ### Storage compatibility
 
-Current native storage is v19. It explicitly upgrades admitted v18/v17/v16/v15/v13
+Current native storage is v20. It explicitly upgrades admitted v19/v18/v17/v16/v15/v13
 layouts; it does not reject every older database
 ([storage format](appserver/native-storage-format.md)). Branch foreign keys and
 root enumeration currently assume `agent_sessions` and a required SessionConfig.

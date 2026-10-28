@@ -11,6 +11,26 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Branch history failed; reopen to retry" => "讀取分支歷程失敗；重新開啟以重試",
         "Branch history is incomplete; stop-all unavailable" => "分支歷程尚未讀完，暫無法全部停止",
         "Running" => "執行中",
+        "Lines" => "分支線",
+        "Enter show the line · x end it · Esc close" => "Enter 查看該線 · x 結束 · Esc 關閉",
+        "This session has no lines." => "這個工作階段還沒有分支線。",
+        "No matching lines." => "沒有符合的分支線。",
+        "the session itself" => "工作階段本身",
+        "working" => "工作中",
+        "ended itself" => "自行結束",
+        "ended by an operation" => "由操作結束",
+        "ended with {id}" => "隨 {id} 結束",
+        "creation failed" => "建立失敗",
+        "shown" => "目前顯示",
+        "line" => "分支線",
+        "line {id}" => "分支線 {id}",
+        "follow, talk to and end this session's lines" => "查看、對話並結束此工作階段的分支線",
+        "End line" => "結束分支線",
+        "y/N" => "y/N",
+        "main is the session itself; a line ends, main does not" => {
+            "main 就是工作階段本身；分支線可以結束，main 不能"
+        }
+        "Line has ended:" => "該分支線已結束：",
         "Starting" => "啟動中",
         "Delegation result" => "委派結果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {

@@ -861,8 +861,9 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
         context_reads.iter().all(|(branch, _)| *branch == child),
         "{context_reads:?}"
     );
-    assert!(
-        matches!(&from_start(&child)[..], [range] if *range == (1..=child_head)),
+    assert_eq!(
+        from_start(&child),
+        [1..=child_head, 1..=child_head],
         "{reads:?}"
     );
     let pages = std::mem::take(&mut *store.pages.lock().unwrap());
@@ -871,9 +872,9 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
         "{pages:?}, {child_head}"
     );
     assert!(
-        of(&child)
-            .iter()
-            .all(|range| *range.start() == 1 || *range.start() > child_head),
+        of(&child).iter().all(|range| *range.start() == 1
+            || *range.start() > child_head
+            || *range.end() == child_head),
         "{reads:?}"
     );
     assert!(

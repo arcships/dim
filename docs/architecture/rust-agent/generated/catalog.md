@@ -73,11 +73,12 @@ Each catalog name a part of the assembly provides or injects. A name that crosse
 | `toolHost` | session | WorkspaceTools | Rust-only | — |
 | `toolRegistry` | session | ToolRegistry | yes | `register` async |
 | `toolSourcesView` | session | ToolRegistry | Rust-only | — |
-| `treeCommands` | session | TimelineTree | yes | `create` async, `info` async, `input` async, `list` async |
+| `treeCommands` | session | TimelineTree | yes | `create` async, `end` async, `info` async, `input` async, `list` async, `page` async |
 | `agentLoop` | branch | Loop | Rust-only | — |
 | `approval` | branch | Approval | Rust-only | — |
 | `backgroundExec` | branch | BackgroundExec | Rust-only | — |
 | `branchLifecycle` | branch | BranchScope | yes | `activated` async, `closing` async |
+| `branchLine` | branch | BranchLine | Rust-only | — |
 | `branchOpening` | branch | BranchScope | Rust-only | — |
 | `configurationPublisher` | branch | ContextPreparation | Rust-only | — |
 | `configureControl` | branch | Prompt | Rust-only | — |
@@ -104,6 +105,7 @@ The parts that inject `dispatcher` or `timeline` ([plugin contract §6](../../..
 | --- | --- | --- |
 | Approval | branch | `dispatcher`, `timeline` |
 | BackgroundExec | branch | `dispatcher`, `timeline` |
+| BranchLine | branch | `dispatcher` |
 | CollaborationTimeline | branch | `dispatcher`, `timeline` |
 | ContextPreparation | branch | `dispatcher`, `timeline` |
 | InputQueue | branch | `dispatcher`, `timeline` |

@@ -13,8 +13,10 @@ pub(crate) use publication::Publication;
 pub use publication::{McpApplication, McpOwner, McpPublication};
 pub use session::{McpSession, McpSessionPlugin, McpSessionState, McpSourceState, install};
 
-use crate::settings::{SettingsError, SettingsScope, SettingsService};
-use config::{McpProjectEnablement, McpServerSettings, McpSettings};
+use crate::settings::{BusinessDocument, SettingsError, SettingsScope, SettingsService};
+use config::{
+    McpPluginDocument, McpPluginServers, McpProjectEnablement, McpServerSettings, McpSettings,
+};
 use dim_agent_capabilities::file_storage::FileStorage;
 use dim_agent_runtime::Names;
 use rutis::Ctx;
@@ -55,12 +57,40 @@ pub enum McpError {
 }
 pub type Result<T> = std::result::Result<T, McpError>;
 
+/// Where an entry comes from. Plugin entries come after the user's and
+/// before a project's, which shadows both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum McpSource {
+    User,
+    Plugins,
+    Project(usize),
+}
+impl McpSource {
+    /// The Settings source a user or project entry is written in; plugin
+    /// entries change only through their plugin.
+    pub fn scope(self) -> Option<SettingsScope> {
+        match self {
+            Self::User => Some(SettingsScope::User),
+            Self::Project(root) => Some(SettingsScope::Project(root)),
+            Self::Plugins => None,
+        }
+    }
+}
+impl From<SettingsScope> for McpSource {
+    fn from(scope: SettingsScope) -> Self {
+        match scope {
+            SettingsScope::User => Self::User,
+            SettingsScope::Project(root) => Self::Project(root),
+        }
+    }
+}
+
 /// Server-side configuration, including secrets. Not a wire or logging type.
 /// For a project entry, the configuration is effective: its enablement comes
 /// from the user's record (`config::effective`).
 #[derive(Clone)]
 pub struct McpServerEntry {
-    pub source: SettingsScope,
+    pub source: McpSource,
     pub configuration: McpServerSettings,
 }
 impl McpServerEntry {
@@ -142,6 +172,8 @@ impl Drop for McpConnection {
 
 pub struct McpService {
     settings: Arc<SettingsService>,
+    /// Why the last registration of a plugin was refused, by plugin id.
+    refused: Mutex<BTreeMap<String, String>>,
     publication: Arc<publication::Publication>,
     stopping: CancellationToken,
     gate: Mutex<()>,
@@ -170,10 +202,11 @@ impl McpService {
     /// Old handles remain closed; a later server() creates a new generation.
     pub async fn disconnect(
         self: &Arc<Self>,
-        source: SettingsScope,
+        source: impl Into<McpSource>,
         id: String,
         cancel: &CancellationToken,
     ) -> Result<()> {
+        let source = source.into();
         let owner = self.clone();
         self.run(cancel, move |_, cancel| async move {
             owner.publication.disconnect(source, id, &cancel).await
@@ -181,8 +214,133 @@ impl McpService {
         .await
     }
 
-    pub fn application(&self, source: SettingsScope) -> McpApplication {
-        self.publication.application(source)
+    pub fn application(&self, source: impl Into<McpSource>) -> McpApplication {
+        self.publication.application(source.into())
+    }
+
+    /// Adds or replaces the MCP document of `plugin` (a plugin id, PluginManager
+    /// §3.7), whose stdio entries run in `dir` unless they name another `cwd`
+    /// inside it; a `cwd` that is absolute, uses `..` or resolves outside `dir`
+    /// through a symbolic link refuses the document. Its entries run as `<plugin>:<server>`. The registration is
+    /// kept in `mcp-plugins.json` and survives Mcp's reload. A document that
+    /// fails validation is refused: the plugin then has no entries, and
+    /// [`Self::plugin_refusal`] reports why.
+    pub async fn register_plugin(
+        self: &Arc<Self>,
+        plugin: String,
+        dir: std::path::PathBuf,
+        document: serde_json::Value,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        let valid = serde_json::from_value::<McpSettings>(document)
+            .map_err(|_| SettingsError::Invalid("invalid MCP configuration"))
+            .and_then(|document| {
+                let registration = McpPluginDocument {
+                    dir,
+                    mcp_servers: document.mcp_servers,
+                };
+                McpPluginServers {
+                    plugins: BTreeMap::from([(plugin.clone(), registration.clone())]),
+                    extra: BTreeMap::new(),
+                }
+                .validate()
+                .and_then(|()| registration.confine())
+                .map(|()| registration)
+            });
+        let result = match valid {
+            Ok(registration) => {
+                self.set_plugin(plugin.clone(), Some(registration), cancel)
+                    .await
+            }
+            Err(error) => {
+                let _ = self.set_plugin(plugin.clone(), None, cancel).await;
+                Err(error.into())
+            }
+        };
+        let mut refused = self.refused.lock().unwrap();
+        match &result {
+            Err(error) => refused.insert(plugin, error.to_string()),
+            Ok(()) => refused.remove(&plugin),
+        };
+        result
+    }
+
+    /// Withdraws the MCP document of `plugin` and retires its entries in
+    /// every Session; nothing when it registered none.
+    pub async fn withdraw_plugin(
+        self: &Arc<Self>,
+        plugin: String,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        self.refused.lock().unwrap().remove(&plugin);
+        self.set_plugin(plugin, None, cancel).await
+    }
+
+    /// Why Mcp refused the last document `plugin` registered.
+    pub fn plugin_refusal(&self, plugin: &str) -> Option<String> {
+        self.refused.lock().unwrap().get(plugin).cloned()
+    }
+
+    /// The plugin ids whose MCP documents Mcp holds.
+    pub async fn plugins(&self, cancel: &CancellationToken) -> Result<Vec<String>> {
+        self.run(cancel, move |settings, cancel| async move {
+            Ok(settings
+                .read::<McpPluginServers>(SettingsScope::User, &cancel)
+                .await?
+                .document
+                .plugins
+                .into_keys()
+                .collect())
+        })
+        .await
+    }
+
+    async fn set_plugin(
+        self: &Arc<Self>,
+        plugin: String,
+        registration: Option<McpPluginDocument>,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        let changed = self
+            .run(cancel, move |settings, cancel| async move {
+                loop {
+                    let current = settings
+                        .read::<McpPluginServers>(SettingsScope::User, &cancel)
+                        .await?;
+                    let mut document = current.document;
+                    if document.plugins.get(&plugin) == registration.as_ref() {
+                        return Ok(false);
+                    }
+                    match &registration {
+                        Some(registration) => {
+                            document
+                                .plugins
+                                .insert(plugin.clone(), registration.clone());
+                        }
+                        None => {
+                            document.plugins.remove(&plugin);
+                        }
+                    }
+                    match settings
+                        .update(SettingsScope::User, &current.revision, document, &cancel)
+                        .await
+                    {
+                        Ok(_) => return Ok(true),
+                        Err(SettingsError::Conflict) => continue,
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+            })
+            .await?;
+        if changed {
+            let publication = self.publication.clone();
+            let _ = self
+                .run(cancel, move |_, cancel| async move {
+                    publication.settle(&cancel).await
+                })
+                .await;
+        }
+        Ok(())
     }
 
     /// Project ids are host-authorized FileStorage indices, never client paths.
@@ -207,11 +365,27 @@ impl McpService {
                     .unwrap_or_default(),
                 None => McpProjectEnablement::default(),
             };
-            for source in
-                std::iter::once(SettingsScope::User).chain(project.map(SettingsScope::Project))
+            for source in [McpSource::User, McpSource::Plugins]
+                .into_iter()
+                .chain(project.map(McpSource::Project))
             {
-                let snapshot = settings.read::<McpSettings>(source, &cancel).await?;
-                match source {
+                let Some(scope) = source.scope() else {
+                    let plugins = settings
+                        .read::<McpPluginServers>(SettingsScope::User, &cancel)
+                        .await?;
+                    for (id, configuration) in plugins.document.entries() {
+                        catalog.servers.insert(
+                            id,
+                            McpServerEntry {
+                                source,
+                                configuration,
+                            },
+                        );
+                    }
+                    continue;
+                };
+                let snapshot = settings.read::<McpSettings>(scope, &cancel).await?;
+                match scope {
                     SettingsScope::User => catalog.user_revision = snapshot.revision,
                     SettingsScope::Project(_) => {
                         catalog.project_revision = Some(snapshot.revision);
@@ -220,7 +394,7 @@ impl McpService {
                 let document = snapshot.document;
                 for (id, configuration) in document.mcp_servers {
                     let configuration =
-                        config::effective(&settings, source, &id, configuration, &enablement)?;
+                        config::effective(&settings, scope, &id, configuration, &enablement)?;
                     catalog.servers.insert(
                         id,
                         McpServerEntry {
@@ -239,11 +413,25 @@ impl McpService {
     /// another source shadows it.
     pub async fn entry(
         &self,
-        source: SettingsScope,
+        source: McpSource,
         id: String,
         cancel: &CancellationToken,
     ) -> Result<McpServerEntry> {
         self.run(cancel, move |settings, cancel| async move {
+            let Some(scope) = source.scope() else {
+                return settings
+                    .read::<McpPluginServers>(SettingsScope::User, &cancel)
+                    .await?
+                    .document
+                    .entries()
+                    .find(|(entry, _)| *entry == id)
+                    .map(|(_, configuration)| McpServerEntry {
+                        source,
+                        configuration,
+                    })
+                    .ok_or(McpError::UnknownServer);
+            };
+            let source = scope;
             let configuration = settings
                 .read::<McpSettings>(source, &cancel)
                 .await?
@@ -260,7 +448,7 @@ impl McpService {
                     .unwrap_or_default(),
             };
             Ok(McpServerEntry {
-                source,
+                source: source.into(),
                 configuration: config::effective(
                     &settings,
                     source,
@@ -477,9 +665,11 @@ impl DynPlugin for McpPlugin {
             let parts = ctx.require_at(&self.parts)?;
             settings.register::<McpSettings>(ctx)?;
             settings.register::<McpProjectEnablement>(ctx)?;
+            settings.register::<McpPluginServers>(ctx)?;
             let auth = McpAuth::new(files, self.home_root).map_err(ErrorKind::PluginFailed)?;
             let service = Arc::new(McpService {
                 settings,
+                refused: Mutex::default(),
                 publication,
                 stopping: ctx.cancellation_token(),
                 gate: Mutex::new(()),

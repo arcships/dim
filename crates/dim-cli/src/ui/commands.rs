@@ -135,6 +135,13 @@ pub const COMMANDS: &[Command] = &[
         Needs::Session,
     ),
     slash(
+        "lines",
+        "session",
+        "follow, talk to and end this session's lines",
+        &["branches"],
+        Needs::Session,
+    ),
+    slash(
         "history",
         "session",
         "load the previous page of messages",
@@ -234,6 +241,13 @@ pub const COMMANDS: &[Command] = &[
         "model",
         "list MCP servers, sign in or out (login|logout ID)",
         &[],
+        Needs::Nothing,
+    ),
+    slash(
+        "plugins",
+        "model",
+        "list plugins, turn them on or off, reload (install PATH)",
+        &["plugin"],
         Needs::Nothing,
     ),
     slash(

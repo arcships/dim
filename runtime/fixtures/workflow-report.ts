@@ -98,7 +98,7 @@ export default definePlugin({
             }
             return store(run => {
               if (reply.ok) run.report = { state: 'delivered' }
-              else if (['session_closed', 'branch_missing', 'rejected'].includes(reply.error.code)) {
+              else if (['session_closed', 'branch_missing', 'branch_ended', 'rejected'].includes(reply.error.code)) {
                 run.report = { state: 'undeliverable', reason: reply.error.code }
               } else if (run.report.state === 'pending') run.report.attempt_open = false
             }, () => pause('reply_write'))

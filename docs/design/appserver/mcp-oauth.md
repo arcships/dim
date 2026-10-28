@@ -472,11 +472,13 @@ secret, and the text has no URL, token, code or issuer.
 All three are `report` like the rest of `mcp.*`, which keeps the
 [migration table](../contracts/session-boundary.md#a4-migration-and-compatibility) true. After
 `operation_interrupted`, read `mcp.catalog` to see the outcome. All three are mutating. Targets use
-the existing `{source, id, cwd?}` form.
+the existing `{source, id, cwd?}` form. `source` is `"user"`, `"project"` or `"plugin"`; a plugin
+entry's `id` is `<plugin id>:<server>`, as `mcp.catalog` lists it
+([PluginManager §3.7](../plugins/PluginManager.md#37-content-registration)).
 
 | Method | Params | Reply | Notes |
 | --- | --- | --- | --- |
-| `mcp.auth.start` | `{source: "user" \| "project", id, cwd?, clientSecret?}` | `{attemptId, authorizationUrl, redirectUri, resource, issuer, expiresAt}` | The entry must be a remote, enabled entry without static credentials. `clientSecret` is accepted only with `oauth.clientId`. `expiresAt` is Unix ms, 10 min ahead. Replaces a pending attempt of the same key |
+| `mcp.auth.start` | `{source: "user" \| "project" \| "plugin", id, cwd?, clientSecret?}` | `{attemptId, authorizationUrl, redirectUri, resource, issuer, expiresAt}` | The entry must be a remote, enabled entry without static credentials. `clientSecret` is accepted only with `oauth.clientId`. `expiresAt` is Unix ms, 10 min ahead. Replaces a pending attempt of the same key |
 | `mcp.auth.complete` | `{attemptId, callbackUrl}` | `{}` | §5.4. Returns after the record is persisted |
 | `mcp.auth.logout` | `{source, id, cwd?}` | `{revoked: boolean}` | Allowed for disabled entries and for remote entries that no longer use OAuth. No record: `{revoked: false}` |
 

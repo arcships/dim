@@ -86,7 +86,7 @@ binary's `main`; the daemon's paths do not change.
    commits the daemon makes during the export are not seen, so all branches, heads and events come from one point.
    Readers do not block the daemon's writes; the WAL cannot be checkpointed past the snapshot until the export ends.
 5. **Format.** Inside the snapshot, the schema must equal exactly one this build opens: the current format, or one an
-   upgrade step starts from (v13, v15, v16, v17 and v18 for v19), with a matching marker. Upgrades only add tables and
+   upgrade step starts from (v13, v15, v16, v17, v18 and v19 for v20), with a matching marker. Upgrades only add tables and
    replace the marker and never rewrite a row, so the reader that a daemon uses after an upgrade reads these stores
    unchanged; the export reads them as they are and does not upgrade them. Any other schema or marker (a newer
    dimcode's store, a changed schema, the legacy TypeScript store) fails with `unsupported Timeline storage format`,
@@ -115,7 +115,7 @@ they carry. Export version 1:
 | Line | Fields |
 | --- | --- |
 | `header`, first | `export` (1), `session_id`, `store_format` (the format of the database read), `sensitive` (always `true`) |
-| `branch`, one per branch | `info`: the branch's `TimelineInfo` as stored (`id`, and for a child `parent`, `branch_point`, `create_anchor`); `head`: the branch's last sequence in the snapshot |
+| `branch`, one per branch | `info`: the branch's stored directory row (`BranchRecord`: `id`, and for a child `parent`, `branch_point`, `create_anchor`, never `source`); `head`: the branch's last sequence in the snapshot |
 | `event`, every event | `branch_id`; `event`: the `AgentEvent` serialization; `trace`: the before trace (`TimelineTrace`) or `null`; `batch_end`: the last sequence of the atomic batch the event was committed in |
 | `end`, last | `branches` and `events`: the counts written |
 
@@ -136,7 +136,7 @@ they carry. Export version 1:
   request, usage, compaction, branch creation and failure, collaboration and turn outcomes. Nothing is filtered,
   merged or re-derived; output deltas appear as the separate events they are.
 - **No second schema.** `event`, `trace` and `info` are the existing serde serializations of `AgentEvent`,
-  `TimelineTrace` and `TimelineInfo`. Event bodies change with their event types, not with the export version.
+  `TimelineTrace` and `BranchRecord`. Event bodies change with their event types, not with the export version.
 - **Versioning.** A reader ignores unknown line kinds and unknown envelope fields. Adding either keeps the version;
   removing or changing the meaning of one raises it.
 - **Completeness.** Only a file that ends with the `end` line, whose counts match, is complete.

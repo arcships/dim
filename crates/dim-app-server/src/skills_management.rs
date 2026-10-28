@@ -17,13 +17,16 @@ use dim_agent_runtime::Names;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SkillDocument {
     disabled_skill_ids: Vec<String>,
+    /// Skills roots registered by plugins, by plugin id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    plugin_skills: BTreeMap<String, PathBuf>,
     #[serde(flatten)]
     extra: BTreeMap<String, serde_json::Value>,
 }
@@ -31,7 +34,7 @@ impl BusinessDocument for SkillDocument {
     const NAMESPACE: &'static str = SOURCE;
     const USER_FILE: &'static str = "skills.json";
     fn validate(&self) -> crate::settings::Result<()> {
-        if self.extra.contains_key("disabledSkillIds") {
+        if self.extra.contains_key("disabledSkillIds") || self.extra.contains_key("pluginSkills") {
             return Err(SettingsError::Invalid("reserved Skill configuration field"));
         }
         if self
@@ -40,6 +43,13 @@ impl BusinessDocument for SkillDocument {
             .any(|id| id.trim().is_empty())
         {
             return Err(SettingsError::Invalid("empty Skill id"));
+        }
+        if self
+            .plugin_skills
+            .iter()
+            .any(|(plugin, root)| plugin.trim().is_empty() || !root.is_absolute())
+        {
+            return Err(SettingsError::Invalid("invalid plugin Skills root"));
         }
         Ok(())
     }
@@ -63,6 +73,7 @@ impl SkillSettings for SkillStorage {
             Ok(SkillSettingsSnapshot {
                 version: snapshot.revision,
                 disabled: snapshot.document.disabled_skill_ids.into_iter().collect(),
+                plugins: snapshot.document.plugin_skills,
             })
         })
     }
@@ -99,6 +110,50 @@ impl SkillSettings for SkillStorage {
                 .await?
                 .revision)
         })
+    }
+    fn set_plugin(
+        self: Arc<Self>,
+        plugin: String,
+        root: Option<PathBuf>,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<SettingsVersion, SkillSettingsError>> {
+        Box::pin(async move { SkillStorage::set_plugin(&self, plugin, root, cancel).await })
+    }
+}
+impl SkillStorage {
+    async fn set_plugin(
+        &self,
+        plugin: String,
+        root: Option<PathBuf>,
+        cancel: CancellationToken,
+    ) -> Result<SettingsVersion, SkillSettingsError> {
+        loop {
+            let current = self
+                .settings
+                .read::<SkillDocument>(SettingsScope::User, &cancel)
+                .await?;
+            let mut document = current.document;
+            let unchanged = match &root {
+                Some(root) => document.plugin_skills.get(&plugin) == Some(root),
+                None => !document.plugin_skills.contains_key(&plugin),
+            };
+            if unchanged {
+                return Ok(current.revision);
+            }
+            match &root {
+                Some(root) => document.plugin_skills.insert(plugin.clone(), root.clone()),
+                None => document.plugin_skills.remove(&plugin),
+            };
+            match self
+                .settings
+                .update(SettingsScope::User, &current.revision, document, &cancel)
+                .await
+            {
+                Ok(snapshot) => return Ok(snapshot.revision),
+                Err(SettingsError::Conflict) => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 }
 impl From<SettingsError> for SkillSettingsError {

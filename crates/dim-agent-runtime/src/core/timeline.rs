@@ -240,7 +240,11 @@ impl Timeline {
     /// submission id is already committed on this branch: the branch accepts
     /// each id once. The check and the append hold the commit lock, so of
     /// concurrent inputs with one id exactly one is written.
-    pub(crate) fn input(&self, data: InputMessageData) -> Result<Appended> {
+    pub(crate) fn input_checked(
+        &self,
+        data: InputMessageData,
+        admit: impl FnOnce() -> Result<()>,
+    ) -> Result<Appended> {
         let _append = AppendGuard::enter()?;
         let _commit = self.0.commit.lock().unwrap();
         if let Some(id) = &data.submission_id
@@ -248,6 +252,7 @@ impl Timeline {
         {
             return Ok(Appended::Existing(sequence));
         }
+        admit()?;
         let mut events = self.commit(vec![EventKind::InputMessage(data).into()], |_| Ok(()))?;
         Ok(Appended::Written(
             events.pop().expect("single-event batch returned one event"),

@@ -7,11 +7,16 @@ export interface RustError<Name extends string = string, Code extends string = s
   readonly data: Data
 }
 
+export type BranchSource =
+  | { kind: "tool"; turn_id: string; request_id: string; call_id: string }
+  | { kind: "host"; operation_id: string }
+
 export interface TimelineInfo {
   id: string
   parent?: string | null
   branch_point?: number | bigint | null
   create_anchor?: number | bigint | null
+  source?: BranchSource | null
 }
 
 export type ImageSourceType = "base64" | "url"
@@ -44,10 +49,6 @@ export interface InputMessageData {
   mode?: InputMode | null
 }
 
-export type BranchSource =
-  | { kind: "tool"; turn_id: string; request_id: string; call_id: string }
-  | { kind: "host"; operation_id: string }
-
 export interface BranchOptions {
   prompt: string
   source: BranchSource
@@ -57,7 +58,8 @@ export interface BranchOptions {
 export interface TreeCommands {
   list(): Promise<TimelineInfo[]>
   /**
-   * The directory record of branch `id`.
+   * The directory record of branch `id`, from its reservation on, so a
+   * part that loads with its own line reads it during its replay.
    * @throws {AgentErrorThrown}
    */
   info(id: string): Promise<TimelineInfo>
@@ -68,6 +70,17 @@ export interface TreeCommands {
    * @throws {AgentErrorThrown}
    */
   input(id: string, input: InputMessageData): Promise<import('./plugin.js').BranchEvent>
+  /**
+   * Ends the line `id` with `source`; only the target is checked (§10).
+   * @throws {AgentErrorThrown}
+   */
+  end(id: string, source: BranchSource): Promise<void>
+  /**
+   * One page of `id`'s committed batches; an ended line reads at its
+   * fixed head.
+   * @throws {AgentErrorThrown}
+   */
+  page(id: string, after: number | bigint, limit: number | bigint): Promise<import('./plugin.js').BranchEvent[]>
   /**
    * Creates a child of `parent` cut at `at` and returns its id.
    * `cancelled` is the caller's cancellation as an explicit argument, the
@@ -295,6 +308,7 @@ export type SessionsError =
   | { code: "agent_unknown"; message: string }
   | { code: "session_closed"; message: string }
   | { code: "branch_missing"; message: string }
+  | { code: "branch_ended"; message: string }
   | { code: "reloading"; message: string }
   | { code: "future_sequence"; message: string }
   | { code: "ambiguous"; message: string }
@@ -382,10 +396,10 @@ export interface WorkflowFiles {
 }
 
 /** What a method returning `Err(AgentError)` throws. */
-export type AgentErrorThrown = RustError<"AgentError", "InvalidInput" | "Closed" | "UnknownBranch" | "Storage" | "Build" | "Cancelled" | "Reloading" | "AmbiguousSubmission" | "Fault" | "Framework" | "Multiple", undefined>
+export type AgentErrorThrown = RustError<"AgentError", "InvalidInput" | "Closed" | "UnknownBranch" | "BranchEnded" | "Storage" | "Build" | "Cancelled" | "Reloading" | "AmbiguousSubmission" | "Fault" | "Framework" | "Multiple", undefined>
 
 /** What a method returning `Err(SessionsError)` throws. */
-export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "agent_unknown" | "session_closed" | "branch_missing" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
+export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
 
 /** What a method returning `Err(WorkflowFilesError)` throws. */
 export type WorkflowFilesErrorThrown = RustError<"WorkflowFilesError", "invalid_path" | "closed" | "cancelled" | "locked" | "unsupported" | "unsynced" | "io" | "not_found" | "invalid_data", WorkflowFilesError>

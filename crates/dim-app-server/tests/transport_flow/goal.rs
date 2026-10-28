@@ -832,6 +832,126 @@ async fn submit_report(client: &mut Client, session: &str, status: &str, summary
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_goal_on_a_line_behaves_as_on_main() {
+    let home = product_home();
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder.timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()));
+    let (server, agent) = launch_goal(&home, builder).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    select_model(&mut client).await;
+    set_limit(&mut client, 1000).await;
+    let mut params = create(json!(["goal_update", "wait", "branch"]));
+    params["permissionPolicy"]["allowedTools"] = json!(["goal_update", "wait", "branch"]);
+    let created = client.rpc("session.create", params).await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let session = agent.get_session(&id).unwrap();
+    let at = session.sequence("main").unwrap();
+    let created = client
+        .rpc(
+            "session.branch_create",
+            json!({"sessionId":id,"parentBranchId":"main","at":at,"prompt":"line work"}),
+        )
+        .await;
+    assert_ok(&created);
+    let child = created["result"]["branch"]["branchId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    idle(&mut client, &id, &child).await;
+    let opening = session
+        .local(&child, ..)
+        .await
+        .unwrap()
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::InputMessage(data) => data.blocks.first().map(|block| {
+                let dim_agent_types::InputBlock::Raw { text, .. } = block;
+                (text.clone(), data.user.clone())
+            }),
+            _ => None,
+        })
+        .expect("the line's opening input");
+    let marker = format!(r#"<dim-branch-line branch="{child}" parent="main" source="host">"#);
+    assert!(opening.0.starts_with(&marker), "{}", opening.0);
+    assert_eq!(
+        first_user_text(&session, &child).await,
+        "line work",
+        "the creator's prompt stays the opening input's words"
+    );
+    assert_ok(
+        &goal(
+            &mut client,
+            "set",
+            json!({"sessionId":id,"branchId":child,"objective":"line objective"}),
+        )
+        .await,
+    );
+    wait_for(&session, &child, r#"op="set""#).await;
+    assert!(
+        goal_block(&session, &child, r#"op="set""#)
+            .await
+            .contains("line objective")
+    );
+    wait_for(&session, &child, r#"count="1""#).await;
+    idle(&mut client, &id, &child).await;
+    let operator = session
+        .submit(
+            "keep going".into(),
+            dim_agent_types::InputMode::Queue,
+            &child,
+        )
+        .await
+        .unwrap()
+        .sequence;
+    let (reset, expected) = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let writes = goal_writes(&session, &child).await;
+            let reset = writes.iter().find(|(_, line)| {
+                line.contains(r#"kind="continuation""#)
+                    && line
+                        .split("after=\"")
+                        .nth(1)
+                        .and_then(|rest| rest.split('"').next())
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .is_some_and(|after| after > operator)
+            });
+            if let Some((sequence, line)) = reset {
+                let raced = writes
+                    .iter()
+                    .filter(|(at, other)| {
+                        other.contains(r#"kind="continuation""#) && *at > operator && at < sequence
+                    })
+                    .count();
+                return (line.clone(), 1 + raced);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("a continuation after the operator input");
+    assert!(
+        reset.contains(&format!(r#"count="{expected}""#)),
+        "the continuation after the operator input counts {expected}: {reset}"
+    );
+    assert!(goal_writes(&session, "main").await.is_empty());
+    assert_ok(
+        &goal(
+            &mut client,
+            "pause",
+            json!({"sessionId":id,"branchId":child}),
+        )
+        .await,
+    );
+    wait_for(&session, &child, r#"op="pause""#).await;
+    idle(&mut client, &id, &child).await;
+    server.shutdown();
+    server.join().await.unwrap();
+    cleanup(&home);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
 async fn node_goal_evaluator_judge_creates_an_evaluator_and_completes_on_done() {
     let home = product_home();
     let (server, agent) = launch_goal_with(
@@ -931,11 +1051,6 @@ async fn node_goal_evaluator_judge_creates_an_evaluator_and_completes_on_done() 
         ),
         "the conclusion marker"
     );
-    assert_eq!(
-        turn_ends(&session, child).await.len(),
-        1,
-        "one evaluator turn"
-    );
     let writes = goal_writes(&session, "main").await;
     assert!(
         writes
@@ -944,6 +1059,60 @@ async fn node_goal_evaluator_judge_creates_an_evaluator_and_completes_on_done() 
             .count()
             == 1,
         "{writes:#?}"
+    );
+    wait_event(
+        &session,
+        "main",
+        |kind| matches!(kind, EventKind::BranchEnded(data) if data.branch == *child),
+    )
+    .await;
+    idle(&mut client, &id, "main").await;
+    let head = session.sequence(child).unwrap();
+    assert_eq!(session.ended_head(child), Some(head));
+    let line_events = session.local_page(child, 0, 256, head).await.unwrap();
+    assert_eq!(
+        line_events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+            .count(),
+        1,
+        "one evaluator turn"
+    );
+    let endings: Vec<Value> = session
+        .local("main", ..)
+        .await
+        .unwrap()
+        .iter()
+        .filter(
+            |event| matches!(&event.kind, EventKind::BranchEnded(data) if data.branch == *child),
+        )
+        .map(|event| serde_json::to_value(&event.kind).unwrap())
+        .collect();
+    assert_eq!(endings.len(), 1, "{endings:#?}");
+    assert_eq!(
+        endings[0]["data"]["source"],
+        json!({"kind": "host", "operation_id": format!("goal:evaluate:{evaluation}")}),
+        "{endings:#?}"
+    );
+    assert_eq!(endings[0]["data"]["branch"], *child, "{endings:#?}");
+    let line = client
+        .rpc(
+            "session.history",
+            json!({"sessionId":id,"branchId":child,"after":0,"limit":256}),
+        )
+        .await;
+    assert_ok(&line);
+    assert_eq!(line["result"]["done"], true, "{line:#?}");
+    assert!(
+        line["result"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["type"] == "branch"
+                && event["name"] == "end"
+                && event["data"]["source"]["operation_id"]
+                    == format!("goal:evaluate:{evaluation}")),
+        "{line:#?}"
     );
     server.shutdown();
     server.join().await.unwrap();

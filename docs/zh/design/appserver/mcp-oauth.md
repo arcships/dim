@@ -404,11 +404,11 @@ Mcp 自己检查 `error` 参数，因为 rmcp 把任何带该请求头的 `403` 
 三个方法都与其余 `mcp.*` 一样是 `report`，使
 [迁移表](../contracts/session-boundary.md#a4-迁移与兼容性)保持成立。收到
 `operation_interrupted` 后读 `mcp.catalog` 查看结果。三个都是修改型方法。目标沿用现有的
-`{source, id, cwd?}` 形式。
+`{source, id, cwd?}` 形式。`source` 是 `"user"`、`"project"` 或 `"plugin"`；插件条目的 `id` 是 `<plugin id>:<server>`，与 `mcp.catalog` 列出的一致（[PluginManager §3.7](../plugins/PluginManager.md#37-内容登记)）。
 
 | 方法 | 参数 | 回复 | 说明 |
 | --- | --- | --- | --- |
-| `mcp.auth.start` | `{source: "user" \| "project", id, cwd?, clientSecret?}` | `{attemptId, authorizationUrl, redirectUri, resource, issuer, expiresAt}` | 条目必须是已启用、无静态凭据的远程条目。只有配置了 `oauth.clientId` 才接受 `clientSecret`。`expiresAt` 为 Unix 毫秒，10 分钟后。取代同一 key 的待完成尝试 |
+| `mcp.auth.start` | `{source: "user" \| "project" \| "plugin", id, cwd?, clientSecret?}` | `{attemptId, authorizationUrl, redirectUri, resource, issuer, expiresAt}` | 条目必须是已启用、无静态凭据的远程条目。只有配置了 `oauth.clientId` 才接受 `clientSecret`。`expiresAt` 为 Unix 毫秒，10 分钟后。取代同一 key 的待完成尝试 |
 | `mcp.auth.complete` | `{attemptId, callbackUrl}` | `{}` | §5.4。记录持久化后才返回 |
 | `mcp.auth.logout` | `{source, id, cwd?}` | `{revoked: boolean}` | 对禁用条目，以及不再使用 OAuth 的远程条目也可用。没有记录：`{revoked: false}` |
 

@@ -10,8 +10,8 @@ use super::{
 use dim_agent_capabilities::host::SessionFilesHost;
 use dim_agent_runtime::Names;
 use dim_agent_runtime::{
-    AgentError, BoxFuture, PublishCallback, Result, SessionConfig, StoredBranch, StoredEvent,
-    TimelineInfo, TimelineKey, TimelineStore, TimelineTrace,
+    AgentError, BoxFuture, BranchRecord, PublishCallback, Result, SessionConfig, StoredBranch,
+    StoredEvent, TimelineKey, TimelineStore, TimelineTrace,
 };
 use dim_agent_types::{
     AgentEvent, BranchCreateAt, ContextCompactionResult, EventKind, ModelRequest, RecoverySnapshot,
@@ -615,7 +615,7 @@ impl SqliteTimelineStore {
                                 |row| row.get(0),
                             )
                             .map_err(error)?;
-                        let info: TimelineInfo = serde_json::from_str(&info).map_err(error)?;
+                        let info: BranchRecord = serde_json::from_str(&info).map_err(error)?;
                         match (info.parent, info.branch_point) {
                             (Some(parent), Some(cut)) => Some((parent, cut)),
                             (None, None) => None,
@@ -983,7 +983,7 @@ impl SessionStore {
                     .collect::<rusqlite::Result<Vec<_>>>()
                     .map_err(error)?;
                 for (id, info) in branches {
-                    let parsed: TimelineInfo = serde_json::from_str(&info).map_err(error)?;
+                    let parsed: BranchRecord = serde_json::from_str(&info).map_err(error)?;
                     let head = if id == "main" {
                         cut
                     } else if parsed.parent.as_deref() == Some("main")
@@ -1170,7 +1170,7 @@ fn create_session(connection: &Connection, session: &str, config: &SessionConfig
             ],
         )
         .map_err(error)?;
-    let info = TimelineInfo {
+    let info = BranchRecord {
         id: "main".into(),
         parent: None,
         branch_point: None,
@@ -1178,7 +1178,7 @@ fn create_session(connection: &Connection, session: &str, config: &SessionConfig
     };
     insert_branch(connection, session, &info)
 }
-fn insert_branch(connection: &Connection, session: &str, info: &TimelineInfo) -> Result<()> {
+fn insert_branch(connection: &Connection, session: &str, info: &BranchRecord) -> Result<()> {
     connection
         .execute(
             "INSERT INTO timeline_branches VALUES (?1, ?2, ?3, 0)",
@@ -1342,7 +1342,7 @@ fn write_batch(
             }
         }
         if let EventKind::BranchCreate(data) = &record.event.kind {
-            let info = TimelineInfo {
+            let info = BranchRecord {
                 id: data.branch.clone(),
                 parent: Some(batch.key.branch_id.clone()),
                 branch_point: Some(match data.at {
@@ -1939,7 +1939,7 @@ pub(super) async fn validate_session(
     let mut created = BTreeSet::new();
     let mut completions = vec![];
     for (id, info, sequence) in directory {
-        let info: TimelineInfo = serde_json::from_str(&info).map_err(error)?;
+        let info: BranchRecord = serde_json::from_str(&info).map_err(error)?;
         if info.id != id {
             return Err(error("branch directory identity mismatch"));
         }

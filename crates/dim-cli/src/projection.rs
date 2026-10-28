@@ -8,15 +8,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dim_agent_types::{
-    CollaborationDelivery, CollaborationOutcome, CollaborationTarget, ContentBlock, ExecStatus,
-    InputMode, JsonObject, ModelOutputOutcome, ToolContent, ToolResult, TurnOutcome, UserInput,
+    BranchCreateFailedData, BranchSource, CollaborationDelivery, CollaborationOutcome,
+    CollaborationTarget, ContentBlock, ExecStatus, InputMode, JsonObject, ModelOutputOutcome,
+    ToolContent, ToolResult, TurnOutcome, UserInput,
 };
 use serde_json::Value;
 
 use crate::model::shell::ShellRun;
 use crate::model::view::{
-    ApprovalView, MemberCard, MemberConversationState, MemberTarget, QueuedInput, RowKind, RowTone,
-    TaskFinish, TaskKind, TaskTarget, TaskView, TurnEnd, ViewRow, ViewSnapshot, WorkflowView,
+    ApprovalView, LineState, LineView, MemberCard, MemberConversationState, MemberTarget,
+    QueuedInput, RowKind, RowTone, TaskFinish, TaskKind, TaskTarget, TaskView, TurnEnd, ViewRow,
+    ViewSnapshot, WorkflowView,
 };
 use crate::wire::{Event, EventContent, Progress, WorkflowRun, WorkflowState};
 
@@ -30,6 +32,9 @@ struct OpenThought {
 
 #[derive(Default)]
 pub struct Projection {
+    owner: String,
+    /// The lines of the Session, as `main` recorded them (design §14).
+    lines: Vec<LineView>,
     /// Shared with the published snapshots: a snapshot copies pointers, and
     /// a row is copied only when it changes while a snapshot still holds it
     /// (in practice the one that is streaming).
@@ -66,11 +71,73 @@ pub struct Projection {
 }
 
 impl Projection {
+    pub fn for_branch(branch: &str) -> Self {
+        Self {
+            owner: branch.to_owned(),
+            ..Self::default()
+        }
+    }
+
+    /// Whether `branch_id` is the line this projection draws.
+    fn owns(&self, branch_id: &str) -> bool {
+        branch_id
+            == if self.owner.is_empty() {
+                "main"
+            } else {
+                &self.owner
+            }
+    }
+
+    /// Folds one line's creation or end into the Session's lines, whichever
+    /// line recorded it: `parent` is the line whose history holds the fact
+    /// (design §14).
+    fn lines(&mut self, parent: &str, event: &Event) {
+        match &event.content {
+            EventContent::BranchCreate(data) => {
+                let purpose = data
+                    .prompt
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned();
+                if !self.lines.iter().any(|line| line.id == data.branch) {
+                    self.lines.push(LineView {
+                        id: data.branch.clone(),
+                        parent: Some(parent.to_owned()),
+                        purpose,
+                        state: LineState::Waiting,
+                    });
+                }
+            }
+            EventContent::BranchCreateFailed(data) => {
+                let branch = match data {
+                    BranchCreateFailedData::Failed { branch, .. }
+                    | BranchCreateFailedData::Cancelled { branch, .. } => branch,
+                };
+                if let Some(line) = self.lines.iter_mut().find(|line| line.id == *branch) {
+                    line.state = LineState::CreationFailed;
+                }
+            }
+            EventContent::BranchEnded(data) => {
+                let state = match (&data.source, &data.ancestor) {
+                    (_, Some(ancestor)) => LineState::EndedWith(ancestor.clone()),
+                    (BranchSource::Tool { .. }, None) => LineState::EndedItself,
+                    (BranchSource::Host { .. }, None) => LineState::EndedByOperation,
+                };
+                if let Some(line) = self.lines.iter_mut().find(|line| line.id == data.branch) {
+                    line.state = state;
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn apply(&mut self, branch_id: &str, event: &Event) {
         match &event.content {
             EventContent::ToolCall(data) => {
                 self.questions.asked(branch_id, &event.id, data);
-                if branch_id == "main" {
+                if self.owns(branch_id) {
                     for call in data
                         .calls
                         .iter()
@@ -87,7 +154,8 @@ impl Projection {
             }
             _ => {}
         }
-        if branch_id != "main"
+        self.lines(branch_id, event);
+        if !self.owns(branch_id)
             && !matches!(
                 &event.content,
                 EventContent::ExecStarted(_)
@@ -114,6 +182,11 @@ impl Projection {
                     ShellRun::parse(text).is_some().then(|| text.clone())
                 }) {
                     self.push(format!("user-{sequence}"), RowKind::Shell, text);
+                } else if let Some(row) = data.blocks.iter().find_map(|block| {
+                    let dim_agent_types::InputBlock::Raw { text, .. } = block;
+                    branch_notice(text, data.mode)
+                }) {
+                    self.push(format!("line-{sequence}"), RowKind::Status, row);
                 }
             }
             EventContent::InputApplied(data) => {
@@ -124,6 +197,18 @@ impl Projection {
             }
             EventContent::InputDeleted(data) => {
                 self.held.retain(|(id, _)| *id != data.input_id);
+            }
+            EventContent::BranchEnd(data) => {
+                let issuer = match (&data.source, &data.ancestor) {
+                    (_, Some(ancestor)) => format!("with {ancestor}"),
+                    (BranchSource::Tool { .. }, None) => "itself".into(),
+                    (BranchSource::Host { .. }, None) => "an operation".into(),
+                };
+                self.push(
+                    format!("end-{sequence}"),
+                    RowKind::Status,
+                    format!("This line ended ({issuer})"),
+                );
             }
             EventContent::ExecStarted(data) => {
                 let label = self
@@ -177,7 +262,7 @@ impl Projection {
                     });
                 }
                 if let Some(call_id) = self.background.remove(&target)
-                    && branch_id == "main"
+                    && self.owns(branch_id)
                     && let Some(index) = self.rows.iter().position(|row| row.row_id == call_id)
                 {
                     let row = self.row(index);
@@ -201,7 +286,7 @@ impl Projection {
                     started_at: event.create_at,
                     finished: None,
                 };
-                if branch_id == "main"
+                if self.owns(branch_id)
                     && let Some(index) = self.tool_rows.get(&data.call_id).copied()
                     && self.rows[index].batch.as_deref() == Some(data.request_id.as_str())
                     && self.rows[index].member.is_none()
@@ -314,7 +399,7 @@ impl Projection {
                 if let Some(card) = self.card(branch_id, &data.request_event_id) {
                     card.task.finished = Some(finish);
                 }
-                if branch_id != "main" {
+                if !self.owns(branch_id) {
                     self.retain_tasks();
                     return;
                 }
@@ -412,9 +497,10 @@ impl Projection {
             }
             EventContent::Configuration(_)
             | EventContent::ToolCall(_)
-            | EventContent::BranchCreate(_)
             | EventContent::BranchStart(_)
+            | EventContent::BranchCreate(_)
             | EventContent::BranchCreateFailed(_)
+            | EventContent::BranchEnded(_)
             | EventContent::PermissionChanged(_)
             | EventContent::InputConsumed(_)
             | EventContent::InputWithdraw(_)
@@ -538,6 +624,32 @@ impl Projection {
 
     pub fn tasks(&self) -> &[TaskView] {
         &self.tasks
+    }
+
+    /// The first message the user sent: the window title's topic.
+    pub fn first_message(&self) -> Option<String> {
+        self.rows
+            .iter()
+            .find(|row| row.kind == RowKind::UserMessage)
+            .map(|row| row.text.clone())
+    }
+
+    /// Whether this transcript's turn runs.
+    pub fn running(&self) -> bool {
+        self.running
+    }
+
+    /// The lines `main` recorded, without `main` itself (design §14).
+    pub fn line_views(&self) -> &[LineView] {
+        &self.lines
+    }
+
+    pub fn approvals(&self) -> Vec<ApprovalView> {
+        self.approvals.clone()
+    }
+
+    pub fn questions(&self) -> Vec<crate::question::Call> {
+        self.questions.calls().cloned().collect()
     }
 
     pub fn workflow(&self, run_id: &str) -> Option<&WorkflowView> {
@@ -876,6 +988,54 @@ pub(crate) fn result_text(result: &ToolResult) -> String {
     }
 }
 
+fn branch_notice(text: &str, mode: Option<InputMode>) -> Option<String> {
+    if let Some(rest) = text.strip_prefix("<dim-branch-message") {
+        let from = attr(rest, "from")?;
+        let steer = match mode {
+            Some(InputMode::Steer) => " (steer)",
+            _ => "",
+        };
+        let ending = match attr(rest, "final") {
+            Some(_) => ", final",
+            None => "",
+        };
+        let body = unescape(&one_line(&element_body(text, "</dim-branch-message>")));
+        return Some(format!("◂ from {from}{steer}{ending}  {body}"));
+    }
+    if let Some(rest) = text.strip_prefix("<dim-branch-idle") {
+        let branch = attr(rest, "branch")?;
+        let status = attr(rest, "status").unwrap_or("idle");
+        return Some(format!("◂ {branch} is waiting ({status})"));
+    }
+    let rest = text.strip_prefix("<dim-branch-ended")?;
+    let branch = attr(rest, "branch")?;
+    Some(format!("◂ {branch} ended"))
+}
+
+fn unescape(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+/// The value of `name="value"` in an element's attribute text.
+fn attr<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("{name}=\"");
+    let start = text.find(&needle)? + needle.len();
+    let end = text[start..].find('"')? + start;
+    Some(&text[start..end])
+}
+
+/// The element's body between its first line and `close`.
+fn element_body(text: &str, close: &str) -> String {
+    let body = text.split_once('\n').map_or("", |(_, body)| body);
+    body.strip_suffix(close).unwrap_or(body).trim().to_owned()
+}
+
+/// A body on one transcript line: its whitespace collapsed.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 fn text_of(blocks: &[ContentBlock]) -> String {
     blocks
         .iter()
@@ -974,6 +1134,202 @@ mod tests {
         let rows = projection.snapshot().rows;
         assert!(!rows[0].streaming);
         assert_eq!(rows[0].text, "");
+    }
+
+    /// A raw-block input, as a line's notice or a message arrives.
+    fn raw_input(sequence: u64, text: &str, mode: &str) -> serde_json::Value {
+        serde_json::json!({
+            "sequence": sequence,
+            "create_at": sequence * 1000,
+            "type": "input",
+            "name": "message",
+            "data": {"blocks": [{"type": "raw", "text": text}], "mode": mode},
+        })
+    }
+
+    fn line_event(sequence: u64, name: &str, data: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "sequence": sequence,
+            "create_at": sequence * 1000,
+            "type": "branch",
+            "name": name,
+            "data": data,
+        })
+    }
+
+    #[test]
+    fn a_message_is_received_by_the_line_it_names_and_shown_once() {
+        let mut line = Projection::for_branch("b-7c");
+        line.apply(
+            "b-7c",
+            &serde_json::from_value(raw_input(
+                4,
+                "<dim-branch-message from=\"main\" to=\"b-7c\">\nStop on parser.rs.\n</dim-branch-message>",
+                "steer",
+            ))
+            .unwrap(),
+        );
+        let rows = line.snapshot().rows;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, RowKind::Status);
+        assert_eq!(rows[0].text, "◂ from main (steer)  Stop on parser.rs.");
+        let mut other = Projection::for_branch("b-91");
+        other.apply(
+            "b-91",
+            &serde_json::from_value(raw_input(4, "anything", "queue")).unwrap(),
+        );
+        assert!(other.snapshot().rows.is_empty());
+        let mut main = Projection::default();
+        apply(
+            &mut main,
+            &[raw_input(
+                5,
+                "<dim-branch-ended branch=\"b-02\">\nLine b-02 was ended from outside its own line, by the user or a host operation. It no longer receives messages; read it if you need what it did.\n</dim-branch-ended>",
+                "steer",
+            )],
+        );
+        apply(
+            &mut main,
+            &[raw_input(
+                6,
+                "<dim-branch-idle branch=\"b-7c\" status=\"completed\">\nLine b-7c's turn ended (completed) without a message to you, and b-7c is waiting. Read it if you need its state; message it with mode \"steer\" to give it more work, or leave it.\n</dim-branch-idle>",
+                "steer",
+            )],
+        );
+        let rows = main.snapshot().rows;
+        assert_eq!(rows[0].text, "◂ b-02 ended");
+        assert_eq!(rows[1].text, "◂ b-7c is waiting (completed)");
+        let mut escaped = Projection::default();
+        apply(
+            &mut escaped,
+            &[raw_input(
+                7,
+                "<dim-branch-message from=\"b-7c\" to=\"main\">\na &amp;&amp; b &lt;Vec&lt;u8&gt;&gt;\n</dim-branch-message>",
+                "steer",
+            )],
+        );
+        let rows = escaped.snapshot().rows;
+        assert_eq!(rows[0].text, "◂ from b-7c (steer)  a && b <Vec<u8>>");
+    }
+
+    #[test]
+    fn the_line_list_follows_creation_and_end() {
+        let mut main = Projection::default();
+        let create = |sequence, branch: &str, prompt: &str| {
+            line_event(
+                sequence,
+                "create",
+                serde_json::json!({
+                    "at": {"kind": "sequence", "sequence": sequence - 1},
+                    "source": {"kind": "tool", "turn_id": "t1", "request_id": "r1", "call_id": "c1"},
+                    "branch": branch,
+                    "prompt": prompt,
+                }),
+            )
+        };
+        apply(
+            &mut main,
+            &[create(4, "b-7c", "parser race hypothesis\nrest")],
+        );
+        assert_eq!(
+            main.line_views(),
+            &[LineView {
+                id: "b-7c".into(),
+                parent: Some("main".into()),
+                purpose: "parser race hypothesis".into(),
+                state: LineState::Waiting,
+            }]
+        );
+        apply(
+            &mut main,
+            &[line_event(
+                8,
+                "ended",
+                serde_json::json!({
+                    "branch": "b-7c",
+                    "endEvent": 6,
+                    "source": {"kind": "tool", "turn_id": "t1", "request_id": "r1", "call_id": "c2"},
+                }),
+            )],
+        );
+        assert_eq!(main.line_views()[0].state, LineState::EndedItself);
+        apply(&mut main, &[create(9, "b-91", "review")]);
+        apply(
+            &mut main,
+            &[line_event(
+                12,
+                "ended",
+                serde_json::json!({
+                    "branch": "b-91",
+                    "endEvent": 11,
+                    "source": {"kind": "host", "operation_id": "op-1"},
+                }),
+            )],
+        );
+        assert_eq!(main.line_views()[1].state, LineState::EndedByOperation);
+        let nested: Event =
+            serde_json::from_value(create(13, "b-90", "review the change")).unwrap();
+        main.apply("b-7c", &nested);
+        assert_eq!(
+            main.line_views().last(),
+            Some(&LineView {
+                id: "b-90".into(),
+                parent: Some("b-7c".into()),
+                purpose: "review the change".into(),
+                state: LineState::Waiting,
+            }),
+            "a line a line opened is still a line of the Session"
+        );
+        let nested_end: Event = serde_json::from_value(line_event(
+            14,
+            "ended",
+            serde_json::json!({
+                "branch": "b-90",
+                "endEvent": 13,
+                "source": {"kind": "host", "operation_id": "op-2"},
+            }),
+        ))
+        .unwrap();
+        main.apply("b-7c", &nested_end);
+        assert_eq!(
+            main.line_views().last().map(|line| &line.state),
+            Some(&LineState::EndedByOperation)
+        );
+        let cascaded: Event = serde_json::from_value(line_event(
+            15,
+            "ended",
+            serde_json::json!({
+                "branch": "b-90",
+                "endEvent": 14,
+                "source": {"kind": "tool", "turn_id": "t1", "request_id": "r1", "call_id": "c1"},
+                "ancestor": "b-7c",
+            }),
+        ))
+        .unwrap();
+        main.apply("b-7c", &cascaded);
+        assert_eq!(
+            main.line_views().last().map(|line| &line.state),
+            Some(&LineState::EndedWith("b-7c".into())),
+            "a tool source does not make a cascade an end of its own"
+        );
+        let mut done = Projection::for_branch("b-90");
+        let end: Event = serde_json::from_value(line_event(
+            16,
+            "end",
+            serde_json::json!({
+                "source": {"kind": "tool", "turn_id": "t1", "request_id": "r1", "call_id": "c1"},
+                "ancestor": "b-7c",
+            }),
+        ))
+        .unwrap();
+        done.apply("b-90", &end);
+        assert!(
+            done.snapshot()
+                .rows
+                .iter()
+                .any(|row| row.text == "This line ended (with b-7c)"),
+            "a cascaded line's own transcript names its ancestor"
+        );
     }
 
     #[test]

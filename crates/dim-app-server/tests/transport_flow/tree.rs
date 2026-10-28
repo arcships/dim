@@ -361,7 +361,7 @@ async fn builtin_branch_is_a_session_tool_under_the_permission_policy() {
             let sid = created["result"]["sessionId"].as_str().unwrap();
             let session = agent.get_session(sid).unwrap();
             assert_ok(&client.rpc("session.attach", json!({"sessionId":sid})).await);
-            assert_ok(&client.rpc("session.submit", json!({"sessionId":sid,"branchId":"main","text":"tool:branch {\"prompt\":\"child\"}"})).await);
+            assert_ok(&client.rpc("session.submit", json!({"sessionId":sid,"branchId":"main","text":"tool:branch {\"action\":\"create\",\"prompt\":\"child\"}"})).await);
             assert_ok(
                 &client
                     .rpc("session.idle", json!({"sessionId":sid,"branchId":"main"}))

@@ -52,6 +52,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "1-9 select · Tab next · Esc decline" => "1-9 選擇 · Tab 下一題 · Esc 不回答",
         "Question" => "問題",
         "Question on branch {branch}" => "來自分支 {branch} 的問題",
+        "Permission on branch {branch}" => "來自分支 {branch} 的授權請求",
         "Sending answer…" => "正在傳送回答…",
         "Question not ready; press Enter to send again" => "問題尚未就緒；按 Enter 重送",
         // prompts.rs: AskUser

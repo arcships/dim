@@ -43,7 +43,7 @@
 | `goal.ts` | 折叠读取 `judge`（来自 `set`，`edit` 保留）；评审裁判下，干活模型的 `completed` 块是请求，不改变状态，目标运行时为 `active`（Goal A16 中的例外）。请求既不是 `set` 也不是 `resume`，所以不移动 `A`：计数仍是 `max(A, last_operator)` 之后的续跑数（[Goal §2](Goal.md#2-数据与状态)）。Goal 的 `decided` 也把 `goal:evaluate:N` 的 `branch/create` 算作 `N` 的决定。以及下面的决策和文本 |
 | `branch.ts` | Dispatcher key 新增 `branch/create` 和 `branch/create-failed`；创建评审分支；在评审分支上承担评审角色（§4.2） |
 
-不新增服务、注入、Settings 字段或事件类型。评审分支是普通的 host 来源子分支；它的第一条 Queue 输入是提示词（[TimelineTree `first_input`](../../../../crates/dim-agent-capabilities/src/timeline_tree.rs)）。那里的 Goal 没有属于自己的目标，并像在任何子分支上一样写入起始 `clear`（[Goal §3.4](Goal.md#34-新分支清除继承的目标)），所以它不会续跑。
+不新增服务、Settings 字段或事件类型，新增的注入只有 Goal 的 `sessionLifecycle`（§13）。评审分支是普通的 host 来源子分支；它的第一条 Queue 输入是提示词（[TimelineTree `first_input`](../../../../crates/dim-agent-capabilities/src/timeline_tree.rs)）。那里的 Goal 没有属于自己的目标，并像在任何子分支上一样写入起始 `clear`（[Goal §3.4](Goal.md#34-新分支清除继承的目标)），所以它不会续跑。
 
 ## 4. Goal 中的决策
 
@@ -178,6 +178,7 @@ Goal 从分支的第一条本地 Queue 输入识别这个角色（Prompt 在 `br
 接口：
 
 - Goal 的分支部件新增 Dispatcher key `branch/ended`。
+- Goal 的分支部件注入 `sessionLifecycle`（`activated()`）：加载时的结束要等 Session 发布其恢复打开的各条线（E2）。
 - 分支 TypeScript 绑定在现在暴露 `create`、`input` 的地方暴露 `end(id, source)` 和 `TimelineInfo.source`：
   - 生成的 `npm/branch-services.d.ts`；
   - [绑定表](../../../design/branch-typescript.md)中的 `treeCommands` 一行；

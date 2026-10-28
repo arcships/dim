@@ -24,7 +24,8 @@ export const settings: SourceDeclaration = {
           },
           "apiKey": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "writeOnly": true
           }
         }
       },
@@ -37,7 +38,8 @@ export const settings: SourceDeclaration = {
       },
       "proxy": {
         "type": "string",
-        "format": "uri"
+        "format": "uri",
+        "writeOnly": true
       }
     }
   },

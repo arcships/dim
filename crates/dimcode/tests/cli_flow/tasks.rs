@@ -422,9 +422,14 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
         terminal.until("resumed paged");
         terminal.until("100 messages");
         terminal.until("earlier history: /history");
-        assert!(terminal.transcript.contains("paged-message-051"));
-        assert!(!terminal.transcript.contains("paged-message-050"));
-        assert!(!terminal.transcript.contains("paged-message-001"));
+        // The window title names the session's first message; only the
+        // screen is windowed.
+        let screen = terminal
+            .transcript
+            .replace("\x1b]0;DIM | paged-message-001\x07", "");
+        assert!(screen.contains("paged-message-051"));
+        assert!(!screen.contains("paged-message-050"));
+        assert!(!screen.contains("paged-message-001"));
         assert!(!terminal.transcript.contains("· 0 messages"));
         terminal.write(b"\r/history\r");
         terminal.until("paged-message-001");

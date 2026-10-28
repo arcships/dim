@@ -540,6 +540,8 @@ impl<'a> EventRef<'a> {
                     | crate::EventKind::ContextConfigured(_)
                     | crate::EventKind::ContextScope(_)
                     | crate::EventKind::BranchCreateFailed(_)
+                    | crate::EventKind::BranchEnd(_)
+                    | crate::EventKind::BranchEnded(_)
                     | crate::EventKind::BranchResume(_)
                     | crate::EventKind::SessionForked(_)
                     | crate::EventKind::CollaborationRequest(_)

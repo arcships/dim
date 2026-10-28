@@ -219,6 +219,8 @@ pub enum SessionsError {
     #[error("{message}")]
     BranchMissing { message: String },
     #[error("{message}")]
+    BranchEnded { message: String },
+    #[error("{message}")]
     Reloading { message: String },
     #[error("{message}")]
     FutureSequence { message: String },
@@ -254,6 +256,7 @@ impl From<AgentError> for SessionsError {
         match error {
             AgentError::Closed(_) => Self::SessionClosed { message },
             AgentError::UnknownBranch(_) => Self::BranchMissing { message },
+            AgentError::BranchEnded(_) => Self::BranchEnded { message },
             AgentError::Reloading(_) => Self::Reloading { message },
             AgentError::InvalidInput(_) => Self::Rejected { message },
             AgentError::AmbiguousSubmission(_) => Self::Ambiguous { message },
@@ -283,9 +286,10 @@ async fn published(publication: &Publication, sequence: u64) -> Result<(), Sessi
 /// dispatch failure.
 fn settlement(error: AgentError) -> SessionsError {
     match error {
-        AgentError::Closed(_) | AgentError::UnknownBranch(_) | AgentError::Reloading(_) => {
-            error.into()
-        }
+        AgentError::Closed(_)
+        | AgentError::UnknownBranch(_)
+        | AgentError::BranchEnded(_)
+        | AgentError::Reloading(_) => error.into(),
         error => SessionsError::Failed {
             message: error.to_string(),
         },

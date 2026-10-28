@@ -1,8 +1,8 @@
 //! Serialized host authority for source selection and cross-Session retirement.
 //! Connection resources and disposal belong exclusively to loader instances.
-use super::config::{self, McpProjectEnablement, McpServerSettings, McpSettings};
+use super::config::{self, McpPluginServers, McpProjectEnablement, McpServerSettings, McpSettings};
 use super::{
-    McpAuth, McpConnection, McpError, Result,
+    McpAuth, McpConnection, McpError, McpSource, Result,
     server::{McpServer, McpServerError, McpServerPlugin, McpServerState},
 };
 use crate::settings::{SettingsScope, SettingsService};
@@ -119,7 +119,7 @@ enum Command {
         reply: oneshot::Sender<Result<Arc<McpConnection>>>,
     },
     Disconnect {
-        source: SettingsScope,
+        source: McpSource,
         id: String,
         reply: oneshot::Sender<Result<()>>,
     },
@@ -129,10 +129,10 @@ enum Command {
 pub struct Publication {
     commands: mpsc::Sender<Command>,
     released: watch::Sender<()>,
-    applications: StateCell<BTreeMap<SettingsScope, McpApplication>>,
+    applications: StateCell<BTreeMap<McpSource, McpApplication>>,
 }
 impl Publication {
-    pub(super) fn application(&self, source: SettingsScope) -> McpApplication {
+    pub(super) fn application(&self, source: McpSource) -> McpApplication {
         self.applications.get().remove(&source).unwrap_or_default()
     }
     pub(super) fn refresh(&self) {
@@ -140,7 +140,7 @@ impl Publication {
     }
     /// Changes when a source's applied state changes, including entries that
     /// the publisher observed in external edits; Sessions re-read then.
-    pub(super) fn applied(&self) -> watch::Receiver<BTreeMap<SettingsScope, McpApplication>> {
+    pub(super) fn applied(&self) -> watch::Receiver<BTreeMap<McpSource, McpApplication>> {
         self.applications.subscribe()
     }
     /// Waits until the worker has refreshed after this call, so generations
@@ -187,7 +187,7 @@ impl Publication {
     }
     pub(super) async fn disconnect(
         &self,
-        source: SettingsScope,
+        source: McpSource,
         id: String,
         cancel: &CancellationToken,
     ) -> Result<()> {
@@ -354,7 +354,7 @@ struct Source {
     degraded: Option<&'static str>,
 }
 struct Generation {
-    source: SettingsScope,
+    source: McpSource,
     id: String,
     configuration: McpServerSettings,
     owner: McpOwner,
@@ -367,11 +367,11 @@ struct Generation {
 }
 struct Projection {
     port: Arc<Publication>,
-    sources: BTreeMap<SettingsScope, Source>,
+    sources: BTreeMap<McpSource, Source>,
     generations: BTreeMap<String, Generation>,
-    disconnected: BTreeMap<(SettingsScope, String), String>,
-    cleanup_failed: BTreeSet<SettingsScope>,
-    application_failed: BTreeMap<(String, SettingsScope, String), (String, CancellationToken)>,
+    disconnected: BTreeMap<(McpSource, String), String>,
+    cleanup_failed: BTreeSet<McpSource>,
+    application_failed: BTreeMap<(String, McpSource, String), (String, CancellationToken)>,
 }
 impl Projection {
     /// The entry no longer exists enabled. A known entry that is disabled is
@@ -398,13 +398,23 @@ impl Projection {
         };
         let unreadable = enablement.is_err();
         let enablement = enablement.unwrap_or_default();
-        for source in std::iter::once(SettingsScope::User).chain(
+        for source in [McpSource::User, McpSource::Plugins].into_iter().chain(
             projects
                 .into_iter()
-                .map(|(root, _)| SettingsScope::Project(root)),
+                .map(|(root, _)| McpSource::Project(root)),
         ) {
-            let snapshot = match settings.read::<McpSettings>(source, cancel).await {
-                Ok(snapshot) => snapshot,
+            let read = match source.scope() {
+                Some(scope) => settings
+                    .read::<McpSettings>(scope, cancel)
+                    .await
+                    .map(|snapshot| (snapshot.revision, snapshot.document.mcp_servers)),
+                None => settings
+                    .read::<McpPluginServers>(SettingsScope::User, cancel)
+                    .await
+                    .map(|snapshot| (snapshot.revision, snapshot.document.entries().collect())),
+            };
+            let (revision, servers) = match read {
+                Ok(read) => read,
                 Err(_) => {
                     let intent = self.sources.entry(source).or_insert_with(|| Source {
                         revision: String::new(),
@@ -414,8 +424,9 @@ impl Projection {
                         degraded: None,
                     });
                     intent.error = Some("MCP source could not be read");
-                    if matches!(source, SettingsScope::Project(_)) {
-                        let workspace = config::workspace(settings, source).ok();
+                    if let McpSource::Project(root) = source {
+                        let workspace =
+                            config::workspace(settings, SettingsScope::Project(root)).ok();
                         for (id, config) in &mut intent.current {
                             let (McpServerSettings::Stdio { enabled, .. }
                             | McpServerSettings::Remote { enabled, .. }) = config;
@@ -429,15 +440,17 @@ impl Projection {
                     continue;
                 }
             };
-            let document = snapshot.document;
             self.disconnected
-                .retain(|(owner, _), revision| *owner != source || *revision == snapshot.revision);
-            let configured = document.mcp_servers.keys().cloned().collect();
+                .retain(|(owner, _), disconnected| *owner != source || *disconnected == revision);
+            let configured = servers.keys().cloned().collect();
             let mut current = BTreeMap::new();
             let mut error = None;
-            for (id, config) in document.mcp_servers {
-                let Ok(config) = config::effective(settings, source, &id, config, &enablement)
-                else {
+            for (id, config) in servers {
+                let config = match source.scope() {
+                    Some(scope) => config::effective(settings, scope, &id, config, &enablement),
+                    None => Ok(config),
+                };
+                let Ok(config) = config else {
                     error = Some("MCP configuration could not be resolved");
                     continue;
                 };
@@ -445,12 +458,12 @@ impl Projection {
                     current.insert(id, config);
                 }
             }
-            let degraded = (unreadable && matches!(source, SettingsScope::Project(_)))
+            let degraded = (unreadable && matches!(source, McpSource::Project(_)))
                 .then_some("MCP project enablement could not be read");
             self.sources.insert(
                 source,
                 Source {
-                    revision: snapshot.revision,
+                    revision,
                     configured,
                     current,
                     error,
@@ -545,8 +558,9 @@ impl Projection {
             return Err(McpError::Closed);
         }
         let mut selected = None;
-        for source in
-            std::iter::once(SettingsScope::User).chain(project.map(SettingsScope::Project))
+        for source in [McpSource::User, McpSource::Plugins]
+            .into_iter()
+            .chain(project.map(McpSource::Project))
         {
             let intent =
                 self.sources
@@ -657,7 +671,7 @@ impl Projection {
         self.generations.insert(reference, generation);
         Ok(lease)
     }
-    async fn disconnect(&mut self, source: SettingsScope, id: String) -> Result<()> {
+    async fn disconnect(&mut self, source: McpSource, id: String) -> Result<()> {
         if let Some(intent) = self.sources.get_mut(&source) {
             self.disconnected
                 .insert((source, id.clone()), intent.revision.clone());

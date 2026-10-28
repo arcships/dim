@@ -51,6 +51,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "1-9 select · Tab next · Esc decline" => "1-9 选择 · Tab 下一题 · Esc 拒答",
         "Question" => "问题",
         "Question on branch {branch}" => "来自分支 {branch} 的问题",
+        "Permission on branch {branch}" => "来自分支 {branch} 的授权请求",
         "Sending answer…" => "正在发送回答…",
         "Question not ready; press Enter to send again" => "问题尚未就绪；按 Enter 重试",
         "Confirm" => "确认",

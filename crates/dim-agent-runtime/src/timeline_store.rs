@@ -1,4 +1,4 @@
-use crate::{BoxFuture, Result, SessionConfig, TimelineInfo, TimelineTrace};
+use crate::{BoxFuture, BranchRecord, Result, SessionConfig, TimelineTrace};
 use dim_agent_types::{AgentEvent, RecoverySnapshot};
 use std::{ops::RangeInclusive, sync::Arc};
 
@@ -19,7 +19,7 @@ pub struct StoredEvent {
 
 #[derive(Debug, Clone)]
 pub struct StoredBranch {
-    pub info: TimelineInfo,
+    pub info: BranchRecord,
     pub sequence: u64,
 }
 

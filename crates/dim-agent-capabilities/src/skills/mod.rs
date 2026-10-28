@@ -51,7 +51,8 @@ pub fn register_parts(ctx: &Ctx, parts: &std::sync::Arc<PartRegistry>) -> Result
 /// already replaced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillDefinition {
-    /// TS `getSkillId`: `user:<rel>` or `workspace:<skills dir>:<rel>`.
+    /// TS `getSkillId`: `user:<rel>` or `workspace:<skills dir>:<rel>`; a
+    /// plugin's Skill is `plugin:<plugin id>:<rel>`.
     pub id: String,
     pub name: String,
     pub description: String,

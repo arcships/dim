@@ -28,7 +28,7 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [Tui](Tui.md) | — (client tree in the CLI process: `DaemonLink`, `Tui`, `WebHold`; not daemon plugins) | — | — | P1 |
 | [RemoteGateway](RemoteGateway.md) | remote entry, devices | — | — | P3 |
 | [Modality](Modality.md) | tasks, realtime connections | — | — | P3 |
-| [PluginManager](PluginManager.md) | plugin configuration (`plugins.json`), install, loader rows of plugin code, content registration | `PluginTools` (plugin tools) | — | M1 |
+| [PluginManager](PluginManager.md) | plugin configuration (`plugins.json`), install, loader rows of plugin code, content registration | `PluginTools` (`plugin` tool) | — | M1 |
 | [RuntimeManager](RuntimeManager.md) | the Node and Python runtimes of plugin code: pinned download, verification, start; `runtime.*` | — | — | M1 (#476) |
 
 ## By scope

@@ -15,7 +15,7 @@
       },
       "phase": "idle",
       "queued": 0,
-      "pluginDrivers": 15
+      "pluginDrivers": 16
     },
     {
       "alias": "timeline_1",
@@ -30,7 +30,7 @@
       },
       "phase": "idle",
       "queued": 0,
-      "pluginDrivers": 15
+      "pluginDrivers": 16
     }
   ]
 }

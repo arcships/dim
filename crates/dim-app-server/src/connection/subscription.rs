@@ -546,6 +546,22 @@ impl Connection {
                             reported: &mut HashMap<String, BranchStatus>,
                             progress: &mut Option<Progress>| {
             let Ok(mut receiver) = session.watch(&branch) else {
+                if session.ended_head(&branch).is_some() {
+                    let closed = BranchStatus {
+                        closed: true,
+                        ..Default::default()
+                    };
+                    if reported.get(&branch) != Some(&closed) {
+                        if !self.notify(
+                            &id,
+                            generation,
+                            state_notice(version, &id, &branch, &closed),
+                        ) {
+                            return false;
+                        }
+                        reported.insert(branch.clone(), closed);
+                    }
+                }
                 return true;
             };
             watched.lock().expect("watched").insert(branch.clone());
@@ -612,7 +628,20 @@ impl Connection {
                             Err(dim_agent_runtime::AgentError::Reloading(_)) => {
                                 watches.push(state_change(branch, receiver));
                             }
-                            Err(_) => {}
+                            Err(_) => {
+                                if session.ended_head(&branch).is_some() {
+                                    let closed = BranchStatus {
+                                        closed: true,
+                                        ..Default::default()
+                                    };
+                                    if reported.get(&branch) != Some(&closed)
+                                        && !self.notify(&id, generation, state_notice(version, &id, &branch, &closed))
+                                    {
+                                        return;
+                                    }
+                                    reported.insert(branch, closed);
+                                }
+                            }
                         }
                     }
                 }

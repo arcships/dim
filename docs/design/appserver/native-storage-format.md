@@ -1,33 +1,32 @@
 # Rust 会话存储格式
 
-The current native format is **v19**, with source-owned `settings_documents`,
+The current native format is **v20**, with source-owned `settings_documents`,
 SessionStore's Session-file rows, its title metadata, request messages stored
-as lists of content-addressed nodes, extension event rows, and Session
-configurations and Agent profiles that may omit their mount list. Startup
-requires the exact v19 SQL schema and a single format marker of 19 before
-writable PRAGMAs, or the exact v18, v17, v16, v15 or v13 schema with its own
-marker, which the same startup transaction upgrades in place to v19 one step
-after another ([S5a v15 decision](#s5a-v15-格式决定), [S5b v16 decision](#s5b-v16-格式决定),
-[#193 v17 decision](#193-v17-格式决定), [#2 v18 decision](#2-v18-格式决定),
-[#364 v19 decision](#364-v19-格式决定)). Older databases and the removed
+as lists of content-addressed nodes, extension event rows, Session
+configurations and Agent profiles that may omit their mount list, and the two
+branch end events. Startup requires the exact v20 SQL schema and a single
+format marker of 20 before writable PRAGMAs, or the exact v19, v18, v17, v16,
+v15 or v13 schema with its own marker, which the same startup transaction
+upgrades in place to v20 one step after another ([S5a v15 decision](#s5a-v15-格式决定),
+[S5b v16 decision](#s5b-v16-格式决定), [#193 v17 decision](#193-v17-格式决定),
+[#2 v18 decision](#2-v18-格式决定), [#364 v19 decision](#364-v19-格式决定),
+[#427 v20 decision](#427-v20-格式决定)). Older databases and the removed
 branch-only v14 `user_configuration` format are unsupported and preserved, never
-migrated, downgraded or interpreted as v13, v15, v16, v17, v18 or v19. No
+migrated, downgraded or interpreted as v13, v15, v16, v17, v18, v19 or v20. No
 migration API or startup option is provided. S5c (Session deletion and fork) kept
 v15 unchanged ([S5c decision](#s5c-格式决定)). v13 document bytes remain valid in
-v19, and v16 request rows stay readable as written. #427 decided v20 for its two
-new core events; that step takes effect with #427's implementation, and until
-then the current format stays v19 ([#427 v20 decision](#427-v20-格式决定)).
+v20, and v16 request rows stay readable as written.
 Storage versions are independent of RPC versions. Private MCP/Skill business documents do not belong
 in loader rows, events, diagnostics, Sessions or Timelines.
 
-## Current v19 tables
+## Current v20 tables
 
 下表逐列对应 `SqliteStorage::SCHEMA`。新表按业务实体命名，其中 `agent_sessions` 与旧 TypeScript 的 `sessions` 区分；当前启动门禁仍只接受本格式，不因此支持旧表同库存取。`—` 表示 SQL 中没有显式 `DEFAULT`；可空列若省略会得到 SQLite 的隐式 `NULL`。SQLite rowid 表中的 `TEXT PRIMARY KEY` 不自动保证非空，因此下表如实标出 v1 的两个缺口；正常写入仍必须给出 ID。
 
 | 表.列 | SQLite 类型 | 可空 | 默认 | 约束与含义 |
 | --- | --- | --- | --- | --- |
-| `agent_store_format.version` | `INTEGER` | No | — | Primary key, `CHECK(version = 19)`; exactly one row |
-| `settings_documents.source` | `TEXT` | No | — | Primary key; `user/mcp`, `user/skills` or `user/mcp-projects`; workspace files are not mirrored |
+| `agent_store_format.version` | `INTEGER` | No | — | Primary key, `CHECK(version = 20)`; exactly one row |
+| `settings_documents.source` | `TEXT` | No | — | Primary key; `user/mcp`, `user/skills`, `user/mcp-projects` or `user/mcp-plugins`; workspace files are not mirrored |
 | `settings_documents.version` | `INTEGER` | No | — | Positive per-source CAS revision; token `native:<source>:<version>` |
 | `settings_documents.document` | `TEXT` | No | — | Plain business payload JSON, without a `{kind, document}` envelope; unknown business fields are preserved |
 | `settings_documents.imported_revision` | `TEXT` | No | — | Original file SHA-256 or `missing`; import provenance, not a CAS token |
@@ -97,6 +96,11 @@ file is `mcp-projects.json`, which only the standalone file backend writes; a
 native home normally has none, so the first read imports `missing` and an empty
 record. The row is an additive source within
 v13: the schema and format version are unchanged, and older binaries ignore it.
+`user/mcp-plugins` holds the MCP documents plugins registered with Mcp
+(`{"plugins":{"<plugin id>":{"dir":"<plugin directory>","mcpServers":{…}}}}`,
+[PluginManager §3.7](../plugins/PluginManager.md#37-content-registration)), and
+`user/skills` may carry `pluginSkills` (`{"<plugin id>":"<skills root>"}`); both
+are additive in the same way.
 Generic Settings persistence retains these exact payload shapes, not loader
 patches or UUID snapshots. Business interpretation and validation belong to the namespace owner.
 Unknown extension fields and disabled Skill IDs are preserved.
@@ -135,7 +139,7 @@ Managed `providers.record` is `{kind:"managed", account, models, modelConfigOver
 
 静态目录的 record 为 `{kind, displayName, driverKind, auth, credentialAuthority, baseUrl, network, headers, credential, models, remoteModels, endpointTypes, modelConfigOverrides, disabledModelIds, enabled, definitionFingerprint, version, userModels?, modelPreferences?, endpointOverrides?}`。可选的 `userModels`、`modelPreferences`、`endpointOverrides` 沿 #329 格式决定保存用户模型、偏好和端点覆盖，缺失表示无对应配置。`kind` 为 `builtin` 或 `custom`；models 和覆盖均为完整 `ModelEntry`；`definitionFingerprint` 是 bundled 定义的 SHA-256，自定义记录为 null。`credentialAuthority` 为 `static`、`openai_codex` 或 `grok`，缺省仅解释为静态来源；后两者只允许对应内置 Provider 的固定非秘密绑定，credential 必须为空。`credential` 可保存静态凭据或不透明秘密引用，但不写回引用解析结果；`network` 保存逐连接代理与超时，只读 `provider.list` 不返回代理 URL；`provider.management` 只返回去除 user info 的 `proxyUrl`，代理认证仍不返回，展示值不得自动写回。`remoteModels` 标记已取得的独立模型快照，避免 bundled 升级覆盖；`endpointTypes` 保存显式协议映射，派生路由不落盘。凭据和 header 值只由 resolver 使用，管理面仅返回非秘密摘要。写入及读取边界校验模型、地址和请求头，外层 SQL 版本须与 record.version 一致；seed、编辑和删除规则见[Provider合同](../../../crates/dim-app-server/README.md)。
 
-`agents.profile` 是 `AgentProfile`：`{name, description, systemPrompt, tools?, model?}`；`model` 若存在为 `{providerId, modelId}`。`agent_sessions.config` 是 `SessionConfig`：`{permissionPolicy, cwd, model, systemPrompt, tools?, collaborationRole, interactive?}`；两者的 `tools` 是字符串数组形式的挂载列表，没有挂载列表时省略（[Session 访问 A.3](../contracts/session-access.md#a3-sessionconfig-fields)，格式决定见 [#364 v19 格式决定](#364-v19-格式决定)）；其中 `model` 是 `ModelSelection {providerId, modelId, config?, metadata?}`，创建时固定完整模型参数，省略参数的身份记录仍可读取。`permissionPolicy` 为 `{preset, allowedTools, disallowedTools}`，`collaborationRole` 为 `leader` 或 `member`。可选字段 `interactive`（布尔，缺省 `true`）由[路线图](../roadmap.md) C2 加入，已实现，格式决定如下：保持 v13，不升级到 v14，这是配置 JSON 中增量的可选字段；缺少它的已存储记录表示 `true`，因为该字段出现之前创建的每个 Session 都是客户端 Session；只写入 `false`，交互式记录不含该字段，与该字段出现之前写入的记录格式相同；这一省略规则写在 `SessionConfig` 的 serde 定义上，原生存储是它唯一的序列化方，在其他地方暴露 `SessionConfig` 须另行决定；旧版守护进程忽略该字段，会把非交互记录读成交互式，这一点可以接受。字段合同见 [Session 访问 A.3](../contracts/session-access.md#a3-sessionconfig-fields)。`timeline_branches.info` 是 `TimelineInfo`：`main` 为 `{id:"main"}`，子分支为 `{id, parent, branch_point, create_anchor}`；后两项是父分支的本地序号。JSON 字段名按各类型的 serde 定义，不能由 SQL 列名的拼写推断。
+`agents.profile` 是 `AgentProfile`：`{name, description, systemPrompt, tools?, model?}`；`model` 若存在为 `{providerId, modelId}`。`agent_sessions.config` 是 `SessionConfig`：`{permissionPolicy, cwd, model, systemPrompt, tools?, collaborationRole, interactive?}`；两者的 `tools` 是字符串数组形式的挂载列表，没有挂载列表时省略（[Session 访问 A.3](../contracts/session-access.md#a3-sessionconfig-fields)，格式决定见 [#364 v19 格式决定](#364-v19-格式决定)）；其中 `model` 是 `ModelSelection {providerId, modelId, config?, metadata?}`，创建时固定完整模型参数，省略参数的身份记录仍可读取。`permissionPolicy` 为 `{preset, allowedTools, disallowedTools}`，`collaborationRole` 为 `leader` 或 `member`。可选字段 `interactive`（布尔，缺省 `true`）由[路线图](../roadmap.md) C2 加入，已实现，格式决定如下：保持 v13，不升级到 v14，这是配置 JSON 中增量的可选字段；缺少它的已存储记录表示 `true`，因为该字段出现之前创建的每个 Session 都是客户端 Session；只写入 `false`，交互式记录不含该字段，与该字段出现之前写入的记录格式相同；这一省略规则写在 `SessionConfig` 的 serde 定义上，原生存储是它唯一的序列化方，在其他地方暴露 `SessionConfig` 须另行决定；旧版守护进程忽略该字段，会把非交互记录读成交互式，这一点可以接受。字段合同见 [Session 访问 A.3](../contracts/session-access.md#a3-sessionconfig-fields)。`timeline_branches.info` 是 `BranchRecord`：`main` 为 `{id:"main"}`，子分支为 `{id, parent, branch_point, create_anchor}`；后两项是父分支的本地序号。运行时的 `TimelineInfo` 是它加上 `source`，该字段不落盘。JSON 字段名按各类型的 serde 定义，不能由 SQL 列名的拼写推断。
 
 `context/configured` 的 `ModelConfiguration` 分别固定模型与工具部分：模型使用上述参数，`tools` 为已采用声明，可选 `toolSources` 为 `{key,version}[]` 的来源版本；没有来源时省略。模型更新保留已采用的工具部分，工具采用保留模型部分，完整合同见[App Server合同](../../../crates/dim-app-server/README.md)。
 
@@ -337,24 +341,24 @@ ProjectionCheckpoint = {
 
 ### #329 格式决定
 
-[Provider 完整管理 #329](https://github.com/arcships/dim/issues/329) 的格式决定沿用当前 **v19，不额外改变格式号或 SQL 结构**（#364 已决定 v18 → v19）；具体合同见[Provider 管理 §6](provider-management.md#6-persistence-existing-sessions-and-migration)。
+[Provider 完整管理 #329](https://github.com/arcships/dim/issues/329) 的格式决定沿用当时当前的 **v19，不额外改变格式号或 SQL 结构**（#364 已决定 v18 → v19；其后 #427 升到 v20，本决定随之保持）；具体合同见[Provider 管理 §6](provider-management.md#6-persistence-existing-sessions-and-migration)。
 这是对上文保持版本条件中“旧写入器不会重写丢失新值”的明确例外，按首次发布前的开发阶段兼容范围接受。
 
 - 只增加三个可选顶层 JSON 字段：静态记录的 `userModels: ModelEntry[]`、静态/托管记录的 `modelPreferences: Record<modelId, ModelPreferences>`，以及静态记录的 `endpointOverrides: Record<modelId, NewApiEndpoint>`。缺失表示无对应用户数据；默认模型与用户新增列表分开。
 - 旧 v19 二进制忽略这些未知顶层字段，重写时会丢失；明确接受该降级损失，包括 fingerprint 改变时自动 `seed_bundled` 重写。不得只验证读取成功；实施须在一次性数据库中运行旧 v19 的实际读取和重写路径。
 - 不扩展既有严格嵌套类型。`ModelPreferences` 拒绝未知字段，`NewApiEndpoint` 是闭合枚举；已支持新映射的旧二进制会拒绝后续新增的内部字段/枚举值，增加前须另作显式格式决定。
 - 新版本 reseed 若因用户模型与新默认项重名，保留该记录已准入定义、fingerprint 和 version，继续处理其他记录，管理面沿既有逐项错误提示。用户删除冲突模型后，下次启动采用新定义；不以 Provider 激活失败阻断修复入口。其他非法记录和未知数据库格式沿原规则拒绝并保留。
-- 验证在一次性 v19 库中运行 Provider 管理实现之前的实际 App Server 二进制：只读不改变自定义记录字节；旧 `provider.save` 重写丢失三个新增字段，旧启动 reseed 丢失内置记录的用户模型和偏好，库标记始终为 19。新增字段的缺失值、重启保留、用户模型冲突、删除和重新装载由 Provider 流程测试保护。
+- 验证在一次性 v19 库中运行 Provider 管理实现之前的实际 App Server 二进制：只读不改变自定义记录字节；旧 `provider.save` 重写丢失三个新增字段，旧启动 reseed 丢失内置记录的用户模型和偏好，库标记不因本决定改变。新增字段的缺失值、重启保留、用户模型冲突、删除和重新装载由 Provider 流程测试保护。
 
 ### #427 v20 格式决定
 
 [Timeline 分支](../timeline-branches.md#16-format)（#427）的格式决定：升级到 **v20**，从 v19 原地升级。
 
-- **状态**：由 #427 决定，随其实现生效。在那之前当前格式仍是 v19，本文其余部分描述的都是 v19。
+- **状态**：当前格式是 v20。
 - **只增两种核心事件**：两者都以 `encoding: "event"` 写入普通 `event` 行，不进输出行、不带请求引用。行结构、内容寻址和其他记录的字节不变。
   - `branch/end` 写在要结束的分支上，`data` 为 `{source, ancestor?}`。`source` 是 `branch/create` 已在用的 `BranchSource`：`{kind: "tool", turn_id, request_id, call_id}` 或 `{kind: "host", operation_id}`。`ancestor` 是分支 ID，只在因祖先结束而结束时出现。
   - `branch/ended` 写在其父分支上，`data` 为 `{branch, endEvent, source, ancestor?}`。`endEvent` 是 `branch/end` 在结束分支上的序号（安全整数），`source` 与 `ancestor` 取自 `branch/end`（[Timeline 分支 §10](../timeline-branches.md#10-ending-a-line)）。
-- **目录行不变**：`timeline_branches.info` 照旧是不含 `source` 的 `TimelineInfo` JSON。运行时的 `TimelineInfo` 新增 `source`，但存储写目录行时不写它；恢复时由 TimelineTree 从父分支的 `branch/create` 补齐（[Timeline 分支 §5](../timeline-branches.md#5-parts)）。
+- **目录行不变**：`timeline_branches.info` 照旧是不含 `source` 的 JSON，类型是 `BranchRecord`（运行时视图 `TimelineInfo` 是它再加上 `source`）。运行时的 `TimelineInfo` 新增 `source`，但存储写目录行时不写它；恢复时由 TimelineTree 从父分支的 `branch/create` 补齐（[Timeline 分支 §5](../timeline-branches.md#5-parts)）。
 - **不能留在 v19**：
   - v19 读取器对核心保留领域只按类型解码（见上文 [#2 v18 决定](#2-v18-格式决定)），解码不了 `branch/end` 与 `branch/ended` 行。
   - #193 的 v17 起，能打开某版本库的守护进程都能解码其中每一行；留在 v19 就打破这一点，为不兼容的已提交格式沿用了版本号。
@@ -410,7 +414,7 @@ ProjectionCheckpoint = {
 
 当前两个 ID 列的 SQL 可空缺口见表结构。永久关闭字段、协作表和旧记录回填在业务范围确定后另行设计。
 
-## 完整记录示例（v19）
+## 完整记录示例（v20）
 
 下例是一条 Session `s1`、主分支 `main` 和子分支 `child` 的全部原生表记录，用于核对存储关系，不代表完整的对话执行序列。为便于阅读，`profile`、`config`、`info` 和事件 `body` 这几个实际为 `TEXT` 的列在展示时解析为 JSON；写入时各自是完整 JSON 字符串，类型规定省略的可选字段照常省略。ID/时间是示例值。`timeline_content.body` 保留实际写入的字符串形式，因此下面各 hash 可以按上文算法复核。`main` 第 4 条 `model/call` 是升级前 v16 写入的行，`child` 第 3 条是升级后 v17 写入的行，示例同时展示两种行混存。
 
@@ -423,7 +427,7 @@ current manual title.
 
 ```json
 {
-  "agent_store_format": [{"version": 19}],
+  "agent_store_format": [{"version": 20}],
   "settings_documents": [],
   "providers": [],
   "provider_selections": [],

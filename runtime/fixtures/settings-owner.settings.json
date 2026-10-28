@@ -8,7 +8,7 @@
       "properties": {
         "searchService": {
           "type": "object",
-          "properties": {"kind": {"type": "string"}, "apiKey": {"type": "string"}}
+          "properties": {"kind": {"type": "string"}, "apiKey": {"type": "string", "writeOnly": true}}
         },
         "maxResults": {"type": "integer", "minimum": 1, "default": 5}
       },

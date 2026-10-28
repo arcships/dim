@@ -44,6 +44,8 @@ impl Worker {
         let attached_session = std::mem::take(&mut self.session_id);
         self.projection = Projection::default();
         self.cursors.clear();
+        self.focus = "main".into();
+        self.lines.clear();
         self.task_history.clear();
         self.task_history_queue.clear();
         self.workflow.clear();
@@ -60,8 +62,23 @@ impl Worker {
             self.task_history
                 .insert(branch_id.to_owned(), BranchHistory::default());
             self.task_history_queue.push_back(branch_id.to_owned());
+            if branch_id != "main" {
+                self.line_projection(branch_id);
+            }
             self.changed();
         }
+    }
+
+    pub(super) fn line_projection(&mut self, branch_id: &str) -> &mut LineProjection {
+        let running = self.task_history.get(branch_id).and_then(|at| at.running);
+        let line = self
+            .lines
+            .entry(branch_id.to_owned())
+            .or_insert_with(|| LineProjection::new(branch_id));
+        if let Some(running) = running {
+            line.projection.set_running(running);
+        }
+        line
     }
 
     pub(super) fn discover_task_branches(&mut self, event: &Event) {
@@ -208,8 +225,8 @@ impl Worker {
                 for event in page.events {
                     self.apply(&request.branch_id, event);
                 }
-                self.cursors
-                    .insert(request.branch_id.clone(), page.next_after);
+                let cursor = self.cursors.entry(request.branch_id.clone()).or_default();
+                *cursor = (*cursor).max(page.next_after);
                 if done {
                     let history = self
                         .task_history
@@ -221,10 +238,14 @@ impl Worker {
                     for event in live {
                         self.apply(&request.branch_id, event);
                     }
-                    if request.branch_id == "main"
-                        && let Some(running) = running
-                    {
-                        self.projection.set_running(running);
+                    if let Some(running) = running {
+                        if request.branch_id != "main" {
+                            self.line_projection(&request.branch_id)
+                                .projection
+                                .set_running(running);
+                        } else {
+                            self.projection.set_running(running);
+                        }
                     }
                 } else {
                     self.task_history_queue.push_back(request.branch_id);

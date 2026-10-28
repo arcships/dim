@@ -484,6 +484,17 @@ struct SlowFirstResponse {
     release: tokio::sync::Notify,
 }
 impl SkillSettings for SlowFirstResponse {
+    fn set_plugin(
+        self: std::sync::Arc<Self>,
+        plugin: String,
+        root: Option<std::path::PathBuf>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> rutis::host::BoxFuture<
+        'static,
+        std::result::Result<String, dim_agent_capabilities::skill_settings::SkillSettingsError>,
+    > {
+        self.inner.clone().set_plugin(plugin, root, cancel)
+    }
     fn skills(
         &self,
         cancel: tokio_util::sync::CancellationToken,
@@ -595,6 +606,17 @@ struct FailingReads {
     failing: std::sync::atomic::AtomicUsize,
 }
 impl SkillSettings for FailingReads {
+    fn set_plugin(
+        self: std::sync::Arc<Self>,
+        plugin: String,
+        root: Option<std::path::PathBuf>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> rutis::host::BoxFuture<
+        'static,
+        std::result::Result<String, dim_agent_capabilities::skill_settings::SkillSettingsError>,
+    > {
+        self.inner.clone().set_plugin(plugin, root, cancel)
+    }
     fn skills(
         &self,
         cancel: tokio_util::sync::CancellationToken,
