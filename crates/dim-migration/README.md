@@ -27,9 +27,9 @@ commits and persists the terminal result before releasing its FileStorage child.
 
 ## Native adapter
 
-The adapter targets native format 21, initialized and checked by the existing
+The adapter targets native format 22, initialized and checked by the existing
 `SqliteStorage` API. It never sends source schemas to business owners. It rejects
-unsupported formats, including future format 22, without downgrading or removing them.
+unsupported formats, including future format 23, without downgrading or removing them.
 
 Sessions use existing `SessionConfig`, ownership and branch records. The adapter
 writes canonical event/output row encodings and complete message batches. Imported
