@@ -1,230 +1,224 @@
-# 009: Sandbox configuration and user-granted paths
+# 009: Sandbox configuration and path-based access
 
 Decision status: Proposed.
 
-Supersedes the second sentence of [ADR 003](003-approval-scope.md) D5 — “permission presets
-confer nothing beyond what they confer today” — for what a sandboxed process may reach. It keeps
-D5's first sentence: host safety settings never enter the Timeline, and replay, restore or fork
-never restores or widens authority. It also replaces the tier-and-escalation policy introduced
-for [#503](https://github.com/arcships/dim/pull/503) in the
+Supersedes only the permission-preset clause of the second sentence of
+[ADR 003](003-approval-scope.md) D5 — “permission presets confer nothing beyond what they confer
+today”. File-root authorization in the same sentence is unchanged. It also replaces the
+tier-and-escalation policy introduced for
+[#503](https://github.com/arcships/dim/pull/503) in the
 [F5 isolation design](../design/host-platform-isolation.md). ADR 003 and that design are not
 edited; this ADR is the new decision.
 
 ## Context
 
-The current mechanism mixes three different things:
+The current mechanism has three separate problems:
 
-- The model chooses an execution environment with `exec`'s `sandbox` argument
-  (`workspace`, `network`, `host`).
-- `Permission` admits the call, but does not decide that environment.
-- `HostPlatform`, after admission, reads `host-isolation.json` and refuses a wider environment
-  unless the file says `escalation: "ask"`. A second decision overrides the first.
-- The only way to cross the workspace boundary is to know and edit that file.
+- The model chooses an execution environment with `exec`'s `sandbox` argument.
+- `Permission` admits the call, but `HostPlatform` reads `host-isolation.json` after admission and
+  refuses a wider environment. It can veto an admitted call; it cannot override a `Permission`
+  denial.
+- Reads have no path rule while writes do. `read` reaches the host under every preset;
+  `write` asks outside the workspace. Attachments and command output live outside the workspace
+  and are read without asking because the Session owns them.
 
-The requirements are different:
+The requirements:
 
-1. The sandbox is the environment where `exec` actually runs. It is not a request the model
-   makes.
-2. Whether a process runs in a sandbox, and whether it has network, is application/user
-   configuration.
-3. The model cannot widen the sandbox. Only the user grants paths; the model may describe what it
-   needs, but that description is not authority.
-4. The model does not manage resources while working. It runs a command or operates on a path; it
-   will not declare a path list or a network request, and the design must not depend on it doing
-   so.
-5. A file operation outside the granted paths is a user decision: once or for the Session.
+1. The sandbox is the environment where `exec` runs. It is node configuration, not a call
+   parameter.
+2. Read and write follow one path rule.
+3. A Session-owned file is readable without asking. The path carries the Session, so a prefix
+   matches it; no ownership query and no additional resource source is introduced.
+4. The model cannot widen the sandbox. Only the user grants paths.
+5. `full-access` does not widen the sandbox.
 
 ```mermaid
 flowchart TD
-  M[Model tool call<br/>exec sandbox: host] --> TE[ToolExecutor<br/>branch]
-  TE --> AP[Approval.admit]
-  AP --> PA[Permission.decide<br/>preset + risk]
+  M[Model tool call<br/>exec sandbox: host] --> TE[ToolExecutor]
+  TE --> AP[Approval]
+  AP --> PA[Permission<br/>reads path-independent, writes path-scoped]
   PA -->|Allow| AP
   AP --> EX[handler executes]
   EX --> HP[HostPlatform<br/>sandbox + policy file]
   HP -->|"escalation: deny"| X[isolation_denied]
-  HP --> SB[bubblewrap / Seatbelt]
   POL[(host-isolation.json)] --> HP
-  CLI[preset + approval prompt] -.-> AP
+  EX -->|read / glob / grep| FS[(Host filesystem<br/>no path rule)]
 ```
 
 ## Decision
 
-### D1. The sandbox is node configuration; the call does not choose it
+### D1. The sandbox is node configuration
 
-The execution node has two settings: whether model-started processes run in a sandbox, and
-whether that sandbox has network access. They are read when a process starts; a running process
-keeps the environment it started with.
+The execution node owns three settings: sandbox on/off, network on/off, and the resource lists
+(read-only roots, writable roots, environment names). They are read when a process starts; a
+running process keeps its environment.
 
-- Sandbox on: `exec` and the persistent shell run in the workspace baseline — the Session
-  workspace and the platform's system roots. Network is off unless the setting enables it.
-- Sandbox off: they run on the host with the daemon user's ordinary access, including its
-  network.
+- Sandbox on: `exec` and the persistent shell run in the workspace baseline plus the node's
+  roots. Network follows the network setting.
+- Sandbox off: they run on the host with the daemon user's ordinary access.
 
-`exec` loses its `sandbox` argument. The model never selects `workspace`, `network` or `host`.
-`Permission` does not produce a sandbox. `HostPlatform` applies the settings and the platform
-defaults; it does not decide whether a call may run.
+`exec` loses its `sandbox` argument. The model never selects a tier. `Permission` does not produce
+a sandbox. `HostPlatform` applies the settings and does not decide whether a call may run.
 
-There is no `host-isolation.json`, no `escalation` and no `isolation_denied`. The platform's
-system roots and environment list are code defaults, not user configuration.
+The settings live in HostPlatform's `host-platform.json`, alongside its exec shell
+configuration. They replace `host-isolation.json`; `escalation` and the tier field are removed.
+This is a new configuration with no legacy reader. The CLI `/settings` switch writes it. The existing platform defaults
+remain, including the persistent shell output directory and, on macOS, each process tree's
+temporary directory and git's global configuration.
 
-### D2. The call declares no resources
+### D2. One path rule for reads and writes
 
-The tool input is the operation, not a grant:
-
-| Tool | Input |
-| --- | --- |
-| `read`, `glob`, `grep` | the `path` it reads |
-| `write`, `edit` | the `path` it writes |
-| `exec` | `command`, `cwd`, `runInBackground`, `timeoutMs` |
-
-`exec` has no `paths`, no `network` and no sandbox tier. The persistent shell uses the baseline
-and the Session grants; its environment is created once, so a new grant applies to a new shell.
-The model is not asked to predict which paths a command will touch. A command that hits the
-sandbox boundary fails as an ordinary command error; the model may report it, and the user
-decides whether to grant a path or turn the sandbox off.
-
-### D3. Permission decides the operation; the user controls the sandbox
-
-`Permission` uses the session permission mode, the user's file-operation rules and the Session
-path grants:
-
-| Mode | File operation inside the grants | File operation outside the grants | `exec` |
-| --- | --- | --- | --- |
-| `read-only` | reads allowed | reads allowed; writes denied | denied |
-| `workspace-write` | allowed | reads and writes ask | allowed inside the sandbox; asks as a command |
-| `full-access` | allowed | allowed | allowed inside the sandbox |
-
-- The grants are the Session workspace, the platform's read-only system roots, and the paths the
-  user granted to this Session.
-- A deny rule wins under every mode. A Session allow rule turns an `Ask` into `Allow` for its
-  path.
-- `Approval` asks only for a file operation outside the grants. The options are allow once,
-  allow for this session and deny. “This session” adds the path to the Session grants.
-- `exec` never widens the sandbox. It runs with the node settings and the Session grants. The
-  model cannot add a path or enable network by calling the tool.
-
-### D4. Session grants are user configuration
-
-A Session path grant is:
+The Session owns a path set. Each entry is a match rule:
 
 ```text
-session   Session id
-key       path (read | write)
-decision  allow
+match   exact(path) | prefix(path)
+mode    read | write
 ```
 
-- The user creates a grant by choosing a path in the client, or by answering “this session” to a
-  file operation outside the grants. The model cannot create one.
-- Grants are stored in the user configuration, keyed by the Session id, and read at use time.
-  They are not Timeline facts: replay and fork do not restore them, and a new Session has a new
-  id and starts without them.
-- A grant applies to `exec` mounts and to file operations. Removing it applies to the next
-  process or call.
-- Entries for an ended Session are inert and may be pruned.
-- Command rules remain user-scoped and separate. This decision adds path grants; it does not
-  turn them into cross-Session rules.
+The set contains:
 
-### D5. `full-access` does not widen the sandbox
+- `prefix(workspace)` (write);
+- `prefix(system root)` for each platform root (read);
+- `prefix(<db>.session-files/<sessionId>/)` (read);
+- `prefix(output directory)` for command output (read);
+- `exact(path)` or `prefix(directory)` for each path the user granted (read or write).
 
-`full-access` means “no tool prompts”. It does not turn the sandbox off and does not add paths:
+A path is covered when a rule matches it. A write rule also permits reads; a read rule never
+permits writes.
 
-- A file operation outside the grants runs without a prompt because the preset allows it. The
-  file tools are in-process; they are not the sandbox.
-- `exec` still runs in the sandbox with the node settings and the Session grants. A command that
-  needs more fails; the user grants a path or turns the sandbox off.
-- To give all model-started processes host access, the user turns the sandbox off. That is a node
-  setting, not a permission preset.
+Session files are stored under the Session's own directory:
+`<db>.session-files/<sessionId>/<fileId>/<name>`. The path carries the owner, so one prefix
+covers every file of the Session and never covers another Session's files. A fork hard-links the
+files it owns into its own Session directory, forming a point-in-time snapshot; a file the source
+adds later is not in the fork. Deletion removes the link; the filesystem keeps the inode while
+another Session still links it.
 
-### D6. Execution and enforcement
+The path set is Session configuration, owned by a Session part. It is built from the Session id,
+the workspace, the platform roots, the output directory and the user's grants. No part writes a
+rule per file, no ownership query runs at decision time, and no other resource source is
+introduced.
 
-The handler executes with the node sandbox settings and the Session grants. `HostPlatform`
-mounts the baseline and the granted paths and applies the network setting. It makes no admission
+### D3. Read and write use the same rule
+
+| Mode | Inside the set | Outside the set |
+| --- | --- | --- |
+| `read-only` | reads allowed | reads ask; writes, processes and network denied |
+| `workspace-write` | reads and writes allowed | reads and writes ask |
+| `full-access` | allowed | reads and writes allowed without a prompt |
+
+- A path operation is allowed when a rule matches it with the needed mode.
+- Outside the set, `Approval` asks once or for the Session. “This session” adds an exact rule for
+  the approved path. There is no cross-Session rule.
+- `full-access` admits an outside operation without adding it to the set. The file tools run in
+  process; the process sandbox is unchanged.
+- Command rules remain user-scoped and govern `exec` commands. There are no path deny rules.
+
+### D4. `exec` cannot widen the sandbox
+
+`exec` has no `sandbox`, `paths` or `network` input. It runs with the node settings and the
+Session path set:
+
+- the workspace and platform roots are mounted as the baseline;
+- the user-granted paths are mounted with their mode;
+- the Session's own files and command output are mounted read-only.
+
+The model cannot add a path or enable network by calling a tool. A command that hits a missing
+path fails as an ordinary command error; the user grants the path or turns the sandbox off, then
+the model may retry.
+
+### D5. Approval only answers the call
+
+`Approval` asks for a file operation outside the set. The options are allow once, allow for this
+Session and deny. The existing `ApprovalDecision` stays `Allow | Deny`; the client writes the
+Session rule through the path set's Session method and then answers allow, as it already does for
+a command rule. No new approval event or wire field is introduced.
+
+### D6. `full-access` is not a sandbox setting
+
+`full-access` means “no tool prompts”. It does not turn the sandbox off, does not add paths and
+does not change the network setting. A file operation outside the set runs because the file
+tools are in process; `exec` still runs in the sandbox. To give all model-started processes host
+access, the user turns the sandbox off in the node settings.
+
+### D7. Execution and enforcement
+
+The handler executes with the node settings and the Session path set. `HostPlatform` mounts the
+baseline and the granted or handed paths and applies the network setting. It makes no admission
 decision.
 
 ```mermaid
 flowchart TD
-  CFG[Node settings<br/>sandbox on/off, network on/off] --> HP[HostPlatform]
-  USER[User<br/>path picker / this-session approval] --> GRANTS[(Session grants<br/>user config)]
-  GRANTS --> PA[Permission.decide]
-  GRANTS --> HP
+  CFG[Node settings<br/>sandbox, network, roots, environment] --> HP[HostPlatform]
+  SET[(Session path rules<br/>workspace, system roots, session files, output, grants)] --> PA[Permission]
+  SET --> HP
+  USER[user] -->|add / remove rule| SET
   M[Model tool call<br/>command / path] --> TE[ToolExecutor]
   TE --> PA
-  PA -->|Ask outside grants| RQ[approval/request<br/>path]
+  PA -->|Ask outside set| RQ[approval/request<br/>path]
   RQ -->|once / session / deny| AP[Approval]
-  AP -->|session| GRANTS
+  AP -->|session| SET
   PA -->|decision| AP
   AP -->|admitted| EX[handler executes]
   EX -->|exec / execute| HP
   EX -->|file tools| FS[(in-process file I/O)]
-  HP --> SB[bubblewrap / Seatbelt<br/>baseline + grants]
-```
-
-```mermaid
-flowchart LR
-  CLI[settings + approval prompt + grant list] -.-> PA[Permission<br/>branch]
-  CLI -.-> AP[Approval<br/>branch]
-  CLI --> GRANTS[(Session grants<br/>user config)]
-  PA --> AP
-  TE[ToolExecutor<br/>branch] --> PA
-  TE --> EX[handlers]
-  EX --> HP[HostPlatform<br/>process]
-  CFG[Node settings] --> HP
-  HP --> OS[bubblewrap / Seatbelt]
+  HP --> SB[bubblewrap / Seatbelt<br/>baseline + set]
 ```
 
 ## Consequences
 
-- The model no longer chooses `workspace`, `network` or `host`, and no longer declares paths or
-  network. It runs the operation and reports a failure.
-- The sandbox becomes a boundary the model cannot widen. Only the user changes node settings or
-  grants a path to the Session.
-- `full-access` no longer widens the sandbox. File operations may run outside the grants because
-  they are in-process; `exec` stays sandboxed. A user who wants host processes turns the sandbox
-  off.
-- `Permission` returns only `Allow`, `Ask` or `Deny`. It does not resolve or return a sandbox.
-- `HostPlatform` keeps the sandbox mechanism and platform defaults; it loses the policy file,
-  `escalation`, `isolation_denied` and its admission role.
-- `exec` loses `sandbox` and gains nothing. The approval prompt shows a path only for a file
-  operation outside the grants.
-- The user configuration gains Session-keyed path grants and an explicit new version. No new
-  part, Timeline event or wire event is added.
-- Documents that state the old rule are updated under their owners after this ADR is accepted:
-  the F5 isolation design is folded into the HostPlatform page, and the CLI permission,
-  isolation and approval tables are updated. ADR 003 is not edited.
-- Running processes keep the environment they started with; a setting or grant change applies to
-  the next process or call.
+- Read and write share one path rule. Attachments and command output are readable because their
+  Session directory prefix is in the set; another Session's path is a different prefix.
+- Session files move under `<db>.session-files/<sessionId>/<fileId>/<name>`. No migration is
+  kept; this is a new layout. A fork hard-links the files it owns into its own directory.
+- A new Session part owns the path rules. The client adds and removes user rules; `Permission`
+  and the tool owners read them. No per-file rule and no ownership query are introduced.
+- The node settings are a new HostPlatform configuration with no legacy reader. `escalation` and
+  the tier request disappear; running processes keep their environment.
+- `exec` loses `sandbox` and gains no resource argument. A call that still sends `sandbox` is
+  rejected as `exec_invalid_request`, not silently ignored. The model cannot widen the sandbox.
+- `full-access` no longer widens the sandbox; a node setting does.
+- Documents that state the old rule are updated under their owners after acceptance: the F5
+  design is folded into the HostPlatform page; `Permission.md`'s read statement becomes the path
+  rule; `session-files.md` §11.1/§11.2 and the Attachments design describe the Session-directory
+  layout; the CLI permission and isolation tables are updated. ADR 003 is not edited.
+- The path set is Session configuration, not a Timeline fact; a restored Session rebuilds its
+  prefixes from its id and starts without user grants.
+- This supersedes §11.2's per-Session ownership query: the Session directory is the ownership
+  fact. A file the Session owns is under its prefix; another Session's file is a different prefix.
+  A fork hard-links the files it owns, so its prefix is a point-in-time snapshot.
 
 ## Non-goals
 
-- Agent-initiated resource requests, per-call sandbox expansion or per-call network requests.
-- Persistent path grants. Grants are Session-scoped; a new Session starts without them.
-- Workspace- or user-scoped path rules.
+- Path globs or a pattern engine. The first version has exact and prefix matching only.
+- An ownership query or an additional resource source for Session files.
+- Cross-Session or user-scoped path rules.
+- Agent-initiated resource requests or per-call sandbox/network expansion.
+- Migration from the old session-file layout or the old isolation file. The new formats replace
+  them.
 - A remote node's policy ceiling.
-- Changing which commands are agent decisions (ADR 003 D1–D3).
-- A new settings page beyond the application's existing settings for the node sandbox.
 
 ## Supersession
 
-Supersedes the second sentence of [ADR 003](003-approval-scope.md) D5 and the tier-and-escalation
-policy in the [F5 isolation design](../design/host-platform-isolation.md). ADR 003 remains as
-written; the relation is recorded in [`docs/adr/README.md`](README.md).
+Supersedes only the permission-preset clause of [ADR 003](003-approval-scope.md) D5's second
+sentence and the tier-and-escalation policy in the
+[F5 isolation design](../design/host-platform-isolation.md). ADR 003 remains as written; the
+relation is recorded in [`docs/adr/README.md`](README.md).
 
 ## Rule check
 
 | Rule | Application |
 | --- | --- |
-| §1, ADR 002 D1 | `Permission` and `Approval` remain branch Capabilities; `ToolExecutor` and `ToolBinding` remain branch parts; tool owners keep execution; `HostPlatform` remains a process part. No part is added or moves scope. |
-| §4 rule 1 | `approval/request` and `approval/respond` keep instructing the owner of admission; Session grants are user configuration, not Timeline state. |
-| §4 rule 2 | The admitted call is handed to execution once; nothing is withdrawn after the start. |
+| §1, ADR 002 D1 | `Permission` and `Approval` remain branch Capabilities; the path rules are Session configuration owned by a Session part; `ToolExecutor` and `ToolBinding` remain branch parts; tool owners keep execution; `HostPlatform` remains a process part. |
+| §4 rule 1 | The path rules are configuration, not another Capability's fact; the owner exposes typed add/remove operations. No command event is introduced. |
+| §4 rule 2 | The admitted call is handed to execution once; a rule applies to the next call. |
 | §4 rule 3 | No `before` callback is added; write resolution keeps its existing pre-admission, metadata-only contract. |
-| §4 rule 4 | No core mechanism changes. Node settings and Session grants are existing configuration sources. |
+| §4 rule 4 | No core mechanism changes. Node settings and the path rules are configuration sources. |
 | §4 rule 5 | No new Timeline batch or ordering. |
 | §4 rule 6 | No context-input path changes. |
-| §4 rule 7 | Parts interact through existing public services and events; the tool input remains the operation. |
+| §4 rule 7 | Parts interact through the existing public services and the call input. |
 | §4 rule 8 | No infrastructure change; no requirement is raised to the runtime. |
-| §4 rule 9 | No new Timeline fact. The permission mode remains `permission/changed`; grants stay outside the Timeline. |
+| §4 rule 9 | No new Timeline fact. The permission mode remains `permission/changed`; the path rules stay outside the Timeline. |
 | ADR 002 D2 | No wiring plugin or adapter is added. |
-| ADR 002 D3 | Dependencies are unchanged; `Permission` does not depend on `HostPlatform`. |
-| ADR 002 D4 | Node sandbox settings and Session grants are business configuration, read at use time. |
-| ADR 002 D5 | No new public contract; the existing file `path` and the approval request carry the operation. |
+| ADR 002 D3 | The path rules are Session-scoped; `Permission` and the tool owners depend on them; `HostPlatform` receives their process portion from the caller. |
+| ADR 002 D4 | Node settings and path rules are business configuration, read at use time. |
+| ADR 002 D5 | The path rules' Session method for adding or removing a rule is a new language-neutral contract; it carries match rules and no event field. |
