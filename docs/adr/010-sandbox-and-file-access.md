@@ -69,6 +69,8 @@ Attachments and command output use one ownership model:
 - A fork copies the source's ownership rows at the fork's commit. The fork owns those files; a
   file the source adds later is not owned by the fork. The file path stays stable.
 - Deleting a session releases its rows; a file another session still owns remains.
+- Command output may grow after a fork. The fork owns the file and reads its current content; a
+  point-in-time copy is a separate concern.
 
 The session-files owner exposes `owns(session_id, path)` for a single decision and
 `owned_paths(session_id)` for a process start. Both are primary-key lookups. The query failure
