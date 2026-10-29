@@ -23,7 +23,7 @@ and resumed, so a user grant made for it must survive the interruption.
 
 ### D1. The sandbox is an application setting, off by default
 
-The application setting has two values: sandbox on/off and, when on, network on/off. Both are
+The application setting has two switches: sandbox on/off and, when on, network on/off. Both are
 read when a process starts; a running process keeps its environment.
 
 - Off: `exec` and the persistent shell run on the host with the user's environment, home and
@@ -146,7 +146,7 @@ Replaces the default-on sandbox policy and the tier and escalation fields in the
 | Rule | Application |
 | --- | --- |
 | §1, ADR 002 D1 | `Permission` and `Approval` remain branch Capabilities; the facts service and session grants are Session configuration; `ToolExecutor` and `ToolBinding` remain branch parts; tool owners keep execution; `HostPlatform` remains a process part. |
-| §4 rule 1 | Grants and facts are configuration with typed owner operations; no command event is introduced. |
+| §4 rule 1 | Grants are configuration with typed owner operations; the session-owned fact is read from its owner. No command event is introduced. |
 | §4 rule 2 | The admitted call is handed to execution once; a grant applies to the next call. |
 | §4 rule 3 | No `before` callback is added; write resolution keeps its existing pre-admission, metadata-only contract. |
 | §4 rule 4 | No core mechanism changes. |
@@ -157,5 +157,5 @@ Replaces the default-on sandbox policy and the tier and escalation fields in the
 | §4 rule 9 | No new Timeline fact; grants and facts stay outside the Timeline. |
 | ADR 002 D2 | No wiring plugin or adapter. |
 | ADR 002 D3 | The facts service is Session-scoped; `Permission` and the tool owners depend on it; `HostPlatform` receives the process portion from the caller. |
-| ADR 002 D4 | The application setting, session grants and facts are business configuration, read at use time. |
+| ADR 002 D4 | The application setting and session grants are business configuration; facts are read from their owners at use time. |
 | ADR 002 D5 | The facts and grant Session methods are language-neutral contracts; they carry paths and modes, not event fields. |
