@@ -1,7 +1,7 @@
 use super::{
     SqliteStorage,
     codec::{
-        self, CONTENT_BUDGET, ContentRow, ListReferences, Previous, Reader, Values, WireEvent,
+        self, CONTENT_BUDGET, ContentRow, ListReferences, Previous, Reader, Row, Values, WireEvent,
     },
     files::{self, SessionFiles},
     metadata::{self, Titles},
@@ -21,7 +21,6 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use rutis::Ctx;
 use rutis::host::{CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis_bridge::session::{HostDispatch, host_key};
-use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     ops::RangeInclusive,
@@ -1232,27 +1231,6 @@ fn transaction<'a>(
     }
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "encoding", rename_all = "lowercase", deny_unknown_fields)]
-enum Row {
-    Event {
-        record: Box<WireEvent>,
-    },
-    Output {
-        turn_id: String,
-        request_id: String,
-        started_at: u64,
-        records: Vec<WireEvent>,
-    },
-}
-impl Row {
-    fn wires(&self) -> &[WireEvent] {
-        match self {
-            Row::Event { record } => std::slice::from_ref(record),
-            Row::Output { records, .. } => records,
-        }
-    }
-}
 /// Whether events of `kind` are streamed model output, which `write_batch`
 /// merges into output rows (native storage format). Output rows carry no
 /// identity index, and a write round of them alone waits for its window.

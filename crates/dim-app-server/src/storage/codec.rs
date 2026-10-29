@@ -18,6 +18,28 @@ pub(super) struct WireEvent {
     trace: Option<WireTrace>,
     pub batch_end: u64,
 }
+/// A stored row: one event record, or the output deltas one row merges.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "encoding", rename_all = "lowercase", deny_unknown_fields)]
+pub(super) enum Row {
+    Event {
+        record: Box<WireEvent>,
+    },
+    Output {
+        turn_id: String,
+        request_id: String,
+        started_at: u64,
+        records: Vec<WireEvent>,
+    },
+}
+impl Row {
+    pub(super) fn wires(&self) -> &[WireEvent] {
+        match self {
+            Row::Event { record } => std::slice::from_ref(record),
+            Row::Output { records, .. } => records,
+        }
+    }
+}
 /// The content a request record references: one reference per message
 /// (format v16, still read) or its message list (v17, written).
 #[derive(Serialize)]

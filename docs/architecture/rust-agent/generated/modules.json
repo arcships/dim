@@ -2225,6 +2225,13 @@
       "unexpandedMacros": []
     },
     {
+      "id": "dim_app_server::storage::catalog",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::storage",
+      "file": "crates/dim-app-server/src/storage/catalog.rs",
+      "unexpandedMacros": []
+    },
+    {
       "id": "dim_app_server::storage::codec",
       "crate": "dim_app_server",
       "parent": "dim_app_server::storage",
@@ -13967,14 +13974,6 @@
     },
     {
       "from": "dim_app_server::agents",
-      "to": "dim_agent_types::content",
-      "references": [
-        "path ContentBlock::Text",
-        "use dim_agent_types::ContentBlock"
-      ]
-    },
-    {
-      "from": "dim_app_server::agents",
       "to": "dim_agent_types::events",
       "references": [
         "path EventKind::BranchResume",
@@ -14066,6 +14065,13 @@
       "references": [
         "path SettingsService",
         "use crate::settings::SettingsService"
+      ]
+    },
+    {
+      "from": "dim_app_server::agents",
+      "to": "dim_app_server::storage::catalog",
+      "references": [
+        "path crate::storage::preview"
       ]
     },
     {
@@ -19675,6 +19681,14 @@
     },
     {
       "from": "dim_app_server::storage",
+      "to": "dim_app_server::storage::catalog",
+      "references": [
+        "mod catalog",
+        "use catalog::preview"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage",
       "to": "dim_app_server::storage::codec",
       "references": [
         "mod codec",
@@ -19732,6 +19746,22 @@
         "use timeline::SessionStore",
         "use timeline::SessionStorePlugin",
         "use timeline::SqliteTimelineStore"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::catalog",
+      "to": "dim_agent_types::content",
+      "references": [
+        "path ContentBlock::Text",
+        "use dim_agent_types::ContentBlock"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::catalog",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path UserInput",
+        "use dim_agent_types::UserInput"
       ]
     },
     {
@@ -20197,6 +20227,9 @@
         "path Previous",
         "path Reader",
         "path Reader::new",
+        "path Row",
+        "path Row::Event",
+        "path Row::Output",
         "path Values::Written",
         "path WireEvent",
         "path codec::NodeLoads",
@@ -20211,6 +20244,7 @@
         "use super::codec::ListReferences",
         "use super::codec::Previous",
         "use super::codec::Reader",
+        "use super::codec::Row",
         "use super::codec::Values",
         "use super::codec::WireEvent"
       ]

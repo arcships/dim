@@ -11,7 +11,7 @@ use dim_agent_runtime::{
     TimelineKey,
 };
 pub use dim_agent_types::AgentProfile;
-use dim_agent_types::{ContentBlock, EventKind};
+use dim_agent_types::EventKind;
 use rutis::host::{
     BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberView, Key, TypeKey,
 };
@@ -327,7 +327,6 @@ impl AgentIndex {
             .flatten()
     }
     const SUMMARY_SCAN_LIMIT: usize = 256;
-    const SUMMARY_PREVIEW_CHARS: usize = 120;
     /// Process Session defaults that Agent profiles apply on top of.
     pub fn session_defaults(&self) -> &SessionConfig {
         &self.session_defaults
@@ -920,21 +919,7 @@ impl AgentIndex {
                 };
                 data.user.as_ref()
             })
-            .and_then(|user| {
-                let text = user
-                    .content
-                    .iter()
-                    .filter_map(|block| {
-                        if let ContentBlock::Text { text } = block {
-                            Some(text.as_str())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                (!text.is_empty()).then(|| truncate_preview(&text, Self::SUMMARY_PREVIEW_CHARS))
-            });
+            .and_then(crate::storage::preview);
         let updated_at = last.map_or(created_at, |event| event.create_at);
         Ok((preview, updated_at))
     }
@@ -1426,16 +1411,6 @@ fn rest_point(events: &[Arc<dim_agent_types::AgentEvent>]) -> Result<(), String>
         return Ok(());
     };
     Err(format!("the fork position is not a rest point: {cause}"))
-}
-
-fn truncate_preview(value: &str, limit: usize) -> String {
-    let mut chars = value.chars();
-    let mut result: String = chars.by_ref().take(limit).collect();
-    if chars.next().is_some() {
-        result.pop();
-        result.push('…');
-    }
-    result
 }
 
 /// Owns every Agent subtree: the process assembly entry.
