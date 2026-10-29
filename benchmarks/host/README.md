@@ -4,14 +4,16 @@
 的 HTTPS，但能用 SSH 拉推代码、能访问 `api.github.com`。整条流水线因此是：
 
 ```
-cron ─► nightly.sh ─► git fetch（SSH）─► daily_run.py ─► 推 eval-ledger（SSH）─► report/issues.py（API）
+cron ─► nightly.sh ─► git fetch（SSH）─► daily_run.py ─► 推 eval-ledger（SSH）
+        ─► report/analyze.py（DeepSeek）─► report/issues.py（API）
 ```
 
 | 文件 | 作用 |
 |---|---|
 | [`nightly.sh`](nightly.sh) | cron 入口：取 main、跑一个语料、推 ledger、提 issue |
 | [`setup-toolchain.sh`](setup-toolchain.sh) | 把 Rust、Zig、cargo-zigbuild 与仓库钉住的 Node 装进一个私有目录 |
-| [`../report/issues.py`](../report/issues.py) | 把当晚的问题写成 GitHub issue，同类问题只开一个、复现时评论、消失时关闭 |
+| [`../report/analyze.py`](../report/analyze.py) | 逐个分析失败的 trial：原因与可疑 PR |
+| [`../report/issues.py`](../report/issues.py) | 每晚一份失败汇总 issue；流水线问题同类只开一个、复现时评论、消失时关闭 |
 
 机器相关的值（地址、路径、端点、凭据）只放在评测机上，不进仓库。
 
@@ -46,7 +48,9 @@ cron ─► nightly.sh ─► git fetch（SSH）─► daily_run.py ─► 推 e
 
    ```sh
    export MODEL_API_KEY=...             # 模型配置里 apiKeyEnv 指向的变量
-   export DEEPSEEK_API_KEY=...          # L1 judge
+   export DEEPSEEK_API_KEY=...          # L1 judge 与失败分析
+   # 可选：DIM_EVAL_ANALYSIS_BASE_URL、DIM_EVAL_ANALYSIS_MODEL、DIM_EVAL_ANALYSIS_KEY_ENV
+   # 换掉失败分析用的模型（默认同 L1 judge）
    export DIM_EVAL_MODEL_CONFIG=$HOME/dim-eval/model.json
    ```
 
@@ -96,6 +100,10 @@ ledger 并推送到 `eval-ledger`。
 不是隔离。要收紧它，需要在容器里或以另一个用户身份构建；在那之前，上面的 ruleset 决定了
 泄露的部署密钥最多能做什么。
 
+失败分析把 agent 的输出和判分日志交给模型，这些文本可能含有诱导模型的内容。提示词声明它们
+只是数据；模型的输出只进 issue 正文（先脱敏），不驱动任何动作，可疑 PR 也只能从窗口内的 PR
+里选。
+
 ## 被测产物
 
 `build/build_image.py` 以 `cargo zigbuild` 编出 glibc 2.28 的 `dimcode`（与
@@ -111,5 +119,10 @@ ledger 并推送到 `eval-ledger`。
   eval-build.json         被测 commit 与构建信息
 ```
 
-`ca-certificates.crt` 不属于发布包。dimcode 为每个 HTTPS 客户端读取系统根证书，题目镜像里没有
-证书时 App Server 无法启动；adapter 用 `SSL_CERT_FILE` 指向这份证书，不改题目文件系统。
+另外两处评测环境与用户机器不同，都只改 dimcode 自己的配置，不改题目文件系统：
+
+- `ca-certificates.crt` 不属于发布包。dimcode 为每个 HTTPS 客户端读取系统根证书，题目镜像里没有
+证书时 App Server 无法启动；adapter 用 `SSL_CERT_FILE` 指向这份证书。
+- 命令沙箱设为 `host`（`host-isolation.json`）。dimcode 的沙箱依赖 bubblewrap，题目镜像里没有，
+  默认配置下每个 trial 的第一条命令都以 `isolation_unavailable` 失败，agent 还会自己去改这个
+  文件。容器本身就是隔离边界。

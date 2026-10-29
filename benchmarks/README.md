@@ -20,7 +20,7 @@ dim-agent 的能力评测 pipeline。回答的问题是：**这次改动会不�
 | `baselines/<pin-sha>.json` | 每任务 k 次的通过分数与成本，按任务 pin 分文件 | baseline 采集 |
 | `ledger/` | 每个 PR 一条判定记录，长期保留；定时运行写在 `eval-ledger` 分支 | 评测机写入 |
 | `host/` | 评测机部署：cron 入口、工具链安装，见 [host/README.md](host/README.md) | 实现代码 |
-| `report/` | 把每晚的问题写成 GitHub issue | 实现代码 |
+| `report/` | 失败分析（`analyze.py`）与 GitHub issue（`issues.py`） | 实现代码 |
 
 ## 分层
 
@@ -96,8 +96,26 @@ k 由 run type 决定，`--k` 可覆盖；但 `checkpoint` / `baseline` 低于 k
 由评测机上的 cron 调用 [host/nightly.sh](host/nightly.sh)，每个语料一条：`frontier` 跑 30 个
 FrontierHarness 任务，`officeqa-pro` 跑 OfficeQA Pro（只允许 daily）。它跑的就是上面那条命令，
 区别只在三处：ledger 与 state 存在 `eval-ledger` 分支；`baseline` 被显式拒绝——换参照是要
-review 的改动，不是 cron 的副产品；跑完后由 [report/issues.py](report/issues.py) 把问题写成
-GitHub issue（标签 `eval-pipeline`）。部署与前提见 [host/README.md](host/README.md)。
+review 的改动，不是 cron 的副产品；跑完后先分析失败、再提 issue。部署与前提见
+[host/README.md](host/README.md)。
+
+### 每晚的 issue
+
+**失败汇总**（标签 `eval-nightly`）。[report/analyze.py](report/analyze.py) 把每个没通过的 trial
+交给模型（默认与 L1 judge 相同的 DeepSeek）：题目、判分输出末尾、dimcode Timeline 的末段，
+以及窗口内影响模型的 PR 改了什么。模型给出失败类型（agent / environment / timeout /
+model_api / harness / unknown）、原因、证据和可疑 PR（只能从窗口内的 PR 里选，带置信度）。
+[report/issues.py](report/issues.py) 每晚开一份汇总，关闭上一份：
+
+- 新出现或原因变了的失败逐题展开；
+- 与上次记录原因相同的失败折叠成一行（自哪天起、连续几晚），一直过不了的难题不会让 issue 变长；
+- 题目通过后从记录里移除，下次失败重新展开。
+
+已知失败的记录在评测机上（`$DIM_EVAL_HOME/known-failures-<suite>.json`），丢了只是下一晚
+全部重新展开。原因与可疑 PR 是模型对单次运行的判断，不是判定：k=1 的单晚结论本来就不成立。
+
+**流水线问题**（标签 `eval-pipeline`）。按下面的退出码，每类问题一个 issue，复现时评论，
+在一次真正跑了 L2 的运行里不再出现时关闭。
 
 ### 窗口
 

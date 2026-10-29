@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""File the night's eval problems as GitHub issues.
+"""File the night's eval results as GitHub issues.
 
-Run by benchmarks/host/nightly.sh after daily_run.py and the ledger push. Each
-problem kind of each suite has at most one open issue, found by a marker in its
-body: a repeat adds a comment instead of a second issue, and a later scored run
-without that problem closes it. The exit codes are daily_run's, plus nightly's
+Run by benchmarks/host/nightly.sh after daily_run.py, the ledger push and
+report/analyze.py. Two kinds of issue:
+
+* The nightly summary (``eval-nightly``): every failed trial with its analyzed
+  cause and suspected PRs. Failures with the cause already reported on an
+  earlier night fold into one line each. Each night's summary supersedes and
+  closes the previous one, so only the latest is open.
+* Pipeline problems: each problem kind of each suite has at most one open
+  issue, found by a marker in its body: a repeat adds a comment instead of a
+  second issue, and a later scored run without that problem closes it. The exit codes are daily_run's, plus nightly's
 own 8 (ledger push failed); benchmarks/README.md lists them.
 
 Exits 2 when GitHub could not be reached, so nightly.sh can surface that the
@@ -25,6 +31,8 @@ from pathlib import Path
 
 LABEL = "eval-pipeline"
 LABEL_COLOR = "d93f0b"
+NIGHTLY_LABEL = "eval-nightly"
+NIGHTLY_COLOR = "1d76db"
 API = "https://api.github.com"
 LOG_TAIL_LINES = 80
 
@@ -162,6 +170,55 @@ def problems(suite: str, run_type: str, exit_code: int, run: dict | None,
     return [Problem(p.key, redact(p.title), redact(p.body)) for p in found]
 
 
+def nightly(suite: str, run_type: str, run: dict, analysis: dict, repo: str) -> Problem | None:
+    """The night's summary of failed trials, or None when every trial passed."""
+    failures = analysis["failures"]
+    if not failures:
+        return None
+    l2 = run.get("l2") or {}
+    head = (run.get("window") or {}).get("head") or ""
+    fresh = [f for f in failures if not f["known"] and not f["error"]]
+    known = [f for f in failures if f["known"]]
+    unanalyzed = [f for f in failures if f["error"]]
+    suspects = sorted({s["pr"] for f in fresh for s in f["suspects"]})
+
+    def link(pr: str) -> str:
+        return pr if pr.startswith("#") else f"[`{pr}`](https://github.com/{repo}/commit/{pr})"
+
+    lines = [f"**{suite} {run_type}** · run `{run['run_id']}` · head "
+             f"[`{head[:9]}`](https://github.com/{repo}/commit/{head})",
+             "",
+             f"{l2.get('trial_passes')}/{l2.get('trials')} trials passed. "
+             f"{len(failures)} failed: {len(fresh)} new or with a new cause, "
+             f"{len(known)} failing for a known reason, {len(unanalyzed)} not analyzed."]
+    if fresh:
+        lines += ["", "### New or changed failures"]
+        for f in fresh:
+            lines += ["", f"#### `{f['task']}` — {f['category']}",
+                      f"**Cause:** {f['cause']}", f"**Evidence:** {f['evidence']}"]
+            if f["suspects"]:
+                lines.append("**Suspected PRs:** " + "; ".join(
+                    f"{link(s['pr'])} ({s['confidence']}): {s['reason']}" for s in f["suspects"]))
+            else:
+                lines.append("**Suspected PRs:** none")
+    if known:
+        lines += ["", "### Still failing for a known reason", "",
+                  "| Task | Category | Failing since | Nights | Cause |", "|---|---|---|---|---|"]
+        lines += [f"| `{f['task']}` | {f['category']} | {f['first_seen']} | {f['nights']} | "
+                  f"{f['cause'].replace('|', '/')} |" for f in known]
+    if unanalyzed:
+        lines += ["", "### Not analyzed", ""]
+        lines += [f"- `{f['task']}`: {f['error']}" for f in unanalyzed]
+    window = describe(run, repo).split("\nMerges in the window that reach the model:\n")
+    if len(window) == 2:
+        lines += ["", "### Model-visible changes in this window", window[1].rstrip()]
+    lines += ["", f"<sub>Causes and suspects are judgements by `{analysis['model']}` from "
+              f"one run of each task (k={run['k']}), not verdicts.</sub>"]
+    title = (f"[eval] {suite} {run_type} {run['run_id'][:10]}: {len(failures)} failed "
+             f"({len(fresh)} new)" + (f" · suspects {' '.join(suspects)}" if suspects else ""))
+    return Problem(f"{suite}/nightly", title, "\n".join(lines))
+
+
 def closes(key: str, run: dict | None) -> bool:
     """Whether a scored run that did not show ``key`` shows it is gone.
 
@@ -207,9 +264,17 @@ class GitHub:
             if error.code != 422:
                 raise
 
-    def create(self, title: str, body: str) -> dict:
+    def ensure_nightly_label(self) -> None:
+        try:
+            self.request("POST", "/labels", {"name": NIGHTLY_LABEL, "color": NIGHTLY_COLOR,
+                                             "description": "Nightly eval failures"})
+        except urllib.error.HTTPError as error:
+            if error.code != 422:
+                raise
+
+    def create(self, title: str, body: str, labels: tuple[str, ...] = (LABEL,)) -> dict:
         return self.request("POST", "/issues", {"title": title, "body": body,
-                                                "labels": [LABEL]})
+                                                "labels": list(labels)})
 
     def comment(self, number: int, body: str) -> None:
         self.request("POST", f"/issues/{number}/comments", {"body": body})
@@ -233,7 +298,16 @@ def report(github: GitHub, suite: str, exit_code: int, run: dict | None,
         github.ensure_label()
     for problem in found:
         existing = open_by_key.get(problem.key)
-        if existing:
+        if problem.key.endswith("/nightly"):
+            github.ensure_nightly_label()
+            created = github.create(problem.title, f"{marker(problem.key)}\n{problem.body}",
+                                    (LABEL, NIGHTLY_LABEL))
+            done.append(f"opened #{created['number']} ({problem.key})")
+            if existing:
+                github.comment(existing["number"], f"Superseded by #{created['number']}.")
+                github.close(existing["number"])
+                done.append(f"closed #{existing['number']} ({problem.key})")
+        elif existing:
             github.comment(existing["number"], f"Seen again.\n\n{problem.body}")
             done.append(f"commented on #{existing['number']} ({problem.key})")
         else:
@@ -261,6 +335,7 @@ def main() -> int:
     parser.add_argument("--log", type=Path, help="the night's log")
     parser.add_argument("--token-file", type=Path, required=True)
     parser.add_argument("--ledger-push-failed", action="store_true")
+    parser.add_argument("--analysis", type=Path, help="report/analyze.py's output, if written")
     parser.add_argument("--dry-run", action="store_true", help="print, file nothing")
     args = parser.parse_args()
 
@@ -274,6 +349,11 @@ def main() -> int:
             run = None
     found = problems(args.suite, args.run_type, args.exit_code, run, args.log, args.repo,
                      args.ledger_push_failed)
+    if run and args.analysis and args.analysis.exists():
+        summary = nightly(args.suite, args.run_type, run,
+                          json.loads(args.analysis.read_text()), args.repo)
+        if summary:
+            found.insert(0, Problem(summary.key, redact(summary.title), redact(summary.body)))
     if args.dry_run:
         for problem in found:
             print(f"[issues] would file {problem.key}: {problem.title}\n{problem.body}")

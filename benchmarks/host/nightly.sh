@@ -6,7 +6,8 @@
 # Extra options go to daily_run.py, e.g. `--dry-run` to judge the window and
 # build nothing when trying out a new setup; issues are then printed, not filed.
 # It evaluates whatever origin/main points at, writes the judgement records to
-# the ledger branch, and files what went wrong as GitHub issues. Settings live
+# the ledger branch, has each failed trial analyzed, and files the night's
+# failures and any pipeline problem as GitHub issues. Settings live
 # in $DIM_EVAL_HOME/config.env; benchmarks/host/README.md lists them and the
 # one-time setup. Exit codes are daily_run.py's, plus 8 when the ledger push
 # failed and 10 when issues could not be filed (benchmarks/README.md).
@@ -90,13 +91,24 @@ main() {
     }
   fi
 
-  local run_json
+  local run_json analysis=""
   run_json="$(find "$home/results" -mindepth 2 -maxdepth 2 -name run.json -newer "$started" | sort | tail -n 1)"
+  # Every failed trial is explained by a model before it is reported. The
+  # model's key comes from the same file the L1 judge reads, in a subshell, so
+  # it is in no other step's environment.
+  if [ -n "$run_json" ] && [ -d "$(dirname "$run_json")/harbor" ] && [ "${#dry[@]}" -eq 0 ]; then
+    analysis="$(dirname "$run_json")/analysis.json"
+    ( set -a; . "$HOME/.dim-eval-env"; set +a
+      python3 "$repo/benchmarks/report/analyze.py" --run-dir "$(dirname "$run_json")" \
+        --repo "$repo" --known "$home/known-failures-$suite.json" --out "$analysis" ) \
+      || { echo "[nightly] WARNING: failure analysis did not finish"; analysis=""; }
+  fi
   local push_flag=()
   [ "$pushed" -eq 1 ] || push_flag=(--ledger-push-failed)
   python3 "$repo/benchmarks/report/issues.py" \
     --repo "$github_repo" --suite "$suite" --run-type "$run_type" \
-    --exit-code "$status" ${run_json:+--run-json "$run_json"} "${push_flag[@]}" "${dry[@]}" \
+    --exit-code "$status" ${run_json:+--run-json "$run_json"} ${analysis:+--analysis "$analysis"} \
+    "${push_flag[@]}" "${dry[@]}" \
     --log "$log" --token-file "$home/github-token" || {
     echo "[nightly] WARNING: issues could not be filed; alerting is down"
     [ "$status" -eq 0 ] && status=10

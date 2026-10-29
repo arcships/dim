@@ -5,7 +5,9 @@ Run: python3 -m unittest discover -s benchmarks/report -p 'flow_test.py'
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -14,6 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import analyze  # noqa: E402
 import issues  # noqa: E402
 
 
@@ -145,6 +148,132 @@ class IssueReporterFlowTest(unittest.TestCase):
         for secret in ("evalbox", "10.1.2.3", "/srv/eval-scratch", "models.internal",
                        "sk-abcdefghijklmnop"):
             self.assertNotIn(secret, body)
+
+
+def git(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, text=True,
+                          capture_output=True).stdout.strip()
+
+
+class NightlyAnalysisFlowTest(unittest.TestCase):
+    """A night's failed trials are analyzed, known causes fold, and the summary
+    issue supersedes the previous night's."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        git(self.repo, "init", "-q", "-b", "main")
+        git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+            "--allow-empty", "-m", "base")
+        git(self.repo, "checkout", "-q", "-b", "grep")
+        (self.repo / "grep.rs").write_text("const LIMIT: usize = 100;\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "limit")
+        git(self.repo, "checkout", "-q", "main")
+        git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff",
+            "grep", "-m", "Merge pull request #548 from arcships/grep")
+        self.merge = git(self.repo, "rev-parse", "HEAD")
+        self.github = FakeGitHub()
+        self.prompts: list[str] = []
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def night(self, outcomes: dict[str, float], replies: dict[str, dict], known: dict) -> tuple:
+        run_dir = self.root / f"run{len(list(self.root.iterdir()))}"
+        harbor = run_dir / "harbor"
+        harbor.mkdir(parents=True)
+        rewards: dict[str, list[str]] = {}
+        for task, reward in outcomes.items():
+            trial = harbor / f"{task}__x"
+            (trial / "agent").mkdir(parents=True)
+            (trial / "verifier").mkdir()
+            task_dir = self.root / "tasks" / task
+            task_dir.mkdir(parents=True, exist_ok=True)
+            (task_dir / "instruction.md").write_text(f"Solve {task}.")
+            (trial / "lock.json").write_text(json.dumps({"task": {"path": str(task_dir)}}))
+            (trial / "verifier" / "test-stdout.txt").write_text(f"FAILED test_{task}\n")
+            (trial / "agent" / "dim-timeline.jsonl").write_text("\n".join(json.dumps(line) for line in [
+                {"kind": "event", "branch_id": "main", "event": {"type": "step", "name": "tool-call",
+                 "data": {"calls": [{"name": "grep", "input": {"pattern": task}}]}}},
+                {"kind": "event", "branch_id": "main", "event": {"type": "step", "name": "tool-result",
+                 "data": {"results": [{"result": {"content": "output truncated", "isError": False}}]}}},
+            ]) + "\n")
+            (trial / "result.json").write_text(json.dumps({
+                "trial_name": trial.name, "task_name": f"tb/{task}", "task_checksum": "c",
+                "agent_result": {}, "verifier_result": {"rewards": {"reward": reward}},
+                "exception_info": None}))
+            rewards.setdefault(str(reward), []).append(trial.name)
+        (harbor / "result.json").write_text(json.dumps({
+            "id": "job", "n_total_trials": len(outcomes),
+            "stats": {"evals": {"dim": {"reward_stats": {"reward": rewards}, "exception_stats": {}}}}}))
+        run = {"run_id": "2026-10-30T0300__daily__abc__0001", "run_type": "daily", "k": 1,
+               "window": {"base": "a" * 40, "head": self.merge},
+               "merges": [{"sha": self.merge, "subject": "Merge pull request #548 from arcships/grep",
+                           "verdict": "visible", "matched_rules": [], "visible_files": ["grep.rs"]}],
+               "l2": {"trials": len(outcomes), "trial_passes": sum(r == 1.0 for r in outcomes.values())}}
+        (run_dir / "run.json").write_text(json.dumps(run))
+
+        def ask(prompt: str) -> str:
+            self.prompts.append(prompt)
+            task = next(t for t in replies if f"Solve {t}." in prompt)
+            return "Here you go:\n" + json.dumps(replies[task])
+
+        failures, updated = analyze.analyze(run_dir, self.repo, known, ask, "2026-10-30")
+        analysis = {"model": "fake", "failures": [analyze.asdict(f) for f in failures]}
+        summary = issues.nightly("frontier", "daily", run, analysis, "arcships/dim")
+        done = issues.report(self.github, "frontier", 0, run, [summary] if summary else [])
+        return failures, updated, summary, done
+
+    def test_failures_are_explained_and_known_causes_fold(self) -> None:
+        regression = {"category": "agent", "cause": "The grep output was cut off.",
+                      "evidence": "result: output truncated", "same_as_known": False,
+                      "suspects": [{"pr": "#548", "confidence": "medium", "reason": "Lowers LIMIT."},
+                                   {"pr": "#999", "confidence": "high", "reason": "Not in the window."}]}
+        hard = {"category": "agent", "cause": "Never finds the key.", "evidence": "step 3",
+                "same_as_known": True, "suspects": []}
+        known = {"tb/hard": {"category": "agent", "cause": "Never finds the key.",
+                             "first_seen": "2026-10-20", "nights": 4},
+                 "tb/fixed": {"category": "agent", "cause": "Old.", "first_seen": "2026-10-01",
+                              "nights": 9}}
+        failures, updated, summary, done = self.night(
+            {"regex": 0.0, "hard": 0.0, "fixed": 1.0}, {"regex": regression, "hard": hard}, known)
+
+        by_task = {f.task: f for f in failures}
+        self.assertEqual(set(by_task), {"tb/regex", "tb/hard"})
+        self.assertEqual([s["pr"] for s in by_task["tb/regex"].suspects], ["#548"])
+        self.assertTrue(by_task["tb/hard"].known)
+        self.assertEqual(updated["tb/hard"]["nights"], 5)
+        self.assertEqual(updated["tb/regex"]["first_seen"], "2026-10-30")
+        self.assertNotIn("tb/fixed", updated)
+        self.assertTrue(any("LIMIT: usize = 100" in prompt for prompt in self.prompts))
+        self.assertTrue(any("Never finds the key." in prompt for prompt in self.prompts))
+
+        self.assertIn("2 failed (1 new) · suspects #548", summary.title)
+        self.assertIn("#### `tb/regex` — agent", summary.body)
+        self.assertIn("#548 (medium): Lowers LIMIT.", summary.body)
+        self.assertIn("| `tb/hard` | agent | 2026-10-20 | 5 |", summary.body)
+        self.assertNotIn("#### `tb/hard`", summary.body)
+        self.assertEqual(done, ["opened #1 (frontier/nightly)"])
+        self.assertIn(issues.NIGHTLY_LABEL, self.github.issues[1]["labels"])
+
+    def test_each_night_supersedes_the_last_and_a_clean_night_closes_it(self) -> None:
+        reply = {"category": "environment", "cause": "uv download failed.", "evidence": "curl: (28)",
+                 "same_as_known": False, "suspects": []}
+        self.night({"regex": 0.0}, {"regex": reply}, {})
+        *_, done = self.night({"regex": 0.0}, {"regex": reply}, {})
+        self.assertEqual(done, ["opened #2 (frontier/nightly)", "closed #1 (frontier/nightly)"])
+        *_, done = self.night({"regex": 1.0}, {}, {})
+        self.assertEqual(done, ["closed #2 (frontier/nightly)"])
+
+    def test_a_reply_that_cannot_be_read_is_listed_not_lost(self) -> None:
+        failures, updated, summary, _ = self.night(
+            {"regex": 0.0}, {"regex": {"category": "vibes"}}, {})
+        self.assertIn("unknown category", failures[0].error)
+        self.assertEqual(updated, {})
+        self.assertIn("### Not analyzed", summary.body)
 
 
 if __name__ == "__main__":
