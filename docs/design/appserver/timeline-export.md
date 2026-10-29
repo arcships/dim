@@ -86,8 +86,8 @@ binary's `main`; the daemon's paths do not change.
    commits the daemon makes during the export are not seen, so all branches, heads and events come from one point.
    Readers do not block the daemon's writes; the WAL cannot be checkpointed past the snapshot until the export ends.
 5. **Format.** Inside the snapshot, the schema must equal exactly one this build opens: the current format, or one an
-   upgrade step starts from (v13, v15, v16, v17, v18, v19, v20 and v21 for v22), with a matching marker. Upgrades only add tables and
-   replace the marker and never rewrite a row, so the reader that a daemon uses after an upgrade reads these stores
+   upgrade step starts from (v13, v15, v16, v17, v18, v19, v20, v21 and v22 for v23), with a matching marker. Upgrades only add tables and
+   replace the marker, and the v23 step also fills its new table from the stored events, never rewriting an existing row, so the reader that a daemon uses after an upgrade reads these stores
    unchanged; the export reads them as they are and does not upgrade them. Any other schema or marker (a newer
    dimcode's store, a changed schema, the legacy TypeScript store) fails with `unsupported Timeline storage format`,
    and the database is left as it was.
@@ -120,7 +120,7 @@ they carry. Export version 1:
 | `end`, last | `branches` and `events`: the counts written |
 
 ```
-{"kind":"header","export":1,"session_id":"S","store_format":22,"sensitive":true}
+{"kind":"header","export":1,"session_id":"S","store_format":23,"sensitive":true}
 {"kind":"branch","info":{"id":"main"},"head":41}
 {"kind":"branch","info":{"id":"B","parent":"main","branch_point":12,"create_anchor":13},"head":7}
 {"kind":"event","branch_id":"main","event":{"id":"…","sequence":1,"create_at":1761000000000,"type":"input","name":"message","data":{…}},"trace":null,"batch_end":1}
