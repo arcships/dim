@@ -28,8 +28,9 @@ resumed, so a grant made for it must survive the interruption.
 ### D1. The sandbox is a client application setting, off by default
 
 The client application owns two switches: `sandbox` and, when the sandbox is on, `network`. Both
-default to off. They are part of the application configuration; the daemon reads them when it
-starts a Session and when a process starts. A running process keeps its environment.
+default to off. They live in the client's local settings document, the same source the command
+rules use; `/settings` edits them. The daemon reads them when it starts a Session and when a
+process starts. A running process keeps its environment.
 
 - Off: `exec` and the persistent shell run on the host with the user's environment, home and
   network.
@@ -38,10 +39,11 @@ starts a Session and when a process starts. A running process keeps its environm
   directory and, on macOS, each process tree's temporary directory and git's global
   configuration.
 
-There is no node policy file, no `host-platform.json`, no management method and no revision.
-Changing the setting applies to the next process or Session. An existing `host-isolation.json`
-is not read. `host.isolation.get/update/reset`, `isolation_policy.rs`, `IsolationPolicy` and the
-`/settings` Command isolation row are removed.
+There is no node policy file, no `host-platform.json`, no `host.isolation` management method and
+no revision. Changing the setting applies to the next process or Session. An existing
+`host-isolation.json` is not read. `host.isolation.get/update/reset`, `isolation_policy.rs` and
+`IsolationPolicy` are removed. The `/settings` Command isolation row is replaced by a Sandbox
+and Network row backed by the local settings document; it no longer calls `host.isolation`.
 
 ### D2. `exec` does not choose the environment or declare resources
 
@@ -137,9 +139,10 @@ turns the sandbox off in the client application setting.
 
 - The release works without a policy file: the sandbox is off and the agent uses the user's
   environment. Isolation is opt-in.
-- `host.isolation.get/update/reset`, `isolation_policy.rs`, `IsolationPolicy`,
-  `host-isolation.json` and the `/settings` Command isolation row are removed. No migration is
-  kept; an existing file is not read.
+- `host.isolation.get/update/reset`, `isolation_policy.rs`, `IsolationPolicy` and
+  `host-isolation.json` are removed. The `/settings` Command isolation row is replaced by a
+  Sandbox and Network row backed by the local settings document. No migration is kept; an
+  existing file is not read.
 - `exec` loses `sandbox`; the node policy file, `escalation` and the tier field are removed.
 - The session-files owner gains `owns`, `owned_paths` and `register`; command output joins the
   same ownership model. A Session-scoped facts service composes the fixed sources for
@@ -148,8 +151,8 @@ turns the sandbox off in the client application setting.
   field is added; `ApprovalDecision` is unchanged. The sandbox switches are application
   configuration, not a management RPC.
 - `Permission.md`, `WorkspaceTools.md`, `HostPlatform.md`, `session-files.md` §11, the
-  Attachments design, the `host.isolation` method document and the CLI permission/isolation
-  tables are updated under their owners after acceptance. ADR 003 is not edited.
+  Attachments design, the `host.isolation` method document and the CLI permission/settings tables
+  are updated under their owners after acceptance. ADR 003 is not edited.
 - AGENTS.md rule 11's “permission presets” clause is updated by ADR 009 and its “file-root
   authorization” clause by this decision.
 - The path facts are exact/prefix for grants and ownership rows for host artifacts. The platform
