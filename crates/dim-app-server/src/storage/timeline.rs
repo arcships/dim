@@ -1,5 +1,5 @@
 use super::{
-    SqliteStorage,
+    SqliteStorage, catalog,
     codec::{
         self, CONTENT_BUDGET, ContentRow, ListReferences, Previous, Reader, Row, Values, WireEvent,
     },
@@ -660,6 +660,7 @@ impl SqliteTimelineStore {
             "timeline_content",
             "session_metadata",
             "session_owners",
+            "session_catalog",
             "agent_sessions",
         ] {
             tx.execute(
@@ -959,13 +960,10 @@ impl SessionStore {
                     return Err(AgentError::Closed(source));
                 };
                 let cut = sql_sequence(at)?;
+                let created_at = dim_agent_runtime::core::unix_millis();
                 tx.execute(
                     "INSERT INTO agent_sessions VALUES (?1, ?2, ?3)",
-                    params![
-                        fork,
-                        config,
-                        sql_sequence(dim_agent_runtime::core::unix_millis())?
-                    ],
+                    params![fork, config, sql_sequence(created_at)?],
                 )
                 .map_err(error)?;
                 tx.execute(
@@ -1078,6 +1076,7 @@ impl SessionStore {
                     )
                     .map_err(error)?;
                 }
+                catalog::backfill_session(&tx, &fork)?;
                 files::share(&tx, &source, &fork).map_err(error)?;
                 tx.commit().map_err(error)
             })
@@ -1158,17 +1157,15 @@ impl DynPlugin for SessionStorePlugin {
 }
 
 fn create_session(connection: &Connection, session: &str, config: &SessionConfig) -> Result<()> {
-    let config = serde_json::to_string(config).map_err(error)?;
+    let created_at = dim_agent_runtime::core::unix_millis();
+    let stored = serde_json::to_string(config).map_err(error)?;
     connection
         .execute(
             "INSERT INTO agent_sessions VALUES (?1, ?2, ?3)",
-            params![
-                session,
-                config,
-                sql_sequence(dim_agent_runtime::core::unix_millis())?
-            ],
+            params![session, stored, sql_sequence(created_at)?],
         )
         .map_err(error)?;
+    catalog::created(connection, session, config, created_at)?;
     let info = BranchRecord {
         id: "main".into(),
         parent: None,
@@ -1246,11 +1243,11 @@ fn head(connection: &Connection, key: &TimelineKey) -> Result<u64> {
         )
         .map_err(error)
 }
-fn read_sequence(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
+pub(super) fn read_sequence(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
     let value: i64 = row.get(index)?;
     u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
 }
-fn sql_sequence(value: u64) -> Result<i64> {
+pub(super) fn sql_sequence(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(error)
 }
 /// Writes `batch`, with `lists` the prepared lists of each of its records.
@@ -1342,6 +1339,9 @@ fn write_batch(
             ],
         )
         .map_err(error)?;
+    if batch.key.branch_id == "main" {
+        catalog::committed(connection, &batch.key.session_id, &batch.events)?;
+    }
     Ok(())
 }
 fn insert_event(

@@ -10,11 +10,11 @@ use std::{
 };
 
 /// The native store format this daemon creates and opens.
-const FORMAT: u32 = 22;
+const FORMAT: u32 = 23;
 pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "agent_store_format",
-        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 22))",
+        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 23))",
     ),
     (
         "settings_documents",
@@ -96,11 +96,23 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
         "session_metadata",
         "CREATE TABLE session_metadata (session_id TEXT NOT NULL PRIMARY KEY REFERENCES agent_sessions(session_id), revision INTEGER NOT NULL CHECK (revision > 0), title TEXT, title_source TEXT CHECK (title_source IN ('auto', 'manual')), CHECK ((title IS NULL) = (title_source IS NULL)))",
     ),
+    (
+        "session_catalog",
+        "CREATE TABLE session_catalog (session_id TEXT NOT NULL PRIMARY KEY REFERENCES agent_sessions(session_id), updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0), preview TEXT, cwd TEXT NOT NULL)",
+    ),
+    (
+        "session_catalog_by_activity",
+        "CREATE INDEX session_catalog_by_activity ON session_catalog(updated_at_ms DESC, session_id)",
+    ),
+    (
+        "session_catalog_with_preview",
+        "CREATE INDEX session_catalog_with_preview ON session_catalog(updated_at_ms DESC, session_id) WHERE preview IS NOT NULL",
+    ),
 ];
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
-const UPGRADES: [(u32, &[&str]); 8] = [
+const UPGRADES: [(u32, &[&str]); 9] = [
     (
         13,
         &[
@@ -126,6 +138,16 @@ const UPGRADES: [(u32, &[&str]); 8] = [
     // #580: tool schemas may omit `type`, which a v21 daemon cannot
     // decode; the marker only.
     (21, &[]),
+    // #556: SessionStore's catalog projection, backfilled from the stored
+    // events.
+    (
+        22,
+        &[
+            "session_catalog",
+            "session_catalog_by_activity",
+            "session_catalog_with_preview",
+        ],
+    ),
 ];
 
 fn format_table(version: u32) -> String {
@@ -290,6 +312,7 @@ impl SqliteStorage {
                         tx.execute_batch(sql).map_err(storage)?;
                     }
                 }
+                super::catalog::backfill(&tx).map_err(storage)?;
                 tx.execute("INSERT INTO agent_store_format VALUES (?1)", [FORMAT])
                     .map_err(storage)?;
                 upgraded_from = Some(version);

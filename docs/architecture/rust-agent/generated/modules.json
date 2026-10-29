@@ -2229,7 +2229,13 @@
       "crate": "dim_app_server",
       "parent": "dim_app_server::storage",
       "file": "crates/dim-app-server/src/storage/catalog.rs",
-      "unexpandedMacros": []
+      "unexpandedMacros": [
+        "eprintln",
+        "format",
+        "matches",
+        "params",
+        "tracing::warn"
+      ]
     },
     {
       "id": "dim_app_server::storage::codec",
@@ -19750,6 +19756,30 @@
     },
     {
       "from": "dim_app_server::storage::catalog",
+      "to": "dim_agent_runtime::config",
+      "references": [
+        "path SessionConfig",
+        "use dim_agent_runtime::SessionConfig"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::catalog",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path Result",
+        "use dim_agent_runtime::Result"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::catalog",
+      "to": "dim_agent_runtime::timeline_store",
+      "references": [
+        "path StoredEvent",
+        "use dim_agent_runtime::StoredEvent"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::catalog",
       "to": "dim_agent_types::content",
       "references": [
         "path ContentBlock::Text",
@@ -19760,8 +19790,38 @@
       "from": "dim_app_server::storage::catalog",
       "to": "dim_agent_types::events",
       "references": [
+        "path AgentEvent",
+        "path EventKind::InputMessage",
         "path UserInput",
+        "use dim_agent_types::AgentEvent",
+        "use dim_agent_types::EventKind",
         "use dim_agent_types::UserInput"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::catalog",
+      "to": "dim_app_server::storage::codec",
+      "references": [
+        "path Row",
+        "path Row::Event",
+        "use super::codec::Row"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::catalog",
+      "to": "dim_app_server::storage::sqlite",
+      "references": [
+        "path error",
+        "use super::sqlite::error"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::catalog",
+      "to": "dim_app_server::storage::timeline",
+      "references": [
+        "path read_sequence",
+        "use super::timeline::read_sequence",
+        "use super::timeline::sql_sequence"
       ]
     },
     {
@@ -20098,6 +20158,13 @@
       ]
     },
     {
+      "from": "dim_app_server::storage::sqlite",
+      "to": "dim_app_server::storage::catalog",
+      "references": [
+        "path super::catalog::backfill"
+      ]
+    },
+    {
       "from": "dim_app_server::storage::timeline",
       "to": "dim_agent_capabilities::host",
       "references": [
@@ -20215,6 +20282,16 @@
       "to": "dim_app_server::protocol",
       "references": [
         "path crate::protocol::SessionInfo"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::timeline",
+      "to": "dim_app_server::storage::catalog",
+      "references": [
+        "path catalog::backfill_session",
+        "path catalog::committed",
+        "path catalog::created",
+        "use super::catalog"
       ]
     },
     {

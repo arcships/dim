@@ -271,6 +271,12 @@ const V15_ADDITIONS: &[&str] = &[
 const V16_ADDITIONS: &[&str] = &[
     "CREATE TABLE session_metadata (session_id TEXT NOT NULL PRIMARY KEY REFERENCES agent_sessions(session_id), revision INTEGER NOT NULL CHECK (revision > 0), title TEXT, title_source TEXT CHECK (title_source IN ('auto', 'manual')), CHECK ((title IS NULL) = (title_source IS NULL)))",
 ];
+/// What v22 adds to v21 besides the marker: SessionStore's catalog projection.
+const V23_ADDITIONS: &[&str] = &[
+    "CREATE TABLE session_catalog (session_id TEXT NOT NULL PRIMARY KEY REFERENCES agent_sessions(session_id), updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0), preview TEXT, cwd TEXT NOT NULL)",
+    "CREATE INDEX session_catalog_by_activity ON session_catalog(updated_at_ms DESC, session_id)",
+    "CREATE INDEX session_catalog_with_preview ON session_catalog(updated_at_ms DESC, session_id) WHERE preview IS NOT NULL",
+];
 /// The exact schema of `version`, sorted: v13's, plus each later step's
 /// additions, with that version's marker.
 fn schema_of(version: u32) -> Vec<String> {
@@ -278,6 +284,7 @@ fn schema_of(version: u32) -> Vec<String> {
         .iter()
         .chain(V15_ADDITIONS.iter().filter(|_| version >= 15))
         .chain(V16_ADDITIONS.iter().filter(|_| version >= 16))
+        .chain(V23_ADDITIONS.iter().filter(|_| version >= 23))
         .map(|sql| sql.replace("(version = 13)", &format!("(version = {version})")))
         .collect();
     statements.sort();
@@ -2427,6 +2434,7 @@ fn unsupported_legacy_or_changed_schema_is_rejected_without_migration() {
         V20,
         V21,
         V22,
+        V23,
     }
     for (base, sql) in [
         (Base::Empty, "CREATE TABLE sessions (id TEXT PRIMARY KEY)"),
@@ -2578,17 +2586,29 @@ fn unsupported_legacy_or_changed_schema_is_rejected_without_migration() {
         (Base::V21, "DELETE FROM agent_store_format"),
         (
             Base::V21,
-            "PRAGMA ignore_check_constraints=ON; UPDATE agent_store_format SET version=22",
+            "PRAGMA ignore_check_constraints=ON; UPDATE agent_store_format SET version=23",
+        ),
+        (
+            Base::V21,
+            "PRAGMA ignore_check_constraints=ON; UPDATE agent_store_format SET version=20",
         ),
         (Base::V22, "DELETE FROM agent_store_format"),
         (
             Base::V22,
             "PRAGMA ignore_check_constraints=ON; UPDATE agent_store_format SET version=21",
         ),
+        // A v22 store the v23 step did not finish: the catalog table but no
+        // marker, then neither.
         (
-            Base::V21,
-            "PRAGMA ignore_check_constraints=ON; UPDATE agent_store_format SET version=20",
+            Base::V22,
+            "CREATE TABLE session_catalog (session_id TEXT NOT NULL PRIMARY KEY)",
         ),
+        (Base::V23, "DELETE FROM agent_store_format"),
+        (
+            Base::V23,
+            "PRAGMA ignore_check_constraints=ON; UPDATE agent_store_format SET version=22",
+        ),
+        (Base::V23, "DROP INDEX session_catalog_with_preview"),
         (
             Base::V13,
             "CREATE TABLE session_files (file_id TEXT NOT NULL PRIMARY KEY, node TEXT, writer TEXT)",
@@ -2602,6 +2622,7 @@ fn unsupported_legacy_or_changed_schema_is_rejected_without_migration() {
         (Base::V20, "DROP TABLE session_metadata"),
         (Base::V21, "DROP TABLE session_metadata"),
         (Base::V22, "DROP TABLE session_metadata"),
+        (Base::V23, "DROP TABLE session_metadata"),
     ] {
         let database = Database::new();
         match base {
@@ -2614,7 +2635,8 @@ fn unsupported_legacy_or_changed_schema_is_rejected_without_migration() {
             Base::V19 => drop(v16_tables_store(&database.0, 19)),
             Base::V20 => drop(v16_tables_store(&database.0, 20)),
             Base::V21 => drop(v16_tables_store(&database.0, 21)),
-            Base::V22 => drop(SqliteStorage::open(database.0.clone()).unwrap()),
+            Base::V22 => drop(v16_tables_store(&database.0, 22)),
+            Base::V23 => drop(SqliteStorage::open(database.0.clone()).unwrap()),
         }
         let connection = Connection::open(&database.0).unwrap();
         connection.execute_batch(sql).unwrap();
@@ -2647,11 +2669,26 @@ fn marker(connection: &Connection) -> Vec<i64> {
         .unwrap()
 }
 
+/// The catalog row of `session`, as `(updated_at_ms, preview, cwd)`.
+fn catalog_row(connection: &Connection, session: &str) -> Option<(i64, Option<String>, String)> {
+    connection
+        .prepare("SELECT updated_at_ms, preview, cwd FROM session_catalog WHERE session_id = ?1")
+        .unwrap()
+        .query_map([session], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+        .pop()
+}
+
 /// Upgrades the disposable `connection`'s store, built at `from` and holding
-/// every documented row of the tables it has, to the exact v22 store in place:
-/// every business row is unchanged, the added tables are empty, and only that
-/// open reports the upgrade. The documented v16 request row then reads and
-/// continues as mixed rows.
+/// every documented row of the tables it has plus a Session that never
+/// committed a batch, to the exact v23 store in place: every business row is
+/// unchanged, the added tables are empty, and only that open reports the
+/// upgrade. The catalog row of the documented Session is backfilled from its
+/// events; the one without a batch takes its creation time and no preview.
+/// The documented v16 request row then reads and continues as mixed rows, and
+/// the row follows its last committed event without overwriting the preview.
 async fn upgrades_in_place_once(database: &Database, connection: Connection, from: u32) {
     connection
         .execute_batch("PRAGMA foreign_keys = ON")
@@ -2668,6 +2705,14 @@ async fn upgrades_in_place_once(database: &Database, connection: Connection, fro
         .copied()
         .collect();
     insert_documented_records(&connection, &kept);
+    connection
+        .execute_batch(
+            "INSERT INTO agent_sessions VALUES ('quiet', \
+             '{\"cwd\":\"/elsewhere\",\"model\":{\"providerId\":\"mock\",\"modelId\":\"deterministic\"},\"systemPrompt\":\"\"}', \
+             500); \
+             INSERT INTO timeline_branches VALUES ('quiet', 'main', '{\"id\":\"main\"}', 0)",
+        )
+        .unwrap();
     let before: Vec<_> = kept.iter().map(|table| rows(&connection, table)).collect();
     assert!(before.iter().filter(|rows| !rows.is_empty()).count() >= 7);
     drop(connection);
@@ -2679,13 +2724,21 @@ async fn upgrades_in_place_once(database: &Database, connection: Connection, fro
     store.close().await.unwrap();
     db.close().await.unwrap();
     let connection = Connection::open(&database.0).unwrap();
-    assert_eq!(schema(&connection), schema_of(22));
-    assert_eq!(marker(&connection), [22]);
+    assert_eq!(schema(&connection), schema_of(23));
+    assert_eq!(marker(&connection), [23]);
     let after: Vec<_> = kept.iter().map(|table| rows(&connection, table)).collect();
     assert_eq!(after, before);
     for table in added {
         assert!(rows(&connection, table).is_empty());
     }
+    assert_eq!(
+        catalog_row(&connection, "s1"),
+        Some((1008, Some("Hi".into()), "/work".into()))
+    );
+    assert_eq!(
+        catalog_row(&connection, "quiet"),
+        Some((500, None, "/elsewhere".into()))
+    );
 
     let db = SqliteStorage::open(database.0.clone()).unwrap();
     assert_eq!(db.upgraded_from(), None);
@@ -2714,6 +2767,11 @@ async fn upgrades_in_place_once(database: &Database, connection: Connection, fro
     append(&store, key("s1", "main"), vec![continued.clone()])
         .await
         .unwrap();
+    assert_eq!(
+        catalog_row(&connection, "s1"),
+        Some((1009, Some("Hi".into()), "/work".into())),
+        "a committed batch moves the row to its last event and keeps the preview"
+    );
     let main = store.read(&key("s1", "main"), 1..=9).await.unwrap();
     assert_eq!(main[8].event, continued.event);
     let EventKind::ModelCall(legacy) = &main[3].event.kind else {
@@ -2752,8 +2810,8 @@ async fn a_v13_store_upgrades_in_place_once() {
     assert_eq!(db.upgraded_from(), None);
     db.close().await.unwrap();
     let connection = Connection::open(&fresh.0).unwrap();
-    assert_eq!(schema(&connection), schema_of(22));
-    assert_eq!(marker(&connection), [22]);
+    assert_eq!(schema(&connection), schema_of(23));
+    assert_eq!(marker(&connection), [23]);
     drop(connection);
 
     let database = Database::new();
@@ -2806,7 +2864,8 @@ async fn a_v19_store_upgrades_in_place_once() {
     upgrades_in_place_once(&database, connection, 19).await;
 }
 
-/// An exact v20 store upgrades by replacing only its marker.
+/// An exact v20 store takes #527's marker step, #580's marker step and
+/// #556's catalog table and backfill.
 #[tokio::test]
 async fn a_v20_store_upgrades_in_place_once() {
     let database = Database::new();
@@ -2815,6 +2874,8 @@ async fn a_v20_store_upgrades_in_place_once() {
     upgrades_in_place_once(&database, connection, 20).await;
 }
 
+/// #580's one-way upgrade replaces an exact v21 store's marker, and #556's
+/// step then builds the catalog row of every Session from its stored events.
 #[tokio::test]
 async fn a_v21_store_upgrades_in_place_once_and_restores_typeless_tool_schemas() {
     let database = Database::new();
@@ -2878,7 +2939,7 @@ async fn a_v21_store_upgrades_in_place_once_and_restores_typeless_tool_schemas()
 
     let connection = Connection::open(&database.0).unwrap();
     assert_ne!(schema(&connection), schema_of(21));
-    assert_eq!(marker(&connection), [22]);
+    assert_eq!(marker(&connection), [23]);
     let body: String = connection
         .query_row(
             "SELECT body FROM timeline_content WHERE session_id = 'schema' AND kind = 'tools'",
@@ -2907,6 +2968,106 @@ async fn a_v21_store_upgrades_in_place_once_and_restores_typeless_tool_schemas()
     agent.close().await.unwrap();
     store.close().await.unwrap();
     db.close().await.unwrap();
+}
+
+/// #556's one-way upgrade builds the catalog row of every Session from its
+/// stored events, from the last event's `create_at` and the preview window,
+/// rather than from a marker alone.
+#[tokio::test]
+async fn a_v22_store_upgrades_in_place_once() {
+    let database = Database::new();
+    let connection = v16_tables_store(&database.0, 22);
+    assert_eq!(schema(&connection), schema_of(22));
+    upgrades_in_place_once(&database, connection, 22).await;
+}
+
+/// #556: a Session whose stored events cannot be read still gets a catalog
+/// row, the one `agent_sessions` alone gives, and the upgrade goes on instead
+/// of refusing a store that v21 opened. The daemon names that Session on
+/// stderr.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unreadable_session_keeps_the_store_open_with_a_degraded_row() {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+    let database = Database::new();
+    let connection = v16_tables_store(&database.0, 22);
+    insert_documented_records(&connection, BUSINESS_TABLES);
+    connection
+        .execute_batch(
+            "INSERT INTO agent_sessions VALUES ('quiet', \
+             '{\"cwd\":\"/elsewhere\",\"model\":{\"providerId\":\"mock\",\"modelId\":\"deterministic\"},\"systemPrompt\":\"\"}', \
+             500); \
+             INSERT INTO timeline_branches VALUES ('quiet', 'main', '{\"id\":\"main\"}', 0); \
+             UPDATE timeline_events SET body = 'not json' WHERE session_id = 's1' AND branch_id = 'main' \
+             AND sequence = (SELECT max(sequence) FROM timeline_events WHERE session_id = 's1' AND branch_id = 'main')",
+        )
+        .unwrap();
+    let created: i64 = connection
+        .query_row(
+            "SELECT created_at_ms FROM agent_sessions WHERE session_id = 's1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(connection);
+
+    let socket = PathBuf::from("/tmp").join(format!("dim-catalog-{}/s", uuid::Uuid::new_v4()));
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_dim-app-server"))
+        .args(["--mock-model", "--no-ws", "--unix"])
+        .arg(&socket)
+        .arg("--database")
+        .arg(&database.0)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut ready = String::new();
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        BufReader::new(child.stdout.take().unwrap()).read_line(&mut ready),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    child.kill().await.unwrap();
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(socket.parent().unwrap());
+    assert!(ready.contains("unixPath"), "the store opened: {stderr}");
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line.contains("s1") && line.contains("catalog")),
+        "{stderr}"
+    );
+
+    let connection = Connection::open(&database.0).unwrap();
+    assert_eq!(schema(&connection), schema_of(23));
+    assert_eq!(marker(&connection), [23]);
+    assert_eq!(
+        catalog_row(&connection, "s1"),
+        Some((created, None, "/work".into())),
+        "the unreadable Session's row comes from `agent_sessions` alone"
+    );
+    assert_eq!(
+        catalog_row(&connection, "quiet"),
+        Some((500, None, "/elsewhere".into()))
+    );
+    // Each row is the one a backfill over its own events gives.
+    for session in ["s1", "quiet"] {
+        assert_eq!(
+            backfilled_row(&database.0, session).await,
+            catalog_row(&connection, session),
+            "{session}"
+        );
+    }
 }
 
 /// The daemon names the one-way upgrade on stderr, where its default log
@@ -2952,7 +3113,7 @@ async fn the_daemon_reports_a_v13_upgrade_on_stderr_once() {
         reports.push(stderr);
     }
     let line = format!(
-        "Upgraded native store {} from format v13 to v22; earlier dimcode versions cannot open it.",
+        "Upgraded native store {} from format v13 to v23; earlier dimcode versions cannot open it.",
         path.display()
     );
     assert!(
@@ -4878,6 +5039,420 @@ async fn a_fork_copies_main_through_the_cut_with_its_content_and_snapshots() {
     ));
     assert!(column("SELECT session_id FROM agent_sessions WHERE session_id='orphan'").is_empty());
     drop((connection, sessions));
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+/// `record` with its atomic batch's last sequence: every event of one batch
+/// carries the batch's end.
+fn batched(sequence: u64, batch_end: u64, kind: EventKind) -> StoredEvent {
+    StoredEvent {
+        batch_end,
+        ..record(sequence, kind)
+    }
+}
+
+/// #556: `session.create` leaves the catalog row at the creation time with no
+/// preview, and rolling the creation back removes it with the Session.
+#[tokio::test]
+async fn session_creation_and_its_rollback_keep_the_catalog_row() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let config = SessionConfig {
+        cwd: "/work".into(),
+        ..SessionConfig::default()
+    };
+    store.create_session("new", &config).await.unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    let created: i64 = connection
+        .query_row(
+            "SELECT created_at_ms FROM agent_sessions WHERE session_id = 'new'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        catalog_row(&connection, "new"),
+        Some((created, None, "/work".into()))
+    );
+    store.rollback_session("new").await.unwrap();
+    assert_eq!(catalog_row(&connection, "new"), None);
+    drop(connection);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+/// #556: a `main` batch writes its catalog row in the transaction that
+/// commits it, and the preview is decided once, by the first user input the
+/// batch-complete window holds.
+#[tokio::test]
+async fn main_batches_write_the_catalog_row_and_decide_the_preview_once() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let config = SessionConfig {
+        cwd: "/work".into(),
+        ..SessionConfig::default()
+    };
+    for session in ["past", "late", "image-only", "failed"] {
+        store.create_session(session, &config).await.unwrap();
+    }
+    let input = |sequence: u64, batch_end: u64, text: &str| {
+        batched(
+            sequence,
+            batch_end,
+            EventKind::InputMessage(InputMessageData::text(text, Some(InputMode::Queue))),
+        )
+    };
+    let deltas = |range: std::ops::RangeInclusive<u64>, batch_end: u64| -> Vec<StoredEvent> {
+        range
+            .map(|sequence| {
+                batched(
+                    sequence,
+                    batch_end,
+                    EventKind::Text(DeltaData {
+                        turn_id: "turn".into(),
+                        request_id: "request".into(),
+                        delta: "delta".into(),
+                    }),
+                )
+            })
+            .collect()
+    };
+    // A user input just past sequence 256 in the batch that holds 256 is
+    // inside the window, so it decides the preview.
+    append(&store, key("past", "main"), deltas(1..=250, 250))
+        .await
+        .unwrap();
+    let mut window = deltas(251..=260, 260);
+    window[6] = input(257, 260, "just past the window");
+    append(&store, key("past", "main"), window).await.unwrap();
+    // A user input in a batch that starts after sequence 256 is outside it.
+    append(&store, key("late", "main"), deltas(1..=256, 256))
+        .await
+        .unwrap();
+    let mut after = deltas(257..=260, 260);
+    after[0] = input(257, 260, "after the window");
+    append(&store, key("late", "main"), after).await.unwrap();
+    // An image-only first message decides no preview, and a later text
+    // message in the window does not fill it.
+    let image = InputMessageData {
+        user: Some(UserInput {
+            content: vec![ContentBlock::Image {
+                source: ImageSource {
+                    source_type: ImageSourceType::Base64,
+                    media_type: "image/png".into(),
+                    data: Some("AA==".into()),
+                    url: None,
+                },
+            }],
+        }),
+        ..InputMessageData::default()
+    };
+    append(
+        &store,
+        key("image-only", "main"),
+        vec![batched(1, 1, EventKind::InputMessage(image))],
+    )
+    .await
+    .unwrap();
+    append(
+        &store,
+        key("image-only", "main"),
+        vec![input(2, 2, "later text")],
+    )
+    .await
+    .unwrap();
+
+    let connection = Connection::open(&database.0).unwrap();
+    assert_eq!(
+        catalog_row(&connection, "past"),
+        Some((1260, Some("just past the window".into()), "/work".into()))
+    );
+    assert_eq!(
+        catalog_row(&connection, "late"),
+        Some((1260, None, "/work".into()))
+    );
+    assert_eq!(
+        catalog_row(&connection, "image-only"),
+        Some((1002, None, "/work".into()))
+    );
+    // A backfill over the same events gives the rows the live writes decided,
+    // the window case just past sequence 256 included.
+    for session in ["past", "late", "image-only"] {
+        assert_eq!(
+            backfilled_row(&database.0, session).await,
+            catalog_row(&connection, session),
+            "{session}"
+        );
+    }
+
+    // A batch that fails leaves neither its events nor a change to the row.
+    let created: i64 = connection
+        .query_row(
+            "SELECT created_at_ms FROM agent_sessions WHERE session_id = 'failed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_catalog_batch BEFORE INSERT ON timeline_events \
+             WHEN NEW.session_id = 'failed' BEGIN SELECT RAISE(ABORT, 'batch failure'); END",
+        )
+        .unwrap();
+    let (done, wait) = tokio::sync::oneshot::channel();
+    store
+        .append(
+            key("failed", "main"),
+            vec![input(1, 1, "never stored")],
+            Box::new(move |result| {
+                let _ = done.send(result);
+            }),
+        )
+        .unwrap();
+    let error = wait.await.unwrap().unwrap_err();
+    assert!(error.to_string().contains("batch failure"), "{error}");
+    let events: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM timeline_events WHERE session_id = 'failed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(events, 0);
+    assert_eq!(
+        catalog_row(&connection, "failed"),
+        Some((created, None, "/work".into()))
+    );
+    drop(connection);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+/// #556: a `main` batch commits even when the preview window cannot be read:
+/// the projection leaves the preview unset instead of failing the events.
+#[tokio::test]
+async fn a_batch_commits_when_the_preview_window_cannot_be_read() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let config = SessionConfig {
+        cwd: "/work".into(),
+        ..SessionConfig::default()
+    };
+    store.create_session("unreadable", &config).await.unwrap();
+    let input = |sequence: u64, text: &str| {
+        batched(
+            sequence,
+            sequence,
+            EventKind::InputMessage(InputMessageData::text(text, Some(InputMode::Queue))),
+        )
+    };
+    // The window's first `input/message` is a context change, which carries no
+    // user part, so the preview is still undecided when the next batch comes.
+    let context = batched(
+        1,
+        1,
+        EventKind::InputMessage(InputMessageData {
+            blocks: vec![InputBlock::Raw {
+                text: "context change".into(),
+                key: Some("context".into()),
+                retire: false,
+            }],
+            mode: Some(InputMode::Append),
+            ..InputMessageData::default()
+        }),
+    );
+    append(&store, key("unreadable", "main"), vec![context])
+        .await
+        .unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    connection
+        .execute(
+            "UPDATE timeline_events SET body = 'not json' WHERE session_id = 'unreadable' AND sequence = 1",
+            [],
+        )
+        .unwrap();
+    append(&store, key("unreadable", "main"), vec![input(2, "Again")])
+        .await
+        .unwrap();
+    let events: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM timeline_events WHERE session_id = 'unreadable'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(events, 2, "the batch's events are stored");
+    assert_eq!(
+        catalog_row(&connection, "unreadable"),
+        Some((1002, None, "/work".into())),
+        "the row follows the batch and leaves the preview unset"
+    );
+    drop(connection);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+/// The catalog row an upgrade backfills for `session`: its stored rows are
+/// copied into a disposable v21 store, which is then opened, so the row comes
+/// from the upgrade's own reader.
+async fn backfilled_row(
+    database: &std::path::Path,
+    session: &str,
+) -> Option<(i64, Option<String>, String)> {
+    let replay = Database::new();
+    drop(v16_tables_store(&replay.0, 22));
+    let copy = Connection::open(&replay.0).unwrap();
+    copy.execute_batch(&format!(
+        "ATTACH DATABASE '{source}' AS source_store; \
+         INSERT INTO agent_sessions SELECT * FROM source_store.agent_sessions WHERE session_id = '{session}'; \
+         INSERT INTO timeline_branches SELECT * FROM source_store.timeline_branches WHERE session_id = '{session}'; \
+         INSERT INTO timeline_events SELECT * FROM source_store.timeline_events WHERE session_id = '{session}'; \
+         DETACH DATABASE source_store",
+        source = database.display(),
+    ))
+    .unwrap();
+    drop(copy);
+    let db = SqliteStorage::open(replay.0.clone()).unwrap();
+    assert_eq!(db.upgraded_from(), Some(22));
+    db.close().await.unwrap();
+    let connection = Connection::open(&replay.0).unwrap();
+    catalog_row(&connection, session)
+}
+
+/// #556: `session.fork` writes its catalog row in the fork transaction, the
+/// row a backfill over the fork's events gives, and `session.delete` removes
+/// the deleted Session's row.
+#[tokio::test]
+async fn a_fork_writes_the_catalog_row_a_backfill_over_its_events_gives() {
+    use dim_agent_capabilities::file_storage::FileStoragePlugin;
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![
+        database.0.parent().unwrap().to_owned(),
+    ])))
+        .await
+        .unwrap();
+    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root, 0);
+    let store = SqliteTimelineStore::new(db.clone());
+    let config = SessionConfig {
+        cwd: "/work".into(),
+        ..SessionConfig::default()
+    };
+    store.create_session("source", &config).await.unwrap();
+    append(
+        &store,
+        key("source", "main"),
+        vec![record(
+            1,
+            EventKind::InputMessage(InputMessageData::text("copied hello", None)),
+        )],
+    )
+    .await
+    .unwrap();
+    append(
+        &store,
+        key("source", "main"),
+        (2..=8).map(|sequence| text(sequence, "delta")).collect(),
+    )
+    .await
+    .unwrap();
+    sessions.fork_session("source", "cut", 4).await.unwrap();
+    sessions.fork_session("source", "start", 0).await.unwrap();
+
+    let connection = Connection::open(&database.0).unwrap();
+    let forked_at: i64 = connection
+        .query_row(
+            "SELECT json_extract(body, '$.record.event.create_at') FROM timeline_events \
+             WHERE session_id = 'cut' AND sequence = 5",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        catalog_row(&connection, "cut"),
+        Some((forked_at, Some("copied hello".into()), "/work".into()))
+    );
+    let created: i64 = connection
+        .query_row(
+            "SELECT created_at_ms FROM agent_sessions WHERE session_id = 'start'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        catalog_row(&connection, "start"),
+        Some((created, None, "/work".into()))
+    );
+
+    // Each fork's row is the row an upgrade backfills from the same events.
+    for session in ["cut", "start"] {
+        assert_eq!(
+            backfilled_row(&database.0, session).await,
+            catalog_row(&connection, session),
+            "the {session} fork's row is a backfill over its events"
+        );
+    }
+
+    assert!(sessions.delete_session("source").await.unwrap());
+    assert_eq!(catalog_row(&connection, "source"), None);
+    assert_eq!(
+        catalog_row(&connection, "cut").unwrap().1.as_deref(),
+        Some("copied hello")
+    );
+    drop(connection);
+    drop(sessions);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+/// #556: a read that skips preview-less rows pages through
+/// `session_catalog_with_preview`, however many preview-less rows precede it.
+#[tokio::test]
+async fn catalog_reads_that_skip_preview_less_rows_use_the_partial_index() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    for index in 0..4 {
+        let session = format!("s{index}");
+        store
+            .create_session(&session, &SessionConfig::default())
+            .await
+            .unwrap();
+        if index % 2 == 0 {
+            append(
+                &store,
+                key(&session, "main"),
+                vec![record(
+                    1,
+                    EventKind::InputMessage(InputMessageData::text("hello", None)),
+                )],
+            )
+            .await
+            .unwrap();
+        }
+    }
+    let connection = Connection::open(&database.0).unwrap();
+    let plan: Vec<String> = connection
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT session_id, updated_at_ms, preview FROM session_catalog \
+             WHERE preview IS NOT NULL ORDER BY updated_at_ms DESC, session_id LIMIT 50",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(3))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        plan.iter()
+            .any(|line| line.contains("session_catalog_with_preview")),
+        "{plan:?}"
+    );
+    drop(connection);
     store.close().await.unwrap();
     db.close().await.unwrap();
 }

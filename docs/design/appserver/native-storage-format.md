@@ -1,35 +1,36 @@
 # Rust 会话存储格式
 
-The current native format is **v22**, with source-owned `settings_documents`,
+The current native format is **v23**, with source-owned `settings_documents`,
 SessionStore's Session-file rows, its title metadata, request messages stored
 as lists of content-addressed nodes, extension event rows, Session
 configurations and Agent profiles that may omit their mount list, the two
-branch end events, the tool-effect and digest fields, and tool schemas that may
-omit `type`. Startup requires the
-exact v22 SQL schema and a single format marker of 22 before writable PRAGMAs,
-or the exact v21, v20, v19, v18, v17, v16, v15 or v13 schema with its own marker,
-which the same startup transaction upgrades in place to v22 one step after
-another ([S5a v15 decision](#s5a-v15-格式决定),
+branch end events, the tool-effect and digest fields, tool schemas that may
+omit `type`, and its catalog projection
+([#556](https://github.com/arcships/dim/issues/556)). Startup requires the
+exact v23 SQL schema and a single format marker of 23 before writable PRAGMAs,
+or the exact v22, v21, v20, v19, v18, v17, v16, v15 or v13 schema with its own
+marker, which the same startup transaction upgrades in place to v23 one step
+after another ([S5a v15 decision](#s5a-v15-格式决定),
 [S5b v16 decision](#s5b-v16-格式决定), [#193 v17 decision](#193-v17-格式决定),
 [#2 v18 decision](#2-v18-格式决定), [#364 v19 decision](#364-v19-格式决定),
 [#427 v20 decision](#427-v20-格式决定), [#527 v21 decision](#527-v21-格式决定),
 [#580 v22 decision](#580-v22-格式决定)).
 Older databases and the removed
 branch-only v14 `user_configuration` format are unsupported and preserved, never
-migrated, downgraded or interpreted as v13, v15, v16, v17, v18, v19, v20, v21 or v22.
+migrated, downgraded or interpreted as v13, v15, v16, v17, v18, v19, v20, v21, v22 or v23.
 No migration API or startup option is provided. S5c (Session deletion and fork)
 kept v15 unchanged ([S5c decision](#s5c-格式决定)). v13 document bytes remain
-valid in v22, and v16 request rows stay readable as written.
+valid in v23, and v16 request rows stay readable as written.
 Storage versions are independent of RPC versions. Private MCP/Skill business documents do not belong
 in loader rows, events, diagnostics, Sessions or Timelines.
 
-## Current v22 tables
+## Current v23 tables
 
 下表逐列对应 `SqliteStorage::SCHEMA`。新表按业务实体命名，其中 `agent_sessions` 与旧 TypeScript 的 `sessions` 区分；当前启动门禁仍只接受本格式，不因此支持旧表同库存取。`—` 表示 SQL 中没有显式 `DEFAULT`；可空列若省略会得到 SQLite 的隐式 `NULL`。SQLite rowid 表中的 `TEXT PRIMARY KEY` 不自动保证非空，因此下表如实标出 v1 的两个缺口；正常写入仍必须给出 ID。
 
 | 表.列 | SQLite 类型 | 可空 | 默认 | 约束与含义 |
 | --- | --- | --- | --- | --- |
-| `agent_store_format.version` | `INTEGER` | No | — | Primary key, `CHECK(version = 22)`; exactly one row |
+| `agent_store_format.version` | `INTEGER` | No | — | Primary key, `CHECK(version = 23)`; exactly one row |
 | `settings_documents.source` | `TEXT` | No | — | Primary key; `user/mcp`, `user/skills`, `user/mcp-projects` or `user/mcp-plugins`; workspace files are not mirrored |
 | `settings_documents.version` | `INTEGER` | No | — | Positive per-source CAS revision; token `native:<source>:<version>` |
 | `settings_documents.document` | `TEXT` | No | — | Plain business payload JSON, without a `{kind, document}` envelope; unknown business fields are preserved |
@@ -85,8 +86,12 @@ in loader rows, events, diagnostics, Sessions or Timelines.
 | `session_metadata.revision` | `INTEGER` | 否 | — | `CHECK(revision > 0)`；该 Session 已提交 `setTitle` 的次数，`setTitle` 的 CAS 修订号 |
 | `session_metadata.title` | `TEXT` | 是 | 隐式 `NULL` | 标题文本，原样保存；清除后为 `NULL`，行保留 |
 | `session_metadata.title_source` | `TEXT` | 是 | 隐式 `NULL` | `CHECK(title_source IN ('auto', 'manual'))`；表级 `CHECK((title IS NULL) = (title_source IS NULL))` |
+| `session_catalog.session_id` | `TEXT` | 否 | — | 主键；外键到 `agent_sessions(session_id)`；每个 Session 恰有一行，从创建起（v23） |
+| `session_catalog.updated_at_ms` | `INTEGER` | 否 | — | `CHECK(updated_at_ms >= 0)`；该 Session `main` 上最后一次提交的最后一个事件的 `create_at` |
+| `session_catalog.preview` | `TEXT` | 是 | 隐式 `NULL` | 窗口里第一条用户输入的文字；`NULL` 表示它没有文字或窗口里没有这样的消息 |
+| `session_catalog.cwd` | `TEXT` | 否 | — | `agent_sessions.config` 的工作目录，目录查询按它过滤与回复 |
 
-v1 的外键只约束上述表列；`info.parent`、`body` 中的内容哈希、before 轨迹和检查点位置都是 JSON 内关系，必须在存储读取边界校验。`timeline_content` 的地址是小写十六进制 `SHA-256(kind + NUL + body)`，其中 `body` 是写入的原始 JSON 字符串字节；同一内容只在同一 Session 内共享。创建 Session、owner 和 `main` 分支是同一事务；写入轮把事件、首次出现的内容、由 `branch/create` 生成的分支目录及分支 head 放在同一事务，提交后才发布。
+v1 的外键只约束上述表列；`info.parent`、`body` 中的内容哈希、before 轨迹和检查点位置都是 JSON 内关系，必须在存储读取边界校验。`timeline_content` 的地址是小写十六进制 `SHA-256(kind + NUL + body)`，其中 `body` 是写入的原始 JSON 字符串字节；同一内容只在同一 Session 内共享。创建 Session、owner、目录行和 `main` 分支是同一事务；写入轮把事件、首次出现的内容、由 `branch/create` 生成的分支目录、分支 head 及 `main` 的目录行放在同一事务，提交后才发布。
 
 ## 持久化 JSON 类型
 
@@ -471,6 +476,9 @@ ProjectionCheckpoint = {
 | v15 主键 `session_file_owners` | `(session_id, file_id)` | put 写入 owner；fork 复制、删除和创建回滚按 Session 读取和删除 |
 | v15 `session_file_owners_by_file` | `(file_id)` | 清扫判断文件是否已无 owner |
 | v16 主键 `session_metadata` | `(session_id)` | `read`、`setTitle`、列表联结标题、删除与创建回滚按 Session 删除 |
+| v23 主键 `session_catalog` | `(session_id)` | 目录行的定点更新；删除与创建回滚按 Session 删除 |
+| v23 `session_catalog_by_activity` | `(updated_at_ms DESC, session_id)` | 目录按活动时间的键集分页 |
+| v23 `session_catalog_with_preview` | `(updated_at_ms DESC, session_id) WHERE preview IS NOT NULL` | 只要非空预览的目录读取；前面有多少无预览的行都不影响其代价 |
 
 ## 分页查询
 
@@ -496,11 +504,12 @@ interpreter bypasses that unchecked cache and restores from facts. Existing v13
 databases needed no migration for this snapshot interpreter change. `s1` owns
 one Session file, stored at `<db>.session-files/<file_id>/<name>`; its name and
 bytes live only on disk. Its title was written twice; the second write is the
-current manual title.
+current manual title. Its catalog row follows from `main`'s events: the last
+one's `create_at` and the first user input's text.
 
 ```json
 {
-  "agent_store_format": [{"version": 22}],
+  "agent_store_format": [{"version": 23}],
   "settings_documents": [],
   "providers": [],
   "provider_selections": [],
@@ -644,8 +653,9 @@ current manual title.
   }],
   "session_files": [{"file_id": "0b4e7d2c-5a1f-4c3e-9f6a-2d8b1e7c4a90", "node": null, "writer": null}],
   "session_file_owners": [{"session_id": "s1", "file_id": "0b4e7d2c-5a1f-4c3e-9f6a-2d8b1e7c4a90"}],
-  "session_metadata": [{"session_id": "s1", "revision": 2, "title": "Example conversation", "title_source": "manual"}]
+  "session_metadata": [{"session_id": "s1", "revision": 2, "title": "Example conversation", "title_source": "manual"}],
+  "session_catalog": [{"session_id": "s1", "updated_at_ms": 1008, "preview": "Hi", "cwd": "/work"}]
 }
 ```
 
-这十一条逻辑事件占十条物理事件行；`main` 的已发布 head 为 8，`child` 为 3。`input/consumed` 把 `e1` 转成 ID 为 `e2` 的用户历史条目；压缩的 `retain_from` 指向事件 `e2`，即从该事件放置的条目起原样保留；可选快照从第 2 条事件重放，所保存的前缀状态含尚未采纳的 `e1` 输入。`main` 的输出行合并两个增量，读出后各自恢复 `turn_id`/`request_id`，两者的原子批次终点都是 6。子分支通过 `branch_point=7` 共享 `main` 的前缀 1–7，不复制父事件；`create_anchor=8` 指向父分支的 `branch/create`。`main` 的 v16 `model/call` 的两个 hash 在同一 Session 的 `timeline_content` 命中。`child` 的 v17 `model/call` 以 `list` 引用三条消息的最后一个节点，`length` 为 3；它在逻辑历史中的上一个请求是 `main` 第 4 条 v16 行，没有可共用的节点，所以三条消息各写一个节点，`system` 按 v16 的写法得到同一地址。`timeline_snapshots` 的独立行锚定主分支第 3 条 completed 事实，事件本身没有快照数据；删除该快照不影响事实重放或 replacement。回滚 Session 时先删除快照，再删除事件、分支、内容、owner 和 Session 文件 owner 行，最后删除 `agent_sessions`；Agent 只有在不再被任何 Session 引用时才能删除。
+这十一条逻辑事件占十条物理事件行；`main` 的已发布 head 为 8，`child` 为 3。`input/consumed` 把 `e1` 转成 ID 为 `e2` 的用户历史条目；压缩的 `retain_from` 指向事件 `e2`，即从该事件放置的条目起原样保留；可选快照从第 2 条事件重放，所保存的前缀状态含尚未采纳的 `e1` 输入。`main` 的输出行合并两个增量，读出后各自恢复 `turn_id`/`request_id`，两者的原子批次终点都是 6。子分支通过 `branch_point=7` 共享 `main` 的前缀 1–7，不复制父事件；`create_anchor=8` 指向父分支的 `branch/create`。`main` 的 v16 `model/call` 的两个 hash 在同一 Session 的 `timeline_content` 命中。`child` 的 v17 `model/call` 以 `list` 引用三条消息的最后一个节点，`length` 为 3；它在逻辑历史中的上一个请求是 `main` 第 4 条 v16 行，没有可共用的节点，所以三条消息各写一个节点，`system` 按 v16 的写法得到同一地址。`timeline_snapshots` 的独立行锚定主分支第 3 条 completed 事实，事件本身没有快照数据；删除该快照不影响事实重放或 replacement。`session_catalog` 的一行由 `main` 的事件派生：`updated_at_ms` 是第 8 条事件的 `create_at`，`preview` 是第 1 条用户输入的文字，`cwd` 是配置的工作目录。回滚 Session 时先删除快照，再删除事件、分支、内容、owner、目录行和 Session 文件 owner 行，最后删除 `agent_sessions`；Agent 只有在不再被任何 Session 引用时才能删除。
