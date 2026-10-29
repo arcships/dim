@@ -957,7 +957,7 @@ fn tui_commands_run_over_a_pending_question() {
         terminal.until("Review your answers");
 
         terminal.write(b"/mcp\r");
-        terminal.until("Columns: ID, source");
+        terminal.until("No MCP server is configured.");
 
         terminal.write(b"\x0f");
         terminal.until(if fullscreen {
@@ -969,7 +969,7 @@ fn tui_commands_run_over_a_pending_question() {
         terminal.until("Review your answers");
 
         terminal.write(b"\x0f");
-        terminal.write(b"appr\r");
+        terminal.write(b"approvals\r");
         terminal.until("Tool Approvals");
         terminal.write(&[0x1b]);
         terminal.until("production");
