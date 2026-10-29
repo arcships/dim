@@ -21,7 +21,8 @@ This index is navigation. Delivery status lives in issues, not here.
 - [ADR 006 — The plugin contract is concepts and conventions, not types](adr/006-plugin-contract.md)（[中文](zh/adr/006-plugin-contract.md)）
 - [ADR 007 — PluginManager keeps plugin configuration; rutis and content owners keep state](adr/007-plugin-configuration.md)
 - [ADR 008 — Documentation ownership and immutable ADRs](adr/008-documentation-ownership.md)
-- [ADR 009 — Sandbox configuration and path-based access](adr/009-sandbox-and-user-grants.md)
+- [ADR 009 — Permission decides; HostPlatform enforces](adr/009-permission-decides.md)
+- [ADR 010 — The sandbox is opt-in; file access uses session ownership](adr/010-sandbox-and-file-access.md)
 - [Plugin contract](design/plugin-contract.md): Dim's architecture as it applies to plugins: instance tree, placement, Dim's services and bus events, facts and their consumption, Capability（[中文](zh/design/plugin-contract.md)）
 - [How Dim uses rutis](design/rutis-usage.md): parts as loader rows, services by name, the catalog, crossing languages, the rutis lifecycle and bus, and the Rust/TypeScript bindings（[中文](zh/design/rutis-usage.md)）
 - [Architecture and ownership](architecture/README.md)

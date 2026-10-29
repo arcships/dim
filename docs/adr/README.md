@@ -16,7 +16,8 @@ original text.
 | [006 — The plugin contract is concepts and conventions, not types](006-plugin-contract.md) | Accepted by the repository owner | Extends 002 D5; supersedes the 0.15 upgrade design's scope model; replaces the #377 draft; D3's first point corrected by 007 |
 | [007 — PluginManager keeps plugin configuration; rutis and content owners keep state](007-plugin-configuration.md) | Accepted by the repository owner | Corrects 002 D4 and 006 D3; withdraws 001's direction for #3 |
 | [008 — Documentation ownership and immutable ADRs](008-documentation-ownership.md) | Proposed | Supersedes 006 D9's sentence that puts delivery status in ADR tables and design documents |
-| [009 — Sandbox configuration and path-based access](009-sandbox-and-user-grants.md) | Proposed | Supersedes the second sentence of 003 D5; replaces the F5 tier and escalation policy |
+| [009 — Permission decides; HostPlatform enforces](009-permission-decides.md) | Proposed | Supersedes the permission-preset clause of 003 D5 and the F5 escalation gate |
+| [010 — The sandbox is opt-in; file access uses session ownership](010-sandbox-and-file-access.md) | Proposed | Extends 009; replaces the F5 default-on policy and the policy file |
 
 Source baseline: [initial foundation parent](https://github.com/arcships/dim/commit/aaaffa5768e031d781abb73e45b1915b05dc2aa0).
 This baseline includes lifecycle fixes not necessarily present on the default branch.
