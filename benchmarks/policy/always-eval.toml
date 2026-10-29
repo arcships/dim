@@ -1,0 +1,42 @@
+# 直接判 visible 的路径规则，不询问 L1 review agent。
+#
+# 依赖升级这类改动的 diff 里只有版本号，行为变化在上游，agent 没有判断依据。
+# 用不确定的模型去执行一条确定的规则没有意义，因此这里的路径绕过 agent。
+#
+# 规则来源与语义见 docs/eval/trigger-policy.md#l1--触发判定
+# 命中本文件的 MR 在 ledger 中记 l1_trigger = "path_rule"。
+#
+# control plane 不在此处。L1 prompt、本文件、runner 与 CI config 不是 agent 的
+# model-visible surface：改它们跑 L2 等于拿同一个 agent 与自己比较，测不出东西，
+# 只烧算力。
+#
+# 但要说清楚：**这条豁免目前没有对应的保护措施。** 仓库里没有 CODEOWNERS，也没有
+# 覆盖 eval 控制面的固定测试。所以它现在靠的是「改这些文件的人知道自己在改尺子」，
+# 不是机制。要让它站得住，需要一个覆盖 benchmarks/**、docs/eval/** 的 CODEOWNERS。
+# 任务集与 baseline 同理——它们改变的是尺子，对应动作是重采 baseline，不是跑门禁。
+
+schema_version = "1"
+
+[[rule]]
+id = "lockfile"
+reason = "依赖树变化只体现为版本号，provider SDK 与运行时依赖的默认行为可能静默改变"
+paths = [
+  "Cargo.lock",
+  "rust-toolchain.toml",
+  "runtime/package-lock.json",
+  "runtime/plugins/*/package-lock.json",
+]
+
+[[rule]]
+id = "vendored-deps"
+reason = "vendor 直接改上游依赖的运行时行为，diff 语义与本仓库代码无关"
+paths = [
+  "vendor/**",
+]
+
+[[rule]]
+id = "provider-catalog"
+reason = "catalog 决定 provider 路由、模型选择与采样参数，属判定轴二；default-catalog.json 是大体量生成物，agent 读不动也不必读"
+paths = [
+  "crates/dim-app-server/resources/default-catalog.json",
+]

@@ -1,0 +1,182 @@
+{
+  "tasks": {
+    "anko-typed-variable-bindings": {
+      "digest": "6c8aba118a052cf017adeb95236de79f01e96a8ac4a3ea11bff7a0454ae20da1",
+      "overlaid": [
+        "task.toml",
+        "instruction.md"
+      ],
+      "upstream": "datacurve"
+    },
+    "arktype-json-schema-refs-dependencies": {
+      "digest": "32e4c1e92ed149a674db5040a077eb6ef66f7d3e3d9eb2886b6965ee7cc28855",
+      "overlaid": [
+        "task.toml",
+        "instruction.md"
+      ],
+      "upstream": "datacurve"
+    },
+    "build-cython-ext": {
+      "digest": "bc27bf7379040cb3320238ef8b831619709f899ba9fadf6c1600c9110126f801",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "chess-best-move": {
+      "digest": "b1ebfbe298cd28fd4326b083d8f637e48b1a1a7d52c947c52723c8c94450e7eb",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "code-from-image": {
+      "digest": "55bebdcf7928cb97b667a6b5f10b5281cb2fbfc00d70538657991f2f2fe7187f",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "constraints-scheduling": {
+      "digest": "84654f0a65c9eddb3da4b9107f2e49e3bb2d84aab4e39bd651a3c685c5cc1571",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "db-wal-recovery": {
+      "digest": "312009081101a3fdb9d591efa5ee5d87f1313b663b1ed77e5032e7ac2b8005a7",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "dna-insert": {
+      "digest": "386681939548148bfdda2c0fcd8d1e30ccc410f1353480e5e5c00305b62e85f8",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "expr-try-catch-errors": {
+      "digest": "f8b2dee9d8e927a683c7589dfaddeea1627f2202daa831ae27ea4efcd789812b",
+      "overlaid": [
+        "task.toml",
+        "instruction.md"
+      ],
+      "upstream": "datacurve"
+    },
+    "extract-elf": {
+      "digest": "cf9a516b4719811ca56bd4f1998ae929bfc73adea7ceb739305c2ce84ecc727d",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "fastapi-deprecation-response-headers": {
+      "digest": "abf7fe20827ae078fdaa4b434e2327042f2fa59f9dca34967abf25bae210d7aa",
+      "overlaid": [
+        "task.toml",
+        "instruction.md"
+      ],
+      "upstream": "datacurve"
+    },
+    "gcode-to-text": {
+      "digest": "d1839b746a97ce5b9ae08d33949a07fd75d3485cafb84fa7980bda4b9b8cc450",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "git-leak-recovery": {
+      "digest": "d20db8f3a4817832d7d9db1f581b6bd56a579777cb08c25878fda6adb1f3cea7",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "httpx-multipart-response-parsing": {
+      "digest": "a7db419f0869fb9cdaf76f9c7148b0f5f7af450f8ff63d3d8e9db3ae6ec0e0c3",
+      "overlaid": [
+        "task.toml",
+        "instruction.md"
+      ],
+      "upstream": "datacurve"
+    },
+    "katex-multicolumn-array-spans": {
+      "digest": "a5aeafb7bc264d2cebb2fd3c5e76a3bb10cba40bb8ae2f8b0234fa5727b0fedb",
+      "overlaid": [
+        "task.toml",
+        "instruction.md"
+      ],
+      "upstream": "datacurve"
+    },
+    "kv-store-grpc": {
+      "digest": "abfb6c09fcca744080a891a6906f048fd51b1c6967a1278e037d82f6baa5f8ed",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "largest-eigenval": {
+      "digest": "4b808b4fc2f7fa1f6f0e54f6735a5367a4680ea66dc4a64c94f7a85e105719b3",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "log-summary-date-ranges": {
+      "digest": "6c165891cb8625fe6105e69276e016593723e7348a582541c34a638e1f115a53",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "merge-diff-arc-agi-task": {
+      "digest": "eb4dc79f655bf49eaf58718ee10d75206148ac2487b7347e1489aeb0ff325df2",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "meriyah-explicit-resource-declarations": {
+      "digest": "e64fbeb13738fc06864e971dfcf82d65bff532d3dd40847b226b5b4a87c68811",
+      "overlaid": [
+        "task.toml",
+        "instruction.md"
+      ],
+      "upstream": "datacurve"
+    },
+    "modernize-scientific-stack": {
+      "digest": "59c570c3ca721a0d3776bb34d12c20fbb7ebd76d861ca1961887678ccb019c2d",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "multi-source-data-merger": {
+      "digest": "422b6cc2132c0f948ca9d2686330e444271f0afc5ec0ee86d99d9496485bdaae",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "openssl-selfsigned-cert": {
+      "digest": "2ac5402f9d757e5da80fd54c57042831bb8f6621756824a561a8daa10ea14ce6",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "polyglot-c-py": {
+      "digest": "d71779b608e7a27df21af4ed626251aa93da91ce976c03f22c638c3f3c155e10",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "python-statemachine-state-data-scoping": {
+      "digest": "12c5c66857eb6d0cbafb06cacc54abf5a34a4f8dbbd9e502df3d6049e06a36ee",
+      "overlaid": [
+        "task.toml",
+        "instruction.md"
+      ],
+      "upstream": "datacurve"
+    },
+    "regex-log": {
+      "digest": "490292756ceff83f7a2c3096b130e87823c43a16e0375ec8b76cefdbb268a5cb",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "sanitize-git-repo": {
+      "digest": "89a225464b2cebf83c315c35a58811f76c630a2102fe64e90cb64ae1407bd47f",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "scc-bounded-memory-spilling": {
+      "digest": "9826033504ae9a9569acb371b2aaac201f41699ce50165a203a122207b190aa5",
+      "overlaid": [
+        "task.toml",
+        "instruction.md"
+      ],
+      "upstream": "datacurve"
+    },
+    "sqlite-db-truncate": {
+      "digest": "b9bed17c3c22b67450c784e16c38ac6645d77e5b4565c0219860b4fee369fa9a",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    },
+    "vulnerable-secret": {
+      "digest": "4efd4ba7c686bf27e98b8f060bc2c661fef4bcc8669ed4df5b7d62b10db6b447",
+      "overlaid": [],
+      "upstream": "terminal-bench"
+    }
+  },
+  "tree_digest": "f71b5af2a6735b002bc2e73a4081d0d384f7d17079cc0be26cb2ca2f36e4b346"
+}
