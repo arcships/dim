@@ -140,9 +140,9 @@
 | 建分支 | 分支目录与 `branch/create` 在同一事务中提交；子 Timeline 以祖先链描述构造 |
 | 恢复 | 按[存储格式](../../design/appserver/native-storage-format.md)校验物理格式与提交边界后，Timeline 以存储中最后的 sequence 为发布水位构造；能力按 `context` 或 `local` 重建，这些读取在分支打开期间共用一份解码副本（第 4 节“使用方”）；TimelineTree 的恢复事实（分支记录的创建失败）也在打开期间从中读取，子分支的创建检查只分页读到它的第一个排队输入 |
 | Timeline close | 关闭前提交的事件全部发布后，才完成关闭 |
-| Session close | 各分支关闭、Session scope 清理完成后释放该次加载的存储准入状态；释放排在已接收批次之后，完成后才从 Agent 移除 Session。只清理故障与 writer memo，不删除持久数据；恢复初始化失败且生产者停止后也执行此释放 |
+| Session close | 各分支关闭并结算其写入、Session scope 清理完成后释放该次加载的存储准入状态；writer 仍运行时，释放排在已接收批次之后，完成后才从 Agent 移除 Session。只清理故障与 writer memo，不删除持久数据；恢复初始化失败且生产者停止后也执行此释放 |
 
-同一存储内，同一 Session ID 同时只允许一个加载实例，跨 Agent 共享存储的调用方也须串行关闭与恢复。释放是幂等操作；SQLite writer 已停止或存储已关闭时，释放直接成功，不再向 Session 清理追加通道错误。存储关闭仍负责排空此前接收的批次并报告其自身的故障。
+同一存储内，同一 Session ID 同时只允许一个加载实例，跨 Agent 共享存储的调用方也须串行关闭与恢复。释放是幂等操作；SQLite 存储开始关闭或 writer 已停止后，释放视为已完成，不再向 Session 清理追加通道错误。存储关闭仍负责排空此前接收的批次并报告其自身的故障，各批次自己的结果仍报告写入失败。
 
 SQLite 关闭与 lease：只关闭描述符可能让并发派生的子进程在 exec 前继续持有 flock，所以关闭时显式 `unlock`，并让 lease 在连接之后释放；否则下一个守护进程会把数据库误报为“另一个进程拥有该 SQLite 数据库”。
 

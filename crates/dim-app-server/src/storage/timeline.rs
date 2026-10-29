@@ -1964,6 +1964,89 @@ impl TimelineStore for SqliteTimelineStore {
     }
 }
 
+#[cfg(test)]
+#[tokio::test]
+async fn release_flow_preserves_history_and_tolerates_a_stopped_writer() {
+    use std::{
+        future::Future,
+        task::{Context, Waker},
+    };
+    let directory = std::env::temp_dir().join(format!("dim-release-{}", uuid::Uuid::new_v4()));
+    let db = SqliteStorage::open(directory.join("dimcode.sqlite")).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("session", &SessionConfig::default())
+        .await
+        .unwrap();
+    let key = TimelineKey {
+        session_id: "session".into(),
+        branch_id: "main".into(),
+    };
+    let record = |sequence| StoredEvent {
+        event: Arc::new(AgentEvent {
+            id: uuid::Uuid::new_v4().to_string(),
+            sequence,
+            create_at: dim_agent_runtime::core::unix_millis(),
+            tags: None,
+            kind: EventKind::InputMessage(dim_agent_types::InputMessageData::text("saved", None)),
+        }),
+        trace: None,
+        batch_end: sequence,
+    };
+    let (done, published) = tokio::sync::oneshot::channel();
+    store
+        .append(
+            key.clone(),
+            vec![record(1)],
+            Box::new(move |result| {
+                let _ = done.send(result);
+            }),
+        )
+        .unwrap();
+    published.await.unwrap().unwrap();
+    store.release_session("session").await.unwrap();
+    store.release_session("session").await.unwrap();
+    store.release_session("unknown").await.unwrap();
+    let mut release = Box::pin(store.release_session("session"));
+    let (done, pending) = tokio::sync::oneshot::channel();
+    {
+        let _connection = db.connection.lock().unwrap();
+        store
+            .append(
+                key.clone(),
+                vec![record(2)],
+                Box::new(move |result| {
+                    let _ = done.send(result);
+                }),
+            )
+            .unwrap();
+        assert!(
+            store
+                .admission
+                .lock()
+                .unwrap()
+                .sender
+                .send(Command::Close)
+                .is_ok()
+        );
+        assert!(
+            release
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+    }
+    release.await.unwrap();
+    pending.await.unwrap().unwrap();
+    store.release_session("session").await.unwrap();
+    assert_eq!(store.head(&key).await.unwrap(), 2);
+    assert_eq!(store.read(&key, 1..=2).await.unwrap().len(), 2);
+    assert!(store.close().await.is_err());
+    store.release_session("session").await.unwrap();
+    db.close().await.unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 /// Checks every row of `session` with one reader, which carries its content
 /// cache and kept request across the pass.
 pub(super) async fn validate_session(
@@ -2163,87 +2246,4 @@ pub(super) async fn validate_session(
         }
     }
     Ok(branches.into_values().collect())
-}
-
-#[cfg(test)]
-#[tokio::test]
-async fn release_flow_preserves_history_and_tolerates_a_stopped_writer() {
-    use std::{
-        future::Future,
-        task::{Context, Waker},
-    };
-    let directory = std::env::temp_dir().join(format!("dim-release-{}", uuid::Uuid::new_v4()));
-    let db = SqliteStorage::open(directory.join("dimcode.sqlite")).unwrap();
-    let store = SqliteTimelineStore::new(db.clone());
-    store
-        .create_session("session", &SessionConfig::default())
-        .await
-        .unwrap();
-    let key = TimelineKey {
-        session_id: "session".into(),
-        branch_id: "main".into(),
-    };
-    let record = |sequence| StoredEvent {
-        event: Arc::new(AgentEvent {
-            id: uuid::Uuid::new_v4().to_string(),
-            sequence,
-            create_at: dim_agent_runtime::core::unix_millis(),
-            tags: None,
-            kind: EventKind::InputMessage(dim_agent_types::InputMessageData::text("saved", None)),
-        }),
-        trace: None,
-        batch_end: sequence,
-    };
-    let (done, published) = tokio::sync::oneshot::channel();
-    store
-        .append(
-            key.clone(),
-            vec![record(1)],
-            Box::new(move |result| {
-                let _ = done.send(result);
-            }),
-        )
-        .unwrap();
-    published.await.unwrap().unwrap();
-    store.release_session("session").await.unwrap();
-    store.release_session("session").await.unwrap();
-    store.release_session("unknown").await.unwrap();
-    let mut release = Box::pin(store.release_session("session"));
-    let (done, pending) = tokio::sync::oneshot::channel();
-    {
-        let _connection = db.connection.lock().unwrap();
-        store
-            .append(
-                key.clone(),
-                vec![record(2)],
-                Box::new(move |result| {
-                    let _ = done.send(result);
-                }),
-            )
-            .unwrap();
-        assert!(
-            store
-                .admission
-                .lock()
-                .unwrap()
-                .sender
-                .send(Command::Close)
-                .is_ok()
-        );
-        assert!(
-            release
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop()))
-                .is_pending()
-        );
-    }
-    release.await.unwrap();
-    pending.await.unwrap().unwrap();
-    store.release_session("session").await.unwrap();
-    assert_eq!(store.head(&key).await.unwrap(), 2);
-    assert_eq!(store.read(&key, 1..=2).await.unwrap().len(), 2);
-    assert!(store.close().await.is_err());
-    store.release_session("session").await.unwrap();
-    db.close().await.unwrap();
-    std::fs::remove_dir_all(directory).unwrap();
 }

@@ -48,8 +48,11 @@ pub trait TimelineStore: Send + Sync + 'static {
     /// Never used for restore failures or ordinary Session close.
     fn rollback_session<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<()>>;
     /// Releases runtime admission state after all Session producers stop.
-    /// Completion drains prior writes and clears this load's failure state
+    /// A running store drains prior writes and clears this load's failure state
     /// without deleting stored history, so a later restore can write again.
+    /// A closing or stopped store treats release as already settled; shutdown
+    /// remains responsible for pending writes and faults. Append failures remain
+    /// observable through their own results.
     /// Idempotent: a Session with no admission state is already released.
     fn release_session<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<()>>;
     fn session_config<'a>(
