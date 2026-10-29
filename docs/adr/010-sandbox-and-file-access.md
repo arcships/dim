@@ -29,7 +29,9 @@ read when a process starts; a running process keeps its environment.
 - Off: `exec` and the persistent shell run on the host with the user's environment, home and
   network.
 - On: they run in the workspace baseline plus the platform's system roots; network follows the
-  setting.
+  setting. The existing platform defaults remain, including the persistent shell output
+  directory and, on macOS, each process tree's temporary directory and git's global
+  configuration.
 
 The defaults live in code. There is no policy file and no `host-platform.json`; a release
 without any setting runs unsandboxed. The application setting is optional.
