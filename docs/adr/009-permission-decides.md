@@ -46,6 +46,7 @@ the environment they started with. HostPlatform keeps its platform defaults and 
 - The node file's `escalation` field is ignored. The remaining policy file and the `sandbox`
   argument are replaced by [ADR 010](010-sandbox-and-file-access.md).
 - No Timeline event, wire field, event fixture or persisted grant is added.
+- AGENTS.md rule 11's "permission presets" clause is updated by this decision.
 
 ## Non-goals
 
