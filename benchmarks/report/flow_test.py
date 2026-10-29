@@ -70,11 +70,13 @@ class IssueReporterFlowTest(unittest.TestCase):
         self.github = FakeGitHub()
 
     def night(self, exit_code: int, run: dict | None = None, suite: str = "frontier",
-              log: Path | None = None, pushed: bool = True) -> list[str]:
+              log: Path | None = None, pushed: bool = True,
+              analysis_failed: bool = False, analysis_ok: bool = True) -> list[str]:
         found = issues.problems(suite, "daily", exit_code, run, log, "arcships/dim",
-                                ledger_push_failed=not pushed)
+                                ledger_push_failed=not pushed,
+                                analysis_failed=analysis_failed)
         return issues.report(self.github, suite, exit_code, run, found,
-                             ledger_push_failed=not pushed)
+                             ledger_push_failed=not pushed, analysis_ok=analysis_ok)
 
     def open_issues(self) -> list[dict]:
         return [issue for issue in self.github.issues.values() if issue["state"] == "open"]
@@ -131,6 +133,34 @@ class IssueReporterFlowTest(unittest.TestCase):
         self.assertEqual(self.night(0, run_json(**MEASURED, comparison={"comparable": False})), [])
         self.assertEqual(self.night(0, run_json(**MEASURED, comparison={"comparable": True})),
                          ["closed #1 (frontier/regression)"])
+
+    def test_an_unanalysed_failure_keeps_the_previous_nightly_open(self) -> None:
+        """A missing analysis must not be read as "no failures"."""
+        previous = issues.Problem("frontier/nightly", "previous", "previous")
+        issues.report(self.github, "frontier", 0, run_json(**MEASURED), [previous],
+                      analysis_ok=True)
+        done = self.night(0, run_json(**MEASURED), analysis_failed=True, analysis_ok=False)
+        self.assertEqual(done, ["opened #2 (frontier/analysis-failed)"])
+        self.assertEqual(self.github.issues[1]["state"], "open")
+
+    def test_a_clean_night_closes_the_previous_nightly_without_analysis(self) -> None:
+        """All trials passed, so the old failure summary is resolved even if the
+        analyzer was not needed (or failed)."""
+        previous = issues.Problem("frontier/nightly", "previous", "previous")
+        issues.report(self.github, "frontier", 0, run_json(trials=30, trial_passes=30), [previous],
+                      analysis_ok=True)
+        done = self.night(0, run_json(trials=30, trial_passes=30),
+                          analysis_failed=True, analysis_ok=False)
+        self.assertEqual(done, ["opened #2 (frontier/analysis-failed)",
+                                "closed #1 (frontier/nightly)"])
+
+    def test_exit_8_with_a_ledger_push_failure_is_one_issue(self) -> None:
+        self.assertEqual(self.night(8, run_json(), pushed=False),
+                         ["opened #1 (frontier/ledger-push)"])
+
+    def test_exit_8_without_the_ledger_flag_is_a_pipeline_error(self) -> None:
+        self.assertEqual(self.night(8, run_json()),
+                         ["opened #1 (frontier/pipeline-error)"])
 
     def test_the_log_tail_does_not_leak_the_eval_machine(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -224,7 +254,8 @@ class NightlyAnalysisFlowTest(unittest.TestCase):
         failures, updated = analyze.analyze(run_dir, self.repo, known, ask, "2026-10-30")
         analysis = {"model": "fake", "failures": [analyze.asdict(f) for f in failures]}
         summary = issues.nightly("frontier", "daily", run, analysis, "arcships/dim")
-        done = issues.report(self.github, "frontier", 0, run, [summary] if summary else [])
+        done = issues.report(self.github, "frontier", 0, run, [summary] if summary else [],
+                             analysis_ok=True)
         return failures, updated, summary, done
 
     def test_failures_are_explained_and_known_causes_fold(self) -> None:

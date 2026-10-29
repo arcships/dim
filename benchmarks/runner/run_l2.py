@@ -93,6 +93,7 @@ def provider_settings() -> ProviderSettings:
 #: failure would inflate the pass rate.
 INFRA_EXCEPTIONS = [
     "ApiRateLimitError",
+    "ApiUsageLimitError",
     "ApiOverloadedError",
     "ApiInternalServerError",
     "ApiConnectionClosedError",

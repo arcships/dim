@@ -64,6 +64,11 @@ LEDGER_PUSH = ("ledger-push", "Ledger push failed",
                "committed in the eval machine's ledger clone and are pushed with the "
                "next run's records; check the deploy key's write access and the "
                "branch rules.")
+ANALYSIS_FAILED = ("analysis-failed", "Failure analysis failed",
+                   "The run finished, but report/analyze.py could not explain its "
+                   "failed trials. The previous nightly summary was kept open; "
+                   "check the analysis endpoint and its credential on the eval "
+                   "machine, then re-run.")
 
 
 @dataclass(frozen=True)
@@ -134,11 +139,16 @@ def describe(run: dict | None, repo: str) -> str:
 
 
 def problems(suite: str, run_type: str, exit_code: int, run: dict | None,
-             log: Path | None, repo: str, ledger_push_failed: bool = False) -> list[Problem]:
+             log: Path | None, repo: str, ledger_push_failed: bool = False,
+             analysis_failed: bool = False) -> list[Problem]:
     context = describe(run, repo) + log_tail(log)
     found = []
     if ledger_push_failed:
         kind, title, explanation = LEDGER_PUSH
+        found.append(Problem(f"{suite}/{kind}", f"[eval] {suite} {run_type}: {title}",
+                             f"{explanation}\n\n{context}"))
+    if analysis_failed:
+        kind, title, explanation = ANALYSIS_FAILED
         found.append(Problem(f"{suite}/{kind}", f"[eval] {suite} {run_type}: {title}",
                              f"{explanation}\n\n{context}"))
     if exit_code in EXIT_PROBLEMS:
@@ -146,6 +156,10 @@ def problems(suite: str, run_type: str, exit_code: int, run: dict | None,
         found.append(Problem(f"{suite}/{kind}",
                              f"[eval] {suite} {run_type}: {title} (exit {exit_code})",
                              f"{explanation}\n\n{context}"))
+    elif exit_code == 8 and ledger_push_failed:
+        # nightly.sh's own code. The ledger-push issue above is the whole
+        # report; a second "unexpected exit code" issue would be noise.
+        pass
     elif exit_code not in SCORED_EXITS:
         found.append(Problem(f"{suite}/pipeline-error",
                              f"[eval] {suite} {run_type}: pipeline error (exit {exit_code})",
@@ -219,15 +233,26 @@ def nightly(suite: str, run_type: str, run: dict, analysis: dict, repo: str) -> 
     return Problem(f"{suite}/nightly", title, "\n".join(lines))
 
 
-def closes(key: str, run: dict | None) -> bool:
+def closes(key: str, run: dict | None, analysis_ok: bool = False) -> bool:
     """Whether a scored run that did not show ``key`` shows it is gone.
 
     Only a run whose L2 ran can say a problem is gone, and only a comparable
-    comparison can say a regression is.
+    comparison can say a regression is. A nightly summary is different: its
+    absence can mean either "no failures" or "analysis never ran", and only the
+    former may close the previous summary. A failed analysis also must not close
+    its own ``analysis-failed`` issue until a later analysis succeeds.
     """
     l2 = (run or {}).get("l2")
     if not l2:
         return False
+    if key.endswith("/nightly"):
+        trials = l2.get("trials")
+        passes = l2.get("trial_passes")
+        if isinstance(trials, int) and trials > 0 and passes == trials:
+            return True
+        return analysis_ok
+    if key.endswith("/analysis-failed"):
+        return analysis_ok
     if key.endswith("/regression"):
         return bool((l2.get("comparison") or {}).get("comparable"))
     return True
@@ -285,7 +310,8 @@ class GitHub:
 
 
 def report(github: GitHub, suite: str, exit_code: int, run: dict | None,
-           found: list[Problem], ledger_push_failed: bool = False) -> list[str]:
+           found: list[Problem], ledger_push_failed: bool = False,
+           analysis_ok: bool = False) -> list[str]:
     """Open, update and close issues. Returns what was done, one line each."""
     open_by_key = {}
     for issue in github.open_issues():
@@ -318,7 +344,7 @@ def report(github: GitHub, suite: str, exit_code: int, run: dict | None,
         current = {problem.key for problem in found}
         run_id = (run or {}).get("run_id", "the latest run")
         for key, issue in open_by_key.items():
-            if key.startswith(f"{suite}/") and key not in current and closes(key, run):
+            if key.startswith(f"{suite}/") and key not in current and closes(key, run, analysis_ok):
                 github.comment(issue["number"], f"Not seen in `{run_id}`; closing.")
                 github.close(issue["number"])
                 done.append(f"closed #{issue['number']} ({key})")
@@ -336,6 +362,8 @@ def main() -> int:
     parser.add_argument("--token-file", type=Path, required=True)
     parser.add_argument("--ledger-push-failed", action="store_true")
     parser.add_argument("--analysis", type=Path, help="report/analyze.py's output, if written")
+    parser.add_argument("--analysis-failed", action="store_true",
+                        help="analysis was attempted but did not complete")
     parser.add_argument("--dry-run", action="store_true", help="print, file nothing")
     args = parser.parse_args()
 
@@ -347,13 +375,33 @@ def main() -> int:
         except (ValueError, KeyError, TypeError) as error:
             print(f"[issues] unreadable {args.run_json}: {error}", file=sys.stderr)
             run = None
+
+    analysis = None
+    analysis_failed = args.analysis_failed
+    if args.analysis:
+        try:
+            loaded = json.loads(args.analysis.read_text())
+            if not isinstance(loaded, dict) or not isinstance(loaded.get("failures"), list):
+                raise ValueError("analysis has no failures list")
+            analysis = loaded
+        except (OSError, ValueError, TypeError) as error:
+            print(f"[issues] unreadable {args.analysis}: {error}", file=sys.stderr)
+            analysis_failed = True
+    analysis_ok = analysis is not None
+
     found = problems(args.suite, args.run_type, args.exit_code, run, args.log, args.repo,
-                     args.ledger_push_failed)
-    if run and args.analysis and args.analysis.exists():
-        summary = nightly(args.suite, args.run_type, run,
-                          json.loads(args.analysis.read_text()), args.repo)
-        if summary:
-            found.insert(0, Problem(summary.key, redact(summary.title), redact(summary.body)))
+                     args.ledger_push_failed, analysis_failed)
+    if run and analysis is not None:
+        try:
+            summary = nightly(args.suite, args.run_type, run, analysis, args.repo)
+        except (KeyError, TypeError, ValueError) as error:
+            print(f"[issues] unusable analysis {args.analysis}: {error}", file=sys.stderr)
+            analysis_ok = False
+            found = problems(args.suite, args.run_type, args.exit_code, run, args.log,
+                             args.repo, args.ledger_push_failed, True)
+        else:
+            if summary:
+                found.insert(0, Problem(summary.key, redact(summary.title), redact(summary.body)))
     if args.dry_run:
         for problem in found:
             print(f"[issues] would file {problem.key}: {problem.title}\n{problem.body}")
@@ -361,7 +409,7 @@ def main() -> int:
     try:
         token = args.token_file.read_text().strip()
         for line in report(GitHub(args.repo, token), args.suite, args.exit_code, run, found,
-                           args.ledger_push_failed):
+                           args.ledger_push_failed, analysis_ok):
             print(f"[issues] {line}")
     except (OSError, urllib.error.URLError, ValueError) as error:
         print(f"[issues] could not report to GitHub: {error}", file=sys.stderr)

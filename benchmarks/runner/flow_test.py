@@ -159,6 +159,19 @@ class ResultsFlowTest(unittest.TestCase):
         self.assertTrue(any("infra failure rate" in p
                             for p in report.problems(expected_k=2)))
 
+    def test_usage_limit_is_an_infra_failure_not_a_task_failure(self) -> None:
+        self.write_job(
+            [
+                trial_record("q__1", "tb/q", 0.0),
+                trial_record("q__2", "tb/q", 0.0),
+            ],
+            {"ApiUsageLimitError": ["q__1"]},
+        )
+        report = results.read_job(self.job)
+        self.assertEqual(report.infra_failures, 1)
+        self.assertTrue(any("infra failure rate" in p
+                            for p in report.problems(expected_k=2)))
+
     def test_missing_trial_is_reported_rather_than_ignored(self) -> None:
         """A trial with no record on disk would otherwise shrink k silently and
         raise the task's pass score."""

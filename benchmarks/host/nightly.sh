@@ -91,28 +91,46 @@ main() {
     }
   fi
 
-  local run_json analysis=""
+  local run_json analysis="" analysis_failed=0
   run_json="$(find "$home/results" -mindepth 2 -maxdepth 2 -name run.json -newer "$started" | sort | tail -n 1)"
+  local known="$home/known-failures-$suite.json"
+  local known_next="$home/known-failures-$suite.next.json"
+  # A leftover from an interrupted run must never be committed by a later run
+  # that did not perform analysis itself.
+  rm -f "$known_next"
   # Every failed trial is explained by a model before it is reported. The
   # model's key comes from the same file the L1 judge reads, in a subshell, so
-  # it is in no other step's environment.
+  # it is in no other step's environment. The updated known-failure record is
+  # written beside the current one and only committed after issues.py succeeds:
+  # an alerting failure must not teach the next night that these failures were
+  # already reported.
   if [ -n "$run_json" ] && [ -d "$(dirname "$run_json")/harbor" ] && [ "${#dry[@]}" -eq 0 ]; then
     analysis="$(dirname "$run_json")/analysis.json"
     ( set -a; . "$HOME/.dim-eval-env"; set +a
       python3 "$repo/benchmarks/report/analyze.py" --run-dir "$(dirname "$run_json")" \
-        --repo "$repo" --known "$home/known-failures-$suite.json" --out "$analysis" ) \
-      || { echo "[nightly] WARNING: failure analysis did not finish"; analysis=""; }
+        --repo "$repo" --known "$known" --known-next "$known_next" --out "$analysis" ) \
+      || { echo "[nightly] WARNING: failure analysis did not finish"; analysis=""; analysis_failed=1; }
   fi
   local push_flag=()
   [ "$pushed" -eq 1 ] || push_flag=(--ledger-push-failed)
-  python3 "$repo/benchmarks/report/issues.py" \
+  local analysis_flag=()
+  [ "$analysis_failed" -eq 1 ] && analysis_flag=(--analysis-failed)
+  if python3 "$repo/benchmarks/report/issues.py" \
     --repo "$github_repo" --suite "$suite" --run-type "$run_type" \
     --exit-code "$status" ${run_json:+--run-json "$run_json"} ${analysis:+--analysis "$analysis"} \
-    "${push_flag[@]}" "${dry[@]}" \
-    --log "$log" --token-file "$home/github-token" || {
-    echo "[nightly] WARNING: issues could not be filed; alerting is down"
-    [ "$status" -eq 0 ] && status=10
-  }
+    "${push_flag[@]}" "${analysis_flag[@]}" "${dry[@]}" \
+    --log "$log" --token-file "$home/github-token"; then
+    if [ -f "$known_next" ]; then
+      mv -f "$known_next" "$known" || {
+        echo "[nightly] WARNING: could not commit $known"
+        status=10
+      }
+    fi
+  else
+    echo "[nightly] WARNING: issues could not be filed; alerting is down (eval exit $status)"
+    rm -f "$known_next"
+    status=10
+  fi
 
   # Harbor output and the eval machine's staging copies are kept for 30 days.
   local dir

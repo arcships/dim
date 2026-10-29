@@ -105,6 +105,19 @@ def clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit // 3] + "\n…\n" + text[-2 * limit // 3:]
 
 
+def write_json(path: Path, payload: dict) -> None:
+    """Write JSON through a sibling temporary file and an atomic rename.
+
+    The known-failure record and this run's analysis are both read by the next
+    stage. A crash or full disk must leave the previous file readable, not a
+    truncated JSON document that makes every later analysis fail.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    os.replace(temporary, path)
+
+
 def render_timeline(path: Path) -> str:
     """The main branch as one line per text, tool call and tool result."""
     if not path.exists():
@@ -263,7 +276,10 @@ def main() -> int:
                         help="results/<run-id>, holding run.json and harbor/")
     parser.add_argument("--repo", type=Path, required=True, help="checkout with the window's commits")
     parser.add_argument("--known", type=Path, required=True,
-                        help="this suite's known-failure record; read and rewritten")
+                        help="this suite's known-failure record; read")
+    parser.add_argument("--known-next", type=Path,
+                        help="write the updated record here; nightly commits it after "
+                             "the issue is filed (default: rewrite --known)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
@@ -281,9 +297,9 @@ def main() -> int:
         lambda prompt: agent_reviewer.call_model(prompt, base_url, model, api_key),
         datetime.now(timezone.utc).date().isoformat(),
     )
-    args.out.write_text(json.dumps({"model": model,
-                                    "failures": [asdict(f) for f in failures]}, indent=2) + "\n")
-    args.known.write_text(json.dumps(updated, indent=2, sort_keys=True) + "\n")
+    write_json(args.out, {"model": model,
+                          "failures": [asdict(f) for f in failures]})
+    write_json(args.known_next or args.known, updated)
     errors = sum(1 for f in failures if f.error)
     print(f"[analyze] {len(failures)} failed trial(s), "
           f"{sum(f.known for f in failures)} known, {errors} not analyzed")
