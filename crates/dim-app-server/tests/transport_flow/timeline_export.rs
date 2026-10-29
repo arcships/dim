@@ -328,6 +328,7 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             (13, "DROP TABLE session_file_owners; DROP TABLE session_files; DROP TABLE session_metadata;"),
             (17, ""),
             (19, ""),
+            (21, ""),
         ] {
             let older = directory.join(format!("copies/v{version}.sqlite"));
             changed(&database, &older, &format!("{dropped} DROP TABLE agent_store_format;
@@ -343,8 +344,8 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
 
         for (name, sql) in [
             ("newer.sqlite", "DROP TABLE agent_store_format;
-                CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 22));
-                INSERT INTO agent_store_format VALUES (22);"),
+                CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 23));
+                INSERT INTO agent_store_format VALUES (23);"),
             ("changed.sqlite", "CREATE TABLE extra (id TEXT)"),
         ] {
             let path = directory.join("copies").join(name);
