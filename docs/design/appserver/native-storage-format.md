@@ -446,6 +446,7 @@ ProjectionCheckpoint = {
   - 恰为 v23 的库直接打开。
   - 其他库（标记不符的 v22 结构、升级到一半的库、更旧的格式、分支专用 v14、未知结构）照旧拒绝并保留。
 - **回填的一次性代价**：回填为每个 Session 读一次 `main`：最后一个已提交批次给出 `updated_at_ms`，起始于前 256 个事件内的批次里找第一条用户输入作为 `preview`；没有已提交 `main` 批次的 Session 得到 `created_at_ms` 与 NULL 预览，与创建时写下的一行相同。这与今天一次完整目录读同阶——导入 Session 的最后一个批次是完整的 `context/compaction`，本步把它解码一次。按 #556 的测量，2,300 个导入 Session 的库上约 3 秒，2.3 GB 的库上超过 20 秒；它只在升级的那次启动支付，此后的目录读不再解码任何事件。
+- **读不了的数据不阻塞投影**：投影从不阻塞它投影的事件，每个 Session 始终恰好一行。回填时某个 Session 的已存数据读不出来——配置或事件行解不开，或最后一行不是 `main` 的头——这一行只由 `agent_sessions` 给出：`updated_at_ms` 为 `created_at_ms`（为负、这一行放不下时取 `0`），`preview` 为 NULL，`cwd` 用 `json_extract` 从已存配置取、取不到时为 `''`。升级照常继续，stderr 为每个这样的 Session 记一行；该 Session 自己的读取仍照旧报出真实的错误。实时写入同一规则：`main` 批次无法从已存事件读出预览时，这一行保持 NULL 并记一条警告，批次照常提交，`updated_at_ms` 仍然跟着该批次的最后一个事件——它不需要读已存事件。
 - **单向**：不做备份，与之前各步相同。旧守护进程以现有的"unsupported SQLite schema … preserved"错误在启动时拒绝升级后的库。
 - **升级日志**：沿用 S5a 的那一行：`Upgraded native store <path> from format v22 to v23; earlier dimcode versions cannot open it.`
 - **验证**：
