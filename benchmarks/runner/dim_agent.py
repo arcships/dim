@@ -183,8 +183,11 @@ class DimAgent(BaseInstalledAgent):
         # output, so stderr and, on failure, the tail of the JSON stream (where
         # provider errors arrive as notifications) are replayed to stderr.
         #
-        # The export and daemon stop run whatever the exit code: a failed run's
-        # Timeline is the evidence for why it failed.
+        # The export runs whatever the exit code: a failed run's Timeline is the
+        # evidence for why it failed. The App Server is left running: background
+        # commands the agent started (a server a task checks, say) belong to it,
+        # and the verifier runs after the agent phase, as for a user whose daemon
+        # outlives `dimcode exec`. Harbor deletes the container afterwards.
         await self.exec_as_agent(
             environment,
             command=(
@@ -198,7 +201,6 @@ class DimAgent(BaseInstalledAgent):
                 f'[ -n "$sid" ] && {DIM_BIN} export "$sid" {home} '
                 f"--output /logs/agent/{TIMELINE_FILENAME} >/dev/null; "
                 f"cp {DIMCODE_HOME}/rust/daemon.log /logs/agent/daemon.log 2>/dev/null; "
-                f"timeout 60 {DIM_BIN} daemon stop {home} >/dev/null 2>&1; "
                 "exit $rc"
             ),
             env=env,
