@@ -2093,9 +2093,12 @@ async fn configured_binary_shares_public_execution_and_persists_settings() {
         for method in ["mcp.approve", "mcp.revoke"] {
             assert!(!features.contains(&json!(method)), "{method}: {features:?}");
         }
-        assert!(!features.contains(&json!("account.providers")));
-        assert_eq!(client.rpc("account.providers", json!({})).await["error"]["code"], -32601);
+        assert!(features.contains(&json!("account.providers")));
+        let providers = client.rpc("account.providers", json!({})).await;
+        assert_ok(&providers);
+        assert_eq!(providers["result"], json!([]));
         for method in [
+            "account.providers",
             "skills.catalog", "skills.set_enabled", "skills.refresh",
             "mcp.catalog", "mcp.set_enabled", "mcp.save", "mcp.remove",
             "mcp.disconnect",
@@ -2318,18 +2321,21 @@ async fn unmounted_management_preserves_mock_sessions_and_wire_admission() {
     let server = launch(Arc::new(MockTools), ServerConfig::default()).await;
     for version in [1, 2, 3] {
         let mut client = Client::new_version(&server, false, version).await;
-        for method in [
-            "account.providers",
-            "provider.create",
-            "mcp.save",
-            "skills.set_enabled",
-        ] {
+        for method in ["provider.create", "mcp.save", "skills.set_enabled"] {
             let result = client.rpc(method, json!({"unexpected":true})).await;
             assert_eq!(
                 result["error"]["code"], -32601,
                 "v{version} {method}: {result}"
             );
             assert_eq!(result["error"]["data"]["appError"], "unknown_method");
+        }
+        let providers = client.rpc("account.providers", json!({})).await;
+        if version == 3 {
+            assert_ok(&providers);
+            assert_eq!(providers["result"], json!([]));
+        } else {
+            assert_eq!(providers["error"]["code"], -32601);
+            assert_eq!(providers["error"]["data"]["appError"], "unknown_method");
         }
         let created = client.rpc("session.create", create(json!([]))).await;
         assert_ok(&created);
