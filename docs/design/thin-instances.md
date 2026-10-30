@@ -50,8 +50,10 @@ Non-goals:
 - **The Agent group.** It stays an instanced loader group: its row isolates the Agent's process values
   (`AgentBuilder::agent_row`), and `agent.create` places Agents as its instances
   (`dim-app-server/src/agents.rs:1297`). Nothing in it scans the loader's entries.
-- **Names and the catalog.** The catalog's groups (`session`, `branch`), `Names`, the keys a part
-  gets, and the `instanceNames` a foreign process row declares stay as they are.
+- **Names and the catalog.** The catalog's groups (`session`, `branch`), the naming scheme, the keys
+  a part gets, and the `instanceNames` a foreign process row declares stay as they are. `Names` keeps
+  its role and `Names::check`'s rule; only `Names::copy` takes the scopes' instances instead of a
+  loader `Build`, and `named` refuses a Rust-typed instance name (§2.2).
 - **The mounters' contract.** They call the generators, follow the registry and hand what they mount
   to creation (How Dim uses rutis §2 "Mounting").
 
@@ -282,7 +284,7 @@ instances from its position in the tree, and a host marks its own scopes with `m
   - "嵌套实例归 Session 分组所有，不归创建它的行所有" becomes: a Session's content belongs to the part
     that mounts it.
 - [Plugin pages index](../architecture/rust-agent/plugins/README.md) `:15-17` and
-  `xtask/src/plugins.rs:45-55`: the excluded infrastructure list drops `SessionExtension`, `session`
+  `xtask/src/plugins.rs:43-55`: the excluded infrastructure list drops `SessionExtension`, `session`
   and `branch`; the scopes and mounters stay.
 - [Session TypeScript](session-typescript.md) `:20`: "loader instances isolate their services"
   becomes "the Session and branch scopes isolate their services".

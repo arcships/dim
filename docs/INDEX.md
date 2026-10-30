@@ -21,8 +21,10 @@ This index is navigation. Delivery status lives in issues, not here.
 - [ADR 006 — The plugin contract is concepts and conventions, not types](adr/006-plugin-contract.md)（[中文](zh/adr/006-plugin-contract.md)）
 - [ADR 007 — PluginManager keeps plugin configuration; rutis and content owners keep state](adr/007-plugin-configuration.md)
 - [ADR 008 — Documentation ownership and immutable ADRs](adr/008-documentation-ownership.md)
+- [ADR 015 — Sessions, branches and their content are plugins, not loader instances](adr/015-scopes-are-plugins.md)
 - [Plugin contract](design/plugin-contract.md): Dim's architecture as it applies to plugins: instance tree, placement, Dim's services and bus events, facts and their consumption, Capability（[中文](zh/design/plugin-contract.md)）
 - [How Dim uses rutis](design/rutis-usage.md): parts as loader rows, services by name, the catalog, crossing languages, the rutis lifecycle and bus, and the Rust/TypeScript bindings（[中文](zh/design/rutis-usage.md)）
+- [Sessions and branches are plugins, not loader instances](design/thin-instances.md): Session and branch scopes as plain plugins that mark their group on rutis 0.19.1, so creation reads no loader table (#594)
 - [Architecture and ownership](architecture/README.md)
 - [Architecture decisions](adr/README.md)
 - [Rust agent design documents](architecture/README.md#design-documents)
