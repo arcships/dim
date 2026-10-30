@@ -30,21 +30,26 @@ admission field. `escalation` is removed.
 
 `full-access` admits a requested boundary, `workspace-write` asks for it through the existing
 execute-process approval, and `read-only` denies it. The request remains the existing `sandbox`
-argument for this decision; a later decision replaces it with node configuration.
+argument only while this decision is read alone. [ADR 010](010-sandbox-and-file-access.md)
+removes the argument and replaces it with the `execution` setting; the two decisions land
+together, so a full-access call cannot request a boundary.
 
 ### D3. No new event, type or stored grant
 
-The approval request already carries the call and the requested boundary. Running processes keep
-the environment they started with. HostPlatform keeps its platform defaults and roots.
+The approval request carries the call and, while the `sandbox` argument exists, the requested
+boundary. Running processes keep the environment they started with. HostPlatform keeps its
+platform defaults and roots.
 
 ## Consequences
 
 - `HostPlatform` no longer makes an admission decision; `isolation_denied` from the node policy
   disappears.
-- `full-access` admits a requested `host` or `network` boundary; an approved `workspace-write`
-  command runs at the boundary the prompt showed.
+- While the argument exists, `full-access` admits a requested `host` or `network` boundary; an
+  approved `workspace-write` command runs at the boundary the prompt showed. ADR 010 removes the
+  argument, so the pair has no model-requested boundary.
 - The node file's `escalation` field is ignored. The remaining policy file and the `sandbox`
-  argument are replaced by [ADR 010](010-sandbox-and-file-access.md).
+  argument are replaced by [ADR 010](010-sandbox-and-file-access.md); 009 is not implemented
+  before 010.
 - No Timeline event, wire field, event fixture or persisted grant is added.
 - AGENTS.md rule 11's "permission presets" clause is updated by this decision.
 
