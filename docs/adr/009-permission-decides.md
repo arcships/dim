@@ -31,7 +31,7 @@ admission field. `escalation` is removed.
 `full-access` admits a requested boundary, `workspace-write` asks for it through the existing
 execute-process approval, and `read-only` denies it. The request remains the existing `sandbox`
 argument only while this decision is read alone. [ADR 010](010-sandbox-and-file-access.md)
-removes the argument and replaces it with the `execution` setting; the two decisions land
+removes the argument and replaces it with the user sandbox setting; the two decisions land
 together, so a full-access call cannot request a boundary.
 
 ### D3. No new event, type or stored grant
