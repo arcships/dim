@@ -22,8 +22,8 @@ only escape, and users are not expected to create one.
 
 ### D1. The sandbox is a user setting, off by default
 
-`/settings` has one Sandbox switch. It is off by default; the network follows the sandbox (off
-unless the user turns it on).
+`/settings` has Sandbox and Network switches. Both are off by default; the network switch applies
+only when the sandbox is on.
 
 - Off: `exec` and the persistent shell run on the host with the user's environment, home and
   network.
@@ -44,8 +44,8 @@ says it is no longer used and the sandbox is off. No migration is kept.
 
 `exec` has no `sandbox`, `paths` or `network` input. A call that still sends `sandbox` is
 rejected as `exec_invalid_request`, not ignored. The model cannot widen the sandbox by calling a
-tool. A command that hits a missing path fails as an ordinary command error; the user grants the
-path or turns the sandbox off, then the model may retry.
+tool. A command that hits a missing path fails as an ordinary command error; the user approves
+the path or turns the sandbox off, then the model may retry.
 
 ### D3. `full-access` does not change the sandbox
 
