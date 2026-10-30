@@ -54,8 +54,8 @@ does not change the network. The mode itself does not change the switch; the use
 `/settings`.
 
 File access is otherwise unchanged. Reads and writes keep the existing permission rules and the
-existing session-file ownership model (`session-files.md` §11.2); this decision adds no grants,
-facts or path rules.
+session-file ownership rows in `session-files.md` §11.1; §11.2 is the requirement the follow-up
+ADR 014 satisfies. This decision adds no grants, facts or path rules.
 
 ### D4. The isolation policy management is removed
 

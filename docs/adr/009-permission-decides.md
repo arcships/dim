@@ -30,7 +30,7 @@ admission field. `escalation` is removed.
 
 `full-access` admits a requested boundary, `workspace-write` asks for it through the existing
 execute-process approval, and `read-only` denies it. The request remains the existing `sandbox`
-argument only while this decision is read alone. [ADR 010](010-sandbox-and-file-access.md)
+argument only while this decision is read alone. [ADR 010](010-sandbox-opt-in.md)
 removes the argument and replaces it with the user sandbox setting; the two decisions land
 together, so a full-access call cannot request a boundary.
 
@@ -48,7 +48,7 @@ platform defaults and roots.
   approved `workspace-write` command runs at the boundary the prompt showed. ADR 010 removes the
   argument, so the pair has no model-requested boundary.
 - The node file's `escalation` field is ignored. The remaining policy file and the `sandbox`
-  argument are replaced by [ADR 010](010-sandbox-and-file-access.md); 009 is not implemented
+  argument are replaced by [ADR 010](010-sandbox-opt-in.md); 009 is not implemented
   before 010.
 - No Timeline event, wire field, event fixture or persisted grant is added.
 - AGENTS.md rule 11's "permission presets" clause is updated by this decision.
