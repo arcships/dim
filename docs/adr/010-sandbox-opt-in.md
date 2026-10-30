@@ -22,16 +22,17 @@ only escape, and users are not expected to create one.
 
 ### D1. The sandbox is a user setting, off by default
 
-`/settings` has Sandbox and Network switches. Both are off by default; the network switch applies
-only when the sandbox is on.
+`/settings` has an Execution row with Sandbox and Network switches. Both are off by default; the
+network switch applies only when the sandbox is on.
 
 - Off: `exec` and the persistent shell run on the host with the user's environment, home and
   network.
 - On: they run in the workspace baseline plus the platform's system roots, with the existing
   platform defaults (the persistent shell output directory; on macOS the per-process temporary
   directory and git's global configuration).
-- On a platform with no sandbox backend (Windows, or Linux without `bwrap`), turning the sandbox
-  on fails as `isolation_unavailable`; the user leaves it off or installs the backend.
+- On a platform with no sandbox backend (Windows, or Linux without `bwrap`), the next process
+  start fails at preparation as `isolation_unavailable`; the Execution row shows the reason and
+  the user leaves it off or installs the backend.
 
 The setting is user configuration, not a policy file. The storage and management of the setting
 are a follow-up ([#691](https://github.com/arcships/dim/issues/691)); this decision fixes its
