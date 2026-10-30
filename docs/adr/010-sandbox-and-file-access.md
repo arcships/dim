@@ -27,10 +27,12 @@ resumed, so a grant made for it must survive the interruption.
 
 ### D1. The sandbox is an execution setting, off by default
 
-The daemon owns an `execution` Settings source with two fields: `sandbox` and `network`, both
-default off. It has the source's CAS revision and is written through the existing local Settings
-management; `/settings` has an Execution row that reads and writes it. The daemon reads the
-source when a Session or a process starts. A running process keeps its environment.
+The App Server's Settings service owns a new declared source `execution`, user scope only, with
+two boolean fields: `sandbox` and `network`, both default off. It has the source's CAS revision
+and is read and written through `settings.read` / `settings.update`; `/settings` has an Execution
+row over it. It has no project file, so a cloned repository cannot turn the network on. The
+daemon reads the source when a Session or a process starts. A running process keeps its
+environment.
 
 - Off: `exec` and the persistent shell run on the host with the user's environment, home and
   network.
@@ -44,9 +46,9 @@ source when a Session or a process starts. A running process keeps its environme
 There is no node policy file and no `host-platform.json`. `host.isolation.get/update/reset`,
 `isolation_policy.rs`, `IsolationPolicy` and `host-isolation.json` are removed; the `/settings`
 Command isolation row is replaced by the Execution row backed by the `execution` source. An
-existing `host-isolation.json` is not read: a one-time notice says the file is no longer used and
-the sandbox is off, and the Execution row turns it on. No migration is kept. Changing the source
-applies to the next process or Session.
+existing `host-isolation.json` is not read: a startup diagnostic shown by the client while the
+file exists says it is no longer used and the sandbox is off, and the Execution row turns it on.
+No migration is kept. Changing the source applies to the next process or Session.
 
 ### D2. `exec` does not choose the environment or declare resources
 
@@ -54,7 +56,8 @@ applies to the next process or Session.
 session's access facts (D3). A call that still sends `sandbox` is rejected as
 `exec_invalid_request`, not ignored. The model cannot widen the sandbox by calling a tool. A
 command that hits a missing path fails as an ordinary command error; the user grants the path or
-turns the sandbox off, then the model may retry.
+turns the sandbox off, then the model may retry as a new `exec`, or after the persistent shell
+restarts. The running shell does not see the grant.
 
 ### D3. File access facts come from fixed sources
 
@@ -68,9 +71,10 @@ turns the sandbox off, then the model may retry.
 | user grant | the session's persisted grants; the grant's mode |
 | preset | the branch's permission mode |
 
-The facts are composed by a Session-scoped service. `Permission` reads the facts and does not
-know about attachments, SessionStore or the sandbox. A new fact source is a design decision, not
-a plugin hook.
+The facts are composed by a Session-scoped service. `Permission` passes the dispatched branch's
+preset into the query; the preset is branch state, not the Session's initial config. `Permission`
+reads the facts and does not know about attachments, SessionStore or the sandbox. A new fact
+source is a design decision, not a plugin hook.
 
 ### D4. Host artifacts are owned by the session
 
@@ -81,18 +85,20 @@ Attachments and command output use one ownership model:
   handed to the model.
 - The owner exposes `register(session_id, path)`, which accepts only a path under the output
   directory the caller owns. It is not a general grant.
-- Ownership is a row `(session_id, artifact)` in the native store, not a directory prefix. A
-  path is readable when the session owns its artifact.
-- A fork copies the source's ownership rows at the fork's commit. The fork owns those files; a
-  file the source adds later is not owned by the fork. The file path stays stable.
-- Deleting a session releases its rows; a file another session still owns remains.
+- Ownership is a row in the native store, not a directory prefix. Attachments keep the existing
+  `session_file_owners (session_id, file_id)`; command output is registered in
+  `session_output_owners (session_id, path)`. The fact service reads both as the
+  `session-owned` fact.
+- A fork copies the source's rows in both tables at the fork's commit. The fork owns those files;
+  a file the source adds later is not owned by the fork. The file path stays stable.
+- Deleting a session releases its rows in both tables; a file another session still owns remains.
 - Command output may grow after a fork. The fork owns the file and reads its current content; a
   point-in-time copy is a separate concern.
 
-The session-files owner exposes `owns(session_id, path)` for a single decision and
-`owned_paths(session_id)` for a process start. Both are primary-key lookups; `owned_paths`
-derives each path from the row plus the node's file directory. A query failure denies the
-operation.
+`owns(session_id, path)` extracts the attachment's file id or uses the output path and does a
+primary-key lookup in the matching table. `owned_paths(session_id)` queries the rows and returns
+the attachment path from its file-id directory and the output path from its row; it is not one
+primary-key read. A query failure denies the operation.
 
 ### D5. Read and write use one table
 
@@ -102,8 +108,12 @@ operation.
 | `workspace-write` | reads allowed; writes only in the workspace and write grants | reads and writes ask |
 | `full-access` | allowed | reads and writes allowed without a prompt |
 
-- System roots and session-owned artifacts are read-only to the model. Only the workspace and a
-  write grant are writable.
+- Under `read-only`, the workspace is read-only too; only reads inside the facts are allowed.
+  Under `workspace-write`, the workspace and write grants are writable. System roots and
+  session-owned artifacts are read-only under both.
+- Under `full-access`, file-tool writes are admitted anywhere, including system roots and
+  session-owned artifacts; the mode is trust, not a boundary. The process mounts in D7 are
+  unchanged.
 - A write grant also permits reads; a read grant never permits writes.
 - Paths are canonicalized before matching; a symlink is judged by its target. A workspace
   symlink to a path outside the workspace does not match the workspace fact.
@@ -124,28 +134,30 @@ prefix covers its children, and `grep`/`glob` over a directory use that director
 directory writes a prefix. It applies to that session only, survives a restore, and is removed
 when the session is deleted. A fork is a new session and does not inherit grants.
 
-Grant writes come from a user client. Local and remote clients are treated the same; the
-connection or identity layer decides whether that user may act on the session. A model is not a
-user: an approval answered by a leader model for a member never writes a grant, and a member
-session does not inherit the leader's grants. `ApprovalDecision` stays `Allow | Deny`; the client
-writes the grant and then answers allow.
+The Session grants service exposes `add(session_id, path, mode)` and
+`remove(session_id, path)`. Grant writes come from a user client. Local and remote clients are
+treated the same; the connection or identity layer decides whether that user may act on the
+session. A model is not a user: an approval answered by a leader model for a member never writes
+a grant, and a member session does not inherit the leader's grants. `ApprovalDecision` stays
+`Allow | Deny`; the client calls `add` and then answers allow.
 
 ### D7. Process start uses the session's ownership
 
 When the sandbox is on, a process start asks the ownership owner for the session's artifact
-paths. Owned artifacts and the platform roots are mounted read-only; the workspace is mounted
-with the tier's write mode; a write grant is mounted writable and a read grant read-only. The
-persistent shell's output directory is writable by the shell and read-only to the model. A
-running persistent shell keeps the mounts it started with; a file handed after it started is
-read through the file tools. A grant made after the shell started applies to new processes, not
-to that shell.
+paths. Owned artifacts and the platform roots are mounted read-only. The workspace is read-only
+under `read-only` and writable under `workspace-write` or `full-access`. A write grant is mounted
+writable and a read grant read-only. The persistent shell's output directory is writable by the
+shell and read-only to the model. A running persistent shell keeps the mounts it started with; a
+file handed after it started is read through the file tools. A grant made after the shell started
+applies to new processes, not to that shell.
 
 ### D8. `full-access` is not a sandbox setting
 
 `full-access` means “no tool prompts”. The mode itself does not change the sandbox or network
-switch and does not add grants. A full-access model can write the `execution` source (D5); that
-is the trust consequence, not the mode changing the switch. To run all model-started processes
-on the host, the user turns the sandbox off in the Execution settings row.
+switch, does not change the process mounts and does not add grants. A full-access model can write
+the `execution` source (D5); that is the trust consequence, not the mode changing the switch. To
+run all model-started processes on the host, the user turns the sandbox off in the Execution
+settings row.
 
 ## Consequences
 
@@ -154,11 +166,14 @@ on the host, the user turns the sandbox off in the Execution settings row.
 - `host.isolation.get/update/reset`, `isolation_policy.rs`, `IsolationPolicy` and
   `host-isolation.json` are removed. The `/settings` Command isolation row is replaced by an
   Execution row backed by the `execution` Settings source. No migration is kept; an existing
-  file is not read and produces a one-time notice.
+  file is not read and produces a startup diagnostic while it exists.
 - `exec` loses `sandbox`; the node policy file, `escalation` and the tier field are removed. A
   call that still sends `sandbox` is rejected as `exec_invalid_request`.
-- The `execution` source is read when a Session or process starts. On Windows or Linux without
-  `bwrap`, turning the sandbox on fails as `isolation_unavailable`.
+- The `execution` source is a new declared Settings source in the App Server's settings service,
+  user scope only, with no project file. It is read when a Session or process starts. On Windows
+  or Linux without `bwrap`, turning the sandbox on fails as `isolation_unavailable`.
+- Under `read-only` and `workspace-write`, a read outside the facts now asks; today reads are
+  path-independent. A directory-prefix grant covers a tree.
 - The session-files owner gains `owns`, `owned_paths` and `register`; command output joins the
   same ownership model. A Session-scoped facts service composes the fixed sources for
   `Permission`.
@@ -168,8 +183,8 @@ on the host, the user turns the sandbox off in the Execution settings row.
 - `Permission.md`, `WorkspaceTools.md`, `HostPlatform.md`, `session-files.md` §11,
   `session-deletion-and-fork.md`, `overview.md` B.1/B.2, the Attachments design, the
   `host.isolation` method document, the CLI permission/settings tables, the model-facing
-  `host_platform.rs` isolation text and the exec `sandbox` description are updated under their
-  owners after acceptance. ADR 003 is not edited.
+  `host_platform.rs` isolation text, the exec `sandbox` description and `settings-service.md` are
+  updated under their owners after acceptance. ADR 003 is not edited.
 - AGENTS.md rule 11's “permission presets” clause is updated by ADR 009 and its “file-root
   authorization” clause by this decision.
 - The path facts are exact/prefix for grants and ownership rows for host artifacts. The platform
@@ -187,11 +202,11 @@ on the host, the user turns the sandbox off in the Execution settings row.
 ## Supersession
 
 Replaces the default-on sandbox policy, the policy file and the management methods in the
-[F5 isolation design](../design/host-platform-isolation.md) with the `execution` Settings source.
-It also supersedes that design's trusted-local rule for session grants: a grant is a user action,
-the identity layer decides which clients may act on a session, and a model never writes one. It
-extends [ADR 009](009-permission-decides.md); the two decisions land together. ADR 003 remains as
-written.
+[F5 isolation design](../design/host-platform-isolation.md) with the `execution` Settings source;
+the F5 trusted-local rule for the policy file is removed with the file. D6 is a new decision for
+session grants: a grant is a user action, the identity layer decides which clients may act on a
+session, and a model never writes one. It extends [ADR 009](009-permission-decides.md); the two
+decisions land together. ADR 003 remains as written.
 
 ## Rule check
 
