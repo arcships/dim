@@ -1,13 +1,17 @@
-//! `read` (TS `read.ts`, without image support).
+//! `read` (TS `read.ts`), and its image results.
 
 use super::super::file_reads::{FileReads, TextEncoding, TextFileBinding};
 use super::codec::{self, CodecError};
 use super::{
     Cancelled, FileTools, NotRegular, blocking, cancelled, failed, field, hex, invalid_input,
-    js_len, not_regular, open_regular, resolve_path, succeeded,
+    js_len, not_regular, object, open_regular, resolve_path, succeeded,
 };
 use crate::host::HostError;
-use dim_agent_types::{JsonObject, ToolContent, ToolResult};
+use crate::images::{self, ImageKind, ImageRefusal, ImageSize, ScaledImage, Sniffed};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use dim_agent_types::{
+    ContentBlock, ImageSource, ImageSourceType, JsonObject, ToolContent, ToolResult,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -28,7 +32,8 @@ const READ_OFFLOAD_PREVIEW_CHARS: usize = 2_000;
 const DETECT_BYTES: usize = 4096;
 const CHUNK_BYTES: usize = 64 * 1024;
 
-/// Known binary extensions, rejected without reading the file.
+/// Known binary extensions, refused once the head shows the content is not an
+/// image.
 const BINARY_EXTENSIONS: &[&str] = &[
     "zip", "gz", "tar", "bz2", "xz", "7z", "rar", "exe", "dll", "so", "dylib", "bin", "wasm",
     "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "class", "pyc", "pyo", "o", "obj", "a",
@@ -38,7 +43,7 @@ const BINARY_EXTENSIONS: &[&str] = &[
 pub(super) fn definition() -> Value {
     json!({
         "name": "read",
-        "description": "Read a text file from the filesystem. Returns text with line numbers. Use offset and limit for large files.",
+        "description": "Read a file from the filesystem. Text comes back with line numbers; use offset and limit for large files. A PNG, JPEG, WebP or GIF image comes back as an image block with one line giving its path and pixel size.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -59,6 +64,8 @@ struct Input {
     offset: u64,
     limit: u64,
     encoding: Option<String>,
+    /// Whether the caller gave `offset` or `limit`, which images ignore.
+    window_given: bool,
 }
 
 fn parse(input: &JsonObject) -> Result<Input, ToolResult> {
@@ -95,6 +102,7 @@ fn parse(input: &JsonObject) -> Result<Input, ToolResult> {
         offset,
         limit,
         encoding,
+        window_given: field(input, "offset").is_some() || field(input, "limit").is_some(),
     })
 }
 
@@ -224,12 +232,6 @@ fn read_text(
 ) -> Result<Outcome, Cancelled> {
     let done = |result| Ok((result, None));
     let display = &input.path;
-    let extension = path
-        .extension()
-        .map(|extension| extension.to_string_lossy().to_lowercase());
-    if extension.is_some_and(|extension| BINARY_EXTENSIONS.contains(&extension.as_str())) {
-        return done(binary(display));
-    }
     let metadata = match std::fs::metadata(&path) {
         Ok(metadata) => metadata,
         Err(error) => return done(stat_failure(&error, &path, display)),
@@ -251,6 +253,23 @@ fn read_text(
         return done(open_failure(&error, display));
     }
     Cancelled::check(cancel)?;
+    if let Some(sniffed) = images::sniff(&head) {
+        return match sniffed {
+            Sniffed::Image(_) => Ok((
+                read_image(&mut file, display, metadata.len(), input, cancel)?,
+                None,
+            )),
+            Sniffed::Unsupported(name) => done(unsupported_image(display, name)),
+        };
+    }
+    // The extension is a hint against content that is not an image: an image
+    // is recognized from its bytes whatever the file is called.
+    let extension = path
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_lowercase());
+    if extension.is_some_and(|extension| BINARY_EXTENSIONS.contains(&extension.as_str())) {
+        return done(binary(display));
+    }
     let resolved = match codec::resolve_encoding(&head, input.encoding.as_deref()) {
         Ok(resolved) => resolved,
         Err(error) => return done(error.into_result()),
@@ -496,6 +515,118 @@ fn render_window(window: &[String], input: &Input, total_lines: u64) -> String {
         ));
     }
     content
+}
+
+/// An image file's result: the image block and one line naming the path, the
+/// pixel size and, when the image was re-encoded, the size sent.
+fn read_image(
+    file: &mut std::fs::File,
+    display: &str,
+    size: u64,
+    input: &Input,
+    cancel: &CancellationToken,
+) -> Result<ToolResult, Cancelled> {
+    if let Err(error) = file.seek(SeekFrom::Start(0)) {
+        return Ok(open_failure(&error, display));
+    }
+    Cancelled::check(cancel)?;
+    // The source is the file itself: `scale_image` reads the header, runs the
+    // pixel guard and only then decodes, so the file is never all in memory.
+    let source = std::io::BufReader::new(&mut *file);
+    Ok(match images::scale_image(source) {
+        Ok(image) => image_result(display, size, input, image),
+        Err(ImageRefusal::NotAnImage) => binary(display),
+        Err(ImageRefusal::UnsupportedFormat(name)) => unsupported_image(display, name),
+        Err(ImageRefusal::TooManyPixels(dimensions)) => image_too_large(display, dimensions),
+        Err(ImageRefusal::Invalid { kind, reason }) => invalid_image(display, kind, &reason),
+    })
+}
+
+fn image_result(display: &str, size: u64, input: &Input, image: ScaledImage) -> ToolResult {
+    let mut line = format!(
+        "Read image: {display} ({}x{} px).",
+        image.original.width, image.original.height
+    );
+    if image.animated {
+        line.push_str(&format!(
+            " Animated {}: only the first frame was sent.",
+            image.kind.name()
+        ));
+    }
+    if image.scaled {
+        line.push_str(&format!(
+            " Sent {}x{} px as {} ({} bytes).",
+            image.sent.width,
+            image.sent.height,
+            image.media_type,
+            image.bytes.len()
+        ));
+    }
+    if input.window_given {
+        line.push_str(" Offset and limit do not apply to images.");
+    }
+    let mut structured = json!({
+        "kind": "image",
+        "path": display,
+        "size": size,
+        "format": image.kind.name(),
+        "mediaType": image.media_type,
+        "width": image.original.width,
+        "height": image.original.height,
+    });
+    if image.scaled {
+        structured["sentWidth"] = json!(image.sent.width);
+        structured["sentHeight"] = json!(image.sent.height);
+        structured["sentBytes"] = json!(image.bytes.len());
+    }
+    if image.animated {
+        structured["animated"] = json!(true);
+    }
+    let source = ImageSource {
+        source_type: ImageSourceType::Base64,
+        media_type: image.media_type.to_string(),
+        data: Some(STANDARD.encode(&image.bytes)),
+        url: None,
+    };
+    ToolResult {
+        content: ToolContent::Blocks(vec![
+            ContentBlock::Text { text: line },
+            ContentBlock::Image { source },
+        ]),
+        structured_content: Some(object(structured)),
+        is_error: None,
+        blob_refs: None,
+        background_task: None,
+        context_messages: None,
+        effects: None,
+    }
+}
+
+fn unsupported_image(display: &str, name: &str) -> ToolResult {
+    failed(
+        format!("{name} images are not supported by read: {display}."),
+        json!({ "code": "binary_unsupported" }),
+    )
+}
+
+fn image_too_large(display: &str, size: ImageSize) -> ToolResult {
+    failed(
+        format!(
+            "Image is too large for read: {display} is {}x{} pixels. Make a smaller copy and read that.",
+            size.width, size.height
+        ),
+        json!({ "code": "binary_unsupported" }),
+    )
+}
+
+fn invalid_image(display: &str, kind: ImageKind, reason: &str) -> ToolResult {
+    failed(
+        format!(
+            "read could not decode the {} image {display}: {reason}",
+            kind.name()
+        ),
+        json!({ "code": "binary_unsupported" }),
+    )
 }
 
 fn binary(display: &str) -> ToolResult {

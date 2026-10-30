@@ -12,7 +12,9 @@ use dim_agent_capabilities::{
 };
 use dim_agent_runtime::{AgentBuilder, AgentConfig, Feature};
 use dim_agent_types::ModelSelection;
-use dim_app_server::{RunningServer, ServerConfig, serve};
+use dim_app_server::{
+    RunningServer, ServerConfig, serve, session_typescript::SessionTypeScriptConfig,
+};
 use rutis::host::diagnostics::RuntimeDiagnostics;
 use serde_json::Value;
 use std::{
@@ -31,6 +33,13 @@ pub struct Overrides {
     /// The summary strategy's system prompt in place of its built-in
     /// `SYSTEM` (ContextCompaction §13.5).
     pub summary_prompt: Option<Arc<str>>,
+    /// Factory configuration members a default plugin's manifest `config`
+    /// gains, by plugin name: the member a candidate text replaces
+    /// (model-prompts §8.1). The product sets none.
+    pub plugin_configs: BTreeMap<String, Value>,
+    /// The `branch` tool's description in place of its built-in text
+    /// (timeline branches §12.4).
+    pub branch_description: Option<Arc<str>>,
 }
 
 /// What one run adds to the product assembly: the overrides above, the model
@@ -41,6 +50,14 @@ pub struct RunSettings {
     pub overrides: Overrides,
     pub model_config: Option<PathBuf>,
     pub unix_path: Option<PathBuf>,
+    /// The default plugin configuration file both arms load when set: the
+    /// product's own `--defaults` (PluginManager §2.3). The product path
+    /// leaves it empty.
+    pub defaults: Option<PathBuf>,
+    /// The Node executable and the rutis runtime its rows import, when
+    /// `defaults` is set.
+    pub node: Option<PathBuf>,
+    pub js_runtime: Option<PathBuf>,
 }
 
 impl RunSettings {
@@ -106,6 +123,31 @@ pub async fn serve_home(
     };
     config.session_defaults.cwd = cwd.to_string_lossy().into_owned();
     dim_app_server::cli::product_session_defaults(&mut config.session_defaults);
+    if let Some(defaults) = &run.defaults {
+        let defaults = std::fs::canonicalize(defaults)
+            .map_err(|error| format!("default plugins {}: {error}", defaults.display()))?;
+        let node = run
+            .node
+            .clone()
+            .ok_or("the default plugins need DIM_TEST_NODE")?;
+        let js_runtime = run
+            .js_runtime
+            .clone()
+            .ok_or("the default plugins need DIM_TEST_JS_RUNTIME")?;
+        config.plugin_defaults = Some(defaults.clone());
+        // A model configuration's profile has no product home; its plugins
+        // still need a files root for their data directories.
+        config.plugin_files = Some(home.clone());
+        config.session_typescript = Some(SessionTypeScriptConfig {
+            node,
+            js_runtime,
+            anchor: defaults,
+            python: None,
+            acquire: None,
+            rows: vec![],
+        });
+        config.plugin_configs = run.overrides.plugin_configs.clone();
+    }
     let summary = ProductSummaryStrategyConfig {
         system_prompt: run.overrides.summary_prompt.clone(),
         ..Default::default()
@@ -115,6 +157,9 @@ pub async fn serve_home(
         &mut builder,
         ModelProviderPlugin::process,
         WorkspaceToolsConfig { output_root },
+        dim_agent_capabilities::timeline_tree::BranchToolConfig {
+            description: run.overrides.branch_description.clone(),
+        },
     );
     dim_app_server::permission_rules::install(&mut builder);
     builder

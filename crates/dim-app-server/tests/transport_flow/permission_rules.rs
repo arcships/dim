@@ -34,6 +34,7 @@ async fn command_rules_written_by_the_client_apply_to_the_next_call() {
         WorkspaceToolsConfig {
             output_root: native.join("outputs"),
         },
+        dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
     );
     dim_app_server::permission_rules::install(&mut builder);
     defaults::mock_model_hosts(&mut builder);
@@ -89,7 +90,7 @@ async fn command_rules_written_by_the_client_apply_to_the_next_call() {
     let session = server.agent().unwrap().get_session(&sid).unwrap();
     let branch = json!({"sessionId":sid,"branchId":"main"});
     assert_ok(&client.rpc("session.attach", json!({"sessionId":sid})).await);
-    let exec = json!({"sessionId":sid,"branchId":"main","text":"tool:exec {\"command\":\"printf ruled\"}"});
+    let exec = json!({"sessionId":sid,"branchId":"main","text":"tool:exec {\"command\":\"printf ruled\",\"sandbox\":\"host\"}"});
     let last_result = async || {
         session
             .history("main", None)

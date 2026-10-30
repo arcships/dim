@@ -1,0 +1,15 @@
+{
+  "name": "text-injector",
+  "description": "A fixture plugin whose tool description is its factory configuration text",
+  "code": {
+    "entry": "index.ts",
+    "inject": [
+      "partRegistry"
+    ],
+    "config": {
+      "texts": {
+        "prompt": "text-injector fixture: the shipped description"
+      }
+    }
+  }
+}

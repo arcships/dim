@@ -55,7 +55,7 @@
 2. **不取租约。** 守护进程的准入租约（`<database>.lock`）排斥第二个写入方。导出不是写入方，所以既不获取也不等待租约，守护进程占有数据库时也能运行。
 3. **只读连接。** `SQLITE_OPEN_READ_ONLY`，忙等超时与守护进程相同，为 5 秒，即 `PRAGMA busy_timeout` 控制的设置，只作用于这条连接。不设置守护进程的其他 pragma（`journal_mode`、`synchronous`、`foreign_keys`、`fullfsync`）。数据库文件从不被写入。与任何读取 WAL 数据库的 SQLite 读者一样，会使用数据库旁的 `-wal` 和 `-shm` 文件，缺少时（正常关闭之后或新的副本）创建为空文件；目录只读且缺少这两个文件时，SQLite 无法读取该 WAL 数据库。
 4. **一个快照。** 连接执行 `BEGIN` 并读完全部内容；关闭连接即结束读事务。第一次读取确定快照：导出期间守护进程的提交不可见，所以所有分支、head 和事件都来自同一时刻。读者不阻塞守护进程的写入；导出结束前，WAL 不能检查点越过该快照。
-5. **格式。** 在快照内，结构必须与本构建能打开的某一格式完全相同：当前格式，或某个升级步骤的起点（对 v22 而言是 v13、v15、v16、v17、v18、v19、v20 和 v21），且标记一致。升级只增加表、替换标记，从不改写任何行，所以守护进程升级后使用的读取器能原样读取这些存储；导出按原样读取它们，不做升级。其他任何结构或标记（更新版本 dimcode 的存储、被改动的结构、旧 TypeScript 存储）都以 `unsupported Timeline storage format` 失败，数据库保持原样。
+5. **格式。** 在快照内，结构必须与本构建能打开的某一格式完全相同：当前格式，或某个升级步骤的起点（对 v25 而言是 v13、v15、v16、v17、v18、v19、v20、v21、v22、v23 和 v24），且标记一致。升级增加表和派生行、删除冗余索引、替换标记，不改写已有事实，所以守护进程升级后使用的读取器能原样读取这些存储；导出按原样读取它们，不做升级。其他任何结构或标记（更新版本 dimcode 的存储、被改动的结构、旧 TypeScript 存储）都以 `unsupported Timeline storage format` 失败，数据库保持原样。
 
 ```
  守护进程（写入方）                  导出（读者）
@@ -79,7 +79,7 @@ UTF-8 JSONL，每行一个对象，各带一个 `kind`。外层字段用 snake_c
 | `end`，最后一行 | `branches` 与 `events`：写出的数量 |
 
 ```
-{"kind":"header","export":1,"session_id":"S","store_format":22,"sensitive":true}
+{"kind":"header","export":1,"session_id":"S","store_format":23,"sensitive":true}
 {"kind":"branch","info":{"id":"main"},"head":41}
 {"kind":"branch","info":{"id":"B","parent":"main","branch_point":12,"create_anchor":13},"head":7}
 {"kind":"event","branch_id":"main","event":{"id":"…","sequence":1,"create_at":1761000000000,"type":"input","name":"message","data":{…}},"trace":null,"batch_end":1}

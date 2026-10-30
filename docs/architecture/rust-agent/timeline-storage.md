@@ -58,6 +58,11 @@
 
 发布与提交回调可能读取或追加；它们必须在连接互斥锁释放后运行，否则回调写入或读取时会在同一把锁上死锁。
 
+同一事务内，writer 按 Session 和分支保留最后一个输出行的已解码 `Row`，
+后续增量直接追加，避免每条增量再次查询并解析已合并的 JSON。
+已有行只在首次需要追加时从 SQLite 解码；非输出事件使该分支的临时行失效。
+事务结束即释放，回滚和按 Session 重试各自重新读取；物理行格式、合并阈值和发布顺序不变。
+
 | 中断时刻（进程崩溃或断电） | 恢复后 |
 | --- | --- |
 | 事务提交前 | 该轮事件不存在；它们从未发布 |
@@ -113,7 +118,7 @@
 | `state` | 投影在 `resume` 之前的状态：`compacted_through` 游标、prompt 条目与 revision、已投递的上下文基线、已提交但未采用的输入、最新 `context/configured`、未闭合的输出与工具 |
 
 - 写入：ContextPolicy 在 completed 事实被采用后构建快照，`Timeline::save_snapshot` 等锚点发布后才写缓存；构建或保存失败只记录告警，不回滚事实、不重做模型工作。
-- 读取：`context_with_checkpoint` 按解释器选候选，校验锚点 ID、sequence、completed 种类、游标与 `resume` 位于固定祖先链和 source through 之内；解码失败、摘要不符、越界或孤立快照一律忽略并回退完整事实重放。`history::read_context` 另在渲染失败时回退完整重放；读取必需事实的错误不被吞掉。
+- 读取：`context_with_checkpoint` 按解释器选候选，校验锚点 ID、sequence、completed 种类、游标与 `resume` 位于固定祖先链和 source through 之内；解码失败、摘要不符、越界或孤立快照一律忽略并回退完整事实重放。默认解释器有两个读取入口：`HistoryRenderer::rendered_context` 返回上下文与其渲染，校验检查点的那次渲染就是调用方使用的渲染，没有检查点时也在这里渲染一次；`HistoryRenderer::context` 只返回上下文，有检查点时渲染一次用于校验并丢弃结果，没有检查点时不渲染。两者的检查点渲染失败都回退完整重放（`rendered_context` 渲染该重放，`context` 不渲染）；读取必需事实的错误不被吞掉，`history::read_context` 与 ContextPolicy 的预算校验走 `context`。
 - 投影从 `state` 开始重放 `resume` 起的事件，并丢弃游标及其之前的条目。编码与摘要规则见[存储格式](../../design/appserver/native-storage-format.md#可丢弃恢复快照)。
 
 ### 使用方
@@ -121,8 +126,9 @@
 | 使用方 | 读取 |
 | --- | --- |
 | Dispatcher | 热窗口；事件分发完即移出窗口 |
-| Loop 构建 `context/prepare` | `HistoryRenderer::context`（带快照加速）：配置、prompt revision 与历史投影 |
-| ContextPreparation / ContextPolicy | `HistoryRenderer::context(through)` 与 `local(through+1..)`；后者包含同一准备重试时已提交的压缩与预算事件；ContextPolicy 在压缩完成后写恢复快照 |
+| Loop 构建 `context/prepare` | `HistoryRenderer::rendered_context`（带快照加速）：配置、prompt revision 与历史投影，以及校验检查点的那次渲染 |
+| ContextPreparation | `HistoryRenderer::rendered_context(through)`：配置、prompt revision 与历史投影 |
+| ContextPolicy | `HistoryRenderer::context(committed())` 做预算校验，并读 `local(through+1..)`（同一准备重试时已提交的压缩与预算事件）；在压缩完成后写恢复快照 |
 | ModelProvider | 不读取；执行事件中的请求 |
 | Prompt 与配置发布 | `history::read_context` |
 | 能力重载重建 | `local(..=S)` |
@@ -140,7 +146,9 @@
 | 建分支 | 分支目录与 `branch/create` 在同一事务中提交；子 Timeline 以祖先链描述构造 |
 | 恢复 | 按[存储格式](../../design/appserver/native-storage-format.md)校验物理格式与提交边界后，Timeline 以存储中最后的 sequence 为发布水位构造；能力按 `context` 或 `local` 重建，这些读取在分支打开期间共用一份解码副本（第 4 节“使用方”）；TimelineTree 的恢复事实（分支记录的创建失败）也在打开期间从中读取，子分支的创建检查只分页读到它的第一个排队输入 |
 | Timeline close | 关闭前提交的事件全部发布后，才完成关闭 |
-| Session close | 各分支关闭完成后才释放存储端口 |
+| Session close | 各分支关闭并结算其写入、Session scope 清理完成后释放该次加载的存储准入状态；存储仍接收写入时，释放排在已接收批次之后，完成后才从 Agent 移除 Session。只清理故障与 writer memo，不删除持久数据；恢复初始化失败且生产者停止后也执行此释放 |
+
+同一存储内，同一 Session ID 同时只允许一个加载实例，跨 Agent 共享存储的调用方也须串行关闭与恢复。释放是幂等操作；SQLite 存储开始关闭或 writer 已停止后，释放视为已完成，不再向 Session 清理追加通道错误。存储关闭仍负责排空此前接收的批次并报告其自身的故障，各批次自己的结果仍报告写入失败。
 
 SQLite 关闭与 lease：只关闭描述符可能让并发派生的子进程在 exec 前继续持有 flock，所以关闭时显式 `unlock`，并让 lease 在连接之后释放；否则下一个守护进程会把数据库误报为“另一个进程拥有该 SQLite 数据库”。
 
@@ -148,8 +156,12 @@ SQLite 关闭与 lease：只关闭描述符可能让并发派生的子进程在 
 
 | 故障 | 处理 |
 | --- | --- |
-| 提交失败 | 该轮按 Session 拆成单独事务重试；仍失败的 Session 进入存储故障：已排队未发布的事件丢弃，后续 `append` 返回存储错误，以 Session 故障进入清理，清理中不再写入终态事件；下次恢复按各能力的终态结算规则处理未完成操作。其他 Session 照常发布 |
+| 提交失败 | 该轮按 Session 拆成单独事务重试；仍失败的 Session 进入存储故障：已排队未发布的事件丢弃，后续 `append` 返回存储错误，以 Session 故障进入清理，清理中不再写入终态事件；完全关闭后释放故障状态，同一进程下次恢复按各能力的终态结算规则处理未完成操作。旧 Session 句柄仍保持关闭。其他 Session 照常发布 |
 | 读取失败 | 发起读取的操作以存储错误失败，并按该能力既有失败终态提交；不进入 Session 禁写状态，后续操作可重试 |
+| SQLite 操作 panic | 回滚该操作未提交的事务，返回存储错误；连接仍可使用，不使连接锁中毒 |
+| writer 操作 panic | panic 转为存储错误，未提交事务回滚。准备与写入沿用按 Session 重试规则，仅写入失败的 Session 禁写，健康 Session 照常提交；创建回滚只使该次操作失败，保留记录并允许重试。已接收批次的回调结算一次；发布回调自身 panic 记录 Session、分支和 panic 信息，不阻断其余回调 |
+| writer 意外退出 | 已接收而未完成的批次以存储错误结算回调，发布与关闭的等待者结束；所有 Session 的后续写入被拒绝，需重启进程 |
+| before 回调 panic | 按 [before 失败约定](principles.md#4-通过时间线扩展行为)处理，不使分支提交锁中毒 |
 | 格式不可读 | 恢复时拒绝打开该 Session，保留存储数据 |
 
 ## 7. 验收

@@ -6,7 +6,11 @@ use crate::model::view::{CompactionPart, CompactionPartSize, CompactionState};
 use crate::ui::i18n::{t, tf};
 use crate::ui::render::markdown::MarkdownRenderer;
 use crate::ui::render::panel::{clip, wrap};
-use crate::ui::text::{display_width, gutter_width, truncate_cells, wrap_cells};
+use crate::ui::text::{
+    ASSISTANT_MARK, DONE_MARK, ERROR_MARK, FAILED_MARK, LINE_MARK, LOAD_MORE_MARK, RUNNING_MARK,
+    SHELL_MARK, STATUS_MARK, THINKING_BAR, USER_MARK, display_width, gutter_width, truncate_cells,
+    wrap_cells,
+};
 use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::fg;
 use crate::ui::transcript::block::{Block, Tone};
@@ -15,10 +19,6 @@ use crate::ui::transcript::tool_group::render_group;
 pub(crate) const SHELL_PREVIEW_LINES: usize = 10;
 const SHELL_COMMAND_LINES: usize = 3;
 const BOUNDARY_MAX_WIDTH: usize = 60;
-
-pub const ASSISTANT_MARK: &str = "\u{25c6}";
-/// The bar in front of every row of a user message, as Amp draws it.
-pub const USER_MARK: &str = "\u{2503}";
 
 /// The mark cell(s) of a gutter.
 pub fn gutter_mark(mark: &str, gutter: usize) -> String {
@@ -87,9 +87,6 @@ pub fn render_user(text: &str, width: usize, style: &UserStyle<'_>) -> Vec<Strin
 /// Rows of running reasoning under its title and blank row: the newest
 /// text, with one `…` row standing for what scrolled away.
 pub(crate) const THINKING_ROWS: usize = 4;
-/// The bar in front of every row of a thought shown whole.
-const THINKING_BAR: &str = "\u{258e}";
-
 /// Running reasoning, in the form its settled block will take so the
 /// transcript never shrinks when the thought ends: expanded, its title and
 /// newest rows behind the bar, growing with the text up to `THINKING_ROWS`
@@ -340,7 +337,7 @@ pub(crate) fn render_shell(
     let mut rows = Vec::new();
     for (i, line) in lines.iter().take(SHELL_COMMAND_LINES).enumerate() {
         let lead = if i == 0 {
-            fg(&gutter_mark("$", gutter), mark)
+            fg(&gutter_mark(SHELL_MARK, gutter), mark)
         } else {
             indent.clone()
         };
@@ -401,10 +398,10 @@ fn render_compaction(
     p: &Palette,
 ) -> Vec<String> {
     let (mark, color) = match state {
-        CompactionState::Running => ("·", &p.accent),
-        CompactionState::Completed => ("✓", &p.success),
-        CompactionState::Skipped | CompactionState::Cancelled => ("◦", &p.muted),
-        CompactionState::Failed => ("✗", &p.danger),
+        CompactionState::Running => (RUNNING_MARK, &p.accent),
+        CompactionState::Completed => (DONE_MARK, &p.success),
+        CompactionState::Skipped | CompactionState::Cancelled => (STATUS_MARK, &p.muted),
+        CompactionState::Failed => (FAILED_MARK, &p.danger),
     };
     let mut header = match state {
         CompactionState::Running => t("Compacting context…").to_owned(),
@@ -509,8 +506,8 @@ pub(crate) fn render_block(
 ) -> Vec<String> {
     match block {
         Block::Banner => Vec::new(),
-        Block::User { text, .. } => render_user(
-            &crate::sanitize::safe(text),
+        Block::User { text, display, .. } => render_user(
+            &crate::sanitize::safe(display.as_deref().unwrap_or(text)),
             width,
             &UserStyle {
                 color: &p.user,
@@ -529,7 +526,7 @@ pub(crate) fn render_block(
             width,
             p,
         ),
-        Block::ToolGroup(group) => render_group(group, width, p, "·"),
+        Block::ToolGroup(group) => render_group(group, width, p, RUNNING_MARK),
         Block::Compaction {
             state,
             text,
@@ -587,14 +584,16 @@ pub(crate) fn render_block(
                 p,
             )
         }
-        Block::Error(text) => gutter_text("■", &crate::sanitize::safe(text), width, &p.danger),
+        Block::Error(text) => {
+            gutter_text(ERROR_MARK, &crate::sanitize::safe(text), width, &p.danger)
+        }
         Block::Status { text, tone } => {
             let color = match tone {
                 Tone::Muted => &p.muted,
                 Tone::Warning => &p.warning,
                 Tone::Danger => &p.danger,
             };
-            gutter_text("◦", &crate::sanitize::safe(text), width, color)
+            gutter_text(STATUS_MARK, &crate::sanitize::safe(text), width, color)
         }
         Block::Failure(message) => vec![tf("Error: {message}", &[("message", message)])],
         Block::Boundary(label) => vec![fg(&boundary_line(label, width), &p.muted)],
@@ -604,10 +603,10 @@ pub(crate) fn render_block(
                 "{count} earlier messages · Enter or click to load",
                 &[("count", &hidden.to_string())],
             );
-            gutter_text("↑", &label, width, &p.accent)
+            gutter_text(LOAD_MORE_MARK, &label, width, &p.accent)
         }
         Block::Line { text, .. } => {
-            gutter_text("⑂", &crate::sanitize::safe(text), width, &p.accent)
+            gutter_text(LINE_MARK, &crate::sanitize::safe(text), width, &p.accent)
         }
     }
 }

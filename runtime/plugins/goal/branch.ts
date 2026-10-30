@@ -1,7 +1,7 @@
 import { definePlugin } from '@arcships/rutis'
 import type { SettingsResult } from '../../../npm/plugin.d.ts'
 import {
-  type AgentEvent, type Conclusion, type InputMessage, Fold, OBJECTIVE_KEY, STATUS_KEY, conclusionOf,
+  type AgentEvent, type Conclusion, type InputMessage, type Texts, Fold, OBJECTIVE_KEY, STATUS_KEY, conclusionOf,
   decideConclusion, decideEvaluatedContinuation, decideEvaluation, decideInterrupt, decideTurnEnd,
   evaluationOfOperation, evaluationOperation, evaluatorPrompt, isOpening, marker, replyConclusion,
   truncate, writes,
@@ -46,7 +46,7 @@ export default definePlugin({
   name: 'GoalBranch',
   provides: {},
   inject: ['dispatcher', 'timelineIdentity', 'treeCommands', 'settings', 'branchLifecycle', 'sessionLifecycle'],
-  async apply(ctx) {
+  async apply(ctx, texts: Texts) {
     const dispatcher = ctx.use<Dispatcher>('dispatcher')
     const tree = ctx.use<TreeCommands>('treeCommands')
     const settings = ctx.use<Settings>('settings')
@@ -135,7 +135,7 @@ export default definePlugin({
       const decision = decideTurnEnd(fold, limit)
       if (!decision) return
       await tree.input(branchId, decision.write === 'continuation'
-        ? writes.continuation(branchId, decision.count, limit, after)
+        ? writes.continuation(branchId, decision.count, limit, after, texts)
         : writes.pause(branchId, decision.reason, after))
     }
     const evaluationFailed = (evaluation: string) => task(`failed:${evaluation}`, async () => {

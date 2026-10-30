@@ -38,7 +38,7 @@ tar = { version = "0.4", default-features = false }
 [target.'cfg(target_os = "macos")'.dependencies]
 image = { version = "0.25.10", default-features = false, features = ["tiff"] }
 objc2 = "0.6.3"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSString", "NSEnumerator"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSString", "NSEnumerator", "NSURL"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem"] }
 
 [target.'cfg(unix)'.dependencies]

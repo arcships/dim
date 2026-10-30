@@ -8,10 +8,14 @@ use dim_app_server::storage::{NodeLoads, SqliteStorage, SqliteTimelineStore};
 use rusqlite::{Connection, params};
 use rutis::host::CtxHost;
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
+
+#[path = "storage_flow/catalog.rs"]
+mod catalog;
 
 const INTERPRETER: &str = "dim/context-projection/v3";
 fn snapshot(sequence: u64, checkpoint: &ProjectionCheckpoint) -> RecoverySnapshot {
@@ -192,9 +196,10 @@ const BUSINESS_TABLES: &[&str] = &[
     "session_files",
     "session_file_owners",
     "session_metadata",
+    "session_catalog",
 ];
 /// The business tables each upgrade step adds: v15's, then v16's; v17, v18,
-/// v19 through v22 add none.
+/// v19 through v22 and v24 add none.
 const V15_TABLES: [&str; 2] = ["session_files", "session_file_owners"];
 const V16_TABLES: [&str; 1] = ["session_metadata"];
 /// Inserts the rows of `tables` from the complete record example in
@@ -271,13 +276,18 @@ const V15_ADDITIONS: &[&str] = &[
 const V16_ADDITIONS: &[&str] = &[
     "CREATE TABLE session_metadata (session_id TEXT NOT NULL PRIMARY KEY REFERENCES agent_sessions(session_id), revision INTEGER NOT NULL CHECK (revision > 0), title TEXT, title_source TEXT CHECK (title_source IN ('auto', 'manual')), CHECK ((title IS NULL) = (title_source IS NULL)))",
 ];
-/// The exact schema of `version`, sorted: v13's, plus each later step's
-/// additions, with that version's marker.
+const V23_ADDITIONS: &[&str] = &[
+    "CREATE TABLE session_catalog (session_id TEXT NOT NULL PRIMARY KEY REFERENCES agent_sessions(session_id), updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0), preview TEXT, cwd TEXT NOT NULL)",
+    "CREATE INDEX session_catalog_by_activity ON session_catalog(updated_at_ms DESC, session_id)",
+    "CREATE INDEX session_catalog_with_preview ON session_catalog(updated_at_ms DESC, session_id) WHERE preview IS NOT NULL",
+];
 fn schema_of(version: u32) -> Vec<String> {
     let mut statements: Vec<String> = V13_SCHEMA
         .iter()
         .chain(V15_ADDITIONS.iter().filter(|_| version >= 15))
         .chain(V16_ADDITIONS.iter().filter(|_| version >= 16))
+        .chain(V23_ADDITIONS.iter().filter(|_| version >= 23))
+        .filter(|sql| version <= 24 || !sql.starts_with("CREATE INDEX timeline_events_by_end "))
         .map(|sql| sql.replace("(version = 13)", &format!("(version = {version})")))
         .collect();
     statements.sort();
@@ -306,6 +316,14 @@ fn v16_tables_store(path: &std::path::Path, marker: u32) -> Connection {
     connection
         .execute("INSERT INTO agent_store_format VALUES (?1)", [marker])
         .unwrap();
+    connection
+}
+/// Builds the v23 table layout under its v23 or v24 marker.
+fn catalog_store(path: &std::path::Path, marker: u32) -> Connection {
+    let connection = v16_tables_store(path, marker);
+    for sql in V23_ADDITIONS {
+        connection.execute_batch(sql).unwrap();
+    }
     connection
 }
 /// Builds a disposable v15 store, as a v15 daemon created it.
@@ -1919,14 +1937,21 @@ async fn failed_session_rolls_back_directory_and_does_not_block_other_sessions()
     assert_eq!(store.writer_memo_requests("bad"), 0);
     assert_eq!(store.head(&key("bad", "main")).await.unwrap(), 1);
     assert_eq!(store.branches("bad").await.unwrap().len(), 1);
+    let (unexpected, rejected_callback) = tokio::sync::oneshot::channel();
     assert!(
         store
             .append(
                 key("bad", "main"),
                 vec![text(2, "late")],
-                Box::new(|_| panic!("rejected append callback must not run"))
+                Box::new(move |_| {
+                    let _ = unexpected.send(());
+                })
             )
             .is_err()
+    );
+    assert!(
+        rejected_callback.await.is_err(),
+        "rejected append callback must not run"
     );
     assert_eq!(store.head(&key("good", "main")).await.unwrap(), 1);
     assert_eq!(store.head(&key("other", "main")).await.unwrap(), 1);
@@ -1939,16 +1964,17 @@ async fn failed_session_rolls_back_directory_and_does_not_block_other_sessions()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_output_commit_closes_only_its_session_and_recovery_settles_the_orphan() {
     tokio::time::timeout(Duration::from_secs(10), async {
+        for reopen in [false, true] {
         let database = Database::new();
-        let db = SqliteStorage::open(database.0.clone()).unwrap();
-        let store = SqliteTimelineStore::new(db.clone());
+        let mut db = SqliteStorage::open(database.0.clone()).unwrap();
+        let mut store = SqliteTimelineStore::new(db.clone());
         let mut builder = AgentBuilder::new(AgentConfig::default());
         dim_agent_capabilities::defaults::mock_hosts(&mut builder);
         dim_agent_capabilities::defaults::install(&mut builder);
         builder.timeline_store(store.clone());
-        let agent = builder.build();
+        let mut agent = builder.build();
         let bad = agent.create_session(SessionConfig::default()).await.unwrap();
-        let good = agent.create_session(SessionConfig::default()).await.unwrap();
+        let mut good = agent.create_session(SessionConfig::default()).await.unwrap();
         let bad_id = bad.id().to_owned();
         let connection = Connection::open(&database.0).unwrap();
         connection.execute_batch("CREATE TRIGGER fail_output BEFORE INSERT ON timeline_events WHEN NEW.kind = 'step/text' AND NEW.session_id = (SELECT session_id FROM injected_session) BEGIN SELECT RAISE(ABORT, 'injected output commit failure'); END; CREATE TABLE injected_session(session_id TEXT)").unwrap();
@@ -1972,25 +1998,34 @@ async fn failed_output_commit_closes_only_its_session_and_recovery_settles_the_o
         assert!(bad.submit("late".into(), InputMode::Queue, "main").await.unwrap_err().to_string().contains("injected output commit failure"));
         assert!(good.history("main", None).await.unwrap().iter().any(|event| matches!(&event.kind, EventKind::Text(data) if data.delta.contains("healthy output"))));
         connection.execute_batch("DROP TRIGGER fail_output; DROP TABLE injected_session").unwrap();
+        connection.execute_batch("CREATE TRIGGER fail_restore BEFORE INSERT ON timeline_events WHEN NEW.session_id = (SELECT session_id FROM restore_failure) BEGIN SELECT RAISE(ABORT, 'injected restore settlement failure'); END; CREATE TABLE restore_failure(session_id TEXT)").unwrap();
+        connection.execute("INSERT INTO restore_failure VALUES (?1)", [&bad_id]).unwrap();
+        let head = store.head(&key(&bad_id, "main")).await.unwrap();
+        let failed_restore = agent.restore_session(bad_id.clone()).await.err().expect("a failed settlement must reject restore");
+        assert!(failed_restore.to_string().contains("injected restore settlement failure"), "{failed_restore}");
+        assert!(agent.get_session(&bad_id).is_none());
+        assert_eq!(store.head(&key(&bad_id, "main")).await.unwrap(), head);
+        connection.execute_batch("DROP TRIGGER fail_restore; DROP TABLE restore_failure").unwrap();
         drop(connection);
-        let _ = agent.close().await;
-        drop(bad);
-        drop(good);
-        drop(agent);
-        store.close().await.unwrap();
-        db.close().await.unwrap();
-        drop(builder);
-        drop(store);
-        drop(db);
-
-        let db = SqliteStorage::open(database.0.clone()).unwrap();
-        let store = SqliteTimelineStore::new(db.clone());
-        let mut builder = AgentBuilder::new(AgentConfig::default());
-        dim_agent_capabilities::defaults::mock_hosts(&mut builder);
-        dim_agent_capabilities::defaults::install(&mut builder);
-        builder.timeline_store(store.clone());
-        let restored = builder.build();
-        let session = restored.restore_session(bad_id).await.unwrap();
+        if reopen {
+            let good_id = good.id().to_owned();
+            agent.close().await.unwrap();
+            store.close().await.unwrap();
+            db.close().await.unwrap();
+            db = SqliteStorage::open(database.0.clone()).unwrap();
+            store = SqliteTimelineStore::new(db.clone());
+            let mut builder = AgentBuilder::new(AgentConfig::default());
+            dim_agent_capabilities::defaults::mock_hosts(&mut builder);
+            dim_agent_capabilities::defaults::install(&mut builder);
+            builder.timeline_store(store.clone());
+            agent = builder.build();
+            good = agent.restore_session(good_id).await.unwrap();
+        }
+        let session = agent.restore_session(bad_id).await.unwrap();
+        assert!(bad.submit("old generation".into(), InputMode::Queue, "main").await.is_err());
+        good.submit("still healthy".into(), InputMode::Queue, "main").await.unwrap();
+        good.idle("main").await.unwrap();
+        assert!(good.history("main", None).await.unwrap().iter().any(|event| matches!(&event.kind, EventKind::Text(data) if data.delta.contains("still healthy"))));
         session.idle("main").await.unwrap();
         let history = session.history("main", None).await.unwrap();
         assert!(history.iter().any(|event| matches!(&event.kind, EventKind::ModelOutputEnd(data) if matches!(data.outcome, ModelOutputOutcome::Failed { .. }))));
@@ -2004,9 +2039,10 @@ async fn failed_output_commit_closes_only_its_session_and_recovery_settles_the_o
         let id = session.id().to_owned();
         drop(session);
         assert_eq!(store.writer_memo_requests(&id), 0);
-        restored.close().await.unwrap();
+        agent.close().await.unwrap();
         store.close().await.unwrap();
         db.close().await.unwrap();
+        }
     }).await.expect("Session failure and recovery completed");
 }
 
@@ -2427,6 +2463,9 @@ fn unsupported_legacy_or_changed_schema_is_rejected_without_migration() {
         V20,
         V21,
         V22,
+        V23,
+        V24,
+        V25,
     }
     for (base, sql) in [
         (Base::Empty, "CREATE TABLE sessions (id TEXT PRIMARY KEY)"),
@@ -2586,6 +2625,25 @@ fn unsupported_legacy_or_changed_schema_is_rejected_without_migration() {
             "PRAGMA ignore_check_constraints=ON; UPDATE agent_store_format SET version=21",
         ),
         (
+            Base::V23,
+            "PRAGMA ignore_check_constraints=ON; UPDATE agent_store_format SET version=24",
+        ),
+        (Base::V24, "DELETE FROM agent_store_format"),
+        (Base::V24, "DROP INDEX timeline_events_by_end"),
+        (Base::V25, "DELETE FROM agent_store_format"),
+        (
+            Base::V25,
+            "PRAGMA ignore_check_constraints=ON; UPDATE agent_store_format SET version=24",
+        ),
+        (
+            Base::V25,
+            "CREATE INDEX timeline_events_by_end ON timeline_events(session_id, branch_id, last_sequence, sequence)",
+        ),
+        (
+            Base::V24,
+            "PRAGMA ignore_check_constraints=ON; UPDATE agent_store_format SET version=23",
+        ),
+        (
             Base::V21,
             "PRAGMA ignore_check_constraints=ON; UPDATE agent_store_format SET version=20",
         ),
@@ -2602,6 +2660,9 @@ fn unsupported_legacy_or_changed_schema_is_rejected_without_migration() {
         (Base::V20, "DROP TABLE session_metadata"),
         (Base::V21, "DROP TABLE session_metadata"),
         (Base::V22, "DROP TABLE session_metadata"),
+        (Base::V23, "DROP TABLE session_metadata"),
+        (Base::V24, "DROP TABLE session_metadata"),
+        (Base::V25, "DROP TABLE session_metadata"),
     ] {
         let database = Database::new();
         match base {
@@ -2614,7 +2675,10 @@ fn unsupported_legacy_or_changed_schema_is_rejected_without_migration() {
             Base::V19 => drop(v16_tables_store(&database.0, 19)),
             Base::V20 => drop(v16_tables_store(&database.0, 20)),
             Base::V21 => drop(v16_tables_store(&database.0, 21)),
-            Base::V22 => drop(SqliteStorage::open(database.0.clone()).unwrap()),
+            Base::V22 => drop(v16_tables_store(&database.0, 22)),
+            Base::V23 => drop(catalog_store(&database.0, 23)),
+            Base::V24 => drop(catalog_store(&database.0, 24)),
+            Base::V25 => drop(SqliteStorage::open(database.0.clone()).unwrap()),
         }
         let connection = Connection::open(&database.0).unwrap();
         connection.execute_batch(sql).unwrap();
@@ -2647,11 +2711,6 @@ fn marker(connection: &Connection) -> Vec<i64> {
         .unwrap()
 }
 
-/// Upgrades the disposable `connection`'s store, built at `from` and holding
-/// every documented row of the tables it has, to the exact v22 store in place:
-/// every business row is unchanged, the added tables are empty, and only that
-/// open reports the upgrade. The documented v16 request row then reads and
-/// continues as mixed rows.
 async fn upgrades_in_place_once(database: &Database, connection: Connection, from: u32) {
     connection
         .execute_batch("PRAGMA foreign_keys = ON")
@@ -2660,6 +2719,7 @@ async fn upgrades_in_place_once(database: &Database, connection: Connection, fro
         .iter()
         .filter(|_| from < 16)
         .chain(V15_TABLES.iter().filter(|_| from < 15))
+        .chain(["session_catalog"].iter().filter(|_| from < 23))
         .copied()
         .collect();
     let kept: Vec<&str> = BUSINESS_TABLES
@@ -2679,13 +2739,22 @@ async fn upgrades_in_place_once(database: &Database, connection: Connection, fro
     store.close().await.unwrap();
     db.close().await.unwrap();
     let connection = Connection::open(&database.0).unwrap();
-    assert_eq!(schema(&connection), schema_of(22));
-    assert_eq!(marker(&connection), [22]);
+    assert_eq!(schema(&connection), schema_of(25));
+    assert_eq!(marker(&connection), [25]);
     let after: Vec<_> = kept.iter().map(|table| rows(&connection, table)).collect();
     assert_eq!(after, before);
     for table in added {
-        assert!(rows(&connection, table).is_empty());
+        if table != "session_catalog" {
+            assert!(rows(&connection, table).is_empty());
+        }
     }
+    assert_eq!(
+        connection
+            .query_row("SELECT count(*) FROM session_catalog", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
 
     let db = SqliteStorage::open(database.0.clone()).unwrap();
     assert_eq!(db.upgraded_from(), None);
@@ -2743,8 +2812,6 @@ async fn upgrades_in_place_once(database: &Database, connection: Connection, fro
     db.close().await.unwrap();
 }
 
-/// An empty store is created at exactly v22; a v13 store takes S5a's,
-/// and all subsequent one-way steps in one open.
 #[tokio::test]
 async fn a_v13_store_upgrades_in_place_once() {
     let fresh = Database::new();
@@ -2752,8 +2819,8 @@ async fn a_v13_store_upgrades_in_place_once() {
     assert_eq!(db.upgraded_from(), None);
     db.close().await.unwrap();
     let connection = Connection::open(&fresh.0).unwrap();
-    assert_eq!(schema(&connection), schema_of(22));
-    assert_eq!(marker(&connection), [22]);
+    assert_eq!(schema(&connection), schema_of(25));
+    assert_eq!(marker(&connection), [25]);
     drop(connection);
 
     let database = Database::new();
@@ -2761,7 +2828,6 @@ async fn a_v13_store_upgrades_in_place_once() {
     upgrades_in_place_once(&database, connection, 13).await;
 }
 
-/// An exact v15 store upgrades without rewriting its business rows.
 #[tokio::test]
 async fn a_v15_store_upgrades_in_place_once() {
     let database = Database::new();
@@ -2770,7 +2836,6 @@ async fn a_v15_store_upgrades_in_place_once() {
     upgrades_in_place_once(&database, connection, 15).await;
 }
 
-/// An exact v16 store upgrades by replacing only its marker.
 #[tokio::test]
 async fn a_v16_store_upgrades_in_place_once() {
     let database = Database::new();
@@ -2779,7 +2844,6 @@ async fn a_v16_store_upgrades_in_place_once() {
     upgrades_in_place_once(&database, connection, 16).await;
 }
 
-/// An exact v17 store upgrades without rewriting its mixed v16/v17 request rows.
 #[tokio::test]
 async fn a_v17_store_upgrades_in_place_once() {
     let database = Database::new();
@@ -2788,7 +2852,6 @@ async fn a_v17_store_upgrades_in_place_once() {
     upgrades_in_place_once(&database, connection, 17).await;
 }
 
-/// An exact v18 store upgrades with its explicit tool mount lists unchanged.
 #[tokio::test]
 async fn a_v18_store_upgrades_in_place_once() {
     let database = Database::new();
@@ -2797,7 +2860,6 @@ async fn a_v18_store_upgrades_in_place_once() {
     upgrades_in_place_once(&database, connection, 18).await;
 }
 
-/// An exact v19 store upgrades by replacing only its marker.
 #[tokio::test]
 async fn a_v19_store_upgrades_in_place_once() {
     let database = Database::new();
@@ -2806,7 +2868,6 @@ async fn a_v19_store_upgrades_in_place_once() {
     upgrades_in_place_once(&database, connection, 19).await;
 }
 
-/// An exact v20 store upgrades by replacing only its marker.
 #[tokio::test]
 async fn a_v20_store_upgrades_in_place_once() {
     let database = Database::new();
@@ -2846,6 +2907,7 @@ async fn a_v21_store_upgrades_in_place_once_and_restores_typeless_tool_schemas()
                 metadata: None,
             }),
             system: None,
+            system_source: None,
         }),
     );
     let mut request = ModelRequest::new("mock", "test", vec![Message::text(Role::User, "Hi")]);
@@ -2878,7 +2940,7 @@ async fn a_v21_store_upgrades_in_place_once_and_restores_typeless_tool_schemas()
 
     let connection = Connection::open(&database.0).unwrap();
     assert_ne!(schema(&connection), schema_of(21));
-    assert_eq!(marker(&connection), [22]);
+    assert_eq!(marker(&connection), [25]);
     let body: String = connection
         .query_row(
             "SELECT body FROM timeline_content WHERE session_id = 'schema' AND kind = 'tools'",
@@ -2952,7 +3014,7 @@ async fn the_daemon_reports_a_v13_upgrade_on_stderr_once() {
         reports.push(stderr);
     }
     let line = format!(
-        "Upgraded native store {} from format v13 to v22; earlier dimcode versions cannot open it.",
+        "Upgraded native store {} from format v13 to v25; earlier dimcode versions cannot open it.",
         path.display()
     );
     assert!(
@@ -3226,9 +3288,12 @@ async fn concurrent_and_cancelled_close_waits_for_the_same_durable_round() {
             .await
             .is_err()
     );
+    store.release_session("session").await.unwrap();
     transaction.commit().unwrap();
     close.await.unwrap();
     receiver.await.unwrap().unwrap();
+    store.release_session("session").await.unwrap();
+    store.release_session("session").await.unwrap();
     assert_eq!(store.head(&key("session", "main")).await.unwrap(), 2);
     db.close().await.unwrap();
 }
@@ -4219,6 +4284,19 @@ async fn directory_history_pages_keep_a_fixed_head_and_resolve_prior_tool_calls(
         .map(|event| event.sequence)
         .collect();
     assert_eq!(sequences, (1..=600).collect::<Vec<_>>());
+    for range in [0..=0, 0..=1, 2..=2, 199..=201, 600..=601] {
+        let expected: Vec<_> = range.clone().filter(|sequence| *sequence > 0).collect();
+        assert_eq!(
+            store
+                .read(&key("paged", "main"), range)
+                .await
+                .unwrap()
+                .iter()
+                .map(|record| record.event.sequence)
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
     assert!(
         sessions
             .read_page("paged", 600, 200, through)
@@ -4227,16 +4305,24 @@ async fn directory_history_pages_keep_a_fixed_head_and_resolve_prior_tool_calls(
             .is_empty()
     );
     let call = sessions
-        .read_event("paged", "event-1")
+        .read_events("paged", &["event-1".to_owned()])
         .await
         .unwrap()
+        .remove("event-1")
         .unwrap();
     assert!(matches!(&call.kind, EventKind::ToolCall(data) if data.calls[0].name == "echo"));
     let connection = Connection::open(&database.0).unwrap();
-    let plan: String = connection.query_row(
-        "EXPLAIN QUERY PLAN SELECT sequence FROM timeline_events WHERE session_id='paged' AND branch_id='main' AND last_sequence>=201 AND sequence<=400 ORDER BY last_sequence",
-        [], |row| row.get(3)).unwrap();
-    assert!(plan.contains("timeline_events_by_end"), "{plan}");
+    let plan = connection
+        .prepare("EXPLAIN QUERY PLAN SELECT sequence, last_sequence, kind, body FROM timeline_events WHERE session_id = ?1 AND branch_id = ?2 AND sequence >= coalesce((SELECT max(sequence) FROM timeline_events WHERE session_id = ?1 AND branch_id = ?2 AND sequence <= ?3), ?3) AND sequence <= ?4 AND last_sequence >= ?3 ORDER BY sequence")
+        .unwrap()
+        .query_map(params!["paged", "main", 201, 400], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+        .join("\n");
+    assert!(plan.contains("sequence>? AND sequence<?"), "{plan}");
+    assert!(!plan.contains("timeline_events_by_end"), "{plan}");
+    assert!(!plan.contains("TEMP B-TREE"), "{plan}");
     drop(connection);
     drop(store);
     drop(sessions);
@@ -4283,19 +4369,29 @@ async fn tool_use_starts_are_found_by_request_and_call_id() {
         )
         .unwrap();
     wait.await.unwrap().unwrap();
-    let name = async |request_id, call_id| {
-        sessions
-            .read_tool_use_start("starts", request_id, call_id)
-            .await
-            .unwrap()
-            .map(|event| match &event.kind {
-                EventKind::ToolUseStart(data) => data.name.clone(),
-                kind => panic!("unexpected {}", kind.key()),
-            })
+    let wanted = [
+        ("request".to_owned(), "call".to_owned()),
+        ("other".to_owned(), "call".to_owned()),
+        ("request".to_owned(), "missing".to_owned()),
+    ];
+    let names: HashMap<_, _> = sessions
+        .read_tool_use_starts("starts", &wanted)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(key, event)| match &event.kind {
+            EventKind::ToolUseStart(data) => (key, data.name.clone()),
+            kind => panic!("unexpected {}", kind.key()),
+        })
+        .collect();
+    let name = |request_id: &str, call_id: &str| {
+        names
+            .get(&(request_id.to_owned(), call_id.to_owned()))
+            .map(String::as_str)
     };
-    assert_eq!(name("request", "call").await.as_deref(), Some("echo"));
-    assert_eq!(name("other", "call").await.as_deref(), Some("wait"));
-    assert_eq!(name("request", "missing").await, None);
+    assert_eq!(name("request", "call"), Some("echo"));
+    assert_eq!(name("other", "call"), Some("wait"));
+    assert_eq!(name("request", "missing"), None);
     let connection = Connection::open(&database.0).unwrap();
     let plan: String = connection.query_row(
         "EXPLAIN QUERY PLAN SELECT sequence FROM timeline_events WHERE session_id='starts' AND branch_id='main' AND kind='step/tool-use-start' AND json_extract(body, '$.record.event.data.request_id')='request' AND json_extract(body, '$.record.event.data.call_id')='call'",
@@ -4880,4 +4976,92 @@ async fn a_fork_copies_main_through_the_cut_with_its_content_and_snapshots() {
     drop((connection, sessions));
     store.close().await.unwrap();
     db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_v21_store_upgrades_in_place_once() {
+    let database = Database::new();
+    let connection = v16_tables_store(&database.0, 21);
+    upgrades_in_place_once(&database, connection, 21).await;
+}
+
+#[tokio::test]
+async fn a_v22_store_upgrades_in_place_once() {
+    let database = Database::new();
+    let connection = v16_tables_store(&database.0, 22);
+    upgrades_in_place_once(&database, connection, 22).await;
+}
+
+/// An exact v23 store preserves its rows through subsequent format steps.
+#[tokio::test]
+async fn a_v23_store_upgrades_in_place_once() {
+    let database = Database::new();
+    let connection = catalog_store(&database.0, 23);
+    assert_eq!(schema(&connection), schema_of(23));
+    upgrades_in_place_once(&database, connection, 23).await;
+}
+
+/// A batch of starts larger than one SQLite compound statement still reads
+/// whole: the store chunks the keys inside one read and merges the rows.
+#[tokio::test]
+async fn a_large_batch_of_tool_use_starts_is_read_in_chunks() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let sessions =
+        dim_app_server::storage::SessionStore::new(db.clone(), rutis::Ctx::root().unwrap(), 0);
+    let store = sessions.timeline_store();
+    store
+        .create_session("many-starts", &SessionConfig::default())
+        .await
+        .unwrap();
+    let mut records: Vec<_> = (1..=520)
+        .map(|at| {
+            record(
+                at,
+                EventKind::ToolUseStart(ToolUseStartData {
+                    turn_id: "turn".into(),
+                    request_id: "request".into(),
+                    call_id: format!("call-{at}"),
+                    name: format!("tool-{at}"),
+                }),
+            )
+        })
+        .collect();
+    records.extend((521..=640).map(|sequence| text(sequence, "delta")));
+    let (done, wait) = tokio::sync::oneshot::channel();
+    store
+        .append(
+            key("many-starts", "main"),
+            records,
+            Box::new(move |result| {
+                let _ = done.send(result);
+            }),
+        )
+        .unwrap();
+    wait.await.unwrap().unwrap();
+    let wanted: Vec<(String, String)> = (1..=520)
+        .map(|at| ("request".to_owned(), format!("call-{at}")))
+        .collect();
+    let starts = sessions
+        .read_tool_use_starts("many-starts", &wanted)
+        .await
+        .unwrap();
+    assert_eq!(starts.len(), 520);
+    for at in 1..=520u64 {
+        let name = match &starts[&("request".to_owned(), format!("call-{at}"))].kind {
+            EventKind::ToolUseStart(data) => data.name.clone(),
+            kind => panic!("unexpected {}", kind.key()),
+        };
+        assert_eq!(name, format!("tool-{at}"));
+    }
+    drop(store);
+    drop(sessions);
+    db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_v24_store_upgrades_in_place_once() {
+    let database = Database::new();
+    let connection = catalog_store(&database.0, 24);
+    upgrades_in_place_once(&database, connection, 24).await;
 }

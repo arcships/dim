@@ -115,7 +115,7 @@ impl Plugin for Tui {
             })
             .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
         ctx.effect(|| async move {
-            let deadline = std::time::Instant::now() + Duration::from_secs(1);
+            let deadline = std::time::Instant::now() + ui::terminal::EXIT_BUDGET;
             while !render.is_finished() && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
             }

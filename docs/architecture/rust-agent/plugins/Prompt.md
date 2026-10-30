@@ -19,8 +19,8 @@ replaying history; rebuilding restores it from checkpoint configuration and fact
 | `B:Dispatcher` | Order configuration adoption and state projection. |
 | `B:Timeline` | Write controls and rebuild adopted context. |
 | `S:FaultReporter` | Report owned work failures. |
-| `S:GuideEntries` | Compose the guide this branch carries at each adoption it publishes. |
 | `B:BranchOpening` | Register initial prompt completion receipt. |
+| `S:GuideEntries` | The entries whose load or unload moves this branch's composition. |
 
 ## Events and lifetime
 
@@ -78,18 +78,54 @@ None: it provides the table and owns its two entries.
 
 A registration is an effect of the part that made it: it is withdrawn when that
 part unloads, and a reloaded part replaces its entry instead of doubling it. A
-composition already made is unaffected by a later registration or withdrawal:
-the adopted System is fixed until the next adoption that renders it — the first
-configuration or a change of sources — and a tools-only or model-only adoption
-keeps the adopted System and its guide. Entries
-reach the model only through the System a branch adopted or through the request
-Loop assembles, never through a request of their own.
+reload that changes an entry's text withdraws the old entry and registers the
+new one in that order, so a branch whose adoption runs between the two publishes
+the composition twice — without the entry, then with the new text — and runs
+with the intermediate System for a step; the design accepts that. A
+composition already made is unaffected by a later registration or withdrawal on
+its own: the adopted System moves only at an adoption that publishes a
+configuration. Prompt's branch part makes the load or unload one of them:
+before the branch's own open adoption composes it takes the entries'
+`changes()` watch and the composition it starts from, and starts listening
+before that adoption runs, so a change during the adoption is queued behind
+the open, whose own reconciliation still comes first; on every change it
+composes the branch's guide again and adopts it with the settings unchanged
+on every open branch whose composition moved, a registration made while
+the open runs included. A branch whose composition did not move reads
+nothing, because the composition reads the in-memory entries only. One more
+adoption runs inside every open, over the configuration the branch carries
+and before it reports itself open, so a fork and a restore converge on the
+entries in force at load and their first request carries them; it costs one
+context read per open and publishes nothing when the adopted System already
+equals the composition. The listener ends when the branch starts closing,
+and an adoption that already started reading refuses its append then, so
+entries that withdraw only because the branch shuts down are never recorded.
+A writer's tools can reach a request one step before its entry: the tools bind through the tool adoption as soon as their source loads,
+while the entry arrives through the guide adoption and its queue, so a step
+between the two carries the new tools with the previous System. A tools-only or
+model-only adoption re-renders the guide over the source text the configuration
+records, and one written before the source was recorded keeps its adopted
+System. Entries reach the model only through the System a branch adopted or
+through the request Loop assembles, never through a request of their own.
 
 ### Tests
 
 [prompt_guide.rs](../../../../tests/integration/tests/prompt_guide.rs):
 `both_paths_carry_one_composition`,
-`an_entry_waits_for_the_next_adoption_that_renders_the_system`,
+`an_adopted_request_and_the_summarizers_request_carry_one_system`,
+`a_tools_only_adoption_carries_the_entry_its_writer_registers`,
+`an_entry_takes_effect_when_its_writer_loads_and_ends_when_it_unloads`,
+`a_branch_scoped_entry_publishes_only_on_its_branch`,
+`an_entry_registered_while_its_branch_opens_is_adopted`,
+`a_fork_composes_its_own_entries_at_its_open`,
+`a_fork_carries_its_own_entry_in_its_first_request`,
+`a_restored_branch_converges_on_the_entries_its_writers_register`,
+`a_restored_branch_carries_its_entries_in_its_first_request`,
+`a_guide_adoption_racing_its_branch_close_records_nothing`,
+`an_entry_withdrawing_as_the_session_unloads_is_not_recorded`,
+`a_reloaded_writer_that_keeps_its_entry_records_nothing`,
+`a_composition_that_moved_and_returned_while_its_branch_opens_is_adopted`,
+`an_entry_that_returns_during_the_open_adoption_is_adopted`,
 `each_branch_keeps_its_own_entries`, `the_frame_states_the_compaction_handle`;
 [reload.rs](../../../../crates/dim-app-server/tests/transport_flow/reload.rs):
 `an_entry_leaves_with_its_contributor`.
@@ -99,6 +135,6 @@ Loop assembles, never through a request of their own.
 | --- | --- |
 | 作用域 | Session |
 | 注入 | — |
-| 提供 | `S:GuideEntries` |
-| 被注入于 | `BackgroundExec`、`BranchLine`、`ContextPreparation`、`Loop`、`Prompt` |
+| 提供 | `S:GuideEntries`、`S:dyn HostDispatch#guideEntries` |
+| 被注入于 | `BackgroundExec`、`BranchLine`、`ContextPreparation`、`Loop`、`Prompt`、`TimelineTree` |
 <!-- /generated -->

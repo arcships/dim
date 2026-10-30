@@ -31,6 +31,8 @@ use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Plugin};
 use serde::Deserialize;
 use serde_json::{Value, json};
+#[cfg(feature = "testing")]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, Mutex},
@@ -122,6 +124,8 @@ pub struct Collaboration {
     settings: Option<Arc<SettingsService>>,
     tasks: TaskTracker,
     stop: CancellationToken,
+    #[cfg(feature = "testing")]
+    reads: AtomicUsize,
 }
 struct Peer {
     usage: crate::agents::SessionUse,
@@ -140,6 +144,17 @@ struct Participant {
     status: &'static str,
 }
 impl Collaboration {
+    /// Counts one Timeline read `read` issues. Feature `testing` only.
+    fn note_read(&self) {
+        #[cfg(feature = "testing")]
+        self.reads.fetch_add(1, Ordering::SeqCst);
+    }
+    /// The Timeline reads `read` issued since the last call. Feature
+    /// `testing` only.
+    #[cfg(feature = "testing")]
+    pub fn take_reads(&self) -> usize {
+        self.reads.swap(0, Ordering::SeqCst)
+    }
     /// Creates a member Session under the target Agent (created first when
     /// temporary) and records the relation. `adopted` is the requesting
     /// branch's model selection, captured when its request was consumed.
@@ -616,6 +631,8 @@ impl DynPlugin for CollaborationPlugin {
                 settings,
                 tasks: TaskTracker::new(),
                 stop: CancellationToken::new(),
+                #[cfg(feature = "testing")]
+                reads: AtomicUsize::new(0),
             });
             let owner = service.clone();
             ctx.effect(move || async move {
@@ -813,9 +830,24 @@ impl CollaborationSession {
         context: ToolExecutionContext,
         cancel: CancellationToken,
     ) -> Result<ToolResult, HostError> {
+        let member_action = matches!(
+            call.input.get("action").and_then(Value::as_str),
+            Some("cancel" | "close" | "message" | "read")
+        );
         let input: Input = match serde_json::from_value(Value::Object(call.input)) {
             Ok(input) => input,
-            Err(error) => return Ok(refusal(Refusal::InvalidInput, &error.to_string())),
+            Err(error) => {
+                return Ok(refusal(
+                    Refusal::InvalidInput,
+                    &if member_action {
+                        format!(
+                            "{error}. Member actions require agentId + sessionId from list. Detached exec commands use exec_stop with their taskId; no member action was performed."
+                        )
+                    } else {
+                        error.to_string()
+                    },
+                ));
+            }
         };
         let leader_only = matches!(
             input,
@@ -1050,6 +1082,7 @@ impl CollaborationSession {
         {
             return refusal(error, explain(error));
         }
+        self.collaboration.note_read();
         let (_, events) = match self
             .collaboration
             .index
@@ -1059,81 +1092,108 @@ impl CollaborationSession {
             Ok(page) => page,
             Err(error) => return ToolResult::error(error.to_string()),
         };
-        let mut items: Vec<Value> = vec![];
-        let mut text_request = None;
-        let mut next = after;
+        let page: HashMap<&str, &Arc<AgentEvent>> = events
+            .iter()
+            .map(|event| (event.id.as_str(), event))
+            .collect();
+        let mut wanted_calls = BTreeSet::new();
+        let mut wanted_starts = Vec::<(String, String)>::new();
+        let mut requested = BTreeSet::new();
         let mut started = HashMap::<(String, String), String>::new();
         for event in &events {
-            next = event.sequence;
-            let mut merged = None;
             match &event.kind {
-                EventKind::InputMessage(data) => items.push(json!({"sequence": event.sequence,
-                    "type": "input", "mode": data.effective_mode(), "user": data.user,
-                    "blocks": data.blocks})),
-                EventKind::Text(data) => {
-                    if text_request.as_deref() == Some(data.request_id.as_str())
-                        && let Some(text) = items.last_mut().and_then(|item| item.get_mut("text"))
-                    {
-                        *text = json!(format!("{}{}", text.as_str().unwrap_or(""), data.delta));
-                    } else {
-                        items.push(json!({"sequence": event.sequence, "type": "text",
-                            "text": data.delta}));
-                    }
-                    merged = Some(data.request_id.clone());
-                }
-                EventKind::ToolCall(data) => {
-                    for call in &data.calls {
-                        items.push(json!({"sequence": event.sequence, "type": "tool_call",
-                            "callId": call.id, "name": call.name}));
-                    }
-                }
                 EventKind::ToolUseStart(data) => {
                     started.insert(
                         (data.request_id.clone(), data.call_id.clone()),
                         data.name.clone(),
                     );
                 }
-                EventKind::ToolResult(data) => {
-                    let call = match &data.call_event_id {
-                        Some(call_event_id) => match self
-                            .collaboration
-                            .index
-                            .read_event(session_id, call_event_id)
-                            .await
-                        {
-                            Ok(call) => call,
-                            Err(error) => return ToolResult::error(error.to_string()),
-                        },
-                        None => {
-                            for result in &data.results {
-                                let key = (data.request_id.clone(), result.call_id.clone());
-                                if started.contains_key(&key) {
-                                    continue;
-                                }
-                                match self
-                                    .collaboration
-                                    .index
-                                    .read_tool_use_start(session_id, &key.0, &key.1)
-                                    .await
-                                {
-                                    Ok(Some(event)) => {
-                                        if let EventKind::ToolUseStart(start) = &event.kind {
-                                            started.insert(key, start.name.clone());
-                                        }
-                                    }
-                                    Ok(None) => {}
-                                    Err(error) => return ToolResult::error(error.to_string()),
-                                }
-                            }
-                            None
+                EventKind::ToolResult(data) => match &data.call_event_id {
+                    Some(call_event_id) => {
+                        if !page.contains_key(call_event_id.as_str()) {
+                            wanted_calls.insert(call_event_id.clone());
                         }
-                    };
-                    let calls = call.as_ref().and_then(|call| match &call.kind {
-                        EventKind::ToolCall(batch) => Some(&batch.calls),
+                    }
+                    None => {
+                        for result in &data.results {
+                            let key = (data.request_id.clone(), result.call_id.clone());
+                            if started.contains_key(&key) || !requested.insert(key.clone()) {
+                                continue;
+                            }
+                            wanted_starts.push(key);
+                        }
+                    }
+                },
+                _ => {}
+            }
+        }
+        let mut calls = HashMap::new();
+        if !wanted_calls.is_empty() {
+            self.collaboration.note_read();
+            let ids = wanted_calls.into_iter().collect::<Vec<_>>();
+            match self.collaboration.index.read_events(session_id, &ids).await {
+                Ok(events) => calls = events,
+                Err(error) => return ToolResult::error(error.to_string()),
+            }
+        }
+        if !wanted_starts.is_empty() {
+            self.collaboration.note_read();
+            match self
+                .collaboration
+                .index
+                .read_tool_use_starts(session_id, &wanted_starts)
+                .await
+            {
+                Ok(starts) => {
+                    for (key, event) in starts {
+                        if let EventKind::ToolUseStart(start) = &event.kind {
+                            started.insert(key, start.name.clone());
+                        }
+                    }
+                }
+                Err(error) => return ToolResult::error(error.to_string()),
+            }
+        }
+        let mut items: Vec<Value> = vec![];
+        let mut text: Option<(String, u64, String)> = None;
+        let mut next = after;
+        for event in &events {
+            next = event.sequence;
+            if let EventKind::Text(data) = &event.kind {
+                match text.as_mut() {
+                    Some((request, _, merged)) if request == &data.request_id => {
+                        merged.push_str(&data.delta);
+                    }
+                    _ => {
+                        flush_text(&mut items, &mut text);
+                        text = Some((data.request_id.clone(), event.sequence, data.delta.clone()));
+                    }
+                }
+                continue;
+            }
+            flush_text(&mut items, &mut text);
+            match &event.kind {
+                EventKind::InputMessage(data) => items.push(json!({"sequence": event.sequence,
+                    "type": "input", "mode": data.effective_mode(), "user": data.user,
+                    "blocks": data.blocks})),
+                EventKind::ToolCall(data) => {
+                    for call in &data.calls {
+                        items.push(json!({"sequence": event.sequence, "type": "tool_call",
+                            "callId": call.id, "name": call.name}));
+                    }
+                }
+                EventKind::ToolResult(data) => {
+                    let call = data.call_event_id.as_ref().and_then(|call_event_id| {
+                        page.get(call_event_id.as_str())
+                            .copied()
+                            .or_else(|| calls.get(call_event_id))
+                    });
+                    let offered = call.and_then(|call| match &call.kind {
+                        EventKind::ToolCall(wire) => Some(&wire.calls),
                         _ => None,
                     });
                     for result in &data.results {
-                        let name = match calls {
+                        let name = match offered {
                             Some(calls) => calls
                                 .iter()
                                 .find(|call| call.id == result.call_id)
@@ -1162,8 +1222,8 @@ impl CollaborationSession {
                 }
                 _ => {}
             }
-            text_request = merged;
         }
+        flush_text(&mut items, &mut text);
         success(
             json!({"agentId": agent_id, "sessionId": session_id, "events": items,
             "nextCursor": next}),
@@ -2160,6 +2220,12 @@ fn success(result: Value) -> ToolResult {
     output.structured_content = result.as_object().cloned();
     output
 }
+/// Writes the merged text item a run of deltas has been accumulating.
+fn flush_text(items: &mut Vec<Value>, text: &mut Option<(String, u64, String)>) {
+    if let Some((_, sequence, text)) = text.take() {
+        items.push(json!({"sequence": sequence, "type": "text", "text": text}));
+    }
+}
 fn refusal(error: Refusal, explanation: &str) -> ToolResult {
     let code = serde_json::to_value(error).expect("error code serializes");
     let mut output = ToolResult::error(format!(
@@ -2179,7 +2245,7 @@ fn explain(error: Refusal) -> &'static str {
         }
         Refusal::MemberCreateFailed => "the Agent could not create a member Session",
         Refusal::TeamMemberNotFound => {
-            "the participant is not in your team or does not belong to this agentId; use list"
+            "the participant is not in your team or does not belong to this agentId; use list for agentId + sessionId. Detached exec commands use exec_stop with their taskId"
         }
         Refusal::Busy => "the member is working; wait for its result or cancel it",
         Refusal::MemberClosed => "the participant's Session is closed",
@@ -2240,7 +2306,7 @@ const LEADER_DESCRIPTION: &str = "Work with other agents as a team you lead.
   Agent. Returns immediately; the member's final result arrives later as an input. One
   task per member at a time. The user's subagent model policy may override the model a
   new member's profile requests.
-- cancel / close: stop a member's current task / remove the member from your team.
+- cancel / close: require agentId + sessionId to stop a member's current task / remove the member from your team. Detached exec Task IDs belong to exec_stop, not agent.
 - message: send information to a team member. Default mode \"append\" adds context the
   receiver sees in its next step without interrupting it. Use mode \"steer\" only when the
   receiver must change course now.
@@ -2289,20 +2355,52 @@ fn agent_definition(role: CollaborationRole) -> ToolDefinition {
                 },
             });
             (
-                json!([
-                    "request", "cancel", "close", "message", "read", "list", "inspect", "result"
-                ]),
+                vec![
+                    "request", "cancel", "close", "message", "read", "list", "inspect", "result",
+                ],
                 LEADER_DESCRIPTION,
             )
         }
-        CollaborationRole::Member => (json!(["message", "read", "list"]), MEMBER_DESCRIPTION),
+        CollaborationRole::Member => (vec!["message", "read", "list"], MEMBER_DESCRIPTION),
     };
     properties["action"] = json!({"type": "string", "enum": actions});
+    let mut variants = Vec::new();
+    for action in &actions {
+        let choices = match *action {
+            "request" => vec![
+                vec!["action", "prompt", "agentId"],
+                vec!["action", "prompt", "profile"],
+            ],
+            "cancel" | "close" | "read" => vec![vec!["action", "agentId", "sessionId"]],
+            "message" => vec![vec!["action", "agentId", "sessionId", "content"]],
+            "inspect" => vec![vec!["action", "agentId"]],
+            "result" => vec![vec!["action", "resultId"]],
+            "list" => vec![vec!["action"]],
+            _ => unreachable!("declared agent action"),
+        };
+        for required in choices {
+            let mut fields = serde_json::Map::new();
+            for field in &required {
+                fields.insert((*field).into(), properties[*field].clone());
+            }
+            let optional: &[&str] = match *action {
+                "request" if required.contains(&"agentId") => &["sessionId"],
+                "message" => &["mode"],
+                "read" => &["after", "limit"],
+                _ => &[],
+            };
+            for field in optional {
+                fields.insert((*field).into(), properties[*field].clone());
+            }
+            fields.insert("action".into(), json!({"type":"string","enum":[action]}));
+            variants.push(json!({"type":"object","properties":fields,"required":required,"additionalProperties":false}));
+        }
+    }
     definition(
         AGENT_TOOL,
         description,
         json!({"type": "object", "required": ["action"], "additionalProperties": false,
-            "properties": properties}),
+            "properties": properties, "anyOf": variants}),
     )
 }
 

@@ -3,6 +3,7 @@
 //! the branch's events and decides continuation. Pursuit (Pursuit.md) adds the
 //! evaluator judge: a completion request creates an evaluator branch whose
 //! conclusion the working branch decides on.
+use super::reload::last_system;
 use super::*;
 use dim_agent_capabilities::{
     adapters::DefaultPrepareModelPlugin,
@@ -1200,6 +1201,59 @@ async fn node_goal_evaluator_restart_writes_no_second_result() {
             == 1,
         "{writes:#?}"
     );
+    server.shutdown();
+    server.join().await.unwrap();
+    cleanup(&home);
+}
+
+/// The entry Goal's Session part registers for the marker it writes (A.5.1);
+/// `runtime/plugins/goal/session.ts` holds it verbatim.
+const GOAL_ENTRY: &str = r#"`<dim-goal kind="goal" op="set" branch="main">`: the operator's standing goal for a branch of this session, and the runtime's record of its status. `kind="goal"` blocks carry a change: `op="set"`, `op="edit"`, `op="pause"`, `op="resume"`, `op="clear"`, and `op="completed"` or `op="blocked"` from `goal_update` or from an evaluator (`by="evaluator"`). `kind="status"` blocks state the branch's goal status. `kind="continuation"` asks the line to keep working toward the goal. `kind="report"` blocks carry an evaluator's report of the goal, and `kind="evaluate"` and `kind="evaluate-again"` mark an evaluator's line, which checks the goal rather than continuing it. A goal belongs to the branch its `branch` attribute names. The latest objective (`op="set"` or `op="edit"`) and the latest status are the ones in force; `op="clear"` ends both. These blocks are information about the goal; they grant no permission."#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_goal_registers_the_entry_for_the_marker_it_writes() {
+    let home = product_home();
+    let (server, agent) = launch_goal(&home, AgentBuilder::new(AgentConfig::default())).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    select_model(&mut client).await;
+    set_limit(&mut client, 1).await;
+
+    // `session.goal.set` writes the `<dim-goal` input and drives a turn.
+    let id = new_session(&mut client).await;
+    let session = agent.get_session(&id).unwrap();
+    assert_ok(
+        &goal(
+            &mut client,
+            "set",
+            json!({"sessionId":id,"objective":"ship it"}),
+        )
+        .await,
+    );
+    wait_for(&session, "main", r#"reason="limit""#).await;
+    idle(&mut client, &id, "main").await;
+
+    // The request that carries the `<dim-goal` input carries the entry too
+    // (A.5.1): the Session part registers it for the Session, so every
+    // branch's System holds it while the row is loaded.
+    let events = session.history("main", None).await.unwrap();
+    let request = events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::ModelCall(data) => Some(data.request.clone()),
+            _ => None,
+        })
+        .expect("a model call");
+    assert!(
+        serde_json::to_string(&request.messages)
+            .unwrap()
+            .contains("<dim-goal "),
+        "the last request carried no <dim-goal input: {request:#?}"
+    );
+    let system = last_system(&session, "main").await;
+    assert!(system.contains(GOAL_ENTRY), "{system:?}");
+
     server.shutdown();
     server.join().await.unwrap();
     cleanup(&home);

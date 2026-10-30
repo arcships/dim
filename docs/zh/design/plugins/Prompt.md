@@ -89,9 +89,15 @@ Prompt 组合出一段文字：框架的头、该分支生效的条目、框架�
 
 Prompt 自己的两个调用点留在原处：ContextPreparation 放置它发布的 System，Loop 放置它构建的请求的 System。变的是指南文字从哪来——从组合而不是一份固定文件——不是由谁放置。移除这两处放置是 [#555](../model-prompts.md#97-loop-与-contextpreparation) 的事。
 
-### 3.4 两次采用之间固定
+### 3.4 在写入者装载时采用
 
-在采用的路径上，条目在装载其写入者的那一次采用时生效，而那正是该写入者的工具声明改变请求前缀的时点。两次采用之间指南不变：其间做出的登记等下一次采用，其间发生的撤回也在下一次采用时才结束。在宿主准备的路径上，指南只在某个写入者装载或卸载的地方变化，而那正是这条路径的工具声明改变请求的时点，因为它逐请求绑定工具。
+指南条目在其写入者装载时生效、在其卸载时结束。Prompt 在那里采用指南：每个组合发生了变化的开放分支发布一条 `context/configured`，其设置——模型、工具与来源文字——保持不变，System 按当时生效的条目重新组合；组合没有变化的分支对这次变化既不发布，也不读自己的上下文。这些时点之间指南不变，因为条目只在其写入者的 `apply` 里登记，并随那一代的卸载而离开。
+
+分支在自己的 open 处还会采用一次指南：fork 继承父分支的配置，恢复的分支承载它持久化的 System，而当时生效的条目是它的写入者在装载时登记的那些。这次采用是 open 的一部分：分支只有在这次采用发布之后才报告自己已打开，所以 open 之后的第一条请求承载的就是调和后的条目，不会有哪一条按继承来的或持久化的 System 组装。这次采用每次 open 读一次上下文，组合与已采用的 System 相同时什么都不发布。
+
+关闭中的分支什么都不采用：它的写入者正因为它要关停而卸载，此时记录下来的配置会带着一个分支从未运行过的 System。
+
+宿主准备的路径在同样的时点改变指南，但不发布任何东西，因为它把指南组合进它构建的请求。装载之后新开的分支在自己的 open 处按当时生效的条目组合，而从已采用配置构建的请求承载该分支已采用的 System。
 
 没有请求自己组装指南，也没有贡献者向请求追加文字。这正是指南不会在会话中途让缓存前缀分叉的原因：指南是前缀的一部分，它只在这次采用本来就移动前缀时才移动。
 
@@ -104,7 +110,8 @@ Prompt 自己的两个调用点留在原处：ContextPreparation 放置它发布
 | 10 | `dim-notification` | BackgroundExec | 分支 | exec 通知 |
 | 20 | `dim-agent-report` | Collaboration 的 Session 部件 | Session | 委派工作的结果 |
 | 30 | `dim-agent-message` | Collaboration 的 Session 部件 | Session | 另一个 agent 的消息 |
-| 40 | `dim-branch-line`、`dim-branch-lines` | BranchLine | 分支 | 你是这个 Session 的哪条线，以及 `main` 上的线列表 |
+| 40 | `dim-branch-line` | TimelineTree | Session | 你是这个 Session 的哪条线 |
+| 40 | `dim-branch-lines` | BranchLine | 分支 | `main` 上的线列表；`order` 相同时身份条目在前 |
 | 50 | `dim-branch-message`、`dim-branch-idle`、`dim-branch-ended` | BranchLine | 分支 | 另一条线发来的消息，以及运行时关于某条线的报告 |
 | 60 | `dim-state` | PromptGuide | Session | 状态块是什么 |
 | 70 | `dim-rule` | PromptGuide | Session | 规则块是什么、怎样结束 |
@@ -134,13 +141,13 @@ Prompt 自己的两个调用点留在原处：ContextPreparation 放置它发布
 
 ### 6.1 插件桥接
 
-经插件桥接贡献的插件，与 Rust 部件用同样的方式登记条目：在自己的 `apply` 里，在它那一行装载期间，通过参数与应答都是 serde 数据的调用。桥接需要、但目前还没有的：
+经插件桥接贡献的插件，与 Rust 部件用同样的方式登记条目：在自己的 `apply` 里，在它那一行装载期间，通过参数与应答都是 serde 数据的调用。这条路由以三部分到达其他语言：
 
-1. **名字，在 Session 组里共享。** 这种形状的 Rust 登记表只有在提供的实例里共享名字，才能到达其他语言；运行外部部件的宿主列出这些名字（App Server 的 `share_names`），新名字加入其中。
+1. **名字，在 Session 组里共享。** 这种形状的 Rust 登记表只有在提供的实例里共享名字，才能到达其他语言；运行外部部件的宿主列出这些名字（App Server 的 `share_names`），`guideEntries` 与 `toolRegistry` 并列共享在那里。
 2. **把登记绑定到调用方的派发。** Rust 的 `register` 从调用方取 `ctx`；别的语言的调用方没有 `ctx`，所以这个名字经一个 `rutis_bridge` 的 `HostDispatch` 提供，它读 `rutis_bridge::session::caller_row()` 并以那一行登记——正是 `toolRegistry` 已经在用的形式。没有调用行时，调用以 `no_caller_row` 失败，而不是登记在谁的名下。
-3. **TypeScript 声明。** 接口与 `ToolRegistry` 的并列加入 `npm/plugin.d.ts`，写明上面的请求、应答与错误码。
+3. **TypeScript 声明。** 接口与 `ToolRegistry` 的并列加入 `npm/plugin.d.ts`，写明上面的请求、应答与错误码：`register(scope, entry)`，`scope` 为 `"session"` 或 `{"branch": "<分支 id>"}`，`entry` 为 `{markers, order, text}`；调用不带返回值；被拒时抛出 `GuideEntryError`，其 `code` 取 §2 的码之一（包括 `closed`），在调用行之外调用时为 `no_caller_row`。
 
-这三项由它们的所有者改自己的文件；本文提出需求，不在这里实现。能力本身——表、组合与两处放置——不依赖这三项就能在 Rust 里工作，所以这个改动里每个内建写入者的条目路由都是完整的。
+能力本身——表、组合与两处放置——只靠 Rust 就能工作，所以不接桥接时每个内建写入者的条目路由已经完整，桥接让它对生活在另一种语言里的写入者也完整。
 
 ### 6.2 写入者
 
@@ -148,13 +155,16 @@ Prompt 自己的两个调用点留在原处：ContextPreparation 放置它发布
 
 ### 6.3 ContextPreparation：条目与已发布的 System
 
-§3.4 的目标需要 Prompt 之外的一处改动，它归 [ContextPreparation](../../../architecture/rust-agent/plugins/ContextPreparation.md)，随 [#555](../model-prompts.md#97-loop-与-contextpreparation) 落地。今天指南只在渲染 System 的采用处组合：第一次配置或来源变化。只更新工具或模型的采用保留上一次采用的 System，连同其中的指南，因此随这类采用装载的写入者，要到下一次渲染 System 的采用才把条目带进 System。
+§3.4 的目标需要 [ContextPreparation](../../../architecture/rust-agent/plugins/ContextPreparation.md) 发布器上的一处改动（[#555](../model-prompts.md#97-loop-与-contextpreparation)），以及 Prompt 本身的一处改动。发布器在每次发布 System 的采用处组合指南：渲染 System 的提示词变化，用新来源文字与生效的条目组合；只更新工具、只更新模型与指南采用，则在分支已采用的来源文字上重新渲染指南。
 
-- 只更新工具或模型的采用，若改变了生效的条目，就重新渲染指南并保留已采用的来源文字。
-- 为做到这一点，已发布的配置把来源文字与指南分开记录，恢复的 Session 才能重新渲染它。
-- 这个拆分是恢复的 Session 需要的：`restoring_a_session_keeps_its_adopted_system_and_model`（`tests/integration/tests/prompt_lifecycle.rs`）从 `context/configured` 恢复已采用的 System，而它的文字没有可重建的来源；只按快照里的来源重新组合，已采用的 System 的位置就只剩指南。
+- 已发布的配置把该来源文字与它携带的指南分开记录（`context/configured.system_source`），因此指南可以重新组合，而来源始终是分支已采用的那份文字。
+- 只更新工具、只更新模型的采用与指南采用都按当前生效的条目组合指南、放在记录的来源文字上：装载的写入者在装载处就把条目带进 System，无论这次装载是否同时采用它的工具；组合本来就读作这样的分支什么都不发布。
+- 在来源被记录之前写下的配置没有可重新渲染的来源：它保留已采用的 System，连同其中的指南，直到下一次渲染 System 的采用替换它。`restoring_a_session_keeps_its_adopted_system_and_model`（`tests/integration/tests/prompt_lifecycle.rs`）恢复的就是这样的 System；只按快照里的提示词来源重新组合，已采用的 System 的位置就只剩指南。
+- 请求原样读取已采用的 System：由配置构建的请求里，Loop 承载 `context/configured.system`；宿主准备的请求承载 Prompt 组合出的 System。两者都不追加自己的文字。
 
-对这条要求，Prompt 与条目表不需要改动：组合已经可以在那里调用，生效的条目也已经随写入者的代变化。
+触发者是 Prompt 的。它的分支部件声明对条目表的读取，并订阅条目表从自己的登记转发出来的 `changes()`，于是这份 watch 留在条目所在的注册表里，而不跨进 ContextPreparation。监听在分支自己的 open 采用组合之前就取好版本与它起始的组合，并在那次采用跑起来之前开始：在 open 进行期间发生的登记因此会改变监听用来比较的组合并被采用，而不是进入一个事后才取、已记为已见的基线；在那次采用期间发生的变化，会由一次排在 open 这一项之后的采用来采用。此后的每次变化都先在内存里重新组合本分支的指南（既不读 Timeline 也不读存储），只有这段文字变了，才往模型变化与工具采用共用的同一条串行队列里排入一次指南采用。open 自己还会在报告自己已打开之前跑一次采用，因为基线是一份组合，而不是分支承载的 System：它每次 open 读一次上下文，两者本来相同时什么都不发布。让这次采用走 open 的路径、而不是排在之后的一项，正是 fork 与恢复之后的第一条请求能承载当时生效的条目的原因。关闭中的分支什么都不记录：分支一开始关闭监听就结束，已经在读取的采用会在提交锁下拒绝自己的追加，所以那一项和其余项一样被丢弃，而不会被记成一个分支从未运行过的 System。
+
+写入者的工具可以比它的指南早一步到达请求。工具的来源一装载，工具就经工具采用到达；条目则经监听和这条队列到达，所以落在这段窗口里的一步带着新工具和上一个 System，下一步再替换 System：前缀因此移动两次，而 §6.2 描述的是移动一次。设计接受这一步。让 Loop 等待待处理的指南采用，为一小步的前缀把它耦合到 Prompt 的队列上，并不值得；指南仍然只在采用处变化，从不在请求内部变化。
 
 ## 7. 规则检查
 
@@ -211,6 +221,10 @@ impl GuideEntries {
 
     /// `branch` 的指南：框架、生效的条目、框架的尾，段落之间隔一个空行。
     pub fn compose(&self, branch: &str) -> String;
+
+    /// `branch` 的 System：`base` 文字在前，其后是指南。`base` 缺失或为空
+    /// 时只有指南；`Parts` 形式的 `base` 追加一个文本 part 承载指南。
+    pub fn compose_system(&self, branch: &str, base: Option<SystemPrompt>) -> SystemPrompt;
 }
 ```
 
@@ -241,6 +255,6 @@ pub struct GuideEntryError {
 
 `invalid_entry`、`duplicate_marker` 和 `too_large` 是这个绑定产生的代码。`no_caller_row` 只由桥接产生：Rust 的调用方总有自己的 `ctx`，登记就是调用方自己的 effect。`closed` 来自框架：调用方的上下文正在关闭或卸载时，effect 无法登记，框架返回它自己的 closed 错误，桥接把它映射为 `closed`；Rust 绑定原样返回它，而不把它包装成 `GuideEntryError`。
 
-Prompt 经 `GuideEntries::compose` 组合：在它发布的采用处，以及宿主准备的请求由 Loop 组装 System 处。`with_input_guide(system, guide)` 把已经组合好的指南放进 `SystemPrompt`；它不再知道指南从哪来，也没有调用方追加自己的文字。
+Prompt 经 `GuideEntries::compose_system` 组合：在它发布的采用处，以及宿主准备的请求由 Loop 组装 System 处。组合的结果就是请求承载的 `SystemPrompt`，放在分支已采用的来源文字之后。没有调用方追加自己的文字。
 
 `register` 的对外形式就是 §2 的数据：作用域、条目与错误码；`compose` 只存在于 Rust，因为没有别的语言读取组合——每种语言都经同一个请求到达模型。

@@ -6,6 +6,16 @@ Owner: [model_provider.rs](../../../../crates/dim-agent-capabilities/src/model_p
 Runs prepared model calls, validates/commits streamed output and owns terminal
 settlement and bounded retry/recovery.
 
+## Image handling
+
+Every image block in a request is handled when the request is built, from that
+request's model (Attachments A.1; [images.rs](../../../../crates/dim-agent-capabilities/src/model_provider/images.rs)).
+The rule covers images in user content and images inside a tool result alike: a
+model that does not accept image input gets the text placeholder in the block's
+place, an image the request cannot carry gets the other placeholder, and every
+other image is sent as is. The decision changes the request only; the adopted
+input, the Timeline and the stored tool result never change.
+
 ## Dependencies
 
 | Service | Purpose |
@@ -34,6 +44,14 @@ historical calls without invoking the model again. Retry is bounded and cannot
 repeat irreversible output. The process-model constructor also injects the
 process `ProviderConnectionResolver` to resolve each request's connection; this
 profile does not.
+
+A provider's `max_tokens` stop fails that turn with a `max_tokens` presentation,
+the request's provider/model identity and an action to increase the output limit.
+It is not a context-budget recovery signal and is never retried automatically.
+The private daemon log records model request failures with their Session, turn and request
+identities. The Session remains available for a later input or model configuration.
+A presentation supplied by the model host takes precedence; ModelFailurePolicy
+provides a presentation only when the host supplied none.
 
 ## Tests
 

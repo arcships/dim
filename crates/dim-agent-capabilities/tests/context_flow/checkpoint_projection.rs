@@ -273,7 +273,10 @@ async fn incompatible_snapshot_is_rejected_before_custom_renderer_decoding() {
         decode_checkpoint: |_, _| panic!("must not decode an incompatible interpreter"),
         ..HistoryRenderer::default()
     };
-    let replay = renderer.context(&timeline, fact.sequence).await.unwrap();
+    let (replay, _) = renderer
+        .rendered_context(&timeline, fact.sequence)
+        .await
+        .unwrap();
     assert!(replay.checkpoint.is_none());
     assert_eq!(replay.events.len(), 4);
     assert_eq!(
@@ -306,7 +309,10 @@ async fn incompatible_snapshot_is_rejected_before_custom_renderer_decoding() {
         )
         .await
         .unwrap();
-    let accelerated = renderer.context(&timeline, fact.sequence).await.unwrap();
+    let (accelerated, _) = renderer
+        .rendered_context(&timeline, fact.sequence)
+        .await
+        .unwrap();
     assert_eq!(accelerated.checkpoint, Some(checkpoint.clone()));
     assert!(accelerated.events.iter().any(|event| event.id == fact.id));
     assert_eq!(
@@ -368,7 +374,7 @@ async fn incompatible_snapshot_is_rejected_before_custom_renderer_decoding() {
         let (timeline, renderer, replay) = (&timeline, &renderer, &replay);
         async move {
             timeline.save_snapshot(snapshot).await.unwrap();
-            let context = renderer.context(timeline, at).await.unwrap();
+            let (context, _) = renderer.rendered_context(timeline, at).await.unwrap();
             assert!(context.checkpoint.is_none());
             assert_eq!(context.events, replay.events);
         }
@@ -389,6 +395,95 @@ async fn incompatible_snapshot_is_rejected_before_custom_renderer_decoding() {
     mismatched.state = (renderer.encode_checkpoint)(&mismatched, &moved).unwrap();
     assert!((renderer.decode_checkpoint)(&mismatched, &fact).is_none());
     fallback(mismatched).await;
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+}
+
+/// A checkpoint whose render fails is a cache miss: the read falls back to the
+/// full replay and returns that with its rendering.
+#[tokio::test]
+async fn a_checkpoint_whose_render_fails_falls_back_to_full_replay() {
+    fn fail_on_checkpoint(
+        context: &ContextHistory,
+    ) -> std::result::Result<Vec<HistoryEntry>, String> {
+        if context.checkpoint.is_some() {
+            return Err("render failed".into());
+        }
+        project_context_history(context)
+    }
+    let store = Arc::new(MemoryTimelineStore::default());
+    let key = TimelineKey {
+        session_id: "fallback".into(),
+        branch_id: "main".into(),
+    };
+    store
+        .create_session(&key.session_id, &SessionConfig::default())
+        .await
+        .unwrap();
+    let timeline = Timeline::new(Ctx::root().unwrap(), key, vec![], store);
+    let input = timeline
+        .append(EventKind::InputMessage(InputMessageData::text("original", None)).into())
+        .unwrap();
+    timeline
+        .append(
+            EventKind::InputConsumed(InputConsumedData {
+                input_id: input.id.clone(),
+            })
+            .into(),
+        )
+        .unwrap();
+    let cut = timeline
+        .append(
+            EventKind::TurnStart(TurnStartData {
+                turn_id: "next".into(),
+            })
+            .into(),
+        )
+        .unwrap();
+    let kept = timeline
+        .append(EventKind::InputMessage(InputMessageData::text("kept", None)).into())
+        .unwrap();
+    timeline
+        .append(
+            EventKind::InputConsumed(InputConsumedData {
+                input_id: kept.id.clone(),
+            })
+            .into(),
+        )
+        .unwrap();
+    let through = timeline.sequence();
+    let fact = timeline
+        .append(completed(&cut.id, "authoritative", through, vec![]).into())
+        .unwrap();
+    let saved = HistoryRenderer::default()
+        .snapshot(&timeline.context(through).await.unwrap(), &cut.id, &fact)
+        .unwrap();
+    timeline.save_snapshot(saved).await.unwrap();
+    let full = timeline.context(fact.sequence).await.unwrap();
+    let (accelerated, _) = HistoryRenderer::default()
+        .rendered_context(&timeline, fact.sequence)
+        .await
+        .unwrap();
+    assert!(
+        accelerated.checkpoint.is_some(),
+        "the read must use the checkpoint"
+    );
+    let renderer = HistoryRenderer {
+        render: fail_on_checkpoint,
+        ..HistoryRenderer::default()
+    };
+    let (context, history) = renderer
+        .rendered_context(&timeline, fact.sequence)
+        .await
+        .unwrap();
+    assert!(context.checkpoint.is_none());
+    assert_eq!(context.events, full.events);
+    assert_eq!(history, project_context_history(&full).unwrap());
+    assert!(
+        !history.is_empty(),
+        "the full replay renders the kept input"
+    );
     dim_agent_runtime::core::close_timeline(&timeline)
         .await
         .unwrap();
@@ -590,6 +685,7 @@ fn checkpoint_replay_preserves_prompt_configuration_pending_input_and_internal_t
             metadata: None,
         }),
         system: Some(SystemPrompt::Text("system".into())),
+        system_source: None,
     };
     let input = |text: &str| InputMessageData {
         user: InputMessageData::text(text, None).user,

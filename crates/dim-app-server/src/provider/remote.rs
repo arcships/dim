@@ -179,17 +179,8 @@ impl ProviderService {
                 }
                 let expected = serde_json::to_value(&record).map_err(ProviderError::from)?;
                 let models = owner.discover(&provider_id, &record, &cancel).await?;
+                reject_user_model_conflicts(&record, &models)?;
                 let version = record.version;
-                if models.iter().any(|model| {
-                    record
-                        .user_models
-                        .iter()
-                        .any(|user| user.model_id == model.model_id)
-                }) {
-                    return Err(ProviderError::Conflict(
-                        "Discovered models conflict with user-added model IDs".into(),
-                    ));
-                }
                 record.models = models;
                 record.remote_models = true;
                 record.version = version

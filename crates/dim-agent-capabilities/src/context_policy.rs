@@ -497,28 +497,13 @@ impl ContextPolicy {
             provider_budget: step.provider_budget.clone(),
             prior,
         };
-        let first = self
-            .pass(
-                &Pass {
-                    view,
-                    model: model.as_ref(),
-                    turn,
-                    recovery: step.provider_budget.is_some(),
-                    history: &view.history,
-                    offset: 0,
-                    cuts: &cuts,
-                },
-                input(
-                    view.history.clone(),
-                    view.checkpoint.clone(),
-                    limit_from.clone(),
-                    cuts.clone(),
-                    None,
-                ),
-                &cancel,
-                cancelled,
-            )
-            .await;
+        let first_input = input(
+            view.history.clone(),
+            view.checkpoint.clone(),
+            limit_from.clone(),
+            cuts.clone(),
+            None,
+        );
         let record = |retain_from: Option<String>,
                       retain_limit: Option<String>,
                       output: Option<f64>,
@@ -574,6 +559,47 @@ impl ContextPolicy {
                     digest_entries: composed.digest,
                 }
             };
+        if step.trigger == CompactionTrigger::Threshold
+            && first_input
+                .cut()
+                .is_some_and(|cut| !self.shrinks(view, model.as_ref(), turn, cut))
+        {
+            let outcome = ContextCompactionResult::Skipped {
+                reason: "nothing_to_compact".into(),
+                diagnostics: record(
+                    None,
+                    limit_from.clone(),
+                    None,
+                    0,
+                    StrategyDiagnostics {
+                        model_call_count: 0,
+                        model_usage: None,
+                        record: CompactionStrategyRecord {
+                            kind: name.clone(),
+                            details: Default::default(),
+                        },
+                    },
+                    None,
+                ),
+            };
+            return self.commit(step, view, model, start, outcome).await;
+        }
+        let first = self
+            .pass(
+                &Pass {
+                    view,
+                    model: model.as_ref(),
+                    turn,
+                    recovery: step.provider_budget.is_some(),
+                    history: &view.history,
+                    offset: 0,
+                    cuts: &cuts,
+                },
+                first_input,
+                &cancel,
+                cancelled,
+            )
+            .await;
         let outcome = match first {
             StepOutcome::Completed {
                 composed,
@@ -672,6 +698,39 @@ impl ContextPolicy {
             StepOutcome::Cancelled { reason } => ContextCompactionResult::Cancelled { reason },
         };
         self.commit(step, view, model, start, outcome).await
+    }
+
+    /// Whether the entries a compaction at `cut` removes — less the pinned
+    /// inputs the replacement carries instead of dropping them, plus the
+    /// previous replacement's strategy part, which the next summary reads and
+    /// replaces — exceed the strategy's planned replacement size
+    /// (ContextCompaction §5.3, step 2).
+    fn shrinks(
+        &self,
+        view: &View,
+        model: &dyn ContextModel,
+        turn: Option<(&str, Option<&CarriedPins>)>,
+        cut: &CompactionCut,
+    ) -> bool {
+        let count =
+            |messages: Vec<Message>| model.count_tokens(&ModelRequest::new("", "", messages));
+        let empty = count(Vec::new());
+        let dropped = count(
+            view.history[..cut.entry]
+                .iter()
+                .map(|entry| entry.message.clone())
+                .collect(),
+        ) - empty;
+        let pinned = count(pinned_inputs(view, turn, &cut.retain_from, model).messages) - empty;
+        let previous = view.checkpoint.as_ref().map_or(0., |checkpoint| {
+            let len = checkpoint.replacement.len();
+            let strategy = checkpoint
+                .replacement_parts
+                .map_or(len, |parts| parts.strategy as usize)
+                .min(len);
+            count(checkpoint.replacement[..strategy].to_vec()) - empty
+        });
+        dropped - pinned + previous > self.strategy.replacement_size(model)
     }
 
     /// Appends the result of a compaction step, then re-reads the committed

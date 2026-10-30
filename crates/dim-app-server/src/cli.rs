@@ -319,6 +319,7 @@ pub fn run_with(
                 &mut builder,
                 ModelProviderPlugin::process,
                 WorkspaceToolsConfig { output_root },
+                dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
             );
             permission_rules::install(&mut builder);
             builder

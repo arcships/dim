@@ -150,6 +150,7 @@ pub async fn local_graph() -> Result<BTreeMap<&'static str, Value>> {
         WorkspaceToolsConfig {
             output_root: dir.join("outputs"),
         },
+        dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
     );
     dim_agent_attachments::install(&mut builder);
     dim_agent_questions::install(&mut builder);

@@ -1,10 +1,14 @@
 //! Input history: the last submitted drafts of one working directory, kept in
 //! `<home>/input-history.json` (`{"version":1,"buckets":{cwd:[...]}}`, at most
-//! ten entries per directory, a repeated entry moves to the end).
+//! ten entries per directory, a repeated entry moves to the end). A file that
+//! does not parse is replaced by one holding the appended entry: history is a
+//! recall convenience, and refusing would stop recording for good.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+use crate::ui::atomic;
 
 const FILE: &str = "input-history.json";
 const MAX_ENTRIES: usize = 10;
@@ -19,11 +23,11 @@ fn path(home: &Path) -> PathBuf {
     home.join(FILE)
 }
 
-fn read(home: &Path) -> Store {
-    let Ok(raw) = std::fs::read_to_string(path(home)) else {
+fn parse(raw: Option<&[u8]>) -> Store {
+    let Some(raw) = raw else {
         return Store::default();
     };
-    match serde_json::from_str::<Store>(&raw) {
+    match serde_json::from_slice::<Store>(raw) {
         Ok(store) if store.version == 1 => Store {
             version: 1,
             buckets: store
@@ -41,6 +45,10 @@ fn read(home: &Path) -> Store {
     }
 }
 
+fn read(home: &Path) -> Store {
+    parse(std::fs::read(path(home)).ok().as_deref())
+}
+
 pub fn load(home: &Path, cwd: &str) -> Vec<String> {
     let key = cwd.trim();
     if key.is_empty() {
@@ -49,40 +57,22 @@ pub fn load(home: &Path, cwd: &str) -> Vec<String> {
     read(home).buckets.remove(key).unwrap_or_default()
 }
 
-/// Appends `entry` for `cwd`, atomically (write a temp file, rename).
+/// Appends `entry` for `cwd` under the history's lock, so concurrent CLIs
+/// keep every entry.
 pub fn append(home: &Path, cwd: &str, entry: &str) -> std::io::Result<()> {
     let key = cwd.trim();
     if key.is_empty() || entry.is_empty() {
         return Ok(());
     }
-    let mut store = read(home);
-    store.version = 1;
-    let list = store.buckets.entry(key.to_owned()).or_default();
-    list.retain(|existing| existing != entry);
-    list.push(entry.to_owned());
-    let skip = list.len().saturating_sub(MAX_ENTRIES);
-    list.drain(..skip);
-    std::fs::create_dir_all(home)?;
-    let target = path(home);
-    let temp = target.with_extension(format!("json.{}.tmp", std::process::id()));
-    use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&temp)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    file.write_all(&serde_json::to_vec(&store)?)?;
-    drop(file);
-    std::fs::rename(&temp, &target).inspect_err(|_| {
-        let _ = std::fs::remove_file(&temp);
+    atomic::update(&path(home), Some(0o600), |current| {
+        let mut store = parse(current);
+        store.version = 1;
+        let list = store.buckets.entry(key.to_owned()).or_default();
+        list.retain(|existing| existing != entry);
+        list.push(entry.to_owned());
+        let skip = list.len().saturating_sub(MAX_ENTRIES);
+        list.drain(..skip);
+        Ok(Some(serde_json::to_vec(&store)?))
     })
 }
 
@@ -118,12 +108,130 @@ mod tests {
         }
     }
 
+    /// A file that does not parse is replaced by a valid one holding the
+    /// appended entry, so recording goes on instead of stopping for good.
     #[test]
-    fn a_corrupt_file_reads_as_empty() {
+    fn a_corrupt_file_is_replaced_by_one_holding_the_entry() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(FILE), "not json").unwrap();
         assert!(load(dir.path(), "/x").is_empty());
         append(dir.path(), "/x", "ok").unwrap();
         assert_eq!(load(dir.path(), "/x"), vec!["ok"]);
+        let store: Store = serde_json::from_slice(&std::fs::read(path(dir.path())).unwrap())
+            .expect("the appended file must parse");
+        assert_eq!(store.version, 1);
+        assert_eq!(store.buckets["/x"], vec!["ok"]);
+    }
+
+    /// A linked history file stays a link, its target takes the append, and
+    /// no lock is left in the linked directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_history_stays_a_link() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let linked = dir.path().join("dotfiles");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&linked).unwrap();
+        let target = linked.join(FILE);
+        std::fs::write(&target, "{\"version\":1,\"buckets\":{\"/keep\":[\"a\"]}}").unwrap();
+        symlink(&target, path(&home)).unwrap();
+        append(&home, "/work", "entry").unwrap();
+        assert!(std::fs::symlink_metadata(path(&home)).unwrap().is_symlink());
+        let store: Store = serde_json::from_slice(&std::fs::read(&target).unwrap()).unwrap();
+        assert_eq!(store.buckets["/keep"], vec!["a"]);
+        assert_eq!(store.buckets["/work"], vec!["entry"]);
+        assert!(!linked.join("input-history.json.lock").exists());
+    }
+
+    /// Concurrent CLIs appending to one home keep every entry.
+    #[test]
+    fn concurrent_appends_keep_every_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        for round in 0..8 {
+            let home = dir.path().join(format!("round-{round}"));
+            std::thread::scope(|scope| {
+                for writer in 0..4 {
+                    let home = home.clone();
+                    scope.spawn(move || {
+                        for n in 0..2 {
+                            append(&home, "/work", &format!("w{writer} {n}")).unwrap();
+                        }
+                    });
+                }
+            });
+            let mut entries = load(&home, "/work");
+            let expected: Vec<String> = (0..4)
+                .flat_map(|writer| (0..2).map(move |n| format!("w{writer} {n}")))
+                .collect();
+            assert_eq!(entries.len(), expected.len(), "round {round}: {entries:?}");
+            entries.sort();
+            let mut expected_sorted = expected;
+            expected_sorted.sort();
+            assert_eq!(entries, expected_sorted, "round {round}");
+        }
+    }
+
+    /// Set on the children a cross-process test re-executes, with the home
+    /// and the writer number they write.
+    const CHILD_HOME: &str = "DIM_TEST_ATOMIC_CHILD_HOME";
+    const CHILD_WRITER: &str = "DIM_TEST_ATOMIC_CHILD_WRITER";
+
+    /// Two processes writing one home keep every key and every entry, so the
+    /// exclusion is a file lock and not one of this process's own. This is
+    /// tested here because both home files are written through the same
+    /// helper, and the layers let only the composer's modules reach both.
+    #[test]
+    fn the_lock_holds_across_processes() {
+        let Some(home) = std::env::var_os(CHILD_HOME) else {
+            return across_processes();
+        };
+        let home = PathBuf::from(home);
+        let writer: usize = std::env::var(CHILD_WRITER).unwrap().parse().unwrap();
+        for value in 0..40 {
+            let key = format!("key{writer}");
+            assert_eq!(crate::ui::config::write(&home, &key, value.into()), None);
+            if value < 4 {
+                append(&home, "/work", &format!("entry {writer} {value}")).unwrap();
+            }
+        }
+    }
+
+    /// Starts the children of `the_lock_holds_across_processes` and checks
+    /// what they wrote: every key, and every history entry.
+    fn across_processes() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let test = std::env::current_exe().unwrap();
+        let children: Vec<_> = (0..2)
+            .map(|writer| {
+                std::process::Command::new(&test)
+                    .arg("--exact")
+                    .arg("ui::composer::history::tests::the_lock_holds_across_processes")
+                    .env(CHILD_HOME, home)
+                    .env(CHILD_WRITER, writer.to_string())
+                    .spawn()
+                    .unwrap_or_else(|error| panic!("writer {writer}: {error}"))
+            })
+            .collect();
+        for mut child in children {
+            assert!(child.wait().unwrap().success(), "a writer failed");
+        }
+        for writer in 0..2 {
+            let key = format!("key{writer}");
+            assert_eq!(
+                crate::ui::config::read(home, &key),
+                Some(39.into()),
+                "{key} lost"
+            );
+        }
+        let mut entries = load(home, "/work");
+        entries.sort();
+        let mut expected: Vec<String> = (0..2)
+            .flat_map(|writer| (0..4).map(move |value| format!("entry {writer} {value}")))
+            .collect();
+        expected.sort();
+        assert_eq!(entries, expected);
     }
 }

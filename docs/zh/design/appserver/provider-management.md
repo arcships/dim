@@ -55,7 +55,7 @@ Capability、通知流、目录副本、凭据服务或注册表。继续遵守
 | 方法 | 请求 | 回复 | mutating | interruption |
 | --- | --- | --- | --- | --- |
 | `provider.management` | `{providerId?}` | `{drivers: ManagementDriver[], providers: ManagementProvider[], errors: ProviderRecordError[]}` | false | `Drain` |
-| `provider.list` | `{}` | 原 `{providers,errors}` 摘要，保持兼容与原语义 | false | `Drain` |
+| `provider.list` | `{}` | 原 `{providers,errors}` 摘要；每项新增 `remoteModelList`，表示 `provider.refresh` 能否列举该 Provider 的模型，客户端据此在空 catalog 的提示行给出或省略该命令 | false | `Drain` |
 | `provider.selection` | `{cwd?}` | 既有 `{selection}`，其 scope/version 独立 | false | `Drain` |
 | `provider.catalog` | `{providerId}` | 既有 `{catalog}` 和 `ProviderModel`，**不修改** | false | `Drain` |
 
@@ -76,6 +76,7 @@ Capability、通知流、目录副本、凭据服务或注册表。继续遵守
 | `connection` | 下表静态记录安全连接；连接配置只在可选账号包内时为 `null` |
 | `models` | `{model:ModelEntry,source:"default"\|"override"\|"user",enabled:boolean,endpoint:ModelProtocol\|null,unavailableReason:string\|null,actions:string[],endpointOverride?:NewApiEndpoint}[]`；路由覆盖限 §6 可执行子集。仅账号无本地目录记录时为 `null`，坏目录报错。模型操作为 `set_enabled`、`edit`、`reset`、`delete`，按来源/authority 限制 |
 | `preferences` | model ID 到既有 `ModelPreferences` 的映射 |
+| `modelsListed` | 读取和不改 `baseUrl`、`credential`、`headers` 的更新不含该字段；其余更新说明本次写入如何处理记录自身的模型：`listed`、`bundled`、`unsupported` 或 `disabled` |
 
 `ManagementDriver` 为 `driverKind:string`、`authTypes:StaticAuth["type"][]`、
 `remoteModelList:boolean`，由可执行 driver 推导，只列允许自定义创建的 driver。
@@ -110,7 +111,7 @@ actions 只说明当前可用性，
 | 方法 | 请求 | 回复与语义 | mutating | interruption |
 | --- | --- | --- | --- | --- |
 | `provider.create` | `{providerId,displayName,connection,models:ModelEntry[],enabled}` | `ManagementProvider`；只创建，客户端生成新 UUID，已存在 ID 冲突 | true | `Drain` |
-| `provider.update` | `{providerId,expectedVersion,patch}` | `ManagementProvider`；校验后单事务局部写入 | true | `Drain` |
+| `provider.update` | `{providerId,expectedVersion,patch}` | `ManagementProvider`；校验后单事务局部写入；patch 改动 `baseUrl`、`credential` 或 `headers` 时，同一次 CAS 写入还用新 endpoint 的列举结果替换记录自身的模型，`modelsListed` 说明结果；只改 `network` 时单独保存 | true | `Drain` |
 | `provider.probe` | `{providerId,connection}` | `{models:ModelEntry[]}`；只做 §3.3 网络探测，不写入或检查版本 | false | `Drain` |
 | `provider.models.create` | `{providerId,expectedVersion,model:ModelEntry}` | 既有 catalog；写独立用户新增列表，与默认/用户项重复的 ID 拒绝；以启用状态新增，同事务清掉该 ID 遗留的 modelConfigOverrides、disabledModelIds、modelPreferences 和 endpointOverrides 项 | true | `Drain` |
 | `provider.models.delete` | `{providerId,expectedVersion,modelId}` | 既有 catalog；仅删用户新增项，同事务移除该 ID 的 disabledModelIds 项并清理自有偏好/路由/选择 | true | `Drain` |
@@ -131,12 +132,25 @@ actions 只说明当前可用性，
 按 `{providerId,modelId}` 复制完整公开 `ModelEntry`，不保存模板引用或客户端 bundled catalog。
 客户端不反向转换执行投影 `ProviderModel`。
 
+`update` 改动 `baseUrl`、`credential` 或 `headers`（记录所达 endpoint 或账户）时，若记录自身的模型不属于
+bundled catalog（bundled 未定义该 Provider，或 `remoteModels` 已为真），就在写入之外列举
+新 endpoint 的模型，并与连接在同一次 CAS 写入中提交；用户模型冲突规则与 `refresh` 相同。
+非法 patch 在列举之前就被拒绝，返回带原因的 `provider_invalid_config`。列举
+失败则更新失败、不写入任何内容，重新指向不会把旧 endpoint 的模型留在新 endpoint 上。
+记录已停用而模型属于自身时，同一次写入丢弃这些模型、不发送请求：它们属于旧 endpoint，
+空的、可列举的 catalog 由记录启用后选择器的填充补齐。
+只改 `network`（代理或超时）时单独保存、不列举：它改变到达 endpoint 的方式而非其内容，
+若要求列举成功，列举失败时这些设置就无法保存。driver 不能列举时只保存连接。
+模型属于 bundled catalog 的记录在连接改动后仍保留它们，
+之后的 bundled 更新也照常到达；显式替换仍走 `dimcode models PROVIDER --refresh`。写入的
+列举结果按 `refresh` 的方式置 `remoteModels`；回复的 `modelsListed` 说明属于哪种情况。
+
 | patch 字段 | 操作 | 可写记录 |
 | --- | --- | --- |
 | `displayName` | 非空字符串 | 仅 custom |
 | `baseUrl` | 已校验 URL 字符串 | 静态 authority 的 builtin/custom |
 | `enabled` | boolean | 本地 builtin/custom |
-| `credential` | 既有 keep/clear/set/set_aws/set_ref；省略保留 | 仅静态 authority |
+| `credential` | 既有 keep/clear/set/set_aws/set_ref；`keep` 与省略同等，均不改动，因此只含 keep 的 patch 即空 patch | 仅静态 authority |
 | `headers` | `{name,action:"set",value}` / `{name,action:"remove"}` 数组；未提及名称保留 | 静态 authority 的 builtin/custom |
 | `network.proxy` | `{action:"set",value:URL}` / `{action:"clear"}` | 本地 builtin/custom，沿用 authority 校验 |
 | `network.timeoutMs` | `{action:"set",value:正整数}` / `{action:"clear"}` | 本地 builtin/custom |
@@ -249,7 +263,8 @@ Desktop / CLI             Local App Server            Provider / account
 
 CLI 同步迁移 crates/dim-cli/src/session_host.rs 的 PROVIDER_METHODS、全部 save 调用者及
 真实 daemon 流程：Add 先 probe 未保存连接再 create，保留 UUID 供丢回复后恢复，不能先保存
-再 refresh 测试；编辑按需 probe 草稿，然后只 update 改动字段；Disconnect 原子提交
+再 refresh 测试；编辑按需 probe 草稿，然后只 update 改动字段，记录自身的模型由该 update
+用新连接列举并保存；Disconnect 原子提交
 credential clear 和 enabled:false，修复只 clear 导致已启用记录缺凭据被拒绝的问题。
 启停用 update，账号登录/登出仍走原 owner。
 重复创建时若 UUID 已存在，转为该记录的编辑表单并保留 URL/密钥草稿，由用户再次 Apply 确认，
@@ -257,14 +272,25 @@ credential clear 和 enabled:false，修复只 clear 导致已启用记录缺凭
 
 /models 对当前选中模型提供 Ctrl+X，按列表读取时的版本 CAS 清除保存的 reasoningEffort
 与 serviceTier；列表保持打开，Enter 另行显式采用默认值。冲突则刷新列表，由用户重试。
+刷新后的列表先于操作结果提示送达选择器，用户看到提示后重试时使用刷新后的目录版本。
 非交互入口为 `dimcode models PROVIDER --clear-preferences MODEL`，先重读版本再同样更新。
 两者都不改当前 Session 已采用的模型；发现和采用失败不会自动删除历史偏好。
 `←` 与 `→` 在选中模型上循环其声明的推理强度。Enter 采用该模型；若强度被切换过，
 先把它存成该模型的 `reasoningEffort`，再连同其余已保存偏好一起发送。
 
+catalog 条目带 `zdr: true` 的模型在推理强度前显示 `ZDR` 标签，固定子代理模型选择器也一样。
+搜索 `zdr` 会包含这些模型；字段缺失或为 false 时不显示标签。替换模型列表时，
+标签随服务端最新字段更新，不保留已撤销的标记。
+
+列表还会通过 `provider.refresh` 填充 catalog 无模型的静态 provider：`provider.list`
+说其模型可列举时，每个连接对 catalog 的每个版本只问一次，并显示刷新写入的 catalog。
+刷新成功时记录它写入的版本，因此列举为空的结果不会再次询问；记录被写入（启停用、
+改端点）后再问一次。读取或刷新失败时该 provider 的提示行保留；面板关闭后才到达的
+回复只记录这次填充，下次打开再读。
+
 ```text
 Select a model
-> Provider / model          ‹ high ›
+> Provider / model          ZDR  ‹ high ›
 Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close
 ```
 
@@ -308,7 +334,8 @@ Settings 一起另行决定，不作为本方案前置。
 路由推导前应用 endpointOverrides。refresh、普通写入、bundled reseed 均保留新增字段；
 托管目录的偏好仅在同账号 refresh 时保留（§3.2）。
 用户 ID 不能与默认/覆盖 ID 冲突；refresh 引入冲突则失败，不替换已准入目录。
-解决时通过 `provider.models.delete` 显式删除冲突的用户模型，再重试 refresh。
+列举新端点的 update 遵循同一规则：失败，点名冲突的用户模型，不写入任何内容。
+解决时通过 `provider.models.delete` 显式删除冲突的用户模型，再重试 refresh 或该 update。
 
 bundled reseed 遇到这种冲突不能导致 seed 或 Provider 激活失败。fingerprint 改变后的实际
 替换候选若与用户模型冲突，保留该记录已准入的定义、fingerprint 和 version，继续在既有

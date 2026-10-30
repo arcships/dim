@@ -182,7 +182,7 @@ the new Dim scope or catalog placement proposed here.
 
 ### Storage compatibility
 
-Current native storage is v22. It explicitly upgrades admitted v21/v20/v19/v18/v17/v16/v15/v13
+Current native storage is v25. It explicitly upgrades admitted v24/v23/v22/v21/v20/v19/v18/v17/v16/v15/v13
 layouts; it does not reject every older database
 ([storage format](appserver/native-storage-format.md)). Branch foreign keys and
 root enumeration currently assume `agent_sessions` and a required SessionConfig.
@@ -190,7 +190,7 @@ root enumeration currently assume `agent_sessions` and a required SessionConfig.
 The target is one root catalog and common bus tables, with Agent configuration
 only on Agent roots. Concrete schema and the next version number require a
 storage-format decision before implementation; this proposal does not reserve
-the next format version (v23 or later) or introduce a parallel Collaboration store.
+the next format version (v26 or later) or introduce a parallel Collaboration store.
 
 That decision must preserve existing Agent identities, sequences, cuts, event
 bytes, files and snapshots. Supported old layouts must upgrade transactionally

@@ -17,7 +17,7 @@ pub use models::PreferencesPatch;
 pub use preferences::ModelPreferences;
 use secrets::StaticCredential;
 pub use secrets::{ProviderSecret, ProviderSecretHost, ResolveProviderSecret};
-pub use view::{ManagementProvider, ManagementView};
+pub use view::{ManagementProvider, ManagementView, ModelsListed};
 
 use crate::{
     codex_oauth::OpenAICodexOAuthService,
@@ -349,6 +349,8 @@ pub struct ProviderSummary {
     pub timeout_ms: Option<u64>,
     pub header_names: Vec<String>,
     pub credential_configured: bool,
+    /// Whether `provider.refresh` can list this provider's models.
+    pub remote_model_list: bool,
     pub enabled: bool,
     pub version: u32,
 }
@@ -776,7 +778,54 @@ fn static_models(
         .collect()
 }
 
-fn static_summary(provider_id: String, record: StaticProviderRecord) -> ProviderSummary {
+/// Whether `provider.refresh` can list this static provider's models: its
+/// driver lists them, and the bundled definition does not opt out.
+fn can_list_models(
+    bundled: &BundledCatalog,
+    provider_id: &str,
+    record: &StaticProviderRecord,
+) -> bool {
+    record.credential_authority == CredentialAuthority::Static
+        && drivers::remote_model_list(&record.driver_kind)
+        && !bundled
+            .provider(provider_id)
+            .and_then(|provider| provider.metadata.as_ref())
+            .is_some_and(|metadata| metadata.remote_model_list == Some(false))
+}
+
+/// The conflict a listing raises when a discovered ID belongs to a user model.
+/// `provider.refresh` and an update that lists both fail with it — the catalog
+/// is never renamed or merged — and it names every colliding ID and the fix,
+/// so the user can delete them and retry.
+fn reject_user_model_conflicts(
+    record: &StaticProviderRecord,
+    models: &[ModelEntry],
+) -> Result<(), ProviderError> {
+    let colliding: Vec<&str> = models
+        .iter()
+        .filter(|model| {
+            record
+                .user_models
+                .iter()
+                .any(|user| user.model_id == model.model_id)
+        })
+        .map(|model| model.model_id.as_str())
+        .collect();
+    if colliding.is_empty() {
+        return Ok(());
+    }
+    Err(ProviderError::Conflict(format!(
+        "Discovered models conflict with user-added models: {}. Delete them through provider.models.delete, then retry.",
+        colliding.join(", ")
+    )))
+}
+
+fn static_summary(
+    bundled: &BundledCatalog,
+    provider_id: String,
+    record: StaticProviderRecord,
+) -> ProviderSummary {
+    let remote_model_list = can_list_models(bundled, &provider_id, &record);
     ProviderSummary {
         provider_id,
         source: if record.kind == StaticRecordKind::Builtin {
@@ -795,6 +844,7 @@ fn static_summary(provider_id: String, record: StaticProviderRecord) -> Provider
             names
         },
         credential_configured: record.credential.is_some(),
+        remote_model_list,
         proxy_configured: record.network.proxy.is_some(),
         timeout_ms: record.network.timeout_ms,
         enabled: record.enabled,
@@ -1168,6 +1218,7 @@ impl ProviderService {
         cancel: &CancellationToken,
     ) -> Result<ProviderList, HostError> {
         let db = self.db.clone();
+        let bundled = self.bundled.clone();
         let mut list = self.owned(cancel, move |_| Box::pin(async move { db.run(move |connection| {
             let mut query = connection.prepare("SELECT provider_id,version,record FROM providers ORDER BY provider_id").map_err(storage)?;
             let rows = query.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?, row.get::<_, String>(2)?))).map_err(storage)?;
@@ -1176,7 +1227,7 @@ impl ProviderService {
                 let (id, version, body) = row.map_err(storage)?;
                 match parse_static_row(&id, version, &body) {
                     Ok(None)=>{},
-                    Ok(Some(record)) => result.providers.push(static_summary(id, record)),
+                    Ok(Some(record)) => result.providers.push(static_summary(&bundled, id, record)),
                     Err(error) => result.errors.push(ProviderRecordError { provider_id: id, message: error.to_string() }),
                 }
             }

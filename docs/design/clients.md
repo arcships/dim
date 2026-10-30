@@ -158,7 +158,7 @@ Desktop lives in its own repository. This repository owns the App Server contrac
 
 | Desktop need | Answer |
 | --- | --- |
-| Current turn, branch head, live Session list | Derived from history and polling `session.summaries` ([#276](https://github.com/arcships/dim/issues/276)) |
+| Current turn, branch head, live Session list | Derived from history and paging `session.catalog` ([#276](https://github.com/arcships/dim/issues/276)) |
 | Rename and goal on the stock daemon | Today `--session-rows` installs SessionTitle and Goal ([#277](https://github.com/arcships/dim/issues/277), #290); with [PluginManager](plugins/PluginManager.md) they are default plugins loaded by the default configuration file |
 | Approval outcome, pending question | `approval.resolved` (#289); a pending question is read from history ([#278](https://github.com/arcships/dim/issues/278)) |
 | Attachment read, archive, file history | Attachment path from `attachment.put`; archive is client-local; rewind is `session.fork` ([#279](https://github.com/arcships/dim/issues/279)) |

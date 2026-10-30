@@ -74,7 +74,7 @@ Agent::restore_session(id)
       for branch b at stored head h:
         store.read(b, 1..=h)               TimelineTree's own scan                   ........ read B
         child only: read_context(parent's Timeline, cut)  validates the cut          ........ read C
-        TimelineFactory::build_until
+        TimelineFactory::build
           store.head(b)
           BranchScope: Timeline(b, ancestry, h); Dispatcher, not yet running       ─┐
           capabilities apply in dependency waves; each rebuilds from a read        │ opening of b
@@ -191,8 +191,10 @@ its own; a lifecycle dropped with its scope drops it too.
 
 A restore opens branches one at a time, so at most one copy of the Session exists at a time during a restore, and the
 last one is dropped before the Session is published. Branches created at runtime open independently: concurrent child
-builds each hold their own copy of their ancestry (§5). The opening deadline (`TimelineFactory::build_until`) bounds an
-opening, its opening handlers included: when it passes, the build fails and is rolled back, which leaves `Loading`.
+builds each hold their own copy of their ancestry (§5). Assembly follows the opening's scoped inactivity interval
+([How Dim uses rutis](../rutis-usage.md#appendix-a-rust-binding)); first row activation, opening dispatch advancement and
+receipt completion renew that interval. Storage reads have an I/O cancellation budget; replay has no fixed total deadline.
+Failure or cancellation rolls back the opening and leaves `Loading`.
 
 The opening is the runtime's own unit; a restore is a Session whose branches all open with `branch/resume`. The same
 opening also serves a branch created at runtime (TimelineTree `branch`, `create_main`) and a prepared Session (fork):
@@ -239,10 +241,11 @@ ancestor parts [(branch, a..=b), ...]
 
 - **Every stored read.** The own seam serves every read of the branch's own stored events: `local`, the own segment
   of `history` and `context`, and the anchor read of `context_with_checkpoint` (`records(branch, snapshot.sequence,
-  cut)`) for an anchor on the branch itself. The ancestor seam serves every read of an ancestor's: the ancestor
-  segments of `history` and `context`, the single-segment shortcut of `history_records` (one segment is read through
-  the per-branch read instead of `read_segments`; a new child's `history(Some(0))` is such a read), and the anchor
-  read for an anchor on an ancestor. No other path in the Timeline reads stored events.
+  snapshot.sequence)`, or the segment read when the anchor row is inside an atomic batch) for an anchor on the branch
+  itself. The ancestor seam serves every read of an ancestor's: the ancestor segments of `history` and `context`, the
+  single-segment shortcut of `history_records` (one segment is read through the per-branch read instead of
+  `read_segments`; a new child's `history(Some(0))` is such a read), and the anchor read for an anchor on an ancestor.
+  No other path in the Timeline reads stored events.
 
 - **Slices by sequence.** A slice takes the entries whose sequence lies in the range (a binary search on
   `event.sequence`), so its events are what the store returns for that range: one event per sequence, merged output
@@ -300,7 +303,7 @@ parent, the App Server's history pages and summaries, collaboration and export.
 Today each reader holds its own decoded history from its read until its fold returns, and readers of one wave overlap,
 so a restore's peak holds several decoded histories at once, plus the opening handlers' context reads after the
 waves. With the copy the opening holds one decoded history from the first fill until the branch leaves `Loading`, its
-opening handlers included, which the opening deadline bounds (§4.1); each reader adds a vector of pointers (8 bytes per
+opening handlers included, bounded by the assembly and I/O policies in §4.1; each reader adds a vector of pointers (8 bytes per
 event) while it folds.
 
 Measured with a counting allocator in `restore_cost` (§8): the peak heap above the level before the restore, during
@@ -371,8 +374,8 @@ Reads of `main` in one restore of a `main`-only Session, from the traces of §2.
 | Opening handlers on `branch/resume` | 1 full (ToolBinding) | 3 from `resume` (ToolBinding, Prompt twice) | slices, each with a one-event tail |
 | Wait, BackgroundExec, Collaboration (product assembly, not measured) | 3 full | 3 full | slices |
 
-A checkpoint read here is two store calls: the anchor read from the snapshot's sequence to the cut and the context from
-`resume`, 354 and 212 events at 10,000 product events.
+A checkpoint read here is two store calls: the anchor read of the snapshot's sequence and the context from `resume`, 1
+and 212 events at 10,000 product events.
 
 A child branch adds, today, its own reads as above and five reads of its ancestry: TimelineTree's cut validation on the
 parent (read C), Permission, Prompt and ToolBinding twice. With the copy it adds its own part once and its ancestry
@@ -650,7 +653,7 @@ TimelineTree::restore, branch b at stored head h
   child only: read_page(b) from the start until branch/start + queued input ... one page
   child only: read C, the cut validation on the parent (unchanged)
   launch b, Resume at h
-    build_until: capabilities apply; the first rebuild read fills the copy   ─┐
+    build: capabilities apply; the first rebuild read fills the copy   ─┐
     TimelineTree: local(..=h), a slice; collects branch/create-failed          │ opening of b
     append branch/resume ... activate                                         ─┘
   restore loop: records b's failed creates, then restores b's children

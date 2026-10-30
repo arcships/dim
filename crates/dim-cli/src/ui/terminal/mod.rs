@@ -76,6 +76,14 @@ fn set_title() -> io::Result<()> {
 /// Exit status when the terminal disappears under the process (SIGHUP shape).
 pub const EXIT_TERMINAL_LOST: i32 = 129;
 
+/// The bound on leaving the terminal: how long the exit may spend flushing
+/// queued output and writing the restore sequence. A terminal that stopped
+/// reading (a suspended application, a stalled remote session, a multiplexer
+/// client not draining its pane) delays an exit by this much, never holds it.
+/// Short enough that a person does not wait on a dead terminal, long enough
+/// for the frames of a live one.
+pub(crate) const EXIT_BUDGET: Duration = Duration::from_millis(1000);
+
 const PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 const FENCE_TIMEOUT: Duration = Duration::from_millis(300);
 /// How long a cursor position report may take.
@@ -170,12 +178,27 @@ impl WriteThread {
         })
     }
 
-    /// Closes the queue and waits until everything queued was written.
-    fn drain(&mut self) {
+    /// Closes the queue and waits until everything queued was written. With a
+    /// deadline, gives up there and leaves the writer behind, which only an
+    /// exit may do: a writer still blocked on a terminal that stopped reading
+    /// ends with the process. A suspend waits for its writer instead, so the
+    /// next one starts on an empty queue.
+    fn drain(&mut self, deadline: Option<Instant>) {
         self.sender = None;
-        if let Some(handle) = self.handle.take() {
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
+        let Some(deadline) = deadline else {
             let _ = handle.join();
+            return;
+        };
+        while !handle.is_finished() {
+            if Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
         }
+        let _ = handle.join();
     }
 }
 
@@ -387,8 +410,9 @@ impl Terminal {
     /// conventional SIGHUP one.
     pub fn lost(&mut self) -> i32 {
         self.left = true;
-        self.writer.drain();
-        sys::restore_terminal_once();
+        let deadline = Instant::now() + EXIT_BUDGET;
+        self.writer.drain(Some(deadline));
+        sys::restore_terminal_once_until(deadline);
         sys::remove_signal_guard();
         EXIT_TERMINAL_LOST
     }
@@ -491,12 +515,15 @@ impl Terminal {
     /// Hands the terminal back to the shell and stops the process (Ctrl+Z).
     /// Output already queued reaches the screen before the modes go; the
     /// writer is restarted because the process keeps writing. Returns once
-    /// the job is continued, with the terminal entered again.
+    /// the job is continued, with the terminal entered again. A suspend is
+    /// not an exit: it waits for its writer, and only the writes that hand
+    /// the terminal back are bounded.
     pub fn suspend(&mut self) -> Result<(), TerminalError> {
-        self.writer.drain();
+        self.writer.drain(None);
+        let deadline = Instant::now() + EXIT_BUDGET;
         self.writer = WriteThread::start();
         let fullscreen = modes::is_live(Mode::AltScreen);
-        self.release_modes();
+        self.release_modes(deadline);
         stop_process();
         sys::rearm_restore_guard();
         sys::enable_raw_mode()?;
@@ -513,32 +540,34 @@ impl Terminal {
     }
 
     /// Leaves normally: pops the keyboard protocol behind the DA1 fence, then
-    /// writes the rest of the restore sequence and drops raw mode.
+    /// writes the rest of the restore sequence and drops raw mode. The whole
+    /// handing back shares one [`EXIT_BUDGET`] deadline.
     pub fn leave(mut self) {
         self.left = true;
-        self.writer.drain();
-        self.release_modes();
+        let deadline = Instant::now() + EXIT_BUDGET;
+        self.writer.drain(Some(deadline));
+        self.release_modes(deadline);
     }
 
     /// Undoes the modes this process turned on, keyboard first. Kitty is
     /// popped before draining to the DA1 fence, so no new reports start; the
     /// answer proves the pop applied.
-    fn release_modes(&mut self) {
+    fn release_modes(&mut self, deadline: Instant) {
         if modes::is_live(Mode::KittyKeyboard) {
             let mut out = Vec::new();
             out.extend_from_slice(b"\x1b[<u");
             out.extend_from_slice(keyboard::FENCE_QUERY);
-            let _ = sys::write_all(sys::STDOUT, &out);
+            sys::write_until(sys::STDOUT, &out, deadline);
             modes::clear(Mode::KittyKeyboard);
-            self.drain_until_da1();
+            self.drain_until_da1(deadline);
         }
-        sys::restore_terminal_once();
+        sys::restore_terminal_once_until(deadline);
         sys::remove_signal_guard();
         modes::clear_all();
     }
 
-    fn drain_until_da1(&mut self) {
-        let deadline = Instant::now() + FENCE_TIMEOUT;
+    fn drain_until_da1(&mut self, deadline: Instant) {
+        let deadline = (Instant::now() + FENCE_TIMEOUT).min(deadline);
         let mut tail: Vec<u8> = Vec::new();
         let mut buf = [0u8; 1024];
         loop {
@@ -565,8 +594,9 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         if !self.left {
-            self.writer.drain();
-            sys::restore_terminal_once();
+            let deadline = Instant::now() + EXIT_BUDGET;
+            self.writer.drain(Some(deadline));
+            sys::restore_terminal_once_until(deadline);
             sys::remove_signal_guard();
         }
     }

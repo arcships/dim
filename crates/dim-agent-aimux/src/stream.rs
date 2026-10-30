@@ -258,19 +258,6 @@ pub(crate) fn convert(
                     if reason != ModelStopReason::MaxTokens && (!block_active.is_empty() || !calls.is_empty() || !ended_inputs.is_empty()) {
                         break Some(Err(error(AiMuxError::InvalidResponseData("Model finished with incomplete blocks or tool calls".into()), &cancel)));
                     }
-                    if reason != ModelStopReason::MaxTokens && parts.iter().any(|part| {
-                        let MessagePart::Thinking { provider_metadata, .. } = part else { return false };
-                        match (protocol, provider_metadata) {
-                            (ModelProtocol::Anthropic, Some(ContentMetadata::Anthropic { signature })) => signature.is_empty(),
-                            (ModelProtocol::Anthropic, Some(ContentMetadata::AnthropicRedacted { data })) => data.is_empty(),
-                            (ModelProtocol::OpenaiResponses, Some(ContentMetadata::OpenaiResponses { encrypted_content: Some(encrypted), .. })) => encrypted.is_empty(),
-                            (ModelProtocol::XaiResponses, Some(ContentMetadata::XaiResponses { encrypted_content: Some(encrypted), .. })) => encrypted.is_empty(),
-                            (ModelProtocol::Anthropic | ModelProtocol::OpenaiResponses | ModelProtocol::XaiResponses, _) => true,
-                            _ => false,
-                        }
-                    }) {
-                        break Some(Err(HostError::failed("Model thinking is missing native continuation metadata")));
-                    }
                     break Some(Ok((usage_chunk(usage), reason)));
                 }
                 StreamPart::Error { error: failure } => break Some(Err(error(failure, &cancel))),

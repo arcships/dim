@@ -21,8 +21,8 @@ const HINT: &str = "type filter · enter select · esc clear/close";
 /// a name containing it, a description word starting with it, then three
 /// or more of the query's letters in order through the name (`stg` for
 /// `settings`).
-/// Registry order breaks ties; a match inside a description word is noise
-/// and is left out.
+/// Category and command name break ties alphabetically; a match inside a
+/// description word is noise and is left out.
 pub fn filter_commands(query: &str, context: Context) -> Vec<&'static Command> {
     let normalized = query.trim().to_lowercase();
     let normalized = normalized
@@ -31,13 +31,10 @@ pub fn filter_commands(query: &str, context: Context) -> Vec<&'static Command> {
         .unwrap_or(&normalized)
         .to_owned();
     let listed = COMMANDS.iter().filter(|c| c.listed(context));
-    if normalized.is_empty() {
-        return listed.collect();
-    }
     let mut ranked: Vec<(u8, &'static Command)> = listed
         .filter_map(|command| rank(command, &normalized).map(|r| (r, command)))
         .collect();
-    ranked.sort_by_key(|(rank, _)| *rank);
+    ranked.sort_by_key(|(rank, command)| (*rank, command.category, command.name));
     ranked.into_iter().map(|(_, command)| command).collect()
 }
 
@@ -138,8 +135,7 @@ fn filter_skills<'a>(skills: &'a [Skill], query: &str) -> Vec<&'a Skill> {
 
 /// Palette rows for `query`: commands and skills share the list, told apart
 /// by their category; skills lead when a skill name matches and no command
-/// name does. A slash command reads `/name` and its description; an action
-/// reached by a key reads as its description.
+/// name does. A command reads `/name` and its description.
 pub fn rows_for(query: &str, context: Context, skills: &[Skill]) -> Vec<Row> {
     let commands = filter_commands(query, context);
     let matched_skills = filter_skills(skills, query);
@@ -147,15 +143,11 @@ pub fn rows_for(query: &str, context: Context, skills: &[Skill]) -> Vec<Row> {
         .iter()
         .map(|command| {
             let description = t(command.describe(context));
-            let (label, detail) = if command.slash {
-                let label = match command.argument {
-                    Some(argument) => format!("/{} {argument}", command.name),
-                    None => format!("/{}", command.name),
-                };
-                (label, description.to_owned())
-            } else {
-                (description.to_owned(), String::new())
+            let label = match command.argument {
+                Some(argument) => format!("/{} {argument}", command.name),
+                None => format!("/{}", command.name),
             };
+            let detail = description.to_owned();
             Row {
                 kind: Kind::Command(command),
                 category: t(command.category).to_owned(),
@@ -422,13 +414,45 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_lists_by_category_and_hides_fullscreen_actions_elsewhere() {
+    fn both_modes_list_only_visible_slash_commands_in_category_and_name_order() {
         let all = names("/", FULLSCREEN);
-        assert_eq!(&all[..2], ["new", "resume"]);
-        assert_eq!(all.len(), COMMANDS.len());
+        assert_eq!(&all[..2], ["exit", "keys"]);
+        assert_eq!(all.len(), COMMANDS.len() - 6);
         let scrollback = names("/", SCROLLBACK);
         assert!(!scrollback.contains(&"scroll-top"));
-        assert!(scrollback.contains(&"interrupt"));
+        for context in [
+            SCROLLBACK,
+            FULLSCREEN,
+            Context {
+                running: true,
+                queued: true,
+                ..SCROLLBACK
+            },
+            Context {
+                running: true,
+                queued: true,
+                ..FULLSCREEN
+            },
+        ] {
+            let commands = filter_commands("/", context);
+            assert!(commands.windows(2).all(|pair| {
+                (pair[0].category, pair[0].name) < (pair[1].category, pair[1].name)
+            }));
+            let listed = names("/", context);
+            assert!(listed.contains(&"approvals"));
+            assert!(commands.iter().all(|command| command.slash));
+            for hidden in [
+                "interrupt",
+                "steer",
+                "approval",
+                "pick-message",
+                "scroll-bottom",
+                "scroll-top",
+            ] {
+                assert!(!listed.contains(&hidden), "{hidden}");
+                assert!(!names(&format!("/{hidden}"), context).contains(&hidden));
+            }
+        }
     }
 
     #[test]
@@ -438,16 +462,16 @@ mod tests {
             [
                 "settings",
                 "resume",
-                "new",
-                "web",
-                "lines",
-                "fork",
-                "models",
+                "agent",
+                "approvals",
                 "effort",
                 "fast",
-                "agent",
                 "mcp",
-                "approvals"
+                "models",
+                "fork",
+                "lines",
+                "new",
+                "web"
             ]
         );
         assert_eq!(names("/stg", SCROLLBACK), ["settings"]);
@@ -471,9 +495,6 @@ mod tests {
         let none = Context::default();
         assert!(rows_for("/timeline", none, &[])[0].unavailable);
         assert!(!rows_for("/timeline", SCROLLBACK, &[])[0].unavailable);
-        let interrupt = &rows_for("/interrupt", SCROLLBACK, &[])[0];
-        assert!(interrupt.unavailable);
-        assert_eq!(interrupt.key.as_deref(), Some("Esc"));
     }
 
     #[test]
@@ -484,28 +505,16 @@ mod tests {
         state.set_query("");
         let panel = render_overlay(&state, &rows, 72, rows.len(), &theme.palette);
         let plain: Vec<String> = panel.iter().map(|r| strip(r)).collect();
-        assert!(plain[4].starts_with("│   session  /new "), "{:?}", plain[4]);
-        assert!(panel[4].contains("\x1b[30;43m"), "{:?}", panel[4]);
-        let top = plain
-            .iter()
-            .position(|r| r.contains("scroll to the top"))
-            .unwrap();
         assert!(
-            plain[top].contains("   view  scroll to the top"),
+            plain[4].starts_with("│       app  /exit "),
             "{:?}",
-            plain[top]
+            plain[4]
         );
-        assert!(plain[top].trim_end_matches(['│', ' ']).ends_with("Home"));
-        assert!(panel[top].contains("\x1b[1;34m  Home"), "{:?}", panel[top]);
-        let interrupt = plain
-            .iter()
-            .position(|r| r.contains("interrupt the run"))
-            .unwrap();
-        assert!(plain[interrupt].contains("interrupt the run (unavailable)"));
+        assert!(panel[4].contains("\x1b[30;43m"), "{:?}", panel[4]);
         assert!(
-            panel[interrupt].contains("\x1b[1;2m"),
-            "{:?}",
-            panel[interrupt]
+            plain[4]
+                .trim_end_matches(['│', ' '])
+                .ends_with("Ctrl+C Ctrl+C")
         );
         assert!(plain.iter().all(|r| display_width(r) == 72), "{plain:#?}");
     }
@@ -532,7 +541,7 @@ mod tests {
         assert_eq!(panel.len(), PAGE_SIZE + CHROME_ROWS);
         let plain: Vec<String> = panel.iter().map(|r| strip(r)).collect();
         assert!(plain[1].contains("Commands") && plain[1].contains("esc close"));
-        assert!(plain[2].starts_with("│   session  /new"), "{:?}", plain[2]);
+        assert!(plain[2].starts_with("│       app  /exit"), "{:?}", plain[2]);
         assert!(
             plain[8].contains(&format!("1 / {}", rows.len())),
             "{:?}",

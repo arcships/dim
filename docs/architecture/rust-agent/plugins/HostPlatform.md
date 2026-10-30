@@ -55,7 +55,18 @@ reads include the `/var/select` links, the effective developer directory (DEVELO
 which passes by default, or the linked selection) and the files of git's global configuration
 with their canonical paths. Every granted root's or file's ancestors permit metadata lookups,
 and each process tree gets its own TMPDIR. The product design lists each platform's defaults.
-Local configuration can change roots, network/environment and disable isolation. User ShellInput
+Missing policies and version 2 policies omitting escalation use `ask`; explicit `deny` and
+version 1 retain their restrictive contracts. The [product design](../../../design/host-platform-isolation.md#trusted-local-policy-management)
+defines typed policy read/update/reset operations owned here, with revisions and atomic writes
+through FileStorage. `read_isolation_policy(cancel)` returns the shared
+`dim_agent_types::IsolationPolicySnapshot`: actual path, byte revision, source, editable policy
+and effective boundary. `update_isolation_policy(expected_revision, policy, cancel)` validates
+external fields and replaces the file under a FileStorage lease only when the revision matches.
+`reset_isolation_policy(expected_revision, cancel)` writes explicit v2 product defaults.
+`IsolationPolicyError` distinguishes invalid policy, revision conflict, unavailable management
+and storage failure. App Server registers their trusted local management entry points; the CLI
+uses them from `/settings > Command isolation`, never a model tool. Local configuration can
+change roots, network/environment and disable isolation. User ShellInput
 commands remain ordinary spawn. BackgroundExec retains its existing live process/tree; no
 namespace PID registry is introduced. Unsupported Windows preserves ordinary execution.
 
@@ -88,8 +99,8 @@ Disabled policy and Windows return the original spec, no `TemporaryDirectory` an
 A sandboxed spec also returns the crate-local `Isolation`, which records where the user changes
 the policy: the configured FileStorage root joined with the file's relative path, or the file
 name without a location. `Isolation::failure_hint(output)` returns a note when the output shows a
-typical denial; it names that location and says approval or retry does not lift isolation. It
-never names an approval or rule. Ordinary user ShellInput does not call this operation. No
+typical denial; it names that location and `/settings > Command isolation`, and distinguishes
+isolation from command approval. Ordinary user ShellInput does not call this operation. No
 process, task, lock, watcher or Timeline fact is added by preparation.
 The crate-local `ISOLATION_SUMMARY` is the static declaration line on default isolation, `None`
 on Windows; on macOS it also names `$TMPDIR` as writable, and so does the failure note. The exec
@@ -129,8 +140,9 @@ path mapping (`EXEC_SHELL_PATH_MAPPING_FAILED`).
 
 ## Rule check
 
-- §1 and ADR 002 D1–D3: process facts and the preference source remain owned by
-  HostPlatform; no new plugin, wiring module or dependency is added.
+- §1 and ADR 002 D1–D3: process facts and policy validation/persistence remain owned by
+  HostPlatform. App Server's process management entry depends on HostPlatform and
+  managementMethods only; it exposes the owner's operations without a second policy store.
 - §4 rules 1–6 and 9: no commands, handovers, before callbacks, batches or Timeline
   facts are added. Existing command execution and input adoption remain unchanged.
 - §4 rule 7: callers use the current-shell methods, command builder and `spawn()`;

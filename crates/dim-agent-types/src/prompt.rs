@@ -158,6 +158,16 @@ pub struct ContextConfiguredData {
         deserialize_with = "crate::optional_non_null"
     )]
     pub system: Option<SystemPrompt>,
+    /// The source text `system` was composed after, apart from the guide: a
+    /// model- or tool-only adoption re-renders the guide over it. Absent in
+    /// records written before it was recorded, which keep their adopted
+    /// System.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub system_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

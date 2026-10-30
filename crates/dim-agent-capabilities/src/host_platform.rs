@@ -24,6 +24,12 @@ use tokio_util::sync::CancellationToken;
 
 #[cfg(unix)]
 mod isolation;
+mod isolation_policy;
+pub use dim_agent_types::{
+    IsolationEscalation, IsolationPolicy, IsolationPolicyEffective, IsolationPolicySnapshot,
+    IsolationPolicySource, Sandbox,
+};
+pub use isolation_policy::IsolationPolicyError;
 
 pub const EXEC_SHELL_CONFIG_INVALID: &str = "EXEC_SHELL_CONFIG_INVALID";
 pub const EXEC_SHELL_UNAVAILABLE: &str = "EXEC_SHELL_UNAVAILABLE";
@@ -43,26 +49,6 @@ pub(crate) const ISOLATION_SUMMARY: Option<&str> = if cfg!(target_os = "macos") 
 } else {
     None
 };
-
-/// The process boundary a command runs under. Wider tiers expose more of the
-/// host, and a request for one is only honored where the node's policy allows
-/// escalation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Sandbox {
-    Workspace,
-    Network,
-    Host,
-}
-impl Sandbox {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Workspace => "workspace",
-            Self::Network => "network",
-            Self::Host => "host",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
@@ -248,7 +234,7 @@ impl Isolation {
         DENIALS.iter().any(|denial| lower.contains(denial)).then(
             || {
                 format!(
-                    "This command ran under host isolation, which may have caused the failure. By default, isolation blocks network access and file access outside {reach}. Approving or retrying the command does not lift it. If the command needs that access, tell the user; only they can change the policy in {}.",
+                    "This command ran under host isolation, which may have caused the failure. By default, isolation blocks network access and file access outside {reach}. Approving or retrying without a wider sandbox request does not lift it. Request the required sandbox boundary, or ask the user to configure /settings > Command isolation (policy: {}).",
                     self.policy
                 )
             },

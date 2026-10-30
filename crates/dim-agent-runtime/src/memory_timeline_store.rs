@@ -62,6 +62,9 @@ impl TimelineStore for MemoryTimelineStore {
             Ok(())
         })
     }
+    fn release_session<'a>(&'a self, _session_id: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     fn session_config<'a>(
         &'a self,
         session_id: &'a str,

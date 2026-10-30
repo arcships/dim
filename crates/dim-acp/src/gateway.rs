@@ -154,6 +154,7 @@ struct Prompt {
     cancel_uncertain: bool,
     consumed: HashMap<String, String>,
     ended: HashMap<String, TurnOutcome>,
+    max_tokens: HashSet<String>,
     deleted: HashSet<String>,
 }
 impl Prompt {
@@ -167,20 +168,31 @@ impl Prompt {
         self.consumed.clear();
         let outcome = self.turn.as_ref().and_then(|turn| self.ended.remove(turn));
         self.ended.clear();
+        self.max_tokens
+            .retain(|turn| Some(turn) == self.turn.as_ref());
         if deleted {
             Some(Ok(json!({"stopReason":"cancelled"})))
         } else {
-            outcome.map(|outcome| prompt_outcome(self.cancelled, &outcome))
+            let max_tokens = self
+                .turn
+                .as_ref()
+                .is_some_and(|turn| self.max_tokens.contains(turn));
+            outcome.map(|outcome| prompt_outcome(self.cancelled, max_tokens, &outcome))
         }
     }
 }
-fn prompt_outcome(cancelled: bool, outcome: &TurnOutcome) -> Result<Value, Error> {
+fn prompt_outcome(
+    cancelled: bool,
+    max_tokens: bool,
+    outcome: &TurnOutcome,
+) -> Result<Value, Error> {
     if cancelled {
         return Ok(json!({"stopReason":"cancelled"}));
     }
     match outcome {
         TurnOutcome::Completed { .. } => Ok(json!({"stopReason":"end_turn"})),
         TurnOutcome::Cancelled { .. } => Ok(json!({"stopReason":"cancelled"})),
+        TurnOutcome::Failed { .. } if max_tokens => Ok(json!({"stopReason":"max_tokens"})),
         TurnOutcome::Failed { error } => {
             Err(Error::new(-32001, error.clone()).data(json!({"code":"turn_failed"})))
         }
@@ -529,7 +541,6 @@ impl Gateway {
                                 selection: Option<Selected>,
                             }
                             #[derive(Deserialize)]
-                            #[serde(rename_all = "camelCase")]
                             struct Selected {
                                 provider_id: String,
                             }
@@ -753,6 +764,7 @@ impl Gateway {
                     cancel_uncertain: false,
                     consumed: HashMap::new(),
                     ended: HashMap::new(),
+                    max_tokens: HashSet::new(),
                     deleted: HashSet::new(),
                 });
                 let mcp = self.mcp.clone();
@@ -1968,8 +1980,20 @@ impl Gateway {
                 EventContent::InputDeleted(data) if prompt.input.is_none() => {
                     prompt.deleted.insert(data.input_id.clone());
                 }
+                EventContent::ModelEnd(data)
+                    if prompt.input.is_none() || prompt.turn.as_deref() == Some(&data.turn_id) =>
+                {
+                    if matches!(&data.outcome, dim_agent_types::ModelOutputOutcome::Failed { presentation: Some(presentation), .. } if presentation.reason == "max_tokens")
+                    {
+                        prompt.max_tokens.insert(data.turn_id.clone());
+                    }
+                }
                 EventContent::TurnEnd(data) if prompt.turn.as_deref() == Some(&data.turn_id) => {
-                    finish = Some(prompt_outcome(prompt.cancelled, &data.outcome));
+                    finish = Some(prompt_outcome(
+                        prompt.cancelled,
+                        prompt.max_tokens.contains(&data.turn_id),
+                        &data.outcome,
+                    ));
                 }
                 EventContent::TurnEnd(data) if prompt.input.is_none() => {
                     prompt

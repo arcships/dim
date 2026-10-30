@@ -206,8 +206,11 @@ fn wait_definition() -> ToolDefinition {
                     "description": "Optional background task id to wait for. Omit to wait for any background task."
                 },
                 "timeoutMs": {
-                    "type": "number",
-                    "description": "Positive integer wait timeout in milliseconds. Default: 300000."
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": DEFAULT_TIMEOUT_MS,
+                    "default": DEFAULT_TIMEOUT_MS,
+                    "description": "Wait timeout in milliseconds, from 1 through 300000 inclusive. Default: 300000. This limits the wait call, not the background task."
                 }
             }
         }),

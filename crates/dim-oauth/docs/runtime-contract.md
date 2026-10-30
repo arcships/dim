@@ -1,6 +1,6 @@
 # Runtime contract
 
-The Dim account (`dimcode-api-oauth`) is the rutis plugin `DimOAuth` ([`src/lib.rs`](../src/lib.rs)). It runs in the App Server process of the account build; no Node runtime or plugin package is involved. It owns the account login (browser PKCE and device flow), the `auth.json` account record, token refresh, the relay model catalog and request credential leases, and publishes them as the process's `ManagedProvider` (below).
+The Dim account (`dimcode-api-oauth`) is the rutis plugin `DimOAuth` ([`src/lib.rs`](../src/lib.rs)). It runs in the App Server process of the account build; no Node runtime or plugin package is involved. It owns the account login (browser PKCE and device flow), the `auth.json` account record, token refresh, the relay model catalog, relay web search (`POST {relay}/web-search`) and request credential leases, and publishes them as the process's `ManagedProvider` (below).
 
 The flow is a public OAuth client: there is no client secret. The `dimagent.com` directory uses `DIM_OAUTH_CLIENT_ID_GLOBAL` and every other directory `DIM_OAUTH_CLIENT_ID_CN`; `dimcode` compiles both in and passes them to `dim_oauth::row` as [`ClientIds`](../src/http.rs), and they never enter the repository. A realm discovered from the login email may name its own client ID, which wins.
 

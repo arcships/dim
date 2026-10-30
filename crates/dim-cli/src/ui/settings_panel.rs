@@ -16,7 +16,7 @@
 //! │   Notify when agent ...  on                  │
 //! │   Permissions                                │
 //! │   Tool approvals         default ›           │
-//! │   Command isolation      on                  │
+//! │   Command isolation      ›                  │
 //! │ 1 / 8 · ↑↓ move · enter select · ←→/space change · esc close │
 //! ╰──────────────────────────────────────────────╯
 //! ```
@@ -37,9 +37,6 @@ pub struct Values {
     pub notify: bool,
     pub approvals: String,
     pub model: Option<String>,
-    /// Whether the next model command is sandboxed. `None` where this OS
-    /// does not isolate commands, which hides the row.
-    pub isolation: Option<bool>,
 }
 
 /// One row: a switch flips in place, a link opens its picker.
@@ -83,7 +80,7 @@ impl Setting {
     fn switch(self) -> bool {
         matches!(
             self,
-            Self::StartupForm | Self::ToolDetails | Self::Mouse | Self::Notify | Self::Isolation
+            Self::StartupForm | Self::ToolDetails | Self::Mouse | Self::Notify
         )
     }
 }
@@ -99,7 +96,7 @@ impl SettingsPanel {
         let row = |setting: Setting, label: &'static str, value: String| {
             Item::new(setting.id(), t(label), value)
         };
-        let mut items = vec![
+        let items = vec![
             Item::heading(t("Interface")),
             row(Setting::Theme, "Theme", link(&values.theme)),
             row(Setting::Language, "Language", link(&values.language)),
@@ -139,22 +136,14 @@ impl SettingsPanel {
                 "Tool approvals",
                 link(&values.approvals),
             ),
-        ];
-        if let Some(on) = values.isolation {
-            items.push(row(
-                Setting::Isolation,
-                "Command isolation",
-                on_off(on).to_owned(),
-            ));
-        }
-        items.extend([
+            row(Setting::Isolation, "Command isolation", link("")),
             Item::heading(t("Models")),
             row(
                 Setting::Model,
                 "Model",
                 link(values.model.as_deref().unwrap_or(t("not set"))),
             ),
-        ]);
+        ];
         let mut list = ListPanel::new(
             "Settings",
             "↑↓ move · Enter select · ←→/Space change · Esc close",
@@ -194,47 +183,5 @@ impl SettingsPanel {
 
     pub fn render(&self, width: usize, rows: usize, p: &Palette) -> Vec<String> {
         self.list.render(width, rows, p)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ui::prompts::Effect;
-    use crate::ui::terminal::{KeyCode, KeyEvent, Modifiers};
-    use crate::ui::theme::{Appearance, ColorMode, palette::terminal_palette};
-
-    fn values(isolation: Option<bool>) -> Values {
-        Values {
-            theme: "System".into(),
-            language: "English".into(),
-            fullscreen_default: false,
-            tools_expanded: false,
-            mouse: true,
-            notify: true,
-            approvals: "default".into(),
-            model: None,
-            isolation,
-        }
-    }
-
-    #[test]
-    fn command_isolation_is_a_switch_only_where_commands_are_isolated() {
-        let palette = terminal_palette(ColorMode::TrueColor, Appearance::Dark);
-        let mut shown = SettingsPanel::new(&values(Some(false)), Setting::Isolation);
-        let text = shown.render(80, 24, &palette).join("\n");
-        let line = text
-            .lines()
-            .find(|line| line.contains("Command isolation"))
-            .expect(&text);
-        assert!(line.contains("off"), "{line}");
-        assert_eq!(
-            shown.handle_key(KeyEvent::new(KeyCode::Char(' '), Modifiers::NONE)),
-            Effect::Setting(Setting::Isolation)
-        );
-
-        let hidden = SettingsPanel::new(&values(None), Setting::Theme);
-        let text = hidden.render(80, 24, &palette).join("\n");
-        assert!(!text.contains("Command isolation"), "{text}");
     }
 }

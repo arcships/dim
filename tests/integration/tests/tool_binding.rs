@@ -823,12 +823,21 @@ async fn optional_contributors_do_not_gate_the_loop_and_follow_new_generations()
         .find(|plugin| plugin.name == "Loop")
         .unwrap();
     let loop_view = root.view(previous_loop.id).unwrap();
+    let previous_provider_generation = provider.watch().borrow().generation;
     root.view(registry_id).unwrap().restart().await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop_view
             .watch()
             .wait_for(|snapshot| {
                 snapshot.generation > previous_loop.generation
+                    && snapshot.state == rutis::host::FiberState::Active
+            })
+            .await
+            .unwrap();
+        provider
+            .watch()
+            .wait_for(|snapshot| {
+                snapshot.generation > previous_provider_generation
                     && snapshot.state == rutis::host::FiberState::Active
             })
             .await

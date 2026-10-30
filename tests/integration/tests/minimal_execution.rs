@@ -189,11 +189,11 @@ impl Harness {
             .process_value(Arc::new(ModelHost(model.clone())))
             .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_value(Arc::new(ContextModelHost(compacting.then(|| {
-                Arc::new(compaction_support::Window) as Arc<dyn ResolveContextModel>
+                Arc::new(compaction_support::Window::default()) as Arc<dyn ResolveContextModel>
             }))))
             .session_value(Arc::new(CommandRulesHost(Arc::new(NoCommandRules))))
             .session_value(Arc::new(CompactionStrategyHost(compacting.then(|| {
-                Arc::new(compaction_support::Window) as Arc<dyn CompactionStrategy>
+                Arc::new(compaction_support::Window::default()) as Arc<dyn CompactionStrategy>
             }))))
             .require_feature(
                 Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
@@ -342,6 +342,118 @@ fn task_of(result: &ToolResult) -> String {
 
 fn tool_results(events: &[Arc<AgentEvent>]) -> usize {
     count(events, "step/tool-result")
+}
+
+/// #552: the entry TimelineTree registers for `<dim-branch-line>`.
+const IDENTITY_ENTRY: &str = r#"<dim-branch-line branch="C" parent="main" source="tool">: which line of this session you are, placed by the runtime at the start of a line's own history. A later block of this name replaces the earlier one; it is state about the line, not a request."#;
+
+fn system_text(prompt: &SystemPrompt) -> String {
+    match prompt {
+        SystemPrompt::Text(text) => text.clone(),
+        SystemPrompt::Parts(parts) => parts
+            .iter()
+            .map(|part| {
+                let SystemPromptPart::Text { text, .. } = part;
+                text.as_str()
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+/// The system of a branch's last model call.
+async fn last_system(session: &Session, branch: &str) -> String {
+    session
+        .history(branch, None)
+        .await
+        .unwrap()
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::ModelCall(data) => data.request.system.as_deref().map(system_text),
+            _ => None,
+        })
+        .expect("a model call carries the system")
+}
+
+/// The minimal execution profile is sound once its Session and a branch are
+/// live: the assembly check reports nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_minimal_execution_assembly_passes_the_assembly_check() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    session
+        .branch(
+            "main".into(),
+            session.sequence("main").unwrap(),
+            BranchOptions {
+                prompt: "check".into(),
+                source: BranchSource::Host {
+                    operation_id: "check".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let findings = harness.agent.check_assembly().unwrap();
+    assert!(findings.is_empty(), "{findings:?}");
+    harness.shutdown().await;
+}
+
+/// #552: this profile installs no branch tool, so nothing writes the roster
+/// and nothing explains it. A host line still carries `<dim-branch-line>`,
+/// and the Session part that writes it explains the marker there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_line_carries_the_identity_entry_without_the_branch_tool() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    let at = session.sequence("main").unwrap();
+    let child = session
+        .branch(
+            "main".into(),
+            at,
+            BranchOptions {
+                prompt: "review the tests".into(),
+                source: BranchSource::Host {
+                    operation_id: "test".into(),
+                },
+            },
+        )
+        .await
+        .expect("the minimal profile opens a host line");
+    session
+        .submit("go".into(), InputMode::Queue, &child)
+        .await
+        .unwrap();
+    session.idle(&child).await.unwrap();
+
+    let events = session.history(&child, None).await.unwrap();
+    let opening = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::InputMessage(data) => data.blocks.iter().find_map(|block| match block {
+                InputBlock::Raw { text, .. } if text.starts_with("<dim-branch-line") => {
+                    Some(text.clone())
+                }
+                _ => None,
+            }),
+            _ => None,
+        })
+        .expect("the line's opening input carries its identity");
+    assert!(
+        opening.starts_with(&format!(
+            "<dim-branch-line branch=\"{child}\" parent=\"main\" source=\"host\">"
+        )),
+        "{opening}"
+    );
+    let system = last_system(&session, &child).await;
+    assert_eq!(system.matches(IDENTITY_ENTRY).count(), 1, "{system}");
+    assert!(
+        !system.contains("<dim-branch-lines"),
+        "no part writes the roster here, so no entry explains it: {system}"
+    );
+    session.close().await.unwrap();
+    harness.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

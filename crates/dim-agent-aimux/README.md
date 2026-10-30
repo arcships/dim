@@ -4,6 +4,22 @@
 
 `ConfiguredModelsPlugin` 管理开发配置的共享 `AimuxModels` 和 `ProviderConnectionResolver`，每次请求读取凭据环境变量。Session 的 `ConfiguredModelPlugin` 依赖模型表、SessionConfig、SessionIdentity、ToolRegistry，提供 `PrepareModelHost`。`defaults::install_with_process_model` 将分支 ModelProvider 接到进程模型服务；模型调用仍使用原有任务。
 
+## 工具结果中的图像
+
+工具结果里的图像按请求的 `ModelProtocol` 决定落点，由转换器能否在工具结果内携带图像决定，不改变历史或存储的工具结果。标记与说明文字在 `src/request.rs` 中各定义一个常量；下表路径相对 `vendor/aimux/aimux-providers/src/`。
+
+| ModelProtocol | 形式 | 决定的转换器 |
+| --- | --- | --- |
+| openai-chat、openai-compatible | 后续 user 消息 | `openai/convert.rs`，`convert_message_to_openai` 的 `Role::Tool` 分支（经 `tool_result_to_content`）只产出字符串 |
+| openai-responses | 后续 user 消息 | `openai/responses/convert.rs`，`convert_to_responses_input` 的 `Role::Tool` 分支：`function_call_output.output` 只收字符串 |
+| xai | 后续 user 消息 | `xai/convert.rs`，`convert_to_xai_messages` 的 `Role::Tool` 分支：tool 消息的 `content` 只收字符串 |
+| xai-responses | 后续 user 消息 | `xai/responses/convert.rs`，`convert_to_xai_responses_input` 的 `Role::Tool` 分支：`function_call_output.output` 只收字符串 |
+| gemini | 后续 user 消息 | `google/convert.rs`，`convert_tool_parts`：`functionResponse.response.content` 只收字符串 |
+| anthropic | 工具结果内 | `anthropic/convert.rs`，`resolve_tool_result_output` 的 `content`/`error` 分支与调用处的 `ContentPart::ToolResult` 分支：`tool_result.content` 接受内容块数组 |
+| bedrock | 工具结果内 | `bedrock/convert.rs`，`ContentPart::ToolResult` 分支与 `resolve_tool_result_output`/`convert_tool_result_content_part`：`toolResult.content` 接受 text/file 块 |
+
+「后续 user 消息」指：工具结果的文本在图像位置留一个标记；该步骤所有 tool 消息结束后放一条 user 消息，图像按工具调用顺序排列，每张图前有一段文本说明它来自哪个工具调用、是工具输出。
+
 Aimux 无目录或 Session 依赖，独占可释放的 HTTP client。卸载关闭准入、释放未读取或停止读取的原生流、排空已受理调用，再释放池；旧宿主和流返回 `OwnerClosed`。HTTP 失败保留类型化 status/code，恢复由调用方决定，adapter 不重试。产品 Provider/OAuth 另行实施。
 
 ## 启动

@@ -66,13 +66,21 @@ replacement is discarded by the next replacement of that name.
 
 `auth.json` also takes the TypeScript-compatible `auth.json.lock` marker, which
 is reclaimed only while holding the `auth.json` key. A marker is stale once it
-is older than 30 seconds and names a process that is no longer running; a
-marker naming this process counts as live. The exception is a marker this
+is older than 30 seconds and has no verified owner: its recorded PID must still
+be running and have started no later than the marker's recorded creation time.
+A reused PID, a permission-denied process probe or a missing PID or creation
+time does not establish ownership. The exception is a marker this
 process failed to release: it keeps the owner record, whose nonce only that
 marker carries, and reclaims the marker at once, so removal and locking need
 not wait for the process to exit. The marker is the external TypeScript wire
-format: PID, wall-clock milliseconds, nonce and a trailing newline, with no
-other fields.
+format: PID, milliseconds since the Unix epoch (`Date.now()` in TypeScript),
+nonce and a trailing newline, with no other fields. Writers must use
+milliseconds, not seconds.
+
+The start-time comparison on macOS, Linux, Android and Windows assumes wall-clock
+adjustments do not make the reported process start later than marker creation;
+otherwise a live owner's marker can be reclaimed after the grace period. Other
+Unix targets retain the marker conservatively while its PID probe succeeds.
 
 On Windows, releasing a `PhysicalLock` unlocks its byte range explicitly before
 release completes, because `CloseHandle` may defer the implicit unlock; a later

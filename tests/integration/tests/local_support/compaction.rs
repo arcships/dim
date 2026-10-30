@@ -1,6 +1,7 @@
 //! Window facts and the strategy that takes the retention rule's cut, so an
 //! execution flow test can compact a real command's history and read the
 //! digest (ContextCompaction §5.10, acceptance 18).
+#![allow(dead_code)]
 use dim_agent_capabilities::{
     agent_loop::AgentLoop,
     history::summary_message,
@@ -11,13 +12,33 @@ use dim_agent_capabilities::{
 };
 use dim_agent_runtime::*;
 use dim_agent_types::*;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio_util::sync::CancellationToken;
 
 /// `40,960` window tokens with `64` reserved for output, so `B` is `40,896`
 /// and the digest's bound is `0.05 × B`. The threshold is out of reach: only a
 /// test that asks compacts.
-pub struct Window;
+#[derive(Default)]
+pub struct Window {
+    /// The request each strategy call was handed, when the test asks for
+    /// them.
+    pub requests: Option<Arc<Mutex<Vec<Arc<ModelRequest>>>>>,
+}
+impl Window {
+    /// The window facts, and the requests its strategy is given.
+    pub fn recording() -> (Self, Arc<Mutex<Vec<Arc<ModelRequest>>>>) {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                requests: Some(requests.clone()),
+            },
+            requests,
+        )
+    }
+}
 
 impl ResolveContextModel for Window {
     fn resolve(
@@ -25,7 +46,7 @@ impl ResolveContextModel for Window {
         _: Arc<ModelRequest>,
         _: CancellationToken,
     ) -> HostFuture<'_, Arc<dyn ContextModel>> {
-        Box::pin(async { Ok(Arc::new(Window) as Arc<dyn ContextModel>) })
+        Box::pin(async { Ok(Arc::new(Window::default()) as Arc<dyn ContextModel>) })
     }
 }
 
@@ -57,6 +78,9 @@ impl CompactionStrategy for Window {
         _: CancellationToken,
     ) -> HostFuture<'_, StrategyOutcome> {
         Box::pin(async move {
+            if let Some(requests) = &self.requests {
+                requests.lock().unwrap().push(input.request.clone());
+            }
             let Some(cut) = input.cut() else {
                 return Ok(StrategyOutcome::Skipped {
                     reason: "nothing_to_compact".into(),

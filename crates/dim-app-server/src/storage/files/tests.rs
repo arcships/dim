@@ -194,7 +194,7 @@ async fn puts_ended_before_txn_2_are_abandoned_and_swept() {
         let database = database.clone();
         move || {
             let connection = Connection::open(database).unwrap();
-            for table in ["timeline_branches", "agent_sessions"] {
+            for table in ["session_catalog", "timeline_branches", "agent_sessions"] {
                 connection
                     .execute(
                         &format!("DELETE FROM {table} WHERE session_id = 'put-deleted'"),

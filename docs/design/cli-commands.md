@@ -12,6 +12,99 @@ local image sources and paste handling. The multiline/paste editor and headless 
 arguments, clipboard/file insertion, completion and dropped paths are implemented. The attachment
 contract records the native platform acceptance evidence and outstanding checks.
 
+## Command menu
+
+In both scrollback and fullscreen TUI, group commands by category and sort
+categories and command names alphabetically by their canonical English identifiers.
+Search relevance takes priority; equally ranked matches use the same category/name order.
+Exit and suspend require their exact name or alias before dispatch: choosing an
+incomplete match fills the command name and keeps the composer open. Exact typed
+commands, including hidden commands, retain their own dispatch behavior.
+The command menu lists `/approvals` as the permission entry. `/approval`
+remains available when typed directly. Interrupt and steer are reached through
+`Esc` and `Ctrl+S` and are omitted from the menu. The menu only lists slash
+commands: the view actions for picking an earlier message and scrolling to the
+top or bottom are also omitted; `Tab`, `Home` and `End` retain their bindings.
+
+```text
+Commands
+  app     /exit        exit
+  app     /keys        show the key bindings
+  model   /approvals   set the session's permission preset
+
+/ + Enter          -> /exit (completion only)
+/exit + Enter      -> exit
+/approval + Enter  -> Ask / Full access menu
+
+Esc     interrupt the run
+Ctrl+S  steer with the next queued message
+Tab     pick an earlier message to edit or quote
+Home    scroll to the top (fullscreen, empty draft)
+End     scroll to the bottom (fullscreen, empty draft)
+```
+
+## Command isolation settings
+
+The existing `/settings` panel adds a separate `Command isolation` row under Permissions,
+next to `Tool approvals`. This is the only user configuration entry: no native `dimcode isolation`
+command or `/isolation` slash command is added. It uses HostPlatform's
+[trusted local policy management](host-platform-isolation.md#trusted-local-policy-management)
+over the local daemon connection even when model commands cannot run. `/approvals` output
+points to `/settings > Command isolation`; isolation is not another Permission preset.
+
+```text
+Settings > Command isolation
+  Permission preset   full-access (admission only)
+  Execution node      local
+  Isolation tier      workspace >  [workspace | network | host]
+  Wider requests      ask       >  [ask | deny]
+  Advanced                     >  Read paths / Write paths / Environment names
+  Policy source       defaults
+  Policy path         <execution-home>/host-isolation.json
+
+  Save
+  Reset to defaults
+  Applies to new commands and new persistent shells.
+```
+
+Opening the panel reads the policy snapshot and the current `main` Permission preset separately.
+The snapshot revision stays with the draft, not as a user-entered field. Tier and wider-request
+pickers initially select the draft value, or its effective value when omitted, and change the
+draft only. Editing a version 1 policy's tier/escalation explicitly converts
+its effective settings to version 2, preserving optional lists. Save submits the complete draft
+with the inspected revision; Reset to defaults asks for confirmation, then resets through the
+owner with that revision. Neither action retries a stale revision automatically. A conflict
+keeps the draft, displays the error and offers Reload; reload explicitly discards the draft.
+Successful save/reset replaces the draft with the returned snapshot and displays the
+next-process activation notice. Esc/Back returns to Settings, asking before discarding edits.
+
+Advanced opens three list editors for `readOnlyPaths`, `writablePaths` and environment **names**.
+Each has a `Use defaults` choice distinct from an explicit list, an Add input, editable/removable
+entries and a clear-list action; an explicit empty list grants none. The panel explains that
+explicit lists replace defaults. Environment values are never read or displayed. Saving one
+field preserves unrelated explicit settings and omitted lists. Validation errors keep the draft
+and show the offending field without changing persisted policy; no live-policy JSON editing,
+external scratch file, export route or force-write option is needed.
+
+Reuse the existing settings/list-panel navigation: arrows select, Enter opens a picker/editor
+or activates an action, Esc returns one level. Only the active panel receives input; a
+confirmation/input overlay returns to its owning panel. Long paths wrap or scroll without
+hiding the controls. At small terminal sizes use the existing panel viewport/scroll behavior,
+not a separate full-screen layout. Loading disables mutation; read failure offers Retry/Back
+without inventing a default snapshot; write failure retains edits. An unavailable management
+method displays an unsupported-daemon error, not a model-exec fallback.
+
+Changing policy is an explicit local-user configuration action, not a model command approval.
+`ask` delegates to Permission/Approval and is not always a prompt. `host` means ordinary
+daemon-user access; `network` changes networking only, not filesystem grants or authentication.
+
+Verification exercises fresh native startup independently of `./dev`: default interactive
+approval displays `network`/`host`, allow runs and deny prevents the payload; version 2 omission
+uses `ask`, explicit deny and version 1 remain restrictive. Flow coverage also exercises `full-access`, allowed tools
+and command rules; local-only management, absence, saves preserving lists, reset, invalid
+fields/roots and revision conflicts. A Homebrew executable
+control distinguishes network from executable access without using real credentials.
+
 ## Commands
 
 | Entry | Behavior |
@@ -574,7 +667,6 @@ filter.
 | --- | --- |
 | A reviewer model that answers approvals for the user | An approval answerer that responds through Approval's public respond operation, with its own model call and design, like the Collaboration leader route; not a CLI change |
 | Allows remembered only for one Session | A recorded fact or a Session-scoped rules source (F2 §10.2 defers per-workspace user rules); a CLI-process memory would answer without a recorded decision |
-| Isolation fields other than on/off | `/settings` turns the local `host-isolation.json` sandbox on or off and keeps every other field. Paths, escalation and an explicit tier still need a hand edit; a remote client still needs a HostPlatform method with a revision |
 | Shift+Tab cycle | CLI only: an editor action result and a confirmation path (decision 4) |
 | `--allowed-tools`/`--disallowed-tools` | A tool catalog read to validate names at the argument boundary (decision 2) |
 | `/approvals` during a running turn | CLI only: the running turn reads plain lines and answers approvals; panel calls would join its multiplexed loop |

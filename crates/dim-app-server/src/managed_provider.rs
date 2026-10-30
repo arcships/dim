@@ -55,6 +55,60 @@ pub struct ManagedCatalog {
     pub account: AccountSnapshot,
     pub models: Vec<ManagedModel>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebSearchRequest {
+    pub query: String,
+    pub count: u32,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebSearchHit {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebSearchResponse {
+    pub results: Vec<WebSearchHit>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedSearchError {
+    #[error("Managed search is unavailable")]
+    Unavailable,
+    #[error("Managed search failed")]
+    SearchFailed,
+}
+impl From<ManagedError> for ManagedSearchError {
+    fn from(error: ManagedError) -> Self {
+        match error {
+            ManagedError::TokenMissing
+            | ManagedError::RefreshRejected
+            | ManagedError::InvalidStore
+            | ManagedError::UnsupportedSchema
+            | ManagedError::AccountRecoveryRequired
+            | ManagedError::AccountResetBlocked
+            | ManagedError::IdentityRejected
+            | ManagedError::ConfigError => Self::Unavailable,
+            ManagedError::AccountChanged
+            | ManagedError::StorageError
+            | ManagedError::Transient
+            | ManagedError::InvalidResponse
+            | ManagedError::InvalidCallback
+            | ManagedError::AttemptNotFound
+            | ManagedError::AttemptClosed
+            | ManagedError::ServiceReloading
+            | ManagedError::InvalidInput
+            | ManagedError::UnknownModel
+            | ManagedError::LeaseNotFound
+            | ManagedError::LeaseCapacity => Self::SearchFailed,
+        }
+    }
+}
 
 /// Canonical managed-provider failures. Only fixed public diagnostics derived
 /// from them cross the client boundary.
@@ -165,6 +219,13 @@ pub trait ManagedProvider: Send + Sync + 'static {
     fn cancel_attempt(&self, attempt: ManagedLoginAttempt) -> ManagedFuture<()>;
     fn logout(&self, provider: &str) -> ManagedFuture<AccountSnapshot>;
     fn usage(&self, provider: &str) -> ManagedFuture<Usage>;
+    /// `cancel` releases the relay request; a token refresh it started still
+    /// completes.
+    fn web_search(
+        &self,
+        request: WebSearchRequest,
+        cancel: CancellationToken,
+    ) -> ManagedFuture<WebSearchResponse>;
     fn catalog(&self, provider: &str) -> ManagedFuture<ManagedCatalog>;
     fn credential(&self, provider: &str, model: &str) -> ManagedFuture<CredentialLease>;
     /// One controlled recovery after the relay rejected `lease`.
@@ -390,6 +451,16 @@ impl ManagedProviders {
     ) -> Result<Usage, ManagedProviderError> {
         Ok(self.provider(cancel)?.usage(id).await?)
     }
+    pub async fn search(
+        &self,
+        request: WebSearchRequest,
+        cancel: &CancellationToken,
+    ) -> Result<WebSearchResponse, ManagedSearchError> {
+        let provider = self
+            .provider(cancel)
+            .map_err(|_| ManagedSearchError::Unavailable)?;
+        Ok(provider.web_search(request, cancel.clone()).await?)
+    }
     pub async fn catalog(
         &self,
         id: &str,
@@ -518,26 +589,13 @@ fn checked_lease(lease: CredentialLease) -> Result<CredentialLease, ManagedProvi
     Ok(lease)
 }
 
-pub struct ManagedProvidersPlugin {
-    methods: Key<crate::methods::ManagementMethods>,
-}
-impl ManagedProvidersPlugin {
-    pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
-        Ok(Self {
-            methods: names.key()?,
-        })
-    }
-}
+pub struct ManagedProvidersPlugin;
 impl DynPlugin for ManagedProvidersPlugin {
     fn name(&self) -> &str {
         "ManagedProviders"
     }
-    fn injects(&self) -> Vec<TypeKey> {
-        vec![self.methods.erase()]
-    }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let methods = ctx.require_at(&self.methods)?;
             let service = Arc::new(ManagedProviders {
                 provider: Mutex::new(None),
                 stop: CancellationToken::new(),
@@ -547,8 +605,36 @@ impl DynPlugin for ManagedProvidersPlugin {
                 owner.stop.cancel();
                 Ok(())
             })?;
-            management::provide(ctx, &methods, service.clone())?;
             ctx.provide_as::<ManagedProviders>(service)?;
+            Ok(Effect::Done)
+        })
+    }
+}
+/// Process owner of the `account` management namespace.
+pub struct ManagedProviderMethodsPlugin {
+    owner: Key<ManagedProviders>,
+    methods: Key<crate::methods::ManagementMethods>,
+}
+impl ManagedProviderMethodsPlugin {
+    pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
+        Ok(Self {
+            owner: names.key()?,
+            methods: names.key()?,
+        })
+    }
+}
+impl DynPlugin for ManagedProviderMethodsPlugin {
+    fn name(&self) -> &str {
+        "ManagedProviderMethods"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.owner.erase(), self.methods.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let owner = ctx.require_at(&self.owner)?;
+            let methods = ctx.require_at(&self.methods)?;
+            management::provide(ctx, &methods, owner)?;
             Ok(Effect::Done)
         })
     }

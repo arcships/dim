@@ -12,7 +12,7 @@ use crate::{
     prompt::{InitialPromptConfiguration, PromptPlugin},
     session_broadcast::{SessionBroadcastEndPlugin, SessionBroadcastPlugin},
     summary_strategy::{ProductSummaryStrategyConfig, ProductSummaryStrategyPlugin},
-    timeline_tree::{TimelineTreePlugin, TreeTimelinePlugin},
+    timeline_tree::{BranchToolConfig, TimelineTreePlugin, TreeTimelinePlugin},
     tool_binding::ToolBindingPlugin,
     tool_executor::ToolExecutorPlugin,
     tool_registry::ToolRegistryPlugin,
@@ -64,7 +64,7 @@ pub fn install_with_prompt_capability(
     builder: &mut AgentBuilder,
     model: fn(&Names<'_>) -> Result<ModelProviderPlugin, Error>,
 ) {
-    install_with_prompt_capability_and_branch(builder, model, true);
+    install_with_prompt_capability_and_branch(builder, model, true, BranchToolConfig::default());
 }
 
 /// Base variant without the branch tool; used by the minimal execution
@@ -73,13 +73,14 @@ pub fn install_with_prompt_capability_no_branch(
     builder: &mut AgentBuilder,
     model: fn(&Names<'_>) -> Result<ModelProviderPlugin, Error>,
 ) {
-    install_with_prompt_capability_and_branch(builder, model, false);
+    install_with_prompt_capability_and_branch(builder, model, false, BranchToolConfig::default());
 }
 
 fn install_with_prompt_capability_and_branch(
     builder: &mut AgentBuilder,
     model: fn(&Names<'_>) -> Result<ModelProviderPlugin, Error>,
     branch_tool: bool,
+    branch_text: BranchToolConfig,
 ) {
     crate::register_names(builder);
     builder
@@ -163,10 +164,13 @@ fn install_with_prompt_capability_and_branch(
     if branch_tool {
         builder.require_feature(
             Feature::new("BranchTool")
-                .session("BranchTool", |names| {
-                    Ok(Box::new(crate::timeline_tree::BranchToolPlugin::new(
-                        names,
-                    )?))
+                .session("BranchTool", move |names| {
+                    Ok(Box::new(
+                        crate::timeline_tree::BranchToolPlugin::with_config(
+                            names,
+                            branch_text.clone(),
+                        )?,
+                    ))
                 })
                 .branch("BranchLine", |names| {
                     Ok(Box::new(crate::timeline_tree::BranchLinePlugin::new(
@@ -202,13 +206,16 @@ pub fn install_minimal_execution(
 /// composition root also registers the process plugins `HostPlatformPlugin`
 /// and `SkillsCatalogPlugin`, plus the product
 /// `SkillSettingsHost`, and binds the Session `CommandRulesHost`. A new
-/// Session adopts `SessionConfig.model` with its prompt sources.
+/// Session adopts `SessionConfig.model` with its prompt sources. `branch_text`
+/// is the branch tool's factory configuration: the product passes its
+/// defaults, and an evaluation passes a candidate description.
 pub fn install_local_execution(
     builder: &mut AgentBuilder,
     model: fn(&Names<'_>) -> Result<ModelProviderPlugin, Error>,
     workspace: crate::workspace_tools::WorkspaceToolsConfig,
+    branch_text: BranchToolConfig,
 ) {
-    install_with_prompt_capability(builder, model);
+    install_with_prompt_capability_and_branch(builder, model, true, branch_text);
     crate::workspace_tools::install(builder, workspace);
     crate::wait::install(builder);
     crate::recall::install(builder);

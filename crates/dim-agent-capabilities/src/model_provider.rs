@@ -73,11 +73,23 @@ impl ModelProvider {
                 budget,
                 presentation,
                 ..
-            }) => ModelOutputOutcome::Failed {
-                error: message,
-                budget,
-                presentation: presentation.map(|value| *value),
-            },
+            }) => {
+                tracing::error!(
+                    session_id = %self.identity.session_id,
+                    branch_id = %self.identity.branch_id,
+                    turn_id = %call.turn_id,
+                    request_id = %call.request_id,
+                    provider_id = %call.request.provider_id,
+                    model_id = %call.request.model_id,
+                    error = %message,
+                    "Model request failed"
+                );
+                ModelOutputOutcome::Failed {
+                    error: message,
+                    budget,
+                    presentation: presentation.map(|value| *value),
+                }
+            }
         };
         let mut events = Vec::new();
         if !matches!(outcome, ModelOutputOutcome::Completed { .. })

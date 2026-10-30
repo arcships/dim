@@ -32,6 +32,26 @@ pub struct ManagementProvider {
     pub connection: Option<ManagementConnection>,
     pub models: Option<Vec<ManagementModel>>,
     pub preferences: BTreeMap<String, ModelPreferences>,
+    /// What an update did with the record's models; absent from the reads and
+    /// from a patch that did not change `baseUrl`, `credential` or `headers`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models_listed: Option<ModelsListed>,
+}
+
+/// What `provider.update` did with the record's models when the patch changed
+/// the endpoint or the account it reaches.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelsListed {
+    /// It listed the new endpoint's models and stored them in the same write
+    /// as the endpoint.
+    Listed,
+    /// The record keeps its models, which are the bundled catalog's.
+    Bundled,
+    /// The driver cannot list models, so the connection was saved alone.
+    Unsupported,
+    /// The record is disabled, so nothing was listed.
+    Disabled,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,13 +101,7 @@ impl ProviderService {
         provider_id: &str,
         record: &StaticProviderRecord,
     ) -> bool {
-        record.credential_authority == CredentialAuthority::Static
-            && drivers::remote_model_list(&record.driver_kind)
-            && !self
-                .bundled
-                .provider(provider_id)
-                .and_then(|provider| provider.metadata.as_ref())
-                .is_some_and(|metadata| metadata.remote_model_list == Some(false))
+        super::can_list_models(&self.bundled, provider_id, record)
     }
 
     pub(super) async fn static_management(
@@ -220,6 +234,7 @@ impl ProviderService {
                 proxy_auth_configured,
                 timeout_ms: record.network.timeout_ms,
             }),
+            models_listed: None,
         })
     }
 
@@ -306,6 +321,7 @@ impl ProviderService {
             connection: None,
             models,
             preferences,
+            models_listed: None,
         }
     }
 

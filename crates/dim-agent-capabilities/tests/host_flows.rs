@@ -69,6 +69,89 @@ impl DynPlugin for Rewrite {
     }
 }
 struct RecordingModel(Arc<Mutex<Vec<Arc<ModelRequest>>>>);
+
+struct OutputLimitedModel;
+impl ModelDriver for OutputLimitedModel {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        connection: ModelConnection,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        if request.config.as_ref().and_then(|config| config.max_tokens) == Some(16.0) {
+            Box::pin(async {
+                Ok(Box::pin(futures_util::stream::iter([
+                    Ok(ModelChunk::MessageStart {
+                        message_id: "limited".into(),
+                    }),
+                    Ok(ModelChunk::Text("partial output".into())),
+                    Ok(ModelChunk::MessageStop {
+                        message_id: "limited".into(),
+                        reason: ModelStopReason::MaxTokens,
+                    }),
+                ])) as ModelStream)
+            })
+        } else {
+            EchoModel.invoke(request, connection, cancel)
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_max_tokens_turn_keeps_the_session_usable_with_a_larger_output_limit() {
+    let agent = builder(Arc::new(OutputLimitedModel), Arc::new(MockTools)).build();
+    let mut config = SessionConfig::default();
+    config.model.config = Some(ModelConfig {
+        max_tokens: Some(16.0),
+        ..Default::default()
+    });
+    let mut model = config.model.clone();
+    let session = agent.create_session(config).await.unwrap();
+    session
+        .submit("first".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let history = session.history("main", None).await.unwrap();
+    assert!(history.iter().any(|event| matches!(&event.kind,
+        EventKind::ModelOutputEnd(ModelOutputEndData { outcome: ModelOutputOutcome::Failed { error, budget: None, presentation: Some(presentation) }, .. })
+        if error.contains(&model.provider_id) && error.contains(&model.model_id)
+            && presentation.source == model.provider_id && presentation.reason == "max_tokens"
+            && presentation.action.as_deref().is_some_and(|action| action.contains("output token limit")))));
+    assert!(matches!(
+        &history.last().unwrap().kind,
+        EventKind::TurnEnd(TurnEndData {
+            outcome: TurnOutcome::Failed { .. },
+            ..
+        })
+    ));
+    model.config.as_mut().unwrap().max_tokens = Some(128.0);
+    session
+        .configure(
+            ConfigureUpdate {
+                model: Some(model),
+                ..Default::default()
+            },
+            "main",
+        )
+        .await
+        .unwrap();
+    session
+        .submit("continue".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let history = session.history("main", None).await.unwrap();
+    assert!(matches!(
+        &history.last().unwrap().kind,
+        EventKind::TurnEnd(TurnEndData {
+            outcome: TurnOutcome::Completed { .. },
+            ..
+        })
+    ));
+    agent.close().await.unwrap();
+}
+
 impl ModelDriver for RecordingModel {
     fn invoke(
         &self,
@@ -1913,4 +1996,165 @@ async fn a_session_switched_to_a_text_only_model_sends_image_placeholders() {
     })
     .await
     .unwrap();
+}
+
+const TOOL_IMAGE: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jD1sAAAAASUVORK5CYII=";
+
+/// A tool whose result is a text block, with or without a PNG block after it.
+struct Screenshot(bool);
+impl ToolDriver for Screenshot {
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
+            risk: Some("session".into()),
+            ..definition(
+                "shot",
+                "Capture the screen.",
+                serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+            )
+        }]
+    }
+    fn execute(
+        &self,
+        _: ToolCall,
+        _: ToolExecutionContext,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ToolResult> {
+        let image = self.0;
+        Box::pin(async move {
+            let mut blocks = vec![ContentBlock::Text {
+                text: "screenshot".into(),
+            }];
+            if image {
+                blocks.push(ContentBlock::Image {
+                    source: ImageSource {
+                        source_type: ImageSourceType::Base64,
+                        media_type: "image/png".into(),
+                        data: Some(TOOL_IMAGE.into()),
+                        url: None,
+                    },
+                });
+            }
+            Ok(ToolResult {
+                content: ToolContent::Blocks(blocks),
+                structured_content: None,
+                is_error: None,
+                blob_refs: None,
+                background_task: None,
+                context_messages: None,
+                effects: None,
+            })
+        })
+    }
+}
+
+/// The compaction strategy resolves a connection only when it compacts; this
+/// turn never does.
+struct NoConnection;
+impl ResolveModelConnection for NoConnection {
+    fn resolve(
+        &self,
+        _: Arc<ModelRequest>,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ResolvedModelConnection> {
+        Box::pin(async {
+            Ok(ResolvedModelConnection {
+                connection: ModelConnection::Local,
+                failure_policy: None,
+                recovery: None,
+            })
+        })
+    }
+}
+
+/// The turn's context estimates, one per model call, for a tool that returns a
+/// text block with or without an image.
+async fn tool_result_estimates(image: bool) -> Vec<f64> {
+    let root = Ctx::root().unwrap();
+    root.provide(ModelHost(Arc::new(EchoModel))).unwrap();
+    root.provide(ProviderConnectionResolver(Arc::new(NoConnection)))
+        .unwrap();
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder
+        .session_value(Arc::new(ToolHost(Arc::new(Screenshot(image)))))
+        .session_value(Arc::new(
+            dim_agent_capabilities::history::HistoryRenderer::default(),
+        ))
+        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .require_feature(
+            Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+            }),
+        );
+    defaults::install_compaction(
+        &mut builder,
+        Arc::new(dim_agent_capabilities::context_model::ProductContextModel),
+        Default::default(),
+    );
+    defaults::install(&mut builder);
+    let agent = builder.build_in(&root);
+    let mut config = SessionConfig {
+        tools: Some(vec!["shot".into()]),
+        ..Default::default()
+    };
+    config.model.capability_snapshot = Some(ModelCapabilitySnapshot {
+        target: ModelId {
+            provider_id: config.model.provider_id.clone(),
+            model_id: config.model.model_id.clone(),
+        },
+        capabilities: ModelCapabilities {
+            context_window: 128_000,
+            max_output_tokens: 4_096,
+            ..Default::default()
+        },
+        reasoning: None,
+        service_tier: None,
+    });
+    let session = agent.create_session(config).await.unwrap();
+    session
+        .submit("tool:shot {}".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let events = session.history("main", None).await.unwrap();
+    assert!(
+        matches!(
+            events.last().unwrap().kind,
+            EventKind::TurnEnd(TurnEndData {
+                outcome: TurnOutcome::Completed { .. },
+                ..
+            })
+        ),
+        "{:?}",
+        events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::ModelOutputEnd(data) => Some(&data.outcome),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    );
+    let estimates = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ContextBudget(data) => Some(data.estimated_input_tokens),
+            _ => None,
+        })
+        .collect();
+    agent.close().await.unwrap();
+    root.shutdown().await.unwrap();
+    estimates
+}
+
+#[tokio::test]
+async fn a_tool_result_image_counts_as_one_image_in_the_estimate() {
+    let with = tool_result_estimates(true).await;
+    let without = tool_result_estimates(false).await;
+    assert_eq!(with.len(), 2, "{with:?}");
+    assert_eq!(without.len(), 2, "{without:?}");
+    let counted = with[1] - without[1];
+    assert!(
+        (1_500. ..=1_700.).contains(&counted),
+        "one image, not its base64 size: {with:?} against {without:?}"
+    );
 }

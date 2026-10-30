@@ -19,6 +19,13 @@ TIMELINE_ACCEPTANCE_ROOT=/absolute/test-directory \
 | `crashes` | Process termination at transaction/publication barriers and continuity after recovery |
 | `powerloss` | Restore only successfully synced main/WAL images and verify recovery continuity |
 
+`rounds` reports `walBytesPerEvent` over all output deltas and chain writes, and
+`checkpointSyncs` counts successful main-database syncs during the measured WAL
+traffic. On Unix, `writerCpuMs` is the syncing writer thread’s CPU time between
+its first and last WAL sync; it excludes setup and work outside that span. It is
+`null` on unsupported platforms or if multiple threads sync the WAL, rather than
+reporting process-wide CPU as writer CPU.
+
 In `crashes` and `powerloss` the interrupted batch is an input and the request prepared from it. Recovery validates the Session, including every request list's nodes, reads the recovered events back, and writes a request extending it; the Session's rows must then equal those of the same events written without interruption.
 
 On macOS, `TIMELINE_ACCEPTANCE_PLAIN_FSYNC=1` turns SQLite's F_FULLFSYNC into a plain fsync, a model of a disk whose sync is fast; elsewhere SQLite does not use F_FULLFSYNC and the variable changes nothing.

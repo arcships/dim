@@ -351,8 +351,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permissions" => "Izin",
         "Tool approvals" => "Persetujuan tool",
         "Command isolation" => "Isolasi perintah",
-        "Command isolation not saved: {error}" => "Isolasi perintah tidak tersimpan: {error}",
-        "Command isolation not read: {error}" => "Isolasi perintah tidak terbaca: {error}",
         "Models" => "Model",
         "Model" => "Model",
         "not set" => "belum diatur",
@@ -401,6 +399,34 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "{provider}: {count} models unavailable · dimcode models {id}" => {
             "{provider}: {count} model tak tersedia · dimcode models {id}"
         }
+        "{provider}: no models · dimcode models {id} --refresh" => {
+            "{provider}: tanpa model · dimcode models {id} --refresh"
+        }
+        "{provider}: no models · add a model with provider.models.create" => {
+            "{provider}: tanpa model · tambahkan model dengan provider.models.create"
+        }
+        "{provider}: {unavailable} unavailable and {disabled} disabled · dimcode models {id}" => {
+            "{provider}: {unavailable} tidak tersedia dan {disabled} dinonaktifkan · dimcode models {id}"
+        }
+        "{provider}: catalog unreadable · dimcode models {id}" => {
+            "{provider}: katalog tidak terbaca · dimcode models {id}"
+        }
+        "No cached catalog. Sign in and run models PROVIDER --refresh." => {
+            "Tidak ada katalog tersimpan. Masuk dan jalankan models PROVIDER --refresh."
+        }
+        "Saved model preferences cleared" => "Preferensi model tersimpan dihapus",
+        "{provider}: 1 model disabled · dimcode models {id}" => {
+            "{provider}: 1 model dinonaktifkan · dimcode models {id}"
+        }
+        "{provider}: {count} models disabled · dimcode models {id}" => {
+            "{provider}: {count} model dinonaktifkan · dimcode models {id}"
+        }
+        "No models. Run dimcode models {id} --refresh to list them." => {
+            "Tidak ada model. Jalankan dimcode models {id} --refresh untuk menampilkannya."
+        }
+        "No models. The provider listed none." => {
+            "Tidak ada model. Penyedia tidak menampilkan satu pun."
+        }
         "Enter select · Esc back" => "Enter pilih · Esc kembali",
         "Subagent models" => "Model subagen",
         "Subagent models: {policy}" => "Model subagen: {policy}",
@@ -438,8 +464,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Ctrl+C hapus, 2x untuk keluar · Ctrl+D keluar jika draf kosong"
         }
         "Fullscreen" => "Layar penuh",
-        "PageUp/PageDown scroll · Home/End top or bottom · Tab pick a message, e edit it, q quote it" => {
-            "PageUp/PageDown gulir · Home/End atas/bawah · Tab pilih pesan, e edit, q kutip"
+        "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
+            "PageUp/PageDown gulir · Home/End atas/bawah (saat draf kosong) · Tab pilih pesan, e edit, q kutip"
         }
         "wheel scroll · drag select and copy · click a link to open it, a tool group to expand it" => {
             "roda gulir · seret pilih dan salin · klik tautan/grup tool untuk membukanya"

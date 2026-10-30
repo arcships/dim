@@ -196,6 +196,24 @@ pub async fn start() -> Fixture {
             }),
         )
         .route(
+            "/v1/web-search",
+            post(|State(s): State<Arc<Service>>, headers: HeaderMap, Json(body): Json<Value>| async move {
+                s.record(format!(
+                    "POST /v1/web-search {}:{}",
+                    body["query"].as_str().unwrap_or_default(),
+                    body["count"].as_u64().unwrap_or_default()
+                ));
+                if s.rejects(&headers) {
+                    return unauthorized();
+                }
+                Json(json!({"data":{"results":[
+                    {"title":"Dim OAuth hit","url":"https://docs.example.com/oauth","snippet":"Account search snippet","publishedAt":"2026-10-28T00:00:00Z"},
+                    {"title":"Other hit","url":"https://other.test/","description":"Fallback description"}
+                ]}}))
+                .into_response()
+            }),
+        )
+        .route(
             "/v1/chat/completions",
             post(|State(s): State<Arc<Service>>, headers: HeaderMap| async move {
                 s.record("POST /v1/chat/completions".into());

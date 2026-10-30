@@ -257,7 +257,7 @@ The Provider supplement (non-conversational connections), the Settings business 
 | `realtime` | `realtime` | `connect` | — | connection | Provider | `modality.realtime` |
 | `ocr` | `ocr` | `recognize` | image or PDF | `data: { pages: [{ index, text }] }` plus `text.txt` | Host runtime component | none; component path per node in the `modality` settings document |
 
-Image understanding is not Modality (vision models through `read`). Per-operation keys are resolved before the category key (A3). Operation parameters beyond the input are declared by each adapter and validated at submission (A4).
+Image understanding is not Modality (vision models through `read`, [WorkspaceTools §read results and images](../../architecture/rust-agent/plugins/WorkspaceTools.md#read-results-and-images)). Per-operation keys are resolved before the category key (A3). Operation parameters beyond the input are declared by each adapter and validated at submission (A4).
 
 ### A.2 Adapters and OCR nodes
 

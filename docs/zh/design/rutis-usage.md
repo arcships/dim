@@ -374,10 +374,11 @@ Agent 为自己挂载的插件建一个自己的登记处。登记是调用方 `
   按能力重载协议从 Timeline 重新开始（[插件契约 §7.2](plugin-contract.md#72-代次重载与重建)），不再增加任何东西。
 - **可选依赖与由配置选择的依赖。** 同 §3.5：由配置选择的依赖在被选中时门控（工厂填的 `Option<Key<T>>`），
   组合检查此时也覆盖它；只在存在时才用的依赖用 `get_at` 读取，不列在 `injects` 中。它的名称仍须登记。
-- **启动期限。** 一个期限覆盖 loader 启动、reconcile 与各行变为 Active。到期时创建失败，回滚取消各行；
-  rutis 等待被取消的 `apply` 返回，从不中止它，因此 `apply` 在 `ctx.cancelled()` 完成后返回。一个测试注入
-  在 `apply` 中一直等到那时的行（`tests/integration/tests/named_parts.rs`）。改为“没有进展才判失败”见
-  [#387](https://github.com/arcships/dim/issues/387)。
+- **启动进展。** `startup_timeout` 限制 loader 启动、reconcile、必需行就绪和打开重放期间连续没有进展的时间。本次打开中一行的首次激活、分支派发序号前进或一份打开回执完成会重置间隔；同一行反复重启不算新的进展。
+  只计本次打开范围内的进展，其他 Session 的活动不算；不设固定总时限。
+  Session、分支、进程启动和 restart 使用同一规则。分支等待父分支时跟随父分支自身受限的打开过程，
+  不另加总时限。没有进展时列出未 Active 的行及缺少的依赖并失败；组合错误或必需提供者失败立即返回。
+  回滚取消各行，rutis 从不中止 `apply`，而是等待它在 `ctx.cancelled()` 完成后返回。
 
 ## 附录 B. TypeScript 与 Python 绑定
 

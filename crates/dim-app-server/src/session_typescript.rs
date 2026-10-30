@@ -4,7 +4,9 @@
 //! instances (`instanceNames`), which the catalog needs before the runtime
 //! starts (rutis usage §2).
 use crate::{Result, ServerError, methods::ManagementMethods, settings::WorkflowPackages};
-use dim_agent_capabilities::{methods::SessionMethods, tool_registry::ToolRegistry};
+use dim_agent_capabilities::{
+    methods::SessionMethods, prompt_guide::GuideEntries, tool_registry::ToolRegistry,
+};
 use dim_agent_runtime::{AgentBuilder, BRANCH_GROUP, PartRegistry, SESSION_GROUP, names::name_of};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, PluginFactory, TypeKey};
 use rutis::{Ctx, Error};
@@ -54,10 +56,10 @@ fn crossing_instance_names() -> [(String, &'static str); 8] {
 
 /// The names a host of foreign parts shares across languages beyond those
 /// the catalog already shares: the marked Session and branch services, the
-/// tool and method registries, with which a part of any language registers
-/// its contributions, and the part registry, with which a plugin registers
-/// its parts. The generated catalog (`xtask graph`) shares them the same
-/// way.
+/// tool, method and guide-entry registries, with which a part of any
+/// language registers its contributions, and the part registry, with which a
+/// plugin registers its parts. The generated catalog (`xtask graph`) shares
+/// them the same way.
 pub fn share_names(catalog: &mut ServiceCatalog) {
     for (name, group) in crossing_instance_names() {
         catalog.register_shared_instance(name, group);
@@ -65,6 +67,7 @@ pub fn share_names(catalog: &mut ServiceCatalog) {
     catalog
         .register_shared_instance(name_of::<ToolRegistry>(), SESSION_GROUP)
         .register_shared_instance(name_of::<SessionMethods>(), SESSION_GROUP)
+        .register_shared_instance(name_of::<GuideEntries>(), SESSION_GROUP)
         .register_shared(name_of::<ManagementMethods>())
         .register_shared(name_of::<PartRegistry>());
 }

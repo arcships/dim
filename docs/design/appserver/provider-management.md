@@ -59,7 +59,7 @@ continues to exclude private account implementations and credentials from this r
 | Method | Request | Reply | mutating | interruption |
 | --- | --- | --- | --- | --- |
 | `provider.management` | `{providerId?}` | `{drivers: ManagementDriver[], providers: ManagementProvider[], errors: ProviderRecordError[]}` | false | `Drain` |
-| `provider.list` | `{}` | Existing `{providers, errors}` summary; retained unchanged for compatibility | false | `Drain` |
+| `provider.list` | `{}` | Existing `{providers, errors}` summary; each provider adds `remoteModelList`, whether `provider.refresh` can list its models, which clients use to offer or withhold that command in a row naming an empty catalog | false | `Drain` |
 | `provider.selection` | `{cwd?}` | Existing `{selection}` and its separate scope/version | false | `Drain` |
 | `provider.catalog` | `{providerId}` | Existing `{catalog}` with `ProviderModel`; **unchanged** | false | `Drain` |
 
@@ -82,6 +82,7 @@ catalog. Aggregation does not promise an atomic snapshot across account owners.
 | `connection` | Safe static-record connection below; `null` when connection configuration exists only in the optional account package |
 | `models` | `{model: ModelEntry, source: "default" \| "override" \| "user", enabled: boolean, endpoint: ModelProtocol \| null, unavailableReason: string \| null, actions: string[], endpointOverride?: NewApiEndpoint}[]`; endpoint overrides use the executable subset in §6. `null` only for an account entry with no local catalog record. Bad catalog data is an error. Model actions are `set_enabled`, `edit`, `reset`, `delete`, restricted by origin/authority |
 | `preferences` | Map from model ID to the existing `ModelPreferences` shape |
+| `modelsListed` | Absent from the reads and from an update that did not change `baseUrl`, `credential` or `headers`; on the other updates it says what the write did with the record's models: `listed`, `bundled`, `unsupported` or `disabled` |
 
 `ManagementDriver` fields are `driverKind: string`, `authTypes: StaticAuth["type"][]`
 and `remoteModelList: boolean`, derived from executable drivers. `StaticAuth` is the
@@ -122,7 +123,7 @@ typed errors in §3.4. Existing writes retain `mutating:true`, `interruption:Dra
 | Method | Request | Reply / behavior | mutating | interruption |
 | --- | --- | --- | --- | --- |
 | `provider.create`  | `{providerId, displayName, connection, models: ModelEntry[], enabled}` | `ManagementProvider`; create-only, caller-generated fresh UUID, existing ID conflicts | true | `Drain` |
-| `provider.update`  | `{providerId, expectedVersion, patch}` | `ManagementProvider`; validate and commit one partial update transaction | true | `Drain` |
+| `provider.update`  | `{providerId, expectedVersion, patch}` | `ManagementProvider`; validate and commit one partial update transaction; a patch that changes `baseUrl`, `credential` or `headers` also replaces the record's own models with the new endpoint's listing in that same compare-and-set write, and `modelsListed` says what it did; a `network`-only change saves alone | true | `Drain` |
 | `provider.probe`  | `{providerId, connection}` | `{models: ModelEntry[]}`; §3.3, no record writes or version check | false | `Drain` |
 | `provider.models.create`  | `{providerId, expectedVersion, model: ModelEntry}` | Existing catalog; separate user-added list; duplicate default or user ID rejected; add enabled and remove any stale `modelConfigOverrides`, `disabledModelIds`, `modelPreferences` and `endpointOverrides` entries for that ID in the same transaction | true | `Drain` |
 | `provider.models.delete`  | `{providerId, expectedVersion, modelId}` | Existing catalog; only user-added items; remove that ID from `disabledModelIds` and clean owned preferences/routes/selections in the same transaction | true | `Drain` |
@@ -150,12 +151,33 @@ same method: copy the complete public `ModelEntry` identified by
 `{providerId, modelId}`; persist neither a template reference nor a client-side
 bundled catalog. Clients never reconstruct descriptors from `ProviderModel`.
 
+An update that changes `baseUrl`, `credential` or `headers` — the endpoint or
+the account the record reaches — lists the models of the new endpoint when the
+record's models are its own — the bundled catalog does not define the provider,
+or `remoteModels` is already true — and commits the listing with the connection
+in one compare-and-set write. The listing is taken outside the write and keeps
+`refresh`'s user-model conflict rule. An invalid patch is rejected before
+anything is listed, as `provider_invalid_config` with its reason. A failed
+listing fails the update and writes nothing, so re-pointing never leaves the old
+endpoint's models on the new one. A disabled record whose models are its own
+drops them in the same write, without a request: they are the old endpoint's,
+and the empty, listable catalog is what the picker's refill fills after the
+record is enabled. A `network`-only change — a proxy or a timeout
+— saves alone and lists nothing: it changes how the endpoint is reached, not
+what it serves, and requiring a listing would make those settings unsavable
+whenever listing fails. A driver that cannot list saves the connection alone. A
+record whose models are the bundled catalog's keeps them through any connection
+change, and later bundled updates still reach it;
+`dimcode models PROVIDER --refresh` stays the explicit way to replace them. A
+stored listing sets `remoteModels` as `refresh` does. The reply's `modelsListed`
+says which of these happened.
+
 | `patch` field | Operation | Writable records |
 | --- | --- | --- |
 | `displayName` | Nonempty string | Custom only |
 | `baseUrl` | Validated URL string | Static-authority builtin/custom |
 | `enabled` | Boolean | Local builtin/custom records |
-| `credential` | Existing keep/clear/set/set_aws/set_ref; omitted keeps | Static authority only |
+| `credential` | Existing keep/clear/set/set_aws/set_ref; `keep` changes nothing, exactly as an omitted credential does, so a keep-only patch is the empty patch | Static authority only |
 | `headers` | `{name, action:"set", value}` / `{name, action:"remove"}` array; omitted names keep | Static-authority builtin/custom |
 | `network.proxy` | `{action:"set", value:URL}` / `{action:"clear"}` | Local builtin/custom; existing authority validation applies |
 | `network.timeoutMs` | `{action:"set", value:positive integer}` / `{action:"clear"}` | Local builtin/custom |
@@ -319,7 +341,9 @@ Native CLI migration includes `PROVIDER_METHODS` in
 `crates/dim-cli/src/session_host.rs`, all save callers, and actual-daemon flows:
 Add probes the unsaved connection **before** create, retains its generated UUID
 for recovery, and never saves then refreshes as a test. Connection edits probe a
-draft when requested, then update changed fields. Disconnect sends credential
+draft when requested, then update the changed fields; the update lists and
+stores the new endpoint's models when the record's models are its own, and a
+proxy or timeout edit saves alone. Disconnect sends credential
 clear **and** `enabled:false` atomically, fixing the enabled-key-required rejection
 of clear alone. Enable/disable use update; account login/logout retain their owners.
 When listing is unsupported, connection edits still save and explicitly report
@@ -333,7 +357,9 @@ without discarding it.
 The `/models` picker clears both saved preferences for its selected model with
 `Ctrl+X`, using the displayed catalog version for CAS. It keeps the picker open;
 Enter separately adopts catalog defaults. On conflict it refreshes the list and
-the user retries. The native `dimcode models PROVIDER --clear-preferences MODEL`
+the user retries. The refreshed list reaches the picker before the operation's
+result notice, so a retry after that notice uses the refreshed catalog version.
+The native `dimcode models PROVIDER --clear-preferences MODEL`
 command rereads the management version and performs the same partial update.
 Neither action changes an adopted Session model. Discovery and adoption errors
 keep historical preferences until this explicit user action.
@@ -341,9 +367,23 @@ keep historical preferences until this explicit user action.
 adopts that model; a cycled effort is saved as its `reasoningEffort` and sent
 with the model's other saved preferences.
 
+Models whose catalog entry has `zdr: true` show a `ZDR` tag before the
+reasoning effort, including in the fixed subagent model picker. Searching
+`zdr` includes these models. Missing or false values show no tag; replacing
+the catalog list replaces the tag with the latest server value.
+
+The picker also fills a static provider whose catalog holds no models through
+`provider.refresh`, once per version of its catalog in a connection, when
+`provider.list` says its models can be listed, and shows what the refresh
+stored. A successful refresh records the version it wrote, so a listing that
+comes back empty is not asked for again; a write to the record, such as an
+enable or a re-point, asks once more. A failed read or a failed refresh keeps
+the provider's row, and a reply that arrives after the picker closed only
+records the fill: the next open reads it.
+
 ```text
 Select a model
-> Provider / model          ‹ high ›
+> Provider / model          ZDR  ‹ high ›
 Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close
 ```
 
@@ -394,8 +434,10 @@ plus userModels, apply descriptor overrides to their owned defaults and endpoint
 overrides before deriving routes. Preserve these fields on refresh, writes and
 bundled-definition reseeding; managed preferences are preserved only for a
 same-account refresh (§3.2). User IDs must not collide with default/override IDs;
-a refresh introducing a collision fails without replacing the admitted catalog.
-Delete the colliding user model through `provider.models.delete`, then retry refresh.
+a refresh introducing a collision fails without replacing the admitted catalog,
+and an update that lists the new endpoint follows the same rule: it fails, names
+the colliding user models, and writes nothing. Delete the colliding user model
+through `provider.models.delete`, then retry the refresh or the update.
 
 Bundled reseeding must not fail seeding or Provider activation on that collision.
 When a changed fingerprint's candidate would collide with a user model, leave

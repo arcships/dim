@@ -114,6 +114,17 @@ on a later page is never hidden by what the page already fetched. [#557](https:/
 defines their fields and defaults. This contract reserves where they apply and requires that a row's position, the
 cursor and any count stay consistent across refreshes with them in place.
 
+### 3.6 Cancelling a read
+
+`session.catalog.cancel {requestId} -> {}` cancels an in-flight `session.catalog` or `session.summaries` read on the
+same connection. An absent, completed or non-catalog request is a no-op. Protocol v3 advertises this method with
+the native catalog. Cancellation never addresses another connection or a mutating request. The cancelled read
+returns `cancelled`; a result already completed remains completed.
+
+Closing a connection also cancels its reads. SessionStore checks cancellation before executing a queued read and
+interrupts an executing SQLite catalog query. It removes the query's cancellation hook before releasing the shared
+connection, so cancellation cannot interrupt a later write. RPC ownership lasts until the SQL operation settles.
+
 ## 4. Events and state
 
 This part writes no event and owns no state. The projection is derived state: every column follows from events the
@@ -147,9 +158,17 @@ own design owns its interaction.
   the server matches the fields it searches today — the Session id, the workspace, the model id and the preview —
   plus the title and the provider id, under the same Unicode fold, so a match on a page it has not fetched still
   appears.
-- **Cancellation.** Closing or refreshing the panel drops its pending read, and a command entered afterwards runs at
-  once.
+- **Cancellation.** Closing, refreshing or replacing a search sends `session.catalog.cancel` for the pending read
+  when advertised, then drops its local request identity. A command entered afterwards does not wait for the obsolete
+  query. An older daemon without cancellation discovery retains its existing behavior.
 - **Fallback.** A daemon that does not advertise the method is listed through `session.summaries`.
+
+```text
+/resume -> [saved Sessions | search...]
+             Esc       -> cancel read -> composer
+             Ctrl+R    -> cancel read -> refreshed first page
+             new query -> cancel read -> matching first page
+```
 
 The project/all switch is a separate client decision: `cwd` exists in this contract for it and applies before the
 page boundary, and the picker's first page does not use it. The gap is recorded in

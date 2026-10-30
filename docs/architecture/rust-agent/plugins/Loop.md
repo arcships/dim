@@ -16,7 +16,7 @@ exposes loop state without itself executing model or tool effects.
 | `B:Dispatcher` | Replay state, then consume step outcomes, inputs and interrupts. |
 | `B:Timeline` | Commit turn/step transitions. |
 | `B:TimelineIdentity` | This branch's id selects the guide entries in force. |
-| `S:GuideEntries` | Compose the guide it places on a host-prepared request. |
+| `S:GuideEntries` | Compose the System it places on a host-prepared request. |
 
 ## Events and lifetime
 

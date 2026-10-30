@@ -25,7 +25,7 @@ The existing owners implement their language bindings:
 
 | Owner | Responsibility |
 | --- | --- |
-| App Server assembly | Validate structural input, serve `toolRegistry` and `sessionMethods` to Session parts and `partRegistry` to process rows by name, register a row's `instanceNames` in their group, select the existing runtime resolver. |
+| App Server assembly | Validate structural input, serve `toolRegistry`, `sessionMethods` and `guideEntries` to Session parts and `partRegistry` to process rows by name, register a row's `instanceNames` in their group, select the existing runtime resolver. |
 | ToolRegistry | Accept a row's `register(declaration, execute)`, decode the declaration once and keep the registration, owned by the calling row, in its versioned contributed set (A.5, #241). |
 | C1 `sessionMethods` (the Session's method table) | Accept a row's `register(namespace, declarations, call)`, check the namespace and decode the declarations once, and bind `call` to the existing generation-owned admission, progress, interruption and drain; the registration belongs to the calling row. |
 | Session broadcast | Encode its own records for the native rutis event path. |

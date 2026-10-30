@@ -1,22 +1,33 @@
 //! The `/resume` picker: a filterable list of stored sessions (port of
 //! `sessionsPanelItems` / `SessionsPanel`).
 
-use crate::model::session::SessionItem;
+use crate::model::session::{Command, SessionItem};
 use crate::ui::i18n::{t, tf};
 use crate::ui::list_panel::{Event, Item, ListPanel};
 use crate::ui::prompts::Effect;
 use crate::ui::terminal::KeyEvent;
 use crate::ui::theme::Palette;
+use std::time::{Duration, Instant};
 
 const HINT: &str = "Enter open · Ctrl+R refresh · Esc close";
 
 pub struct SessionsPanel {
     list: ListPanel,
+    request_id: Option<String>,
+    paged: Option<bool>,
+    due: Option<Instant>,
+    append: bool,
+    next_cursor: Option<String>,
 }
 
 impl SessionsPanel {
     pub fn new() -> Self {
         Self {
+            request_id: None,
+            paged: None,
+            due: Some(Instant::now()),
+            append: false,
+            next_cursor: None,
             list: ListPanel::new(
                 "Sessions",
                 HINT,
@@ -29,32 +40,85 @@ impl SessionsPanel {
     }
 
     pub fn set_items(&mut self, items: Result<Vec<SessionItem>, String>) {
-        self.list.set_items(
-            items.map(|items| {
-                items
-                    .iter()
-                    .map(|item| {
-                        let mut row = Item::new(
-                            item.id.clone(),
-                            label(item),
-                            relative_time(item.updated_at, now_ms()),
-                        );
-                        row.search = search_text(item);
-                        row
-                    })
-                    .collect()
-            }),
-            None,
-        );
+        if self.paged.is_none() {
+            self.paged = Some(false);
+        }
+        self.list.set_items(items.map(session_rows), None);
+    }
+
+    pub fn page(
+        &mut self,
+        id: &str,
+        paged: bool,
+        result: Result<(Vec<SessionItem>, Option<String>), String>,
+    ) {
+        if self.request_id.as_deref() != Some(id) {
+            return;
+        }
+        self.request_id = None;
+        self.paged = Some(paged);
+        self.list.remote_filter(paged);
+        match result {
+            Ok((items, next_cursor)) => {
+                self.next_cursor = next_cursor;
+                if self.append {
+                    self.list.append_items(session_rows(items));
+                } else {
+                    self.set_items(Ok(items));
+                }
+            }
+            Err(error) => self.set_items(Err(error)),
+        }
+    }
+
+    pub fn request(&mut self) -> Option<Command> {
+        let reset = self.due.is_some_and(|due| Instant::now() >= due);
+        if self.due.is_some() && !reset {
+            return None;
+        }
+        if !reset
+            && (self.request_id.is_some() || !self.list.near_end() || self.next_cursor.is_none())
+        {
+            return None;
+        }
+        self.due = None;
+        self.append = !reset;
+        let id = uuid::Uuid::new_v4().to_string();
+        self.request_id = Some(id.clone());
+        Some(Command::ListSessions {
+            id,
+            query: self.list.query().trim().to_owned(),
+            cursor: if reset { None } else { self.next_cursor.take() },
+        })
+    }
+
+    pub fn refresh(&mut self) {
+        self.request_id = None;
+        self.next_cursor = None;
+        self.due = Some(Instant::now());
+        self.list.loading();
+    }
+
+    fn filter_changed(&mut self) {
+        if self.paged != Some(false) {
+            self.refresh();
+            self.due = Some(Instant::now() + Duration::from_millis(150));
+        }
     }
 
     /// A paste goes into the filter.
     pub fn paste(&mut self, text: &str) {
         self.list.paste(text);
+        self.filter_changed();
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
-        match self.list.handle_key(key) {
+        let before = self.list.query().to_owned();
+        let event = self.list.handle_key(key);
+        if before != self.list.query() {
+            self.filter_changed();
+        }
+        match event {
             Event::None => Effect::None,
             Event::Close => Effect::Close,
             Event::Pick(id) => Effect::Resume(id),
@@ -69,6 +133,21 @@ impl SessionsPanel {
     pub fn render(&self, width: usize, rows: usize, p: &Palette) -> Vec<String> {
         self.list.render(width, rows, p)
     }
+}
+
+fn session_rows(items: Vec<SessionItem>) -> Vec<Item> {
+    items
+        .iter()
+        .map(|item| {
+            let mut row = Item::new(
+                item.id.clone(),
+                label(item),
+                relative_time(item.updated_at, now_ms()),
+            );
+            row.search = search_text(item);
+            row
+        })
+        .collect()
 }
 
 fn search_text(item: &SessionItem) -> String {

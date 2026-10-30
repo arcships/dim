@@ -150,6 +150,12 @@ pub enum Effect {
     },
     /// Reread the subagent model policy before another save.
     ReadModelPolicy,
+    ReadIsolation,
+    SaveIsolation {
+        expected_revision: String,
+        policy: dim_agent_types::isolation::IsolationPolicy,
+    },
+    ResetIsolation(String),
     SetModelPolicy {
         expected_revision: String,
         policy: crate::model::session::SubagentModelPolicy,

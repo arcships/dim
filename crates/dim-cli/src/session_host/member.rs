@@ -249,11 +249,6 @@ impl Worker {
         if asked.is_empty() {
             return Ok(());
         }
-        if !self.client.supports(&["agent.list"]) {
-            self.projection.name_agents(HashMap::new(), asked);
-            self.changed();
-            return Ok(());
-        }
         let id = self.client.send("agent.list", json!({})).await?;
         self.members.agents = Some((id, self.projection_id, asked));
         Ok(())

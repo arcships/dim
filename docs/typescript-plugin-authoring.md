@@ -31,6 +31,7 @@ provider and the methods it serves to other languages. This table says which to 
 | Read/save Workflow definition files | `workflowFiles`, process | Generated `read/list/replace/createDirectory`; fixed project directories and the calling row's read-only packages ([contract](design/p6-p7-bindings.md#3-workflow-definition-files)). |
 | Offer model tools | `toolRegistry`, Session | A Session part registers each tool with `register` ([Session tools](#session-tools-and-client-methods)). |
 | Offer client methods | `sessionMethods`, Session | A Session part registers each method namespace with `register` ([Session tools](#session-tools-and-client-methods)). |
+| Explain a marker you write | `guideEntries`, Session | A Session part registers the input guide's entry for each marker it writes, with `register(scope, entry)`, for as long as its row is loaded ([Prompt §6.1](design/plugins/Prompt.md#61-the-plugin-bridge)). |
 | Offer host management methods | `managementMethods`, process | A process row registers each namespace with `register`; protected-local v3 Rpc serves it ([management methods](#process-owners-and-management-methods)). |
 | Register Session and branch parts | `partRegistry`, process | `registerDefinition(scope, name, definition)` ([One row per plugin](#one-row-per-plugin)). |
 | Know this Session and its phases | `sessionIdentity`, `sessionConfig`, `sessionLifecycle`, Session | `get()` returns `{sessionId, restored}` or the creation-time configuration; `activated()`, `closing()`, `hold()` and `release(id)` ([Session observation](#session-observation)). |
@@ -129,9 +130,9 @@ Which names a part declares:
   needs no service name.
 - **Provided without declaring it** (an undeclared `ctx.provide`, as an unmodified Cordis plugin
   does): rutis publishes it under its plain name for the whole process. Inside a Session or branch
-  that is one process-wide service: a second copy fails with rutis's duplicate-provider error, and a
-  debug build of the host refuses the Session at once (`scoped service provided without an instance
-  key`).
+  that is one process-wide service: a second copy fails with rutis's duplicate-provider error, and
+  the host's assembly check reports the Session (`scoped service provided without an instance key`)
+  when a test runs it.
 
 One provider per name per instance: of two parts that provide the same name in one Session or
 branch, the second fails with rutis's duplicate-provider error.

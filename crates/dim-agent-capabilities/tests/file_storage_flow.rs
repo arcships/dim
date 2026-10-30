@@ -920,10 +920,40 @@ fn file_storage_flow() {
 
             let account_lock = root_path.join("auth.json.lock");
             let old = SystemTime::now() - Duration::from_secs(60);
-            fs::write(&account_lock, format!("{}\n1\nexternal-live-owner\n", std::process::id())).unwrap();
+            let created_at = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis();
+            fs::write(&account_lock, format!("{}\n{created_at}\nexternal-live-owner\n", std::process::id())).unwrap();
             fs::OpenOptions::new().write(true).open(&account_lock).unwrap().set_times(FileTimes::new().set_modified(old)).unwrap();
-            assert!(matches!(storage.lock(&auth, &cancel).await, Err(FileStorageError::Locked)));
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            let original_name = fs::read("/proc/self/comm").unwrap();
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            fs::write("/proc/self/comm", b"dim-\xff").unwrap();
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            assert!(String::from_utf8(fs::read("/proc/self/stat").unwrap()).is_err());
+            let held = storage.lock(&auth, &cancel).await;
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            fs::write("/proc/self/comm", original_name.strip_suffix(b"\n").unwrap()).unwrap();
+            assert!(matches!(held, Err(FileStorageError::Locked)));
             fs::remove_file(&account_lock).unwrap();
+            fs::write(&account_lock, format!("{}\n1\nreused-pid-owner\n", std::process::id())).unwrap();
+            fs::OpenOptions::new().write(true).open(&account_lock).unwrap().set_times(FileTimes::new().set_modified(old)).unwrap();
+            let recovered = storage.lock(&auth, &cancel).await;
+            if cfg!(any(target_os = "macos", target_os = "linux", target_os = "android", windows)) {
+                drop(recovered.unwrap());
+                assert!(!account_lock.exists());
+            } else {
+                assert!(matches!(recovered, Err(FileStorageError::Locked)));
+                fs::remove_file(&account_lock).unwrap();
+            }
+            #[cfg(unix)]
+            if unsafe { libc::kill(1, 0) } != 0
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+            {
+                fs::write(&account_lock, format!("1\n{created_at}\nforeign-owner\n")).unwrap();
+                fs::OpenOptions::new().write(true).open(&account_lock).unwrap().set_times(FileTimes::new().set_modified(old)).unwrap();
+                let recovered = storage.lock(&auth, &cancel).await.unwrap();
+                drop(recovered);
+                assert!(!account_lock.exists());
+            }
             fs::write(&account_lock, format!("{dead_pid}\n1\nexternal-dead-owner\n")).unwrap();
             fs::OpenOptions::new().write(true).open(&account_lock).unwrap().set_times(FileTimes::new().set_modified(old)).unwrap();
             let recovered = storage.lock(&auth, &cancel).await.unwrap();
@@ -931,7 +961,7 @@ fn file_storage_flow() {
             let fields = owner.split('\n').collect::<Vec<_>>();
             assert_eq!(fields.len(), 4);
             assert_eq!(fields[0], std::process::id().to_string());
-            assert!(fields[1].parse::<u64>().unwrap() > 1);
+            assert!(fields[1].parse::<u128>().unwrap() >= created_at);
             uuid::Uuid::parse_str(fields[2]).unwrap();
             drop(recovered);
             assert!(!account_lock.exists());

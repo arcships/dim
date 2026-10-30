@@ -13,41 +13,37 @@ fn error_name(value: &Value) -> &str {
     value["error"]["data"]["appError"].as_str().unwrap()
 }
 
-/// Holds the key of its Session's ToolRegistry, which it reads undeclared.
-struct FailChildBuild(
-    rutis::host::Key<dim_agent_capabilities::tool_registry::ToolRegistry>,
-    rutis::host::Key<dim_agent_runtime::TimelineIdentity>,
-);
+/// The part's name, which carries the private configuration that must never
+/// leave the server.
+const PRIVATE_NAME: &str = "test.fail-child-build /private/config token=test-secret";
+
+/// Fails its own build once the test arms it, with a message that names the
+/// private configuration: a required part that fails to build fails the
+/// mounter that mounts it, so the branch creation fails in every build.
+struct FailChildBuild(rutis::host::Key<dim_agent_runtime::TimelineIdentity>);
 impl FailChildBuild {
-    fn new(
-        names: &dim_agent_runtime::Names<'_>,
-        a0: rutis::host::Key<dim_agent_capabilities::tool_registry::ToolRegistry>,
-    ) -> rutis::Result<Self> {
-        Ok(Self(a0, names.key()?))
+    fn new(names: &dim_agent_runtime::Names<'_>) -> rutis::Result<Self> {
+        Ok(Self(names.key()?))
     }
 }
 impl rutis::host::DynPlugin for FailChildBuild {
     fn name(&self) -> &str {
-        "test.fail-child-build /private/config token=test-secret"
+        PRIVATE_NAME
     }
     fn injects(&self) -> Vec<rutis::host::TypeKey> {
-        vec![self.1.erase()]
+        vec![self.0.erase()]
     }
     fn apply<'a>(
         &'a self,
         ctx: &'a rutis::Ctx,
     ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
         Box::pin(async move {
-            let identity = ctx.require_at(&self.1)?;
-            if identity.branch_id != "main" {
-                let _ = ctx.get_at(&self.0);
-            }
+            ctx.require_at(&self.0)?;
             Ok(rutis::host::Effect::Done)
         })
     }
 }
 
-#[cfg_attr(not(debug_assertions), ignore)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_branch_build_keeps_private_details_off_both_transports() {
     for ws in [false, true] {
@@ -56,11 +52,20 @@ async fn failed_branch_build_keeps_private_details_off_both_transports() {
         defaults::install(&mut builder);
         defaults::mock_model_hosts(&mut builder);
         dim_agent_capabilities::defaults::tool_host(&mut builder, Arc::new(MockTools));
-        builder.require_feature(
-            Feature::new("test.fail-child-build").branch("test.fail-child-build", |names| {
-                Ok(Box::new(FailChildBuild::new(names, names.key()?)?))
-            }),
-        );
+        let fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let armed = fail.clone();
+        builder.require_feature(Feature::new("test.fail-child-build").branch(
+            "test.fail-child-build",
+            move |names| {
+                if armed.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err(rutis::host::ErrorKind::PluginFailed(
+                        format!("{PRIVATE_NAME} could not be built").into(),
+                    )
+                    .into());
+                }
+                Ok(Box::new(FailChildBuild::new(names)?))
+            },
+        ));
         let server = serve(
             builder,
             ServerConfig {
@@ -80,6 +85,7 @@ async fn failed_branch_build_keeps_private_details_off_both_transports() {
         let session = server.agent().unwrap().get_session(sid).unwrap();
         let attached = client.rpc("session.attach", json!({"sessionId":sid})).await;
         assert_eq!(attached["result"]["sessionId"], sid);
+        fail.store(true, std::sync::atomic::Ordering::SeqCst);
         let failed = client
             .rpc(
                 "session.branch_create",
@@ -109,6 +115,21 @@ async fn failed_branch_build_keeps_private_details_off_both_transports() {
                 assert!(!encoded.contains(private), "{encoded}");
             }
         }
+        let internal = session
+            .branch(
+                "main".into(),
+                0,
+                dim_agent_runtime::BranchOptions {
+                    prompt: "child".into(),
+                    source: dim_agent_types::BranchSource::Host {
+                        operation_id: "internal".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap_err();
+        let internal = format!("{internal:?}");
+        assert!(internal.contains("test-secret"), "{internal}");
         assert_eq!(
             session.branches().len(),
             1,

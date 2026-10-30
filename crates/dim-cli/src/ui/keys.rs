@@ -77,7 +77,7 @@ pub fn report(fullscreen: bool, mouse: bool) -> Vec<String> {
         rows.push(t("Fullscreen").to_owned());
         rows.push(format!(
             "  {}",
-            t("PageUp/PageDown scroll · Home/End top or bottom · Tab pick a message, e edit it, q quote it")
+            t("PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it")
         ));
         rows.push(format!(
             "  {}",
@@ -110,6 +110,27 @@ pub fn report(fullscreen: bool, mouse: bool) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_report_keeps_shortcut_only_actions_and_distinguishes_modes() {
+        for fullscreen in [false, true] {
+            let report = report(fullscreen, false).join("\n");
+            assert!(report.contains("Esc interrupt or clear"), "{report}");
+            assert!(report.contains("Ctrl+S steer queued"), "{report}");
+            if fullscreen {
+                assert!(
+                    report.contains("Home/End top or bottom (empty draft)"),
+                    "{report}"
+                );
+                assert!(report.contains("Tab pick a message"), "{report}");
+                assert!(!report.contains("Terminal-owned history"), "{report}");
+            } else {
+                assert!(report.contains("Terminal-owned history"), "{report}");
+                assert!(!report.contains("Home/End"), "{report}");
+                assert!(!report.contains("Tab pick a message"), "{report}");
+            }
+        }
+    }
 
     #[test]
     fn the_terminal_decides_how_its_history_is_reached() {

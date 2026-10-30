@@ -619,6 +619,7 @@ fn tui_questions_keep_structured_answers_and_the_leader_draft() {
             wire.reply(&attach, attach_record(&attach));
             let history = wire.read("session.history");
             wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+            wire.no_context();
             let providers = wire.read("account.providers");
             wire.reply(&providers, json!([]));
             control.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -680,6 +681,7 @@ fn tui_questions_retry_and_keep_call_identity_across_late_replies() {
         wire.reply(&attach, attach_record(&attach));
         let history = wire.read("session.history");
         wire.reply(&history, json!({"events":[event("main",9,"tool-call",asked("old-request","c1",json!([deploy()])))],"through":9,"nextAfter":9,"done":true}));
+        wire.no_context();
         let providers = wire.read("account.providers");
         wire.reply(&providers, json!([]));
         let first = wire.read("session.question.respond");
@@ -742,6 +744,7 @@ fn tui_questions_restore_a_child_and_interrupt_its_branch() {
             &history,
             json!({"events":[],"through":8,"nextAfter":8,"done":true}),
         );
+        wire.no_context();
         let providers = wire.read("account.providers");
         wire.reply(&providers, json!([]));
         let shell = wire.read("shell.run");
@@ -755,10 +758,12 @@ fn tui_questions_restore_a_child_and_interrupt_its_branch() {
         let stop = wire.read("session.stop");
         assert_eq!(stop["params"]["sessionId"], "session");
         assert_eq!(stop["params"]["branchId"], "child");
+        assert_eq!(stop["params"]["reason"], "User interrupted the run.");
         wire.reply(&stop, json!({}));
         let main = wire.read("session.stop");
         assert_eq!(main["params"]["sessionId"], "session");
         assert_eq!(main["params"]["branchId"], "main");
+        assert_eq!(main["params"]["reason"], "User interrupted the run.");
         wire.reply(&main, json!({}));
         step(
             wire,
@@ -812,6 +817,7 @@ fn tui_member_questions_stay_read_only_and_a_leader_question_takes_the_prompt() 
             {"id":"delivery","sequence":2,"create_at":2,"type":"collaboration","name":"delivered","data":{"op_event_id":"request","status":"ok","agent_id":"reviewer","session_id":"member"}},
             {"id":"result","sequence":3,"create_at":3,"type":"collaboration","name":"result","data":{"request_event_id":"request","agent_id":"reviewer","session_id":"member","status":"completed","text":"done"}},
         ],"through":3,"nextAfter":3,"done":true}));
+        wire.no_context();
         let providers = wire.read("account.providers");
         wire.reply(&providers,json!([]));
         let attach = wire.read("session.attach");
@@ -898,6 +904,7 @@ fn tui_commands_run_over_a_pending_question() {
                 &history,
                 json!({"events":[],"through":8,"nextAfter":8,"done":true}),
             );
+            wire.no_context();
             let providers = wire.read("account.providers");
             wire.reply(&providers, json!([]));
             control.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -957,7 +964,7 @@ fn tui_commands_run_over_a_pending_question() {
         terminal.until("Review your answers");
 
         terminal.write(b"/mcp\r");
-        terminal.until("Columns: ID, source");
+        terminal.until("No MCP server is configured.");
 
         terminal.write(b"\x0f");
         terminal.until(if fullscreen {
@@ -969,7 +976,7 @@ fn tui_commands_run_over_a_pending_question() {
         terminal.until("Review your answers");
 
         terminal.write(b"\x0f");
-        terminal.write(b"appr\r");
+        terminal.write(b"permissions\r");
         terminal.until("Tool Approvals");
         terminal.write(&[0x1b]);
         terminal.until("production");
@@ -999,6 +1006,7 @@ fn tui_command_arguments_run_over_a_pending_question() {
                 &history,
                 json!({"events":[],"through":8,"nextAfter":8,"done":true}),
             );
+            wire.no_context();
             let providers = wire.read("account.providers");
             wire.reply(&providers, json!([]));
             control.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -1091,6 +1099,7 @@ fn tui_free_text_answers_keep_their_slashes_and_the_palette_survives_a_dropped_q
             &history,
             json!({"events":[],"through":8,"nextAfter":8,"done":true}),
         );
+        wire.no_context();
         let providers = wire.read("account.providers");
         wire.reply(&providers, json!([]));
         control.recv_timeout(Duration::from_secs(10)).unwrap();

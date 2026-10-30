@@ -65,6 +65,12 @@ Issue：[#556](https://github.com/arcships/dim/issues/556)，要求有界的 `/r
 
 层级与来源过滤是同一条目录查询的条件，在页边界之前应用，因此后面页上的匹配不会被已取的页挡住。[#557](https://github.com/arcships/dim/issues/557) 定义它们的字段与缺省值。本合同保留它们生效的位置，并要求有过滤时行的位置、游标与任何计数在多次刷新之间保持一致。
 
+### 3.6 取消读取
+
+`session.catalog.cancel {requestId} -> {}` 取消同一连接上尚未完成的 `session.catalog` 或 `session.summaries` 读取。不存在、已完成或非目录请求均为空操作。协议 v3 与原生目录一起公布该方法；它不能取消其他连接或写请求。被取消的读取返回 `cancelled`，已经完成的结果不变。
+
+连接关闭也取消其读取。SessionStore 在排队读取执行前检查取消，并中断正在执行的 SQLite 目录查询。共享连接释放前移除该查询的取消钩子，避免中断后续写入。RPC 的所有权持续到 SQL 操作结束。
+
 ## 4. 事件与状态
 
 本部分不写事件，也不拥有状态。投影是派生状态：每一列都由 Timeline 已有的事件蕴含，升级时按它们为整个库重建一次（[原生存储格式](../../../design/appserver/native-storage-format.md#556-v23-格式决定)）。这里没有任何东西进入 Timeline：目录是给选择面板显示的数据，[设计规则 §4 第 9 条](../../../architecture/rust-agent/principles.md)把它挡在 Timeline 之外。
@@ -88,8 +94,15 @@ Issue：[#556](https://github.com/arcships/dim/issues/556)，要求有界的 `/r
 - **首页。** 首页是不过滤 `cwd` 的目录：`/resume` 今天列出所有工作区。
 - **分页。** 选择接近已装载行的末尾时取下一页，跨页保持服务端的顺序。它发送 `withPreview`，因为它今天隐藏没有预览的行，于是首页是它显示的整页行，末尾附近的触发始终有行可取。每次冷启动都创建一个可能永远收不到消息的 Session，没有这个过滤，最新的若干行往往正是它隐藏的那些。
 - **搜索。** 过滤以去抖的 `query` 发到服务端，而不是只缩小它已经持有的行；服务端匹配它今天搜索的字段——Session ID、工作区、model ID 与预览——加上标题与 provider ID，用相同的 Unicode 折叠，因此还没取的页上的匹配也会出现。
-- **取消。** 关闭或刷新面板放弃它未完成的读取，之后输入的命令立即执行。
+- **取消。** 关闭、刷新或替换搜索时，若守护进程公布了 `session.catalog.cancel`，先用它取消未完成的读取，再丢弃本地请求标识。之后的命令不等待过期查询。没有公布取消方法的旧守护进程保留原行为。
 - **回落。** 不宣告该方法的守护进程经 `session.summaries` 列出。
+
+```text
+/resume -> [saved Sessions | search...]
+             Esc       -> cancel read -> composer
+             Ctrl+R    -> cancel read -> refreshed first page
+             new query -> cancel read -> matching first page
+```
 
 project/all 开关是另一个客户端决定：`cwd` 为本合同为它而存在，并且在页边界之前应用，选择面板的首页不使用它。缺口记录在[客户端](../clients.md#32-session-管理)。
 

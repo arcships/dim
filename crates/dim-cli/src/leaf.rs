@@ -228,7 +228,6 @@ impl DynPlugin for HostedTui {
                     .options
                     .fullscreen
                     .unwrap_or_else(|| ui::config::saved_fullscreen(&self.options.home)),
-                isolation: crate::client::isolation_policy_file(&self.options),
             };
             let tui = ctx.plugin(Tui {
                 env,

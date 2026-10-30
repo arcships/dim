@@ -11,7 +11,9 @@ and a line's end: the identity block in every child's opening input, the
 parent, and the restore rule that leaves an ended line closed
 ([timeline branches §5–§10](../../../design/timeline-branches.md#10-ending-a-line)).
 Provides the TreeCommands/TimelineTreeControl ports. The `branch` tool is
-[BranchTool](BranchTool.md)'s.
+[BranchTool](BranchTool.md)'s. Its model-facing texts — every child's identity
+block and the branch markers — with their classes are listed on
+[timeline branches §12.4](../../../design/timeline-branches.md#124-texts-and-their-classes).
 
 ### Dependencies
 
@@ -20,6 +22,7 @@ Provides the TreeCommands/TimelineTreeControl ports. The `branch` tool is
 | `S:TimelineFactory` | Build branch capability scopes. |
 | `S:SessionIdentity` | Identify the persisted Session. |
 | `S:dyn TimelineStore` | Persist/load branch directories and timeline facts. |
+| `S:GuideEntries` | Register the `<dim-branch-line>` entry, until this part unloads. |
 
 ### Events and lifetime
 
@@ -57,7 +60,7 @@ Session close, and closing is not deletion of persisted history.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `S:SessionIdentity`、`S:TimelineFactory`、`S:dyn TimelineStore` |
+| 注入 | `S:GuideEntries`、`S:SessionIdentity`、`S:TimelineFactory`、`S:dyn TimelineStore` |
 | 提供 | `S:TimelineTree`、`S:TreeCommands`、`S:dyn HostDispatch#treeCommands`、`S:dyn TimelineTreeControl` |
 | 被注入于 | `BranchLine`、`BranchTool`、`InputMethods`、`Recall`、`ShellInput`、`TreeTimeline`、`Wait`、`WorkspaceTools` |
 <!-- /generated -->

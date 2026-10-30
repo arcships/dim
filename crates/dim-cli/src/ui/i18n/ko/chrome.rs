@@ -325,8 +325,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permissions" => "권한",
         "Tool approvals" => "도구 승인",
         "Command isolation" => "명령 격리",
-        "Command isolation not saved: {error}" => "명령 격리를 저장하지 못했습니다: {error}",
-        "Command isolation not read: {error}" => "명령 격리를 읽지 못했습니다: {error}",
         "Models" => "모델",
         "Model" => "모델",
         "not set" => "미설정",
@@ -371,6 +369,34 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "{provider}: {count} models unavailable · dimcode models {id}" => {
             "{provider}: 모델 {count}개 사용 불가 · dimcode models {id}"
         }
+        "{provider}: no models · dimcode models {id} --refresh" => {
+            "{provider}: 모델 없음 · dimcode models {id} --refresh"
+        }
+        "{provider}: no models · add a model with provider.models.create" => {
+            "{provider}: 모델 없음 · provider.models.create로 모델 추가"
+        }
+        "{provider}: {unavailable} unavailable and {disabled} disabled · dimcode models {id}" => {
+            "{provider}: {unavailable}개 사용 불가, {disabled}개 비활성 · dimcode models {id}"
+        }
+        "{provider}: catalog unreadable · dimcode models {id}" => {
+            "{provider}: 카탈로그를 읽을 수 없음 · dimcode models {id}"
+        }
+        "No cached catalog. Sign in and run models PROVIDER --refresh." => {
+            "캐시된 카탈로그가 없습니다. 로그인한 뒤 models PROVIDER --refresh를 실행하세요."
+        }
+        "Saved model preferences cleared" => "저장된 모델 환경설정을 지웠습니다",
+        "{provider}: 1 model disabled · dimcode models {id}" => {
+            "{provider}: 모델 1개 사용 안 함 · dimcode models {id}"
+        }
+        "{provider}: {count} models disabled · dimcode models {id}" => {
+            "{provider}: 모델 {count}개 사용 안 함 · dimcode models {id}"
+        }
+        "No models. Run dimcode models {id} --refresh to list them." => {
+            "모델이 없습니다. dimcode models {id} --refresh 로 확인하세요."
+        }
+        "No models. The provider listed none." => {
+            "모델이 없습니다. 이 제공자는 아무것도 나열하지 않았습니다."
+        }
         "Enter select · Esc back" => "Enter 선택 · Esc 뒤로",
         "Subagent models" => "서브에이전트 모델",
         "Subagent models: {policy}" => "서브에이전트 모델: {policy}",
@@ -408,8 +434,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Ctrl+C 지우기, 두 번 누르면 종료 · 빈 초안에서 Ctrl+D 종료"
         }
         "Fullscreen" => "전체 화면",
-        "PageUp/PageDown scroll · Home/End top or bottom · Tab pick a message, e edit it, q quote it" => {
-            "PageUp/PageDown 스크롤 · Home/End 맨 위/아래 · Tab 메시지 선택, e 편집, q 인용"
+        "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
+            "PageUp/PageDown 스크롤 · Home/End 맨 위/아래 (초안이 비어 있을 때) · Tab 메시지 선택, e 편집, q 인용"
         }
         "wheel scroll · drag select and copy · click a link to open it, a tool group to expand it" => {
             "휠 스크롤 · 드래그 선택·복사 · 링크 클릭 시 열기, 도구 그룹 클릭 시 펼치기"

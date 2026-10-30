@@ -1,26 +1,9 @@
 use crate::prompt_state::PromptSnapshot;
-use dim_agent_runtime::{ContextHistory, Timeline};
+use dim_agent_runtime::{AgentError, ContextHistory, Timeline};
 use dim_agent_types::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, sync::Arc};
-
-/// Places the guide Prompt composed beside the renderer's system
-/// configuration.
-pub(crate) fn with_input_guide(system: Option<SystemPrompt>, guide: &str) -> SystemPrompt {
-    match system {
-        None => SystemPrompt::Text(guide.to_owned()),
-        Some(SystemPrompt::Text(text)) if text.is_empty() => SystemPrompt::Text(guide.to_owned()),
-        Some(SystemPrompt::Text(text)) => SystemPrompt::Text(format!("{text}\n\n{guide}")),
-        Some(SystemPrompt::Parts(mut parts)) => {
-            parts.push(SystemPromptPart::Text {
-                text: guide.to_owned(),
-                cache_control: None,
-            });
-            SystemPrompt::Parts(parts)
-        }
-    }
-}
 
 /// An ephemeral view of a fixed timeline prefix, never a second history store.
 #[derive(Debug, Clone, PartialEq)]
@@ -143,6 +126,10 @@ impl HistoryRenderer {
         Ok(snapshot)
     }
 
+    /// The context at `through` alone, for readers that inspect events instead
+    /// of rendering them. A checkpoint is validated by rendering it once and
+    /// discarding that render; without a checkpoint no render is made, and a
+    /// checkpoint that does not render falls back to the full replay.
     pub async fn context(
         &self,
         timeline: &Timeline,
@@ -155,6 +142,31 @@ impl HistoryRenderer {
             return timeline.context(through).await;
         }
         Ok(context)
+    }
+
+    /// The context at `through` with its rendering, for callers that use it. A
+    /// read renders once: the render that validates a checkpoint is the one
+    /// returned, and without a checkpoint the context is rendered here too. A
+    /// checkpoint that does not render is a cache miss and yields the full
+    /// replay with its rendering.
+    pub async fn rendered_context(
+        &self,
+        timeline: &Timeline,
+        through: u64,
+    ) -> dim_agent_runtime::Result<(ContextHistory, Vec<HistoryEntry>)> {
+        let context = timeline
+            .context_with_checkpoint(through, self.checkpoint_interpreter, self.decode_checkpoint)
+            .await?;
+        match (self.render)(&context) {
+            Ok(history) => Ok((context, history)),
+            Err(_) if context.checkpoint.is_some() => {
+                let context = timeline.context(through).await?;
+                let history =
+                    (self.render)(&context).map_err(|error| AgentError::fault("History", error))?;
+                Ok((context, history))
+            }
+            Err(error) => Err(AgentError::fault("History", error)),
+        }
     }
 }
 

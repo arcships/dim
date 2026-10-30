@@ -5,10 +5,15 @@
 //! An entry registers from its contributor's own `apply` and is withdrawn
 //! with it
 //! ([rutis usage R6](../../../docs/design/rutis-usage.md#r6-contributions-register-with-their-owner)).
-use dim_agent_runtime::{Names, Registrations};
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
+use dim_agent_runtime::{Names, Registrations, SESSION_GROUP, names::name_of};
+use dim_agent_types::{SystemPrompt, SystemPromptPart};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, InstanceId, Key, TypeKey};
 use rutis::{Ctx, Error};
+use rutis_bridge::exports::failure;
+use rutis_bridge::session::{Error as BridgeError, HostDispatch, Reply, Value, host_key_in};
+use serde_json::{Value as Json, json};
 use std::sync::{Arc, Mutex};
+use tokio::sync::watch;
 
 /// Longest entry text, in bytes: the guide is part of every request's
 /// prefix, and an entry that large is a design smell as much as a cost.
@@ -36,8 +41,10 @@ const STATE: &str = r#"<dim-state source="dim/environment/date">: the current va
 /// `dim-rule`: Prompt writes it from any context source.
 const RULE: &str = r#"<dim-rule source="dim/instructions/project" scope="branch" op="set">: instructions you must follow within the stated scope, such as the project's AGENTS.md. op="set" or op="replace" makes the instructions inside the tag active. op="revoke" or op="expired" ends them for that scope only; the same rule in other scopes is unaffected."#;
 
-/// One entry of the input guide: the markers it explains and its text.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One entry of the input guide: the markers it explains and its text. It is
+/// the `entry` of the bridge's request as it stands
+/// ([Prompt §2](../../../docs/design/plugins/Prompt.md#2-the-entry-route)).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct GuideEntry {
     /// The marker element names this entry explains.
     pub markers: Vec<String>,
@@ -48,8 +55,11 @@ pub struct GuideEntry {
     pub text: String,
 }
 
-/// Where a registration applies.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// Where a registration applies. It is the `scope` of the bridge's request:
+/// `"session"`, or `{"branch": "<branch id>"}`
+/// ([Prompt §2](../../../docs/design/plugins/Prompt.md#2-the-entry-route)).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum GuideScope {
     /// Every branch of the Session.
     Session,
@@ -196,6 +206,31 @@ impl GuideEntries {
         parts.extend(FRAME_TAIL);
         parts.join("\n\n")
     }
+
+    /// Changes with every registration and withdrawal, for the parts that
+    /// adopt a composition over the entries in force.
+    pub fn changes(&self) -> watch::Receiver<u64> {
+        self.entries.changes()
+    }
+
+    /// The System for `branch`: `base` text followed by the guide composed
+    /// for the entries in force. A missing or empty base is the guide alone,
+    /// and a `Parts` base gains the guide as one more text part.
+    pub fn compose_system(&self, branch: &str, base: Option<SystemPrompt>) -> SystemPrompt {
+        let guide = self.compose(branch);
+        match base {
+            None => SystemPrompt::Text(guide),
+            Some(SystemPrompt::Text(text)) if text.is_empty() => SystemPrompt::Text(guide),
+            Some(SystemPrompt::Text(text)) => SystemPrompt::Text(format!("{text}\n\n{guide}")),
+            Some(SystemPrompt::Parts(mut parts)) => {
+                parts.push(SystemPromptPart::Text {
+                    text: guide,
+                    cache_control: None,
+                });
+                SystemPrompt::Parts(parts)
+            }
+        }
+    }
 }
 
 fn meets(a: &GuideScope, b: &GuideScope) -> bool {
@@ -224,15 +259,96 @@ fn refused(code: GuideEntryErrorCode, message: impl Into<String>) -> Error {
     GuideEntryError::new(code, message).into()
 }
 
+/// `guideEntries` for other languages: `register(scope, entry)` registers an
+/// entry for as long as the calling row is loaded, the way a Rust part
+/// registers from its own `apply`
+/// ([Prompt §2 and §6.1](../../../docs/design/plugins/Prompt.md#61-the-plugin-bridge)).
+struct ForeignGuideEntries(Arc<GuideEntries>);
+
+impl HostDispatch for ForeignGuideEntries {
+    fn methods(&self) -> Option<Json> {
+        Some(json!({ "register": "async" }))
+    }
+    fn invoke(&self, method: &str, args: Value) -> Reply {
+        if method != "register" {
+            return Err(BridgeError::Value(format!(
+                "guideEntries has no method {method}"
+            )));
+        }
+        // Read the caller inside `invoke`: a future returned here runs later
+        // and no longer sees it.
+        let caller = rutis_bridge::session::caller_row()
+            .map(|row| row.ctx().clone())
+            .ok_or_else(|| {
+                failure(
+                    "GuideEntryError",
+                    "no_caller_row",
+                    "register needs the calling row's context: only a row of a language runtime can call it"
+                        .into(),
+                    None,
+                )
+            })?;
+        let (scope, entry) = request(args)?;
+        let registered = self
+            .0
+            .register(&caller, scope, entry)
+            .map(|()| Value::Undefined)
+            .map_err(refused_bridge_error);
+        Ok(Value::future(async move { registered }))
+    }
+}
+
+/// `register(scope, entry)`: the two arguments of the §2 request.
+fn request(args: Value) -> Result<(GuideScope, GuideEntry), BridgeError> {
+    let mut args = match args {
+        Value::Undefined => Vec::new(),
+        args => args.list()?,
+    };
+    if args.len() > 2 {
+        return Err(BridgeError::Value(format!(
+            "expected at most 2 arguments, received {}",
+            args.len()
+        )));
+    }
+    args.resize(2, Value::Undefined);
+    let mut args = args.into_iter();
+    let scope = args.next().expect("two arguments").json()?;
+    let entry = args.next().expect("two arguments").json()?;
+    let invalid =
+        |error| BridgeError::Value(format!("register takes a scope and an entry: {error}"));
+    Ok((
+        serde_json::from_value(scope).map_err(invalid)?,
+        serde_json::from_value(entry).map_err(invalid)?,
+    ))
+}
+
+/// A refused registration as its caller reads it: the §2 code the table's
+/// [`GuideEntryError`] carries, taken from the downcasted source. Any other
+/// failure is the effect unable to outlive its caller — the row is unloading
+/// or the Session closing — which §2 names `closed`.
+fn refused_bridge_error(error: Error) -> BridgeError {
+    let kind = error.into_kind();
+    let (code, message) = match &kind {
+        ErrorKind::PluginFailed(source) => match source.downcast_ref::<GuideEntryError>() {
+            Some(refusal) => (refusal.code.as_str(), refusal.message.clone()),
+            None => ("closed", kind.to_string()),
+        },
+        _ => ("closed", kind.to_string()),
+    };
+    failure("GuideEntryError", code, message, None)
+}
+
 /// The Session part of the Prompt plugin: provides the table and registers
 /// the two entries of the markers Prompt itself writes.
 pub struct PromptGuidePlugin {
     table: Key<GuideEntries>,
+    session: InstanceId,
 }
 impl PromptGuidePlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
             table: names.key()?,
+            session: names.instance(SESSION_GROUP)?,
         })
     }
 }
@@ -257,6 +373,12 @@ impl DynPlugin for PromptGuidePlugin {
                     },
                 )?;
             }
+            // The name other languages reach the table by, served in this
+            // Session's subtree ([Prompt §6.1]).
+            ctx.provide_at::<dyn HostDispatch>(
+                host_key_in(&name_of::<GuideEntries>(), self.session),
+                Arc::new(ForeignGuideEntries(table.clone())),
+            )?;
             ctx.provide_at(self.table.clone(), table)?;
             Ok(Effect::Done)
         })

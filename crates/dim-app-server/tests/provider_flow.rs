@@ -300,7 +300,7 @@ async fn provider_network_is_request_local_and_covers_catalogs_and_stream_bodies
         );
         root.plugin(FileStoragePlugin::new(vec![home.clone()]));
         root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
-        root.plugin(ManagedProvidersPlugin::new(&names()).unwrap());
+        root.plugin(ManagedProvidersPlugin);
         root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
         root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
         active(&root.plugin(dim_agent_aimux::AimuxPlugin)).await;
@@ -416,33 +416,71 @@ async fn provider_network_is_request_local_and_covers_catalogs_and_stream_bodies
             let unused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let dead = format!("http://user:private-proxy@{}", unused.local_addr().unwrap());
             drop(unused);
-            version = provider
+            // A network-only change saves alone: a dead proxy must not make it
+            // unsavable.
+            let saved = provider
                 .update(PROXY.into(), version, serde_json::from_value(json!({"network":{"proxy":{"action":"set","value":dead},"timeoutMs":{"action":"set","value":500}}})).unwrap(), &cancel)
                 .await
-                .unwrap()
-                .version.unwrap();
-            let error = provider
-                .refresh_for(PROXY.into(), &cancel)
-                .await
-                .err()
                 .unwrap();
-            assert!(!error.to_string().contains("private-proxy"));
-            assert_eq!(direct.lock().unwrap().len(), 2);
-            provider
+            assert!(
+                !serde_json::to_string(&saved)
+                    .unwrap()
+                    .contains("private-proxy")
+            );
+            assert_eq!(
+                direct.lock().unwrap().len(),
+                2,
+                "a network-only update lists nothing"
+            );
+            version = saved.version.unwrap();
+            let saved = provider
                 .update(PROXY.into(), version, serde_json::from_value(json!({"network":{"proxy":{"action":"clear"},"timeoutMs":{"action":"clear"}}})).unwrap(), &cancel)
                 .await
                 .unwrap();
+            assert_eq!(
+                direct.lock().unwrap().len(),
+                2,
+                "a network-only update lists nothing"
+            );
+            assert_eq!(saved.version, Some(version + 1));
             version = provider
                 .refresh_for(PROXY.into(), &cancel)
                 .await
                 .unwrap()
                 .version;
             assert_eq!(direct.lock().unwrap().len(), 3);
+            assert!(
+                provider
+                    .update(PROXY.into(), version, serde_json::from_value(json!({"baseUrl":format!("http://{}/slow/v1", addresses[0]),"network":{"timeoutMs":{"action":"set","value":500}}})).unwrap(), &cancel)
+                    .await
+                    .is_err(),
+                "a listing that outlives the catalog timeout fails the update"
+            );
+            // Re-point while the record is disabled: an enabled custom record
+            // lists the new endpoint, and this one never answers a listing.
             version = provider
-                .update(PROXY.into(), version, serde_json::from_value(json!({"baseUrl":format!("http://{}/slow/v1", addresses[0]),"network":{"timeoutMs":{"action":"set","value":500}}})).unwrap(), &cancel)
+                .update(PROXY.into(), version, serde_json::from_value(json!({"baseUrl":format!("http://{}/slow/v1", addresses[0]),"network":{"timeoutMs":{"action":"set","value":500}},"enabled":false})).unwrap(), &cancel)
                 .await
                 .unwrap()
                 .version.unwrap();
+            version = provider
+                .update(
+                    PROXY.into(),
+                    version,
+                    serde_json::from_value(json!({"enabled":true})).unwrap(),
+                    &cancel,
+                )
+                .await
+                .unwrap()
+                .version
+                .unwrap();
+            // The re-point dropped the old endpoint's models, so the model
+            // the request below names is added back as a user model.
+            version = provider
+                .create_model(PROXY.into(), version, model("same", 21), &cancel)
+                .await
+                .unwrap()
+                .version;
             assert!(
                 tokio::time::timeout(
                     std::time::Duration::from_secs(3),
@@ -499,14 +537,25 @@ async fn provider_network_is_request_local_and_covers_catalogs_and_stream_bodies
             .unwrap();
             assert_eq!(text, "network reply");
             assert!(failed && !stopped);
-            provider
+            version = provider
                 .update(
                     PROXY.into(),
                     version,
                     serde_json::from_value(
-                        json!({"baseUrl":format!("http://{}/redirect/v1", addresses[0])}),
+                        json!({"baseUrl":format!("http://{}/redirect/v1", addresses[0]),"enabled":false}),
                     )
                     .unwrap(),
+                    &cancel,
+                )
+                .await
+                .unwrap()
+                .version
+                .unwrap();
+            provider
+                .update(
+                    PROXY.into(),
+                    version,
+                    serde_json::from_value(json!({"enabled":true})).unwrap(),
                     &cancel,
                 )
                 .await
@@ -596,7 +645,7 @@ async fn external_secrets_are_request_local_and_follow_plugin_lifetime() {
     );
     root.plugin(FileStoragePlugin::new(vec![home.clone()]));
     root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
-    root.plugin(ManagedProvidersPlugin::new(&names()).unwrap());
+    root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
     active(&root.plugin(dim_agent_aimux::AimuxPlugin)).await;
@@ -890,7 +939,7 @@ async fn remote_catalog_refresh_preserves_edits_and_rejects_stale_or_partial_res
     );
     root.plugin(FileStoragePlugin::new(vec![home.clone()]));
     root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
-    root.plugin(ManagedProvidersPlugin::new(&names()).unwrap());
+    root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_agent_aimux::AimuxPlugin);
@@ -1631,7 +1680,7 @@ async fn remote_catalog_refresh_preserves_edits_and_rejects_stale_or_partial_res
     );
     root.plugin(FileStoragePlugin::new(vec![home.clone()]));
     root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
-    root.plugin(ManagedProvidersPlugin::new(&names()).unwrap());
+    root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_agent_aimux::AimuxPlugin);
@@ -1710,6 +1759,863 @@ async fn remote_catalog_refresh_preserves_edits_and_rejects_stale_or_partial_res
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// A patch that changes a connection field follows the record's models: a
+/// custom provider lists the new endpoint and stores that listing in the same
+/// compare-and-set write, a failed listing fails the update and writes
+/// nothing, a builtin keeps its bundled models without a request, and a
+/// driver that cannot list saves the connection alone.
+#[tokio::test]
+async fn connection_updates_list_the_new_endpoint_and_keep_bundled_models() {
+    use axum::{
+        http::{StatusCode, Uri},
+        routing::get,
+    };
+    use tokio::sync::{mpsc, oneshot};
+    type Exchange = (Uri, oneshot::Sender<(StatusCode, Json<Value>)>);
+    let (send, mut requests) = mpsc::channel::<Exchange>(8);
+    let app = Router::new().route(
+        "/{*path}",
+        get(move |uri: Uri| {
+            let send = send.clone();
+            async move {
+                let (reply, response) = oneshot::channel();
+                send.send((uri, reply)).await.unwrap();
+                response
+                    .await
+                    .unwrap_or((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({}))))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let home = std::env::temp_dir().join(format!("provider-update-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    root.plugin(FileStoragePlugin::new(vec![home.clone()]));
+    root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
+    root.plugin(ManagedProvidersPlugin);
+    root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
+    root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
+    root.plugin(dim_agent_aimux::AimuxPlugin);
+    let view = root.plugin(provider_part(ProviderPlugin::new));
+    tokio::time::timeout(std::time::Duration::from_secs(5), active(&view))
+        .await
+        .unwrap();
+    let provider = root.get::<ProviderService>().unwrap();
+    let cancel = CancellationToken::new();
+
+    let custom = input(
+        REMOTE,
+        &format!("{base}/old/v1"),
+        StaticAuth::Bearer,
+        Some("first-key"),
+        "first",
+        31,
+    );
+    provider.create(custom, &cancel).await.unwrap();
+    let moved = {
+        let provider = provider.clone();
+        let cancel = cancel.clone();
+        let patch = serde_json::from_value(json!({"baseUrl":format!("{base}/new/v1")})).unwrap();
+        tokio::spawn(async move { provider.update(REMOTE.into(), 1, patch, &cancel).await })
+    };
+    let (uri, reply) = requests.recv().await.unwrap();
+    assert_eq!(uri.path(), "/new/v1/models");
+    reply
+        .send((
+            StatusCode::OK,
+            Json(json!({"data":[
+                {"id":"new-model","context_window":64000,"max_output_tokens":512},
+                {"id":"second-model","context_window":32000,"max_output_tokens":256}
+            ]})),
+        ))
+        .unwrap();
+    let updated = moved.await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(&updated).unwrap()["modelsListed"],
+        json!("listed")
+    );
+    assert_eq!(
+        updated.version,
+        Some(2),
+        "the connection and its listing are one write"
+    );
+    let catalog = provider
+        .catalog_for(REMOTE.into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        catalog
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["new-model", "second-model"]
+    );
+
+    let refused = {
+        let provider = provider.clone();
+        let cancel = cancel.clone();
+        let patch = serde_json::from_value(json!({
+            "baseUrl":format!("{base}/down/v1"),
+            "credential":{"action":"set","value":"second-key"}
+        }))
+        .unwrap();
+        tokio::spawn(async move { provider.update(REMOTE.into(), 2, patch, &cancel).await })
+    };
+    let (uri, reply) = requests.recv().await.unwrap();
+    assert_eq!(uri.path(), "/down/v1/models");
+    reply
+        .send((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"down"})),
+        ))
+        .unwrap();
+    assert!(refused.await.unwrap().is_err());
+    let unchanged = provider
+        .management(Some(REMOTE.into()), &cancel)
+        .await
+        .unwrap()
+        .providers
+        .remove(0);
+    assert_eq!(unchanged.version, Some(2));
+    assert_eq!(
+        unchanged.connection.as_ref().unwrap().base_url,
+        format!("{base}/new/v1")
+    );
+    assert_eq!(
+        unchanged
+            .models
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|model| model.model.model_id.as_str())
+            .collect::<Vec<_>>(),
+        ["new-model", "second-model"]
+    );
+
+    // A network-only patch changes how the endpoint is reached, not what it
+    // serves: it saves alone, without a listing.
+    let timed = {
+        let provider = provider.clone();
+        let cancel = cancel.clone();
+        let patch =
+            serde_json::from_value(json!({"network":{"timeoutMs":{"action":"set","value":4000}}}))
+                .unwrap();
+        tokio::spawn(async move { provider.update(REMOTE.into(), 2, patch, &cancel).await })
+    };
+    let timed = tokio::time::timeout(std::time::Duration::from_secs(2), timed)
+        .await
+        .expect("a network-only patch saves without a listing")
+        .unwrap()
+        .unwrap();
+    assert_eq!(timed.version, Some(3));
+    assert_eq!(timed.connection.as_ref().unwrap().timeout_ms, Some(4000));
+    assert_eq!(
+        serde_json::to_value(&timed).unwrap().get("modelsListed"),
+        None
+    );
+    assert!(
+        requests.try_recv().is_err(),
+        "a network-only patch sends no listing request"
+    );
+
+    // A kept credential is no change: it saves with the name and lists
+    // nothing, and on its own it is the empty patch.
+    let renamed = {
+        let provider = provider.clone();
+        let cancel = cancel.clone();
+        let patch = serde_json::from_value(json!({
+            "displayName":"Renamed remote",
+            "credential":{"action":"keep"}
+        }))
+        .unwrap();
+        tokio::spawn(async move { provider.update(REMOTE.into(), 3, patch, &cancel).await })
+    };
+    let renamed = tokio::time::timeout(std::time::Duration::from_secs(2), renamed)
+        .await
+        .expect("a kept credential saves without a listing")
+        .unwrap()
+        .unwrap();
+    assert_eq!(renamed.display_name, "Renamed remote");
+    assert_eq!(
+        renamed.version,
+        Some(4),
+        "a name change with a kept credential saves alone"
+    );
+    assert_eq!(
+        serde_json::to_value(&renamed).unwrap().get("modelsListed"),
+        None
+    );
+    assert_eq!(
+        renamed.connection.as_ref().unwrap().base_url,
+        format!("{base}/new/v1")
+    );
+    assert!(
+        requests.try_recv().is_err(),
+        "a kept credential sends no listing request"
+    );
+    let kept = provider
+        .update(
+            REMOTE.into(),
+            4,
+            serde_json::from_value(json!({"credential":{"action":"keep"}})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&kept, ProviderError::InvalidConfig(reason) if reason.contains("must not be empty")),
+        "a keep-only patch answers as the empty patch: {kept:?}"
+    );
+    assert!(
+        requests.try_recv().is_err(),
+        "a keep-only patch sends no listing request"
+    );
+
+    // An invalid patch is reported with its reason, not as a generic failure.
+    let invalid = provider
+        .update(
+            REMOTE.into(),
+            4,
+            serde_json::from_value(json!({"baseUrl":"not a url"})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(invalid, ProviderError::InvalidConfig(_)),
+        "{invalid:?}"
+    );
+    let invalid = provider
+        .update(
+            REMOTE.into(),
+            4,
+            serde_json::from_value(json!({
+                "credential":{"action":"set","value":"third-key"},
+                "network":{"proxy":{"action":"set","value":"socks5://localhost:1080"}}
+            }))
+            .unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(invalid, ProviderError::InvalidConfig(_)),
+        "{invalid:?}"
+    );
+    let untouched = provider
+        .management(Some(REMOTE.into()), &cancel)
+        .await
+        .unwrap()
+        .providers
+        .remove(0);
+    assert_eq!(untouched.version, Some(4));
+    assert_eq!(untouched.display_name, "Renamed remote");
+    assert_eq!(
+        untouched.connection.as_ref().unwrap().base_url,
+        format!("{base}/new/v1")
+    );
+
+    let seeded = provider
+        .management(Some("deepseek".into()), &cancel)
+        .await
+        .unwrap()
+        .providers
+        .remove(0);
+    let bundled: Vec<String> = seeded
+        .models
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|model| model.model.model_id.clone())
+        .collect();
+    assert!(!bundled.is_empty());
+    let keyed = provider
+        .update(
+            "deepseek".into(),
+            seeded.version.unwrap(),
+            serde_json::from_value(json!({
+                "baseUrl":format!("{base}/bundled"),
+                "credential":{"action":"set","value":"builtin-key"},
+                "enabled":true
+            }))
+            .unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&keyed).unwrap()["modelsListed"],
+        json!("bundled")
+    );
+    assert_eq!(
+        keyed
+            .models
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|model| model.model.model_id.clone())
+            .collect::<Vec<_>>(),
+        bundled,
+        "a builtin keeps the bundled catalog's models"
+    );
+    let repointed = provider
+        .update(
+            "deepseek".into(),
+            keyed.version.unwrap(),
+            serde_json::from_value(json!({"baseUrl":format!("{base}/bundled-2")})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&repointed).unwrap()["modelsListed"],
+        json!("bundled")
+    );
+    assert!(
+        requests.try_recv().is_err(),
+        "no listing request reaches a builtin's endpoint"
+    );
+
+    let azure = {
+        let mut azure = input(
+            INVALID_AZURE,
+            "https://fixture.services.ai.azure.com/openai/",
+            StaticAuth::ApiKey {
+                header_name: "api-key".into(),
+                prefix: String::new(),
+            },
+            Some("azure-key"),
+            "azure",
+            11,
+        );
+        azure.connection.driver_kind = "azure-openai".into();
+        azure
+    };
+    provider.create(azure, &cancel).await.unwrap();
+    let saved = provider
+        .update(
+            INVALID_AZURE.into(),
+            1,
+            serde_json::from_value(json!({"credential":{"action":"set","value":"next-azure-key"}}))
+                .unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&saved).unwrap()["modelsListed"],
+        json!("unsupported")
+    );
+    assert!(saved.connection.as_ref().unwrap().credential_configured);
+    assert!(requests.try_recv().is_err());
+
+    root.shutdown().await.unwrap();
+    server.abort();
+    let _ = server.await;
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A listing that collides with a user model fails the update and the refresh
+/// with one message that names every colliding ID and the fix, writes nothing,
+/// and the same update lists those IDs as defaults once they are deleted.
+#[tokio::test]
+async fn a_listing_that_collides_with_a_user_model_names_it_and_writes_nothing() {
+    use axum::{
+        http::{StatusCode, Uri},
+        routing::get,
+    };
+    use tokio::sync::{mpsc, oneshot};
+    type Exchange = (Uri, oneshot::Sender<(StatusCode, Json<Value>)>);
+    let (send, mut requests) = mpsc::channel::<Exchange>(8);
+    let app = Router::new().route(
+        "/{*path}",
+        get(move |uri: Uri| {
+            let send = send.clone();
+            async move {
+                let (reply, response) = oneshot::channel();
+                send.send((uri, reply)).await.unwrap();
+                response
+                    .await
+                    .unwrap_or((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({}))))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let home = std::env::temp_dir().join(format!("provider-conflict-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    root.plugin(FileStoragePlugin::new(vec![home.clone()]));
+    root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
+    root.plugin(ManagedProvidersPlugin);
+    root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
+    root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
+    root.plugin(dim_agent_aimux::AimuxPlugin);
+    let view = root.plugin(provider_part(ProviderPlugin::new));
+    tokio::time::timeout(std::time::Duration::from_secs(5), active(&view))
+        .await
+        .unwrap();
+    let provider = root.get::<ProviderService>().unwrap();
+    let cancel = CancellationToken::new();
+
+    provider
+        .create(
+            input(
+                REMOTE,
+                &format!("{base}/old/v1"),
+                StaticAuth::Bearer,
+                Some("first-key"),
+                "first",
+                31,
+            ),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let mut version = 1;
+    for id in ["m", "n"] {
+        version = provider
+            .create_model(REMOTE.into(), version, model(id, 41), &cancel)
+            .await
+            .unwrap()
+            .version;
+    }
+    let before: Vec<String> = provider
+        .management(Some(REMOTE.into()), &cancel)
+        .await
+        .unwrap()
+        .providers
+        .remove(0)
+        .models
+        .unwrap()
+        .iter()
+        .map(|model| model.model.model_id.clone())
+        .collect();
+    assert_eq!(before, ["same", "m", "n"]);
+    let moved = {
+        let provider = provider.clone();
+        let cancel = cancel.clone();
+        let patch = serde_json::from_value(json!({"baseUrl":format!("{base}/new/v1")})).unwrap();
+        tokio::spawn(async move {
+            provider
+                .update(REMOTE.into(), version, patch, &cancel)
+                .await
+        })
+    };
+    let (uri, reply) = requests.recv().await.unwrap();
+    assert_eq!(uri.path(), "/new/v1/models");
+    reply
+        .send((
+            StatusCode::OK,
+            Json(json!({"data":[
+                {"id":"m","context_window":64000,"max_output_tokens":512},
+                {"id":"n","context_window":64000,"max_output_tokens":512},
+                {"id":"fresh","context_window":64000,"max_output_tokens":512}
+            ]})),
+        ))
+        .unwrap();
+    let conflict = moved.await.unwrap().unwrap_err();
+    assert_eq!(
+        conflict.to_string(),
+        "Discovered models conflict with user-added models: m, n. Delete them through provider.models.delete, then retry."
+    );
+    let unchanged = provider
+        .management(Some(REMOTE.into()), &cancel)
+        .await
+        .unwrap()
+        .providers
+        .remove(0);
+    assert_eq!(unchanged.version, Some(version));
+    assert_eq!(
+        unchanged.connection.as_ref().unwrap().base_url,
+        format!("{base}/old/v1")
+    );
+    assert_eq!(
+        unchanged
+            .models
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|model| model.model.model_id.clone())
+            .collect::<Vec<_>>(),
+        before,
+        "a failed listing replaces nothing"
+    );
+
+    version = provider
+        .delete_model(REMOTE.into(), version, "m".into(), &cancel)
+        .await
+        .unwrap()
+        .version;
+    version = provider
+        .delete_model(REMOTE.into(), version, "n".into(), &cancel)
+        .await
+        .unwrap()
+        .version;
+    let moved = {
+        let provider = provider.clone();
+        let cancel = cancel.clone();
+        let patch = serde_json::from_value(json!({"baseUrl":format!("{base}/new/v1")})).unwrap();
+        tokio::spawn(async move {
+            provider
+                .update(REMOTE.into(), version, patch, &cancel)
+                .await
+        })
+    };
+    let (uri, reply) = requests.recv().await.unwrap();
+    assert_eq!(uri.path(), "/new/v1/models");
+    reply
+        .send((
+            StatusCode::OK,
+            Json(json!({"data":[
+                {"id":"m","context_window":64000,"max_output_tokens":512},
+                {"id":"n","context_window":64000,"max_output_tokens":512},
+                {"id":"fresh","context_window":64000,"max_output_tokens":512}
+            ]})),
+        ))
+        .unwrap();
+    let updated = moved.await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::to_value(&updated).unwrap()["modelsListed"],
+        json!("listed")
+    );
+    let catalog = provider
+        .catalog_for(REMOTE.into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        catalog
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["m", "n", "fresh"],
+        "the deleted user models are the endpoint's defaults now"
+    );
+
+    // The refresh path answers the same message.
+    version = provider
+        .create_model(REMOTE.into(), catalog.version, model("k", 51), &cancel)
+        .await
+        .unwrap()
+        .version;
+    let refresh = {
+        let provider = provider.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move { provider.refresh_for(REMOTE.into(), &cancel).await })
+    };
+    let (uri, reply) = requests.recv().await.unwrap();
+    assert_eq!(uri.path(), "/new/v1/models");
+    reply
+        .send((
+            StatusCode::OK,
+            Json(json!({"data":[
+                {"id":"k","context_window":64000,"max_output_tokens":512}
+            ]})),
+        ))
+        .unwrap();
+    let conflict = refresh.await.unwrap().unwrap_err();
+    assert_eq!(
+        conflict.to_string(),
+        "Discovered models conflict with user-added models: k. Delete them through provider.models.delete, then retry."
+    );
+    let unchanged = provider
+        .catalog_for(REMOTE.into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.version, version);
+    assert_eq!(
+        unchanged
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["m", "n", "fresh", "k"],
+        "a failed refresh replaces nothing"
+    );
+
+    version = provider
+        .delete_model(REMOTE.into(), version, "k".into(), &cancel)
+        .await
+        .unwrap()
+        .version;
+    let refresh = {
+        let provider = provider.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move { provider.refresh_for(REMOTE.into(), &cancel).await })
+    };
+    let (uri, reply) = requests.recv().await.unwrap();
+    assert_eq!(uri.path(), "/new/v1/models");
+    reply
+        .send((
+            StatusCode::OK,
+            Json(json!({"data":[
+                {"id":"k","context_window":64000,"max_output_tokens":512}
+            ]})),
+        ))
+        .unwrap();
+    let refreshed = refresh.await.unwrap().unwrap();
+    assert_eq!(refreshed.version, version + 1);
+    assert_eq!(
+        refreshed
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["k"]
+    );
+
+    root.shutdown().await.unwrap();
+    server.abort();
+    let _ = server.await;
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A connection change that lands on a disabled record drops the record's own
+/// models in the same write, without a request, so enabling it leaves an empty
+/// listable catalog that the picker's refresh fills from the new endpoint. A
+/// bundled catalog and a driver that cannot list stay as they are.
+#[tokio::test]
+async fn a_disabled_re_point_drops_an_own_catalog_and_the_refill_lists_the_new_endpoint() {
+    use axum::{
+        http::{StatusCode, Uri},
+        routing::get,
+    };
+    use tokio::sync::{mpsc, oneshot};
+    type Exchange = (Uri, oneshot::Sender<(StatusCode, Json<Value>)>);
+    let (send, mut requests) = mpsc::channel::<Exchange>(8);
+    let app = Router::new().route(
+        "/{*path}",
+        get(move |uri: Uri| {
+            let send = send.clone();
+            async move {
+                let (reply, response) = oneshot::channel();
+                send.send((uri, reply)).await.unwrap();
+                response
+                    .await
+                    .unwrap_or((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({}))))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let home = std::env::temp_dir().join(format!("provider-disabled-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    root.plugin(FileStoragePlugin::new(vec![home.clone()]));
+    root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
+    root.plugin(ManagedProvidersPlugin);
+    root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
+    root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
+    root.plugin(dim_agent_aimux::AimuxPlugin);
+    let view = root.plugin(provider_part(ProviderPlugin::new));
+    tokio::time::timeout(std::time::Duration::from_secs(5), active(&view))
+        .await
+        .unwrap();
+    let provider = root.get::<ProviderService>().unwrap();
+    let cancel = CancellationToken::new();
+
+    let mut create = input(
+        REMOTE,
+        &format!("{base}/old/v1"),
+        StaticAuth::Bearer,
+        Some("first-key"),
+        "first",
+        21,
+    );
+    create.models = vec![model("old", 21)];
+    provider.create(create, &cancel).await.unwrap();
+    let disabled = provider
+        .update(
+            REMOTE.into(),
+            1,
+            serde_json::from_value(json!({
+                "enabled":false,
+                "baseUrl":format!("{base}/new/v1")
+            }))
+            .unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&disabled).unwrap()["modelsListed"],
+        json!("disabled")
+    );
+    assert_eq!(disabled.version, Some(2));
+    assert_eq!(
+        disabled.connection.as_ref().unwrap().base_url,
+        format!("{base}/new/v1")
+    );
+    assert!(
+        disabled.models.as_ref().unwrap().is_empty(),
+        "the old endpoint's models are dropped"
+    );
+    assert!(
+        requests.try_recv().is_err(),
+        "a disabled re-point sends no listing request"
+    );
+
+    let enabled = provider
+        .update(
+            REMOTE.into(),
+            2,
+            serde_json::from_value(json!({"enabled":true})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(enabled.version, Some(3));
+    assert_eq!(
+        serde_json::to_value(&enabled).unwrap().get("modelsListed"),
+        None
+    );
+    assert!(enabled.models.as_ref().unwrap().is_empty());
+
+    // What the picker's refill sends: `provider.refresh` lists the new
+    // endpoint and stores it.
+    let refresh = {
+        let provider = provider.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move { provider.refresh_for(REMOTE.into(), &cancel).await })
+    };
+    let (uri, reply) = requests.recv().await.unwrap();
+    assert_eq!(uri.path(), "/new/v1/models");
+    reply
+        .send((
+            StatusCode::OK,
+            Json(json!({"data":[
+                {"id":"new-model","context_window":64000,"max_output_tokens":512}
+            ]})),
+        ))
+        .unwrap();
+    let refreshed = refresh.await.unwrap().unwrap();
+    assert_eq!(
+        refreshed
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["new-model"],
+        "the old endpoint's model is gone and the new one is listed"
+    );
+
+    // A builtin's models are the bundled catalog's, not the endpoint's.
+    let seeded = provider
+        .management(Some("deepseek".into()), &cancel)
+        .await
+        .unwrap()
+        .providers
+        .remove(0);
+    let bundled: Vec<String> = seeded
+        .models
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|model| model.model.model_id.clone())
+        .collect();
+    let kept = provider
+        .update(
+            "deepseek".into(),
+            seeded.version.unwrap(),
+            serde_json::from_value(json!({
+                "enabled":false,
+                "credential":{"action":"set","value":"builtin-key"}
+            }))
+            .unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&kept).unwrap()["modelsListed"],
+        json!("disabled")
+    );
+    assert_eq!(
+        kept.models
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|model| model.model.model_id.clone())
+            .collect::<Vec<_>>(),
+        bundled,
+        "a disabled re-point keeps a builtin's bundled models"
+    );
+    assert!(requests.try_recv().is_err());
+
+    // A driver that cannot list keeps what the user declared.
+    let mut azure = input(
+        INVALID_AZURE,
+        "https://fixture.services.ai.azure.com/openai/",
+        StaticAuth::ApiKey {
+            header_name: "api-key".into(),
+            prefix: String::new(),
+        },
+        Some("azure-key"),
+        "azure",
+        11,
+    );
+    azure.connection.driver_kind = "azure-openai".into();
+    provider.create(azure, &cancel).await.unwrap();
+    let azure = provider
+        .update(
+            INVALID_AZURE.into(),
+            1,
+            serde_json::from_value(json!({
+                "enabled":false,
+                "credential":{"action":"set","value":"next-azure-key"}
+            }))
+            .unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&azure).unwrap()["modelsListed"],
+        json!("disabled")
+    );
+    assert_eq!(
+        azure
+            .models
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|model| model.model.model_id.as_str())
+            .collect::<Vec<_>>(),
+        ["same"],
+        "an unlistable record keeps its user-declared models"
+    );
+    assert!(requests.try_recv().is_err());
+
+    root.shutdown().await.unwrap();
+    server.abort();
+    let _ = server.await;
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 /// A listing item's `type: "model"` names the object, not a model kind: an
 /// OpenAI-compatible provider lists those models available and a Session
 /// adopts one, an already stored catalog keeps them available without a
@@ -1749,7 +2655,7 @@ async fn object_kind_listings_classify_their_models_as_chat() {
     );
     root.plugin(FileStoragePlugin::new(vec![home.clone()]));
     root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
-    root.plugin(ManagedProvidersPlugin::new(&names()).unwrap());
+    root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_agent_aimux::AimuxPlugin);
@@ -1769,6 +2675,18 @@ async fn object_kind_listings_classify_their_models_as_chat() {
     );
     config.models = Vec::new();
     provider.create(config, &cancel).await.unwrap();
+    let listed = provider
+        .list(&cancel)
+        .await
+        .unwrap()
+        .providers
+        .into_iter()
+        .find(|entry| entry.provider_id == REMOTE_KIND)
+        .unwrap();
+    assert!(
+        listed.remote_model_list,
+        "provider.list says whether provider.refresh can list a provider's models"
+    );
     let refresh = {
         let provider = provider.clone();
         let cancel = cancel.clone();
@@ -1894,7 +2812,7 @@ async fn vendor_routes_agree_across_selection_and_actual_http_execution() {
     );
     root.plugin(FileStoragePlugin::new(vec![home.clone()]));
     root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
-    root.plugin(ManagedProvidersPlugin::new(&names()).unwrap());
+    root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
     active(&root.plugin(dim_agent_aimux::AimuxPlugin)).await;
@@ -2257,7 +3175,7 @@ async fn new_api_metadata_routes_and_builtin_routes_survive_restart() {
         );
         root.plugin(FileStoragePlugin::new(vec![home.clone()]));
         root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
-        root.plugin(ManagedProvidersPlugin::new(&names()).unwrap());
+        root.plugin(ManagedProvidersPlugin);
         root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
         root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
         active(&root.plugin(dim_agent_aimux::AimuxPlugin)).await;
@@ -2694,7 +3612,7 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
             .unwrap(),
     );
     let files = root.plugin(FileStoragePlugin::new(vec![home.clone()]));
-    let oauth = root.plugin(ManagedProvidersPlugin::new(&names()).unwrap());
+    let oauth = root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
     let sqlite = root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
@@ -2797,19 +3715,56 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
             Some(1)
         );
     }
-    let edited = provider.update(managed_id.into(), 1, serde_json::from_value(json!({
+    // The connection edit runs on a disabled record: an enabled custom
+    // record lists the new endpoint, and this fixture answers completions
+    // only. The edit drops the endpoint's own models, so the model the rest
+    // of the flow selects is added back as a user model.
+    let disabled = provider
+        .update(
+            managed_id.into(),
+            1,
+            serde_json::from_value(json!({"enabled":false})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(disabled.version, Some(2));
+    let edited = provider.update(managed_id.into(), 2, serde_json::from_value(json!({
         "displayName":"Renamed", "headers":[{"name":"x-private","action":"remove"},{"name":"X-Preserved","action":"set","value":"preserved"}],
         "network":{"timeoutMs":{"action":"clear"}}
     })).unwrap(), &cancel).await.unwrap();
-    assert_eq!(edited.version, Some(2));
+    assert_eq!(edited.version, Some(3));
+    assert_eq!(
+        serde_json::to_value(&edited).unwrap()["modelsListed"],
+        json!("disabled")
+    );
+    assert!(edited.models.as_ref().unwrap().is_empty());
+    let edited = provider
+        .update(
+            managed_id.into(),
+            3,
+            serde_json::from_value(json!({"enabled":true})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(edited.version, Some(4));
     let connection = edited.connection.unwrap();
     assert!(connection.credential_configured && connection.proxy_auth_configured);
     assert_eq!(connection.header_names, ["X-Preserved"]);
     assert_eq!(connection.timeout_ms, None);
-    let preferred = provider.update_preferences(managed_id.into(), 2, "editable".into(), serde_json::from_value(json!({
+    let re_added = provider
+        .create_model(managed_id.into(), 4, editable.clone(), &cancel)
+        .await
+        .unwrap();
+    assert!(
+        re_added.models.iter().any(|model| model.id == "editable"),
+        "the dropped model is a user model now"
+    );
+    let preferred = provider.update_preferences(managed_id.into(), 5, "editable".into(), serde_json::from_value(json!({
         "reasoningEffort":{"action":"set","value":"high"},"serviceTier":{"action":"set","value":"priority"}
     })).unwrap(), &cancel).await.unwrap();
-    assert_eq!(preferred.version, Some(3));
+    assert_eq!(preferred.version, Some(6));
     let preference_target = ModelId {
         provider_id: managed_id.into(),
         model_id: "editable".into(),
@@ -2840,7 +3795,7 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
     let preferred = provider
         .update_preferences(
             managed_id.into(),
-            3,
+            6,
             "editable".into(),
             serde_json::from_value(json!({
                 "reasoningEffort":{"action":"clear"}
@@ -2859,7 +3814,7 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
         provider
             .update_preferences(
                 managed_id.into(),
-                4,
+                7,
                 "editable".into(),
                 serde_json::from_value(json!({
                     "reasoningEffort":{"action":"set","value":"unsupported"}
@@ -2873,14 +3828,14 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
     let disconnected = provider
         .update(
             managed_id.into(),
-            4,
+            7,
             serde_json::from_value(json!({"credential":{"action":"clear"},"enabled":false}))
                 .unwrap(),
             &cancel,
         )
         .await
         .unwrap();
-    assert_eq!(disconnected.version, Some(5));
+    assert_eq!(disconnected.version, Some(8));
     assert!(
         !disconnected
             .connection
@@ -2892,7 +3847,7 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
         provider
             .update(
                 managed_id.into(),
-                5,
+                8,
                 serde_json::from_value(json!({"enabled":true})).unwrap(),
                 &cancel
             )
@@ -2906,7 +3861,7 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(management_snapshot["providers"][0]["version"], 5);
+    assert_eq!(management_snapshot["providers"][0]["version"], 8);
     assert_eq!(
         management_snapshot["providers"][0]["preferences"]["editable"],
         json!({"serviceTier":"priority"})
@@ -3634,7 +4589,7 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
     let plugins = [
         restarted.plugin(FileStoragePlugin::new(vec![home.clone()])),
         restarted.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
-        restarted.plugin(ManagedProvidersPlugin::new(&names()).unwrap()),
+        restarted.plugin(ManagedProvidersPlugin),
         restarted
             .plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         restarted.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
@@ -3772,7 +4727,7 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
     let plugins = [
         isolated.plugin(FileStoragePlugin::new(vec![home.clone()])),
         isolated.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
-        isolated.plugin(ManagedProvidersPlugin::new(&names()).unwrap()),
+        isolated.plugin(ManagedProvidersPlugin),
         isolated
             .plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         isolated.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
@@ -4011,7 +4966,7 @@ async fn legacy_import_preserves_sources_model_origins_and_scoped_choices() {
     let plugins = [
         root.plugin(FileStoragePlugin::new(vec![home.clone()])),
         root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
-        root.plugin(ManagedProvidersPlugin::new(&names()).unwrap()),
+        root.plugin(ManagedProvidersPlugin),
         root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(provider_part(ProviderPlugin::new)),
@@ -4171,7 +5126,7 @@ async fn auxiliary_model_calls_the_given_model_once_without_tools_or_fallback() 
     );
     root.plugin(FileStoragePlugin::new(vec![home.clone()]));
     root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
-    root.plugin(ManagedProvidersPlugin::new(&names()).unwrap());
+    root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
     active(&root.plugin(dim_agent_aimux::AimuxPlugin)).await;

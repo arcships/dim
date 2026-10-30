@@ -7,7 +7,7 @@ The WorkspaceTools plugin registers WorkspaceTools in every Session and FileRead
 Owner: [workspace_tools/mod.rs](../../../../crates/dim-agent-capabilities/src/workspace_tools/mod.rs),
 [files.rs](../../../../crates/dim-agent-capabilities/src/workspace_tools/files.rs),
 [exec.rs](../../../../crates/dim-agent-capabilities/src/workspace_tools/exec.rs).
-Provides ToolHost for read, write, edit, glob, grep and exec, and registers the
+Provides ToolHost for read, write, edit, glob, grep, exec and exec_stop, and registers the
 leaf namespace `session.exec.output` with `sessionMethods` for the active
 command's bounded tail preview. The WorkspaceTools plugin registers this part
 and the branch parts FileReads and BackgroundExec, and holds the file-write
@@ -59,6 +59,20 @@ the foreground or after the background handoff, appends HostPlatform's failure
 note to the result text when the shown output matches; stops, timeouts and
 offload failures get none. Codes and structured content are unchanged.
 
+`exec_stop {taskId}` stops a detached command owned by the calling branch through
+BackgroundExec. It waits for cleanup and returns the committed terminal
+`{task_id, status, result}` in the model-readable content. An already-ended task
+keeps its result. Only `cancelled` confirms cancellation; `failed` remains an error,
+including when the process tree could not be released. An unknown task fails
+without stopping any command. Detached exec results name this operation and
+distinguish their Task ID from Collaboration's Agent and Session identities.
+
+```text
+exec(command, runInBackground) -> Task ID: exec-...
+exec_stop(taskId)              -> {status: cancelled, result: ...}
+agent(cancel, agentId, sessionId) -> member task only
+```
+
 Exec retains its `cwd` argument resolution, POSIX `&` refusal, heavy-search
 refusal, timeouts and background ownership. Its existing `exec_shell_unavailable`
 tool-result code is preserved, with instructions to fix the file and retry.
@@ -81,6 +95,65 @@ within 50 KiB on UTF-8 boundaries. `pump` reads one pipe through its own
 decoder into an `OutputSink` (exec's sink also offloads to the output file) and
 keeps reading for the 100 ms grace after the root exits. These are the existing
 output rules, exposed without changing their behavior.
+
+### read results and images
+
+`read` returns a PNG, JPEG, WebP or GIF file as an image block and one text
+line, recognized from the file's content rather than its extension
+([images.rs](../../../../crates/dim-agent-capabilities/src/images.rs)). The line
+gives the path and the pixel size after any EXIF orientation; an image that had
+to be re-encoded also gives the size sent, in pixels and bytes; an animation
+says only its first frame was sent; `offset` or `limit` on an image adds one
+sentence saying they do not apply.
+
+Recognition comes before the extension refusal. The stat and directory checks
+run first, then `read` opens the file and reads its head: content that is an
+image takes the image path whatever the file is called, a PNG named
+`screenshot.bin` included, and only content that is not an image is refused by
+its extension, or by the text rules when it has none. A binary-extension file
+is therefore opened before the refusal: a missing one reports `file_not_found`
+and an unreadable one `read_error`.
+
+One shared function, `images::scale_image`, makes the image acceptable to a
+model. It reads from a seekable source — the file, not its bytes — so the whole
+source is never buffered: it reads the header, runs the guard, and only then
+decodes. An image whose longest edge exceeds 2048 px or whose base64 encoding
+exceeds 5,000,000 bytes is decoded, its EXIF orientation applied first so the
+sent pixels are upright, and re-encoded to fit: a PNG source stays PNG while
+its scaled PNG fits, everything else becomes JPEG at quality 85, transparent
+pixels flattened onto white, and the long edge steps down until the encoding
+fits. An image within both limits with no orientation to apply is sent byte
+for byte. An animation is always re-encoded from its first frame, its EXIF
+orientation applied the same way, so the frame sent is upright as a still's
+pixels are, its transparent pixels flattened onto white the same way. The line's pixel size is the source's size after its EXIF
+orientation, so it compares with the size sent. One guard keeps memory bounded:
+a header claiming more than 100 megapixels is refused from its dimensions
+before the pixels are decoded, and the refusal names the dimensions and asks
+for a smaller copy.
+Decoding is bounded by that guard too: a decoder that takes an allocation
+limit may allocate at most 800 MB, the guard at eight bytes per pixel — the
+largest format `read` decodes, 16-bit RGBA — and an allocation refused for size
+takes the pixel-guard form; the WebP decoder takes no allocation limit of its
+own, so a metadata chunk larger than that bound, or than the file that declares
+it, is refused before it is read.
+HEIC, HEIF and AVIF are refused with the format named; every other binary file
+is refused as before. `read` never decides for the model: the same image block
+goes into the tool result whatever the model, and the stored result holds what
+was sent, the scaled image. ModelProvider turns the image into its text
+placeholder for a model without image input
+([ModelProvider](ModelProvider.md#image-handling)).
+
+The model-facing texts and their classes
+([model prompts §4](../../../design/model-prompts.md#4-protocol-and-policy)):
+
+- **Protocol.** The image text line's form — `Read image: <path> (<w>x<h> px).`,
+  the `Sent <w>x<h> px as <media type> (<n> bytes).` sentence when the image was
+  re-encoded, `Animated <format>: only the first frame was sent.` for an
+  animation, and `Offset and limit do not apply to images.` when either was
+  given — the refusal sentences (unsupported format, too many pixels,
+  undecodable bytes) with their `binary_unsupported` code, and the tool
+  declaration's schema and image result format.
+- **Policy.** The description's guidance naming the formats it returns.
 
 ### Declared effects
 
@@ -150,6 +223,19 @@ None (§4 rule 8). S7 uses the existing host and storage contracts.
 [workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs),
 [local_execution.rs](../../../../tests/integration/tests/local_execution.rs),
 [local_product.rs](../../../../tests/integration/tests/local_product.rs).
+
+[workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs)
+also drives `read` over images: a PNG and its line, an image recognized ahead of
+the binary-extension refusal, a JPEG scaled within both limits, an image
+re-encoded when its base64 exceeds the limit, the 3,750,000-byte exact fit sent
+byte for byte and one byte over it re-encoded, an EXIF-rotated photo and an
+animated WebP's first frame made upright, a wide screenshot kept PNG, an
+animated GIF's first frame, transparent pixels on white, a WebP EXIF chunk
+larger than its file refused, a missing file reported as `file_not_found`, the
+pixel guard before decoding, and the refusals.
+[read_image_flow.rs](../../../../crates/dim-app-server/tests/read_image_flow.rs)
+runs a model's `read` on a PNG: a vision model receives the image block, and a
+model without image input receives the placeholder.
 
 The App Server's [native execution flow](../../../../crates/dim-app-server/tests/transport_flow/shell_input.rs)
 reads a live capture through C1, holds its real SQLite terminal commit, checks

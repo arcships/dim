@@ -6,6 +6,12 @@
     "inject": [
       "partRegistry",
       "settings"
-    ]
+    ],
+    "config": {
+      "texts": {
+        "objective": "This is the user's standing goal for branch {branch}. If you are on another line of this Session, the goal belongs to branch {branch}: treat it as background, do not continue it, and do not call goal_update for it.",
+        "continuation": "Continue working toward the active goal for branch {branch}. If it is completed or blocked, call goal_update. If you are on another line of this Session, the goal belongs to branch {branch}: do not call goal_update for it."
+      }
+    }
   }
 }

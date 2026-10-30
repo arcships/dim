@@ -463,14 +463,14 @@ ADR 002 中记录的 HostPlatform exec shell 变更（作为业务配置在每�
 | 扩展 | Hooks | 新增：Hooks |
 | 扩展 | Web 搜索与抓取 | 新增：Web |
 | 扩展 | Slack 与飞书 | 各平台各自的插件与工具；没有通用渠道，也没有 `notify` 工具 |
-| 工作区工具 | `read`、`write`、`edit`、`glob`、`grep`、`exec`、`wait` | 现有：WorkspaceTools、BackgroundExec、Wait |
+| 工作区工具 | `read`、`write`、`edit`、`glob`、`grep`、`exec`、`exec_stop`、`wait` | 现有：WorkspaceTools、BackgroundExec、Wait |
 | 远程访问 | JSON-RPC 常驻服务 | 现有：Transport、Rpc |
 | 远程访问 | ACP | 新增：AcpGateway |
 | 远程访问 | `/web`、`/remote`、手机配对、远程 Session | 新增：RemoteGateway |
 | 远程访问 | VS Code | CLI |
 | CLI 命令 | 子命令、`exec --json`、`exec --verify` | CLI，调用各插件的 RPC |
 | 多模态 | `image generate/edit/enhance`、`modality`、`modality task` | 新增：Modality |
-| 多模态 | `image read` | 现有：视觉模型通过 `read` 读取图像 |
+| 多模态 | `image read` | 现有：视觉模型通过 `read` 读取图像（[WorkspaceTools](../../architecture/rust-agent/plugins/WorkspaceTools.md#read-results-and-images)） |
 | 多模态 | `video`、`speech`、`music`、`audio`、`asset`、`motion`、`realtime` | 新增：Modality（由 provider 执行） |
 | 多模态 | `ocr` | 新增：Modality（由宿主执行；OCR 运行时组件） |
 
@@ -490,7 +490,7 @@ ADR 002 中记录的 HostPlatform exec shell 变更（作为业务配置在每�
 | ToolRegistry | 补充 | 任何语言的部件向 `toolRegistry` 注册工具（[方法 A.5](contracts/session-boundary.md#a5-工具贡献)） | 非 Rust 的 Session 工具 |
 | Agent 装配 | 补充 | 收集每个已安装插件在 `provides` 中声明的具名服务；可选的 Session 与分支部分按已启用插件安装 | 所有 Session 插件 |
 | Permission | 补充 | 命令规则在使用时读取（不新增风险类别：未知风险按未分类处理，#45） | `/approvals` |
-| ModelProvider | 补充 | 构建请求时发送图像，模型不支持图像时改为文本占位；历史不变（从 Rpc 移出） | Attachments |
+| ModelProvider | 补充 | 构建请求时发送用户内容或工具结果中的图像，模型不支持图像或请求无法携带时改为文本占位；历史不变（从 Rpc 移出） | Attachments |
 | Prompt, PromptSources | 补充 | Prompt 发布的已采纳模型配置；使用 PromptSources 现有的 `dim/session` System 条目，原子采纳 profile 的提示词和可选模型 | `/effort`、`/fast`、`/agent` |
 | PromptSources | 补充 | 提示词语言来源 | `/language` |
 | ContextPreparation | 补充 | 用量查询；手动压缩；实现 `ResolveContextModel` 的生产环境压缩宿主 | `/usage`、`/compact` |

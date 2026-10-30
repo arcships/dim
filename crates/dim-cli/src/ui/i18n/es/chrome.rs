@@ -367,10 +367,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permissions" => "Permisos",
         "Tool approvals" => "Aprobaciones",
         "Command isolation" => "Aislamiento de comandos",
-        "Command isolation not saved: {error}" => {
-            "No se guardó el aislamiento de comandos: {error}"
-        }
-        "Command isolation not read: {error}" => "No se leyó el aislamiento de comandos: {error}",
         "Models" => "Modelos",
         "Model" => "Modelo",
         "not set" => "sin definir",
@@ -421,6 +417,32 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "{provider}: {count} models unavailable · dimcode models {id}" => {
             "{provider}: {count} modelos no disponibles · dimcode models {id}"
         }
+        "{provider}: no models · dimcode models {id} --refresh" => {
+            "{provider}: sin modelos · dimcode models {id} --refresh"
+        }
+        "{provider}: no models · add a model with provider.models.create" => {
+            "{provider}: sin modelos · añade un modelo con provider.models.create"
+        }
+        "{provider}: {unavailable} unavailable and {disabled} disabled · dimcode models {id}" => {
+            "{provider}: {unavailable} no disponibles y {disabled} desactivados · dimcode models {id}"
+        }
+        "{provider}: catalog unreadable · dimcode models {id}" => {
+            "{provider}: catálogo ilegible · dimcode models {id}"
+        }
+        "No cached catalog. Sign in and run models PROVIDER --refresh." => {
+            "Sin catálogo en caché. Inicia sesión y ejecuta models PROVIDER --refresh."
+        }
+        "Saved model preferences cleared" => "Preferencias de modelo guardadas borradas",
+        "{provider}: 1 model disabled · dimcode models {id}" => {
+            "{provider}: 1 modelo desactivado · dimcode models {id}"
+        }
+        "{provider}: {count} models disabled · dimcode models {id}" => {
+            "{provider}: {count} modelos desactivados · dimcode models {id}"
+        }
+        "No models. Run dimcode models {id} --refresh to list them." => {
+            "Sin modelos. Ejecuta dimcode models {id} --refresh para verlos."
+        }
+        "No models. The provider listed none." => "Sin modelos. El proveedor no enumeró ninguno.",
         "Enter select · Esc back" => "Enter elegir · Esc volver",
         "Subagent models" => "Modelos de subagentes",
         "Subagent models: {policy}" => "Modelos de subagentes: {policy}",
@@ -458,8 +480,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Ctrl+C borrar, dos veces salir · Ctrl+D salir con borrador vacío"
         }
         "Fullscreen" => "Pantalla completa",
-        "PageUp/PageDown scroll · Home/End top or bottom · Tab pick a message, e edit it, q quote it" => {
-            "PageUp/PageDown desplazar · Home/End inicio o final · Tab elegir mensaje, e editar, q citar"
+        "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
+            "PageUp/PageDown desplazar · Home/End inicio o final (con el borrador vacío) · Tab elegir mensaje, e editar, q citar"
         }
         "wheel scroll · drag select and copy · click a link to open it, a tool group to expand it" => {
             "rueda desplazar · arrastrar selecciona y copia · clic abre enlaces y expande grupos de herramientas"

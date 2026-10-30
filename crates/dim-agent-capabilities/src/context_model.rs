@@ -92,6 +92,17 @@ impl ContextModel for WindowFacts {
                     for part in parts {
                         match part {
                             MessagePart::Image { .. } => images += 1.,
+                            MessagePart::ToolResult {
+                                content: ToolContent::Blocks(blocks),
+                                ..
+                            } => {
+                                for block in blocks {
+                                    match block {
+                                        ContentBlock::Image { .. } => images += 1.,
+                                        block => bytes += size(block),
+                                    }
+                                }
+                            }
                             part => bytes += size(part),
                         }
                     }

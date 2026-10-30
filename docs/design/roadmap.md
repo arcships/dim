@@ -99,7 +99,7 @@ P3 的每一批都按功能检查同一作用域里的部件：只有一个所�
 | --- | --- | --- | --- |
 | 1 | ShellInput | Rust | C1、S7 |
 | 2 | Attachments | Rust | C1、S5a、S6、S11 |
-| 3 | Web（Ready 已确认；[可选工具包](../../runtime/plugins/web/README.md)） | TypeScript | C3、C4、S8b（已交付） |
+| 3 | Web（已实现为内置 Rust 插件） | Rust | C3、C4、S8b（已交付） |
 | 4 | SessionTitle | TypeScript | C1、C2、C4、C6、S4、S5b、S8b |
 | 5 | Goal | TypeScript | C1、C3、C4、C5、S1、S8b |
 | 6 | Scheduler | TypeScript | C4、S2、S8b、S10 |

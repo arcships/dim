@@ -23,7 +23,7 @@ use rutis_loader::{Loader, LoaderError, Patch, ServiceCatalog, resolve::Build};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
@@ -127,6 +127,9 @@ pub(crate) struct State {
     /// The canonical `pluginFiles` root, when the host has one.
     files: Option<PathBuf>,
     defaults: Defaults,
+    /// The host's row-configuration patches by plugin name (§2.1),
+    /// deep-merged over each manifest's `config`.
+    configs: BTreeMap<String, Value>,
     record: Mutex<Record>,
     /// The built-in rows of the assembly.
     builtins: OnceLock<BTreeSet<String>>,
@@ -157,6 +160,7 @@ impl State {
         home: &Path,
         files: Option<&Path>,
         defaults: Option<&Path>,
+        configs: &BTreeMap<String, Value>,
         catalog: &mut ServiceCatalog,
     ) -> Result<Arc<Self>, String> {
         let record_path = home.join("plugins.json");
@@ -185,6 +189,7 @@ impl State {
             dirs: PluginsDir::new(home),
             files: files.map(Path::to_owned),
             defaults,
+            configs: configs.clone(),
             record: Mutex::new(record),
             builtins: OnceLock::new(),
             catalog: OnceLock::new(),
@@ -221,6 +226,17 @@ impl State {
             off,
             locked: locked_rows,
         })
+    }
+
+    /// The row configuration of the plugin `name` uses: the manifest's
+    /// `config` with the host's patch for that name deep-merged over it
+    /// (§2.1).
+    fn config_of(&self, name: &str, config: &Value) -> Value {
+        let mut config = config.clone();
+        if let Some(patch) = self.configs.get(name) {
+            merge(&mut config, patch);
+        }
+        config
     }
 
     /// The `plugins` layer `record` implies (§3): a row for each name that
@@ -263,7 +279,8 @@ impl State {
                     {
                         tracing::warn!(%name, %error, "Python plugin link refused");
                     }
-                    rows.push(row_value(&name, id, &dir, &code));
+                    let config = self.config_of(&name, &code.config);
+                    rows.push(row_value(&name, id, &dir, &code, config));
                 }
                 Ok(_) => {}
                 Err(error) => tracing::warn!(%name, %error, "plugin manifest unreadable"),
@@ -394,12 +411,30 @@ fn missing_instance_names(catalog: &ServiceCatalog, code: &record::Code) -> Vec<
         .collect()
 }
 
-fn row_value(name: &str, id: &str, dir: &Path, code: &record::Code) -> Value {
+/// Deep-merges `patch` into `value`: objects merge member by member, and
+/// every other value is replaced.
+fn merge(value: &mut Value, patch: &Value) {
+    match (value, patch) {
+        (Value::Object(value), Value::Object(patch)) => {
+            for (key, member) in patch {
+                match value.get_mut(key) {
+                    Some(existing) => merge(existing, member),
+                    None => {
+                        value.insert(key.clone(), member.clone());
+                    }
+                }
+            }
+        }
+        (value, patch) => *value = patch.clone(),
+    }
+}
+
+fn row_value(name: &str, id: &str, dir: &Path, code: &record::Code, config: Value) -> Value {
     json!({
         "id": row_id(name),
         "name": module(id, dir, code),
         "inject": code.inject,
-        "config": code.config,
+        "config": config,
     })
 }
 
@@ -1145,7 +1180,8 @@ impl Manager {
                     entry.options["name"] == json!(module)
                         && entry.options.get("inject").cloned().unwrap_or(json!([]))
                             == json!(code.inject)
-                        && entry.options.get("config") == Some(&code.config)
+                        && entry.options.get("config")
+                            == Some(&self.state.config_of(name, &code.config))
                 });
                 if same {
                     if let Some(Some(node)) = self.state.node.get() {

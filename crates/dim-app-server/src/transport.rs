@@ -687,12 +687,19 @@ async fn run_connection(
                                 daemon_profile: hub.config().daemon_profile.clone(),
                                 features: (params.protocol_version >= 3).then(|| {
                                     let trusted = entry != Entry::Bare;
-                                    let mut features =
-                                        if trusted || !hub.config().protected_profile() {
-                                            vec!["session.summaries", "daemon.shutdown.completed"]
-                                        } else {
-                                            vec![]
-                                        };
+                                    let mut features = if trusted
+                                        || !hub.config().protected_profile()
+                                    {
+                                        let mut methods =
+                                            vec!["session.summaries", "daemon.shutdown.completed"];
+                                        if hub.config().database_path.is_some() {
+                                            methods.push("session.catalog");
+                                            methods.push("session.catalog.cancel");
+                                        }
+                                        methods
+                                    } else {
+                                        vec![]
+                                    };
                                     if hub.config().session_execution
                                         && (trusted || !hub.config().protected_profile())
                                     {

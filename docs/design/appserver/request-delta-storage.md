@@ -779,10 +779,10 @@ Carried from [timeline-storage §7](../../architecture/rust-agent/timeline-stora
    - **3a. Checkpoint read with a long history before `resume`, under a concurrent writer.** A Session with 2,000
      request rows before a compaction whose snapshot's `resume` lies a few turns before it. After the snapshot is
      saved, every event row that ends before `resume` has its body overwritten with invalid JSON in the disposable
-     database; `HistoryRenderer::context` through the checkpoint still returns the same `ContextHistory` as before the
-     overwrite, so no such row was read. The store's read from `resume` loads exactly the first request's node count
-     plus the new nodes of later requests. While that read runs cold, a writer appending to another Session never
-     waits longer than one hold of 256 node loads.
+     database; `HistoryRenderer::context`, the context-only read through the checkpoint, still returns the same
+     `ContextHistory` as before the overwrite, so no such row was read. The store's read from `resume` loads exactly
+     the first request's node count plus the new nodes of later requests. While that read runs cold, a writer
+     appending to another Session never waits longer than one hold of 256 node loads.
    - **3b. One request.** Lists of 2,000 and 20,000 messages, append-only and with the last four messages rewritten
      each turn: a cold read of the last request loads exactly as many nodes as it has messages, holds the connection
      for at most 256 node loads at a time, and takes at most twice the v16 read of a request with the same

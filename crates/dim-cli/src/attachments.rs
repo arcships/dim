@@ -17,7 +17,23 @@ pub fn file_url(value: &str) -> Option<PathBuf> {
     if url.scheme() != "file" || !matches!(url.host_str(), None | Some("localhost")) {
         return None;
     }
-    url.to_file_path().ok()
+    let path = url.to_file_path().ok()?;
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::{NSString, NSURL};
+        objc2::rc::autoreleasepool(|_| {
+            let native = NSURL::URLWithString(&NSString::from_str(url.as_str()))?;
+            if native.isFileReferenceURL() {
+                return native
+                    .filePathURL()?
+                    .path()
+                    .map(|path| PathBuf::from(path.to_string()));
+            }
+            Some(path)
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    Some(path)
 }
 
 fn local_path(value: &str, base: &Path) -> Option<PathBuf> {
@@ -26,7 +42,12 @@ fn local_path(value: &str, base: &Path) -> Option<PathBuf> {
     } else if value.starts_with("http://") || value.starts_with("https://") {
         None
     } else {
-        Some(base.join(value))
+        let path = base.join(value);
+        #[cfg(target_os = "macos")]
+        if path.starts_with("/.file") {
+            return file_url(url::Url::from_file_path(path).ok()?.as_str());
+        }
+        Some(path)
     }
 }
 

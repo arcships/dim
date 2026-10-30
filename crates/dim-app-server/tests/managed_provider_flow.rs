@@ -3,7 +3,7 @@ use dim_agent_runtime::Names;
 use dim_app_server::managed_provider::{
     AccountSnapshot, AccountView, CredentialLease, LeaseOwner, ManagedCatalog, ManagedError,
     ManagedFuture, ManagedProvider, ManagedProviderBinding, ManagedProviders,
-    ManagedProvidersPlugin, ProviderDescriptor,
+    ManagedProvidersPlugin, ProviderDescriptor, WebSearchRequest, WebSearchResponse,
     management::{
         BrowserLogin, BrowserLoginBegin, DeviceLogin, LoginBegin, LoginState,
         ManagedBrowserLoginComplete, ManagedLoginAttempt, Usage,
@@ -142,6 +142,13 @@ impl ManagedProvider for Provider {
     fn usage(&self, _: &str) -> ManagedFuture<Usage> {
         unused()
     }
+    fn web_search(
+        &self,
+        _: WebSearchRequest,
+        _: CancellationToken,
+    ) -> ManagedFuture<WebSearchResponse> {
+        unused()
+    }
     fn catalog(&self, _: &str) -> ManagedFuture<ManagedCatalog> {
         unused()
     }
@@ -229,7 +236,7 @@ async fn setup() -> (
     let fixture = Arc::new(Fixture::default());
     *fixture.recovered_generation.lock().unwrap() = 1;
     let captured = Arc::new(OnceLock::new());
-    let owner_plugin = root.plugin(ManagedProvidersPlugin::new(&names).unwrap());
+    let owner_plugin = root.plugin(ManagedProvidersPlugin);
     let fixture_plugin = root.plugin(FixturePlugin(fixture.clone()));
     let binding = root.plugin(ManagedProviderBinding::new(&names).unwrap());
     let capture = root.plugin(Capture::new(&names, captured.clone()).unwrap());
@@ -338,7 +345,7 @@ async fn a_lease_of_a_replaced_provider_never_reaches_its_replacement() {
         let build = rutis_loader::resolve::Build::default();
         let names = Names::copy(&catalog, &build);
         root.plugin(dim_app_server::methods::ManagementMethodsPlugin::typed(&catalog).unwrap());
-        let owner_plugin = root.plugin(ManagedProvidersPlugin::new(&names).unwrap());
+        let owner_plugin = root.plugin(ManagedProvidersPlugin);
         let first_plugin = root.plugin(FixturePlugin(first.clone()));
         let binding = root.plugin(ManagedProviderBinding::new(&names).unwrap());
         let capture = root.plugin(Capture::new(&names, captured.clone()).unwrap());

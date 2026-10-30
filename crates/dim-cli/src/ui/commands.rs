@@ -1,7 +1,6 @@
 //! The command palette registry: the actions the native interface runs,
-//! grouped by category, in palette order. A slash command is also typed as
-//! `/name`; the other entries are actions a key reaches (named in `key`),
-//! listed so the palette teaches the key.
+//! sorted by category and name when listed. A slash command is also typed as
+//! `/name`; the other entries are actions reached only by their keys.
 
 #[derive(Debug)]
 pub struct Command {
@@ -10,13 +9,15 @@ pub struct Command {
     pub category: &'static str,
     pub description: &'static str,
     pub aliases: &'static [&'static str],
-    /// Typed as `/name`; otherwise reached by its key or the palette only.
+    /// Typed as `/name`; otherwise reached only by its key.
     pub slash: bool,
     /// The key that runs it, as the palette shows it.
     pub key: Option<&'static str>,
     /// The argument a slash command takes inline (`<prompt>`): choosing it
     /// fills the composer instead of running it.
     pub argument: Option<&'static str>,
+    /// Dispatch requires the exact name or alias; other matches only complete.
+    pub requires_exact_name: bool,
     pub needs: Needs,
 }
 
@@ -29,7 +30,7 @@ pub enum Needs {
     Run,
     /// A queued message.
     Queue,
-    /// The fullscreen interface; elsewhere the action is not listed.
+    /// The fullscreen interface; unavailable elsewhere.
     Fullscreen,
 }
 
@@ -39,6 +40,7 @@ pub struct Context {
     pub session: bool,
     pub running: bool,
     pub queued: bool,
+    /// Whether fullscreen actions are available to the command dispatcher.
     pub fullscreen: bool,
     /// The Dim account is signed in: `/login` opens the account rather
     /// than a sign-in.
@@ -58,13 +60,15 @@ impl Command {
         }
     }
 
-    /// Listed at all: fullscreen-only actions are left out elsewhere, and
-    /// `/fast` while the model has no service tiers to switch.
+    /// Whether the menu offers this command in the current context.
     pub fn listed(&self, context: Context) -> bool {
+        if !self.slash || self.name == "approval" {
+            return false;
+        }
         if self.name == "fast" {
             return context.service_tiers;
         }
-        self.needs != Needs::Fullscreen || context.fullscreen
+        true
     }
 
     pub fn available(&self, context: Context) -> bool {
@@ -93,6 +97,7 @@ const fn slash(
         slash: true,
         key: None,
         argument: None,
+        requires_exact_name: false,
         needs,
     }
 }
@@ -112,6 +117,7 @@ const fn action(
         slash: false,
         key: Some(key),
         argument: None,
+        requires_exact_name: false,
         needs,
     }
 }
@@ -295,15 +301,19 @@ pub const COMMANDS: &[Command] = &[
     ),
     slash("settings", "app", "open settings", &[], Needs::Nothing),
     slash("keys", "app", "show the key bindings", &[], Needs::Nothing),
-    slash(
-        "suspend",
-        "app",
-        "suspend to the shell",
-        &[],
-        Needs::Nothing,
-    ),
+    Command {
+        requires_exact_name: true,
+        ..slash(
+            "suspend",
+            "app",
+            "suspend to the shell",
+            &[],
+            Needs::Nothing,
+        )
+    },
     Command {
         key: Some("Ctrl+C Ctrl+C"),
+        requires_exact_name: true,
         ..slash("exit", "app", "exit", &["quit"], Needs::Nothing)
     },
 ];

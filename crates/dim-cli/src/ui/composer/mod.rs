@@ -325,6 +325,15 @@ impl Composer {
 
     fn palette_key(&mut self, key: KeyEvent) -> Option<Outcome> {
         let query = self.command_query()?.to_owned();
+        if key.code == KeyCode::Enter
+            && crate::ui::commands::COMMANDS.iter().any(|command| {
+                command.slash
+                    && !command.listed(self.context)
+                    && (command.name == query || command.aliases.contains(&query.as_str()))
+            })
+        {
+            return Some(self.submit());
+        }
         self.palette.set_query(&query);
         let rows = self.palette_rows();
         match key.code {
@@ -352,6 +361,16 @@ impl Composer {
                     return Some(Outcome::Handled);
                 }
                 match &row.kind {
+                    crate::ui::rows::Kind::Command(command)
+                        if command.requires_exact_name
+                            && query != command.name
+                            && !command.aliases.contains(&query.as_str()) =>
+                    {
+                        let filled = format!("/{}", command.name);
+                        self.clear();
+                        self.area.insert_str(&filled);
+                        Some(Outcome::Handled)
+                    }
                     crate::ui::rows::Kind::Command(command) if command.argument.is_some() => {
                         let filled = format!("/{} ", command.name);
                         self.clear();
@@ -1319,6 +1338,38 @@ mod tests {
             Outcome::Command {
                 name: "exit".into(),
                 args: String::new()
+            }
+        );
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn palette_requires_an_exact_exit_or_suspend_before_dispatch() {
+        for query in ["/", "/e", "/ex", "/sus"] {
+            let mut c = Composer::new(Vec::new());
+            typed(&mut c, query);
+            assert_eq!(c.handle_key(key(KeyCode::Enter)), Outcome::Handled);
+            assert!(matches!(c.text(), "/exit" | "/suspend"));
+        }
+        for query in ["/exit", "/quit", "/suspend"] {
+            let mut c = Composer::new(Vec::new());
+            typed(&mut c, query);
+            assert!(matches!(
+                c.handle_key(key(KeyCode::Enter)),
+                Outcome::Command { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn hidden_exact_approval_is_dispatched_before_palette_prefix_matches() {
+        let mut c = Composer::new(Vec::new());
+        typed(&mut c, "/approval");
+        assert_eq!(
+            c.handle_key(key(KeyCode::Enter)),
+            Outcome::Command {
+                name: "approval".into(),
+                args: String::new(),
             }
         );
         assert!(c.is_empty());

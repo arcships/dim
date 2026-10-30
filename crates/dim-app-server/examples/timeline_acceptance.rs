@@ -461,7 +461,9 @@ async fn rounds(branches: usize, per_second: f64, chains: usize) -> std::result:
         ten_hops.extend(chained);
     }
     let elapsed = started.elapsed().as_secs_f64();
-    let (written, syncs) = durable_vfs::measurement();
+    let measured = durable_vfs::measurement();
+    let written = measured.wal_bytes;
+    let syncs = measured.wal_syncs;
     let connection = Connection::open(directory.join("dimcode.sqlite"))?;
     let output_rows: i64 = connection.query_row(
         "SELECT count(*) FROM timeline_events WHERE kind = 'step/text'",
@@ -472,7 +474,7 @@ async fn rounds(branches: usize, per_second: f64, chains: usize) -> std::result:
     let at = |values: &mut Vec<f64>, p| (!values.is_empty()).then(|| quantile(values, p));
     println!(
         "{}",
-        serde_json::json!({"scenario":"rounds","branches":branches,"perSecond":per_second,"chains":chains,"events":delay.len(),"writeRounds":rounds.len(),"writeRoundsPerSecond":rounds.len() as f64/elapsed,"publishP50Ms":at(&mut delay,0.5),"publishP99Ms":at(&mut delay,0.99),"enqueueP99Ms":at(&mut enqueue,0.99),"walFileBytes":wal,"walWrittenBytes":written,"walWriteBytesPerSecond":written as f64/elapsed,"walSyncs":syncs.len(),"walSyncsPerSecond":syncs.len() as f64/elapsed,"physicalOutputRows":output_rows,"chainHops":hops.len(),"chainWritesPerSecond":hops.len() as f64/elapsed,"chainHopP50Ms":at(&mut hops,0.5),"chainHopP99Ms":at(&mut hops,0.99),"chainP50Ms":at(&mut ten_hops,0.5),"debugAssertions":cfg!(debug_assertions),"database":directory})
+        serde_json::json!({"scenario":"rounds","branches":branches,"perSecond":per_second,"chains":chains,"events":delay.len(),"writeRounds":rounds.len(),"writeRoundsPerSecond":rounds.len() as f64/elapsed,"publishP50Ms":at(&mut delay,0.5),"publishP99Ms":at(&mut delay,0.99),"enqueueP99Ms":at(&mut enqueue,0.99),"walFileBytes":wal,"walWrittenBytes":written,"walBytesPerEvent":written as f64/(delay.len()+hops.len()) as f64,"checkpointSyncs":measured.checkpoint_syncs,"writerCpuMs":measured.writer_cpu_ms,"walWriteBytesPerSecond":written as f64/elapsed,"walSyncs":syncs.len(),"walSyncsPerSecond":syncs.len() as f64/elapsed,"physicalOutputRows":output_rows,"chainHops":hops.len(),"chainWritesPerSecond":hops.len() as f64/elapsed,"chainHopP50Ms":at(&mut hops,0.5),"chainHopP99Ms":at(&mut hops,0.99),"chainP50Ms":at(&mut ten_hops,0.5),"debugAssertions":cfg!(debug_assertions),"database":directory})
     );
     store.close().await?;
     db.close().await?;
@@ -663,6 +665,9 @@ impl TimelineStore for BarrierStore {
     }
     fn rollback_session<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<()>> {
         self.inner.rollback_session(id)
+    }
+    fn release_session<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<()>> {
+        self.inner.release_session(id)
     }
     fn session_config<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Option<SessionConfig>>> {
         self.inner.session_config(id)

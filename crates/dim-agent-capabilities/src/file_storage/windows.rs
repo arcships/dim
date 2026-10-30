@@ -24,7 +24,7 @@ use windows_sys::{
     Win32::{
         Foundation::{
             ERROR_ACCESS_DENIED, ERROR_INVALID_FUNCTION, ERROR_INVALID_LEVEL,
-            ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED, LocalFree,
+            ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED, FILETIME, LocalFree,
             RtlNtStatusToDosError, UNICODE_STRING, WAIT_OBJECT_0, WAIT_TIMEOUT,
         },
         Security::{
@@ -38,7 +38,10 @@ use windows_sys::{
         System::{
             IO::{DeviceIoControl, IO_STATUS_BLOCK},
             SystemServices::IO_REPARSE_TAG_MOUNT_POINT,
-            Threading::{GetCurrentProcess, OpenProcess, OpenProcessToken, WaitForSingleObject},
+            Threading::{
+                GetCurrentProcess, GetProcessTimes, OpenProcess, OpenProcessToken,
+                PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
+            },
         },
     },
 };
@@ -1000,20 +1003,43 @@ impl Ancestors {
         Ok(parent)
     }
 }
-pub(super) fn process_alive(pid: u32) -> io::Result<bool> {
-    let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+pub(super) fn process_owns_marker(pid: u32, created_at: u64) -> io::Result<bool> {
+    let handle = unsafe { OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if handle.is_null() {
         let error = io::Error::last_os_error();
         return match error.raw_os_error().map(|error| error as u32) {
             Some(ERROR_INVALID_PARAMETER) => Ok(false),
-            Some(ERROR_ACCESS_DENIED) => Ok(true),
+            Some(ERROR_ACCESS_DENIED) => Ok(false),
             _ => Err(error),
         };
     }
     let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
     match unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) } {
         WAIT_OBJECT_0 => Ok(false),
-        WAIT_TIMEOUT => Ok(true),
+        WAIT_TIMEOUT => {
+            let mut times = [FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            }; 4];
+            let inspected = unsafe {
+                GetProcessTimes(
+                    handle.as_raw_handle(),
+                    times.as_mut_ptr(),
+                    times.as_mut_ptr().add(1),
+                    times.as_mut_ptr().add(2),
+                    times.as_mut_ptr().add(3),
+                )
+            };
+            if inspected == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let ticks =
+                (u64::from(times[0].dwHighDateTime) << 32) | u64::from(times[0].dwLowDateTime);
+            let started = ticks.checked_sub(116_444_736_000_000_000).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid process start time")
+            })? / 10_000;
+            Ok(started <= created_at)
+        }
         _ => Err(io::Error::last_os_error()),
     }
 }

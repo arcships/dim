@@ -53,8 +53,8 @@ pub(super) async fn import(
     }
     let providers = state["providers"].as_object().unwrap();
     let selected = state["activeProvider"].as_str().unwrap();
-    let explicit_brave =
-        selected == "brave" && state.get("activeProviderExplicit") == Some(&Value::Bool(true));
+    let explicit = state.get("activeProviderExplicit") == Some(&Value::Bool(true));
+    let explicit_brave = explicit && selected == "brave";
     if explicit_brave {
         if let Some(provider) = providers.get("brave")
             && provider.as_object().is_some_and(|fields| {
@@ -83,8 +83,19 @@ pub(super) async fn import(
             )
             .await?;
         }
+    } else if !explicit || selected == "dim-oauth" {
+        if explicit {
+            fill(
+                owner,
+                task,
+                client,
+                "web",
+                json!({"searchService":{"kind":"dim-oauth"}}),
+            )
+            .await?;
+        }
     } else {
-        record(owner, task, "web.activeProvider".into(), Outcome::Unsupported, Some("Native Web supports explicit Brave selection; other adapters and account-dependent defaults remain in the source".into())).await?;
+        record(owner, task, "web.activeProvider".into(), Outcome::Unsupported, Some("Native Web supports dim-oauth and Brave selection; other adapters remain in the source".into())).await?;
     }
     for key in providers
         .keys()

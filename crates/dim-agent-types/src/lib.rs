@@ -3,6 +3,7 @@
 mod checkpoint;
 mod content;
 mod events;
+pub mod isolation;
 mod model;
 mod permission;
 mod profile;
@@ -13,6 +14,7 @@ pub mod v1;
 pub use checkpoint::*;
 pub use content::*;
 pub use events::*;
+pub use isolation::*;
 pub use model::*;
 pub use permission::*;
 pub use profile::*;

@@ -58,6 +58,21 @@ session: <session-id>
 The composer stays in terminal scrollback. It redraws its own input and suggestion rows and
 keeps the cursor in the draft. Image pixels are not rendered in the terminal. Markers show
 escaped file names or paste line counts; labels are presentation, not model content.
+After submission, transcript messages show image blocks as numbered `[Image #N]` markers
+on separate lines in content order, including image-only messages and messages restored
+from history. These fixed tokens do not change with the interface language. Numbering starts
+at 1 for each message; the submitted image block has no filename. Tool results retain their
+existing text-only display. Editing, quoting, branching, forking and withdrawing a queued
+message reuse only its text; display markers are never inserted into those drafts.
+
+```text
+┃ What is this?
+┃ [Image #1]
+┃  [Pasted text: /files/paste.txt (1 lines)]
+
+┃ [Image #1]
+```
+
 Suggestions show the current directory's matching entries; `Tab` enters a selected directory
 or inserts a selected file. Up/Down selects a suggestion; Esc leaves its text in the draft.
 Typing path components narrows the search from the displayed base. Suggestions list UTF-8 names;
@@ -98,7 +113,11 @@ separators outside single/double quotes, backslash-escaped spaces/quotes, and lo
 URLs with percent-encoded paths. A single existing path containing spaces also works. This is
 path parsing, without shell evaluation, variable expansion, globbing or implicit `~` expansion.
 For a file URL, accept an empty authority or `localhost`; other URL authorities are not local
-path imports. File paths must be representable in UTF-8 without lossy replacement.
+path imports. On macOS, resolve file-reference URLs and `/.file/id=…` paths with the
+native URL API before classifying an image or constructing a file link. Accepted file items
+carry image bytes or a real path, never the virtual file-reference ID. Linux and Windows
+keep their native filesystem paths. File paths must be representable in UTF-8 without
+lossy replacement.
 If the entire payload is not a file list, retain it as text rather than extracting guessed paths
 from prose. HTTP image links remain text; the CLI never fetches them as images.
 
@@ -152,6 +171,20 @@ like), within 8 levels, 50,000 entries and 2 seconds. The picker ranks what has 
 and redraws as more arrives; a finished index is reused for 10 seconds. The home directory and
 the filesystem root are never walked: there the picker lists only the directory being typed, one
 directory read of at most 2,000 entries, as it does for an outside prefix.
+
+## Terminal and shell paste entry points
+
+Terminal.app, iTerm2, Ghostty, Warp and VS Code handle their own paste shortcuts. A terminal's
+`Cmd+V` or paste action supplies only the text or paths that host forwards; use the `Ctrl+V`
+entry above for native clipboard images and files when the host forwards that key. The CLI
+cannot observe a shortcut consumed without sending input. PowerShell and CMD are shells;
+their terminal host determines which keys and paste events reach the CLI. Linux clipboard
+backends and native platform validation are specified below.
+
+Relative pasted paths follow the local `--cwd` contract above, independent of the shell.
+Quoting a path does not run PowerShell, CMD or a Unix shell. Native execution is required
+for platform acceptance; shared parser and emulated terminal tests alone do not establish
+behavior in every terminal.
 
 ## Clipboard and local image validation
 

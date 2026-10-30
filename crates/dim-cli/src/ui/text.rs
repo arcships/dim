@@ -10,6 +10,41 @@ pub fn gutter_width(width: usize) -> usize {
     if width < 40 { 1 } else { 2 }
 }
 
+/// The bar in front of a user message.
+pub const USER_MARK: &str = "\u{2503}";
+/// The mark in front of an assistant thought summary.
+pub const ASSISTANT_MARK: &str = "\u{25c6}";
+/// The bar in front of a thought shown whole.
+pub const THINKING_BAR: &str = "\u{258e}";
+/// The mark in front of an error row.
+pub const ERROR_MARK: &str = "\u{25a0}";
+/// The mark in front of a status or skipped row.
+pub const STATUS_MARK: &str = "\u{25e6}";
+/// The mark in front of a shell or command row.
+pub const SHELL_MARK: &str = "$";
+/// The mark in front of a running tool or compaction row.
+pub const RUNNING_MARK: &str = "\u{00b7}";
+/// The mark in front of a completed row.
+pub const DONE_MARK: &str = "\u{2713}";
+/// The mark in front of a failed row.
+pub const FAILED_MARK: &str = "\u{2717}";
+/// The mark in front of a load-earlier row.
+pub const LOAD_MORE_MARK: &str = "\u{2191}";
+/// The mark in front of a branch line.
+pub const LINE_MARK: &str = "\u{2442}";
+
+/// The gutter glyphs that count as chrome after a row's margin column. The
+/// others (`$`, `·`, `✓`, `✗`, `↑`, `⑂`) can start assistant prose, which has
+/// no gutter. Fullscreen copy retains these ambiguous marks on margin-prefixed
+/// rows, including shell and status rows, until rows report their own chrome.
+pub const MARGIN_MARKS: &[&str] = &[
+    USER_MARK,
+    ASSISTANT_MARK,
+    THINKING_BAR,
+    ERROR_MARK,
+    STATUS_MARK,
+];
+
 pub fn display_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }

@@ -23,6 +23,20 @@ export type Status = 'active' | 'paused' | 'completed' | 'blocked'
 export type Judge = 'model' | 'evaluator'
 export type PauseReason = 'user' | 'interrupted' | 'limit' | 'turn_failed' | 'evaluation_failed'
 
+/**
+ * Goal's policy texts (A.5.1), from the row's factory configuration: the row
+ * carries them, so the code keeps no copy of either sentence.
+ */
+export type Texts = { objective: string; continuation: string }
+
+/**
+ * A text's `{branch}` placeholder replaced with the branch it is written for;
+ * the factory value writes the branch that way.
+ */
+export function branchText(template: string, branch: string): string {
+  return template.replaceAll('{branch}', branch)
+}
+
 const REASONS: Record<Exclude<PauseReason, 'user'>, string> = {
   interrupted: 'the user interrupted the turn',
   limit: 'the automatic continuation limit was reached',
@@ -92,10 +106,10 @@ function cleared(branch: string, attrs: Record<string, string>, text: string): I
 
 /** The change inputs (A.5); each is one `input/message`. */
 export const changes = {
-  set: (branch: string, objective: string, judge: Judge = 'model') => input([
+  set: (branch: string, objective: string, texts: Texts, judge: Judge = 'model') => input([
     block({ kind: 'goal', op: 'set', ...(judge === 'evaluator' ? { judge } : {}), branch }, [
       'Objective:', escape(objective), '',
-      `This is the user's standing goal for branch ${branch}. If you are working on a delegated sub-task started from branch ${branch}, treat this goal as background and do not call goal_update.`,
+      branchText(texts.objective, branch),
     ], OBJECTIVE_KEY),
     activeStatus(branch),
   ], 'queue'),
@@ -126,9 +140,9 @@ export const changes = {
 
 /** Goal's own writes, each marked with the sequence that decided it. */
 export const writes = {
-  continuation: (branch: string, count: number, limit: number, after: bigint) => input([
+  continuation: (branch: string, count: number, limit: number, after: bigint, texts: Texts) => input([
     block({ kind: 'continuation', count, limit, after: String(after), branch }, [
-      `Continue working toward the active goal for branch ${branch}. If it is completed or blocked, call goal_update. If you are working on a delegated sub-task started from branch ${branch}, do not call goal_update.`,
+      branchText(texts.continuation, branch),
     ]),
   ], 'queue'),
   pause: (branch: string, reason: Exclude<PauseReason, 'user'>, after: bigint) => input([

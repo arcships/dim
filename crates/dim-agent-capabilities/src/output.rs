@@ -676,7 +676,24 @@ async fn parse_output(
                     return Err(HostError::failed("Provider message_stop identity mismatch"));
                 }
                 if reason == ModelStopReason::MaxTokens {
-                    return Err(HostError::failed("Provider output exceeded max_tokens"));
+                    let request = &output.scope.request;
+                    let message = format!(
+                        "Model {}/{} stopped at max_tokens",
+                        request.provider_id, request.model_id
+                    );
+                    return Err(HostError::Failed {
+                        message: message.clone(),
+                        budget: None,
+                        kind: HostErrorKind::Other,
+                        model: None,
+                        presentation: Some(Box::new(ProviderPresentation {
+                            source: request.provider_id.clone(),
+                            reason: "max_tokens".into(),
+                            server_message: Some(message),
+                            request_id: None,
+                            action: Some("Increase the output token limit and retry.".into()),
+                        })),
+                    });
                 }
                 if !partial.is_empty() {
                     return Err(HostError::failed("Provider left incomplete tool arguments"));

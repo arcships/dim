@@ -38,7 +38,7 @@ Prompt 是 Timeline 级 rutis Plugin，依赖通过 `Deps` 声明。来源 I/O �
 
 `ConfigureUpdate.model` 只更新模型身份、参数与 metadata，保留已采用的工具与来源版本。产品的初始 `InitialPromptConfiguration` 只有 [PromptRegistry](plugins/PromptSources.md#promptregistry) 一个提供者，它从 `SessionConfig.model` 读取完整 `ModelSelection`，在分支打开时与当时注册的全部来源（按名称排序）合成同一更新，由 Prompt 在根分支 `branch/start` 时采用；组合根不重复提供该键。开发 profile 可以没有初始采用配置，继续使用 `PrepareModelHost`。
 
-配置的工具部分只由 [ToolBinding](plugins/ToolExecution.md#toolbinding) 经 `Prompt::adopt_tools` 写入，Prompt 不注入 ToolRegistry（否则 `ToolHost` 的重载会连带 Prompt）。首次采用模型时配置没有工具部分：Loop 经 `ToolBinding::bind_current` 声明当前挂载的宿主工具与注册工具；有动态来源时 ToolBinding 采用完整工具部分。模型更新与工具采用在 Prompt 的串行队列中分别只替换各自部分，互不覆盖；只更新其中一部分时 `system` 沿用已采用的值。
+配置的工具部分只由 [ToolBinding](plugins/ToolExecution.md#toolbinding) 经 `Prompt::adopt_tools` 写入，Prompt 不注入 ToolRegistry（否则 `ToolHost` 的重载会连带 Prompt）。首次采用模型时配置没有工具部分：Loop 经 `ToolBinding::bind_current` 声明当前挂载的宿主工具与注册工具；有动态来源时 ToolBinding 采用完整工具部分。模型更新与工具采用在 Prompt 的串行队列中分别只替换各自部分，互不覆盖；只更新其中一部分时，发布器在配置记录的来源文字上按当时生效的条目重新渲染 `system`，来源文字保持已采用的版本，来源尚未记录的旧配置则沿用已采用的 `system`。
 
 来源作用域的可见性取决于当前分支与固定祖先历史，撤销不抹除祖先身份，子分支可以重新加载已撤销的继承来源。工具结果不携带提示词条目：Skill 正文只是工具结果，不登记规则；上下文注入一律经输入写入历史。
 
@@ -46,7 +46,7 @@ Prompt 是 Timeline 级 rutis Plugin，依赖通过 `Deps` 声明。来源 I/O �
 
 请求从固定历史位置选取已发布配置与提示词版本，不混合宿主实时设置。`context/prepare` 与 `model/call` 保留来源关联，不另外建立逐请求提示词渲染事件链。预算恢复复用原来源和准备结果，后来到达的规则只能影响后续请求。
 
-未发布配置的既有宿主保留 `PrepareModelHost` 路径；一旦采用完整配置，Loop 直接读取固定前缀中的配置，不再调用该路径选择模型。两条路径都带有输入指南的同一份组合：采用的 System 只在渲染 System 的采用（第一次配置或来源变化）时组合并冻结进 `context/configured`，只更新模型或工具的采用保留已采用的 System 与其中的指南（[Prompt 设计 §6.3](../../design/plugins/Prompt.md#63-contextpreparation-the-entries-and-the-published-system)）；宿主准备的请求在构建时按当时生效的条目组合。`Session::input` 接收结构化 `user` 与 raw `blocks`；RPC 只接收操作者内容，不接收块。没有指定模式且没有 `user` 的输入按 Append 等待合法输入边界；只有块的输入不唤醒空闲分支。
+未发布配置的既有宿主保留 `PrepareModelHost` 路径；一旦采用完整配置，Loop 直接读取固定前缀中的配置，不再调用该路径选择模型。两条路径都带有输入指南的同一份组合：采用的 System 由发布器在每次发布配置的采用处组合进 `context/configured`——渲染 System 的采用组合新的来源文字，只更新模型或工具的采用在已记录的来源文字上重新渲染指南，来源尚未记录的旧配置保留已采用的 System（[Prompt 设计 §6.3](../../design/plugins/Prompt.md#63-contextpreparation-the-entries-and-the-published-system)）；宿主准备的请求在构建时按当时生效的条目组合。`Session::input` 接收结构化 `user` 与 raw `blocks`；RPC 只接收操作者内容，不接收块。没有指定模式且没有 `user` 的输入按 Append 等待合法输入边界；只有块的输入不唤醒空闲分支。
 
 system 只保存静态内容。Context 与 State 投递的提示词变化由 Prompt 写成 Append 输入（`<dim-rule>`、`<dim-state>`，每项一条，与 `prompt/changed` 同一批次，按 `order` 排列；作用域结束时写 expired），在 Loop 消费的位置进入上下文，不改写已交付历史。分支创建或恢复时，Prompt 在 `branch/start`、`branch/resume` 分发时加载全部来源并写入变化；新 Session 的根分支同时采用 system 与模型，子分支与恢复的分支不改 system。来源由各能力在自己的 `apply` 中注册到 PromptRegistry，注册在该能力卸载时撤回。
 

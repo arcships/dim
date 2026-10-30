@@ -17,8 +17,8 @@ use aimux_core::{
 };
 use dim_agent_capabilities::host::HostError;
 use dim_agent_types::{
-    ContentBlock, ContentMetadata, ImageSourceType, MessageContent, MessagePart, ModelRequest,
-    Role, SystemPrompt, SystemPromptPart, ToolContent,
+    ContentBlock, ContentMetadata, ImageSource, ImageSourceType, MessageContent, MessagePart,
+    ModelRequest, Role, SystemPrompt, SystemPromptPart, ToolContent,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -27,6 +27,11 @@ pub(crate) struct PreparedRequest {
     pub options: CallOptions,
     pub tool_names: ToolNames,
 }
+
+/// The tool result's text where an image moved to the following user message.
+const TOOL_IMAGE_MARKER: &str = "[Image: sent in the following user message as tool output.]";
+/// Names the tool call an image came from, before that image.
+const TOOL_IMAGE_LABEL: &str = "Tool output from tool call";
 
 pub(crate) fn convert(
     request: &ModelRequest,
@@ -93,7 +98,13 @@ pub(crate) fn convert(
         .transpose()?;
 
     let mut calls = HashMap::new();
+    // Images a tool message cannot carry, in tool-call order; they become one
+    // user message once the step's tool messages end.
+    let mut following = Vec::new();
     for (index, source) in request.messages.iter().enumerate() {
+        if source.role != Role::ToolResult && !following.is_empty() {
+            prompt.push(message(AimuxRole::User, std::mem::take(&mut following)));
+        }
         let path = format!("messages[{index}].content");
         let content = match &source.content {
             MessageContent::Text(text) if source.role != Role::ToolResult => {
@@ -113,28 +124,9 @@ pub(crate) fn convert(
                         (Role::Assistant, MessagePart::Thinking { thinking, .. }) => {
                             Ok(ContentPart::reasoning(thinking))
                         }
-                        (Role::User, MessagePart::Image { source }) => match source.source_type {
-                            ImageSourceType::Base64 => {
-                                let data = source.data.as_ref().ok_or_else(|| {
-                                    error(
-                                        request,
-                                        &format!("{path}.source.data"),
-                                        "base64 image has no data",
-                                    )
-                                })?;
-                                Ok(ContentPart::file_base64(data, &source.media_type))
-                            }
-                            ImageSourceType::Url => {
-                                let url = source.url.as_ref().ok_or_else(|| {
-                                    error(
-                                        request,
-                                        &format!("{path}.source.url"),
-                                        "URL image has no URL",
-                                    )
-                                })?;
-                                Ok(ContentPart::file_url(url, &source.media_type))
-                            }
-                        },
+                        (Role::User, MessagePart::Image { source }) => {
+                            image_part(request, &path, source)
+                        }
                         (
                             Role::Assistant,
                             MessagePart::ToolUse {
@@ -167,33 +159,24 @@ pub(crate) fn convert(
                                     "no preceding tool call",
                                 )
                             })?;
-                            let result = match content {
-                                ToolContent::Text(text) => text.clone(),
-                                ToolContent::Blocks(blocks) => {
-                                    let mut result = String::new();
-                                    for block in blocks {
-                                        match block {
-                                            ContentBlock::Text { text } => result.push_str(text),
-                                            ContentBlock::Image { .. } => {
-                                                return Err(error(
-                                                    request,
-                                                    &format!("{path}.content"),
-                                                    "images in tool results are not supported",
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    result
-                                }
-                            };
+                            let result = tool_result(
+                                request,
+                                kind,
+                                &path,
+                                tool_use_id,
+                                content,
+                                *is_error == Some(true),
+                                &mut following,
+                            )?;
                             Ok(ContentPart::ToolResult {
                                 tool_call_id: tool_use_id.clone(),
                                 result: if *kind == ProviderKind::Anthropic
                                     && *is_error == Some(true)
+                                    && !matches!(result, Value::Object(_))
                                 {
                                     json!({"type":"error", "value":result})
                                 } else {
-                                    Value::String(result)
+                                    result
                                 },
                                 tool_name: Some(name.clone()),
                                 is_error: *is_error,
@@ -209,8 +192,9 @@ pub(crate) fn convert(
                         )),
                     };
                     let mut mapped = mapped?;
-                    continuation(request, kind, &path, part, &mut mapped)?;
-                    content.push(mapped);
+                    if continuation(request, kind, &path, part, &mut mapped)? {
+                        content.push(mapped);
+                    }
                 }
                 content
             }
@@ -221,6 +205,9 @@ pub(crate) fn convert(
             Role::ToolResult => AimuxRole::Tool,
         };
         prompt.push(message(role, content));
+    }
+    if !following.is_empty() {
+        prompt.push(message(AimuxRole::User, following));
     }
 
     let mut options = CallOptions {
@@ -299,6 +286,138 @@ fn message(role: AimuxRole, content: Vec<ContentPart>) -> LanguageModelPromptMes
     }
 }
 
+/// An image block as the protocols' user messages carry it.
+fn image_part(
+    request: &ModelRequest,
+    path: &str,
+    source: &ImageSource,
+) -> Result<ContentPart, HostError> {
+    match source.source_type {
+        ImageSourceType::Base64 => {
+            let data = source.data.as_ref().ok_or_else(|| {
+                error(
+                    request,
+                    &format!("{path}.source.data"),
+                    "base64 image has no data",
+                )
+            })?;
+            Ok(ContentPart::file_base64(data, &source.media_type))
+        }
+        ImageSourceType::Url => {
+            let url = source.url.as_ref().ok_or_else(|| {
+                error(
+                    request,
+                    &format!("{path}.source.url"),
+                    "URL image has no URL",
+                )
+            })?;
+            Ok(ContentPart::file_url(url, &source.media_type))
+        }
+    }
+}
+
+/// A tool result's `output` value. Protocols whose tool message carries an
+/// image keep it inside the result; the others mark its place in the text and
+/// put the image in `following` (one user message after the step's tools).
+fn tool_result(
+    request: &ModelRequest,
+    kind: &ProviderKind,
+    path: &str,
+    tool_use_id: &str,
+    content: &ToolContent,
+    is_error: bool,
+    following: &mut Vec<ContentPart>,
+) -> Result<Value, HostError> {
+    let blocks = match content {
+        ToolContent::Text(text) => return Ok(Value::String(text.clone())),
+        ToolContent::Blocks(blocks) => blocks,
+    };
+    // A result without images keeps its existing text-only form.
+    if !blocks
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Image { .. }))
+    {
+        let mut text = String::new();
+        for block in blocks {
+            if let ContentBlock::Text { text: block } = block {
+                text.push_str(block);
+            }
+        }
+        return Ok(Value::String(text));
+    }
+    let inside = matches!(kind, ProviderKind::Anthropic | ProviderKind::Bedrock);
+    let mut result = Vec::with_capacity(blocks.len());
+    let mut text = String::new();
+    for block in blocks {
+        let marker = match block {
+            ContentBlock::Text { text: block } => {
+                if inside {
+                    result.push(json!({"type":"text","text":block}));
+                } else {
+                    text.push_str(block);
+                }
+                continue;
+            }
+            ContentBlock::Image { source } => match (inside, base64_data(source)) {
+                (true, Some(data)) => {
+                    result.push(inside_image(kind, source, data));
+                    continue;
+                }
+                _ => {
+                    following.push(ContentPart::text(format!(
+                        "{TOOL_IMAGE_LABEL} {tool_use_id}: the image after this text is that call's result."
+                    )));
+                    following.push(image_part(request, path, source)?);
+                    TOOL_IMAGE_MARKER
+                }
+            },
+        };
+        if inside {
+            result.push(json!({"type":"text","text":marker}));
+        } else {
+            text.push_str(marker);
+        }
+    }
+    if inside {
+        // The Anthropic converter takes the error flag from the output's type
+        // (`resolve_tool_result_output`); Bedrock reads the part's flag, so it
+        // keeps `content`.
+        let output = match kind {
+            ProviderKind::Anthropic if is_error => "error",
+            _ => "content",
+        };
+        Ok(json!({"type": output, "value": result}))
+    } else {
+        Ok(Value::String(text))
+    }
+}
+
+fn base64_data(source: &ImageSource) -> Option<&str> {
+    if source.source_type != ImageSourceType::Base64 {
+        return None;
+    }
+    source.data.as_deref()
+}
+
+/// An image inside a tool result, in the form that protocol's converter reads.
+fn inside_image(kind: &ProviderKind, source: &ImageSource, data: &str) -> Value {
+    match kind {
+        ProviderKind::Anthropic => json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": source.media_type,
+                "data": data,
+            },
+        }),
+        _ => json!({
+            "type": "file",
+            "mediaType": source.media_type,
+            "data": {"type": "data", "data": data},
+        }),
+    }
+}
+
 fn error(request: &ModelRequest, path: &str, reason: &str) -> HostError {
     HostError::failed(format!(
         "{}/{}: {path}: {reason}",
@@ -306,13 +425,19 @@ fn error(request: &ModelRequest, path: &str, reason: &str) -> HostError {
     ))
 }
 
+/// Attaches the native continuation fields a stored part carries, and says
+/// whether the part belongs in the request. A thinking part without
+/// continuation data for this protocol stays in the Timeline and in display,
+/// but is not sent back: the endpoint cannot continue it, and an empty or
+/// invented signature is rejected by a strict Anthropic implementation.
 fn continuation(
     request: &ModelRequest,
     kind: &ProviderKind,
     path: &str,
     part: &MessagePart,
     native: &mut ContentPart,
-) -> Result<(), HostError> {
+) -> Result<bool, HostError> {
+    let thinking = matches!(part, MessagePart::Thinking { .. });
     let metadata = match part {
         MessagePart::Text {
             provider_metadata, ..
@@ -326,45 +451,48 @@ fn continuation(
         _ => None,
     };
     let Some(metadata) = metadata else {
-        if matches!(part, MessagePart::Thinking { .. })
+        if thinking
             && matches!(
                 kind,
                 ProviderKind::Anthropic
-                    | ProviderKind::Bedrock
                     | ProviderKind::OpenaiResponses
                     | ProviderKind::XaiResponses
             )
         {
+            warn_dropped(kind);
+            return Ok(false);
+        }
+        if thinking && *kind == ProviderKind::Bedrock {
             return Err(error(
                 request,
                 path,
                 "thinking requires native continuation metadata",
             ));
         }
-        return Ok(());
+        return Ok(true);
     };
     let options = match (kind, metadata) {
-        (ProviderKind::Bedrock, ContentMetadata::Bedrock { signature })
-            if matches!(part, MessagePart::Thinking { .. }) =>
-        {
+        (ProviderKind::Bedrock, ContentMetadata::Bedrock { signature }) if thinking => {
             match signature {
                 Some(signature) => json!({"bedrock":{"signature":signature}}),
                 None => json!({"bedrock":{}}),
             }
         }
-        (ProviderKind::Bedrock, ContentMetadata::BedrockRedacted { data })
-            if matches!(part, MessagePart::Thinking { .. }) =>
-        {
+        (ProviderKind::Bedrock, ContentMetadata::BedrockRedacted { data }) if thinking => {
             json!({"bedrock":{"redactedData":data}})
         }
-        (ProviderKind::Anthropic, ContentMetadata::Anthropic { signature })
-            if matches!(part, MessagePart::Thinking { .. }) =>
-        {
+        (ProviderKind::Anthropic, ContentMetadata::Anthropic { signature }) if thinking => {
+            if signature.is_empty() {
+                warn_dropped(kind);
+                return Ok(false);
+            }
             json!({"anthropic":{"signature":signature}})
         }
-        (ProviderKind::Anthropic, ContentMetadata::AnthropicRedacted { data })
-            if matches!(part, MessagePart::Thinking { .. }) =>
-        {
+        (ProviderKind::Anthropic, ContentMetadata::AnthropicRedacted { data }) if thinking => {
+            if data.is_empty() {
+                warn_dropped(kind);
+                return Ok(false);
+            }
             json!({"anthropic":{"redactedData":data}})
         }
         (ProviderKind::Gemini, ContentMetadata::Gemini { thought_signature }) => {
@@ -377,14 +505,9 @@ fn continuation(
                 encrypted_content,
             },
         ) => {
-            if matches!(part, MessagePart::Thinking { .. })
-                && encrypted_content.as_ref().is_none_or(String::is_empty)
-            {
-                return Err(error(
-                    request,
-                    path,
-                    "thinking requires encrypted continuation metadata",
-                ));
+            if thinking && encrypted_content.as_ref().is_none_or(String::is_empty) {
+                warn_dropped(kind);
+                return Ok(false);
             }
             let mut options = serde_json::Map::from_iter([("itemId".into(), json!(item_id))]);
             if let Some(encrypted) = encrypted_content {
@@ -401,14 +524,9 @@ fn continuation(
                 phase,
             },
         ) => {
-            if matches!(part, MessagePart::Thinking { .. })
-                && encrypted_content.as_ref().is_none_or(String::is_empty)
-            {
-                return Err(error(
-                    request,
-                    path,
-                    "thinking requires encrypted continuation metadata",
-                ));
+            if thinking && encrypted_content.as_ref().is_none_or(String::is_empty) {
+                warn_dropped(kind);
+                return Ok(false);
             }
             let mut options = serde_json::Map::from_iter([("itemId".into(), json!(item_id))]);
             if let Some(encrypted) = encrypted_content {
@@ -442,5 +560,21 @@ fn continuation(
         } => *provider_options = Some(options),
         _ => unreachable!(),
     }
-    Ok(())
+    Ok(true)
+}
+
+fn warn_dropped(kind: &ProviderKind) {
+    tracing::warn!(
+        protocol = match kind {
+            ProviderKind::Anthropic => "anthropic",
+            ProviderKind::OpenaiResponses => "openai-responses",
+            ProviderKind::XaiResponses => "xai-responses",
+            ProviderKind::OpenaiChat => "openai-chat",
+            ProviderKind::OpenaiCompatible => "openai-compatible",
+            ProviderKind::Xai => "xai",
+            ProviderKind::Gemini => "gemini",
+            ProviderKind::Bedrock => "bedrock",
+        },
+        "thinking without continuation data was left out of the request"
+    );
 }

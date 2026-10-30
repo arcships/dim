@@ -94,7 +94,11 @@ impl TimelinePanel {
                 let row = &snapshot.rows[index];
                 Item::new(
                     row.row_id.clone(),
-                    format!("#{}  {}", number + 1, preview(&row.text)),
+                    format!(
+                        "#{}  {}",
+                        number + 1,
+                        preview(row.display.as_deref().unwrap_or(&row.text))
+                    ),
                     reply.map(preview).unwrap_or_default(),
                 )
             })
@@ -146,6 +150,7 @@ mod tests {
             row_id: id.into(),
             kind,
             text: text.into(),
+            display: None,
             streaming: false,
             elapsed_ms: None,
             tone: None,

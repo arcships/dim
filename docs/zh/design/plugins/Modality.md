@@ -257,7 +257,7 @@ Provider 补充（非对话连接）、Settings 业务来源和 `pluginFiles` �
 | `realtime` | `realtime` | `connect` | — | 连接 | Provider | `modality.realtime` |
 | `ocr` | `ocr` | `recognize` | 图像或 PDF | `data: { pages: [{ index, text }] }` 加 `text.txt` | 宿主运行时组件 | 无；每节点组件路径在 `modality` 设置文档中 |
 
-图像理解不属于 Modality（视觉模型通过 `read`）。按操作的 key 先于按类别的 key 解析（A3）。输入之外的操作参数由各适配器声明，并在提交时校验（A4）。
+图像理解不属于 Modality（视觉模型通过 `read` 读取，见 [WorkspaceTools §read results and images](../../../architecture/rust-agent/plugins/WorkspaceTools.md#read-results-and-images)）。按操作的 key 先于按类别的 key 解析（A3）。输入之外的操作参数由各适配器声明，并在提交时校验（A4）。
 
 ### A.2 适配器与 OCR 节点
 

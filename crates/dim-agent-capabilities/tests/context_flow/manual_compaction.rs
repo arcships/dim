@@ -1,6 +1,6 @@
 //! The Loop's compaction step and the record contract (ContextCompaction
 //! §5.3–§5.8, acceptance 3–6 and 8 at the capability level).
-use super::context_reads::TASK_READS;
+use super::context_reads::{CountContextReads, TASK_READS};
 use super::*;
 use dim_agent_capabilities::{
     agent_loop::AgentLoop,
@@ -450,6 +450,96 @@ async fn a_manual_compaction_with_no_turn_writes_only_its_facts() {
     agent.close().await.unwrap();
 }
 
+/// Counts renders across the one test that installs it.
+static RENDERS: AtomicUsize = AtomicUsize::new(0);
+
+fn counting_render(context: &ContextHistory) -> std::result::Result<Vec<HistoryEntry>, String> {
+    RENDERS.fetch_add(1, Ordering::SeqCst);
+    project_context_history(context)
+}
+
+/// A checkpointed context read plus its caller's use renders once: the render
+/// that validates the checkpoint is the render the step keeps.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_checkpointed_step_renders_its_context_once() {
+    let store = Arc::new(CountContextReads::default());
+    let mut builder = builder_with_strategy(
+        Arc::new(EchoModel),
+        HistoryRenderer {
+            render: counting_render,
+            ..HistoryRenderer::default()
+        },
+        Scripted::new(Mode::Cut),
+        None,
+    );
+    builder.timeline_store(store.clone());
+    let agent = builder.build();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    turns(&session, &[first().as_str(), "second", "third"]).await;
+    let command = session
+        .service::<AgentLoop>("main")
+        .unwrap()
+        .compact()
+        .unwrap();
+    let events = until(&session, |events| result_for(events, command).is_some()).await;
+    assert!(matches!(
+        result_for(&events, command).unwrap().outcome,
+        ContextCompactionResult::Completed { .. }
+    ));
+    let through = session.sequence("main").unwrap();
+    let key = TimelineKey {
+        session_id: session.id().into(),
+        branch_id: "main".into(),
+    };
+    let default = HistoryRenderer::default();
+    // The step saves the snapshot after it publishes the fact, so wait for the
+    // save instead of reading the snapshot before it exists.
+    let snapshot = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let snapshot = store
+                .latest_snapshot(&key, through, default.checkpoint_interpreter)
+                .await
+                .unwrap();
+            if let Some(snapshot) = snapshot {
+                break snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the compaction step saves its snapshot");
+    let events = session.history("main", None).await.unwrap();
+    let anchor = events
+        .iter()
+        .find(|event| event.id == snapshot.event_id)
+        .unwrap();
+    let checkpoint = (default.decode_checkpoint)(&snapshot, anchor).unwrap();
+    store.ranges.lock().unwrap().clear();
+    RENDERS.store(0, Ordering::SeqCst);
+    let command = session
+        .service::<AgentLoop>("main")
+        .unwrap()
+        .compact()
+        .unwrap();
+    let events = until(&session, |events| result_for(events, command).is_some()).await;
+    assert!(result_for(&events, command).is_some());
+    assert!(
+        store.ranges.lock().unwrap().iter().any(|(branch, range)| {
+            branch == "main" && *range.start() == checkpoint.resume.sequence
+        }),
+        "the step must read from the checkpoint's resume"
+    );
+    assert_eq!(
+        RENDERS.load(Ordering::SeqCst),
+        1,
+        "a checkpointed read and its use render once"
+    );
+    agent.close().await.unwrap();
+}
+
 /// Answers every request with a short text.
 struct ShortReply;
 impl ModelDriver for ShortReply {
@@ -881,9 +971,11 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
         matches!(&pages[..], [(branch, 0, events)] if *branch == child && (*events as u64) < child_head),
         "{pages:?}, {child_head}"
     );
+    // A checkpointed read checks its anchor with a read of that one row.
     assert!(
         of(&child).iter().all(|range| *range.start() == 1
             || *range.start() > child_head
+            || *range.start() == *range.end()
             || *range.end() == child_head),
         "{reads:?}"
     );
@@ -891,6 +983,7 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
         of("main").iter().all(|range| *range.start() == 1
             || *range.start() > main_head
             || *range == (2..=main_head)
+            || *range.start() == *range.end()
             || *range.end() == cut),
         "{reads:?}"
     );

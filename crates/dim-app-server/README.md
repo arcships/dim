@@ -82,7 +82,9 @@ Local protocol-v3 clients read `provider.management {providerId?}` for one safe
 editing snapshot containing the record version, connection fields, full model
 descriptors, available actions and saved preferences. Credentials, secret
 references, header values and proxy authentication are never returned.
-`provider.list`, `provider.catalog` and `provider.selection` retain their read shapes.
+`provider.list`, `provider.catalog` and `provider.selection` retain their read shapes;
+`provider.list` additionally reports `remoteModelList` per provider, whether
+`provider.refresh` can list that provider's models.
 
 `provider.create` takes a fresh canonical UUID; `provider.update` applies only the
 supplied fields with record CAS. `provider.probe` tests a complete new connection
@@ -252,15 +254,18 @@ and paired devices cannot read or write them. See
 
 The configured digest is SHA-256 of the same original bytes parsed and validated for that server launch. It excludes neither whitespace nor environment-variable reference names, and never prints file contents or resolved environment values. A client must refuse another profile or configuration rather than reuse, delete or terminate its daemon.
 
-`--home` and `--database` are mutually exclusive. The SQLite store uses native format v21. It holds user settings in the unchanged v13 settings data contract, normalized managed-provider records, Timeline facts with optional recovery snapshots kept separate, Session file rows (v15), Session title metadata (v16), request messages stored as content-addressed node lists (v17), extension event rows (v18), Session configurations and Agent profiles that may omit their mount list (v19), the branch end events (v20) and the tool-effect and digest fields, which need no schema change either (v21).
+`--home` and `--database` are mutually exclusive. The SQLite store uses native format v25. It holds user settings in the unchanged v13 settings data contract, normalized managed-provider records, Timeline facts with optional recovery snapshots kept separate, Session file rows (v15), Session title metadata (v16), request messages stored as content-addressed node lists (v17), extension event rows (v18), Session configurations and Agent profiles that may omit their mount list (v19), the branch end events (v20) and the tool-effect and digest fields, which need no schema change either (v21), tool schemas that may omit `type` (v22), the Session catalog projection (v23) and a configuration's System source, which needs no schema change either (v24). Format v25 removes the unused timeline end-sequence index.
 
-Startup opens a store with the exact v21 schema and a single marker of 21. A store with the exact v20, v19, v18, v17, v16, v15 or v13 schema and its own single marker is upgraded in place to v21 inside the startup admission transaction, before any writable PRAGMA. The transaction replaces the marker table once, then applies each step from that version on:
+Startup opens a store with the exact v25 schema and a single marker of 25. A store with the exact v24, v23, v22, v21, v20, v19, v18, v17, v16, v15 or v13 schema and its own single marker is upgraded in place to v25 inside the startup admission transaction, before any writable PRAGMA. The transaction replaces the marker table once, then applies each step from that version on:
 
 - v13 → v15 adds `session_files`, `session_file_owners` and the `session_file_owners_by_file` index.
 - v15 → v16 adds `session_metadata`.
-- v16 → v17, v17 → v18, v18 → v19, v19 → v20 and v20 → v21 change only the marker.
+- v16 → v17, v17 → v18, v18 → v19, v19 → v20, v20 → v21 and v21 → v22 change only the marker.
+- v22 → v23 adds the Session catalog table and indexes and backfills it once from committed main history.
+- v23 → v24 changes only the marker.
+- v24 → v25 removes `timeline_events_by_end` and replaces the marker; facts and other indexes are unchanged.
 
-No business row is read or rewritten. v13 settings bytes and v16 request rows stay readable as written, and a failure rolls back to the untouched store. The upgrade is one-way: the daemon writes `Upgraded native store <path> from format v<N> to v21; earlier dimcode versions cannot open it.` to stderr once, and earlier daemons refuse the upgraded store. Any other database is rejected and preserved: an older format such as v12, the removed branch-only v14, a mismatched marker, a partly upgraded schema or an unknown one. There is no migration command or startup option. [Native storage format](../../docs/design/appserver/native-storage-format.md) defines the SQL and JSON contract.
+Existing facts, v13 settings bytes and v16 request rows are preserved, and a failure rolls back to the untouched store. The upgrade is one-way: the daemon writes `Upgraded native store <path> from format v<N> to v25; earlier dimcode versions cannot open it.` to stderr once, and earlier daemons refuse the upgraded store. Any other database is rejected and preserved: an older format such as v12, the removed branch-only v14, a mismatched marker, a partly upgraded schema or an unknown one. There is no migration command or startup option. [Native storage format](../../docs/design/appserver/native-storage-format.md) defines the SQL and JSON contract.
 
 ### Timeline export
 
@@ -381,13 +386,14 @@ with byte preservation and unchanged transaction/backup/lifecycle behavior.
 
 ## Managed provider contract
 
-`ManagedProvider` ([`src/managed_provider.rs`](src/managed_provider.rs)) is the typed service a managed provider plugin publishes. `ManagedProviderBinding` hands it to the process-owned `ManagedProviders`, which the account RPC and the provider service use. Without a binding the process lists no managed providers. The contract is Rust-only.
+`ManagedProvider` ([`src/managed_provider.rs`](src/managed_provider.rs)) is the typed service a managed provider plugin publishes. `ManagedProviderBinding` hands it to the process-owned `ManagedProviders`, which the account RPC, the provider service and `webSearch` (exported via `#[rutis::service]` for the `Web` plugin) use. `ManagedProviders` is assembled on every server; `ManagedProviderMethods`, also a process row, registers the `account` namespace with `managementMethods` and is assembled with a product home. Without a binding the process lists no managed providers and `webSearch` fails with `unavailable`.
 
 | Method | Input | Value |
 | --- | --- | --- |
 | `providers` | — | `ProviderDescriptor[]` (`providerId`, `displayName`, `loginMethods`) |
 | `status`, `recover`, `logout` | provider ID | `AccountSnapshot` |
 | `usage` | provider ID | `Usage` |
+| `web_search` | `{query,count}` | `{results: Array<{title,url,snippet,publishedAt?}>}` |
 | `begin_browser` | `{providerId,directory,email?,redirectUri}` | `{attemptId,authorizationUrl,expiresAt}` |
 | `begin_device` | `{providerId,directory,email?}` | `{attemptId,verificationUri,verificationUriComplete?,userCode,expiresAt}` |
 | `complete_browser` | `{providerId,attemptId,callbackUrl}` | `AccountSnapshot` |

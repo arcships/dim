@@ -34,7 +34,7 @@ Agent::restore_session(id)
       对存储头部为 h 的分支 b：
         store.read(b, 1..=h)               TimelineTree 自己的扫描                 ........ 读取 B
         仅子分支：read_context(父分支的 Timeline, cut)  校验截点              ........ 读取 C
-        TimelineFactory::build_until
+        TimelineFactory::build
           store.head(b)
           BranchScope：Timeline(b, 祖先链, h)；Dispatcher 尚未运行               ─┐
           能力按依赖分波 apply；各自从一次读取重建                                │ b 的打开期间
@@ -128,7 +128,7 @@ v17
 
 Timeline 只持有打开期间的弱引用，所以打开期间随阶段变化结束，不需要自己的调用点；生命周期随作用域一起丢弃时也会丢弃它。
 
-恢复一个接一个地打开分支，所以恢复期间一个 Session 同时至多有一份副本，最后一份在 Session 发布之前丢弃。运行时新建的分支各自独立打开：并发构建的子分支各持一份自己祖先链的副本（§5）。打开期限（`TimelineFactory::build_until`）约束打开期间，包括打开处理器：期限一到，构建失败并回滚，从而离开 `Loading`。
+恢复一个接一个地打开分支，所以恢复期间一个 Session 同时至多有一份副本，最后一份在 Session 发布之前丢弃。运行时新建的分支各自独立打开：并发构建的子分支各持一份自己祖先链的副本（§5）。装配遵循本次打开范围内的无进展间隔（[How Dim uses rutis](../../../design/rutis-usage.md#appendix-a-rust-binding)）；行首次激活、打开派发序号前进和回执完成会重置间隔。存储读取有 I/O 取消预算，重放没有固定总期限。失败或取消会回滚打开过程并离开 `Loading`。
 
 打开期间是运行时自己的单位；恢复就是一个所有分支都以 `branch/resume` 打开的 Session。同一个打开期间也服务运行时新建的分支（TimelineTree 的 `branch`、`create_main`）和预先准备的 Session（fork）：新的子分支自己没有事件，但打开时会把祖先链重读好几次（§7）。运行时不需要知道它构建的是哪一种。
 
@@ -160,7 +160,7 @@ Timeline 的每次已提交历史读取都经过同一条内部路径，它把�
   其他组合，祖先链未填充 ............................ store.read / read_segments    同现在
 ```
 
-- **每次存储读取。** 本分支接缝服务对本分支已存储事件的每次读取：`local`、`history` 和 `context` 的本分支段，以及锚点在本分支上时 `context_with_checkpoint` 的锚点读取（`records(branch, snapshot.sequence, cut)`）。祖先接缝服务对祖先的每次读取：`history` 和 `context` 的祖先段、`history_records` 的单段捷径（只有一段时经按分支的读取而不是 `read_segments` 读取；新子分支的 `history(Some(0))` 就是这样的读取），以及锚点在祖先上时的锚点读取。Timeline 中没有其他读取已存储事件的路径。
+- **每次存储读取。** 本分支接缝服务对本分支已存储事件的每次读取：`local`、`history` 和 `context` 的本分支段，以及锚点在本分支上时 `context_with_checkpoint` 的锚点读取（`records(branch, snapshot.sequence, snapshot.sequence)`，锚点行位于原子批次内部时改为读取该段）。祖先接缝服务对祖先的每次读取：`history` 和 `context` 的祖先段、`history_records` 的单段捷径（只有一段时经按分支的读取而不是 `read_segments` 读取；新子分支的 `history(Some(0))` 就是这样的读取），以及锚点在祖先上时的锚点读取。Timeline 中没有其他读取已存储事件的路径。
 
 - **按序号切片。** 切片取序号落在区间内的条目（在 `event.sequence` 上二分查找），所以其中的事件就是存储对该区间的返回：每个序号一个事件，合并的输出行已拆成各自的事件。
 - **终点检查。** 提供切片 `a..=e` 之前（本分支部分的 `e` 是 `min(b, h)`，祖先段的 `e` 是该段的终点），先应用存储对区间的规则：起点可以位于原子批次内部，终点必须是批次边界。若 `e` 处条目的 `batch_end > e`，读取以 `AgentError::InvalidInput("sequence {e} is inside an atomic batch")` 失败，即两种存储（`MemoryTimelineStore` 与 SQLite 存储）返回的错误，不提供任何事件。若序号 1 和 2 是一个已持久化的批次且 `h >= 2`，无论副本是否已填充，`local(..=1)`、`history(Some(1))` 和 `context(1)` 都会失败，而 `local(..=2)` 返回事件 1 和 2，`local(2..=2)` 返回事件 2。`h` 是批次边界，所以 `b > h` 时缓存部分总能通过检查，`b` 由现有的 `h` 之后的读取检查。每个祖先切片都用同一个函数执行同样的检查：祖先段终止于它的截点，填充读取已经检查过截点，所以现有读者都不会让它失败，但没有切片会绕过它被提供。
@@ -187,7 +187,7 @@ Timeline 的每次已提交历史读取都经过同一条内部路径，它把�
 
 ## 5. 驻留
 
-现在每个读者从读取到折叠返回一直持有自己解码的历史，同一波的读者在时间上重叠，所以恢复的峰值同时持有好几份解码历史，波次之后还有打开处理器的上下文读取。有了副本，打开期间从第一次填充到分支离开 `Loading`（包括打开处理器，受打开期限约束，§4.1）持有一份解码历史；每个读者折叠时只多一个指针向量（每条事件 8 字节）。
+现在每个读者从读取到折叠返回一直持有自己解码的历史，同一波的读者在时间上重叠，所以恢复的峰值同时持有好几份解码历史，波次之后还有打开处理器的上下文读取。有了副本，打开期间从第一次填充到分支离开 `Loading`（包括打开处理器，受 §4.1 的装配和 I/O 策略约束）持有一份解码历史；每个读者折叠时只多一个指针向量（每条事件 8 字节）。
 
 用 `restore_cost` 中的计数分配器测得（§8）：恢复及其首次 idle 期间，堆峰值高出恢复之前的量，单位 MB。
 
@@ -238,7 +238,7 @@ Timeline 的每次已提交历史读取都经过同一条内部路径，它把�
 | `branch/resume` 时的打开处理器 | 1 次全量（ToolBinding） | 3 次，从 `resume` 起（ToolBinding、Prompt 两次） | 切片，各带一个单事件尾段 |
 | Wait、BackgroundExec、Collaboration（产品装配，未测） | 3 次全量 | 3 次全量 | 切片 |
 
-这里的一次检查点读取是两次存储调用：从快照序号到截点的锚点读取，以及从 `resume` 起的上下文，10,000 条 product 事件时分别是 354 和 212 条事件。
+这里的一次检查点读取是两次存储调用：快照序号那一个锚点事件的读取，以及从 `resume` 起的上下文，10,000 条 product 事件时分别是 1 和 212 条事件。
 
 子分支现在除上述本分支读取外，还要读五次祖先链：TimelineTree 在父分支上的截点校验（读取 C）、Permission、Prompt，以及 ToolBinding 两次。有副本后，它读一次本分支部分、两次祖先链（读取 C 与一次填充）。在 v17 上跟踪一个截于 `main` 第 3,002 条事件的子分支：它自己的事件被读了 11 次，`main` 的前缀被读了 5 次；原型下各两次（本分支：扫描和填充；前缀：读取 C 和填充），外加一个单事件尾段。
 
@@ -420,7 +420,7 @@ TimelineTree::restore，分支 b，存储头部 h
   仅子分支：read_page(b) 从开头读到 branch/start + 排队输入               ... 一页
   仅子分支：读取 C，在父分支上校验截点（不变）
   启动 b，以 Resume 打开于 h
-    build_until：能力 apply；第一个重建读取填充副本                         ─┐
+    build：能力 apply；第一个重建读取填充副本                         ─┐
     TimelineTree：local(..=h)，切片；收集 branch/create-failed               │ b 的打开期间
     追加 branch/resume …… 激活                                              ─┘
   恢复循环：记下 b 的创建失败，再恢复 b 的子分支

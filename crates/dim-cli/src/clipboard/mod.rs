@@ -111,6 +111,76 @@ mod native_flow {
     use objc2_foundation::{NSArray, NSData, NSString};
 
     #[test]
+    fn copied_file_references_submit_images_and_real_file_paths() {
+        use crate::model::session::DraftPart;
+        use crate::ui::composer::{Composer, Outcome};
+        use crate::ui::terminal::{KeyCode, KeyEvent, Modifiers};
+        use objc2_foundation::NSURL;
+        objc2::rc::autoreleasepool(|_| {
+            let dir = tempfile::tempdir().unwrap();
+            let image = dir.path().join("截图 with space.png");
+            let note = dir.path().join("note with space.md");
+            let mut png = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgb8(2, 1)
+                .write_to(&mut png, image::ImageFormat::Png)
+                .unwrap();
+            std::fs::write(&image, png.get_ref()).unwrap();
+            std::fs::write(&note, "local file").unwrap();
+            let paths = [image.canonicalize().unwrap(), note.canonicalize().unwrap()];
+            let board = NSPasteboard::pasteboardWithUniqueName();
+            let items: Vec<_> = paths
+                .iter()
+                .map(|path| {
+                    let file = NSURL::fileURLWithPath(&NSString::from_str(path.to_str().unwrap()));
+                    let reference = file.fileReferenceURL().unwrap();
+                    assert!(reference.isFileReferenceURL());
+                    let reference = reference.absoluteString().unwrap();
+                    let item = NSPasteboardItem::new();
+                    assert!(
+                        item.setString_forType(&reference, &NSString::from_str("public.file-url"))
+                    );
+                    assert_eq!(
+                        crate::attachments::pasted_entries(&reference.to_string(), dir.path()),
+                        Some(vec![path.clone()])
+                    );
+                    let raw = url::Url::parse(&reference.to_string())
+                        .unwrap()
+                        .to_file_path()
+                        .unwrap();
+                    assert_eq!(
+                        crate::attachments::pasted_entries(raw.to_str().unwrap(), dir.path()),
+                        Some(vec![path.clone()])
+                    );
+                    item
+                })
+                .collect();
+            let objects: Vec<_> = items
+                .iter()
+                .map(|item| ProtocolObject::from_ref(&**item))
+                .collect();
+            assert!(board.writeObjects(&NSArray::from_slice(&objects)));
+            let Source::Files(files) = read_board(&board).unwrap() else {
+                panic!("copied files must remain files");
+            };
+            assert_eq!(files, paths);
+            let mut composer = Composer::new(Vec::new());
+            composer.attach_files(&files).unwrap();
+            let Outcome::SubmitDraft { parts, .. } =
+                composer.handle_key(KeyEvent::new(KeyCode::Enter, Modifiers::NONE))
+            else {
+                panic!("copied files must submit content");
+            };
+            assert!(
+                matches!(&parts[0], DraftPart::Block(dim_agent_types::ContentBlock::Image { source }) if source.media_type == "image/png" && source.data.as_deref() == Some(STANDARD.encode(png.get_ref()).as_str()))
+            );
+            assert!(
+                matches!(&parts[1], DraftPart::Text(text) if text.contains(paths[1].to_str().unwrap()) && !text.contains("/.file/"))
+            );
+            board.clearContents();
+        });
+    }
+
+    #[test]
     fn private_pasteboard_preserves_formats_precedence_pixels_and_rejections() {
         objc2::rc::autoreleasepool(|_| {
             let board = NSPasteboard::pasteboardWithUniqueName();

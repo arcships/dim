@@ -788,11 +788,12 @@ async fn node_default_plugins_load_and_their_settings_follow_them() {
     config.session_typescript = Some(parts);
     let (server, _requests, _) = start(config).await;
     let mut client = Client::new_version(&server, false, 3).await;
-    let defaults = ["goal", "web", "session-title", "workflow", "scheduler"];
+    let defaults = ["goal", "session-title", "workflow", "scheduler"];
     let list = running(&mut client, &defaults).await;
     for name in defaults {
         assert_eq!(item(&list, name)["use"], "default", "{list}");
     }
+    assert_eq!(item(&list, "web")["use"], "builtin", "{list}");
     assert_eq!(item(&list, "Agents")["use"], "builtin", "{list}");
 
     let read = json!({"source": "session-title", "scope": "user"});
@@ -900,16 +901,6 @@ async fn node_default_plugins_load_and_their_settings_follow_them() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
-/// A server on `home` that loads the default plugins.
-fn defaults_config(home: &Path) -> ServerConfig {
-    let mut config = config(home);
-    let mut parts = fixture();
-    parts.rows.clear();
-    config.plugin_defaults = Some(parts.anchor.with_file_name("default-plugins.json"));
-    config.session_typescript = Some(parts);
-    config
-}
-
 /// The tools offered to the model in a new turn of `session`.
 async fn offered(
     client: &mut Client,
@@ -933,10 +924,9 @@ async fn web_session(client: &mut Client) -> String {
 /// open Session; `enable web` offers them again there and in a new Session,
 /// and the state survives a restart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
-async fn node_web_tools_follow_disable_enable_and_restart() {
+async fn web_tools_follow_disable_enable_and_restart() {
     let home = home();
-    let (server, mut requests, _) = start(defaults_config(&home)).await;
+    let (server, mut requests, _) = start(config(&home)).await;
     let mut client = Client::new_version(&server, false, 3).await;
     running(&mut client, &["web"]).await;
     select_fixture_model(&mut client).await;
@@ -956,7 +946,7 @@ async fn node_web_tools_follow_disable_enable_and_restart() {
     let tools = offered(&mut client, &mut requests, &new).await;
     assert!(tools.contains(&web), "a new Session: {tools:?}");
     let reloaded = call(&mut client, "plugin.reload", json!({"name": "web"})).await;
-    assert_eq!(reloaded["result"]["status"], "running", "{reloaded}");
+    assert_eq!(app_error(&reloaded), "not_reloadable", "{reloaded}");
     let tools = offered(&mut client, &mut requests, &open).await;
     assert!(tools.contains(&web), "reloaded unchanged: {tools:?}");
 
@@ -964,7 +954,7 @@ async fn node_web_tools_follow_disable_enable_and_restart() {
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
-    let (server, mut requests, _) = start(defaults_config(&home)).await;
+    let (server, mut requests, _) = start(config(&home)).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let list = call(&mut client, "plugin.list", json!({})).await;
     assert_eq!(item(&list, "web")["status"], "off", "{list}");
@@ -1094,6 +1084,7 @@ fn product_builder() -> AgentBuilder {
         dim_agent_capabilities::workspace_tools::WorkspaceToolsConfig {
             output_root: std::env::temp_dir().join("dm-pm-outputs"),
         },
+        dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
     );
     dim_app_server::permission_rules::install(&mut builder);
     defaults::mock_model_hosts(&mut builder);

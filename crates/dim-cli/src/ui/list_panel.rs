@@ -72,6 +72,7 @@ pub struct ListPanel {
     all_rows: bool,
     /// Typed characters filter the list.
     filterable: bool,
+    remote_filter: bool,
     items: Vec<Item>,
     filter: LineInput,
     /// Index among the *selectable* rows currently shown.
@@ -103,6 +104,7 @@ impl ListPanel {
             inline_detail: false,
             all_rows: false,
             filterable: true,
+            remote_filter: false,
             items: Vec::new(),
             filter: LineInput::new(""),
             selected: 0,
@@ -130,6 +132,31 @@ impl ListPanel {
 
     pub fn filter_is_empty(&self) -> bool {
         self.filter.is_empty()
+    }
+
+    pub fn query(&self) -> &str {
+        self.filter.text()
+    }
+
+    pub fn remote_filter(&mut self, enabled: bool) {
+        self.remote_filter = enabled;
+    }
+
+    pub fn near_end(&self) -> bool {
+        !self.items.is_empty() && self.selected + 4 >= self.items.len()
+    }
+
+    pub fn loading(&mut self) {
+        self.loading = true;
+        self.items.clear();
+        self.selected = 0;
+        self.window.set(0);
+        self.error = None;
+    }
+
+    pub fn append_items(&mut self, items: Vec<Item>) {
+        self.items.extend(items);
+        self.error = None;
     }
 
     /// A paste goes into the filter, on one line.
@@ -177,7 +204,7 @@ impl ListPanel {
         self.items
             .iter()
             .filter(|item| {
-                if query.is_empty() {
+                if self.remote_filter || query.is_empty() {
                     return true;
                 }
                 if item.sticky {

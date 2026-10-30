@@ -10,13 +10,15 @@ use std::{
         Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
-    time::Instant,
+    thread::ThreadId,
+    time::{Duration, Instant},
 };
 
 struct File {
     original: usize,
     wrapper: usize,
     path: Option<PathBuf>,
+    main: bool,
 }
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static FILES: OnceLock<Mutex<HashMap<usize, File>>> = OnceLock::new();
@@ -24,6 +26,8 @@ static IMAGES: OnceLock<PathBuf> = OnceLock::new();
 static INTERRUPT: AtomicBool = AtomicBool::new(false);
 static WAL_BYTES: AtomicU64 = AtomicU64::new(0);
 static WAL_SYNCS: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
+static CHECKPOINTS: AtomicU64 = AtomicU64::new(0);
+static WRITER_CPU: Mutex<Vec<(ThreadId, Duration, Duration)>> = Mutex::new(Vec::new());
 static PLAIN_FSYNC: OnceLock<bool> = OnceLock::new();
 
 pub fn install(images: PathBuf) {
@@ -56,6 +60,8 @@ pub fn interrupt_next_wal_sync() {
 pub fn reset_measurement() {
     WAL_BYTES.store(0, Ordering::SeqCst);
     WAL_SYNCS.lock().unwrap().clear();
+    CHECKPOINTS.store(0, Ordering::SeqCst);
+    WRITER_CPU.lock().unwrap().clear();
 }
 
 /// The WAL syncs since the last reset.
@@ -63,11 +69,43 @@ pub fn wal_syncs() -> usize {
     WAL_SYNCS.lock().unwrap().len()
 }
 
-pub fn measurement() -> (u64, Vec<Instant>) {
-    (
-        WAL_BYTES.load(Ordering::SeqCst),
-        WAL_SYNCS.lock().unwrap().clone(),
-    )
+/// Observations since reset. CPU spans the first through last WAL sync.
+pub struct Measurement {
+    pub wal_bytes: u64,
+    pub wal_syncs: Vec<Instant>,
+    /// Successful main-database syncs during WAL traffic.
+    pub checkpoint_syncs: u64,
+    /// Unavailable when the platform lacks the clock or multiple threads synced WAL.
+    pub writer_cpu_ms: Option<f64>,
+}
+
+pub fn measurement() -> Measurement {
+    let cpu = WRITER_CPU.lock().unwrap();
+    Measurement {
+        wal_bytes: WAL_BYTES.load(Ordering::SeqCst),
+        wal_syncs: WAL_SYNCS.lock().unwrap().clone(),
+        checkpoint_syncs: CHECKPOINTS.load(Ordering::SeqCst),
+        writer_cpu_ms: match cpu.as_slice() {
+            [(_, first, last)] => Some((*last - *first).as_secs_f64() * 1000.),
+            _ => None,
+        },
+    }
+}
+
+#[cfg(unix)]
+fn thread_cpu() -> Option<Duration> {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: time points to a writable timespec for this call.
+    (unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) } == 0)
+        .then(|| Duration::new(time.tv_sec as u64, time.tv_nsec as u32))
+}
+
+#[cfg(not(unix))]
+fn thread_cpu() -> Option<Duration> {
+    None
 }
 
 unsafe extern "C" fn write(
@@ -123,6 +161,7 @@ unsafe extern "C" fn open(
                     original: original as usize,
                     wrapper: wrapper as usize,
                     path,
+                    main: flags & ffi::SQLITE_OPEN_MAIN_DB != 0,
                 },
             );
             (*file).pMethods = wrapper;
@@ -132,10 +171,10 @@ unsafe extern "C" fn open(
 }
 
 unsafe extern "C" fn sync(file: *mut ffi::sqlite3_file, flags: i32) -> i32 {
-    let (original, path) = {
+    let (original, path, main) = {
         let files = FILES.get().unwrap().lock().unwrap();
         let tracked = files.get(&(file as usize)).unwrap();
-        (tracked.original, tracked.path.clone())
+        (tracked.original, tracked.path.clone(), tracked.main)
     };
     if path
         .as_ref()
@@ -166,6 +205,16 @@ unsafe extern "C" fn sync(file: *mut ffi::sqlite3_file, flags: i32) -> i32 {
     {
         if path.to_string_lossy().ends_with("-wal") {
             WAL_SYNCS.lock().unwrap().push(Instant::now());
+            if let Some(cpu) = thread_cpu() {
+                let thread = std::thread::current().id();
+                let mut writers = WRITER_CPU.lock().unwrap();
+                match writers.iter_mut().find(|(id, _, _)| *id == thread) {
+                    Some((_, _, last)) => *last = cpu,
+                    None => writers.push((thread, cpu, cpu)),
+                }
+            }
+        } else if main {
+            CHECKPOINTS.fetch_add(1, Ordering::SeqCst);
         }
         let Some(images) = IMAGES.get() else {
             return result;

@@ -124,6 +124,17 @@ async fn a_fork_copies_main_through_a_rest_point_and_starts_nothing() {
 
     let reply = fork(&mut client, &sid, at).await;
     let fid = forked(&reply);
+    assert_eq!(
+        store
+            .connection()
+            .query_row(
+                "SELECT preview FROM session_catalog WHERE session_id=?1",
+                [&fid],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "first"
+    );
     let fork = agent.get_session(&fid).unwrap();
     assert_eq!(
         reply["result"]["sequence"].as_u64().unwrap(),
@@ -688,6 +699,7 @@ pub(super) async fn launch_configured(
                 .0
                 .join(dim_app_server::storage::COMMAND_OUTPUT_DIRECTORY),
         },
+        dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
     );
     dim_app_server::permission_rules::install(&mut builder);
     defaults::mock_model_hosts(&mut builder);

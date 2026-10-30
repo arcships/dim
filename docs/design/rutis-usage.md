@@ -478,11 +478,16 @@ Carried from [#6](https://github.com/arcships/dim/issues/6):
   gates when chosen (an `Option<Key<T>>` the factory fills), and the composition check covers it then;
   one used only if present is read with `get_at` and not listed in `injects`. Its name must still be
   registered.
-- **Startup deadline.** One deadline covers loader startup, reconcile and rows becoming Active. At the
-  deadline the creation fails and its rollback cancels the rows; rutis waits for a cancelled `apply` to
-  return and never aborts it, so `apply` returns once `ctx.cancelled()` resolves. A test injects a row
-  that waits in `apply` until then (`tests/integration/tests/named_parts.rs`). Failing on no progress
-  instead of a total deadline is [#387](https://github.com/arcships/dim/issues/387).
+- **Startup progress.** `startup_timeout` bounds an interval without progress, across loader startup,
+  reconcile, required rows becoming Active and opening replay. A row's first activation during the
+  opening, advancement of its branch's dispatch sequence, or completion of an opening receipt resets
+  that interval. Restarting the same row does not renew it; activity in another Session does not.
+  There is no fixed total startup deadline. The
+  same rule applies to Session and branch opening, process startup and restart. A branch waiting for
+  its parent follows that parent's bounded opening rather than imposing another total deadline.
+  A stalled opening fails with its inactive rows and unmet dependencies, and rollback cancels them.
+  A composition error or failed required provider fails immediately. Rutis never aborts `apply`:
+  rollback waits for it to return after `ctx.cancelled()` resolves.
 
 ## Appendix B: TypeScript and Python binding
 

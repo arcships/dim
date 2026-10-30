@@ -13,7 +13,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::model::view::{MemberCard, MemberConversationState, MemberTarget, TaskKind, ViewRow};
 use crate::ui::i18n::{t, tf};
-use crate::ui::text::display_width;
+use crate::ui::text::{DONE_MARK, FAILED_MARK, RUNNING_MARK, SHELL_MARK, display_width};
 use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::{Paint, fg, paint};
 
@@ -1535,7 +1535,7 @@ pub fn action_at<'a>(
     p: &Palette,
     row: usize,
 ) -> Option<&'a str> {
-    let (rows, starts) = lay_out_group(group, width, p, "·");
+    let (rows, starts) = lay_out_group(group, width, p, RUNNING_MARK);
     if row >= rows.len() {
         return None;
     }
@@ -1567,7 +1567,7 @@ pub fn card_rows(
     p: &Palette,
     action: &str,
 ) -> Option<(usize, usize)> {
-    let (rows, starts) = lay_out_group(group, width, p, "·");
+    let (rows, starts) = lay_out_group(group, width, p, RUNNING_MARK);
     let lines = group.lines();
     let first = lines
         .iter()
@@ -1643,12 +1643,12 @@ fn lay_out_group(
 fn mark_text(mark: Mark, spinner: &str, p: &Palette) -> String {
     let (glyph, color, bold) = match mark {
         Mark::Running => (spinner, &p.accent, false),
-        Mark::Done => ("✓", &p.success, false),
-        Mark::Failed => ("✗", &p.danger, false),
-        Mark::DoneMuted => ("✓", &p.muted, false),
-        Mark::FailedMuted => ("✗", &p.muted, false),
-        Mark::Command => ("$", &p.success, true),
-        Mark::CommandFailed => ("$", &p.danger, true),
+        Mark::Done => (DONE_MARK, &p.success, false),
+        Mark::Failed => (FAILED_MARK, &p.danger, false),
+        Mark::DoneMuted => (DONE_MARK, &p.muted, false),
+        Mark::FailedMuted => (FAILED_MARK, &p.muted, false),
+        Mark::Command => (SHELL_MARK, &p.success, true),
+        Mark::CommandFailed => (SHELL_MARK, &p.danger, true),
     };
     paint(
         glyph,

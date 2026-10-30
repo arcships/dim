@@ -27,6 +27,11 @@ pub(super) fn metadata(
             ))),
         }
     };
+    // A continuation field carries a value only when it is nonempty: an empty
+    // signature, redacted payload or encrypted payload is the same as absent.
+    let continuation = |key: &str| -> Result<Option<String>, HostError> {
+        Ok(string(key)?.filter(|value| !value.is_empty()))
+    };
     Ok(match protocol {
         ModelProtocol::Bedrock => match (string("signature")?, string("redactedData")?) {
             (Some(signature), None) => Some(ContentMetadata::Bedrock {
@@ -40,20 +45,22 @@ pub(super) fn metadata(
                 ));
             }
         },
-        ModelProtocol::Anthropic => match (string("signature")?, string("redactedData")?) {
-            (Some(signature), None) => Some(ContentMetadata::Anthropic { signature }),
-            (None, Some(data)) => Some(ContentMetadata::AnthropicRedacted { data }),
-            (None, None) => None,
-            _ => {
-                return Err(HostError::failed(
-                    "Thinking cannot be both signed and redacted",
-                ));
+        ModelProtocol::Anthropic => {
+            match (continuation("signature")?, continuation("redactedData")?) {
+                (Some(signature), None) => Some(ContentMetadata::Anthropic { signature }),
+                (None, Some(data)) => Some(ContentMetadata::AnthropicRedacted { data }),
+                (None, None) => None,
+                _ => {
+                    return Err(HostError::failed(
+                        "Thinking cannot be both signed and redacted",
+                    ));
+                }
             }
-        },
+        }
         ModelProtocol::Gemini => string("thoughtSignature")?
             .map(|thought_signature| ContentMetadata::Gemini { thought_signature }),
         ModelProtocol::XaiResponses => {
-            let encrypted_content = string("reasoningEncryptedContent")?;
+            let encrypted_content = continuation("reasoningEncryptedContent")?;
             match string("itemId")? {
                 Some(item_id) => Some(ContentMetadata::XaiResponses {
                     item_id,
@@ -68,7 +75,7 @@ pub(super) fn metadata(
             }
         }
         ModelProtocol::OpenaiResponses => {
-            let encrypted_content = string("reasoningEncryptedContent")?;
+            let encrypted_content = continuation("reasoningEncryptedContent")?;
             let phase = string("phase")?;
             let summary_index = match fields.get("summaryIndex") {
                 None | Some(Value::Null) => None,

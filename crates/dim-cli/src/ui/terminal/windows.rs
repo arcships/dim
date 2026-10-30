@@ -7,7 +7,7 @@
 use std::io;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
@@ -105,6 +105,22 @@ pub fn write_all(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Writes all of `bytes` to the console, giving up at `deadline`.
+///
+/// A console write cannot be interrupted from the writing thread, so the
+/// write runs on a helper thread and this returns at the deadline; a write
+/// still blocked there ends with the process, as the writer thread's does on
+/// Unix.
+pub fn write_until(fd: RawFd, bytes: &[u8], deadline: Instant) {
+    let bytes = bytes.to_vec();
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = write_all(fd, &bytes);
+        let _ = done.send(());
+    });
+    let _ = finished.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum ReadOutcome {
     Data(usize),
@@ -154,13 +170,20 @@ pub fn rearm_restore_guard() {
     RESTORED.store(false, Ordering::SeqCst);
 }
 
+/// Writes the mode restore sequence once and drops raw mode, giving the write
+/// the exit bound (see unix.rs).
 pub fn restore_terminal_once() {
+    restore_terminal_once_until(Instant::now() + super::EXIT_BUDGET);
+}
+
+/// [`restore_terminal_once`] sharing the exit's deadline.
+pub fn restore_terminal_once_until(deadline: Instant) {
     if RESTORED.swap(true, Ordering::SeqCst) {
         return;
     }
     let mut buf = [0u8; MAX_RESTORE_LEN];
     let len = modes::restore_into(modes::live_bits(), &mut buf);
-    let _ = write_all(STDOUT, &buf[..len]);
+    write_until(STDOUT, &buf[..len], deadline);
     disable_raw_mode();
 }
 

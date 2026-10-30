@@ -84,6 +84,62 @@ pub fn definition_for(platform: &HostPlatform) -> ToolDefinition {
     definition
 }
 
+pub(super) fn stop_definition() -> ToolDefinition {
+    let mut tool = definition(
+        "exec_stop",
+        "Stop a detached exec command on this branch by the Task ID exec returned. Waits for process cleanup and returns its terminal {task_id, status, result} as JSON. An already-ended command keeps its existing result. Only status cancelled confirms cancellation; a failed status must not be treated as stopped. Collaboration agentId/sessionId values are not exec task IDs.",
+        json!({"type":"object","required":["taskId"],"additionalProperties":false,"properties":{"taskId":{"type":"string","minLength":1,"description":"Task ID copied exactly from the detached exec result."}}}),
+    );
+    tool.risk = Some("session".into());
+    tool
+}
+
+pub(super) async fn stop(
+    branch: &Branch,
+    call: &ToolCall,
+    cancel: &CancellationToken,
+) -> Result<ToolResult, HostError> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Input {
+        task_id: String,
+    }
+    let input: Input = match serde_json::from_value(Value::Object(call.input.clone())) {
+        Ok(input) => input,
+        Err(error) => {
+            return Ok(failed(
+                format!("exec_stop requires the taskId returned by exec: {error}"),
+                "exec_invalid_request",
+            ));
+        }
+    };
+    if input.task_id.is_empty() {
+        return Ok(failed(
+            "exec_stop taskId must not be empty.",
+            "exec_invalid_request",
+        ));
+    }
+    crate::context_policy::check_cancel(cancel)?;
+    let owner = branch
+        .service::<BackgroundExec>()
+        .map_err(super::host_error)?;
+    match owner.stop(&input.task_id).await {
+        Ok(ended) => Ok(ToolResult {
+            is_error: (ended.status == ExecStatus::Failed).then_some(true),
+            ..ToolResult::text(
+                serde_json::to_string(&ended).expect("exec terminal contains JSON data"),
+            )
+        }),
+        Err(super::background::TaskError::Unknown) => Ok(failed(
+            "Command is not a task of this branch. Use the Task ID returned by exec on this branch; use agent for Collaboration members. No command was stopped.",
+            "exec_task_unknown",
+        )),
+        Err(super::background::TaskError::Closed) => Err(HostError::Cancelled(
+            dim_agent_runtime::CAPABILITY_RELOADING.into(),
+        )),
+    }
+}
+
 /// The process tree could not be confirmed gone; dropping it kills what is
 /// left, but the caller must not take the command as stopped. Like the
 /// background result, it keeps the output captured so far, including the
@@ -1126,6 +1182,7 @@ fn running_content(reason: &str, task_id: &str, output_path: &str, preview: &str
         reason,
         &format!("Task ID: {task_id}"),
         &format!("Output: {output_path}"),
+        "Stop with exec_stop({\"taskId\":\"<Task ID>\"}); this is not a Collaboration agentId.",
         "",
         "Preview:",
         preview,

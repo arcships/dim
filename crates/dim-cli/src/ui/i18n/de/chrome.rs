@@ -357,8 +357,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permissions" => "Berechtigungen",
         "Tool approvals" => "Tool-Freigaben",
         "Command isolation" => "Befehlsisolation",
-        "Command isolation not saved: {error}" => "Befehlsisolation nicht gespeichert: {error}",
-        "Command isolation not read: {error}" => "Befehlsisolation nicht gelesen: {error}",
         "Models" => "Modelle",
         "Model" => "Modell",
         "not set" => "nicht gesetzt",
@@ -409,6 +407,34 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "{provider}: {count} models unavailable · dimcode models {id}" => {
             "{provider}: {count} Modelle nicht verfügbar · dimcode models {id}"
         }
+        "{provider}: no models · dimcode models {id} --refresh" => {
+            "{provider}: keine Modelle · dimcode models {id} --refresh"
+        }
+        "{provider}: no models · add a model with provider.models.create" => {
+            "{provider}: keine Modelle · mit provider.models.create ein Modell hinzufügen"
+        }
+        "{provider}: {unavailable} unavailable and {disabled} disabled · dimcode models {id}" => {
+            "{provider}: {unavailable} nicht verfügbar und {disabled} deaktiviert · dimcode models {id}"
+        }
+        "{provider}: catalog unreadable · dimcode models {id}" => {
+            "{provider}: Katalog nicht lesbar · dimcode models {id}"
+        }
+        "No cached catalog. Sign in and run models PROVIDER --refresh." => {
+            "Kein zwischengespeicherter Katalog. Melde dich an und führe models PROVIDER --refresh aus."
+        }
+        "Saved model preferences cleared" => "Gespeicherte Modellpräferenzen gelöscht",
+        "{provider}: 1 model disabled · dimcode models {id}" => {
+            "{provider}: 1 Modell deaktiviert · dimcode models {id}"
+        }
+        "{provider}: {count} models disabled · dimcode models {id}" => {
+            "{provider}: {count} Modelle deaktiviert · dimcode models {id}"
+        }
+        "No models. Run dimcode models {id} --refresh to list them." => {
+            "Keine Modelle. Mit dimcode models {id} --refresh auflisten."
+        }
+        "No models. The provider listed none." => {
+            "Keine Modelle. Der Anbieter hat keine aufgelistet."
+        }
         "Enter select · Esc back" => "Enter wählen · Esc zurück",
         "Subagent models" => "Subagent-Modelle",
         "Subagent models: {policy}" => "Subagent-Modelle: {policy}",
@@ -446,8 +472,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Ctrl+C leeren, zweimal beenden · Ctrl+D beendet bei leerem Entwurf"
         }
         "Fullscreen" => "Vollbild",
-        "PageUp/PageDown scroll · Home/End top or bottom · Tab pick a message, e edit it, q quote it" => {
-            "PageUp/PageDown scrollen · Home/End Anfang/Ende · Tab Nachricht wählen, e bearbeiten, q zitieren"
+        "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
+            "PageUp/PageDown scrollen · Home/End Anfang/Ende (bei leerem Entwurf) · Tab Nachricht wählen, e bearbeiten, q zitieren"
         }
         "wheel scroll · drag select and copy · click a link to open it, a tool group to expand it" => {
             "Mausrad scrollen · ziehen markiert+kopiert · Klick öffnet Link, klappt Tool-Gruppe aus"

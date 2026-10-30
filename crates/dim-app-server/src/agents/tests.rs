@@ -85,6 +85,77 @@ fn config(directory: &Path) -> ServerConfig {
     }
 }
 
+struct ProgressingProcess {
+    name: String,
+    hub: rutis::host::Key<crate::connection::ConnectionHub>,
+    step: usize,
+    completed: tokio::sync::watch::Sender<usize>,
+}
+impl rutis::host::DynPlugin for ProgressingProcess {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn injects(&self) -> Vec<rutis::host::TypeKey> {
+        vec![self.hub.erase()]
+    }
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+    ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
+        Box::pin(async move {
+            ctx.require_at(&self.hub)?;
+            let mut completed = self.completed.subscribe();
+            while *completed.borrow_and_update() < self.step {
+                tokio::select! {
+                    result = completed.changed() => result.map_err(|error| rutis::host::ErrorKind::PluginFailed(error.into()))?,
+                    _ = ctx.cancelled() => return Err(rutis::host::ErrorKind::PluginFailed("opening cancelled".into()).into()),
+                }
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+                _ = ctx.cancelled() => return Err(rutis::host::ErrorKind::PluginFailed("opening cancelled".into()).into()),
+            }
+            self.completed.send_replace(self.step + 1);
+            Ok(rutis::host::Effect::Done)
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn process_startup_and_restart_follow_rows_becoming_active() {
+    let mut builder = builder();
+    let (completed, _) = tokio::sync::watch::channel(0);
+    for step in 0..4 {
+        let completed = completed.clone();
+        builder.plugin(move |names| {
+            Ok(Box::new(ProgressingProcess {
+                name: format!("test.process-progress-{step}"),
+                hub: names.key()?,
+                step,
+                completed: completed.clone(),
+            }))
+        });
+    }
+    let server = crate::serve(
+        builder,
+        ServerConfig {
+            startup_timeout: Duration::from_millis(500),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(*completed.borrow(), 4);
+    completed.send_replace(0);
+    tokio::time::timeout(Duration::from_secs(20), server.restart("Connection"))
+        .await
+        .expect("a progressing process restart finishes")
+        .unwrap();
+    assert_eq!(*completed.borrow(), 4);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 /// One `sessions` call as a process owner makes it: the reply envelope.
 async fn call(root: &Ctx, method: &str, request: Value) -> Value {
     let service = root
@@ -187,6 +258,55 @@ async fn sessions_never_fails_a_stored_session_while_its_owner_installs() {
     std::fs::remove_dir_all(stored.directory).unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stored_agent_creation_timeout_settles_during_progressing_startup() {
+    let stored = stored().await;
+    let mut held = HeldCreation::new(&stored.default_agent);
+    let mut progressing = builder();
+    let (completed, _) = tokio::sync::watch::channel(0);
+    progressing.plugin(move |names| {
+        Ok(Box::new(ProgressingProcess {
+            name: "test.stored-owner-progress".into(),
+            hub: names.key()?,
+            step: 0,
+            completed: completed.clone(),
+        }))
+    });
+    let mut starting = std::pin::pin!(crate::serve(
+        progressing,
+        ServerConfig {
+            startup_timeout: Duration::from_secs(2),
+            ..config(&stored.directory)
+        },
+    ));
+    tokio::select! {
+        _ = held.arrived() => {}
+        result = &mut starting => panic!("startup ended unheld: {:?}", result.err()),
+    }
+    let server = tokio::time::timeout(Duration::from_secs(10), starting)
+        .await
+        .expect("the stored Agent's timeout settles initialization")
+        .unwrap();
+    let index = server.root.get::<AgentIndex>().unwrap();
+    let reason = index.unavailable_agent(&stored.default_agent).unwrap();
+    assert!(reason.contains("timed out"), "{reason}");
+    let reply = call(&server.root, "lookup", lookup(&stored.session)).await;
+    assert_eq!(reply["error"]["code"], "failed", "{reply}");
+    drop(held);
+    server.shutdown();
+    server.join().await.unwrap();
+    let server = crate::serve(builder(), config(&stored.directory))
+        .await
+        .unwrap();
+    assert_eq!(
+        call(&server.root, "lookup", lookup(&stored.session)).await,
+        stored.accepted
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(stored.directory).unwrap();
+}
+
 /// An execution-disabled host keeps its gate: it loads neither the default
 /// nor a stored Agent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -207,46 +327,6 @@ async fn execution_disabled_hosts_load_no_stored_agent() {
     assert!(
         held.arrived.try_recv().is_err(),
         "no Agent creation started"
-    );
-    server.shutdown();
-    server.join().await.unwrap();
-    std::fs::remove_dir_all(stored.directory).unwrap();
-}
-
-/// `serve` covers owner initialization with its startup deadline: a stored
-/// Agent that exhausts it fails startup, whose cleanup leaves the store to
-/// the next host.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_stored_agent_exhausting_the_startup_deadline_fails_startup() {
-    let stored = stored().await;
-    let mut held = HeldCreation::new(&stored.default_agent);
-    let mut starting = std::pin::pin!(crate::serve(
-        builder(),
-        ServerConfig {
-            startup_timeout: Duration::from_secs(2),
-            ..config(&stored.directory)
-        },
-    ));
-    tokio::select! {
-        _ = held.arrived() => {}
-        result = &mut starting => panic!("startup ended unheld: {:?}", result.err()),
-    }
-    let error = match starting.await {
-        Err(error) => error.to_string(),
-        Ok(server) => {
-            server.shutdown();
-            server.join().await.unwrap();
-            panic!("startup outlived its deadline");
-        }
-    };
-    assert!(error.contains("timed out"), "{error}");
-    drop(held);
-    let server = crate::serve(builder(), config(&stored.directory))
-        .await
-        .unwrap();
-    assert_eq!(
-        call(&server.root, "lookup", lookup(&stored.session)).await,
-        stored.accepted
     );
     server.shutdown();
     server.join().await.unwrap();

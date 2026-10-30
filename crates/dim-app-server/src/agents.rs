@@ -619,13 +619,15 @@ impl AgentIndex {
             session.local_page("main", after, limit, through).await?,
         ))
     }
-    pub(crate) async fn read_event(
+    /// The stored events of `event_ids` in one read; ids the store does not
+    /// hold are absent.
+    pub(crate) async fn read_events(
         &self,
         id: &str,
-        event_id: &str,
-    ) -> dim_agent_runtime::Result<Option<Arc<dim_agent_types::AgentEvent>>> {
+        event_ids: &[String],
+    ) -> dim_agent_runtime::Result<HashMap<String, Arc<dim_agent_types::AgentEvent>>> {
         if let Some(store) = &self.session_store {
-            return store.read_event(id, event_id).await;
+            return store.read_events(id, event_ids).await;
         }
         let (_, session) = self
             .session(id)
@@ -634,30 +636,35 @@ impl AgentIndex {
             .history("main", None)
             .await?
             .into_iter()
-            .find(|event| event.id == event_id))
+            .filter(|event| event_ids.contains(&event.id))
+            .map(|event| (event.id.clone(), event))
+            .collect())
     }
-    /// The main-branch `step/tool-use-start` of call `call_id` in request
-    /// `request_id`.
-    pub(crate) async fn read_tool_use_start(
+    /// The main-branch `step/tool-use-start` of each `(request_id, call_id)`
+    /// in one read; calls the store does not hold are absent.
+    pub(crate) async fn read_tool_use_starts(
         &self,
         id: &str,
-        request_id: &str,
-        call_id: &str,
-    ) -> dim_agent_runtime::Result<Option<Arc<dim_agent_types::AgentEvent>>> {
+        keys: &[(String, String)],
+    ) -> dim_agent_runtime::Result<HashMap<(String, String), Arc<dim_agent_types::AgentEvent>>>
+    {
         if let Some(store) = &self.session_store {
-            return store.read_tool_use_start(id, request_id, call_id).await;
+            return store.read_tool_use_starts(id, keys).await;
         }
         let (_, session) = self
             .session(id)
             .ok_or_else(|| AgentError::Closed(id.into()))?;
-        Ok(session
-            .history("main", None)
-            .await?
-            .into_iter()
-            .find(|event| {
-                matches!(&event.kind, dim_agent_types::EventKind::ToolUseStart(start)
-                    if start.request_id == request_id && start.call_id == call_id)
-            }))
+        let mut starts = HashMap::with_capacity(keys.len());
+        for event in session.history("main", None).await? {
+            let key = match &event.kind {
+                EventKind::ToolUseStart(start) => (start.request_id.clone(), start.call_id.clone()),
+                _ => continue,
+            };
+            if keys.contains(&key) {
+                starts.insert(key, event);
+            }
+        }
+        Ok(starts)
     }
     fn slot(&self, id: &str) -> Arc<SessionSlot> {
         self.directory
@@ -825,6 +832,53 @@ impl AgentIndex {
         Ok(Some(records))
     }
 
+    pub(crate) async fn session_catalog(
+        &self,
+        request: crate::protocol::Catalog,
+        agent: Option<String>,
+        version: u32,
+        cancel: CancellationToken,
+    ) -> dim_agent_runtime::Result<crate::protocol::CatalogResult> {
+        let store = self
+            .session_store
+            .as_ref()
+            .ok_or_else(|| AgentError::InvalidInput("a catalog needs the native store".into()))?;
+        let hosts = self
+            .hosts()
+            .into_iter()
+            .map(|host| host.agent_id.clone())
+            .collect();
+        let closed = self
+            .directory
+            .inner
+            .lock()
+            .expect("agent index")
+            .sessions
+            .iter()
+            .filter(|(_, slot)| slot.closed.load(Ordering::Acquire))
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut page = store
+            .catalog(request, agent, version, hosts, closed, cancel)
+            .await?;
+        for summary in &mut page.sessions {
+            if let Some((_, session)) = self.session(&summary.session.session_id) {
+                match session
+                    .state("main")
+                    .and_then(|state| Ok((state.running, session.sequence("main")?)))
+                {
+                    Ok((running, sequence)) => {
+                        summary.session.running = running;
+                        summary.session.sequence = sequence;
+                    }
+                    Err(_) if session.is_unloading() => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Ok(page)
+    }
+
     /// The directory record of one Session whose lease the caller holds, with
     /// the fields `session_directory` gives it. It reads this Session's title
     /// row and no other Session or history; the caller fills
@@ -933,7 +987,8 @@ impl AgentIndex {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                (!text.is_empty()).then(|| truncate_preview(&text, Self::SUMMARY_PREVIEW_CHARS))
+                (!text.is_empty())
+                    .then(|| crate::storage::truncate_preview(&text, Self::SUMMARY_PREVIEW_CHARS))
             });
         let updated_at = last.map_or(created_at, |event| event.create_at);
         Ok((preview, updated_at))
@@ -1426,16 +1481,6 @@ fn rest_point(events: &[Arc<dim_agent_types::AgentEvent>]) -> Result<(), String>
         return Ok(());
     };
     Err(format!("the fork position is not a rest point: {cause}"))
-}
-
-fn truncate_preview(value: &str, limit: usize) -> String {
-    let mut chars = value.chars();
-    let mut result: String = chars.by_ref().take(limit).collect();
-    if chars.next().is_some() {
-        result.pop();
-        result.push('…');
-    }
-    result
 }
 
 /// Owns every Agent subtree: the process assembly entry.

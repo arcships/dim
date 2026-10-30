@@ -67,6 +67,7 @@ async fn product(dirs: &Dirs) -> Product {
         WorkspaceToolsConfig {
             output_root: dirs.dir("outputs"),
         },
+        dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
     );
     builder.plugin(|names| Ok(Box::new(SkillsCatalogPlugin::new(names)?)));
     Product {
@@ -129,6 +130,31 @@ async fn tool_results(session: &Session) -> Vec<ToolResult> {
         .flatten()
         .map(|call| call.result)
         .collect()
+}
+
+/// The product assembly with its default plugins is sound once its Session
+/// and a branch are live: the assembly check reports nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_product_assembly_passes_the_assembly_check() {
+    let dirs = Dirs::new();
+    let product = product(&dirs).await;
+    let session = session(&product, &dirs.dir("work")).await;
+    session
+        .branch(
+            "main".into(),
+            session.sequence("main").unwrap(),
+            BranchOptions {
+                prompt: "check".into(),
+                source: BranchSource::Host {
+                    operation_id: "check".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let findings = product.agent.check_assembly().unwrap();
+    assert!(findings.is_empty(), "{findings:?}");
+    product.agent.close().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

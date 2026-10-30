@@ -210,6 +210,8 @@ async fn node_branch_typescript_part_follows_events_and_writes_input() {
     assert_eq!(count(&agent, &sessions[0], &child, "<c5-marker").await, 1);
     assert_eq!(count(&agent, &sessions[0], &child, "<c5-rebuilt").await, 0);
     assert_eq!(count(&agent, &sessions[0], "main", "<c5-marker").await, 1);
+    let findings = agent.check_assembly().unwrap();
+    assert!(findings.is_empty(), "{findings:?}");
 
     drop(client);
     server.shutdown();

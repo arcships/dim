@@ -89,9 +89,15 @@ Both call the same composition, so a host-prepared request carries the same fram
 
 Prompt's own two call sites stay where they are: ContextPreparation places the System it publishes, and Loop places the System of the request it assembles. What changes is where the guide text comes from — the composition instead of a fixed file — not who places it. Removing the two placements is [#555](../model-prompts.md#97-loop-and-contextpreparation)'s.
 
-### 3.4 Fixed between adoptions
+### 3.4 Adopted when its writer loads
 
-On the adopted path an entry takes effect at the adoption that loads its writer, which is the point at which that writer's tool declarations already change the request prefix. Between adoptions the guide does not change: a registration made in between waits for the next adoption, and a withdrawal made in between ends at the next adoption. On the host-prepared path the guide changes only where a writer loads or unloads, the points at which that path's tool declarations change the request, since it binds its tools per request.
+A guide entry takes effect when its writer loads and ends when its writer unloads. Prompt adopts the guide there: every open branch whose composition moved publishes one `context/configured` with its settings — the model, the tools and the source text — unchanged, and with the System composed over the entries in force; a branch whose composition did not move neither publishes nor reads its context for that change. Between those points the guide does not change, because an entry reaches the table only from its writer's `apply` and leaves with that writer's generation.
+
+A branch also adopts the guide once at its open: a fork inherits its parent's configuration and a restored branch carries the System it persisted, while the entries in force are the ones its writers registered at load. That adoption is part of the open: the branch reports itself open only after the adoption published, so the first request after an open carries the reconciled entries and none assembles from the inherited or the persisted System. It costs one context read per open and publishes nothing when the composition already equals the adopted System.
+
+A closing branch adopts nothing: its writers withdraw because it is shutting down, and a configuration recorded then would carry a System the branch never ran with.
+
+The host-prepared path changes the guide at the same points without publishing anything, because it composes the guide into the request it assembles. A branch started after a load composes the entries in force at its open, and a request built from an adopted configuration carries the System that branch adopted.
 
 No request assembles a guide of its own, and no contributor appends text to a request. That is what keeps the guide from forking a cached prefix in the middle of a Session: the guide is part of the prefix, and it moves only when the prefix legitimately moves.
 
@@ -104,7 +110,8 @@ Each built-in entry moves verbatim to the capability that writes its markers, an
 | 10 | `dim-notification` | BackgroundExec | branch | The exec notification |
 | 20 | `dim-agent-report` | Collaboration's Session part | session | The report of delegated work |
 | 30 | `dim-agent-message` | Collaboration's Session part | session | A message from another agent |
-| 40 | `dim-branch-line`, `dim-branch-lines` | BranchLine | branch | Which line of the Session this is, and the roster on `main` |
+| 40 | `dim-branch-line` | TimelineTree | session | Which line of the Session this is |
+| 40 | `dim-branch-lines` | BranchLine | branch | The roster on `main`; the tie on `order` leaves the identity's entry first |
 | 50 | `dim-branch-message`, `dim-branch-idle`, `dim-branch-ended` | BranchLine | branch | A message from another line, and the runtime's reports about a line |
 | 60 | `dim-state` | PromptGuide | session | What a state block is |
 | 70 | `dim-rule` | PromptGuide | session | What a rule block is, and how it ends |
@@ -134,13 +141,13 @@ The state and rules a branch adopted are not facts about the guide: they are pro
 
 ### 6.1 The plugin bridge
 
-A plugin contributed through the plugin bridge registers an entry the same way a Rust part does: from its `apply`, for as long as its row is loaded, through a call whose arguments and reply are serde data. What the bridge needs, and does not have yet:
+A plugin contributed through the plugin bridge registers an entry the same way a Rust part does: from its `apply`, for as long as its row is loaded, through a call whose arguments and reply are serde data. The route reaches other languages in three parts:
 
-1. **The name, shared in the Session group.** A Rust registry of this shape reaches other languages only when its name is shared where it is provided; the host that runs foreign parts lists those names (`share_names` in the App Server), and the new one joins them.
-2. **A dispatch that ties the registration to the caller.** The Rust `register` takes its `ctx` from the caller; a foreign caller has no `ctx`, so the name is served through a `rutis_bridge` `HostDispatch` that reads `rutis_bridge::session::caller_row()` and registers under that row — the form `toolRegistry` already uses. Without a caller row the call fails with `no_caller_row` rather than registering in no one's name.
-3. **The TypeScript declaration.** The interface joins `npm/plugin.d.ts` beside `ToolRegistry`'s, naming the request, the reply and the error codes above.
+1. **The name, shared in the Session group.** A Rust registry of this shape reaches other languages only when its name is shared where it is provided; the host that runs foreign parts lists those names (`share_names` in the App Server), and `guideEntries` is shared there beside `toolRegistry`.
+2. **A dispatch that ties the registration to the caller.** The Rust `register` takes its `ctx` from the caller; a foreign caller has no `ctx`, so the name is served through a `rutis_bridge` `HostDispatch` that reads `rutis_bridge::session::caller_row()` and registers under that row — the form `toolRegistry` uses. Without a caller row the call fails with `no_caller_row` rather than registering in no one's name.
+3. **The TypeScript declaration.** The interface joins `npm/plugin.d.ts` beside `ToolRegistry`'s, naming the request, the reply and the error codes above: `register(scope, entry)` where `scope` is `"session"` or `{"branch": "<branch id>"}` and `entry` is `{markers, order, text}`; the call resolves with no value; a refusal throws a `GuideEntryError` whose `code` is one of §2's codes, `closed` included, and `no_caller_row` for a call made outside a row.
 
-The owner of these three changes its own files; this design raises them and does not build them. The capability itself — the table, the composition and the two placements — needs none of the three to work in Rust, so the entries' route is complete for every built-in writer in this change.
+The capability itself — the table, the composition and the two placements — works in Rust alone, so the entries' route is complete for every built-in writer without the bridge, and the bridge makes it complete for the writers that live in another language.
 
 ### 6.2 The writers
 
@@ -148,13 +155,16 @@ Each capability in §4 adds one dependency, its Session's `guideEntries`, and re
 
 ### 6.3 ContextPreparation: the entries and the published System
 
-The target in §3.4 needs one change outside Prompt, and it is [ContextPreparation](../../architecture/rust-agent/plugins/ContextPreparation.md)'s, landing with [#555](../model-prompts.md#97-loop-and-contextpreparation). Today the guide is composed only at an adoption that renders the System: the first configuration or a change of sources. A tools-only or model-only adoption keeps the previously adopted System, and with it the guide, so a writer that loads with one has its entry in force only at the next adoption that renders the System.
+The target in §3.4 needs one change in [ContextPreparation](../../architecture/rust-agent/plugins/ContextPreparation.md)'s publisher ([#555](../model-prompts.md#97-loop-and-contextpreparation)) and one in Prompt. The publisher composes the guide at every adoption that publishes a System: a prompt change that renders the System composes the new source text with the entries in force, and a tools-only, model-only or guide adoption re-renders the guide over the source text the branch adopted.
 
-- A tools-only or model-only adoption that changes the entries in force re-renders the guide and keeps the adopted source text.
-- To do that, the published configuration records the source text apart from the guide, so a restored Session can re-render it.
-- The split is what a restored Session needs: `restoring_a_session_keeps_its_adopted_system_and_model` (`tests/integration/tests/prompt_lifecycle.rs`) restores the adopted System from `context/configured`, whose text has no source it can be rebuilt from; recomposing from the snapshot's sources alone would put the guide where the adopted System stands.
+- The published configuration records that source text apart from the guide it carried (`context/configured.system_source`), so the source stays what the branch adopted even as the guide is composed again.
+- A tools-only or model-only adoption, and a guide adoption, compose the guide as it reads now over the recorded source text: a writer that loads has its entry in force at the load itself, whether or not that load also adopts its tools, and one whose composition already reads so publishes nothing.
+- A configuration written before the source was recorded has none to re-render from: it keeps its adopted System, guide included, and only a later adoption that renders the System replaces it. `restoring_a_session_keeps_its_adopted_system_and_model` (`tests/integration/tests/prompt_lifecycle.rs`) restores such a System from `context/configured`; recomposing it from the snapshot's prompt sources alone would put the guide where the adopted System stands.
+- The request reads the adopted System as it is: Loop carries `context/configured.system` into a request built from it, and a host-prepared request carries the composition Prompt composes. Neither appends text of its own.
 
-Prompt and the table need no change for this: the composition is already there to call, and the entries in force already follow their writers' generations.
+The trigger is Prompt's. Its branch part declares a read of the table and subscribes to a `changes()` the table forwards from its registrations, so the watch stays with the registry the entries live in rather than crossing into ContextPreparation. The listener takes its version and the composition it starts from before the branch's own open adoption composes, and starts before that adoption runs: a registration made while the open runs therefore moves the composition the listener compares against and is adopted, instead of entering a baseline taken afterwards and marked as seen, and a change made while that adoption runs is adopted by an adoption queued behind the open's arm. Each change after it composes the branch's guide again in memory, which reads neither the Timeline nor the store, and enqueues one guide adoption on the same serial queue a model change and a tool adoption use only when that text moved. The open runs one more adoption itself, before it reports itself open, because the baseline is a composition and not the System the branch carries: it costs one context read per open and publishes nothing when the two already agree. Running it on the open's path rather than as a later queue item is what makes a fork's and a restore's first request carry the entries in force. Nothing is recorded on a closing branch: the listener ends when the branch starts closing, and an adoption that already started reading refuses its append under the commit lock, so the item is dropped with the others rather than persisted as a System the branch never ran with.
+
+A writer's tools can reach a request one step before its guide. The tools arrive through the tool adoption as soon as their source loads, while the entry arrives through the listener and this queue, so a step in that window carries the new tools with the previous System and the next step replaces it: the prefix moves twice where §6.2 describes one move. The design accepts that step. Making Loop wait for a pending guide adoption would couple it to Prompt's queue for one step's prefix, and the guide still changes only at an adoption, never inside the request.
 
 ## 7. Rule check
 
@@ -213,6 +223,11 @@ impl GuideEntries {
     /// The guide for `branch`: the frame, the entries in force, and the
     /// frame's tail, paragraphs joined by one blank line.
     pub fn compose(&self, branch: &str) -> String;
+
+    /// The System for `branch`: `base` text followed by the guide. A missing
+    /// or empty base is the guide alone, and a `Parts` base gains the guide
+    /// as one more text part.
+    pub fn compose_system(&self, branch: &str, base: Option<SystemPrompt>) -> SystemPrompt;
 }
 ```
 
@@ -243,6 +258,6 @@ pub struct GuideEntryError {
 
 `invalid_entry`, `duplicate_marker` and `too_large` are the codes this binding produces. `no_caller_row` is produced only by the bridge: a Rust caller always has its `ctx`, and the registration is that caller's own effect. `closed` comes from the framework: when the caller's context is closing or unloading, the effect cannot be registered and the framework returns its own closed error, which a bridge maps to `closed`; the Rust binding returns it unchanged rather than dressing it as a `GuideEntryError`.
 
-Prompt composes through `GuideEntries::compose`, at the adoption it publishes and, for a host-prepared request, where Loop assembles its System. `with_input_guide(system, guide)` places an already composed guide in a `SystemPrompt`; it no longer knows where the guide came from, and no caller appends text of its own.
+Prompt composes through `GuideEntries::compose_system`, at the adoption it publishes and, for a host-prepared request, where Loop assembles its System: the composition is the `SystemPrompt` the request carries, placed over the source text the branch adopted. No caller appends text of its own.
 
 The foreign form of `register` is §2's data: the scope, the entry, and the error codes; `compose` is Rust-only, since no other language reads a composition — every language reaches the model through the same request.

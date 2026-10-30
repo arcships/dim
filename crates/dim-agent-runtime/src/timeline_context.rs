@@ -1,3 +1,4 @@
+use crate::assembly::OpeningAdvanced;
 use crate::core::TailLock;
 use crate::lifecycle::{CloseOnce, guarded};
 use crate::*;
@@ -28,6 +29,10 @@ pub struct TimelineContext {
     ctx: Ctx,
     view: FiberView,
     children: Vec<FiberView>,
+    /// Loader row ids the branch profile requires.
+    required: Arc<[String]>,
+    /// The required parts its mounters mounted before it published.
+    parts: Vec<FiberView>,
     copies: crate::parts::Copies,
     scope: BranchScope,
     timeline: Timeline,
@@ -70,49 +75,73 @@ impl BranchOpening {
     pub(crate) fn new() -> Self {
         Self(Mutex::new(Some(Vec::new())))
     }
-    async fn finish(&self) -> Result<()> {
+    async fn finish(&self, ctx: &Ctx, scope: rutis::host::PluginId) -> Result<()> {
         use futures_util::{StreamExt, stream::FuturesUnordered};
         let receipts = self.0.lock().unwrap().take().unwrap_or_default();
         let mut pending: FuturesUnordered<_> = receipts.into_iter().collect();
         while let Some(result) = pending.next().await {
             result?;
+            ctx.emit(OpeningAdvanced(scope))?;
         }
         Ok(())
     }
 }
 
 impl TimelineContext {
-    /// Called after opening dispatch: seal registration, await capability work,
-    /// then dispatch a fixed committed fence before the first input.
-    pub async fn finish_opening(&self) -> Result<()> {
-        let mut dispatch = self.dispatcher.watch();
-        let receipts = self.opening.finish();
-        tokio::pin!(receipts);
-        loop {
-            if let Some(error) = dispatch.borrow_and_update().failure.clone() {
-                return Err(error);
-            }
-            tokio::select! {
-                result = &mut receipts => { result?; break; }
-                changed = dispatch.changed() => {
-                    changed.map_err(|_| AgentError::Closed("branch dispatch".into()))?;
-                }
-            }
-        }
-        let through = self.timeline.committed();
-        loop {
-            let state = dispatch.borrow_and_update().clone();
-            if let Some(error) = state.failure {
-                return Err(error);
-            }
-            if state.sequence >= through {
-                return Ok(());
-            }
-            dispatch
-                .changed()
-                .await
-                .map_err(|_| AgentError::Closed("branch dispatch".into()))?;
-        }
+    /// Dispatches the opening through `through`, seals registration and waits
+    /// for capability receipts and their committed fence. First activations,
+    /// dispatch advancement and receipt completion renew the inactivity limit.
+    pub async fn finish_opening(&self, through: u64, timeout: std::time::Duration) -> Result<()> {
+        let mut progress = StartupProgress::new(&self.ctx, timeout)?;
+        progress
+            .wait(
+                async {
+                    let mut dispatch = self.dispatcher.watch();
+                    loop {
+                        let state = dispatch.borrow_and_update().clone();
+                        if let Some(error) = state.failure {
+                            return Err(error);
+                        }
+                        if state.sequence >= through {
+                            break;
+                        }
+                        dispatch
+                            .changed()
+                            .await
+                            .map_err(|_| AgentError::Closed("branch dispatch".into()))?;
+                    }
+                    let receipts = self.opening.finish(&self.ctx, self.view.id);
+                    tokio::pin!(receipts);
+                    loop {
+                        if let Some(error) = dispatch.borrow_and_update().failure.clone() {
+                            return Err(error);
+                        }
+                        tokio::select! {
+                            result = &mut receipts => { result?; break; }
+                            changed = dispatch.changed() => {
+                                changed.map_err(|_| AgentError::Closed("branch dispatch".into()))?;
+                            }
+                        }
+                    }
+                    let through = self.timeline.committed();
+                    loop {
+                        let state = dispatch.borrow_and_update().clone();
+                        if let Some(error) = state.failure {
+                            return Err(error);
+                        }
+                        if state.sequence >= through {
+                            return Ok(());
+                        }
+                        dispatch
+                            .changed()
+                            .await
+                            .map_err(|_| AgentError::Closed("branch dispatch".into()))?;
+                    }
+                },
+                || vec![self.view.id],
+            )
+            .await
+            .unwrap_or_else(|| Err(AgentError::Build("branch opening timed out".into())))
     }
 
     /// Starts dispatch once every capability of the subtree is Active.
@@ -122,6 +151,8 @@ impl TimelineContext {
         ctx: Ctx,
         view: FiberView,
         children: Vec<FiberView>,
+        required: Arc<[String]>,
+        parts: Vec<FiberView>,
         copies: crate::parts::Copies,
         scope: BranchScope,
         timeline: Timeline,
@@ -137,6 +168,8 @@ impl TimelineContext {
             ctx,
             view,
             children,
+            required,
+            parts,
             copies,
             scope,
             timeline,
@@ -168,10 +201,20 @@ impl TimelineContext {
         let monitor = tokio::spawn(async move {
             let mut phase: Option<watch::Receiver<LoopSnapshot>> = None;
             let mut signal = true;
+            let mut sequence = dispatcher.borrow().sequence;
             loop {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
+                let dispatched = dispatcher.borrow().sequence;
+                if dispatched > sequence {
+                    sequence = dispatched;
+                    if inner.lifecycle.phase() == BranchPhase::Loading
+                        && let Err(error) = inner.ctx.emit(OpeningAdvanced(inner.view.id))
+                    {
+                        inner.dispatcher.fail(error.into());
+                    }
+                }
                 let had = phase.is_some();
                 if phase.as_ref().is_none_or(|rx| rx.has_changed().is_err()) {
                     phase = inner
@@ -297,6 +340,18 @@ impl TimelineContext {
             .collect();
         crate::assembly::retain_scope(&mut snapshot, scope, |plugin| rows.contains(&plugin));
         snapshot
+    }
+    /// This branch's scope view.
+    pub(crate) fn scope_view(&self) -> &FiberView {
+        &self.view
+    }
+    /// The loader row ids this branch's profile requires.
+    pub(crate) fn required_rows(&self) -> &[String] {
+        &self.required
+    }
+    /// The required parts its mounters mounted when it opened.
+    pub(crate) fn required_parts(&self) -> &[FiberView] {
+        &self.parts
     }
     pub(crate) fn state_cell<S: Clone + Send + Sync + 'static>(&self) -> Option<Arc<StateCell<S>>> {
         self.ctx

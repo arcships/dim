@@ -352,9 +352,10 @@ impl AgentLoop {
         let Some(policy) = &self.policy else {
             return failed("Context compaction is not available".into());
         };
-        let context = self.history.context(&self.timeline, through).await?;
-        let history =
-            (self.history.render)(&context).map_err(|error| AgentError::fault("Loop", error))?;
+        let (context, history) = self
+            .history
+            .rendered_context(&self.timeline, through)
+            .await?;
         let Some(request) = configured_request(&context, &history) else {
             return failed("Context is not configured; adopt a model first".into());
         };
@@ -661,11 +662,12 @@ impl AgentLoop {
                     source.request_id = request_id.clone();
                     return Ok(source);
                 }
-                let prefix = owner.history.context(&owner.timeline, through).await?;
+                let (prefix, entries) = owner
+                    .history
+                    .rendered_context(&owner.timeline, through)
+                    .await?;
                 let configuration = context_configuration(&prefix);
                 let prompt = PromptSnapshot::from_context(&prefix).revision;
-                let entries = (owner.history.render)(&prefix)
-                    .map_err(|error| AgentError::fault("Loop", error))?;
                 let history = context_messages(&prefix, &entries);
                 let settings = match &configuration {
                     Some(data) => crate::host::ModelSettings {
@@ -700,7 +702,7 @@ impl AgentLoop {
                                     .map_err(|error| AgentError::fault("Loop", error.to_string()))
                             })?;
                         settings.system =
-                            Some(crate::history::with_input_guide(settings.system, &owner.guide.compose(&owner.branch)));
+                            Some(owner.guide.compose_system(&owner.branch, settings.system));
                         settings
                     }
                 };

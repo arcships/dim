@@ -519,7 +519,6 @@ impl TimelineTree {
         });
         let owner = self.weak.upgrade().expect("tree owns branch creation");
         self.builds.spawn(async move {
-            let deadline = tokio::time::Instant::now() + owner.factory.startup_timeout();
             let mut acquired = None;
             let mut cleanup_failure = None;
             let mut started = false;
@@ -530,23 +529,20 @@ impl TimelineTree {
                         _ = owner.cancel.cancelled() => {
                             return Err(AgentError::Cancelled("branch creation".into()));
                         }
-                        _ = tokio::time::sleep_until(deadline) => {
-                            return Err(AgentError::Build("branch opening timed out".into()));
-                        }
                     }
                 }
                 if let Some((timeline, through)) = validate {
                     let context = tokio::select! {
-                        result = crate::history::read_context(&timeline, through) => result?,
+                        result = tokio::time::timeout(owner.factory.startup_timeout(), crate::history::read_context(&timeline, through)) =>
+                            result.map_err(|_| AgentError::Build("branch opening timed out".into()))??,
                         _ = owner.cancel.cancelled() => return Err(AgentError::Cancelled("branch creation".into())),
-                        _ = tokio::time::sleep_until(deadline) => return Err(AgentError::Build("branch opening timed out".into())),
                     };
                     crate::history::validate_context_boundary(&context)
                         .map_err(AgentError::InvalidInput)?;
                 }
                 let built = owner
                     .factory
-                    .build_until(id.clone(), ancestors, owner.cancel.child_token(), deadline)
+                    .build(id.clone(), ancestors, owner.cancel.child_token())
                     .await;
                 let context = match built {
                     Err(error) => {
@@ -568,9 +564,9 @@ impl TimelineTree {
                     Opening::Start { start, first } => (EventKind::BranchStart(start), first),
                     Opening::Resume { head, lines } => {
                         let history = tokio::select! {
-                            result = context.timeline().local(..=head) => result?,
+                            result = tokio::time::timeout(owner.factory.startup_timeout(), context.timeline().local(..=head)) =>
+                                result.map_err(|_| AgentError::Build("branch opening timed out".into()))??,
                             _ = owner.cancel.cancelled() => return Err(AgentError::Cancelled("branch creation".into())),
-                            _ = tokio::time::sleep_until(deadline) => return Err(AgentError::Build("branch opening timed out".into())),
                         };
                         let mut facts = LineFacts::default();
                         for event in &history {
@@ -595,31 +591,9 @@ impl TimelineTree {
                     }
                 };
                 let opened = context.timeline().append(opening.into())?;
-                let mut dispatch = context.branch().dispatch_watch();
-                loop {
-                    let state = dispatch.borrow_and_update().clone();
-                    if let Some(error) = state.failure {
-                        return Err(error);
-                    }
-                    if state.sequence >= opened.sequence {
-                        break;
-                    }
-                    tokio::select! {
-                        changed = dispatch.changed() => if changed.is_err() {
-                            return Err(AgentError::Closed("branch dispatch".into()));
-                        },
-                        _ = owner.cancel.cancelled() => {
-                            return Err(AgentError::Cancelled("branch creation".into()));
-                        }
-                        _ = tokio::time::sleep_until(deadline) => {
-                            return Err(AgentError::Build("branch opening timed out".into()));
-                        }
-                    }
-                }
                 tokio::select! {
-                    result = context.finish_opening() => result?,
+                    result = context.finish_opening(opened.sequence, owner.factory.startup_timeout()) => result?,
                     _ = owner.cancel.cancelled() => return Err(AgentError::Cancelled("branch creation".into())),
-                    _ = tokio::time::sleep_until(deadline) => return Err(AgentError::Build("branch opening timed out".into())),
                 }
                 if let Some(first) = first {
                     context.branch().input(first).await?;
@@ -1588,6 +1562,7 @@ pub struct TimelineTreePlugin {
     factory: Key<TimelineFactory>,
     store: Key<dyn TimelineStore>,
     identity: Key<SessionIdentity>,
+    guide: Key<GuideEntries>,
 }
 impl TimelineTreePlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
@@ -1598,6 +1573,7 @@ impl TimelineTreePlugin {
             factory: names.key()?,
             store: names.key()?,
             identity: names.key()?,
+            guide: names.key()?,
         })
     }
 }
@@ -1610,6 +1586,7 @@ impl DynPlugin for TimelineTreePlugin {
             self.factory.erase(),
             self.store.erase(),
             self.identity.erase(),
+            self.guide.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -1617,6 +1594,16 @@ impl DynPlugin for TimelineTreePlugin {
             let factory = ctx.require_at(&self.factory)?;
             let store = ctx.require_at(&self.store)?;
             let identity = ctx.require_at(&self.identity)?;
+            let guide = ctx.require_at(&self.guide)?;
+            guide.register(
+                ctx,
+                GuideScope::Session,
+                GuideEntry {
+                    markers: vec!["dim-branch-line".into()],
+                    order: 40,
+                    text: IDENTITY_ENTRY.into(),
+                },
+            )?;
             let tree = TimelineTree::new(factory, store, identity.session_id.clone());
             let owner = tree.clone();
             ctx.effect(move || async move { owner.close().await.map_err(Into::into) })?;
@@ -1635,12 +1622,19 @@ impl DynPlugin for TimelineTreePlugin {
 pub struct BranchToolPlugin {
     tree: Key<TreeCommands>,
     tools: Key<ToolRegistry>,
+    config: BranchToolConfig,
 }
 impl BranchToolPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
+        Self::with_config(names, BranchToolConfig::default())
+    }
+    /// The plugin with a candidate's policy text at its factory
+    /// configuration ([timeline branches §12.4](../../../docs/design/timeline-branches.md#124-texts-and-their-classes)).
+    pub fn with_config(names: &Names<'_>, config: BranchToolConfig) -> rutis::Result<Self> {
         Ok(Self {
             tree: names.key()?,
             tools: names.key()?,
+            config,
         })
     }
 }
@@ -1658,7 +1652,12 @@ impl DynPlugin for BranchToolPlugin {
             tools.register(
                 ctx,
                 ToolContribution {
-                    definition: branch_definition(),
+                    definition: branch_definition(
+                        self.config
+                            .description
+                            .as_deref()
+                            .unwrap_or(BRANCH_TOOL_DESCRIPTION),
+                    ),
                     handler: Arc::new(BranchTool { tree }),
                 },
             )?;
@@ -1703,8 +1702,11 @@ struct LineView {
     /// The line committed its own `branch/end`: it is ending.
     ending: bool,
 }
-/// `<dim-branch-line>` and `<dim-branch-lines>`.
-const BRANCH_LINE_ENTRY: &str = r#"<dim-branch-line branch="C" parent="main" source="tool">: which line of this session you are, placed by the runtime at the start of a line's own history. On main, dim-branch-lines lists the lines you opened that are still open. A later block of either name replaces the earlier one; both are state about the lines, not requests."#;
+/// `<dim-branch-line>`, written by TimelineTree at the start of every child.
+const IDENTITY_ENTRY: &str = r#"<dim-branch-line branch="C" parent="main" source="tool">: which line of this session you are, placed by the runtime at the start of a line's own history. A later block of this name replaces the earlier one; it is state about the line, not a request."#;
+
+/// `<dim-branch-lines>`, the roster BranchLine writes on main.
+const ROSTER_ENTRY: &str = r#"<dim-branch-lines branch="main">: on main, the runtime lists the lines you opened that are still open, each with the first line of its purpose. A later block of this name replaces the earlier one; it is state about the lines, not a request."#;
 
 /// `<dim-branch-message>`, `<dim-branch-idle>` and `<dim-branch-ended>`.
 const BRANCH_MESSAGE_ENTRY: &str = r#"<dim-branch-message from="C" to="main">: a message from another line of this session, in that line's own words and not the operator's. dim-branch-idle and dim-branch-ended are the runtime's reports about a line you opened: information, not requests."#;
@@ -1751,11 +1753,7 @@ impl DynPlugin for BranchLinePlugin {
             let guide = ctx.require_at(&self.guide)?;
             let scope = GuideScope::Branch(identity.branch_id.clone());
             for (markers, order, text) in [
-                (
-                    vec!["dim-branch-line", "dim-branch-lines"],
-                    40,
-                    BRANCH_LINE_ENTRY,
-                ),
+                (vec!["dim-branch-lines"], 40, ROSTER_ENTRY),
                 (
                     vec!["dim-branch-message", "dim-branch-idle", "dim-branch-ended"],
                     50,
@@ -2638,7 +2636,7 @@ fn tool_line_identity(line: &str, parent: &str, prompt: &str) -> InputBlock {
         format!("How you work with {parent}:"),
         format!("- Work on this purpose only. You cannot open lines; if more parallel work is needed, tell {parent}."),
         format!("- Tell {parent} with the branch tool (message, to \"{parent}\"). Use mode \"steer\" for what {parent} must act on now: a finding that changes its work or another line's, a blocking question, a conflict. Use \"append\" for progress {parent} should see at its next step. Do not repeat what {parent} already knows: when several steps give the same result, send one message for the run of them, and say only what changes what {parent} does or what it cannot see for itself."),
-        format!("- You share the workspace with {parent} and its other lines. Change only the files {parent} gave you; before changing any other file, tell {parent} which. If edit or write fails with file_modified_since_read, another line may have changed the file: read it again and tell {parent} before you continue."),
+        format!("- You share the workspace with {parent} and its other lines. Change only the files {parent} gave you; before changing any other file, tell {parent} which. If edit or write fails because the file was modified after it was last read, another line may have changed the file: read it again and tell {parent} before you continue."),
         "- The user can talk to you directly. Answer the user, and ask with ask_user when only the user can decide.".to_string(),
         format!("- When your purpose is done, or cannot be done, call the branch tool with action \"end\" and content saying what you found, did, changed and left undone. If you already told {parent} that in a message, your end content carries only what is new. That is your last action; {parent} receives it."),
     ]
@@ -2666,12 +2664,27 @@ fn host_line_identity(line: &str, parent: &str) -> InputBlock {
     )
 }
 
-fn branch_definition() -> ToolDefinition {
+/// The `branch` tool's description: its policy sentences are the coordination
+/// text for `main` ([timeline branches §12.4](../../../docs/design/timeline-branches.md#124-texts-and-their-classes)),
+/// replaceable at [`BranchToolConfig`].
+const BRANCH_TOOL_DESCRIPTION: &str = "Work with the other lines of this session. A line is you: it starts from your history at the point it is opened, then works in parallel on its own line. It is not a helper with its own memory, and it owes you no result; you and it keep each other informed while you work.\n- create (main only): open a line to work on prompt in parallel. Open one line per part that can go on at the same time as the rest — separate files, a separate question, or a second approach — instead of doing those parts one after another yourself; not for a single quick edit, nor when your next step needs its result. Write prompt as a brief to yourself: the purpose, what you already know that it needs, which files or area are its own, and when it should tell you or end. Returns the line's id.\n- message: send content to a line you opened, or to the line that opened you. Mode \"append\" (default) reaches the receiver at its next step without interrupting it and does not wake an idle line. Use \"steer\" when the receiver must act now or is idle.\n- read: show the recent activity of a line you opened, also after it ended. Pass nextCursor as after to continue.\n- end: on a line opened with create, end your own line. content is your final message to the line that opened you: what you found, did, changed and left undone. It is your last action.\nLines talk only with the line that opened them and the lines they opened.";
+
+/// Factory configuration of the branch tool ([timeline branches §12.4](../../../docs/design/timeline-branches.md#124-texts-and-their-classes)).
+/// The product sets none of it, so the built-in text is in force.
+#[derive(Clone, Default)]
+pub struct BranchToolConfig {
+    /// The tool description in place of [`BRANCH_TOOL_DESCRIPTION`]. A
+    /// candidate keeps the description's protocol sentences byte-identical
+    /// ([timeline branches §12.4](../../../docs/design/timeline-branches.md#124-texts-and-their-classes)).
+    pub description: Option<Arc<str>>,
+}
+
+fn branch_definition(description: &str) -> ToolDefinition {
     ToolDefinition {
         risk: Some("session".into()),
         ..crate::tool_registry::definition(
             "branch",
-            "Work with the other lines of this session. A line is you: it starts from your history at the point it is opened, then works in parallel on its own line. It is not a helper with its own memory, and it owes you no result; you and it keep each other informed while you work.\n- create (main only): open a line to work on prompt in parallel. Open one line per part that can go on at the same time as the rest — separate files, a separate question, or a second approach — instead of doing those parts one after another yourself; not for a single quick edit, nor when your next step needs its result. Write prompt as a brief to yourself: the purpose, what you already know that it needs, which files or area are its own, and when it should tell you or end. Returns the line's id.\n- message: send content to a line you opened, or to the line that opened you. Mode \"append\" (default) reaches the receiver at its next step without interrupting it and does not wake an idle line. Use \"steer\" when the receiver must act now or is idle.\n- read: show the recent activity of a line you opened, also after it ended. Pass nextCursor as after to continue.\n- end: on a line opened with create, end your own line. content is your final message to the line that opened you: what you found, did, changed and left undone. It is your last action.\nLines talk only with the line that opened them and the lines they opened.",
+            description,
             serde_json::json!({"type":"object","required":["action"],"additionalProperties":false,"properties":{
                 "action":{"type":"string","enum":["create","message","read","end"],"description":"What the call does."},
                 "prompt":{"type":"string","description":"create: the purpose of the new line."},

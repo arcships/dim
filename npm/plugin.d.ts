@@ -291,6 +291,28 @@ export interface ToolRegistry {
   register(declaration: ToolDefinition, execute: ToolExecute): Promise<void>;
 }
 
+/** One entry of the input guide: the markers it explains, its position among
+ * the entries (ties break by the first marker's name) and its text, verbatim. */
+export interface GuideEntry {
+  markers: string[];
+  order: number;
+  text: string;
+}
+/** Where an entry applies: every branch of the Session, or one branch by id. */
+export type GuideScope = 'session' | { branch: string };
+/** What a refused registration throws; the codes are the ones the registry
+ * carries, `closed` when the effect cannot outlive its caller, and
+ * `no_caller_row` for a call made outside a row. */
+export interface GuideEntryError extends Error {
+  code: 'invalid_entry' | 'duplicate_marker' | 'too_large' | 'closed' | 'no_caller_row';
+}
+/** Session service `guideEntries`: a Session row registers the entry for a
+ * marker it writes, which stays registered until the row unloads. The call
+ * resolves with no value; a refusal throws a `GuideEntryError`. */
+export interface GuideEntries {
+  register(scope: GuideScope, entry: GuideEntry): Promise<void>;
+}
+
 export interface MethodDeclaration {
   name: string;
   mutating: boolean;

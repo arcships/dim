@@ -27,9 +27,10 @@ commits and persists the terminal result before releasing its FileStorage child.
 
 ## Native adapter
 
-The adapter targets native format 21, initialized and checked by the existing
+The adapter targets native format 25, initialized and checked by the existing
 `SqliteStorage` API. It never sends source schemas to business owners. It rejects
-unsupported formats, including future format 22, without downgrading or removing them.
+unsupported formats without downgrading or removing them. The Session catalog row is
+initialized through storage in the same transaction as the imported Session rows.
 
 Sessions use existing `SessionConfig`, ownership and branch records. The adapter
 writes canonical event/output row encodings and complete message batches. Imported
@@ -79,7 +80,7 @@ and receipts commit together. Client preference files use atomic replacement and
 an intent record; an ambiguous interrupted replacement is a conflict, preventing
 replay over a later clear. Explicit shell auto-detection is a configured choice.
 Skills IDs and command permission groups require exact compatible semantics. Web
-imports explicit Brave settings and its enabled choice; unsupported adapters stay
+imports `dim-oauth` and explicit Brave settings and its enabled choice; unsupported adapters stay
 at source. Calendar-compatible schedules retain their enabled state and map bound
 Sessions through successful receipts.
 

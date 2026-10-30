@@ -64,6 +64,12 @@ impl dim_agent_runtime::TimelineStore for CountingTimelineStore {
     ) -> dim_agent_runtime::BoxFuture<'a, dim_agent_runtime::Result<()>> {
         self.memory.rollback_session(id)
     }
+    fn release_session<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> dim_agent_runtime::BoxFuture<'a, dim_agent_runtime::Result<()>> {
+        self.memory.release_session(id)
+    }
     fn session_config<'a>(
         &'a self,
         id: &'a str,
@@ -1278,6 +1284,79 @@ async fn leader_delegates_and_team_members_communicate() {
             && guidance.contains("is not an agentId"),
         "{guidance}"
     );
+    let schema = serde_json::to_value(
+        &leader_tools
+            .iter()
+            .find(|tool| tool.name == "agent")
+            .unwrap()
+            .input_schema,
+    )
+    .unwrap();
+    for (action, required) in [
+        ("request", json!(["action", "prompt", "agentId"])),
+        ("cancel", json!(["action", "agentId", "sessionId"])),
+        ("close", json!(["action", "agentId", "sessionId"])),
+        (
+            "message",
+            json!(["action", "agentId", "sessionId", "content"]),
+        ),
+        ("read", json!(["action", "agentId", "sessionId"])),
+        ("inspect", json!(["action", "agentId"])),
+        ("result", json!(["action", "resultId"])),
+        ("list", json!(["action"])),
+    ] {
+        let variant = schema["anyOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|variant| variant["properties"]["action"]["enum"][0] == action)
+            .unwrap();
+        assert_eq!(variant["required"], required, "{action}");
+        for field in required.as_array().unwrap() {
+            assert!(
+                variant["properties"].get(field.as_str().unwrap()).is_some(),
+                "{variant}"
+            );
+        }
+    }
+    assert!(
+        schema["anyOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|variant| variant["required"] == json!(["action", "prompt", "profile"]))
+    );
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(!validator.is_valid(&json!({"action":"cancel","agentId":"exec-unknown"})));
+    assert!(!validator.is_valid(&json!({"action":"list","agentId":"unexpected"})));
+    assert!(!validator.is_valid(&json!({"action":"request","prompt":"work","agentId":default_agent,"profile":{"name":"worker","description":"","systemPrompt":"work","tools":[]}})));
+    assert!(validator.is_valid(
+        &json!({"action":"request","prompt":"work","agentId":default_agent,"sessionId":member})
+    ));
+    assert!(validator.is_valid(
+        &json!({"action":"read","agentId":default_agent,"sessionId":member,"after":1,"limit":2})
+    ));
+    assert!(
+        validator.is_valid(&json!({"action":"cancel","agentId":default_agent,"sessionId":member}))
+    );
+    assert!(validator.is_valid(&json!({"action":"request","prompt":"work","profile":{"name":"worker","description":"","systemPrompt":"work","tools":[]}})));
+    let before = facts(&lead_session).await;
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action":"cancel","agentId":"exec-unknown"})),
+        "queue",
+    )
+    .await;
+    idle(&mut client, &lead).await;
+    let rejected = last_error(&events(&lead_session).await);
+    assert!(
+        rejected.contains("sessionId")
+            && rejected.contains("exec_stop")
+            && rejected.contains("no member action was performed"),
+        "{rejected}"
+    );
+    assert_eq!(facts(&lead_session).await, before);
 
     server.shutdown();
     server.join().await.unwrap();
@@ -2203,6 +2282,13 @@ async fn member_work_absorbs_messages_and_spans_turns() {
         split_call,
         "a page must start with a result of an earlier call"
     );
+    assert!(
+        paged
+            .iter()
+            .filter(|item| item["type"] == "tool_result")
+            .all(|item| item["name"].is_string()),
+        "a result names its call however far before the page it is"
+    );
     assert_eq!(after, end);
     assert_eq!(&paged, full["events"].as_array().unwrap());
 
@@ -2233,6 +2319,7 @@ async fn a_member_stop_reports_cancellation_and_a_later_steer_does_not_reopen_th
         WorkspaceToolsConfig {
             output_root: home.0.join("command-output"),
         },
+        dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
     );
     defaults::mock_model_hosts(&mut builder);
     dim_app_server::permission_rules::install(&mut builder);
@@ -2435,8 +2522,9 @@ async fn a_member_stop_reports_cancellation_and_a_later_steer_does_not_reopen_th
 }
 
 /// Echoes like the mock host, except that a request whose last message asks
-/// for `partial-call` starts an `echo` call and streams nothing more until it
-/// is cancelled, leaving a call that only started.
+/// for `partial-call` or `many-calls` starts that many `echo` calls and
+/// streams nothing more until it is cancelled, leaving calls that only
+/// started.
 struct PartialCallModel;
 impl dim_agent_capabilities::host::ModelDriver for PartialCallModel {
     fn invoke(
@@ -2447,30 +2535,40 @@ impl dim_agent_capabilities::host::ModelDriver for PartialCallModel {
     ) -> dim_agent_capabilities::host::HostFuture<'_, dim_agent_capabilities::host::ModelStream>
     {
         use dim_agent_capabilities::host::{HostError, ModelChunk, ModelStream};
-        let partial = request.messages.last().is_some_and(|message| {
-            let text = serde_json::to_string(message).unwrap();
-            message.role == dim_agent_types::Role::User
-                && text.contains("<dim-agent-message ")
-                && text.contains("partial-call")
-        });
-        if !partial {
+        let calls = request
+            .messages
+            .last()
+            .filter(|message| message.role == dim_agent_types::Role::User)
+            .map(|message| serde_json::to_string(message).unwrap())
+            .filter(|text| text.contains("<dim-agent-message "))
+            .and_then(|text| {
+                if text.contains("many-calls") {
+                    Some(MANY_CALLS)
+                } else if text.contains("partial-call") {
+                    Some(UNFINISHED_CALLS)
+                } else {
+                    None
+                }
+            });
+        let Some(calls) = calls else {
             return dim_agent_capabilities::host::ModelDriver::invoke(
                 &dim_agent_capabilities::adapters::EchoModel,
                 request,
                 connection,
                 cancel,
             );
-        }
+        };
         Box::pin(async move {
-            let started = futures_util::stream::iter(vec![
-                Ok(ModelChunk::MessageStart {
-                    message_id: "partial".into(),
-                }),
+            let mut started = vec![Ok(ModelChunk::MessageStart {
+                message_id: "partial".into(),
+            })];
+            started.extend((0..calls).map(|at| {
                 Ok(ModelChunk::ToolStart {
-                    id: "unfinished".into(),
+                    id: format!("unfinished-{at}"),
                     name: "echo".into(),
-                }),
-            ]);
+                })
+            }));
+            let started = futures_util::stream::iter(started);
             let usage = futures_util::stream::iter((0..PARTIAL_USAGE).map(|_| {
                 Ok(ModelChunk::Usage(
                     serde_json::from_value(
@@ -2491,6 +2589,12 @@ impl dim_agent_capabilities::host::ModelDriver for PartialCallModel {
 
 /// More than one search step, and more than a read page holds.
 const PARTIAL_USAGE: u64 = 300;
+
+/// The calls one request starts and leaves undispatched.
+const UNFINISHED_CALLS: usize = 3;
+
+/// More calls than one statement may name; the store reads them in chunks.
+const MANY_CALLS: usize = 520;
 
 /// A result closing undispatched calls (ADR agent-029) names them from their
 /// `step/tool-use-start`, however far before the read page it is.
@@ -2589,6 +2693,10 @@ async fn undispatched_results_name_calls_from_their_starts() {
     .await;
     idle(&mut client, &lead).await;
     let after = start.sequence + PARTIAL_USAGE - 1;
+    let collaboration = server
+        .service::<dim_app_server::collaboration::Collaboration>()
+        .expect("the collaboration service");
+    collaboration.take_reads();
     say(
         &mut client,
         &lead,
@@ -2606,11 +2714,112 @@ async fn undispatched_results_name_calls_from_their_starts() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|item| item["type"] == "tool_result" && item["callId"] == "unfinished")
+        .filter(|item| item["type"] == "tool_result")
         .collect();
-    assert_eq!(closed.len(), 1, "{read}");
-    assert_eq!(closed[0]["name"], "echo");
-    assert_eq!(closed[0]["status"], "error");
+    assert_eq!(closed.len(), UNFINISHED_CALLS, "{read}");
+    for (at, item) in closed.iter().enumerate() {
+        assert_eq!(item["callId"], format!("unfinished-{at}"));
+        assert_eq!(item["name"], "echo", "{item}");
+        assert_eq!(item["status"], "error", "{item}");
+    }
+    assert_eq!(
+        collaboration.take_reads(),
+        2,
+        "one page and one read of every start it names"
+    );
+    say(
+        &mut client,
+        &lead,
+        tool(
+            json!({"action": "read", "agentId": holder, "sessionId": member,
+            "after": through, "limit": 200}),
+        ),
+        "queue",
+    )
+    .await;
+    idle(&mut client, &lead).await;
+    assert_eq!(
+        collaboration.take_reads(),
+        1,
+        "a page without results reads only itself"
+    );
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "request", "agentId": holder, "prompt": "many-calls"})),
+        "queue",
+    )
+    .await;
+    let many = next_member(&lead_session, 1).await;
+    let many_session = agent.get_session(&many).unwrap();
+    poll("every started call", async || {
+        let events = events(&many_session).await;
+        let started = events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::ToolUseStart(_)))
+            .count();
+        let usage = events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::ModelUsage(_)))
+            .count() as u64;
+        (started == MANY_CALLS && usage == PARTIAL_USAGE).then_some(())
+    })
+    .await;
+    assert_ok(
+        &client
+            .rpc(
+                "session.stop",
+                json!({"sessionId": many, "branchId": "main", "reason": "stopped"}),
+            )
+            .await,
+    );
+    let closed_at = poll("published many-call result", async || {
+        events(&many_session)
+            .await
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::ToolResult(data) if data.call_event_id.is_none() => {
+                    Some((event.sequence, data.results.len()))
+                }
+                _ => None,
+            })
+    })
+    .await;
+    assert_eq!(closed_at.1, MANY_CALLS);
+    poll("two member reports", async || {
+        (agent_results(&events(&lead_session).await).len() == 2).then_some(())
+    })
+    .await;
+    idle(&mut client, &lead).await;
+    collaboration.take_reads();
+    say(
+        &mut client,
+        &lead,
+        tool(
+            json!({"action": "read", "agentId": holder, "sessionId": many,
+            "after": closed_at.0 - 1, "limit": 200}),
+        ),
+        "queue",
+    )
+    .await;
+    idle(&mut client, &lead).await;
+    let page = last_ok(&events(&lead_session).await);
+    let named: Vec<_> = page["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "tool_result")
+        .collect();
+    assert_eq!(named.len(), MANY_CALLS, "{page}");
+    for (at, item) in named.iter().enumerate() {
+        assert_eq!(item["callId"], format!("unfinished-{at}"));
+        assert_eq!(item["name"], "echo", "{item}");
+    }
+    assert_eq!(
+        collaboration.take_reads(),
+        2,
+        "one page and one read of the starts"
+    );
     server.shutdown();
     server.join().await.unwrap();
 }

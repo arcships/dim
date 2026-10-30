@@ -981,6 +981,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_agent_runtime::config::BranchLifecycle@main",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_runtime::config::TimelineIdentity@main",
             "scope": null,
             "status": "Ready"
@@ -1025,6 +1030,12 @@
             "service": "dim_agent_capabilities::prompt_guide::GuideEntries@session",
             "scope": null,
             "provider": 27,
+            "generation": 1
+          },
+          {
+            "service": "dim_agent_runtime::config::BranchLifecycle@main",
+            "scope": null,
+            "provider": 33,
             "generation": 1
           },
           {
@@ -1074,6 +1085,12 @@
           {
             "service": "dim_agent_capabilities::prompt_guide::GuideEntries@session",
             "provider": 27,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_agent_runtime::config::BranchLifecycle@main",
+            "provider": 33,
             "declared": true,
             "external": true
           },
@@ -1557,6 +1574,11 @@
         "generation": 1,
         "injects": [
           {
+            "service": "dim_agent_capabilities::prompt_guide::GuideEntries@session",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_runtime::assembly::TimelineFactory@session",
             "scope": null,
             "status": "Ready"
@@ -1573,6 +1595,12 @@
           }
         ],
         "resolved": [
+          {
+            "service": "dim_agent_capabilities::prompt_guide::GuideEntries@session",
+            "scope": null,
+            "provider": 27,
+            "generation": 1
+          },
           {
             "service": "dim_agent_runtime::assembly::TimelineFactory@session",
             "scope": null,
@@ -1593,6 +1621,12 @@
           }
         ],
         "reads": [
+          {
+            "service": "dim_agent_capabilities::prompt_guide::GuideEntries@session",
+            "provider": 27,
+            "declared": true,
+            "external": true
+          },
           {
             "service": "dim_agent_runtime::assembly::TimelineFactory@session",
             "provider": 21,
@@ -1940,6 +1974,12 @@
       {
         "service": "dyn dim_agent_runtime::timeline_store::TimelineStore@session",
         "provider": 21,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#guideEntries@session",
+        "provider": 27,
         "generation": 1,
         "removing": false
       },

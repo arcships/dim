@@ -8,6 +8,88 @@ CLI 接口；当前可执行文件由[原生 CLI 合同](../../../crates/dim-cli
 多行/粘贴编辑器、无头 exec 的图片参数、剪贴板/文件插入、补全和拖入路径已实现。附件合同记录了
 各原生平台的验收证据和尚未完成的检查。
 
+## 命令菜单
+
+scrollback 与 fullscreen TUI 都按分类分组，分类及分类内的命令名按其英文标识的字母顺序排列。
+搜索时匹配程度优先，同等匹配按分类和命令名排序。
+退出和挂起必须完整匹配命令名或别名才执行：选择不完整匹配时只补全命令名并保留输入框。
+完整输入的命令（包括隐藏命令）仍走各自的处理流程。
+菜单中的权限入口为 `/approvals`；`/approval` 隐藏，但完整输入后仍可打开自己的菜单。
+菜单只列出斜杠命令，移除中断、steer、选择较早消息、滚动到顶部或底部等仅由按键触发的操作。
+`/keys` 仍列出这些快捷键：两种模式均支持 `Esc` 和 `Ctrl+S`；fullscreen 还支持
+`Tab`、`Home`、`End`，其中 `Home/End` 仅在草稿为空时滚动历史。
+
+```text
+Commands
+  app     /exit        exit
+  app     /keys        show the key bindings
+  model   /approvals   set the session's permission preset
+
+/ + Enter          -> /exit (completion only)
+/exit + Enter      -> exit
+/approval + Enter  -> Ask / Full access menu
+
+Esc     interrupt the run
+Ctrl+S  steer with the next queued message
+Tab     pick an earlier message to edit or quote (fullscreen)
+Home    scroll to the top (fullscreen, empty draft)
+End     scroll to the bottom (fullscreen, empty draft)
+```
+
+## 命令隔离设置
+
+现有 `/settings` 面板在 Permissions 下、`Tool approvals` 旁增加独立的 `Command isolation` 行。
+这是唯一的用户配置入口，不新增原生 `dimcode isolation` 命令或 `/isolation` 斜杠命令。
+即使模型命令无法运行，该入口仍通过本地守护进程连接使用 HostPlatform 的
+[可信本地策略管理](../../design/host-platform-isolation.md#trusted-local-policy-management)。
+`/approvals` 输出指向 `/settings > Command isolation`；隔离不是另一种 Permission 预设。
+
+```text
+Settings > Command isolation
+  Permission preset   full-access (admission only)
+  Execution node      local
+  Isolation tier      workspace >  [workspace | network | host]
+  Wider requests      ask       >  [ask | deny]
+  Advanced                     >  Read paths / Write paths / Environment names
+  Policy source       defaults
+  Policy path         <execution-home>/host-isolation.json
+
+  Save
+  Reset to defaults
+  Applies to new commands and new persistent shells.
+```
+
+打开面板时分别读取策略快照和当前 `main` 分支的 Permission 预设。快照的 revision 随草稿保留，
+不作为用户输入字段。隔离层级和扩大范围请求的选择器打开时预选草稿值，字段省略时预选其有效值，
+并且只修改草稿。编辑版本 1 策略的
+tier/escalation 时，显式将其有效设置转换为版本 2，并保留可选列表。Save 提交完整草稿和
+读取时的 revision；Reset to defaults 先要求确认，再携带该 revision 由所有者重置。
+两种操作都不会自动重试过期 revision。发生冲突时保留草稿，显示错误并提供 Reload；
+Reload 明确丢弃草稿。保存或重置成功后，以返回的快照替换草稿，并提示设置从下一个进程起生效。
+Esc/Back 返回 Settings；有未保存修改时先询问是否丢弃。
+
+Advanced 为 `readOnlyPaths`、`writablePaths` 和环境变量**名称**提供三个列表编辑器。
+每个编辑器都有与显式列表不同的 `Use defaults` 选项、Add 输入、条目编辑/删除和清空列表操作；
+显式空列表不授予任何访问。面板说明显式列表会替换默认值。绝不读取或显示环境变量值。
+保存一个字段时保留无关的显式设置和省略的列表。校验失败时保留草稿并指出错误字段，
+不改变已保存策略；不需要直接编辑生效策略 JSON、外部临时文件、导出入口或强制覆盖选项。
+
+复用现有设置和列表面板的导航：方向键选择，Enter 打开选择器/编辑器或执行操作，Esc 返回上一级。
+只有活动面板接收输入；确认或输入浮层结束后返回所属面板。长路径换行或滚动，不遮住操作控件。
+小终端复用现有面板的视口和滚动行为，不另设全屏布局。加载时禁用修改；读取失败提供 Retry/Back，
+不伪造默认快照；写入失败保留编辑。管理方法不可用时显示守护进程不支持的错误，
+不回退到模型执行命令。
+
+修改策略是本地用户的显式配置操作，不是模型命令审批。`ask` 委托 Permission/Approval 决定，
+并不总是弹出询问。`host` 表示普通守护进程用户的访问权限；`network` 只改变网络访问，
+不改变文件系统授权或认证。
+
+验证独立于 `./dev` 覆盖全新原生启动：默认交互审批显示 `network`/`host`，允许后执行载荷，
+拒绝则阻止载荷；版本 2 省略 escalation 时使用 `ask`，显式 deny 和版本 1 仍保持限制。
+流程覆盖还包括 `full-access`、允许的工具和命令规则、本地专用管理、策略文件缺失、保存时保留列表、
+重置、非法字段/根路径及 revision 冲突。Homebrew 可执行文件的对照用例区分网络访问和可执行文件访问，
+不使用真实凭据。
+
 ## 命令
 
 | 入口 | 行为 |
@@ -395,7 +477,6 @@ CLI 报告规则的结果，不发送回答。Ctrl+C 之后不再发起新的写
 | --- | --- |
 | 由审阅模型代替用户回答审批 | 一个通过 Approval 公开的回答操作作答的审批回答者，带自己的模型调用和设计，类似 Collaboration 的领导者路径；不是 CLI 改动 |
 | 只在一个 Session 内记住的允许 | 一条记录下来的事实，或 Session 作用域的规则来源（F2 §10.2 暂缓了按工作区的用户规则）；CLI 进程内的记忆会在没有记录决定的情况下代为回答 |
-| 开关以外的隔离字段 | `/settings` 只开关本机 `host-isolation.json` 的沙箱，并保留其余字段。路径、升级和显式层级仍需手改文件；远程客户端仍需要带修订号的 HostPlatform 方法 |
 | Shift+Tab 循环切换 | 只涉及 CLI：编辑器动作结果和确认路径（决定 4） |
 | `--allowed-tools`/`--disallowed-tools` | 一个工具目录读取接口，用于在参数边界校验名字（决定 2） |
 | 回合运行中使用 `/approvals` | 只涉及 CLI：运行中的回合读取普通行并回答审批；面板调用需要加入它的多路复用循环 |

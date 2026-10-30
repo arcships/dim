@@ -51,6 +51,8 @@ mod agents;
 #[path = "transport_flow/collaboration.rs"]
 mod collaboration;
 
+#[path = "transport_flow/catalog.rs"]
+mod catalog;
 #[path = "transport_flow/native_storage.rs"]
 mod native_storage;
 
@@ -75,8 +77,14 @@ mod management;
 #[path = "transport_flow/permission_rules.rs"]
 mod permission_rules;
 
+#[path = "transport_flow/isolation_policy.rs"]
+mod isolation_policy;
+
 #[path = "transport_flow/session_methods.rs"]
 mod session_methods;
+
+#[path = "transport_flow/session_ids.rs"]
+mod session_ids;
 
 #[path = "transport_flow/branch_typescript.rs"]
 mod branch_typescript;
@@ -87,6 +95,8 @@ mod runtime_manager;
 mod foreign_rows;
 #[path = "transport_flow/goal.rs"]
 mod goal;
+#[path = "transport_flow/guide_entries.rs"]
+mod guide_entries;
 #[path = "transport_flow/plugin_manager.rs"]
 mod plugin_manager;
 #[path = "transport_flow/process_typescript.rs"]

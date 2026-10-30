@@ -501,6 +501,26 @@ impl Timeline {
                 .await?,
         ))
     }
+    /// The event a context checkpoint is anchored at, out of the events of
+    /// `branch` up to `cut`. The point read decodes one row. A row inside an
+    /// atomic batch cannot end a range, so an invalid point read falls back to
+    /// the segment read this check made before the point read existed.
+    async fn anchor(
+        &self,
+        branch: &str,
+        sequence: u64,
+        cut: u64,
+    ) -> Result<Option<Arc<AgentEvent>>> {
+        match self.records(branch, sequence, sequence).await {
+            Ok(records) => Ok(records.into_iter().next()),
+            Err(AgentError::InvalidInput(_)) => Ok(self
+                .records(branch, sequence, cut)
+                .await?
+                .into_iter()
+                .next()),
+            Err(error) => Err(error),
+        }
+    }
     /// This branch's stored events in `start..=end`, `end` at most the
     /// published sequence. While the branch opens, the part up to the head
     /// the Timeline was built at is served from the opening's copy and only
@@ -757,12 +777,9 @@ impl Timeline {
             {
                 continue;
             }
-            let anchor = self
-                .records(branch, snapshot.sequence, *cut)
-                .await?
-                .into_iter()
-                .next();
-            let Some(anchor) = anchor else { continue };
+            let Some(anchor) = self.anchor(branch, snapshot.sequence, *cut).await? else {
+                continue;
+            };
             if anchor.id != snapshot.event_id || anchor.sequence != snapshot.sequence {
                 continue;
             }

@@ -178,17 +178,9 @@ async fn a_v2_client_never_sees_the_new_kinds() {
         .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
         .await;
     assert_ok(&idle);
-    let seen = std::mem::take(&mut client.notices);
-    assert!(
-        seen.iter().all(|value| {
-            let event = &value["params"]["event"];
-            !(event["type"] == "branch" && event["name"] == "ended")
-                && !(event["type"] == "branch" && event["name"] == "end")
-        }),
-        "{seen:?}"
-    );
-    assert!(
-        seen.iter().any(|value| {
+    let mut seen = std::mem::take(&mut client.notices);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !seen.iter().any(|value| {
             let event = &value["params"]["event"];
             event["type"] == "input"
                 && event["data"]["blocks"].as_array().is_some_and(|blocks| {
@@ -198,6 +190,17 @@ async fn a_v2_client_never_sees_the_new_kinds() {
                             .is_some_and(|text| text.starts_with("<dim-branch-ended"))
                     })
                 })
+        }) {
+            seen.push(client.notice("session.event").await);
+        }
+    })
+    .await
+    .expect("v2 client received the end notice");
+    assert!(
+        seen.iter().all(|value| {
+            let event = &value["params"]["event"];
+            !(event["type"] == "branch" && event["name"] == "ended")
+                && !(event["type"] == "branch" && event["name"] == "end")
         }),
         "{seen:?}"
     );

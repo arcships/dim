@@ -1229,7 +1229,7 @@ static ABANDONED_MARKERS: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
 /// Removes a stale account marker; false while it may be live. A marker this
 /// process failed to release is stale at once. Any other marker is stale once
-/// older than 30 seconds and naming a process that is no longer running.
+/// older than 30 seconds without a matching process alive at its creation.
 /// Called holding the `auth.json` key.
 fn reclaim_account(parent: &File) -> io::Result<bool> {
     let name = OsString::from("auth.json.lock");
@@ -1241,15 +1241,17 @@ fn reclaim_account(parent: &File) -> io::Result<bool> {
     let observed = file.metadata()?;
     let mut owner = Vec::new();
     (&mut file).take(256).read_to_end(&mut owner)?;
-    let pid = owner
-        .split(|byte| *byte == b'\n')
-        .next()
-        .unwrap_or_default();
+    let mut fields = owner.split(|byte| *byte == b'\n');
+    let pid = fields.next().unwrap_or_default();
     let pid = std::str::from_utf8(pid)
         .ok()
         .filter(|pid| !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()))
         .and_then(|pid| pid.parse::<u32>().ok())
         .filter(|pid| *pid > 0);
+    let created_at = fields
+        .next()
+        .and_then(|field| std::str::from_utf8(field).ok())
+        .and_then(|field| field.parse::<u64>().ok());
     let abandoned = ABANDONED_MARKERS.lock().unwrap().contains(&owner);
     if !abandoned {
         let age = SystemTime::now()
@@ -1258,8 +1260,8 @@ fn reclaim_account(parent: &File) -> io::Result<bool> {
         if age <= Duration::from_secs(30) {
             return Ok(false);
         }
-        if let Some(pid) = pid
-            && native::process_alive(pid)?
+        if let (Some(pid), Some(created_at)) = (pid, created_at)
+            && native::process_owns_marker(pid, created_at)?
         {
             return Ok(false);
         }
@@ -1463,12 +1465,87 @@ mod native {
     pub(super) fn remove_account(parent: &File, name: &OsString, _: &File) -> io::Result<()> {
         remove(parent, name)
     }
-    pub(super) fn process_alive(pid: u32) -> io::Result<bool> {
+    pub(super) fn process_owns_marker(pid: u32, created_at: u64) -> io::Result<bool> {
         let Ok(pid) = libc::pid_t::try_from(pid) else {
             return Ok(false);
         };
-        Ok(unsafe { libc::kill(pid, 0) } == 0
-            || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH))
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            let error = io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(libc::ESRCH | libc::EPERM) => Ok(false),
+                _ => Err(error),
+            };
+        }
+        match process_started_at(pid) {
+            Ok(started) => Ok(started <= created_at),
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => Ok(true),
+            Err(error)
+                if error.raw_os_error() == Some(libc::ESRCH)
+                    || matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                    ) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_started_at(pid: libc::pid_t) -> io::Result<u64> {
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of_val(&info) as libc::c_int;
+        let inspected = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size,
+            )
+        };
+        if inspected != size {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(info.pbi_start_tvsec * 1000 + info.pbi_start_tvusec / 1000)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn process_started_at(pid: libc::pid_t) -> io::Result<u64> {
+        let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid process start time");
+        let stat = std::fs::read(format!("/proc/{pid}/stat"))?;
+        let stat = String::from_utf8_lossy(&stat);
+        let ticks = stat
+            .rsplit_once(')')
+            .and_then(|(_, fields)| fields.split_whitespace().nth(19))
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(invalid)?;
+        let boot = std::fs::read_to_string("/proc/stat")?
+            .lines()
+            .find_map(|line| line.strip_prefix("btime "))
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(invalid)?;
+        let frequency = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or_else(invalid)?;
+        boot.checked_mul(1000)
+            .and_then(|boot| {
+                ticks
+                    .checked_mul(1000)?
+                    .checked_div(frequency)?
+                    .checked_add(boot)
+            })
+            .ok_or_else(invalid)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
+    fn process_started_at(_: libc::pid_t) -> io::Result<u64> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "process start time is unavailable on this platform",
+        ))
     }
 
     fn open(
@@ -2067,7 +2144,7 @@ mod unsupported {
     pub fn remove_account(_: &File, _: &OsString, _: &File) -> io::Result<()> {
         Err(unsupported())
     }
-    pub fn process_alive(_: u32) -> io::Result<bool> {
+    pub fn process_owns_marker(_: u32, _: u64) -> io::Result<bool> {
         Err(unsupported())
     }
     pub fn target_name(_: &File, _: &OsString) -> io::Result<OsString> {

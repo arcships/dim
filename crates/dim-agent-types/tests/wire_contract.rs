@@ -451,3 +451,43 @@ fn a_v1_connection_receives_a_tool_result_without_its_effects() {
     assert_eq!(result["content"], "Wrote /work/dim/src/lib.rs");
     assert!(result.get("isError").is_none(), "{value}");
 }
+
+#[test]
+fn a_system_source_round_trips_and_an_older_record_keeps_its_system() {
+    let data = ContextConfiguredData {
+        timeline: "main".into(),
+        revision: "configuration".into(),
+        previous: None,
+        prompt: None,
+        settings: Box::new(ModelConfiguration {
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            capability_snapshot: None,
+            tools: None,
+            tool_sources: Vec::new(),
+            config: None,
+            metadata: None,
+        }),
+        system: Some(SystemPrompt::Text(
+            "You are helpful.\n\n# How to read your input".into(),
+        )),
+        system_source: Some("You are helpful.".into()),
+    };
+    let value = serde_json::to_value(&data).unwrap();
+    assert_eq!(value["system_source"], "You are helpful.");
+    assert_eq!(
+        serde_json::from_value::<ContextConfiguredData>(value.clone()).unwrap(),
+        data
+    );
+    let without = serde_json::to_value(ContextConfiguredData {
+        system_source: None,
+        ..data.clone()
+    })
+    .unwrap();
+    assert!(without.get("system_source").is_none(), "{without}");
+    let mut older = value;
+    older.as_object_mut().unwrap().remove("system_source");
+    let decoded: ContextConfiguredData = serde_json::from_value(older).unwrap();
+    assert_eq!(decoded.system_source, None);
+    assert_eq!(decoded.system, data.system);
+}

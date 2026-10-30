@@ -303,8 +303,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permissions" => "权限",
         "Tool approvals" => "工具审批",
         "Command isolation" => "命令隔离",
-        "Command isolation not saved: {error}" => "命令隔离未能保存：{error}",
-        "Command isolation not read: {error}" => "未能读取命令隔离：{error}",
         "Models" => "模型",
         "Model" => "模型",
         "not set" => "未设置",
@@ -343,6 +341,32 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "{provider}: {count} models unavailable · dimcode models {id}" => {
             "{provider}：{count} 个模型不可用 · dimcode models {id}"
         }
+        "{provider}: no models · dimcode models {id} --refresh" => {
+            "{provider}：没有模型 · dimcode models {id} --refresh"
+        }
+        "{provider}: no models · add a model with provider.models.create" => {
+            "{provider}：没有模型 · 用 provider.models.create 添加模型"
+        }
+        "{provider}: {unavailable} unavailable and {disabled} disabled · dimcode models {id}" => {
+            "{provider}：{unavailable} 个不可用、{disabled} 个已禁用 · dimcode models {id}"
+        }
+        "{provider}: catalog unreadable · dimcode models {id}" => {
+            "{provider}：无法读取 catalog · dimcode models {id}"
+        }
+        "No cached catalog. Sign in and run models PROVIDER --refresh." => {
+            "没有缓存的 catalog。请登录并运行 models PROVIDER --refresh。"
+        }
+        "Saved model preferences cleared" => "已清除保存的模型偏好",
+        "{provider}: 1 model disabled · dimcode models {id}" => {
+            "{provider}：1 个模型已禁用 · dimcode models {id}"
+        }
+        "{provider}: {count} models disabled · dimcode models {id}" => {
+            "{provider}：{count} 个模型已禁用 · dimcode models {id}"
+        }
+        "No models. Run dimcode models {id} --refresh to list them." => {
+            "没有模型。运行 dimcode models {id} --refresh 查看。"
+        }
+        "No models. The provider listed none." => "没有模型。该 Provider 没有列出任何模型。",
         "Enter select · Esc back" => "Enter 选择 · Esc 返回",
         "Subagent models" => "子代理模型",
         "Subagent models: {policy}" => "子代理模型：{policy}",
@@ -376,8 +400,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Ctrl+C 清空，连按两次退出 · 草稿为空时 Ctrl+D 退出"
         }
         "Fullscreen" => "全屏",
-        "PageUp/PageDown scroll · Home/End top or bottom · Tab pick a message, e edit it, q quote it" => {
-            "PageUp/PageDown 滚动 · Home/End 到顶部或底部 · Tab 选择消息，e 编辑，q 引用"
+        "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
+            "PageUp/PageDown 滚动 · Home/End 到顶部或底部 (草稿为空时) · Tab 选择消息，e 编辑，q 引用"
         }
         "wheel scroll · drag select and copy · click a link to open it, a tool group to expand it" => {
             "滚轮滚动 · 拖动选择并复制 · 点击链接打开，点击工具组展开"

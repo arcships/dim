@@ -75,14 +75,16 @@ A plugin is a directory with `dim-plugin.json` at its root. The keys present say
 | Key | Kind | Meaning |
 | --- | --- | --- |
 | `name` | — | The plugin's name. Plugins with the same name replace each other. |
-| `code` | code | The rutis row fields ([rutis usage §2](../rutis-usage.md#2-plugins-are-rows-instances-mount-their-parts)) except `id` and `name`: `entry` is a path inside the directory; `inject`, `provides`, `instanceNames` and `config` are copied into the row. |
+| `code` | code | The rutis row fields ([rutis usage §2](../rutis-usage.md#2-plugins-are-rows-instances-mount-their-parts)) except `id` and `name`: `entry` is a path inside the directory; `inject`, `provides` and `instanceNames` are copied into the row; `config` is the row's configuration, with the host's patch for that plugin name deep-merged over it (below). |
 | `skills` | skills | A directory inside the plugin of Skill documents, registered with SkillsCatalog. |
 | `mcp` | MCP | A file inside the plugin holding MCP server entries, registered with Mcp. |
 | `hooks` | hooks | A file inside the plugin holding a hooks document, registered with Hooks. |
 
 Every path is relative, resolved inside the directory after following symbolic links; a path that leaves the directory is refused at install and at reload (`invalid_manifest`). The manifest is parsed at this boundary; owners receive documents already read.
 
-**Data directory.** When a plugin with code is turned on, PluginManager creates `<pluginFiles root>/<id>/` if it does not exist: `<id>` is the installed id, or a default plugin's name, both checked by the id rule (§7). It never deletes the directory, on turning off or on remove, as Settings documents stay in the home. An existing entry is used only if it is a directory, not a symbolic link, that resolves to itself inside the root; otherwise nothing is created and the plugin's file operations fail as they would without it. A plugin writes only under its own id directory through `pluginFiles` ([process TypeScript §5.2](../process-typescript.md#52-public-pluginfiles-binding)).
+**Row configuration.** A row's `config` is the manifest's `code.config` with the host's patch for that plugin name deep-merged over it: objects merge member by member, and any other value, arrays included, replaces the manifest's. A host sets a patch before startup; the product sets none, so a shipped plugin reads its manifest's value. A host that runs a candidate text puts the text at the member the plugin's author exposed, as the evaluation tooling does ([model-prompts §8.1](../model-prompts.md#81-the-rule)), so both arms run the same plugin code.
+
+**Data directory.** The plugin files root is the product home's; a host without a product home names it. When a plugin with code is turned on, PluginManager creates `<pluginFiles root>/<id>/` if it does not exist: `<id>` is the installed id, or a default plugin's name, both checked by the id rule (§7). It never deletes the directory, on turning off or on remove, as Settings documents stay in the home. An existing entry is used only if it is a directory, not a symbolic link, that resolves to itself inside the root; otherwise nothing is created and the plugin's file operations fail as they would without it. A plugin writes only under its own id directory through `pluginFiles` ([process TypeScript §5.2](../process-typescript.md#52-public-pluginfiles-binding)).
 
 A plugin's business configuration (its Settings sources) is not in the manifest: the plugin's code registers its sources with Settings when it starts (§9 R1). The `settings` member of today's TypeScript rows goes away.
 
@@ -139,7 +141,6 @@ Shipped with Dim, read-only, given to the App Server with `--defaults PATH` (the
 {
   "plugins": {
     "goal": "plugins/goal",
-    "web": "plugins/web",
     "session-title": "plugins/session-title",
     "workflow": "plugins/workflow",
     "scheduler": "plugins/scheduler",

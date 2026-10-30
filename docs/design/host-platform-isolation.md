@@ -52,7 +52,14 @@ keeps the node tier.
 | Runtime | Backend-required devices and the caller's existing stdio/PTY; Linux has its private /proc and namespace skeleton. Host /tmp, the user's own TMPDIR and the home receive no implicit grant, apart from git's global configuration on macOS; macOS temporary files use the per-process directory above. |
 | Running processes | Policy is a startup snapshot. Edits affect the next process; running exec and persistent shells retain their original boundary. |
 
-A missing policy file uses these defaults; it does not prevent all commands from starting.
+A missing policy file uses `workspace` with `escalation: "ask"`; it does not write a file.
+`ask` delegates admission to Permission/Approval, not an unconditional additional prompt:
+the ordinary default interactive `workspace-write` preset asks for commands and displays the
+requested boundary; `full-access`, an allowed tool or a matching allow rule can admit a wider
+request without a prompt. Explicit node `deny` still refuses that request after admission.
+Version 2 files omitting `escalation` also use `ask`: omission is not an explicit denial.
+An explicit `escalation: "deny"` is required to refuse wider requests at the node policy gate.
+Version 1 retains its legacy no-escalation contract.
 The platform's default system roots are calibrated as part of its supported baseline: macOS
 uses /System, /usr, /bin, /sbin, /Library/Apple and /private/etc (including its /etc alias),
 plus /var/select (the root-owned selection links that /bin/sh and the /usr/bin developer-tool
@@ -85,7 +92,8 @@ execution reads the remote node's file. HostPlatformConfig supplies an optional 
 as with exec-shell.json. The location is structural; the file's policy is business data.
 
 The file is a new, versioned format. Version 2 accepts `sandbox`, `escalation`, `readOnlyPaths`,
-`writablePaths` and `environment`. Each omitted policy field uses the default in the table;
+`writablePaths` and `environment`. Omitted `escalation` uses `ask`;
+each other omitted policy field uses the default in the table;
 an explicitly empty list grants none of that resource. Only `version` is required when a file
 exists. Version 1 files stay valid: they name the tier with `enabled` and `network`, and never
 permit escalation. Examples:
@@ -112,7 +120,7 @@ git read the user's global configuration and name a writable workspace:
 }
 ```
 
-`sandbox` is `workspace`, `network` or `host`. `escalation` is `deny` (default) or `ask`: `deny`
+`sandbox` is `workspace`, `network` or `host`. `escalation` is `ask` (default) or `deny`: `deny`
 refuses every request above the node tier, `ask` runs a request Permission admits at the tier it names.
 Version 1 maps `enabled: false` to `host`, `network: true` to `network` and everything else to
 `workspace`, with `escalation` denied. A field that belongs to another version, an unknown field,
@@ -135,20 +143,56 @@ writable parent. A writable child inside a read-only root is supported.
 Writable roots also permit reads; grants are additive. Naming an environment value grants no
 filesystem access to the path it contains. No file is written merely because defaults are used.
 
-The CLI `/settings` switch is a local edit of this same file, not a protocol method and not
-client configuration. On macOS and Linux it shows whether isolation is on. Turning it off writes
-`"sandbox": "host"` into a version 2 file, or `"enabled": false` into a version 1 file, and keeps
-every other field; a missing file becomes `{"version": 2, "sandbox": "host"}`. Turning it on
-removes that field. When only `version` remains, the CLI deletes the file, which restores the
-default `workspace` tier. An explicit `network` tier that was the file's only field therefore
-becomes `workspace`. An invalid file is reported and left unchanged. The switch is absent on
-Windows. A running command keeps the policy it started with.
-
 Read at each model process start; no cache, watcher, Session subscription, loader reload or
 restart of an existing shell. No configured location, or a missing file at that location, uses
 the defined default. An existing invalid file fails explicitly. The `host` tier returns the
 ordinary ProcessSpec without requiring a sandbox backend. Windows skips this unsupported policy
 and retains ordinary execution until it has an accepted backend contract.
+
+## Trusted local policy management
+
+HostPlatform owns typed `read_isolation_policy` and `update_isolation_policy` operations over
+its existing FileStorage source. The App Server exposes them only through trusted local
+management methods, never paired-device RPC, Session/branch services or model tools. The CLI
+uses this management path, not model `exec`; it remains available when commands are denied.
+No new Settings document, workspace setting, Timeline event or policy cache is introduced.
+
+| Management method | Request | Reply |
+| --- | --- | --- |
+| `host.isolation.get` | `{}` | `{revision, path, source, policy, effective}` |
+| `host.isolation.update` | `{expectedRevision, policy}` | The same snapshot as `get` |
+| `host.isolation.reset` | `{expectedRevision}` | The same snapshot as `get` |
+
+`path` is the actual execution-node policy path. `source` is `defaults` for an absent file or
+`file` for an explicit file. A node without a configured policy location reports management
+unavailable rather than inventing a client-local file. `policy` is the editable versioned file
+with omitted fields preserved (null list values are rejected); for an absent file it is the
+version 2 product-default document `{version: 2, sandbox: "workspace", escalation: "ask"}`.
+`effective` contains the resolved `sandbox` and `escalation`. Environment fields contain names
+only; no operation reads or returns credential values. Existing version 1 files remain readable
+and writable under their own schema; changing their tier/escalation in the CLI explicitly
+converts their effective tier/escalation to version 2 while preserving optional lists.
+
+`revision` is an opaque content revision that distinguishes absence from file bytes and detects
+external edits as well as other clients' saves. Update/reset acquire the existing FileStorage
+file lease, reread and compare the revision, validate the complete proposed document using the
+same boundary rules as process preparation, then atomically replace the file under the lease.
+Validation includes explicit roots and their overlap even at the `host` tier. A stale revision
+returns `isolation_policy_conflict` without writing; invalid input returns invalid params;
+read/validation failures in persisted data or storage failures return `isolation_policy_failed`.
+A conflicting or invalid write does not alter either the policy or running processes. Storage
+post-commit durability errors retain FileStorage's error contract; clients reread before retrying.
+
+Reset atomically saves the explicit version 2 product-default document above, discarding custom
+lists so they once again use resource defaults. It does not remove the file: its source remains
+`file`, and future product-default changes do not silently reinterpret this saved policy. Updates
+and reset apply to the next command or new persistent shell, not an existing process.
+
+Isolation denial, unavailable-backend and sandbox failure diagnostics name both the actual
+policy path and the supported `/settings > Command isolation` configuration entry. They
+distinguish admission from process isolation. In particular, `network` does not grant Homebrew
+executable or GitHub credential access: a Homebrew `gh` workflow must request authorized `host`
+access or configure explicit roots, then provide its ordinary credential source separately.
 
 ## Existing call flow
 
@@ -412,13 +456,14 @@ approval or rule. Successful commands, timeouts, disabled policy and Windows get
 persistent shell's `execute` results carry none: that tool is not in the App Server's product
 assembly, and ShellSession can keep the same value if it joins.
 
-**CLI status.** On macOS and Linux, `/settings` shows Command isolation and turns this file on or
-off, as [Configuration owner and format](#configuration-owner-and-format) describes. It reads the
-file when the panel opens. There is no indicator beside the permission preset and no protocol
-method: the switch edits the node's local file, so it follows this node's home and does not report
-another node's policy. A value shown in the panel can be stale by the next command if the file
-changes elsewhere. Windows has no row. The CLI guide documents the policy and states that presets
-and approvals do not change it, and the failure note names the file.
+**CLI status.** `/settings > Command isolation` shows the effective tier, wider-request policy,
+source and actual path through the local management methods
+([Trusted local policy management](#trusted-local-policy-management)); it remains usable when
+model commands are denied. There is no indicator beside the permission preset: isolation is the
+execution node's local policy, read at each process start, so a value shown in the panel can be
+stale by the next command if the file changes elsewhere, and another node's policy is not
+reported. The CLI guide documents the policy and states that presets and approvals do not change
+it, and the failure note names both the file and the settings entry.
 
 **User documentation.** The [CLI guide](../../crates/dim-cli/README.md#command-isolation) has the user page: the
 file location for each profile, the fields, how to disable isolation from `/settings` or by

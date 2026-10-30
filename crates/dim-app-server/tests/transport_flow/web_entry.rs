@@ -107,7 +107,7 @@ async fn web_entry_serves_the_frontend_to_local_callers_only() {
         "unknown_method"
     );
 
-    let opened = local.rpc("web.open", json!({})).await;
+    let opened = local.rpc("web.open", json!({"port":0})).await;
     let address = opened["result"]["address"].as_str().unwrap().to_owned();
     let (status, head, body) = http(&address, get(&address, "/assets/app-1.js")).await;
     assert_eq!(status, 200);
@@ -150,7 +150,7 @@ async fn web_switch_outlives_its_client_and_disable_closes_it() {
     )
     .await;
     let mut local = Client::new_version(&server, false, 3).await;
-    let toggled = local.rpc("web.toggle", json!({})).await;
+    let toggled = local.rpc("web.toggle", json!({"port":0})).await;
     assert_ok(&toggled);
     assert_eq!(toggled["result"]["enabled"], true);
     assert_eq!(toggled["result"]["open"], true);
@@ -284,6 +284,7 @@ async fn web_entry_admits_token_holders_to_session_methods_only() {
         WorkspaceToolsConfig {
             output_root: native.join("outputs"),
         },
+        dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
     );
     dim_app_server::permission_rules::install(&mut builder);
     defaults::mock_model_hosts(&mut builder);
@@ -310,7 +311,7 @@ async fn web_entry_admits_token_holders_to_session_methods_only() {
         ..Default::default()
     };
     assert_ok(&local.rpc("provider.create", json!({"providerId":"018ec73f-0000-7000-8000-000000000011","displayName":"Fixture","connection":{"driverKind":"openai-compatible","baseUrl":"http://127.0.0.1:1/v1","auth":{"type":"bearer"},"credential":{"action":"set","value":"fixture-secret"}},"models":[{"modelId":"alpha","displayName":"alpha","status":"active","capabilities":caps}],"enabled":true})).await);
-    let opened = local.rpc("web.open", json!({})).await["result"].clone();
+    let opened = local.rpc("web.open", json!({"port":0})).await["result"].clone();
     let address = opened["address"].as_str().unwrap().to_owned();
     let url = opened["url"].as_str().unwrap();
     assert_eq!(

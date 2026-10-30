@@ -321,10 +321,10 @@ impl Harness {
             .process_value(Arc::new(ModelHost(model.clone())))
             .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_value(Arc::new(ContextModelHost(compacting.then(|| {
-                Arc::new(compaction_support::Window) as Arc<dyn ResolveContextModel>
+                Arc::new(compaction_support::Window::default()) as Arc<dyn ResolveContextModel>
             }))))
             .session_value(Arc::new(CompactionStrategyHost(compacting.then(|| {
-                Arc::new(compaction_support::Window) as Arc<dyn CompactionStrategy>
+                Arc::new(compaction_support::Window::default()) as Arc<dyn CompactionStrategy>
             }))))
             .require_feature(
                 Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
@@ -374,7 +374,7 @@ impl Harness {
     fn config(&self) -> SessionConfig {
         SessionConfig {
             cwd: self.cwd.to_string_lossy().into_owned(),
-            tools: Some(vec!["exec".into(), "wait".into()]),
+            tools: Some(vec!["exec".into(), "exec_stop".into(), "wait".into()]),
             permission_policy: dim_agent_runtime::PermissionPolicy {
                 preset: dim_agent_runtime::PermissionPreset::FullAccess,
                 ..Default::default()
@@ -490,6 +490,30 @@ fn kill(pid: &str) {
 }
 fn tool_results(events: &[Arc<AgentEvent>]) -> usize {
     count(events, "step/tool-result")
+}
+
+/// The local execution profile is sound once its Session and a branch are
+/// live: the assembly check reports nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_local_execution_assembly_passes_the_assembly_check() {
+    let harness = Harness::new(platform(&[]).await, Hook::None).await;
+    let session = harness.session().await;
+    session
+        .branch(
+            "main".into(),
+            session.sequence("main").unwrap(),
+            BranchOptions {
+                prompt: "check".into(),
+                source: BranchSource::Host {
+                    operation_id: "check".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let findings = harness.agent.check_assembly().unwrap();
+    assert!(findings.is_empty(), "{findings:?}");
+    harness.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1163,20 +1187,24 @@ async fn isolated_exec_failures_point_to_the_local_policy() {
     );
     let harness = Harness::with_platform(root, view, Hook::None, scratch("cwd")).await;
     let session = harness.session().await;
-    let noted = |result: &ToolResult| {
-        let text = text(result);
-        let structured = serde_json::to_string(&result.structured_content).unwrap();
-        assert!(!structured.contains("host isolation"), "{structured}");
-        let Some((_, note)) = text.split_once("This command ran under host isolation") else {
-            return false;
+    let noted =
+        |result: &ToolResult| {
+            let text = text(result);
+            let structured = serde_json::to_string(&result.structured_content).unwrap();
+            assert!(!structured.contains("host isolation"), "{structured}");
+            let Some((_, note)) = text.split_once("This command ran under host isolation") else {
+                return false;
+            };
+            assert!(note.contains(
+                "Approving or retrying without a wider sandbox request does not lift it."
+            ));
+            assert!(note.contains("/settings > Command isolation"));
+            assert!(
+                note.contains(&format!("policy: {}", policy.display())),
+                "{text}"
+            );
+            true
         };
-        assert!(note.contains("Approving or retrying the command does not lift it."));
-        assert!(
-            note.contains(&format!("change the policy in {}.", policy.display())),
-            "{text}"
-        );
-        true
-    };
     let last = async || results(&local_events(&session).await).pop().unwrap();
 
     for (command, cwd, failed, note) in [
@@ -1805,7 +1833,7 @@ async fn an_unavailable_shell_or_backend_refuses_the_payload() {
         assert_eq!(code(&result), Some("isolation_unavailable"));
         assert!(
             text(&result).contains(
-                "Install bubblewrap, or set \"sandbox\": \"host\" in host-isolation.json to run commands without isolation."
+                "Install bubblewrap, or use /settings > Command isolation to select host access (policy: host-isolation.json)."
             ),
             "{}",
             text(&result)
@@ -2151,6 +2179,78 @@ async fn background_completion_is_recorded_once_and_wakes_with_a_bounded_notice(
         count(events, "turn/end") == 2
     })
     .await;
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_model_stops_its_detached_exec_and_keeps_an_already_ended_result() {
+    let harness = Harness::new(platform(&[]).await, Hook::None).await;
+    let session = harness.session().await;
+    let pid_file = harness.cwd.join("model-stop.pid");
+    harness.run(&session, &[("exec", json!({"command":format!("sh -c 'sleep 100 & echo $! > {}; wait'", pid_file.display()),"runInBackground":true,"timeoutMs":-1}))]).await;
+    let events = until(&session, "detached task", |events| {
+        count(events, "turn/end") == 1
+    })
+    .await;
+    let task = task_of(&results(&events)[0]);
+    assert!(text(&results(&events)[0]).contains("exec_stop"));
+    let pid = pid_in(&pid_file).await;
+    harness
+        .run(&session, &[("exec_stop", json!({"taskId":task}))])
+        .await;
+    let events = until(&session, "model stop", |events| results(events).len() == 2).await;
+    let stopped = &results(&events)[1];
+    assert_ne!(stopped.is_error, Some(true));
+    let terminal: ExecEndedData = serde_json::from_str(text(stopped)).unwrap();
+    assert_eq!(terminal.task_id, task);
+    assert_eq!(terminal.status, ExecStatus::Cancelled);
+    assert!(gone(&pid).await);
+    assert_eq!(ended(&events).len(), 1);
+    session.idle("main").await.unwrap();
+    harness
+        .run(
+            &session,
+            &[("exec_stop", json!({"taskId":"member-session"}))],
+        )
+        .await;
+    let events = until(&session, "invalid target", |events| {
+        results(events).len() == 3
+    })
+    .await;
+    assert_eq!(code(&results(&events)[2]), Some("exec_task_unknown"));
+    assert!(text(&results(&events)[2]).contains("No command was stopped"));
+    assert_eq!(ended(&events).len(), 1);
+    session.idle("main").await.unwrap();
+    harness
+        .run(
+            &session,
+            &[(
+                "exec",
+                json!({"command":"echo already-done","runInBackground":true}),
+            )],
+        )
+        .await;
+    let events = until(&session, "completed command", |events| {
+        ended(events).len() == 2
+    })
+    .await;
+    let completed = ended(&events)[1].1.clone();
+    assert_eq!(completed.status, ExecStatus::Completed);
+    session.idle("main").await.unwrap();
+    harness
+        .run(
+            &session,
+            &[("exec_stop", json!({"taskId":completed.task_id}))],
+        )
+        .await;
+    let events = until(&session, "already ended stop", |events| {
+        results(events).len() == 5
+    })
+    .await;
+    let again: ExecEndedData = serde_json::from_str(text(&results(&events)[4])).unwrap();
+    assert_eq!(again, completed);
+    assert_eq!(ended(&events).len(), 2);
     session.close().await.unwrap();
     harness.shutdown().await;
 }
@@ -2720,6 +2820,77 @@ fn wait_texts(events: &[Arc<AgentEvent>]) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wait_publishes_and_accepts_its_exact_timeout_boundaries() {
+    let harness = Harness::new(platform(&[]).await, Hook::None).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[
+                ("wait", json!({"timeoutMs":0})),
+                ("wait", json!({"timeoutMs":1.5})),
+                ("wait", json!({"timeoutMs":300001})),
+            ],
+        )
+        .await;
+    let events = until(&session, "invalid wait timeouts", |events| {
+        results(events).len() == 3
+    })
+    .await;
+    assert!(
+        results(&events)
+            .iter()
+            .all(|result| result.is_error == Some(true))
+    );
+    assert!(text(&results(&events)[2]).contains("less than or equal to 300000"));
+    let tool = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ModelCall(call) => call
+                .request
+                .tools
+                .as_ref()?
+                .iter()
+                .find(|tool| tool.name == "wait"),
+            _ => None,
+        })
+        .unwrap();
+    let timeout = &tool.input_schema.properties.as_ref().unwrap()["timeoutMs"];
+    assert_eq!(timeout.schema_type, Some(SchemaType::Integer));
+    assert_eq!(timeout.extensions["minimum"], 1);
+    assert_eq!(timeout.extensions["maximum"], 300000);
+    assert_eq!(timeout.extensions["default"], 300000);
+    session.idle("main").await.unwrap();
+    harness
+        .run(&session, &[("wait", json!({"timeoutMs":1}))])
+        .await;
+    let events = until(&session, "minimum timeout", |events| {
+        results(events).len() == 4
+    })
+    .await;
+    assert_eq!(text(&results(&events)[3]), "wait ended: timeout");
+    session.idle("main").await.unwrap();
+    harness
+        .run(&session, &[("wait", json!({"timeoutMs":300000}))])
+        .await;
+    until(&session, "maximum wait started", |events| {
+        count(events, "step/tool-call") == 3
+    })
+    .await;
+    session
+        .submit("continue now".into(), InputMode::Steer, "main")
+        .await
+        .unwrap();
+    let events = until(&session, "maximum wait steered", |events| {
+        results(events).len() == 5
+    })
+    .await;
+    assert_eq!(text(&results(&events)[4]), "wait ended: steer");
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wait_ends_on_the_matching_completion_not_on_the_input_that_started_the_turn() {
     let harness = Harness::new(platform(&[]).await, Hook::None).await;
     let session = harness.session().await;
@@ -2840,41 +3011,164 @@ async fn exec_sandbox_requests_follow_the_nodes_escalation_policy() {
         escaped.display()
     );
 
-    harness
-        .run(
-            &session,
-            &[(
-                "exec",
-                json!({"command": command.clone(), "cwd": home.clone(), "sandbox": "host"}),
-            )],
-        )
-        .await;
-    session.idle("main").await.unwrap();
-    let events = local_events(&session).await;
-    let result = results(&events).pop().unwrap();
-    assert_eq!(result.is_error, Some(true), "{}", text(&result));
-    assert_eq!(code(&result), Some("isolation_denied"));
-    assert!(!escaped.exists(), "{}", text(&result));
-
-    std::fs::write(
-        &policy,
-        r#"{"version":2,"sandbox":"workspace","escalation":"ask"}"#,
-    )
-    .unwrap();
-    harness
-        .run(
-            &session,
-            &[(
-                "exec",
-                json!({"command": command, "cwd": home.clone(), "sandbox": "host"}),
-            )],
-        )
-        .await;
-    session.idle("main").await.unwrap();
-    let events = local_events(&session).await;
-    let result = results(&events).pop().unwrap();
-    assert!(result.is_error != Some(true), "{}", text(&result));
-    assert_eq!(std::fs::read_to_string(&escaped).unwrap(), "escaped");
+    for explicit in [
+        None,
+        Some(r#"{"version":2,"sandbox":"workspace"}"#),
+        Some(r#"{"version":2,"sandbox":"workspace","escalation":"ask"}"#),
+    ] {
+        if let Some(bytes) = explicit {
+            std::fs::write(&policy, bytes).unwrap();
+        }
+        for boundary in ["host", "network"] {
+            for decision in [ApprovalDecision::Deny, ApprovalDecision::Allow] {
+                let mut config = harness.config();
+                config.permission_policy.preset = PermissionPreset::WorkspaceWrite;
+                let interactive = harness.agent.create_session(config).await.unwrap();
+                let marker = if boundary == "host" {
+                    escaped.clone()
+                } else {
+                    harness.cwd.join("network-payload")
+                };
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let payload = if boundary == "host" {
+                    command.clone()
+                } else {
+                    format!(
+                        "printf network > '{}'; /usr/bin/curl --fail --silent --max-time 3 http://{address}",
+                        marker.display()
+                    )
+                };
+                harness
+                    .run(
+                        &interactive,
+                        &[("exec", json!({"command":payload,"sandbox":boundary}))],
+                    )
+                    .await;
+                let events = until(&interactive, "boundary approval", |events| {
+                    events
+                        .iter()
+                        .any(|event| matches!(event.kind, EventKind::ApprovalRequest(_)))
+                })
+                .await;
+                let request = events
+                    .iter()
+                    .find_map(|event| match &event.kind {
+                        EventKind::ApprovalRequest(data) => Some(data.clone()),
+                        _ => None,
+                    })
+                    .unwrap();
+                assert_eq!(request.call.input["sandbox"], boundary);
+                assert!(!marker.exists(), "payload must wait for command approval");
+                let responder = if boundary == "network" && decision == ApprovalDecision::Allow {
+                    Some(tokio::spawn(async move {
+                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                        let (mut socket, _) =
+                            tokio::time::timeout(Duration::from_secs(10), listener.accept())
+                                .await
+                                .unwrap()
+                                .unwrap();
+                        let mut request = [0; 4096];
+                        assert!(socket.read(&mut request).await.unwrap() > 0);
+                        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nnetwork-proof").await.unwrap();
+                    }))
+                } else {
+                    None
+                };
+                interactive
+                    .service::<dim_agent_capabilities::approval::Approval>("main")
+                    .unwrap()
+                    .respond(&request.approval_id, decision)
+                    .await
+                    .unwrap();
+                interactive.idle("main").await.unwrap();
+                let result = results(&local_events(&interactive).await).pop().unwrap();
+                if decision == ApprovalDecision::Allow {
+                    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+                    assert!(marker.exists());
+                    if let Some(responder) = responder {
+                        responder.await.unwrap();
+                        assert!(text(&result).contains("network-proof"), "{}", text(&result));
+                    }
+                    std::fs::remove_file(marker).unwrap();
+                } else {
+                    assert_eq!(result.is_error, Some(true));
+                    assert!(!marker.exists(), "denied payload must not execute");
+                }
+                interactive.close().await.unwrap();
+            }
+        }
+        if explicit.is_none() {
+            assert!(
+                !policy.exists(),
+                "default escalation must not create a policy file"
+            );
+        }
+        for allowed_tool in [false, true] {
+            let mut config = harness.config();
+            if allowed_tool {
+                config.permission_policy.preset = PermissionPreset::WorkspaceWrite;
+                config.permission_policy.allowed_tools = vec!["exec".into()];
+            }
+            let admitted = harness.agent.create_session(config).await.unwrap();
+            harness
+                .run(
+                    &admitted,
+                    &[("exec", json!({"command":command,"sandbox":"host"}))],
+                )
+                .await;
+            admitted.idle("main").await.unwrap();
+            let events = local_events(&admitted).await;
+            assert_eq!(count(&events, "approval/request"), 0);
+            let result = results(&events).pop().unwrap();
+            assert_ne!(result.is_error, Some(true), "{}", text(&result));
+            assert_eq!(std::fs::read_to_string(&escaped).unwrap(), "escaped");
+            std::fs::remove_file(&escaped).unwrap();
+            admitted.close().await.unwrap();
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if Path::new("/opt/homebrew/bin/gh").is_file() {
+        for boundary in ["network", "host"] {
+            harness
+                .run(
+                    &session,
+                    &[(
+                        "exec",
+                        json!({"command":"/opt/homebrew/bin/gh --version","sandbox":boundary}),
+                    )],
+                )
+                .await;
+            session.idle("main").await.unwrap();
+            let result = results(&local_events(&session).await).pop().unwrap();
+            assert_eq!(
+                result.is_error == Some(true),
+                boundary == "network",
+                "{}",
+                text(&result)
+            );
+            if boundary == "host" {
+                assert!(text(&result).contains("gh version"), "{}", text(&result));
+            }
+        }
+    }
+    for explicit in [
+        r#"{"version":1}"#,
+        r#"{"version":2,"sandbox":"workspace","escalation":"deny"}"#,
+    ] {
+        std::fs::write(&policy, explicit).unwrap();
+        harness
+            .run(
+                &session,
+                &[("exec", json!({"command":command,"sandbox":"host"}))],
+            )
+            .await;
+        session.idle("main").await.unwrap();
+        let result = results(&local_events(&session).await).pop().unwrap();
+        assert_eq!(code(&result), Some("isolation_denied"));
+        assert!(!escaped.exists());
+    }
     session.close().await.unwrap();
     harness.shutdown().await;
+    std::fs::remove_dir_all(home).unwrap();
 }

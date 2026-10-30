@@ -44,8 +44,10 @@ contributor injects Rpc or Connection; neither contains contributor-specific
 dispatch. Adding a method changes its owner's declaration, parsing and
 implementation.
 
-Account, Codex, Grok, Provider and Mcp register their namespaces directly, without
-adapter rows. Settings supplies generic BusinessDocument persistence and the declared sources of
+Codex, Grok, Provider and Mcp register their namespaces directly, without
+adapter rows; ManagedProviderMethods, which depends on the process-owned
+managed-provider service, owns `account`. Settings supplies generic
+BusinessDocument persistence and the declared sources of
 [the settings service](settings-service.md), not approvals, a method contribution or a configuration
 namespace; SettingsMethods, which depends on it, owns `settings.read`/`settings.update`.
 MCP owns its configuration types in `mcp/config.rs`; the Skills owner supplies

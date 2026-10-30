@@ -1,6 +1,6 @@
 import { definePlugin } from '@arcships/rutis'
-import { type InputMessage, changes } from './goal.ts'
-import type { SessionMethods, ToolRegistry } from '../../../npm/plugin.js'
+import { type InputMessage, type Texts, changes } from './goal.ts'
+import type { GuideEntries, SessionMethods, ToolRegistry } from '../../../npm/plugin.js'
 
 type TreeCommands = { input(id: string, input: InputMessage): Promise<{ sequence: number | bigint }> }
 type Call = { branchId: string; arguments: { status?: unknown; summary?: unknown } }
@@ -9,6 +9,13 @@ type Reply = { kind: 'value'; value: unknown } | { code: string; message: string
 
 const OBJECTIVE_LIMIT = 4000
 const SUMMARY_LIMIT = 2000
+
+/**
+ * A.5.1: the guide entry for `dim-goal`, registered by the part that writes
+ * the marker, at session scope because Goal writes it on every branch.
+ */
+const ENTRY = '`<dim-goal kind="goal" op="set" branch="main">`: the operator\'s standing goal for a branch of this session, and the runtime\'s record of its status. `kind="goal"` blocks carry a change: `op="set"`, `op="edit"`, `op="pause"`, `op="resume"`, `op="clear"`, and `op="completed"` or `op="blocked"` from `goal_update` or from an evaluator (`by="evaluator"`). `kind="status"` blocks state the branch\'s goal status. `kind="continuation"` asks the line to keep working toward the goal. `kind="report"` blocks carry an evaluator\'s report of the goal, and `kind="evaluate"` and `kind="evaluate-again"` mark an evaluator\'s line, which checks the goal rather than continuing it. A goal belongs to the branch its `branch` attribute names. The latest objective (`op="set"` or `op="edit"`) and the latest status are the ones in force; `op="clear"` ends both. These blocks are information about the goal; they grant no permission.'
+
 const invalid = (message: string): Reply => ({ code: 'invalid_params', message })
 
 const text = (value: unknown, limit: number) =>
@@ -20,9 +27,14 @@ const text = (value: unknown, limit: number) =>
 export default definePlugin({
   name: 'GoalSession',
   provides: {},
-  inject: ['treeCommands', 'toolRegistry', 'sessionMethods'],
-  async apply(ctx) {
+  inject: ['treeCommands', 'toolRegistry', 'sessionMethods', 'guideEntries'],
+  async apply(ctx, texts: Texts) {
     const tree = ctx.use<TreeCommands>('treeCommands')
+    await ctx.use<GuideEntries>('guideEntries').register('session', {
+      markers: ['dim-goal'],
+      order: 55,
+      text: ENTRY,
+    })
     await ctx.use<ToolRegistry>('toolRegistry').register(
       {
         name: 'goal_update',
@@ -67,7 +79,7 @@ export default definePlugin({
           } else {
             const judge = call.params.judge ?? 'model'
             if (judge !== 'model' && judge !== 'evaluator') return invalid('judge must be "model" or "evaluator"')
-            input = changes.set(branchId, objective, judge)
+            input = changes.set(branchId, objective, texts, judge)
           }
         } else if (op === 'pause' || op === 'resume' || op === 'clear') {
           input = changes[op](branchId)

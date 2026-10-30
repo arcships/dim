@@ -121,9 +121,20 @@ pub enum Command {
     /// Switch to a stored session.
     Resume(String),
     /// List stored sessions (newest first).
-    ListSessions,
+    ListSessions {
+        id: String,
+        query: String,
+        cursor: Option<String>,
+    },
+    CloseSessions,
     /// List the models that can be chosen.
     ListModels,
+    ReadIsolation,
+    SaveIsolation {
+        expected_revision: String,
+        policy: dim_agent_types::isolation::IsolationPolicy,
+    },
+    ResetIsolation(String),
     ClearModelPreferences {
         provider_id: String,
         model_id: String,
@@ -385,6 +396,7 @@ pub struct ModelItem {
     pub provider_version: u32,
     pub model_id: String,
     pub display_name: String,
+    pub zdr: bool,
     /// Advertised reasoning efforts, in cycle order. Empty when the model
     /// offers no choice.
     pub efforts: Vec<String>,
@@ -394,13 +406,28 @@ pub struct ModelItem {
     pub saved_effort: Option<String>,
 }
 
-/// A usable provider with unavailable models and none selectable.
+/// Why a usable provider contributes no selectable model.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EmptyReason {
+    /// It lists no models: none discovered yet, or none at all. `listable`
+    /// is whether `provider.refresh` can ask it for a listing.
+    NoModels { listable: bool },
+    /// Some models are unavailable and some are disabled.
+    Mixed { unavailable: usize, disabled: usize },
+    /// Every model it lists is unavailable.
+    Unavailable { count: usize },
+    /// Every model it lists is disabled.
+    Disabled { count: usize },
+    /// Its catalog could not be read, so nothing is known about its models.
+    Unreadable,
+}
+
+/// A usable provider with no selectable model.
 #[derive(Debug, Clone)]
 pub struct EmptyProvider {
     pub provider_id: String,
     pub provider_name: String,
-    /// How many of its models it lists as unavailable.
-    pub unavailable: usize,
+    pub reason: EmptyReason,
 }
 
 /// Which model new Collaboration members use (`collaboration.model_policy`).
@@ -432,8 +459,8 @@ pub enum ModelPolicyUpdate {
 pub struct ModelList {
     pub models: Vec<ModelItem>,
     pub current: Option<(String, String)>,
-    /// The providers with unavailable models and none selectable, so the
-    /// picker can say why they are missing.
+    /// The usable providers that offer no selectable model, with why, so the
+    /// picker can name them.
     pub empty: Vec<EmptyProvider>,
 }
 
@@ -520,7 +547,11 @@ pub enum Update {
         kind: SwitchKind,
     },
     /// The stored sessions, or why they could not be listed.
-    Sessions(Result<Vec<SessionItem>, String>),
+    Sessions {
+        id: String,
+        paged: bool,
+        result: Result<(Vec<SessionItem>, Option<String>), String>,
+    },
     /// A command failed without ending the session.
     Notice(String),
     /// A newer version the user has not skipped, once per start.
@@ -531,8 +562,12 @@ pub enum Update {
         result: Result<(), String>,
     },
     Models(Result<ModelList, String>),
+    /// A catalog `models()` asked `provider.refresh` to fill holds models
+    /// now: a picker that is still open reads the list again.
+    ModelsRefilled,
     /// Sent only by a daemon that advertises the policy methods.
     ModelPolicy(ModelPolicyUpdate),
+    Isolation(Result<dim_agent_types::isolation::IsolationPolicySnapshot, String>),
     /// A transient status-line message.
     Toast(String),
     /// The default tool-approval mode (wire name).

@@ -34,6 +34,8 @@ pub type PublishCallback = Box<dyn FnOnce(Result<()>) + Send + 'static>;
 /// for an empty range; missing keys return a storage error. `append` rejects
 /// missing keys immediately or through its publish callback and never creates
 /// a directory.
+/// Each Session id has at most one live load per store; callers serialize
+/// closing and restoring that id, including when Agents share a store.
 pub trait TimelineStore: Send + Sync + 'static {
     fn create_session<'a>(
         &'a self,
@@ -45,6 +47,14 @@ pub trait TimelineStore: Send + Sync + 'static {
     /// removes its directory, ownership, events, branches, and content atomically.
     /// Never used for restore failures or ordinary Session close.
     fn rollback_session<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<()>>;
+    /// Releases runtime admission state after all Session producers stop.
+    /// A running store drains prior writes and clears this load's failure state
+    /// without deleting stored history, so a later restore can write again.
+    /// A closing or stopped store treats release as already settled; shutdown
+    /// remains responsible for pending writes and faults. Append failures remain
+    /// observable through their own results.
+    /// Idempotent: a Session with no admission state is already released.
+    fn release_session<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<()>>;
     fn session_config<'a>(
         &'a self,
         session_id: &'a str,

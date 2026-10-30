@@ -259,6 +259,11 @@ async fn a_branch_failing_after_its_root_is_built_rolls_it_back_before_releasing
                     ))
                 }),
         )
+        .require_feature(Feature::new("Prompt").session("PromptGuide", |names| {
+            Ok(Box::new(
+                dim_agent_capabilities::prompt_guide::PromptGuidePlugin::new(names)?,
+            ))
+        }))
         .require_feature(
             Feature::new("review.extension-controls")
                 .branch("review.extension-controls", move |names| {

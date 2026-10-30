@@ -1,6 +1,6 @@
 use super::*;
 
-fn legacy_home(home: &std::path::Path, database: &str, content: &str) {
+pub(super) fn legacy_home(home: &std::path::Path, database: &str, content: &str) {
     fs::create_dir_all(home).unwrap();
     let db = rusqlite::Connection::open(home.join(database)).unwrap();
     db.execute_batch("CREATE TABLE sessions(sessionId TEXT PRIMARY KEY,cwd TEXT,title TEXT,status TEXT,tags TEXT,createdAt TEXT,updatedAt TEXT,version INTEGER);

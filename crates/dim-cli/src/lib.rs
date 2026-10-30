@@ -114,7 +114,6 @@ async fn run_tui_with_connection(
         fullscreen: options
             .fullscreen
             .unwrap_or_else(|| ui::config::saved_fullscreen(&options.home)),
-        isolation: client::isolation_policy_file(options),
     };
     let (leave, left) = tokio::sync::oneshot::channel();
     let tui = root.plugin(plugins::Tui {
@@ -565,9 +564,13 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
             Ok(0)
         }
         Action::Models(provider) => {
+            crate::ui::i18n::set(
+                crate::ui::i18n::saved_locale(&options.home)
+                    .unwrap_or_else(crate::ui::i18n::system_locale),
+            );
             if let Some(model) = &options.clear_preferences {
                 session_host::clear_saved_model_preferences(&mut client, provider, model).await?;
-                println!("Saved model preferences cleared");
+                println!("{}", crate::ui::i18n::t("Saved model preferences cleared"));
                 return Ok(0);
             }
             #[derive(serde::Deserialize)]
@@ -597,6 +600,17 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
                     .catalog
             };
             if let Some(catalog) = catalog {
+                if catalog.models.is_empty() {
+                    let notice = if options.refresh {
+                        crate::ui::i18n::t("No models. The provider listed none.").to_owned()
+                    } else {
+                        crate::ui::i18n::tf(
+                            "No models. Run dimcode models {id} --refresh to list them.",
+                            &[("id", provider)],
+                        )
+                    };
+                    eprintln!("{notice}");
+                }
                 for model in catalog.models {
                     let availability = if catalog.disabled_model_ids.contains(&model.id) {
                         "disabled"
@@ -612,7 +626,12 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
                     );
                 }
             } else {
-                eprintln!("No cached catalog. Sign in and run models PROVIDER --refresh.");
+                eprintln!(
+                    "{}",
+                    crate::ui::i18n::t(
+                        "No cached catalog. Sign in and run models PROVIDER --refresh."
+                    )
+                );
             }
             Ok(0)
         }

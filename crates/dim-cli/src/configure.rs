@@ -18,6 +18,14 @@ pub struct Report {
     pub changed: bool,
 }
 
+/// Whether `text` reaches for the Session: every configuration command
+/// given a value writes the shown Session (`/agent ID`, `/effort VALUE`,
+/// `/reasoning VALUE`, `/fast on|off`). Bare commands read a catalog and
+/// answer on their own.
+pub fn needs_session(text: &str) -> bool {
+    text.split_whitespace().nth(1).is_some()
+}
+
 /// Runs `text`, a configuration command line; `model` is the model the
 /// Session adopted, which the preference commands read choices for.
 pub async fn run(

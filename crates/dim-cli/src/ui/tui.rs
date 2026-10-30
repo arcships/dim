@@ -41,7 +41,7 @@ use crate::ui::tasks_panel::TasksPanel;
 use crate::ui::terminal::{
     InputEvent, KeyCode, KeyEvent, Modifiers, Terminal, TerminalError, Wait,
 };
-use crate::ui::text::{display_width, truncate_cells};
+use crate::ui::text::{RUNNING_MARK, STATUS_MARK, display_width, truncate_cells};
 use crate::ui::theme::ansi::{Paint, fg, paint};
 use crate::ui::theme::{Palette, Theme, detect};
 use crate::ui::theme_panel::ThemePanel;
@@ -63,8 +63,6 @@ use crate::ui::transcript::tool_group::{
 use crate::ui::upgrade_dialog::UpgradeDialog;
 use crate::usage::format_tokens;
 
-/// The stop reason and the note committed when the user interrupts a run.
-pub const INTERRUPT_REASON: &str = "User interrupted the run.";
 const COMPOSER_PLACEHOLDER: &str = "Ask anything...";
 const SHELL_PLACEHOLDER: &str = "Run a shell command · Esc to exit";
 /// `config.json` key of the tool detail toggle, shared with the TS CLI.
@@ -249,7 +247,6 @@ fn run_terminal(
         surroundings.home.clone(),
         cwd_key,
     );
-    app.isolation = surroundings.isolation.clone();
     app.fullscreen = full.is_some();
     app.terminal_clipboard =
         terminal.clipboard_protocol() && crate::clipboard::terminal::native_unreachable();
@@ -690,8 +687,6 @@ struct App {
     composer: Composer,
     cwd_key: String,
     home: PathBuf,
-    /// This profile's `host-isolation.json`, when this OS isolates commands.
-    isolation: Option<PathBuf>,
     /// How tool groups are drawn by default (`/tools`, which redraws every
     /// committed group too).
     tool_detail: Detail,
@@ -901,6 +896,7 @@ enum Prompt {
     Theme(ThemePanel),
     Language(LanguagePanel),
     Settings(SettingsPanel),
+    Isolation(Box<crate::ui::isolation_panel::IsolationPanel>),
     Exit(ExitConfirm),
     Upgrade(UpgradeDialog),
     Permission(PermissionPrompt),
@@ -929,7 +925,6 @@ impl App {
             group_details: HashMap::new(),
             tail_groups: Vec::new(),
             home,
-            isolation: None,
             notices: Vec::new(),
             reports: Vec::new(),
             banner_committed: false,
@@ -1076,10 +1071,21 @@ impl App {
     /// Shows `prompt` in the prompt slot, keeping a pending question aside
     /// so the panel gives the question back with its answers when it closes.
     fn open_prompt(&mut self, prompt: Prompt) {
+        if matches!(self.prompt, Some(Prompt::Sessions(_))) {
+            self.host.send(Command::CloseSessions);
+        }
         if let Some(Prompt::Ask(question)) = self.prompt.take() {
             self.question_stash = Some(question);
         }
         self.prompt = Some(prompt);
+    }
+
+    fn sync_sessions(&mut self) {
+        if let Some(Prompt::Sessions(panel)) = &mut self.prompt
+            && let Some(command) = panel.request()
+        {
+            self.host.send(command);
+        }
     }
 
     /// Puts the question a panel took the screen from back, once the slot
@@ -1177,6 +1183,7 @@ impl App {
             | Some(Prompt::Theme(_))
             | Some(Prompt::Language(_))
             | Some(Prompt::Settings(_))
+            | Some(Prompt::Isolation(_))
             | Some(Prompt::Lines(_))
             | Some(Prompt::Timeline(_)) => {}
             Some(Prompt::Tasks(_)) if approval.is_none() && question.is_none() => {}
@@ -1221,6 +1228,7 @@ impl App {
     /// Time-driven changes: the pulse of a running turn, notice and arm
     /// expiry. True when the screen needs a frame.
     fn tick(&mut self) -> bool {
+        self.sync_sessions();
         self.sync_task_details();
         let now = Instant::now();
         let mut changed = false;
@@ -1406,9 +1414,9 @@ impl App {
                 ));
             }
             Update::Switched { session_id, kind } => self.switch_session(session_id, kind),
-            Update::Sessions(items) => {
+            Update::Sessions { id, paged, result } => {
                 if let Some(Prompt::Sessions(panel)) = &mut self.prompt {
-                    panel.set_items(items);
+                    panel.page(&id, paged, result);
                 }
             }
             Update::Toast(text) => self.set_notice(text),
@@ -1523,6 +1531,16 @@ impl App {
                     panel.set_models(models);
                 }
             }
+            Update::ModelsRefilled => {
+                if matches!(self.prompt, Some(Prompt::Models(_))) {
+                    self.host.send(Command::ListModels);
+                }
+            }
+            Update::Isolation(result) => {
+                if let Some(Prompt::Isolation(panel)) = &mut self.prompt {
+                    panel.set_snapshot(result);
+                }
+            }
             Update::ModelPolicy(update) => {
                 if let Some(Prompt::Models(panel)) = &mut self.prompt
                     && let Some(notice) = panel.set_policy(update)
@@ -1605,6 +1623,7 @@ impl App {
                     Some(Prompt::Theme(panel)) => panel.paste(&text),
                     Some(Prompt::Language(panel)) => panel.paste(&text),
                     Some(Prompt::Settings(panel)) => panel.paste(&text),
+                    Some(Prompt::Isolation(panel)) => panel.paste(&text),
                     Some(Prompt::Ask(prompt)) => prompt.paste(&text),
                     Some(_) => {}
                 }
@@ -1697,6 +1716,7 @@ impl App {
                 Prompt::Theme(p) => p.handle_key(key),
                 Prompt::Language(p) => p.handle_key(key),
                 Prompt::Settings(p) => p.handle_key(key),
+                Prompt::Isolation(p) => p.handle_key(key),
                 Prompt::Exit(p) => p.handle_key(key),
                 Prompt::Upgrade(p) => p.handle_key(key),
                 Prompt::Permission(p) => p.handle_key(key),
@@ -1984,8 +2004,6 @@ impl App {
         Outcome::Continue
     }
 
-    /// Stops the run and records it at once: the note lands in the transcript
-    /// ahead of whatever the interrupted answer still commits.
     fn interrupt(&mut self) {
         if let Some(Prompt::Ask(prompt)) = &self.prompt {
             self.host.send(Command::StopQuestion {
@@ -1996,7 +2014,7 @@ impl App {
         } else {
             self.host.stop();
         }
-        self.notices.push(t(INTERRUPT_REASON).to_owned());
+        self.set_notice(t("Stopping"));
     }
 
     fn place_label(&self) -> String {
@@ -2120,6 +2138,9 @@ impl App {
         match effect {
             Effect::None => {}
             Effect::Close => {
+                if matches!(self.prompt, Some(Prompt::Sessions(_))) {
+                    self.host.send(Command::CloseSessions);
+                }
                 self.prompt = None;
                 self.reopen_upgrade();
             }
@@ -2202,15 +2223,20 @@ impl App {
                 });
             }
             Effect::Resume(id) => {
+                self.host.send(Command::CloseSessions);
                 self.prompt = None;
                 self.composer.clear();
                 self.host.send(Command::Resume(id));
             }
-            Effect::Refresh => self.host.send(match self.prompt {
-                Some(Prompt::Providers(_)) => Command::ListProviders,
-                Some(Prompt::Plugins(_)) => Command::ListPlugins,
-                _ => Command::ListSessions,
-            }),
+            Effect::Refresh => match &mut self.prompt {
+                Some(Prompt::Providers(_)) => self.host.send(Command::ListProviders),
+                Some(Prompt::Plugins(_)) => self.host.send(Command::ListPlugins),
+                Some(Prompt::Sessions(panel)) => {
+                    panel.refresh();
+                    self.sync_sessions();
+                }
+                _ => {}
+            },
             Effect::FullAccess {
                 request_id,
                 branch_id,
@@ -2367,6 +2393,15 @@ impl App {
                     reasoning_effort,
                 });
             }
+            Effect::ReadIsolation => self.host.send(Command::ReadIsolation),
+            Effect::SaveIsolation {
+                expected_revision,
+                policy,
+            } => self.host.send(Command::SaveIsolation {
+                expected_revision,
+                policy,
+            }),
+            Effect::ResetIsolation(revision) => self.host.send(Command::ResetIsolation(revision)),
             Effect::ReadModelPolicy => self.host.send(Command::ReadModelPolicy),
             Effect::SetModelPolicy {
                 expected_revision,
@@ -2486,19 +2521,6 @@ impl App {
                 &[("locale", i18n::system_locale().label())],
             ),
         };
-        let isolation =
-            self.isolation
-                .clone()
-                .and_then(|path| match crate::ui::isolation::enabled(&path) {
-                    Ok(on) => Some(on),
-                    Err(error) => {
-                        self.set_notice(tf(
-                            "Command isolation not read: {error}",
-                            &[("error", &error)],
-                        ));
-                        None
-                    }
-                });
         let values = SettingValues {
             theme: theme.to_owned(),
             language,
@@ -2508,7 +2530,6 @@ impl App {
             notify: self.notify,
             approvals: t(status_label(&self.approvals)).to_owned(),
             model: self.label.clone(),
-            isolation,
         };
         self.open_prompt(Prompt::Settings(SettingsPanel::new(&values, select)));
     }
@@ -2530,6 +2551,11 @@ impl App {
             Setting::Approvals => {
                 let panel = ApprovalsPanel::new(&self.approvals);
                 self.open_prompt(Prompt::Approvals(panel));
+            }
+            Setting::Isolation => {
+                let panel = crate::ui::isolation_panel::IsolationPanel::new(&self.approvals);
+                self.open_prompt(Prompt::Isolation(Box::new(panel)));
+                self.host.send(Command::ReadIsolation);
             }
             Setting::Model => {
                 self.open_prompt(Prompt::Models(ModelsPanel::new()));
@@ -2562,19 +2588,6 @@ impl App {
                 let value = if self.mouse { "on" } else { "off" };
                 if let Some(error) = crate::ui::config::write(&self.home, MOUSE_KEY, value.into()) {
                     self.set_notice(error);
-                }
-                self.settings_return = None;
-                self.open_settings(setting);
-            }
-            Setting::Isolation => {
-                if let Some(path) = self.isolation.clone()
-                    && let Ok(on) = crate::ui::isolation::enabled(&path)
-                    && let Err(error) = crate::ui::isolation::set_enabled(&path, !on)
-                {
-                    self.set_notice(tf(
-                        "Command isolation not saved: {error}",
-                        &[("error", &error)],
-                    ));
                 }
                 self.settings_return = None;
                 self.open_settings(setting);
@@ -2698,7 +2711,7 @@ impl App {
             "web" => Outcome::Web,
             "resume" => {
                 self.open_prompt(Prompt::Sessions(SessionsPanel::new()));
-                self.host.send(Command::ListSessions);
+                self.sync_sessions();
                 Outcome::Continue
             }
             "lines" => {
@@ -2960,19 +2973,9 @@ impl App {
             }
         }
         for notice in std::mem::take(&mut self.notices) {
-            let interrupted = notice == t(INTERRUPT_REASON);
-            let tone = if interrupted {
-                &self.palette.warning
-            } else {
-                &self.palette.muted
-            };
-            let rows = gutter_text("◦", &notice, width, tone);
+            let rows = gutter_text(STATUS_MARK, &notice, width, &self.palette.muted);
             let text = chunk(&rows);
-            let tone = if interrupted {
-                Tone::Warning
-            } else {
-                Tone::Muted
-            };
+            let tone = Tone::Muted;
             self.record(Block::Status { text: notice, tone });
             frame.commits.push(text);
         }
@@ -2982,7 +2985,7 @@ impl App {
                 Tone::Warning => &self.palette.warning,
                 Tone::Danger => &self.palette.danger,
             };
-            let rows = gutter_text("◦", &text, width, color);
+            let rows = gutter_text(STATUS_MARK, &text, width, color);
             let chunk_text = chunk(&rows);
             self.record(Block::Status { text, tone });
             frame.commits.push(chunk_text);
@@ -3042,7 +3045,18 @@ impl App {
         }
         frame.dock = live.len();
         if self.prompt.is_none() {
-            let queued = self.queued();
+            let queued: Vec<_> = self
+                .snapshot
+                .as_ref()
+                .into_iter()
+                .flat_map(|snapshot| &snapshot.queued)
+                .map(|input| {
+                    (
+                        input.id.clone(),
+                        input.display.as_deref().unwrap_or(&input.text).to_owned(),
+                    )
+                })
+                .collect();
             // An empty queue draws no strip; the composer keeps its row and
             // the strip's rows are given back above it.
             self.queue_rows = if queued.is_empty() {
@@ -3281,6 +3295,7 @@ impl App {
                 Some(Prompt::Theme(prompt)) => list(prompt.render(list_width, budget, p)),
                 Some(Prompt::Language(prompt)) => list(prompt.render(list_width, budget, p)),
                 Some(Prompt::Settings(prompt)) => list(prompt.render(list_width, budget, p)),
+                Some(Prompt::Isolation(prompt)) => list(prompt.render(list_width, budget, p)),
                 _ => None,
             };
         }
@@ -3303,6 +3318,7 @@ impl App {
             Some(Prompt::Theme(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Language(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Settings(prompt)) => Some(prompt.render(outer, panel_rows, p)),
+            Some(Prompt::Isolation(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Exit(prompt)) => Some(prompt.render(outer, p)),
             Some(Prompt::Upgrade(prompt)) => Some(prompt.render(outer, p)),
             Some(Prompt::Permission(prompt)) => Some(prompt.render(outer, p)),
@@ -3441,7 +3457,6 @@ impl App {
                         settled_ids.push(row.row_id.clone());
                     }
                 },
-                RowKind::Status if text == INTERRUPT_REASON => {}
                 _ => settled_ids.push(row.row_id.clone()),
             }
         }
@@ -3591,7 +3606,7 @@ impl App {
                         &project_group(&group_rows(&snapshot.rows, *index), detail_of(*index)),
                         width,
                         p,
-                        "·",
+                        RUNNING_MARK,
                     )
                 }
                 LiveItem::Compaction(index) => render_block(
@@ -3794,7 +3809,7 @@ impl App {
         self.history
             .iter()
             .rposition(|block| {
-                matches!(block, Block::User { text, cut } if *cut == row.cut && *text == row.text)
+                matches!(block, Block::User { text, cut, .. } if *cut == row.cut && *text == row.text)
             })
             .map(|index| self.dropped + index)
     }
@@ -4837,6 +4852,92 @@ mod tests {
         fn shutdown(self: Box<Self>) {}
     }
 
+    #[test]
+    fn isolation_settings_edit_save_conflict_and_reset_without_model_execution() {
+        use dim_agent_types::isolation::{
+            IsolationEscalation, IsolationPolicy, IsolationPolicyEffective,
+            IsolationPolicySnapshot, IsolationPolicySource, Sandbox,
+        };
+        let home = tempfile::tempdir().unwrap();
+        let theme = test_theme();
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut app = App::new(
+            Box::new(Recorder(sent.clone())),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        let key = |code| InputEvent::Key(crate::ui::terminal::KeyEvent::new(code, Modifiers::NONE));
+        app.run_command("settings", "");
+        for _ in 0..7 {
+            app.handle_input(key(KeyCode::Down));
+        }
+        app.handle_input(key(KeyCode::Enter));
+        assert!(matches!(sent.borrow().last(), Some(Command::ReadIsolation)));
+        let policy = IsolationPolicy {
+            sandbox: Some(Sandbox::Host),
+            escalation: Some(IsolationEscalation::Deny),
+            environment: Some(Vec::new()),
+            read_only_paths: Some(vec!["/usr".into()]),
+            ..IsolationPolicy::default()
+        };
+        let snapshot = IsolationPolicySnapshot {
+            revision: "r1".into(),
+            path: home.path().join("host-isolation.json"),
+            source: IsolationPolicySource::File,
+            effective: IsolationPolicyEffective {
+                sandbox: Sandbox::Host,
+                escalation: IsolationEscalation::Deny,
+            },
+            policy,
+        };
+        app.apply(Update::Isolation(Ok(snapshot)));
+        app.handle_input(key(KeyCode::Enter));
+        app.handle_input(key(KeyCode::Up));
+        app.handle_input(key(KeyCode::Enter));
+        app.handle_input(key(KeyCode::Enter));
+        app.handle_input(key(KeyCode::Enter));
+        app.handle_input(key(KeyCode::Down));
+        app.handle_input(key(KeyCode::Enter));
+        app.handle_input(key(KeyCode::Enter));
+        for _ in 0..3 {
+            app.handle_input(key(KeyCode::Down));
+        }
+        app.handle_input(key(KeyCode::Enter));
+        match sent.borrow().last() {
+            Some(Command::SaveIsolation {
+                expected_revision,
+                policy,
+            }) => {
+                assert_eq!(expected_revision, "r1");
+                assert_eq!(policy.sandbox, Some(Sandbox::Network));
+                assert_eq!(policy.escalation, Some(IsolationEscalation::Deny));
+                assert_eq!(policy.environment, Some(Vec::new()));
+                assert_eq!(policy.read_only_paths, Some(vec!["/usr".into()]));
+                assert_eq!(policy.writable_paths, None);
+            }
+            _ => panic!("settings save must use local management, not model exec"),
+        }
+        app.apply(Update::Isolation(Err("isolation_policy_conflict".into())));
+        for _ in 0..3 {
+            app.handle_input(key(KeyCode::Down));
+        }
+        app.handle_input(key(KeyCode::Enter));
+        assert!(
+            matches!(sent.borrow().last(), Some(Command::SaveIsolation { expected_revision, policy }) if expected_revision == "r1" && policy.sandbox == Some(Sandbox::Network))
+        );
+        app.apply(Update::Isolation(Err("isolation_policy_conflict".into())));
+        for _ in 0..4 {
+            app.handle_input(key(KeyCode::Down));
+        }
+        app.handle_input(key(KeyCode::Enter));
+        app.handle_input(key(KeyCode::Char('y')));
+        assert!(
+            matches!(sent.borrow().last(), Some(Command::ResetIsolation(revision)) if revision == "r1")
+        );
+    }
+
     /// A picked message opens a line of the shown line with the submitted
     /// text, and forks only `main`, after a confirmation, carrying the text
     /// into the fork (timeline UI §4.2, §4.3).
@@ -5008,6 +5109,7 @@ mod tests {
                 row_id: text.into(),
                 kind,
                 text: text.into(),
+                display: None,
                 streaming: false,
                 elapsed_ms: None,
                 tone: None,
@@ -5246,6 +5348,7 @@ mod tests {
                         row_id: (*id).into(),
                         kind: RowKind::AssistantMessage,
                         text: (*text).into(),
+                        display: None,
                         streaming: false,
                         elapsed_ms: None,
                         tone: None,
@@ -5273,6 +5376,91 @@ mod tests {
                 ..ViewSnapshot::default()
             })));
             self.draw();
+        }
+    }
+
+    #[test]
+    fn escape_commits_the_interrupt_after_the_answer_tail_and_before_stopped() {
+        use crate::model::view::INTERRUPT_REASON;
+        use crate::projection::Projection;
+        use serde_json::json;
+
+        for fullscreen in [false, true] {
+            let mut drawn = Drawn::new((100, 40), None, true);
+            drawn.app.fullscreen = fullscreen;
+            let mut projection = Projection::default();
+            let event: crate::wire::Event = serde_json::from_value(json!({
+                "sequence": 1, "create_at": 1, "type": "step", "name": "text",
+                "data": {"turn_id": "t1", "request_id": "r1", "delta": "Answer tail."}
+            }))
+            .unwrap();
+            projection.apply("main", &event);
+            projection.set_running(true);
+            let publish = |drawn: &mut Drawn, projection: &Projection| {
+                let mut snapshot = projection.snapshot();
+                snapshot.session_id = "s1".into();
+                snapshot.focus = "main".into();
+                snapshot.history_complete = true;
+                drawn.app.apply(Update::Snapshot(Box::new(snapshot)));
+            };
+            publish(&mut drawn, &projection);
+            drawn.draw();
+            drawn.key(KeyCode::Esc);
+            drawn.key(KeyCode::Esc);
+            assert_eq!(
+                drawn.app.notice.as_ref().map(|(text, _)| text.as_str()),
+                Some(t("Stopping"))
+            );
+            assert!(!drawn.transcript().contains(INTERRUPT_REASON));
+
+            for value in [
+                json!({
+                    "sequence": 2, "create_at": 2, "type": "step", "name": "model-output-end",
+                    "data": {"turn_id": "t1", "request_id": "r1", "status": "cancelled", "reason": INTERRUPT_REASON}
+                }),
+                json!({
+                    "sequence": 3, "create_at": 3, "type": "turn", "name": "end",
+                    "data": {"turn_id": "t1", "status": "cancelled", "reason": INTERRUPT_REASON}
+                }),
+            ] {
+                projection.apply("main", &serde_json::from_value(value).unwrap());
+            }
+            projection.set_running(false);
+            publish(&mut drawn, &projection);
+            for (_, shown) in drawn.app.revealed.values_mut() {
+                *shown = 0;
+            }
+            let (commits, _, _) = drawn.app.transcript(97);
+            assert!(
+                commits.is_empty(),
+                "the answer is still revealing: {commits:?}"
+            );
+
+            let now = Instant::now();
+            for (pace, shown) in drawn.app.revealed.values_mut() {
+                *shown = pace.advance(now + Duration::from_secs(1), "Answer tail.".len(), true);
+            }
+            drawn.draw();
+            drawn.draw();
+            let text = drawn.transcript();
+            let answer = text.find("Answer tail.").unwrap();
+            let interrupt = text.find(INTERRUPT_REASON).unwrap();
+            let stopped = text.find("stopped").unwrap();
+            assert!(answer < interrupt && interrupt < stopped, "{text}");
+            assert_eq!(text.matches(INTERRUPT_REASON).count(), 1, "{text}");
+
+            let mut resumed = Drawn::new((100, 40), None, true);
+            publish(&mut resumed, &projection);
+            resumed.draw();
+            let text = resumed.transcript();
+            assert!(
+                text.find("Answer tail.").unwrap() < text.find(INTERRUPT_REASON).unwrap(),
+                "{text}"
+            );
+            assert!(
+                text.find(INTERRUPT_REASON).unwrap() < text.find("stopped").unwrap(),
+                "{text}"
+            );
         }
     }
 
@@ -5383,6 +5571,7 @@ mod tests {
                 row_id: "r1".into(),
                 kind: RowKind::UserMessage,
                 text: "line work".into(),
+                display: None,
                 streaming: false,
                 elapsed_ms: None,
                 tone: None,
@@ -5450,6 +5639,7 @@ mod tests {
                     row_id: format!("u{n}"),
                     kind: RowKind::UserMessage,
                     text: format!("ask {n}"),
+                    display: None,
                     streaming: false,
                     elapsed_ms: None,
                     tone: None,
@@ -5566,6 +5756,84 @@ mod tests {
         assert_eq!(
             drawn.app.jump,
             Some(Jump::Block(drawn.app.dropped + picked))
+        );
+    }
+
+    #[test]
+    fn image_markers_stay_out_of_reused_message_drafts() {
+        let mut projection = crate::projection::Projection::default();
+        let input: crate::wire::Event = serde_json::from_value(serde_json::json!({
+            "id": "image", "sequence": 1, "create_at": 1, "type": "input", "name": "message",
+            "data": {"user": {"content": [
+                {"type": "text", "text": "look [Image #7]"},
+                {"type": "image", "source": {"type": "url", "mediaType": "image/png", "url": "https://invalid.example/image.png"}},
+            ]}, "mode": "queue"},
+        })).unwrap();
+        projection.apply("main", &input);
+        let mut snapshot = projection.snapshot();
+        snapshot.session_id = "s1".into();
+        snapshot.focus = "main".into();
+        snapshot.history_complete = true;
+        let mut drawn = Drawn::new((80, 40), None, true);
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        drawn.app.host = Box::new(Recorder(sent.clone()));
+        drawn.app.apply(Update::Snapshot(Box::new(snapshot)));
+        drawn.draw();
+        assert!(drawn.transcript().contains("[Image #1]"));
+        let row_id = drawn.app.snapshot.as_ref().unwrap().rows[0].row_id.clone();
+        let message = drawn
+            .app
+            .history
+            .iter()
+            .position(|block| matches!(block, Block::User { .. }))
+            .unwrap();
+        assert_eq!(
+            Document::message(&drawn.app, message),
+            Some("look [Image #7]")
+        );
+        for action in [
+            TimelineAction::Edit,
+            TimelineAction::Quote,
+            TimelineAction::Branch,
+            TimelineAction::Fork,
+        ] {
+            drawn.app.composer.clear();
+            drawn.app.line_draft = None;
+            drawn.app.timeline(&row_id, action);
+            if action == TimelineAction::Fork {
+                drawn.key(KeyCode::Char('y'));
+                drawn.app.apply(Update::Switched {
+                    session_id: "forked".into(),
+                    kind: SwitchKind::Forked,
+                });
+            }
+            assert!(drawn.app.composer.text().contains("look [Image #7]"));
+            assert!(!drawn.app.composer.text().contains("[Image #1]"));
+            drawn.key(KeyCode::Enter);
+            match sent.borrow().last().unwrap() {
+                Command::Submit(text) => assert!(!text.contains("[Image #1]")),
+                Command::OpenLine { prompt, .. } => assert_eq!(prompt, "look [Image #7]"),
+                _ => panic!("message reuse must submit text or open a line"),
+            }
+        }
+        projection.set_running(true);
+        let mut queued = input;
+        queued.id = "queued-image".into();
+        queued.sequence = 2;
+        projection.apply("main", &queued);
+        let mut snapshot = projection.snapshot();
+        snapshot.session_id = "s1".into();
+        snapshot.focus = "main".into();
+        drawn.app.apply(Update::Snapshot(Box::new(snapshot)));
+        drawn.app.composer.clear();
+        drawn.key(KeyCode::Up);
+        assert_eq!(drawn.app.composer.text(), "look [Image #7]");
+        assert!(
+            matches!(sent.borrow().last(), Some(Command::InputControl { input_id, action: "withdraw" }) if input_id == "queued-image")
+        );
+        drawn.key(KeyCode::Enter);
+        assert!(
+            matches!(sent.borrow().last(), Some(Command::Submit(text)) if text == "look [Image #7]")
         );
     }
 

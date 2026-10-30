@@ -1,3 +1,4 @@
+mod catalog;
 mod codec;
 mod export;
 mod files;
@@ -5,6 +6,8 @@ mod metadata;
 mod sqlite;
 mod timeline;
 
+pub use catalog::initialize_session_catalog;
+pub(crate) use catalog::truncate_preview;
 #[cfg(feature = "testing")]
 pub use codec::NodeLoads;
 pub use export::export_timeline;

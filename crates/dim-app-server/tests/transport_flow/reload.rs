@@ -935,7 +935,7 @@ fn system_of(prompt: &SystemPrompt) -> String {
 }
 
 /// The system text of the last model call on `branch`.
-async fn last_system(session: &dim_agent_runtime::Session, branch: &str) -> String {
+pub(super) async fn last_system(session: &dim_agent_runtime::Session, branch: &str) -> String {
     let events = session.history(branch, None).await.unwrap();
     let request = events
         .iter()

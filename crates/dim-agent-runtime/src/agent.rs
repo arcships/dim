@@ -2,7 +2,7 @@ use crate::*;
 use crate::{
     assembly::{
         AgentHost, Assembly, BuiltSession, Extension, Owned, Placement, SessionInitialization,
-        build_session, own_placement, release, scope_diagnostics, shutdown_scope,
+        build_session, check_scope, own_placement, release, scope_diagnostics, shutdown_scope,
     },
     core::TailLock,
     lifecycle::{CloseOnce, guarded},
@@ -253,8 +253,13 @@ impl Agent {
                     Err(cleanup) => Err(cancelled.with_cleanup(cleanup)),
                 };
             }
-            if created && let Err(failure) = result {
-                result = Err(match owner.0.assembly.store.rollback_session(&id).await {
+            if let Err(failure) = result {
+                let cleanup = if created {
+                    owner.0.assembly.store.rollback_session(&id).await
+                } else {
+                    owner.0.assembly.store.release_session(&id).await
+                };
+                result = Err(match cleanup {
                     Ok(()) => failure,
                     Err(cleanup) => failure.with_cleanup(cleanup),
                 });
@@ -279,6 +284,98 @@ impl Agent {
             .placed
             .get()
             .map(|placed| placed.placement.anchor.diagnostics())
+    }
+    /// Checks how the live assembly is written, over one diagnostics snapshot:
+    /// for every Session and branch this Agent hosts, that its profile's
+    /// required rows and the plugins below them are `Active`, that no plugin
+    /// reads an external service it does not declare, that every declared read
+    /// is among the reader's resolved dependencies, and that no scoped service
+    /// is provided without an instance key. Each plugin is checked once, by the
+    /// innermost scope that contains it, and names the Session it belongs to
+    /// and, for a branch plugin, the branch. It reports every finding rather
+    /// than the first, and nothing for a sound assembly. The loader's rows are
+    /// read once per call; each scope still walks one whole snapshot, so the
+    /// cost grows with the square of the live Sessions.
+    ///
+    /// Creation does not run this. A test that wants the check creates the
+    /// Session, branch or scope it wants covered, then calls this once; a
+    /// plugin's own tests do the same for the assembly they build.
+    ///
+    /// A check that could not inspect anything is an `Err`, never an empty
+    /// list: no diagnostics snapshot, or a Session whose loaded assembly is
+    /// already gone. `Ok` with no findings means every live scope was
+    /// inspected and is sound.
+    pub fn check_assembly(&self) -> Result<Vec<AssemblyFinding>> {
+        let Some(placed) = self.0.placed.get() else {
+            return Err(AgentError::fault(
+                "assembly check",
+                "no diagnostics snapshot",
+            ));
+        };
+        let snapshot = placed.placement.anchor.diagnostics();
+        // Every Session of an Agent is placed by the same loader, so one pass
+        // over its rows covers all of them.
+        let rows = scope_rows(&placed.placement.loader);
+        let parents: std::collections::HashMap<_, _> = snapshot
+            .plugins
+            .iter()
+            .map(|plugin| (plugin.id, plugin.parent))
+            .collect();
+        let mut findings = Vec::new();
+        for session in self.sessions() {
+            let owner = &session.0.owner;
+            let loaded = owner.loaded().map_err(|_| {
+                AgentError::fault(
+                    "assembly check",
+                    format!("Session {} has no loaded assembly", session.id()),
+                )
+            })?;
+            let branches: Vec<_> = session
+                .0
+                .tree
+                .list()
+                .into_iter()
+                .filter_map(|info| session.0.tree.get(&info.id))
+                .collect();
+            /// One scope of a Session: its view, the loader row ids its
+            /// profile requires, the required parts it mounted and the branch.
+            type Scope<'a> = (
+                &'a FiberView,
+                &'a [String],
+                &'a [FiberView],
+                Option<&'a str>,
+            );
+            let mut scopes: Vec<Scope> =
+                vec![(&session.0.view, &loaded.required[..], &loaded.parts, None)];
+            for branch in &branches {
+                scopes.push((
+                    branch.0.scope_view(),
+                    branch.0.required_rows(),
+                    branch.0.required_parts(),
+                    Some(branch.id()),
+                ));
+            }
+            for (view, required, parts, branch) in scopes.iter().copied() {
+                let nested: Vec<FiberView> = scopes
+                    .iter()
+                    .filter(|(other, _, _, _)| {
+                        other.id != view.id && below(&parents, other.id, view.id)
+                    })
+                    .map(|(other, _, _, _)| (*other).clone())
+                    .collect();
+                check_scope(
+                    &snapshot,
+                    &rows,
+                    view,
+                    required,
+                    parts,
+                    &nested,
+                    (session.id(), branch),
+                    &mut findings,
+                );
+            }
+        }
+        Ok(findings)
     }
     pub fn sessions(&self) -> Vec<Session> {
         self.0
@@ -731,6 +828,13 @@ impl Session {
             if let Err(e) = shutdown_scope(&this.0.view, &children).await {
                 errors.push(e);
             }
+            if let Err(error) = guarded("storage.release_session", async {
+                this.0.owner.assembly.store.release_session(this.id()).await
+            })
+            .await
+            {
+                errors.push(error);
+            }
             this.0.owner.lifecycle.advance(SessionPhase::Closed);
             let supervisor = this.0.supervisor.lock().unwrap().take();
             if let Some(task) = supervisor
@@ -789,4 +893,19 @@ impl Drop for AgentInner {
             });
         }
     }
+}
+
+/// Whether `ancestor` is above `id` in the snapshot's parent links.
+fn below(
+    parents: &std::collections::HashMap<rutis::host::PluginId, Option<rutis::host::PluginId>>,
+    mut id: rutis::host::PluginId,
+    ancestor: rutis::host::PluginId,
+) -> bool {
+    while let Some(Some(parent)) = parents.get(&id) {
+        if *parent == ancestor {
+            return true;
+        }
+        id = *parent;
+    }
+    false
 }

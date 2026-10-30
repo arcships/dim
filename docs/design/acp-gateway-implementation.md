@@ -283,7 +283,7 @@ validating -> submitting -> accepted(input event id)
 
 native reply、事件和 live progress 可以先后任意到达。先登记 submissionId 与 ACP request，再发送 native submit；reply 未到先收到的事实保留，不能丢失。使用 input event id 关联 `input/applied` / `input/consumed`，以消费位置上的真实 `turn/start` 确定 T，绝不把别人的 `session.state.running=false` 当作当前 prompt 完成。
 
-`Completed` 默认 `end_turn`；只有 native terminal reason 明确对应 token/request 限制时才返回 `max_tokens` / `max_turn_requests`，不匹配错误文本。`Cancelled` → `cancelled`；`Failed` → `turn_failed` JSON-RPC 错误；本连接已收到 session/cancel 时，最终 prompt 回复必须是 `cancelled`，不能让清理异常改成泛化 failure。无在途 prompt 的重复 cancel 是一次 addressed stop，不制造 prompt response。
+`Completed` 默认 `end_turn`；只有 native terminal reason 明确对应 token/request 限制时才返回 `max_tokens` / `max_turn_requests`，不匹配错误文本。`model-output-end` 的失败 presentation 明确给出 `reason = max_tokens` 时，对其对应 turn 返回 `max_tokens`；Session 与 ACP 连接继续接受后续 prompt。`Cancelled` → `cancelled`；其他 `Failed` → `turn_failed` JSON-RPC 错误；本连接已收到 session/cancel 时，最终 prompt 回复必须是 `cancelled`，不能让清理异常改成泛化 failure。无在途 prompt 的重复 cancel 是一次 addressed stop，不制造 prompt response。
 
 现有 Hooks 设计中的 `input_blocked` 尚不是此基线的已实现提交检查；首版不依赖 Hooks。如果服务端未来返回该“未写入”错误，展示原消息并返回 `refusal`，不在 Gateway 实现 Hook 或解析专属 marker。
 

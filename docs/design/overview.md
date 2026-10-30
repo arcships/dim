@@ -463,14 +463,14 @@ The HostPlatform exec-shell change recorded in ADR 002 (business configuration r
 | Extensions | Hooks | New: Hooks |
 | Extensions | Web search and fetch | New: Web |
 | Extensions | Slack and Feishu | Per-platform plugins with their own tools; no generic channel or `notify` tool |
-| Workspace tools | `read`, `write`, `edit`, `glob`, `grep`, `exec`, `wait` | Existing: WorkspaceTools, BackgroundExec, Wait |
+| Workspace tools | `read`, `write`, `edit`, `glob`, `grep`, `exec`, `exec_stop`, `wait` | Existing: WorkspaceTools, BackgroundExec, Wait |
 | Remote access | JSON-RPC resident service | Existing: Transport, Rpc |
 | Remote access | ACP | New: AcpGateway |
 | Remote access | `/web`, `/remote`, phone pairing, remote Sessions | New: RemoteGateway |
 | Remote access | VS Code | CLI |
 | CLI commands | Subcommands, `exec --json`, `exec --verify` | CLI, calling each plugin's RPC |
 | Multimodality | `image generate/edit/enhance`, `modality`, `modality task` | New: Modality |
-| Multimodality | `image read` | Existing: a vision model reads images through `read` |
+| Multimodality | `image read` | Existing: a vision model reads images through `read` ([WorkspaceTools](../architecture/rust-agent/plugins/WorkspaceTools.md#read-results-and-images)) |
 | Multimodality | `video`, `speech`, `music`, `audio`, `asset`, `motion`, `realtime` | New: Modality (provider-executed) |
 | Multimodality | `ocr` | New: Modality (host-executed; OCR runtime component) |
 
@@ -490,7 +490,7 @@ A **supplement** adds services, methods or configuration. A **change** alters ex
 | ToolRegistry | Supplement | Parts of any language register tools with `toolRegistry` ([methods A.5](contracts/session-boundary.md#a5-tool-contribution)) | Non-Rust Session tools |
 | Agent assembly | Supplement | Collects the named services each installed plugin declares in `provides`; optional Session and branch parts installed per enabled plugin | All Session plugins |
 | Permission | Supplement | Command rules read at use time (no new risk category: unknown risks are unclassified, #45) | `/approvals` |
-| ModelProvider | Supplement | When building a request, sends an image, or replaces it with a text placeholder if the model lacks image support; history is unchanged (moved out of Rpc) | Attachments |
+| ModelProvider | Supplement | When building a request, sends an image in user content or in a tool result, or replaces it with a text placeholder if the model lacks image support or the request cannot carry it; history is unchanged (moved out of Rpc) | Attachments |
 | Prompt, PromptSources | Supplement | Prompt's published adopted model configuration; atomic adoption of a profile's prompt and optional model, using PromptSources' existing `dim/session` System entry | `/effort`, `/fast`, `/agent` |
 | PromptSources | Supplement | Prompt language source | `/language` |
 | ContextPreparation | Supplement | Usage query; manual compaction; production compaction host implementing `ResolveContextModel` | `/usage`, `/compact` |

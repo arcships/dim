@@ -16,7 +16,8 @@ use dim_agent_runtime::{Names, register_part};
 use dim_app_server::{
     managed_provider::{
         AccountSnapshot, CredentialLease, LeaseOwner, ManagedCatalog, ManagedError, ManagedFuture,
-        ManagedModel, ManagedProvider, ManagedProviderRow, ProviderDescriptor,
+        ManagedModel, ManagedProvider, ManagedProviderRow, ProviderDescriptor, WebSearchHit,
+        WebSearchRequest, WebSearchResponse,
         management::{
             BrowserLogin, BrowserLoginBegin, DeviceLogin, LoginBegin, LoginState,
             ManagedBrowserLoginComplete, ManagedLoginAttempt, Usage,
@@ -113,6 +114,40 @@ fn platform() -> &'static str {
         "windows" => "win32",
         os => os,
     }
+}
+fn project_search(body: &http::Body) -> Result<WebSearchResponse> {
+    let data = body.get("data").and_then(Value::as_object).unwrap_or(body);
+    let list = data
+        .get("results")
+        .and_then(Value::as_array)
+        .ok_or(ManagedError::InvalidResponse)?;
+    let mut results = Vec::with_capacity(list.len());
+    for item in list {
+        let obj = item.as_object().ok_or(ManagedError::InvalidResponse)?;
+        let title = text(obj.get("title"), ManagedError::InvalidResponse)?;
+        let url = http_url(obj.get("url"), ManagedError::InvalidResponse)?.to_string();
+        let snippet = obj
+            .get("snippet")
+            .and_then(Value::as_str)
+            .or_else(|| obj.get("description").and_then(Value::as_str))
+            .map(|s| s.trim().to_owned())
+            .unwrap_or_default();
+        let published_at = obj
+            .get("published_at")
+            .or_else(|| obj.get("publishedAt"))
+            .or_else(|| obj.get("age"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        results.push(WebSearchHit {
+            title,
+            url,
+            snippet,
+            published_at,
+        });
+    }
+    Ok(WebSearchResponse { results })
 }
 
 struct Browser {
@@ -696,10 +731,11 @@ impl Inner {
         Ok(account)
     }
 
-    /// One authenticated GET with a single controlled refresh after 401.
+    /// One authenticated request with a single controlled refresh after 401.
     async fn authorized(
         &self,
-        url: impl Fn(&Tokens) -> String,
+        build: impl Fn(&Client, &Tokens) -> reqwest::RequestBuilder,
+        cancel: Option<&CancellationToken>,
     ) -> Result<(Grant, StatusCode, http::Body)> {
         let mut current = self.store.resolve(None).await?;
         let expected = current.account.clone();
@@ -708,14 +744,12 @@ impl Inner {
             if !same_account(&expected, &current.account) {
                 return Err(ManagedError::AccountChanged);
             }
-            let mut get = self
-                .client
-                .get(url(&current.tokens))
-                .bearer_auth(current.tokens.str("access"));
+            let mut req =
+                build(&self.client, &current.tokens).bearer_auth(current.tokens.str("access"));
             for (name, value) in identity_headers() {
-                get = get.header(name, value);
+                req = req.header(name, value);
             }
-            let (status, body) = request(get, None).await?;
+            let (status, body) = request(req, cancel).await?;
             if status != StatusCode::UNAUTHORIZED {
                 return Ok((current, status, body));
             }
@@ -732,7 +766,15 @@ impl Inner {
         input(&provider)?;
         let _gate = self.catalog_gate.lock().await;
         let (grant, status, body) = self
-            .authorized(|t| format!("{}/models?type=dim", trimmed(t.str("relayBaseUrl"))))
+            .authorized(
+                |c, t| {
+                    c.get(format!(
+                        "{}/models?type=dim",
+                        trimmed(t.str("relayBaseUrl"))
+                    ))
+                },
+                None,
+            )
             .await?;
         if !status.is_success() {
             return Err(rejected(status, &body));
@@ -750,7 +792,10 @@ impl Inner {
     async fn usage(self: Arc<Self>, provider: String) -> Result<Usage> {
         input(&provider)?;
         let (_, status, body) = self
-            .authorized(|t| format!("{}/api/me/usage", trimmed(t.str("issuer"))))
+            .authorized(
+                |c, t| c.get(format!("{}/api/me/usage", trimmed(t.str("issuer")))),
+                None,
+            )
             .await?;
         if status == StatusCode::FORBIDDEN {
             return Err(ManagedError::RefreshRejected);
@@ -759,6 +804,35 @@ impl Inner {
             return Err(rejected(status, &body));
         }
         usage::project_usage(&body)
+    }
+
+    async fn web_search(
+        self: Arc<Self>,
+        req: WebSearchRequest,
+        cancel: CancellationToken,
+    ) -> Result<WebSearchResponse> {
+        let query = req.query.trim();
+        if query.is_empty() || query.chars().count() > 500 || !(1..=10).contains(&req.count) {
+            return Err(ManagedError::InvalidInput);
+        }
+        let payload = json!({
+            "query": query,
+            "count": req.count,
+            "offset": 0,
+        });
+        let (_, status, body) = self
+            .authorized(
+                |c, t| {
+                    c.post(format!("{}/web-search", trimmed(t.str("relayBaseUrl"))))
+                        .json(&payload)
+                },
+                Some(&cancel),
+            )
+            .await?;
+        if !status.is_success() {
+            return Err(ManagedError::InvalidResponse);
+        }
+        project_search(&body)
     }
 
     fn connection(self: &Arc<Self>, lease: HeldLease) -> Result<CredentialLease> {
@@ -911,6 +985,13 @@ impl ManagedProvider for DimOAuth {
     fn usage(&self, provider: &str) -> ManagedFuture<Usage> {
         let provider = provider.to_owned();
         self.owned(|inner| inner.usage(provider))
+    }
+    fn web_search(
+        &self,
+        request: WebSearchRequest,
+        cancel: CancellationToken,
+    ) -> ManagedFuture<WebSearchResponse> {
+        self.owned(|inner| inner.web_search(request, cancel))
     }
     fn catalog(&self, provider: &str) -> ManagedFuture<ManagedCatalog> {
         let provider = provider.to_owned();

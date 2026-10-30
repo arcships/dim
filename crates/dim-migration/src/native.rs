@@ -59,9 +59,9 @@ impl Native {
         })?;
         let (checked, version) = SqliteStorage::open_read_only(path.clone()).map_err(failure)?;
         checked.close().await.map_err(failure)?;
-        if version != 21 {
+        if version != 25 {
             return Err(Error::Target(
-                "Migration requires native storage format 21; target preserved".into(),
+                "Migration requires native storage format 25; target preserved".into(),
             ));
         }
         let db = Connection::open(path).map_err(failure)?;
@@ -538,6 +538,7 @@ impl Native {
             )
             .map_err(failure)?;
         }
+        dim_app_server::storage::initialize_session_catalog(&tx, &session).map_err(failure)?;
         if let Some(title) = &data.title {
             tx.execute(
                 "INSERT INTO session_metadata VALUES (?1,1,?2,'manual')",
@@ -899,18 +900,21 @@ fn validate_settings(source: &str, value: &Value) -> Result<()> {
         }
         "web" => {
             let service = &value["searchService"];
-            if service["kind"] != "brave"
-                || !service["apiKey"]
+            let dim_oauth = service
+                .as_object()
+                .is_some_and(|s| s.len() == 1 && s.get("kind") == Some(&json!("dim-oauth")));
+            let brave = service["kind"] == "brave"
+                && service["apiKey"]
                     .as_str()
                     .is_some_and(|key| !key.is_empty())
-                || service.get("endpoint").is_some_and(|url| {
-                    !url.as_str().is_some_and(|raw| {
+                && service.get("endpoint").is_none_or(|url| {
+                    url.as_str().is_some_and(|raw| {
                         reqwest::Url::parse(raw).is_ok_and(|url| {
                             matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
                         })
                     })
-                })
-            {
+                });
+            if !dim_oauth && !brave {
                 return Err(invalid());
             }
         }

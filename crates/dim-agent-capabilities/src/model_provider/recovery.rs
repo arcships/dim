@@ -97,11 +97,19 @@ pub async fn invoke<S: Send, T>(
         }
     };
     result.map_err(|mut error| {
-        let display = policy
-            .as_ref()
-            .and_then(|policy| policy.presentation(&error));
-        if let HostError::Failed { presentation, .. } = &mut error {
-            *presentation = display.map(Box::new);
+        if matches!(
+            &error,
+            HostError::Failed {
+                presentation: None,
+                ..
+            }
+        ) {
+            let display = policy
+                .as_ref()
+                .and_then(|policy| policy.presentation(&error));
+            if let HostError::Failed { presentation, .. } = &mut error {
+                *presentation = display.map(Box::new);
+            }
         }
         error
     })

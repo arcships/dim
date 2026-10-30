@@ -347,29 +347,6 @@ pub async fn connect_inner(options: &Options, start: bool) -> Result<Option<Clie
     }
 }
 
-/// `host-isolation.json` for the daemon this profile starts.
-///
-/// The product profile reads `<home>/host-isolation.json`. An API-key
-/// `--model-config` profile reads `<home>/rust/host-isolation.json`, the
-/// daemon `--home`. `None` on Windows, which does not isolate commands.
-pub(crate) fn isolation_policy_file(options: &Options) -> Option<PathBuf> {
-    #[cfg(not(unix))]
-    {
-        let _ = options;
-        None
-    }
-    #[cfg(unix)]
-    {
-        let root = if options.model_config.is_some() {
-            options.home.join("rust")
-        } else {
-            options.home.clone()
-        };
-        let root = std::fs::canonicalize(&root).unwrap_or(root);
-        Some(root.join("host-isolation.json"))
-    }
-}
-
 fn missing(error: &io::Error) -> bool {
     matches!(
         error.kind(),
@@ -409,45 +386,5 @@ mod web_assets_tests {
             Some(configured.clone())
         );
         std::fs::remove_dir_all(root).unwrap();
-    }
-}
-
-#[cfg(test)]
-mod isolation_policy_file_tests {
-    use super::{Options, isolation_policy_file};
-
-    #[test]
-    fn the_policy_file_follows_the_daemon_home() {
-        let home = std::env::temp_dir().join(format!("dim-isolation-home-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(&home).unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap();
-        options.home = home.clone();
-        options.model_config = None;
-        #[cfg(unix)]
-        {
-            let canonical = std::fs::canonicalize(&home).unwrap();
-            assert_eq!(
-                isolation_policy_file(&options),
-                Some(canonical.join("host-isolation.json"))
-            );
-            options.model_config = Some(home.join("model.json"));
-            assert_eq!(
-                isolation_policy_file(&options),
-                Some(home.join("rust").join("host-isolation.json"))
-            );
-            std::fs::create_dir(home.join("rust")).unwrap();
-            assert_eq!(
-                isolation_policy_file(&options),
-                Some(
-                    std::fs::canonicalize(home.join("rust"))
-                        .unwrap()
-                        .join("host-isolation.json")
-                )
-            );
-        }
-        #[cfg(not(unix))]
-        assert_eq!(isolation_policy_file(&options), None);
-        std::fs::remove_dir_all(home).unwrap();
     }
 }

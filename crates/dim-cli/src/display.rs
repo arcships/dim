@@ -28,6 +28,7 @@ pub struct Display {
     tools: HashMap<String, String>,
     finished: HashSet<String>,
     completed_tools: HashSet<String>,
+    presented_failure: Option<String>,
 }
 impl Display {
     pub fn new(interactive: bool, json: bool) -> Self {
@@ -45,6 +46,7 @@ impl Display {
             tools: HashMap::new(),
             finished: HashSet::new(),
             completed_tools: HashSet::new(),
+            presented_failure: None,
         }
     }
     pub fn record(&mut self, message: &str) -> Result<()> {
@@ -160,18 +162,41 @@ impl Display {
             EventContent::ModelEnd(data) => {
                 self.finished.insert(data.request_id);
                 self.finish_text()?;
-                if let ModelOutputOutcome::Failed { .. } = data.outcome {
+                if let ModelOutputOutcome::Failed {
+                    error,
+                    presentation,
+                    ..
+                } = data.outcome
+                {
                     self.failed = true;
+                    if let Some(presentation) = presentation {
+                        self.record(&format!(
+                            "[failed] {}: {}{}",
+                            presentation.source,
+                            presentation
+                                .server_message
+                                .as_deref()
+                                .unwrap_or(&presentation.reason),
+                            presentation
+                                .action
+                                .map(|action| format!(". {action}"))
+                                .unwrap_or_default(),
+                        ))?;
+                        self.presented_failure = Some(error);
+                    }
                 }
             }
             EventContent::TurnEnd(data) => {
                 self.finish_text()?;
+                let presented = self.presented_failure.take();
                 match data.outcome {
-                    TurnOutcome::Failed { .. } => {
+                    TurnOutcome::Failed { error } => {
                         self.failed = true;
-                        self.record(
-                            "[failed] Model or turn failed; see the private daemon log for details",
-                        )?;
+                        if presented.as_deref() != Some(error.as_str()) {
+                            self.record(
+                                "[failed] Model or turn failed; see the private daemon log for details",
+                            )?;
+                        }
                     }
                     TurnOutcome::Cancelled { .. } => self.record("[stopped]")?,
                     _ => {}

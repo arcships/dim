@@ -2,9 +2,9 @@ use dim_agent_runtime::*;
 use dim_agent_types::BranchSource;
 use dim_agent_types::InputMode;
 use rutis::Plugin;
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, Key, TypeKey};
 use std::time::Duration;
-use test_extension_a::Provider;
+use test_extension_a::{Counter, Provider};
 use test_extension_b::{Consumer, Snapshot};
 fn builder() -> AgentBuilder {
     let mut b = AgentBuilder::new(AgentConfig::default());
@@ -198,25 +198,6 @@ async fn missing_dependency_and_undeclared_read_fail_before_session_publication(
     assert!(agent.sessions().is_empty());
     agent.close().await.unwrap();
 
-    if cfg!(debug_assertions) {
-        for scope in [PartScope::Session, PartScope::Branch] {
-            let mut b = builder();
-            b.require_feature(Feature::new("test.required-owner").when(
-                scope,
-                "test.required-owner",
-                |_| Ok(Some(Box::new(UnawaitedChild))),
-            ));
-            let agent = b.build();
-            let error = agent
-                .create_session(SessionConfig::default())
-                .await
-                .err()
-                .expect("required child prevents publication");
-            assert!(error.to_string().contains("unawaited-child"), "{error}");
-            assert!(agent.sessions().is_empty());
-            agent.close().await.unwrap();
-        }
-    }
     let mut undeclared = builder();
     test_extension_a::register_names(undeclared.catalog_mut());
     undeclared
@@ -234,6 +215,341 @@ async fn missing_dependency_and_undeclared_read_fail_before_session_publication(
     );
     assert!(agent.sessions().is_empty());
     agent.close().await.unwrap();
+}
+
+/// A check that inspected nothing does not look like a pass: an Agent that
+/// never placed its Sessions has no diagnostics snapshot to inspect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_assembly_check_with_nothing_to_inspect_is_an_error() {
+    let agent = builder().build();
+    let error = agent.check_assembly().unwrap_err();
+    assert!(
+        error.to_string().contains("no diagnostics snapshot"),
+        "{error}"
+    );
+    agent.close().await.unwrap();
+}
+
+/// The findings with their scope, as `(session, branch, plugin, rule)` tuples
+/// sorted by that prefix, so a test asserts the whole list rather than the
+/// presence of one entry.
+fn pairs(findings: &[AssemblyFinding]) -> Vec<(String, Option<String>, String, AssemblyRule)> {
+    let mut pairs: Vec<_> = findings
+        .iter()
+        .map(|finding| {
+            (
+                finding.session.clone(),
+                finding.branch.clone(),
+                finding.plugin.clone(),
+                finding.rule,
+            )
+        })
+        .collect();
+    pairs.sort_by(|a, b| (&a.0, &a.1, &a.2).cmp(&(&b.0, &b.1, &b.2)));
+    pairs
+}
+
+/// A required part that returns from `apply` without awaiting the child it
+/// registered leaves a plugin that is not `Active`. Creation does not wait for
+/// it; the assembly check reports it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unawaited_children_are_reported() {
+    for scope in [PartScope::Session, PartScope::Branch] {
+        let mut b = builder();
+        b.require_feature(Feature::new("test.required-owner").when(
+            scope,
+            "test.required-owner",
+            |_| Ok(Some(Box::new(UnawaitedChild))),
+        ));
+        let agent = b.build();
+        let session = agent
+            .create_session(SessionConfig::default())
+            .await
+            .unwrap();
+        let findings = agent.check_assembly().unwrap();
+        assert_eq!(
+            pairs(&findings),
+            vec![(
+                session.id().to_string(),
+                (scope == PartScope::Branch).then(|| "main".to_string()),
+                "unawaited-child".to_string(),
+                AssemblyRule::Ready,
+            )],
+            "{findings:?}"
+        );
+        session.close().await.unwrap();
+        agent.close().await.unwrap();
+    }
+}
+
+/// Two branches of one Session carry the same faulty plugin: the findings are
+/// told apart by the branch they name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn findings_name_their_branch() {
+    let mut b = builder();
+    b.require_feature(
+        Feature::new("test.required-owner")
+            .branch("test.required-owner", |_| Ok(Box::new(UnawaitedChild))),
+    );
+    let agent = b.build();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    let fork = session
+        .branch(
+            "main".into(),
+            session.sequence("main").unwrap(),
+            BranchOptions {
+                prompt: "fork".into(),
+                source: BranchSource::Host {
+                    operation_id: "fork".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let findings = agent.check_assembly().unwrap();
+    let expected_branch = |branch: &str| {
+        (
+            session.id().to_string(),
+            Some(branch.to_string()),
+            "unawaited-child".to_string(),
+            AssemblyRule::Ready,
+        )
+    };
+    let mut expected = vec![expected_branch("main"), expected_branch(fork.as_str())];
+    expected.sort_by(|a, b| (&a.0, &a.1, &a.2).cmp(&(&b.0, &b.1, &b.2)));
+    assert_eq!(pairs(&findings), expected, "{findings:?}");
+    let fork_scope = format!("session {} branch {}: ", session.id(), fork.as_str());
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding.to_string().starts_with(&fork_scope)),
+        "{findings:?}"
+    );
+    session.close().await.unwrap();
+    agent.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn undeclared_reads_are_reported() {
+    let mut b = builder();
+    test_extension_a::register_names(b.catalog_mut());
+    names::register::<Marker>(b.catalog_mut(), Some(BRANCH_GROUP));
+    b.require_feature(
+        Feature::new("test.pair")
+            .branch("test.pair", |names| Ok(Box::new(PairProvider::new(names)?))),
+    )
+    .require_feature(
+        Feature::new("test.undeclared-reader").branch("test.undeclared-reader", |names| {
+            Ok(Box::new(UndeclaredReader::new(names)?))
+        }),
+    );
+    let agent = b.build();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    let findings = agent.check_assembly().unwrap();
+    // Each plugin is checked once, by the innermost scope that contains it, so
+    // the reader's branch reports this read once.
+    assert_eq!(
+        pairs(&findings),
+        vec![(
+            session.id().to_string(),
+            Some("main".to_string()),
+            "test.undeclared-reader".to_string(),
+            AssemblyRule::UndeclaredRead
+        )],
+        "{findings:?}"
+    );
+    session.close().await.unwrap();
+    agent.close().await.unwrap();
+}
+
+/// A reader whose provider withdraws after the read keeps the access but loses
+/// the resolved dependency. Each plugin is checked once, by its innermost
+/// scope: the reader's branch reports its `Pending` state and the lost
+/// generation, and the required provider that left the tree is reported too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reads_of_a_withdrawn_generation_are_reported() {
+    let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut b = builder();
+    names::register::<Marker>(b.catalog_mut(), Some(BRANCH_GROUP));
+    let provider_armed = armed.clone();
+    b.require_feature(Feature::new("test.withdrawn-provider").branch(
+        "test.withdrawn-provider",
+        move |names| {
+            Ok(Box::new(WithdrawnProvider {
+                marker: names.key()?,
+                armed: provider_armed.clone(),
+            }))
+        },
+    ))
+    .require_feature(Feature::new("test.declared-reader").branch(
+        "test.declared-reader",
+        |names| {
+            Ok(Box::new(DeclaredReader {
+                marker: names.key()?,
+            }))
+        },
+    ));
+    let agent = b.build();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut pending = false;
+    for _ in 0..400 {
+        let state = agent
+            .diagnostics()
+            .unwrap()
+            .plugins
+            .into_iter()
+            .find(|plugin| plugin.name == "test.declared-reader")
+            .map(|plugin| plugin.state);
+        if state == Some(FiberState::Pending) {
+            pending = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(pending, "the reader loses its provider");
+    let findings = agent.check_assembly().unwrap();
+    assert_eq!(
+        pairs(&findings),
+        vec![
+            (
+                session.id().to_string(),
+                Some("main".to_string()),
+                "test.declared-reader".to_string(),
+                AssemblyRule::Ready
+            ),
+            (
+                session.id().to_string(),
+                Some("main".to_string()),
+                "test.declared-reader".to_string(),
+                AssemblyRule::Generation
+            ),
+            (
+                session.id().to_string(),
+                Some("main".to_string()),
+                "test.withdrawn-provider".to_string(),
+                AssemblyRule::Ready
+            ),
+        ],
+        "{findings:?}"
+    );
+    session.close().await.unwrap();
+    agent.close().await.unwrap();
+}
+
+/// Provides the `Marker` a reader gates on and an external `Counter` in one
+/// part, so the gate also guarantees the counter is bound.
+struct PairProvider {
+    marker: Key<Marker>,
+    counter: Key<Counter>,
+}
+impl PairProvider {
+    fn new(names: &Names<'_>) -> rutis::Result<Self> {
+        Ok(Self {
+            marker: names.key()?,
+            counter: names.key()?,
+        })
+    }
+}
+impl DynPlugin for PairProvider {
+    fn name(&self) -> &str {
+        "test.pair-provider"
+    }
+    fn apply<'a>(&'a self, ctx: &'a rutis::Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            ctx.provide_at(self.marker.clone(), std::sync::Arc::new(Marker))?;
+            ctx.provide_at(
+                self.counter.clone(),
+                std::sync::Arc::new(Counter::default()),
+            )?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// Declares the marker and reads the counter through the non-strict read,
+/// without declaring it.
+struct UndeclaredReader {
+    marker: Key<Marker>,
+    counter: Key<Counter>,
+}
+impl UndeclaredReader {
+    fn new(names: &Names<'_>) -> rutis::Result<Self> {
+        Ok(Self {
+            marker: names.key()?,
+            counter: names.key()?,
+        })
+    }
+}
+impl DynPlugin for UndeclaredReader {
+    fn name(&self) -> &str {
+        "test.undeclared-reader"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.marker.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a rutis::Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            ctx.require_at(&self.marker)?;
+            let _ = ctx.get_at(&self.counter);
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// Provides the marker until the test arms it, after creation, and then
+/// closes itself.
+struct WithdrawnProvider {
+    marker: Key<Marker>,
+    armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl DynPlugin for WithdrawnProvider {
+    fn name(&self) -> &str {
+        "test.withdrawn-provider"
+    }
+    fn apply<'a>(&'a self, ctx: &'a rutis::Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        let ctx = ctx.clone();
+        let marker = self.marker.clone();
+        let armed = self.armed.clone();
+        Box::pin(async move {
+            ctx.provide_at(marker, std::sync::Arc::new(Marker))?;
+            tokio::spawn(async move {
+                while !armed.load(std::sync::atomic::Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                let _ = ctx.dispose_self();
+            });
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// Declares the marker and reads it once.
+struct DeclaredReader {
+    marker: Key<Marker>,
+}
+impl DynPlugin for DeclaredReader {
+    fn name(&self) -> &str {
+        "test.declared-reader"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.marker.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a rutis::Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            ctx.require_at(&self.marker)?;
+            Ok(Effect::Done)
+        })
+    }
 }
 
 #[tokio::test]
@@ -385,7 +701,7 @@ impl Plugin for ScopeProbe {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn scoped_services_stay_inside_their_session_and_unkeyed_ones_fail_publication() {
+async fn scoped_services_stay_inside_their_session_and_unkeyed_ones_are_reported() {
     let foreign = std::sync::Arc::new(std::sync::Mutex::new(None));
     let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut scoped = builder();
@@ -416,9 +732,6 @@ async fn scoped_services_stay_inside_their_session_and_unkeyed_ones_fail_publica
     second.close().await.unwrap();
     agent.close().await.unwrap();
 
-    if !cfg!(debug_assertions) {
-        return;
-    }
     let mut unkeyed = builder();
     unkeyed.require_feature(
         Feature::new("test.scope-probe").session("test.scope-probe", |_| {
@@ -430,16 +743,22 @@ async fn scoped_services_stay_inside_their_session_and_unkeyed_ones_fail_publica
         }),
     );
     let agent = unkeyed.build();
-    let error = agent
+    let session = agent
         .create_session(SessionConfig::default())
         .await
-        .err()
-        .expect("unkeyed scoped service");
-    assert!(
-        error.to_string().contains("without an instance key"),
-        "{error}"
+        .unwrap();
+    let findings = agent.check_assembly().unwrap();
+    assert_eq!(
+        pairs(&findings),
+        vec![(
+            session.id().to_string(),
+            None,
+            "test.scope-probe".to_string(),
+            AssemblyRule::InstanceKey
+        )],
+        "{findings:?}"
     );
-    assert!(agent.sessions().is_empty());
+    session.close().await.unwrap();
     agent.close().await.unwrap();
 }
 

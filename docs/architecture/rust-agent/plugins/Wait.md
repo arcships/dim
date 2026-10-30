@@ -20,7 +20,9 @@ timeout or an interruption.
 
 No direct event production/subscription; the outcome is a tool result.
 WaitBranch records arrivals. Futures use caller cancellation and release the
-single-wait slot on exit/drop. Default timeout is 300,000 ms. Generation changes
+single-wait slot on exit/drop. The timeout is an integer from 1 through 300,000 ms,
+inclusive, with default 300,000 ms; it bounds this wait, not task execution.
+Both the tool schema and runtime enforce that range. Generation changes
 can make per-call branch lookup fail as reloading; this contribution itself has
 no tracker or disposer. It is not a process join primitive: cancelled background
 tasks emit no wake and old arrivals are not replayed after WaitBranch reload.

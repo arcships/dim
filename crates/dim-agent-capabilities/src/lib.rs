@@ -13,6 +13,7 @@ pub mod file_storage;
 pub mod history;
 pub mod host;
 pub mod host_platform;
+pub mod images;
 pub mod input_queue;
 pub mod methods;
 pub mod model_provider;
