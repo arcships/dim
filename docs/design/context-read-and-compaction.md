@@ -114,7 +114,7 @@ ORDER BY sequence
 | 查询 | 回答什么 | 标签与索引 |
 | --- | --- | --- |
 | 最近一次压缩尝试 | `regrown` 的边界（任何触发、任何结算），以及它的 `through` | `kind='context/compaction-start'`；索引 `(session, branch, kind, sequence)` 倒序取一 |
-| 最近一次完成压缩 | 起读的锚点与裁剪点 | 窄表 `status='completed'`，索引 `(session, branch, status, sequence)`；无窄表时用完成事实的部分索引（`WHERE kind='context/compaction' AND json_extract(body,'$.record.event.data.outcome.status')='completed'`），只取一行、只提取一行正文 |
+| 最近一次完成压缩 | 起读的锚点与裁剪点 | 窄表 `status='completed'`，索引 `(session, branch, status, sequence)`；无窄表时用完成事实的部分索引（`WHERE kind='context/compaction' AND json_extract(body,'$.record.event.data.status')='completed'`（结算结果被摊平在 `context/compaction` 事件的数据里，路径不含 `outcome`）），只取一行、只提取一行正文 |
 | 段边界之后的轮次边界 | 合法裁剪点枚举与预算分段 | `kind='turn/start'` 的 `turn_id`；索引 `(session, branch, kind, sequence)` |
 | 输入窗口 | 当前轮输入与它引用的、写在轮次之前的已消费输入 | `input/consumed` 的 `input_id`、`input/message` 的 id；输入行的部分索引 |
 | 用量基线 | 估算用的 `model/call` 与其 `model/usage` 配对 | 按 `request_id`/`turn_id` 的部分索引 |
@@ -206,6 +206,7 @@ ORDER BY sequence
 | 手动命令 | 开始前失败（无开始）、已有命令进行中、重载时已有命令未结算，各一条流程 |
 | 读取量 | 命中快照的会话：读行数只与恢复位置之后有关；`context-breakdown` 对照 |
 | 定位查询 | 用查询计划或访问行数证明五个查询在窄表存在时不读正文行；回退路径（窄表缺失）各取一行、提取一行正文，失败尝试再多也不增长；两者都不随前缀长度线性增长 |
+| 完成事实的回退索引 | 一次性数据库：一次完成压缩后跟多次失败尝试，仍能通过该索引取到那次完成 |
 | 峰值 | 与批大小相关，不随历史增长；`restore-replay` 与 `context-replay` |
 
 不设 CI 字节阈值；数值写进实现 PR。
