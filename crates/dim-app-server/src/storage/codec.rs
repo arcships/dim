@@ -399,6 +399,7 @@ pub(super) fn encode(
             create_at: source.create_at,
             tags: source.tags.clone(),
             kind,
+            contributions: None,
         }),
         None => serde_json::to_value(source),
     }

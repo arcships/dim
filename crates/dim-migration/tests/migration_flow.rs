@@ -688,7 +688,14 @@ async fn offline_import_reopens_with_unchanged_native_consumers_and_preserves_co
              CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0));
              INSERT INTO agent_sessions(session_id, config, created_at_ms) SELECT session_id, config, created_at_ms FROM sessions_rows;
              DROP TABLE sessions_rows;
+             CREATE TEMP TABLE events_rows AS SELECT session_id, branch_id, sequence, last_sequence, kind, body, event_id FROM timeline_events;
+             DROP TABLE timeline_events;
+             CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id));
+             INSERT INTO timeline_events(session_id, branch_id, sequence, last_sequence, kind, body, event_id) SELECT session_id, branch_id, sequence, last_sequence, kind, body, event_id FROM events_rows;
+             DROP TABLE events_rows;
              CREATE INDEX timeline_events_by_end ON timeline_events(session_id, branch_id, last_sequence, sequence);
+             CREATE INDEX timeline_events_by_id ON timeline_events(session_id, event_id) WHERE event_id IS NOT NULL;
+             CREATE INDEX timeline_tool_use_starts ON timeline_events(session_id, json_extract(body, '$.record.event.data.request_id'), json_extract(body, '$.record.event.data.call_id')) WHERE branch_id = 'main' AND kind = 'step/tool-use-start';
              DROP TABLE agent_store_format;
              CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 23));
              INSERT INTO agent_store_format VALUES (23);",

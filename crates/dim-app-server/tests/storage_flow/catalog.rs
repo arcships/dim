@@ -205,6 +205,9 @@ async fn catalog_projection_preserves_the_preview_window_and_commits_atomically(
         let projection = match *table {
             "agents" => "agent_id, profile, is_default",
             "agent_sessions" => "session_id, config, created_at_ms",
+            "timeline_events" => {
+                "session_id, branch_id, sequence, last_sequence, kind, body, event_id"
+            }
             _ => "*",
         };
         old.execute_batch(&format!(

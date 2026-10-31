@@ -282,6 +282,7 @@ mod tests {
                 system: None,
                 system_source: None,
             }),
+            contributions: None,
         }))
     }
 

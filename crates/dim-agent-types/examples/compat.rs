@@ -220,6 +220,7 @@ fn native_events() -> Vec<AgentEvent> {
             create_at: 1_790_000_001_234,
             tags: None,
             kind,
+            contributions: None,
         })
         .collect()
 }
@@ -254,6 +255,7 @@ fn extension_events() -> Vec<AgentEvent> {
             create_at: 1_790_000_001_234,
             tags: None,
             kind,
+            contributions: None,
         })
         .collect()
 }

@@ -971,6 +971,26 @@ impl From<EventKind> for EventDraft {
     }
 }
 
+/// What one committed event contributes to model context: ordered messages and
+/// keyed complete state values. Either part may be empty.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Contributions {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<ContributionMessage>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub state: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContributionMessage {
+    pub role: Role,
+    pub content: MessageContent,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentEvent {
     pub id: String,
@@ -986,6 +1006,12 @@ pub struct AgentEvent {
     pub tags: Option<Vec<String>>,
     #[serde(flatten)]
     pub kind: EventKind,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub contributions: Option<Contributions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

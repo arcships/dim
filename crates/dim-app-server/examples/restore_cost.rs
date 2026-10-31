@@ -496,6 +496,7 @@ fn request_event(sequence: u64, request: Arc<ModelRequest>, call: bool) -> Store
             create_at: 1_760_000_000_000 + sequence,
             tags: None,
             kind,
+            contributions: None,
         }),
         trace: None,
         batch_end: sequence,

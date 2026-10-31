@@ -29,7 +29,7 @@ async fn catalog_pages_and_searches_a_large_dormant_store_without_reading_histor
         if index < 300 {
             let event = json!({"encoding":"event","record":{"event":{"id":format!("input-{index}"),"sequence":1,"create_at":1000+index,"type":"input","name":"message","data":{"user":{"content":[{"type":"text","text":format!("preview {index}")}]}}},"refs":null,"trace":null,"batch_end":1}});
             tx.execute(
-                "INSERT INTO timeline_events VALUES (?1,'main',1,1,'input/message',?2,?3)",
+                "INSERT INTO timeline_events VALUES (?1,'main',1,1,'input/message',?2,?3,0)",
                 params![id, event.to_string(), format!("input-{index}")],
             )
             .unwrap();

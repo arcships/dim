@@ -46,6 +46,7 @@ fn record(sequence: u64, kind: EventKind) -> StoredEvent {
             create_at: dim_agent_runtime::core::unix_millis(),
             tags: None,
             kind,
+            contributions: None,
         }),
         trace: None,
         batch_end: sequence,

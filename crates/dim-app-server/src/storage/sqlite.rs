@@ -11,7 +11,7 @@ use std::{
 };
 
 /// The native store format this daemon creates and opens.
-pub const FORMAT: u32 = 27;
+pub const FORMAT: u32 = 28;
 const LEGACY_BY_END: (&str, &str) = (
     "timeline_events_by_end",
     "CREATE INDEX timeline_events_by_end ON timeline_events(session_id, branch_id, last_sequence, sequence)",
@@ -19,7 +19,7 @@ const LEGACY_BY_END: (&str, &str) = (
 pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "agent_store_format",
-        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 27))",
+        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 28))",
     ),
     (
         "settings_documents",
@@ -71,7 +71,7 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
     ),
     (
         "timeline_events",
-        "CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id))",
+        "CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, contributes INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id))",
     ),
     (
         "timeline_snapshots",
@@ -84,6 +84,10 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "timeline_events_by_id",
         "CREATE INDEX timeline_events_by_id ON timeline_events(session_id, event_id) WHERE event_id IS NOT NULL",
+    ),
+    (
+        "timeline_events_contributions",
+        "CREATE INDEX timeline_events_contributions ON timeline_events(session_id, branch_id, contributes, sequence)",
     ),
     (
         "timeline_tool_use_starts",
@@ -122,14 +126,20 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
 /// to recognize a store older than v27.
 const AGENT_SESSIONS_BEFORE_V27: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0))";
 const AGENTS_BEFORE_V27: &str = "CREATE TABLE agents(agent_id TEXT PRIMARY KEY, profile TEXT NOT NULL, is_default INTEGER NOT NULL CHECK(is_default IN (0, 1)))";
+/// The text of `timeline_events` before v28 adds the derived contribution flag.
+const TIMELINE_EVENTS_BEFORE_V28: &str = "CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id))";
 /// v27 adds a column to two tables, which `SCHEMA` cannot express as a new
 /// entry: the upgrade alters them before it creates the indexes on them.
 const V27_COLUMNS: &str = "ALTER TABLE agent_sessions ADD COLUMN leader_session_id TEXT REFERENCES agent_sessions(session_id);
 ALTER TABLE agents ADD COLUMN owner_session_id TEXT REFERENCES agent_sessions(session_id);";
+/// v28 adds the derived contribution flag to `timeline_events`; the upgrade
+/// alters the table before it creates the index on the column.
+const V28_COLUMNS: &str =
+    "ALTER TABLE timeline_events ADD COLUMN contributes INTEGER NOT NULL DEFAULT 0;";
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
-const UPGRADES: [(u32, &[&str]); 13] = [
+const UPGRADES: [(u32, &[&str]); 14] = [
     (
         13,
         &[
@@ -172,6 +182,8 @@ const UPGRADES: [(u32, &[&str]); 13] = [
     (25, &[]),
     // #593: a delegation's owner and a member Session's leader.
     (26, &["agents_by_owner", "agent_sessions_by_leader"]),
+    // #708: the derived contribution flag on timeline events.
+    (27, &["timeline_events_contributions"]),
 ];
 
 fn format_table(version: u32) -> String {
@@ -195,6 +207,7 @@ fn schema_of(version: u32) -> Vec<(&'static str, String)> {
                 "agent_store_format" => format_table(version),
                 "agent_sessions" if version < 27 => AGENT_SESSIONS_BEFORE_V27.to_owned(),
                 "agents" if version < 27 => AGENTS_BEFORE_V27.to_owned(),
+                "timeline_events" if version < 28 => TIMELINE_EVENTS_BEFORE_V28.to_owned(),
                 _ => sql.to_owned(),
             };
             (name, sql)
@@ -353,6 +366,9 @@ impl SqliteStorage {
                 for (from, added) in UPGRADES.iter().filter(|(from, _)| *from >= version) {
                     if *from == 26 {
                         tx.execute_batch(V27_COLUMNS).map_err(storage)?;
+                    }
+                    if *from == 27 {
+                        tx.execute_batch(V28_COLUMNS).map_err(storage)?;
                     }
                     for (_, sql) in SCHEMA.iter().filter(|(name, _)| added.contains(name)) {
                         tx.execute_batch(sql).map_err(storage)?;

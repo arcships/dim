@@ -524,7 +524,7 @@ impl Native {
                 _ => json!({"encoding":"event","record":wire}),
             };
             tx.execute(
-                "INSERT INTO timeline_events VALUES (?1,'main',?2,?2,?3,?4,?5)",
+                "INSERT INTO timeline_events VALUES (?1,'main',?2,?2,?3,?4,?5,0)",
                 params![
                     session,
                     i64::try_from(event.sequence).map_err(failure)?,
@@ -589,6 +589,7 @@ pub(crate) fn history(data: &SessionData) -> Result<Vec<StoredEvent>> {
                 create_at: now,
                 tags: Some(vec!["migration:legacy-import".into()]),
                 kind,
+                contributions: None,
             }),
             trace: None,
             batch_end: sequence,

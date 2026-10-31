@@ -443,6 +443,7 @@ fn a_v1_connection_receives_a_tool_result_without_its_effects() {
                 },
             }],
         }),
+        contributions: None,
     };
     let shared = v1::SharedEvent::new(std::sync::Arc::new(event)).expect("a dispatched result");
     let value = serde_json::to_value(&shared).unwrap();
