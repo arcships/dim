@@ -146,6 +146,9 @@ checkpoint 有三样：
 - **压缩所有者**
   - 需求：定义“有效压缩”的查找，以及裁剪点的边界位置与它的前缀贡献（§3.2），保证不改写历史字段、不重复输出前缀。
   - owner 与 issue：[ContextCompaction](plugins/ContextCompaction.md)。
+- **其余能力（裁剪合法性所依赖的事实、`usage` 键的载荷、`prompt` 类键的写入者）**
+  - 需求：各自的语义与写入者由所属能力定义；本契约只要求它们以贡献字段表达。
+  - owner 与 issue：对应能力与文档。
 
 ## 7. 验收
 
