@@ -37,6 +37,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Owner-independent Timeline instances](design/collaboration-timeline.md) (#335)
 - [Timeline branches](design/timeline-branches.md): what branches are for, branch versus member and fork, messages between lines, identity across compaction, ending a line (#427)（[中文](zh/design/timeline-branches.md)）
 - [Context replay memory plan](design/context-replay-memory.md)（中文）：每步重建的拷贝链、按边界重放与共享消息
+- [Context read and compaction positioning](design/context-read-and-compaction.md)（中文）：读取起点、事件分类过滤、定位标签、压缩状态机与失败语义
 - [Context assembly and recognition requirements](design/context-assembly-requirements.md)（中文）：业务必须保证什么，内存与读取加速允许改变什么
 - [Compaction requirements](design/compaction-quality.md): what compaction keeps, what users see and control, its cost bounds, how its quality is judged (#428)（[中文](zh/design/compaction-quality.md)）
 - [Model-facing prompts](design/model-prompts.md): the channels that carry model text, protocol versus policy, who may change what, the input guide, one prompt language, and how a prompt change is judged (#429)（[中文](zh/design/model-prompts.md)）
