@@ -178,13 +178,20 @@ WireTrace = { event_id: string, original: WireDraft, steps: WireStep[] }
 WireDraft = { event: EventDraft, refs: ListReferences | References | null }
 WireStep = { handler: string, result: WireDraft | null }
 AgentEvent = { id: string, sequence: integer, create_at: integer,
-               tags?: string[], type: string, name: string, data: object }
+               tags?: string[], type: string, name: string, data: object,
+               contributions?: Contributions }                       v28
+Contributions = { messages: ContributionMessage[], state: object }
+ContributionMessage = { role: string, content: string | MessagePart[], pinned?: boolean }
 EventDraft = { tags?: string[], type: string, name: string, data: object }
 ```
 
 `AgentEvent` 与 `EventDraft` 的 `{type,name,data}` 是 `EventKind` 标记联合，核心定义的事件由该变体的类型定义（如 `ModelCallData`、`ContextCompactionData`）校验；存储没有第二套业务事件定义。`EventDraft.id` 是 runtime 的进程内预分配字段，不写入存储；持久化身份由 `AgentEvent.id` 表示。核心未定义领域的扩展事件（`EventKind::Extension`，[ADR 001](../../adr/001-harness-foundation.md#events-and-ownership-issue-2)）以同一信封原样保存 `data`，`kind` 为 `<type>/<name>`；核心保留领域的行只按其类型解码，解码失败即报错，不当作扩展事件。格式决定见 [#2 v18 格式决定](#2-v18-格式决定)。`ModelRequest` 正文为 `{providerId,modelId,messages,tools?,system?,config?,metadata?}`，末尾四项是可选字段，缺省时省略，不能写 `null`。`event` 行有且仅有一个 `record`，其 `sequence = last_sequence = timeline_events.sequence`；`output` 行的 `records` 非空、同一 `kind`/turn/request，逐条保留 `id`、sequence、`create_at`、tags、delta、refs、trace 和各自 `batch_end`。输出行只在 `step/text` 或 `step/thinking` 出现，`turn_id`/`request_id` 提到行级并从各 `record.event.data` 移除，读取时补回；`started_at` 是首事件的 `create_at`。合并不改变逻辑事件或原子批次，`last_sequence` 必须等于最后一条的序号。
 
 写入时只有前一物理行与当前增量同 `kind`、同 `turn_id`/`request_id`，前一行编码长度小于 4096 字节，且当前事件的 `create_at - started_at < 1000` 毫秒，才向该行追加；否则新建 `output` 行。阈值检查发生在追加前，故追加后的行可以超过 4096 字节。读取现有输出行不依赖这些写入侧阈值，只校验行内事件与区间。
+
+### 贡献字段
+
+`AgentEvent.contributions` 是可选字段，缺省时整条省略，不能写 `null`。`messages` 按顺序是该事件贡献给模型上下文的消息；`state` 是若干“键 → 完整值”，由写它的能力命名。一个事件可以只有消息、只有状态或两者都有。`EventDraft`（before 草稿）不带这个字段：它只变换即将写入的草稿，不产生贡献。存储按 `contributions` 是否为空维护派生列 `timeline_events.contributes` 与索引，读取只按该列过滤，不读正文判断。
 
 ### 请求引用与 before 轨迹
 
@@ -209,27 +216,21 @@ continues to treat state as opaque TEXT; the snapshot change needed no new datab
 
 摘要算法为 SHA-256：先写入 UTF-8 `dim/recovery-snapshot/v1` 和一个 NUL，再写入 sequence 的 8 字节大端编码，随后依次写入 event_id、interpreter、payload；每个字符串先写入 UTF-8 字节长度的 8 字节大端编码，再写入原始字节。sha256 保存小写十六进制。解释器在解码 payload 前校验摘要，覆盖 resume、全部状态及锚点身份。旧 v1 无校验快照及按条目 ID 记录切点的 v2 快照直接绕过，不通过补算摘要升级；v3 不接受裸检查点或缺失摘要。历史事实及摘要文本不受影响。
 
-`HistoryRenderer` 同时拥有 `encode_checkpoint` 和 `decode_checkpoint`，自定义格式必须成对提供并管理自己的 interpreter 标识。完整性校验检测编码后发生的损坏，不是认证或生产者语义证明：可信 builder 必须生成与完整事实重放等价的状态，并通过差分测试验证。已知 builder 语义缺陷需要修复并更换解释器版本，不能给错误状态重算摘要。有效快照仍只读取恢复位置以后的事实，不在每次读取时重复完整重放。
+`HistoryRenderer` 同时拥有 `encode_checkpoint` 和 `decode_checkpoint`，自定义格式必须成对提供并管理自己的 interpreter 标识。v28 的 `dim/context-projection/v4` 只编码 `{payload,sha256}`，payload 是下面的检查点；v3 及更早的检查点不转换，直接作废。完整性校验检测编码后发生的损坏，不是认证或生产者语义证明：可信 builder 必须生成与完整事实重放等价的状态，并通过差分测试验证。已知 builder 语义缺陷需要修复并更换解释器版本，不能给错误状态重算摘要。有效快照仍只读取恢复位置以后的事实，不在每次读取时重复完整重放。
 
 候选查询只选择相同 interpreter 且 sequence 不大于固定 through 的最新快照，并连接事件锚点验证 ID 与序号，不读取事件种类或内容；孤立或元数据不匹配的快照被忽略。锚点能否承载状态由快照所有者的解码回调判断：默认解释器只接受自己完成的 compaction 事实，且其 `retain_from` 与状态一致、through 早于锚点（#130）。Session 恢复不校验可选 state；缺失、不兼容、损坏、越界或锚点不符的快照回退事实重放，replacement 仍保留。运行时在裁剪前校验解码后的 resume 属于固定祖先链和 source through。`Timeline.context` 默认完整重放；加速显式调用 `context_with_checkpoint`，默认能力使用 `history::read_context`。事实或必需引用损坏仍失败并保留原字节。回滚先删除 snapshots 再删除 events。
 
 ```text
 ProjectionCheckpoint = {
-  resume: { branch_id: string, sequence: integer },
-  state: {
-    compacted_through: string,
-    prompts: { entries: PromptEntry[], revision: PromptReference | null,
-      system_revision: PromptReference | null, system: string,
-      turns: string[], tasks: PromptScope[] },
-    delivered: ContextBaselineEntry[],
-    inputs: [string, InputMessageData][],
-    configuration: ContextConfiguredData | null,
-    output: MessagePart[], open_tools: string[], output_open: boolean
-  }
+  resume: { branch_id: string, sequence: integer },   v28
+  cut: { branch_id: string, sequence: integer },      v28
+  state: { [key: string]: any }                       v28
 }
 ```
 
-上述检查点中的叶子类型仍是事件类型的原 JSON 形状，不另做存储转换：`PromptReference={timeline,revision}`；`PromptScope={kind:"branch",timeline}` 或 `{kind:"turn"|"task",timeline,id}`；`PromptEntry={source,version,body,scope,delivery,order}`，其中 `delivery` 为 `system`/`context`/`state`。
+`resume` 是状态重放起点，`cut` 是消息收集起点；`state` 是恢复位置之前的状态，键由所有者命名。校验沿用锚点、`through`、`cut` 一致、`resume` 在固定祖先链内且不早于 `cut`、祖先段不超过该段固定边界、同段早于锚点；任一条不成立即整份作废。
+
+检查点 `state` 中核心键的值仍是事件类型的原 JSON 形状，由写入它的能力解释，不另做存储转换；插件键的值由插件定义。`PromptReference={timeline,revision}`；`PromptScope={kind:"branch",timeline}` 或 `{kind:"turn"|"task",timeline,id}`；`PromptEntry={source,version,body,scope,delivery,order}`，其中 `delivery` 为 `system`/`context`/`state`。
 
 `ContextBaselineEntry={key,sourceEvent,message}`；`InputMessageData={submission_id?,user?,blocks?,mode?}`，`user.content` 是文本/图片块列表。`blocks` 项只有原文一种：`{type:"raw",text,key?,retire?}`，`text` 是能力写入的最终文本，`key` 表示仍然有效的内容，`retire:true` 结束该 key；语义见[架构约定](../../architecture/README.md)。
 
@@ -429,6 +430,19 @@ ProjectionCheckpoint = {
 - **升级路径**：沿用 `IMMEDIATE` 启动准入事务，只将 `agent_store_format` 的约束和唯一标记改为 22，不读取或改写任何业务行、内容地址或快照。精确匹配且标记相符的 v21 库原地升级；v20、v19、v18、v17、v16、v15、v13 库先走既有步骤。空库创建 v22，v22 直接打开，未知或标记不符的库拒绝并保留。失败回滚。
 - **单向**：v21 daemon 按现有精确 SQL 结构检查拒绝 `CHECK (version = 22)`，不会尝试解码新值；不做降级或备份。升级提交后沿用一次性 stderr 日志：`Upgraded native store <path> from format v21 to v22; earlier dimcode versions cannot open it.`
 - **验证**：`storage_flow.rs` 的 `a_v21_store_upgrades_in_place_once_and_restores_typeless_tool_schemas` 使用一次性 v21 库，核对所有原有业务行不变、新结构和标记、再次打开不再升级，并在采用工具配置和模型请求两条路径写入无 `type` 的组合 schema，关闭后恢复 Session，逐值核对。既有各版本升级与非法结构保留测试覆盖准入路径；冻结 wire fixtures 不变。
+
+### #708 v28 格式决定
+
+[事件贡献与读取边界](../../design/context-read-and-compaction.md)（#708）的格式决定：升级到 **v28**，从 v27 原地升级。若在本实现之前另有格式变更先合入，实现取当时的下一个编号，本节其余内容与列定义不随编号改变。
+
+- **事件数据加可选贡献**：`AgentEvent.contributions`（见[贡献字段](#贡献字段)）；`EventDraft` 不带。冻结的 wire fixture 随本决定更新，迁移前后各留一份对照。
+- **一列一索引**：`timeline_events.contributes INTEGER NOT NULL DEFAULT 0` 与 `timeline_events_contributions (session_id, branch_id, contributes, sequence)`；正文仍是事实来源，列只是索引镜像。
+- **检查点换代**：`dim/context-projection/v4` 编码 `{resume, cut, state}`；v3 及更早的快照不转换、直接作废，读不到就回退重放。`timeline_snapshots` 表结构不变，`interpreter` 列区分。
+- **迁移**：升级任务按会话跑旧折叠，把消息与状态写进 `contributions` 并维护 `contributes`，写入**暂存区**；全部会话在每个裁剪点前缀与每条分支的固定祖先链上比对消息和状态，任一不一致则丢弃暂存、保留 v27。全部通过后一次性发布并推进格式标记。迁移未发布完成前守护进程不接纳该库；崩溃后先续跑暂存再启动。没有运行时双路径：旧折叠只存在于迁移任务里。
+- **为什么必须落盘**：旧事件没有贡献，新读取方不再按类型折叠；不填充就无法重建上下文。`contributes` 是派生索引，不能只靠正文过滤，否则每次读取都要解析全部事件。
+- **旧版本的失败方式**：v27 守护进程按精确 SQL 结构拒绝 v28 库（多一列一索引、`CHECK (version = 28)`），不会解码新事件。
+- **单向**：不做备份；不做降级。升级提交后沿用一次性日志：`Upgraded native store <path> from format v27 to v28; earlier dimcode versions cannot open it.`
+- **验证**：一次性 v27 库升级后结构恰为 v28、标记为 28、行数与序号不变、贡献列逐行一致；每个裁剪点前缀与祖先链的消息与状态比对一致；迁移中断后重启续跑且旧格式仍可用；任一比对失败整库回滚；v13 起的各版一次升级到 v28；未迁移完成前守护进程拒绝启动。
 
 ### #593 v27 格式决定
 
