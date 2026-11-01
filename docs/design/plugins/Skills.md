@@ -62,23 +62,26 @@ Every reply and error is a safe projection: a Git URL is reported without user i
 or fragment, and Git's own error text is never forwarded. The record keeps the URL as given, like
 `plugins.json` does.
 
-The **revision** is SkillsCatalog's content identity of a source tree, not a Git commit: a digest
-over the Skills the scan finds, in scan order, of each Skill's source-relative directory and its
-`SKILL.md` bytes. The same tree therefore has the same revision whether it came from a path or a
-clone, and an unchanged branch is not stale. Files bundled next to a `SKILL.md` are copied but are
-not part of the revision: the revision states that the reviewed Skills and their documents are
-unchanged.
+The **revision** is SkillsCatalog's content identity of a Skill directory: a digest over every
+regular file under it, by relative path and content, in sorted order. A path component named
+`.git` is skipped, and symbolic links are never followed — a selected Skill that contains one is
+refused — so a bundled script or template changes the revision exactly as a `SKILL.md` change does.
+An installation's revision is the digest over its ordered selection of source-relative path and
+per-Skill revision, so the same tree yields the same installation revision whether it came from a
+path or a clone, and an unchanged branch is not stale.
 
 ### 2.2 Reads
 
-`skills.preview` takes a source and answers what installing it could add. It writes nothing.
+`skills.preview {source, id?}` takes a source and the installation id it would install as (the
+caller derives it from the source when the user names none), and answers what installing it could
+add. It writes nothing.
 
 ```json
 {
   "source": {"git": "https://example.com/acme/skills", "ref": "main", "commit": "1a2b3c4d"},
-  "revision": "sha256:…",
   "skills": [
-    {"path": "writing/review", "name": "review", "description": "Reviews a change against its spec."}
+    {"path": "writing/review", "name": "review", "description": "Reviews a change against its spec.",
+     "revision": "sha256:…"}
   ],
   "conflicts": [],
   "shadows": [
@@ -89,13 +92,16 @@ unchanged.
 ```
 
 - `skills` lists every Skill the scan found, in scan order, by its source-relative directory
-  (`path`), the `name` and `description` its frontmatter declares. `path` is the selection
-  identity: a name may repeat across sources, a path cannot within one tree.
+  (`path`), the `name` and `description` its frontmatter declares, and the `revision` of its
+  files. `path` is the selection identity: a name may repeat across sources, a path cannot within
+  one tree. The revision is what the install compares against, so a caller cannot install content
+  it did not see.
 - `source` echoes what was read, projected like every other reply: a canonical path, or the Git
   URL with the commit that was acquired, so the caller can show what the selection belongs to.
 - `conflicts` are reasons the install would be refused with this selection: a Skill whose name is
   already provided by another Skill in the *user* root, where the winner would depend on
-  traversal order rather than on a defined precedence.
+  traversal order rather than on a defined precedence. The Skills of the installation named by
+  `id` are not conflicts: a replace excludes its own.
 - `shadows` is information: the user root precedes plugin and project roots, so installing the
   Skill hides a Skill of that name from those roots. The catalog reports it after the fact as
   `shadowedBy`; before the install the user decides.
@@ -130,9 +136,8 @@ catalog until the installation is updated or removed.
 ```json
 {
   "source": {"path": "/src/acme-skills"},
-  "revision": "sha256:…",
   "id": "acme-skills",
-  "skills": ["writing/review"],
+  "skills": [{"path": "writing/review", "revision": "sha256:…"}],
   "overwrite": false
 }
 ```
@@ -141,12 +146,12 @@ Order:
 
 1. Validate the request shape at the boundary: source shape, `id` (`[a-z0-9_-]{1,64}`), a
    non-empty selection of distinct paths.
-2. Acquire the source and compute its revision. A revision that differs from the request's is
-   `skills_preview_stale`; the reply names the revision found, and nothing else happens.
-3. Scan the acquired tree, and check the selection against it: every path is one the scan found
-   and directly contains `SKILL.md`; no two selected Skills declare the same name; no user-root
-   Skill outside this installation provides one of those names; no selected Skill contains a
-   symbolic link.
+2. Acquire the source and scan it. A selected Skill whose files now digest to another revision is
+   `skills_preview_stale`; the reply names the path and the revision found, and nothing else
+   happens.
+3. Check the selection against the scan: every path is one the scan found and directly contains
+   `SKILL.md`; no two selected Skills declare the same name; no user-root Skill outside this
+   installation provides one of those names; no selected Skill contains a symbolic link.
 4. Check the destination `<user skills root>/<id>`. It is created only by an installation: an
    existing directory or record needs `overwrite`, and nothing outside `<user skills root>/<id>`
    is ever written or deleted.
@@ -160,7 +165,8 @@ Order:
    before the reply.
 
 A failure in 2–5 leaves the previous installation and the record untouched. A failure in 6 removes
-the new files and restores the previous directory.
+the new files and restores the previous directory. The reply carries the installation it replaced
+under `previous` (absent when it created one), so the caller can show what changed.
 
 `id` is optional. Without it, the owner derives it from the source's last path component
 (`owner/repo` → `repo`), ASCII-lowercased, characters outside `[a-z0-9_-]` replaced by `-`,
@@ -174,20 +180,22 @@ is recorded for a different source is `skills_install_exists`, and the user name
 recorded ref (the default branch when none was recorded), a local source at its recorded path.
 The recorded selection must still exist in the new tree; a path that disappeared refuses the
 update with its name and changes nothing, because dropping a Skill the user chose is not an
-update. The installation's revision and Git commit advance; the id and selection do not. Update is
-also the repair for a recorded installation whose directory was removed by hand.
+update. The installation's revision and Git commit advance; the id and selection do not. The reply
+carries the record before the update under `previous`, so the caller can show whether anything
+changed: equal revisions mean the source had not moved. Update is also the repair for a recorded
+installation whose directory was removed by hand.
 
 ### 2.5 Remove
 
 `skills.remove` takes an installation id, deletes `<user skills root>/<id>` after the same shape
 check the owner applies to its own directories (exactly that path, real directories, no symbolic
-link component), removes the record, rescans the user root and advances the version. A recorded
-installation whose directory is already gone removes its record only. Unrelated Skills, other
-installations and plugin-owned Skills are untouched.
+link component), removes the record, rescans the user root and advances the version; its reply is
+the new catalog version. A recorded installation whose directory is already gone removes its
+record only. Unrelated Skills, other installations and plugin-owned Skills are untouched.
 
-If deleting the files fails, the record is kept and the reply says the files remain: the record is
-the only proof of what the installation owns, so it cannot be dropped first. The user retries; the
-next update reinstalls the files.
+If deleting the files fails, the record is kept and the reply says so, whether or not every file
+was removed: the record is the only proof of what the installation owns, so it cannot be dropped
+first. The user retries; the next update reinstalls the files.
 
 ### 2.6 Ownership boundary with PluginManager
 
@@ -204,7 +212,7 @@ Plugin packages that carry Skills stay visible in the same settings page and kee
 | --- | --- | --- |
 | `skills_source_invalid` | the source is not an absolute directory, is not an `https://`/`ssh://` URL, or a link in the tree leaves it | correct the source |
 | `skills_acquire_failed` | the clone or the staging directory failed | retry; check access to the repository |
-| `skills_preview_stale` | the source's revision at install differs from the request's | preview again and reselect |
+| `skills_preview_stale` | a selected Skill's files changed since the preview, bundled files included | preview again and reselect |
 | `skills_selection_invalid` | empty or repeated selection, a path the scan did not find, a repeated name in the selection, or a link inside a selected Skill | correct the selection |
 | `skills_install_exists` | the id is recorded or its directory exists and `overwrite` is false | confirm overwrite or choose another id |
 | `skills_install_unknown` | update or remove of an id the record does not hold | refresh `skills.installations` |
@@ -259,6 +267,11 @@ replies, and calls the owner. The catalog keeps everything after acquisition: va
 record and publication. Route management methods behind the existing local-transport admission;
 paired and legacy clients see `local_transport_required` exactly as for `skills.catalog`.
 
+Acquisition and the link check are the crate's existing implementation
+(`crates/dim-app-server/src/plugin_manager/acquire.rs`), used here and by PluginManager: one place
+states the rules, and the two callers differ only in the destination they own, the staging
+directory they use and the record they write. Skills states none of them again.
+
 ## 5. Cross-module requirements
 
 **R1. Web workspace: admit the five methods and render them ([§4.3 and §8](../web-workspace.md#8-requirements-raised-to-mechanism-owners)).**
@@ -270,16 +283,7 @@ paired and legacy clients see `local_transport_required` exactly as for `skills.
 | Required capability and ordering | Admission of `skills.preview`, `skills.install`, `skills.update`, `skills.remove` and `skills.installations` on the authenticated local Web entry, filtered by the same list that dispatch uses; the Skills page renders preview, selection, overwrite confirmation, update and confirmed removal from these replies, keeps the draft on failure and refreshes the catalog after success. The Web advertisement must not offer them when the server lacks them. |
 | Owner and issue | Web workspace ([WebEntry](../web-workspace.md)); #740. |
 
-**R2. PluginManager: state that source acquisition is shared ([§7 Security](PluginManager.md#7-security)).**
-
-| Field | Content |
-| --- | --- |
-| Problem | §7 states the acquisition rules (allowed schemes, hardened Git, the link check, the staging directory) as PluginManager's own. Skills needs the same rules for a non-plugin source, and a second statement of them would be a second rule. |
-| Why existing mechanisms do not suffice | The rules exist and are implemented; only their scope in the document is narrower than their use. Duplicating them in the Skills design would let the two drift. |
-| Required capability and ordering | §7 describes acquiring an outside directory as the process-wide mechanism behind both plugin installation and Skill installation, each consumer owning its destination and its record. The Skills design then links to it and adds no acquisition rule of its own. |
-| Owner and issue | PluginManager ([PluginManager.md](PluginManager.md)); #740. |
-
-**R3. Settings: none.** The installations field is Skills' own document content and needs no new
+**R2. Settings: none.** The installations field is Skills' own document content and needs no new
 Settings capability; the source stays registered by the same plugin that registers it today.
 
 ## 6. Rule check
@@ -292,7 +296,7 @@ Settings capability; the source stays registered by the same plugin that registe
 | §4.3 handlers register work and return | The methods are ordinary provider calls with `Interruption::Report`; acquisition and copying run inside the call, a cancelled call settles before the reply, and no handler writes a Timeline event. |
 | §4.4 state and rebuild | The record is business memory read back from Settings after a reload; filesystem state is the installation's own I/O resource and is settled to a terminal state (present, or recorded and repaired by update). Producible facts stay out of the Timeline because nothing outside Skills decides on them. |
 | §4.7 public events and services | The only observable signal is the existing `skills.catalog_changed {version}`; no new service, event or port. |
-| §4.8 requirements raised | R1 and R2 above, in the §4 rule 8 format. |
+| §4.8 requirements raised | R1 and R2 above, in the §4 rule 8 format; acquisition adds none, because it is the same crate-internal implementation (§4). |
 | §4.9 ordering | The record commits before the version advances; a removal deletes files before the record, because the record is what proves ownership. |
 | ADR 002 D4 configuration | No structural configuration: no loader row, no enablement flag of its own. `skills.json` stays business configuration. |
 | ADR 002 D5 language-neutral contract | §2 is stated as source, revision, selection, id and outcomes in neutral terms; the Rust and JSON spellings are in the appendix. |
@@ -322,10 +326,17 @@ Owner-side additions (Rust, `dim-agent-capabilities`):
 ```rust
 pub struct SkillInstallation {
     pub source: SkillInstallSource,
-    /// SkillsCatalog's revision of the selected Skills.
+    /// Revision of the installed selection, in install order.
     pub revision: String,
     /// Source-relative Skill directories, in install order.
     pub skills: Vec<String>,
+}
+
+/// One selected Skill. `revision` is what the caller reviewed: `Some` must
+/// match the tree, `None` accepts whatever the source holds (an update).
+pub struct SelectedSkill {
+    pub path: String,
+    pub revision: Option<String>,
 }
 
 pub enum SkillInstallSource {
@@ -341,6 +352,10 @@ fn set_installation(
 ) -> BoxFuture<'static, Result<SettingsVersion, SkillSettingsError>>;
 ```
 
+Owner operations on the catalog: `preview(root)`, `install(id, source, root, operation_dir,
+skills, version_check)`, `uninstall(id)`, `installation(id)` and `installations()`. The first two
+return the previous record and the new catalog version.
+
 `SkillSettingsSnapshot` gains `installations: BTreeMap<String, SkillInstallation>`, and
 `SkillDocument` in the App Server serializes it under `installations` with unknown members
 preserved. New `SkillsError` variants: `InstallationExists`, `UnknownInstallation`,
@@ -353,17 +368,18 @@ preserved. New `SkillsError` variants: `InstallationExists`, `UnknownInstallatio
 Owner flows, in [skills.rs](../../../tests/integration/tests/skills.rs), over a disposable home
 and a source directory with several Skills and no manifest:
 
-- preview lists every Skill with its source path, description and issues, and writes nothing;
+- preview lists every Skill with its source path, description, revision and issues, and writes
+  nothing; a change to a bundled file under a selected Skill changes its revision;
 - install copies only the selected Skill directories, leaves other files in the home and the
   project untouched, and the catalog lists them under `user:<id>/…` before the reply;
-- a Skill changed between preview and install refuses with `skills_preview_stale` and writes
-  nothing;
+- a `SKILL.md` or a bundled file changed between preview and install refuses with
+  `skills_preview_stale` and writes nothing;
 - a name already provided in the user root, a repeated name in the selection, a `..` or absolute
   selection path, and a source whose link leaves it are each refused, with nothing written;
 - install over an existing installation needs `overwrite`, and with it replaces the selection
   without touching another installation or a hand-written Skill;
-- update keeps the selection, refuses a selected path that disappeared, and repairs a directory
-  removed by hand;
+- update keeps the selection, refuses a selected path that disappeared, reports the previous
+  revision and commit, and repairs a directory removed by hand;
 - remove deletes only `<user skills root>/<id>` and its record, and removes a record whose
   directory is already gone;
 - the record survives a catalog reload and a process restart.
