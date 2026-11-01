@@ -1,7 +1,7 @@
 use super::*;
 use dim_agent_capabilities::{
     context_block,
-    history::{context_configuration, project_context_history, projection_checkpoint},
+    history::{context_configuration, context_messages, project_context_history, projection_checkpoint},
     prompt_state::PromptSnapshot,
 };
 
@@ -216,6 +216,109 @@ fn a_record_without_replacement_parts_deserializes_and_replays() {
         ],
         "the replacement replays unchanged, then the kept entry"
     );
+}
+
+#[tokio::test]
+async fn a_streamed_context_from_a_snapshot_matches_the_full_render() {
+    let store = Arc::new(MemoryTimelineStore::default());
+    let key = TimelineKey {
+        session_id: "stream-checkpoint".into(),
+        branch_id: "main".into(),
+    };
+    store
+        .create_session(&key.session_id, &SessionConfig::default())
+        .await
+        .unwrap();
+    let timeline = Timeline::new(Ctx::root().unwrap(), key, vec![], store.clone());
+    let input = timeline
+        .append(EventKind::InputMessage(InputMessageData::text("original", None)).into())
+        .unwrap();
+    let consumed = timeline
+        .append(
+            EventKind::InputConsumed(InputConsumedData {
+                input_id: input.id.clone(),
+            })
+            .into(),
+        )
+        .unwrap();
+    let cut = timeline
+        .append(
+            EventKind::TurnStart(TurnStartData {
+                turn_id: "next".into(),
+            })
+            .into(),
+        )
+        .unwrap();
+    let through = timeline.sequence();
+    let context = timeline.context(through).await.unwrap();
+    let renderer = HistoryRenderer::default();
+    let snapshot = renderer.snapshot(&context, &cut.id, &consumed).unwrap();
+    timeline.save_snapshot(snapshot).await.unwrap();
+    let fact = timeline
+        .append(completed(&cut.id, "authoritative", through, vec![]).into())
+        .unwrap();
+
+    let (full, full_history) = renderer
+        .rendered_context(&timeline, fact.sequence)
+        .await
+        .unwrap();
+    let streamed = renderer
+        .rendered_stream(&timeline, fact.sequence, 8)
+        .await
+        .unwrap();
+    assert!(!streamed.fallback);
+    assert_eq!(streamed.history, full_history);
+    assert_eq!(streamed.history, project_context_history(&full).unwrap());
+    assert_eq!(
+        context_messages(&full, &streamed.history)
+            .into_iter()
+            .map(Arc::unwrap_or_clone)
+            .collect::<Vec<_>>(),
+        context_messages(&full, &project_context_history(&full).unwrap())
+            .into_iter()
+            .map(Arc::unwrap_or_clone)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn a_streamed_context_without_a_snapshot_matches_the_full_render() {
+    let store = Arc::new(MemoryTimelineStore::default());
+    let key = TimelineKey {
+        session_id: "stream-filtered".into(),
+        branch_id: "main".into(),
+    };
+    store
+        .create_session(&key.session_id, &SessionConfig::default())
+        .await
+        .unwrap();
+    let timeline = Timeline::new(Ctx::root().unwrap(), key, vec![], store.clone());
+    let input = timeline
+        .append(EventKind::InputMessage(InputMessageData::text("original", None)).into())
+        .unwrap();
+    timeline
+        .append(
+            EventKind::InputConsumed(InputConsumedData {
+                input_id: input.id.clone(),
+            })
+            .into(),
+        )
+        .unwrap();
+    timeline
+        .append(
+            EventKind::TurnStart(TurnStartData {
+                turn_id: "next".into(),
+            })
+            .into(),
+        )
+        .unwrap();
+    let through = timeline.sequence();
+    let renderer = HistoryRenderer::default();
+    let (full, full_history) = renderer.rendered_context(&timeline, through).await.unwrap();
+    let streamed = renderer.rendered_stream(&timeline, through, 8).await.unwrap();
+    assert!(!streamed.fallback);
+    assert_eq!(streamed.history, full_history);
+    assert_eq!(streamed.history, project_context_history(&full).unwrap());
 }
 
 #[tokio::test]

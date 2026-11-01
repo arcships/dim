@@ -439,7 +439,7 @@ ProjectionCheckpoint = {
 - **只加两个可空默认 0 的列与两个部分索引**：`timeline_events.context_render INTEGER NOT NULL DEFAULT 0`、`timeline_events.context_state INTEGER NOT NULL DEFAULT 0`，以及 `timeline_events_render`、`timeline_events_state`（`WHERE` 对应列为 1）。事件正文、内容寻址、快照与既有索引不变，冻结的 wire fixture 不变。
   - 两列是冗余开关，不携带内容：`context_render=1` 表示该行参与渲染，`context_state=1` 表示该行参与 checkpoint 状态计算；真相仍是渲染与 checkpoint 逻辑对事件的处理，开关只用于不解析正文地筛行。
   - 一行可以同时为 1/1；开关由写事件的一方按渲染/状态逻辑给出。
-- **迁移**：按会话跑现有渲染与折叠，标出实际消费的行，写入**暂存区**；在每个裁剪点前缀与每条分支的固定祖先链上，比对开关筛选后的渲染与状态和不过滤的结果，任一不一致则丢弃暂存、保留 v27。全部通过后一次性发布并推进格式标记；迁移未发布完成前守护进程不接纳该库，崩溃后先续跑暂存再启动。没有运行时双路径。
+- **升级**：启动准入事务内先 `ALTER TABLE` 两列，再按事件 key 集合 `UPDATE` 为 1；事务提交前库不可用，提交后整体生效，没有部分迁移的状态。开关是事件 key 的纯函数，等价性由差分测试证明，不按会话暂存或比对。
 - **为什么必须落盘**：事件表没有“是否参与渲染/状态”的入口，读取要么解码全部正文，要么读到无关行；开关让读取在 SQL 层筛行。
 - **旧版本的失败方式**：v27 守护进程按精确 SQL 结构拒绝 v28 库（多两列两索引、`CHECK (version = 28)`）。
 - **单向**：不做备份，不做降级。升级提交后沿用一次性日志：`Upgraded native store <path> from format v27 to v28; earlier dimcode versions cannot open it.`
