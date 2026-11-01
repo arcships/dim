@@ -259,15 +259,26 @@ impl HistoryRenderer {
             return Ok(StreamedContext::fallback());
         }
         let order = timeline.policy_order(through).await?.events;
-        let mut state = None;
+        let checkpoint = timeline
+            .checkpoint(through, self.checkpoint_interpreter, self.decode_checkpoint)
+            .await?;
+        let mut state = checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.state.clone());
         let mut history = Vec::new();
         let mut compaction = None;
         let mut streamed_state = None;
-        let mut start = 1;
+        let mut start = checkpoint
+            .as_ref()
+            .map_or(1, |checkpoint| checkpoint.resume.sequence);
         while start <= through {
-            let events = timeline
-                .stored_page(start.saturating_sub(1), batch as usize, through)
-                .await?;
+            let events = match timeline
+                .stored_context_page(start.saturating_sub(1), batch as usize, through)
+                .await
+            {
+                Ok(events) => events,
+                Err(_) => return Ok(StreamedContext::fallback()),
+            };
             if events.is_empty() {
                 return Ok(StreamedContext::fallback());
             }

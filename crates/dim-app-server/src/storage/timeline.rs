@@ -2489,6 +2489,54 @@ impl TimelineStore for SqliteTimelineStore {
             Ok(PolicyFacts { through, events })
         })
     }
+    fn read_context<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        from: u64,
+        through: u64,
+    ) -> BoxFuture<'a, Result<Vec<StoredEvent>>> {
+        Box::pin(async move {
+            if from == 0 || from > through {
+                return Ok(Vec::new());
+            }
+            let session = key.session_id.clone();
+            let branch = key.branch_id.clone();
+            let (start, end) = (sql_sequence(from)?, sql_sequence(through)?);
+            let mut reader = self.reader();
+            let rows = holds(
+                &self.db,
+                &mut reader,
+                None,
+                move |connection, reader, rows: &mut Option<Rows>| {
+                    let rows = match rows {
+                        Some(rows) => rows,
+                        None => {
+                            let mut query = connection
+                                .prepare(
+                                    "SELECT sequence, last_sequence, kind, body, event_id FROM timeline_events \
+                             WHERE session_id=?1 AND branch_id=?2 AND sequence>=?3 AND sequence<=?4 \
+                             AND (context_render=1 OR context_state=1) ORDER BY sequence"
+                                )
+                                .map_err(error)?;
+                            rows.insert(Rows {
+                                fetched: query_fetched(
+                                    &mut query,
+                                    rusqlite::params![session, branch, start, end],
+                                )?
+                                .into(),
+                                decoded: vec![],
+                            })
+                        }
+                    };
+                    rows.advance(connection, &session, reader)
+                },
+            )
+            .await?;
+            self.finish(reader);
+            let mut rows = rows.expect("a finished read fetched its rows");
+            rows.records(&(from..=through), false)
+        })
+    }
     fn read_segments<'a>(
         &'a self,
         session_id: &'a str,

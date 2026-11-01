@@ -190,6 +190,29 @@ pub trait TimelineStore: Send + Sync + 'static {
             Ok(records)
         })
     }
+    /// Reads the rows this projection consumes: rows whose render or state
+    /// switch is set. Stores may filter before decoding; the default reads the
+    /// prefix and keeps the flagged kinds.
+    fn read_context<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        from: u64,
+        through: u64,
+    ) -> BoxFuture<'a, Result<Vec<StoredEvent>>> {
+        Box::pin(async move {
+            if from == 0 || from > through {
+                return Ok(Vec::new());
+            }
+            let records = self.read(key, from..=through).await?;
+            Ok(records
+                .into_iter()
+                .filter(|record| {
+                    let (render, state) = record.event.kind.context_flags();
+                    render || state
+                })
+                .collect())
+        })
+    }
     /// Decodes all segments in one read scope, sharing content across branches.
     fn read_segments<'a>(
         &'a self,

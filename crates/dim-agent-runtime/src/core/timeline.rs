@@ -754,6 +754,44 @@ impl Timeline {
             .map(|record| record.event)
             .collect())
     }
+
+    /// Reads complete batches of the rows this projection consumes after a
+    /// batch-boundary cursor. The event limit is a target: the final batch may
+    /// exceed it.
+    pub async fn stored_context_page(
+        &self,
+        after: u64,
+        limit: usize,
+        through: u64,
+    ) -> Result<Vec<Arc<AgentEvent>>> {
+        let through = self.through(Some(through))?;
+        let records = self
+            .0
+            .store
+            .read_context(&self.0.key, after.max(1), through)
+            .await?;
+        if after > 0
+            && records
+                .first()
+                .is_some_and(|record| record.batch_end != after)
+        {
+            return Err(AgentError::InvalidInput(
+                "cursor is inside an atomic batch".into(),
+            ));
+        }
+        if limit == 0 {
+            return Ok(vec![]);
+        }
+        let mut records: Vec<_> = records
+            .into_iter()
+            .filter(|record| record.event.sequence > after)
+            .collect();
+        if let Some(record) = records.get(limit - 1) {
+            let end = record.batch_end;
+            records.retain(|record| record.event.sequence <= end);
+        }
+        Ok(records.into_iter().map(|record| record.event).collect())
+    }
     /// A local event range read from the store, bypassing the hot cache.
     #[service(skip)]
     pub async fn stored_local<R: RangeBounds<u64> + Send>(
@@ -898,12 +936,15 @@ impl Timeline {
     /// Select an interpreter-compatible cache before decoding or trimming facts.
     /// Invalid caches are disposable; failures reading required facts are not.
     #[service(skip)]
-    pub async fn context_with_checkpoint(
+    /// The latest interpreter-compatible checkpoint at `through`, if one is
+    /// valid for this branch and its fixed ancestor chain.
+    #[service(skip)]
+    pub async fn checkpoint(
         &self,
         through: u64,
         interpreter: &str,
         decode: fn(&RecoverySnapshot, &AgentEvent) -> Option<ProjectionCheckpoint>,
-    ) -> Result<ContextHistory> {
+    ) -> Result<Option<ProjectionCheckpoint>> {
         let through = self.through(Some(through))?;
         let segments: Vec<_> = self
             .0
@@ -955,9 +996,21 @@ impl Timeline {
             {
                 continue;
             }
-            return self.context_from(through, Some(checkpoint)).await;
+            return Ok(Some(checkpoint));
         }
-        self.context(through).await
+        Ok(None)
+    }
+    /// Select an interpreter-compatible cache before decoding or trimming facts.
+    /// Invalid caches are disposable; failures reading required facts are not.
+    #[service(skip)]
+    pub async fn context_with_checkpoint(
+        &self,
+        through: u64,
+        interpreter: &str,
+        decode: fn(&RecoverySnapshot, &AgentEvent) -> Option<ProjectionCheckpoint>,
+    ) -> Result<ContextHistory> {
+        let checkpoint = self.checkpoint(through, interpreter, decode).await?;
+        self.context_from(through, checkpoint).await
     }
     async fn context_from(
         &self,
