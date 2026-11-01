@@ -263,9 +263,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "answer required" => "réponse requise",
         "permission required" => "autorisation requise",
         "esc interrupt" => "esc interrompre",
-        "↑ edit · ctrl+s steer now" => "↑ modifier · ctrl+s orienter",
-        "+{count} more · ↑ edit · ctrl+s steer now" => {
-            "+{count} autres · ↑ modifier · ctrl+s orienter"
+        "shift+← edit last · ctrl+s steer now" => {
+            "shift+← modifier la dernière · ctrl+s orienter maintenant"
+        }
+        "+{count} more · shift+← edit last · ctrl+s steer now" => {
+            "+{count} autres · shift+← modifier la dernière · ctrl+s orienter maintenant"
         }
         "Queue ({count})" => "File ({count})",
         "Thinking…" => "Réflexion…",
@@ -476,14 +478,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permission needed: {tool}" => "Autorisation requise: {tool}",
         "Question waiting for your answer" => "Question en attente de réponse",
         "Notify when agent needs you" => "Notifier si l'agent vous attend",
+        "Show ACP sessions" => "Afficher les sessions ACP",
         // keys.rs
         "show the key bindings" => "afficher les raccourcis",
         "Application keys" => "Raccourcis de l'app",
-        "Enter submit · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter envoyer · Shift+Enter ou Ctrl+J nouvelle ligne · ↑↓ historique"
+        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
+            "Entrée envoyer ou mettre en file · brouillon vide : orienter la première en file · Shift+Entrée ou Ctrl+J nouvelle ligne · ↑↓ historique"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt or clear · Ctrl+S steer queued · ↑ edit queued" => {
-            "Ctrl+O ou Ctrl+P commandes · Esc interrompre ou effacer · Ctrl+S orienter (file) · ↑ modifier (file)"
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
+            "Ctrl+O ou Ctrl+P commandes · Esc interrompre, les messages en file reviennent · Ctrl+S orienter le brouillon ou la première en file · Shift+← modifier la dernière en file"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C effacer, deux fois pour quitter · Ctrl+D quitter si brouillon vide"

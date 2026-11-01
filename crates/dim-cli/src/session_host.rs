@@ -906,7 +906,7 @@ impl Worker {
 
     /// Stores the draft's pastes as attachments, then submits its text
     /// and blocks in order.
-    async fn submit_draft(&mut self, parts: Vec<DraftPart>) {
+    async fn submit_draft(&mut self, parts: Vec<DraftPart>, mode: &str) {
         use dim_agent_types::ContentBlock;
         let mut content = Vec::new();
         let mut text = String::new();
@@ -954,7 +954,7 @@ impl Worker {
             "sessionId": self.session_id,
             "branchId": self.focus,
             "submissionId": uuid::Uuid::new_v4().to_string(),
-            "mode": "queue",
+            "mode": mode,
         });
         match content.as_slice() {
             [ContentBlock::Text { text }] => params["text"] = json!(text),
@@ -966,15 +966,15 @@ impl Worker {
 
     async fn command(&mut self, command: Command) -> crate::Result<()> {
         if self.session_id.is_empty()
-            && matches!(command, Command::Submit(_) | Command::SubmitDraft(_))
+            && matches!(command, Command::Submit(..) | Command::SubmitDraft(..))
             && let Err(error) = self.start_session().await
         {
             self.send(Update::Notice(no_session(&error)));
             return Ok(());
         }
         match command {
-            Command::Submit(text) => self.submit(text, "queue").await,
-            Command::SubmitDraft(parts) => self.submit_draft(parts).await,
+            Command::Submit(text, mode) => self.submit(text, mode.as_str()).await,
+            Command::SubmitDraft(parts, mode) => self.submit_draft(parts, mode.as_str()).await,
             Command::FocusLine(line) => self.focus_line(line).await,
             Command::CloseSide => {
                 self.side = None;
@@ -1184,11 +1184,19 @@ impl Worker {
             Command::Resume(session_id) => {
                 self.attach(session_id, SwitchKind::Resumed).await?;
             }
-            Command::ListSessions { id, query, cursor } => {
+            Command::ListSessions {
+                id,
+                query,
+                cursor,
+                show_acp,
+            } => {
                 self.cancel_catalog().await?;
                 let paged = self.client.offers("session.catalog");
                 let (method, params) = if paged {
                     let mut params = json!({"limit":50,"query":query,"withPreview":true});
+                    if show_acp && self.client.offers("session.catalog.origins") {
+                        params["withAcpSessions"] = json!(true);
+                    }
                     if let Some(cursor) = cursor {
                         params["cursor"] = cursor.into();
                     }
@@ -1688,6 +1696,10 @@ impl Worker {
                     Ok(withdrawn) if withdrawn.status == "notHeld" => {
                         self.send(Update::Notice(QUEUE_LEFT.into()))
                     }
+                    Ok(withdrawn) if withdrawn.status == "deleted" && action == "withdraw" => self
+                        .send(Update::Withdrawn {
+                            input_id: input_id.clone(),
+                        }),
                     Ok(_) => {}
                     Err(error) => self.send(Update::Notice(error.to_string())),
                 }
@@ -3326,6 +3338,7 @@ impl Worker {
                             cwd: session.cwd,
                             updated_at: session.updated_at,
                             model: session.model.model_id,
+                            origin: session.origin,
                         })
                         .collect(),
                     next_cursor,
@@ -3947,6 +3960,9 @@ struct SessionSummary {
     #[serde(default)]
     preview: Option<String>,
     title: Option<String>,
+    /// The creation origin, from a daemon that reports one (#557).
+    #[serde(default)]
+    origin: Option<String>,
 }
 
 fn execution_snapshot(value: serde_json::Value) -> Result<ExecutionSnapshot, String> {

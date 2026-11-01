@@ -52,6 +52,9 @@ Commands:\n\
   runtime list                     List the plugin runtimes and their state\n\
   runtime install node|python      Turn a plugin runtime on and acquire it\n\
   daemon stop                      Gracefully stop an existing daemon\n\
+  daemon vacuum [--database PATH]  Rewrite an offline database to reclaim\n\
+                                   space; --database defaults to the home's\n\
+                                   rust/dimcode.sqlite\n\
   migration [run|inspect] [--source OLD_HOME]\n\
                                    Import or inspect Global and CN separately;\n\
                                    Global stays in ~/.dim, CN in ~/.dimcode;\n\
@@ -124,6 +127,10 @@ pub enum Action {
     Timeline {
         session_id: String,
         output: Option<PathBuf>,
+        database: Option<PathBuf>,
+    },
+    /// `daemon vacuum`: rewrite an offline database to reclaim space (#600).
+    DaemonVacuum {
         database: Option<PathBuf>,
     },
     /// `login [PROVIDER]`: without one, list the described accounts.
@@ -323,8 +330,10 @@ impl Options {
                     }
                 }
                 "--database" => {
-                    let Action::Timeline { database, .. } = &mut options.action else {
-                        return Err("--database requires export".into());
+                    let database = match &mut options.action {
+                        Action::Timeline { database, .. } => database,
+                        Action::DaemonVacuum { database } => database,
+                        _ => return Err("--database requires export or daemon vacuum".into()),
                     };
                     if database.replace(PathBuf::from(value(&mut args)?)).is_some() {
                         return Err("Supply the database path only once".into());
@@ -555,10 +564,13 @@ impl Options {
                     }
                 }
                 "daemon" if matches!(options.action, Action::Chat) => {
-                    if value(&mut args)? != "stop" {
-                        return Err("Use daemon stop".into());
-                    }
-                    options.action = Action::DaemonStop;
+                    options.action = match value(&mut args)?.as_str() {
+                        "stop" => Action::DaemonStop,
+                        "vacuum" => Action::DaemonVacuum { database: None },
+                        _ => {
+                            return Err("Use daemon stop or daemon vacuum [--database PATH]".into());
+                        }
+                    };
                 }
                 "login" | "account" | "logout" | "models"
                     if matches!(options.action, Action::Chat) =>

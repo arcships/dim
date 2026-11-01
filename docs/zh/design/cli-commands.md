@@ -15,9 +15,8 @@ scrollback 与 fullscreen TUI 都按分类分组，分类及分类内的命令�
 退出和挂起必须完整匹配命令名或别名才执行：选择不完整匹配时只补全命令名并保留输入框。
 完整输入的命令（包括隐藏命令）仍走各自的处理流程。
 菜单中的权限入口为 `/permissions`；`/approvals` 和 `/approval` 是完整输入时仍可使用的兼容别名。
-菜单只列出斜杠命令，移除中断、steer、选择较早消息、滚动到顶部或底部等仅由按键触发的操作。
-`/keys` 仍列出这些快捷键：两种模式均支持 `Esc` 和 `Ctrl+S`；fullscreen 还支持
-`Tab`、`Home`、`End`，其中 `Home/End` 仅在草稿为空时滚动历史。
+菜单不列出运行、排队和 steer 的按键，它们只由按键触发。菜单只列出斜杠命令：选择较早消息、滚动到顶部或底部等视图操作也不列出；
+`Tab`、`Home`、`End` 保留各自的绑定。
 
 ```text
 Commands
@@ -28,27 +27,43 @@ Commands
 / + Enter          -> /exit (completion only)
 /exit + Enter      -> exit
 /permissions + Enter -> permission controls
-
-Esc     interrupt the run
-Ctrl+S  steer with the next queued message
-Tab     pick an earlier message to edit or quote (fullscreen)
-Home    scroll to the top (fullscreen, empty draft)
-End     scroll to the bottom (fullscreen, empty draft)
 ```
+
+## 运行按键与排队
+
+排队与引导和 Codex CLI 不同：运行中 `Enter` 排队，`Ctrl+S` 引导。其余运行按键与 Codex CLI 的交互一致（已在其 TUI v0.166.0 中核对）。没有运行时，`Enter` 提交。
+
+```text
+按键                 空闲                         运行中
+Enter               提交                         排队草稿；草稿为空：steer 最早的排队消息
+Tab                 选择较早消息                 选择较早消息
+                    （fullscreen）               （fullscreen）
+Shift+Left          —                            草稿为空：把最新一条排队消息取回草稿
+Esc                 保留草稿                     中断；所有排队消息按先后顺序回到草稿
+Ctrl+S              —                            草稿非空：steer 草稿；为空：steer 最早的排队消息
+Up / Down           输入历史                     输入历史
+Home / End          滚动（fullscreen，草稿为空） 滚动（fullscreen，草稿为空）
+```
+
+- 排队消息在当前运行结束后运行，每次运行一条。被 steer 的消息在当前运行的下一个轮次边界并入该运行。
+- 取回消息和中断都通过 `session.input.withdraw` 撤回消息。文字只在撤回被删除后才进入草稿。
+  已离开队列的消息不会放回，其文字也不会再次发送。
+- 中断产生的撤回先于 stop 发出，因此运行不会开始下一条排队消息。
+- `Ctrl+C` 清空草稿。`Esc` 从不清空草稿。
 
 ### 队列条
 
-有消息排队时，输入框上方的队列条在带标题的边框里画出队列：按排队顺序排列，最先运行的一条在最上面，最后一行提示作用于队列的按键。草稿为空时，`↑` 把最新排队的消息取回输入框编辑；`Ctrl+S` 以下一条消息 steer。提示只在命令表里有对应命令时才写出命令名，因此它写出的 `/name` 都在本地执行，不会作为用户消息发给模型。目前没有查看队列的命令，所以提示只列按键。
+有消息排队时，输入框上方的队列条在带标题的边框里画出队列：按排队顺序排列，最先运行的一条在最上面，最后一行提示作用于队列的按键。运行中，草稿为空时，`Shift+Left` 把最新排队的消息取回输入框编辑。`Ctrl+S` steer 当前草稿；草稿为空时，`Ctrl+S` 或 `Enter` steer 最早的排队消息。Up/Down 仍用于输入历史。提示只在命令表里有对应命令时才写出命令名，因此它写出的 `/name` 都在本地执行，不会作为用户消息发给模型。目前没有查看队列的命令，所以提示只列按键。
 
 ```text
-╭─ Queue (2) ─────────────────────────────────────╮
+┌─ Queue (2) ─────────────────────────────────────┐
 │ › fix the failing test in session_host          │
 │ › then update the design note                   │
-│ ↑ edit · ctrl+s steer now                       │
-╰─────────────────────────────────────────────────╯
+│ shift+← edit last · ctrl+s steer now            │
+└────────────────────────────────────────────────┘
 ```
 
-队列条没有显示的消息把数量加进提示：`+3 more · ↑ edit · ctrl+s steer now`。队列条最多显示五条消息，并在队列排空时保持已达到的高度。
+队列条没有显示的消息把数量加进提示：`+3 more · shift+← edit last · ctrl+s steer now`。队列条最多显示五条消息，并在队列排空时保持已达到的高度。
 
 ## 用量报告
 
@@ -166,6 +181,7 @@ Reset 要求确认后把两个布尔值都写为 false。Off 可保留无效的�
 | `dimcode session export SESSION_ID --format markdown\|json [--output PATH]` | 导出主分支；未给输出路径时写到 stdout。 |
 | `/export markdown PATH` 或 `/export json PATH` | 交互客户端空闲时把当前主分支导出到文件。 |
 | `dimcode export SESSION_ID [--output PATH] [--database PATH]` | 不经守护进程，把 Session 的完整 Timeline 写成带版本的 JSONL（[Timeline 导出](appserver/timeline-export.md)）；未给输出路径时写到 stdout。 |
+| `dimcode daemon vacuum [--database PATH]` | 用 SQLite `VACUUM` 重写离线原生库，回收已删除 Session 留下的页，并打印操作前后的大小（[存储格式](appserver/native-storage-format.md#sqlite-运行参数与空间回收)）；守护进程持库时失败，也不创建或升级库。 |
 | `dimcode hooks list [--cwd DIR]` | 经 `hooks.catalog` 列出生效的 Hook 目录（[Hooks](plugins/Hooks.md#a7-管理方法)）：每个来源的路径、启用状态与状态，以及每个处理器的事件、匹配器、命令与状态。 |
 | `dimcode hooks enable\|disable [--cwd DIR]` | 经 `hooks.set_enabled` 启用或停用 `DIR`（默认当前目录）所在工作区的项目 Hook，记录在 Settings 为其授权的项目根上。 |
 | `dimcode login [PROVIDER] [--directory URL] [--device] [--redirect-uri URI]` | 启动被描述账号的浏览器或设备签到（[提供方账号](#提供方账号)）；不给 PROVIDER 时列出被描述的账号。 |

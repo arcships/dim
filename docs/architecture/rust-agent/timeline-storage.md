@@ -51,7 +51,7 @@
 | --- | --- |
 | append | `append`、`append_registered`、`append_batch_registered` 保持同步：执行 before 链、分配 sequence、运行登记回调，事件进入热窗口并交给 `TimelineStore` 排队；不等待磁盘 |
 | 写入轮 | 写入任务逐轮提交：一轮取走所有 Session 的全部待写批次（到下一条回滚或关闭命令为止），放进一个事务；原子批次不拆分，同一分支按 sequence 顺序写入。上一轮提交后，有待写批次就开始下一轮；只有待写批次全部只含输出行事件（`step/text`、`step/thinking`，见第 2 节“模型输出”）时，这一轮才等到上一轮开始后 20 ms，其间来了其他批次或回滚、关闭命令就不再等。这样区分只看存储的物理编码：输出行靠改写同一行增长，一轮把改过的页写入 WAL 并 fsync 一次，等待让只有流式输出时每秒至多 50 轮，增量最多等待的时间和以前一样。其他批次不等，所以一串依赖写入（每次等上一次发布后才写）每步只等一次提交 |
-| 耐久 | SQLite WAL，`synchronous=FULL`；macOS 另开 `fullfsync`。事务提交返回即已落盘 |
+| 耐久 | SQLite WAL，`synchronous=FULL`；macOS 另开 `fullfsync`。事务提交返回即已落盘。自动检查点关闭；writer 在提交与发布后按 WAL 大小执行被动检查点，WAL 文件有上限，关闭时截断（[存储格式](../../design/appserver/native-storage-format.md#sqlite-运行参数与空间回收)） |
 | 发布 | 提交返回后推进各分支发布水位并唤醒 Dispatcher |
 | 可见性 | 事件分配序号即是总线上的事实（[时间总线总纲](time-bus.md)）。能力经注入的 `Timeline` 读取到已写入位置 `committed()`，包括尚未发布、仍在热窗口的事件；Dispatcher 只分发已发布事件；`sequence()`、`watch()` 与分支外的读取（`Branch`、`Session`、RPC）只看到已发布事件，向外部表达的是“已落盘” |
 | 驻留 | 已提交历史本身不设容量上限；待提交事件由 writer 队列与热窗口暂持，按 writer 队列、热窗口、冷读结果与已装载实例的实际持有和释放时机估算内存，不为此新增业务硬配额或终态兜底。输入、并发、出站均不设预设额度 |

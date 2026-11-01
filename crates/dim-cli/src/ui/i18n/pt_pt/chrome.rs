@@ -269,9 +269,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "answer required" => "resposta necessária",
         "permission required" => "permissão necessária",
         "esc interrupt" => "esc interromper",
-        "↑ edit · ctrl+s steer now" => "↑ editar · ctrl+s orientar já",
-        "+{count} more · ↑ edit · ctrl+s steer now" => {
-            "+{count} mais · ↑ editar · ctrl+s orientar já"
+        "shift+← edit last · ctrl+s steer now" => "shift+← editar a última · ctrl+s orientar já",
+        "+{count} more · shift+← edit last · ctrl+s steer now" => {
+            "+{count} mais · shift+← editar a última · ctrl+s orientar já"
         }
         "Queue ({count})" => "Fila ({count})",
         "Thinking…" => "A pensar…",
@@ -488,14 +488,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permission needed: {tool}" => "Permissão necessária: {tool}",
         "Question waiting for your answer" => "Pergunta à espera de resposta",
         "Notify when agent needs you" => "Notificar quando o agente precisar de si",
+        "Show ACP sessions" => "Mostrar sessões ACP",
         // keys.rs
         "show the key bindings" => "ver atalhos de teclado",
         "Application keys" => "Teclas da aplicação",
-        "Enter submit · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter enviar · Shift+Enter ou Ctrl+J nova linha · ↑↓ histórico"
+        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
+            "Enter enviar ou enfileirar · rascunho vazio: orientar a primeira em fila · Shift+Enter ou Ctrl+J nova linha · ↑↓ histórico"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt or clear · Ctrl+S steer queued · ↑ edit queued" => {
-            "Ctrl+O ou Ctrl+P comandos · Esc interromper ou limpar · Ctrl+S orientar com fila · ↑ editar fila"
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
+            "Ctrl+O ou Ctrl+P comandos · Esc interromper, as mensagens em fila voltam · Ctrl+S orientar o rascunho ou a primeira em fila · Shift+← editar a última em fila"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C limpar, duas vezes para sair · Ctrl+D sair com rascunho vazio"

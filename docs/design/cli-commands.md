@@ -21,10 +21,10 @@ Exit and suspend require their exact name or alias before dispatch: choosing an
 incomplete match fills the command name and keeps the composer open. Exact typed
 commands, including hidden commands, retain their own dispatch behavior.
 The command menu lists `/permissions` as the permission entry. `/approvals` and `/approval`
-remain compatibility aliases when typed directly. Interrupt and steer are reached through
-`Esc` and `Ctrl+S` and are omitted from the menu. The menu only lists slash
-commands: the view actions for picking an earlier message and scrolling to the
-top or bottom are also omitted; `Tab`, `Home` and `End` retain their bindings.
+remain compatibility aliases when typed directly. Run, queue and steer keys are
+omitted from the menu. The menu only lists slash commands: the view actions for
+picking an earlier message and scrolling to the top or bottom are also omitted;
+`Tab`, `Home` and `End` retain their bindings.
 
 ```text
 Commands
@@ -35,27 +35,53 @@ Commands
 / + Enter          -> /exit (completion only)
 /exit + Enter      -> exit
 /permissions + Enter -> permission controls
-
-Esc     interrupt the run
-Ctrl+S  steer with the next queued message
-Tab     pick an earlier message to edit or quote
-Home    scroll to the top (fullscreen, empty draft)
-End     scroll to the bottom (fullscreen, empty draft)
 ```
+
+## Run keys and queue
+
+Queue and steer differ from Codex CLI: `Enter` queues while a run is in progress, and
+`Ctrl+S` steers. The other run keys follow the Codex CLI interaction (checked in its TUI,
+v0.166.0). `Enter` submits when no run is in progress.
+
+```text
+key                 run idle                     run in progress
+Enter               submit                       queue the draft; empty draft:
+                                                 steer the oldest queued message
+Tab                 pick an earlier message      pick an earlier message
+                    (fullscreen)                 (fullscreen)
+Shift+Left          —                            empty draft: take the newest queued
+                                                 message back into the draft
+Esc                 keep the draft               interrupt; every queued message
+                                                 returns to the draft, oldest first
+Ctrl+S              —                            draft not empty: steer the draft;
+                                                 empty: steer the oldest queued message
+Up / Down           input history                input history
+Home / End          scroll (fullscreen, empty)   scroll (fullscreen, empty)
+```
+
+- A queued message runs after the current run ends, one message per run. A
+  steered message joins the current run at its next turn boundary.
+- Taking a message back, and interrupting, withdraw the message through
+  `session.input.withdraw`. The text
+  enters the draft only after the withdrawal is deleted. A message that already left
+  the queue is not put back, and its text is not sent again.
+- Withdrawals of an interrupt are sent before the stop, so the run does not start the
+  next queued message.
+- `Ctrl+C` clears the draft. `Esc` never clears it.
 
 ### Queue strip
 
-With a message queued, the strip above the composer draws the queue in a titled border: messages oldest first, the next to run at the top, then a hint naming the keys that act on them. With an empty draft, `↑` withdraws the newest queued message into the composer to edit; `Ctrl+S` steers with the next one. The hint names a command only when the command table has one for the queue, so a typed `/name` it shows runs locally instead of being sent to the model. No command views the queue, so the hint names keys only.
+With a message queued, the strip above the composer draws the queue in a titled border: messages oldest first, the next to run at the top, then a hint naming the keys that act on them. During a run, `Shift+Left` on an empty draft withdraws the newest queued message into the composer to edit. `Ctrl+S` steers the draft, or the oldest queued message when the draft is empty; `Enter` on an empty draft also steers the oldest queued message. Up/Down remain input history. The hint names a command only when the command table has one for the queue, so a typed `/name` it shows runs locally instead of being sent to the model. No command views the queue, so the hint names keys only.
 
 ```text
-╭─ Queue (2) ─────────────────────────────────────╮
+┌─ Queue (2) ─────────────────────────────────────┐
 │ › fix the failing test in session_host          │
 │ › then update the design note                   │
-│ ↑ edit · ctrl+s steer now                       │
-╰─────────────────────────────────────────────────╯
+│ shift+← edit last · ctrl+s steer now            │
+└────────────────────────────────────────────────┘
 ```
 
-A queued message the strip does not show adds its count to the hint: `+3 more · ↑ edit · ctrl+s steer now`. The strip shows at most five messages and keeps the height it reached while the queue drains.
+A queued message the strip does not show adds its count to the hint: `+3 more · shift+← edit last · ctrl+s steer now`. The strip shows at most five messages and keeps the height it reached while the queue drains.
 
 ## Usage report
 
@@ -195,6 +221,7 @@ a user can through this control; that write creates no grant and changes no runn
 | `dimcode session export SESSION_ID --format markdown\|json [--output PATH]` | Export the main branch; write to stdout when no output path is supplied. |
 | `/export markdown PATH` or `/export json PATH` | Export the current main branch to a file while the interactive client is idle. |
 | `dimcode export SESSION_ID [--output PATH] [--database PATH]` | Write the Session's whole Timeline as versioned JSONL without a daemon ([Timeline export](appserver/timeline-export.md)); write to stdout when no output path is supplied. |
+| `dimcode daemon vacuum [--database PATH]` | Rewrite an offline native store with SQLite `VACUUM` to reclaim the pages deleted Sessions left, and print its size before and after ([storage format](appserver/native-storage-format.md#sqlite-运行参数与空间回收)); it fails while a daemon owns the database and never creates or upgrades one. |
 | `dimcode migration [run\|inspect] [--source OLD_HOME]` | Import by default, or inspect, a stopped legacy data home through the shared [Migration plugin](../../crates/dim-migration/README.md). |
 | `dimcode migration list\|show TASK\|cancel TASK` | Query durable results or request cancellation without a daemon. |
 | `dimcode migration retry TASK [--source OLD_HOME]` | Reconcile a previous task's source again; return a new task linked to the old report. |

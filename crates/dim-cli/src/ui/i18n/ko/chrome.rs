@@ -237,9 +237,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "answer required" => "답변 필요",
         "permission required" => "권한 필요",
         "esc interrupt" => "esc 중단",
-        "↑ edit · ctrl+s steer now" => "↑ 편집 · ctrl+s 지금 steer",
-        "+{count} more · ↑ edit · ctrl+s steer now" => {
-            "+{count}개 더 · ↑ 편집 · ctrl+s 지금 steer"
+        "shift+← edit last · ctrl+s steer now" => "shift+← 마지막 편집 · ctrl+s 지금 steer",
+        "+{count} more · shift+← edit last · ctrl+s steer now" => {
+            "+{count}개 더 · shift+← 마지막 편집 · ctrl+s 지금 steer"
         }
         "Queue ({count})" => "대기열 ({count})",
         "Thinking…" => "생각 중…",
@@ -440,14 +440,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permission needed: {tool}" => "권한 필요: {tool}",
         "Question waiting for your answer" => "답변 대기 중인 질문",
         "Notify when agent needs you" => "에이전트 요청 시 알림",
+        "Show ACP sessions" => "ACP 세션 표시",
         // keys.rs
         "show the key bindings" => "단축키 보기",
         "Application keys" => "앱 단축키",
-        "Enter submit · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter 제출 · Shift+Enter/Ctrl+J 줄바꿈 · ↑↓ 기록"
+        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
+            "Enter 제출 또는 대기열 추가 · 빈 입력: 첫 대기 메시지 steer · Shift+Enter/Ctrl+J 줄바꿈 · ↑↓ 기록"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt or clear · Ctrl+S steer queued · ↑ edit queued" => {
-            "Ctrl+O/Ctrl+P 명령 · Esc 중단/지우기 · Ctrl+S 대기 메시지 steer · ↑ 대기 메시지 편집"
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
+            "Ctrl+O/Ctrl+P 명령 · Esc 중단, 대기 메시지는 입력란으로 복귀 · Ctrl+S 입력 또는 첫 대기 메시지 steer · Shift+← 마지막 대기 메시지 편집"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C 지우기, 두 번 누르면 종료 · 빈 초안에서 Ctrl+D 종료"

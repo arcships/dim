@@ -36,14 +36,13 @@ The CLI owns terminal and command interactions; the App Server owns host configu
 ### Sending, queuing and steering
 
 - Send: press Enter while idle to submit input and start the Agent; combine text, file references and images in one message.
-- Queue: messages submitted during an Agent run enter the queue without immediately interrupting the current task.
+- Queue: press Enter during an Agent run to queue the draft without interrupting the current task.
 - Automatic sending: after the current run ends, send queued messages in submission order to start subsequent runs.
-- Steer: add a queued message to the current run's context at a subsequent Agent turn boundary without stopping the task first.
-- `Ctrl+S`: steer the earliest queued message into the current run. This does not submit the current draft; an empty queue has no effect.
+- Steer: press Ctrl+S during an Agent run to add the draft to the current run's context at a subsequent Agent turn boundary, without stopping the task first. With an empty draft, Ctrl+S or Enter steers the oldest queued message; an empty queue has no effect.
 - `/queue`: view messages awaiting submission and messages being incorporated into the current run; select an entry to steer or delete it.
-- Retrieve for editing: with an empty draft, press Up to move the latest queued message back into the input area. Messages with attachments or file references cannot be retrieved this way; use `/queue` to manage them.
+- Retrieve for editing: with an empty draft, press Shift+Left to move the newest queued message back into the input area. Messages with attachments or file references cannot be retrieved this way; use `/queue` to manage them.
 - Queue deletion: remove messages that have not been sent; a steering instruction already handed to the current run cannot be deleted as a queued message.
-- Interrupt: press Esc to stop the current Agent run; an open dialog or input suggestion takes priority.
+- Interrupt: press Esc to stop the current Agent run; queued messages return to the input area instead of running; an open dialog or input suggestion takes priority.
 - Clear draft and exit: while idle, clear the draft or exit the terminal. During a run, the first `Ctrl+C` interrupts in scrollback; fullscreen TUI clears the draft or enters the exit flow according to the input state.
 
 `send`, `queue` and `steer` name submission behaviors. There are no `/send` or `/steer` commands.

@@ -267,9 +267,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "answer required" => "Antwort nötig",
         "permission required" => "Freigabe nötig",
         "esc interrupt" => "esc unterbrechen",
-        "↑ edit · ctrl+s steer now" => "↑ bearbeiten · ctrl+s jetzt steuern",
-        "+{count} more · ↑ edit · ctrl+s steer now" => {
-            "+{count} weitere · ↑ bearbeiten · ctrl+s jetzt steuern"
+        "shift+← edit last · ctrl+s steer now" => {
+            "shift+← bearbeiten (letzte) · ctrl+s jetzt steuern"
+        }
+        "+{count} more · shift+← edit last · ctrl+s steer now" => {
+            "+{count} weitere · shift+← bearbeiten (letzte) · ctrl+s jetzt steuern"
         }
         "Queue ({count})" => "Warteschlange ({count})",
         "Thinking…" => "Denkt…",
@@ -480,14 +482,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permission needed: {tool}" => "Freigabe nötig: {tool}",
         "Question waiting for your answer" => "Frage wartet auf Antwort",
         "Notify when agent needs you" => "Benachrichtigen, wenn Agent Eingabe braucht",
+        "Show ACP sessions" => "ACP-Sitzungen anzeigen",
         // keys.rs
         "show the key bindings" => "Tastenbelegung anzeigen",
         "Application keys" => "Anwendungstasten",
-        "Enter submit · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter senden · Shift+Enter/Ctrl+J neue Zeile · ↑↓ Verlauf"
+        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
+            "Enter senden oder einreihen · leerer Entwurf: erste eingereihte steuern · Shift+Enter/Ctrl+J neue Zeile · ↑↓ Verlauf"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt or clear · Ctrl+S steer queued · ↑ edit queued" => {
-            "Ctrl+O/Ctrl+P Befehle · Esc unterbrechen/leeren · Ctrl+S Eingereihte steuern · ↑ Eingereihte bearbeiten"
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
+            "Ctrl+O/Ctrl+P Befehle · Esc unterbrechen, eingereihte Nachrichten kommen zurück · Ctrl+S Entwurf oder erste eingereihte steuern · Shift+← letzte eingereihte bearbeiten"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C leeren, zweimal beenden · Ctrl+D beendet bei leerem Entwurf"

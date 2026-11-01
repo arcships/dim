@@ -748,7 +748,11 @@ impl Connection {
                         match rpc
                             .index
                             .session_catalog(
-                                Catalog::default(),
+                                Catalog {
+                                    with_internal: true,
+                                    with_acp_sessions: true,
+                                    ..Catalog::default()
+                                },
                                 filter,
                                 self.protocol_version(),
                                 cancel,
@@ -815,6 +819,8 @@ impl Connection {
                                 attached_clients: self.hub.attached_clients(s.id()),
                                 agent_id: (self.protocol_version() >= 3)
                                     .then(|| host.agent_id.clone()),
+                                origin: None,
+                                parent_session_id: None,
                                 title: (self.protocol_version() >= 3)
                                     .then(crate::storage::TitleFields::default),
                             })
@@ -1285,9 +1291,18 @@ impl Connection {
         if let Some(interactive) = params.interactive {
             config.interactive = interactive;
         }
+        let origin = match params.origin {
+            None | Some(SessionOrigin::Client) => SessionOrigin::Client,
+            Some(SessionOrigin::Acp) => SessionOrigin::Acp,
+            Some(_) => {
+                return Err(RpcError::invalid(
+                    "a client may declare client or acp as a Session origin",
+                ));
+            }
+        };
         let session = rpc
             .index
-            .create_session(&host, config, self.protocol_version(), None)
+            .create_session(&host, config, self.protocol_version(), None, origin)
             .await
             .map_err(RpcError::from)?;
         rpc.index.retain_versions();

@@ -1374,3 +1374,68 @@ async fn failed_creation_rolls_back_storage_but_failed_restore_preserves_it() {
     server.join().await.unwrap();
     tokio::fs::remove_dir_all(directory).await.unwrap();
 }
+
+/// `--vacuum` is the offline maintenance entry: it refuses a store a daemon
+/// owns and rewrites an idle one, reporting its size before and after (#600).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vacuum_mode_reclaims_an_offline_store_and_refuses_a_held_one() {
+    use dim_app_server::storage::SqliteStorage;
+
+    async fn vacuum(database: &std::path::Path) -> std::process::Output {
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_dim-app-server"))
+            .args(["--vacuum", "--database"])
+            .arg(database)
+            .output()
+            .await
+            .unwrap()
+    }
+
+    let directory = std::env::temp_dir().join(format!("dim-vacuum-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let database = directory.join("dimcode.sqlite");
+    let db = SqliteStorage::open(database.clone()).unwrap();
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "INSERT INTO agent_sessions(session_id, config, created_at_ms) VALUES ('s', '{}', 0);
+             INSERT INTO timeline_branches VALUES ('s', 'main', '{}', 0);",
+        )
+        .unwrap();
+    connection.execute_batch("BEGIN").unwrap();
+    for sequence in 1..=2000 {
+        connection
+            .execute(
+                "INSERT INTO timeline_events VALUES ('s', 'main', ?1, ?1, 'turn/start', ?2, NULL)",
+                rusqlite::params![sequence, "x".repeat(4000)],
+            )
+            .unwrap();
+    }
+    connection.execute_batch("COMMIT").unwrap();
+    connection
+        .execute_batch("DELETE FROM timeline_events; PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+    drop(connection);
+
+    let refused = vacuum(&database).await;
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        String::from_utf8(refused.stderr)
+            .unwrap()
+            .contains("another process owns the SQLite database")
+    );
+
+    db.close().await.unwrap();
+    let output = vacuum(&database).await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .starts_with("Vacuumed ")
+    );
+    drop(db);
+    tokio::fs::remove_dir_all(directory).await.unwrap();
+}

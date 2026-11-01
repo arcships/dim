@@ -78,7 +78,8 @@ binary's `main`; the daemon's paths do not change.
    writer, so it neither takes nor waits for the lease, and it runs while a daemon owns the database.
 3. **Read-only connection.** `SQLITE_OPEN_READ_ONLY`, with the daemon's 5-second busy timeout, the setting
    `PRAGMA busy_timeout` controls; it applies to this connection only. None of the daemon's other pragmas
-   (`journal_mode`, `synchronous`, `foreign_keys`, `fullfsync`) is set. The database file is never written. As for
+   (`journal_mode`, `synchronous`, `foreign_keys`, `fullfsync`, `wal_autocheckpoint`, `journal_size_limit`,
+   `cache_size`) is set. The database file is never written. As for
    any SQLite reader of a WAL database, the `-wal` and `-shm` files beside it are used, and created empty when they
    are absent (after a clean shutdown or for a fresh copy); SQLite cannot read a WAL database whose directory is
    read-only and lacks them.

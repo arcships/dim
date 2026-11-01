@@ -273,9 +273,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "answer required" => "respuesta requerida",
         "permission required" => "permiso requerido",
         "esc interrupt" => "esc interrumpir",
-        "↑ edit · ctrl+s steer now" => "↑ editar · ctrl+s steer ahora",
-        "+{count} more · ↑ edit · ctrl+s steer now" => {
-            "+{count} más · ↑ editar · ctrl+s steer ahora"
+        "shift+← edit last · ctrl+s steer now" => {
+            "shift+← editar la última · ctrl+s steer ahora"
+        }
+        "+{count} more · shift+← edit last · ctrl+s steer now" => {
+            "+{count} más · shift+← editar la última · ctrl+s steer ahora"
         }
         "Queue ({count})" => "Cola ({count})",
         "Thinking…" => "Pensando…",
@@ -488,14 +490,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permission needed: {tool}" => "Permiso necesario: {tool}",
         "Question waiting for your answer" => "Pregunta pendiente de respuesta",
         "Notify when agent needs you" => "Avisar si el agente te necesita",
+        "Show ACP sessions" => "Mostrar sesiones ACP",
         // keys.rs
         "show the key bindings" => "ver atajos de teclado",
         "Application keys" => "Atajos de la app",
-        "Enter submit · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter enviar · Shift+Enter o Ctrl+J nueva línea · ↑↓ historial"
+        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
+            "Enter enviar o encolar · borrador vacío: steer la primera en cola · Shift+Enter o Ctrl+J nueva línea · ↑↓ historial"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt or clear · Ctrl+S steer queued · ↑ edit queued" => {
-            "Ctrl+O o Ctrl+P comandos · Esc interrumpir o borrar · Ctrl+S steer en cola · ↑ editar en cola"
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
+            "Ctrl+O o Ctrl+P comandos · Esc interrumpir, los mensajes en cola vuelven · Ctrl+S steer el borrador o la primera en cola · Shift+← editar la última en cola"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C borrar, dos veces salir · Ctrl+D salir con borrador vacío"

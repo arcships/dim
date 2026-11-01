@@ -67,6 +67,65 @@ fn tui_resume_catalog_pages_searches_and_closes_without_waiting_for_a_read() {
     daemon.join().unwrap();
 }
 
+/// #557: the picker labels every row by its creation origin and asks for ACP
+/// Sessions only when the saved preference says so.
+#[test]
+fn tui_resume_labels_origins_and_shows_acp_sessions_when_asked() {
+    let home = Home::new();
+    fs::write(
+        home.0.join("config.json"),
+        r#"{"locale":"en","showAcpSessions":true}"#,
+    )
+    .unwrap();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&[
+            "session.catalog",
+            "session.catalog.cancel",
+            "session.catalog.origins",
+        ]);
+        wire.created();
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let first = wire.read("session.catalog");
+        assert_eq!(
+            first["params"],
+            json!({"limit":50,"query":"","withPreview":true,"withAcpSessions":true})
+        );
+        wire.reply(
+            &first,
+            json!({"sessions":[
+                {"sessionId":"chat","cwd":"/workspace","title":"Update cache","preview":"chat preview",
+                 "model":{"providerId":"test","modelId":"model"},"updatedAt":5,"origin":"client"},
+                {"sessionId":"editor","cwd":"/workspace","title":"Editor conversation","preview":"acp preview",
+                 "model":{"providerId":"test","modelId":"model"},"updatedAt":4,"origin":"acp"},
+                {"sessionId":"helper","cwd":"/workspace","title":"Inspect cache","preview":"agent preview",
+                 "model":{"providerId":"test","modelId":"model"},"updatedAt":3,"origin":"internal",
+                 "parentSessionId":"chat"}
+            ]}),
+        );
+        no_catalog(wire);
+    });
+    let mut terminal = Terminal::launch_tui(home.command());
+    terminal.until("test / model");
+    terminal.write(b"/resume\r");
+    terminal.until("[Chat] Update cache");
+    terminal.until("[ACP ] Editor conversation");
+    terminal.until("[Agent] Inspect cache");
+    terminal.write(b"\x1b[27u");
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
 #[test]
 #[ignore = "requires DIM_TEST_APP_SERVER pointing to the built production App Server"]
 fn a_cold_ui_leaf_submits_its_first_message_with_a_large_native_catalog() {

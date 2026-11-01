@@ -74,10 +74,27 @@ impl<'de> serde::Deserialize<'de> for SandboxBackend {
     }
 }
 
+/// Whether a submitted message starts after the current run (`Queue`) or
+/// joins the run at its next turn boundary (`Steer`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitMode {
+    Queue,
+    Steer,
+}
+
+impl SubmitMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queue => "queue",
+            Self::Steer => "steer",
+        }
+    }
+}
+
 pub enum Command {
-    Submit(String),
+    Submit(String, SubmitMode),
     /// A draft with pastes to store or content blocks to send.
-    SubmitDraft(Vec<DraftPart>),
+    SubmitDraft(Vec<DraftPart>, SubmitMode),
     Stop,
     /// Answer an approval request.
     Approval {
@@ -182,6 +199,8 @@ pub enum Command {
         id: String,
         query: String,
         cursor: Option<String>,
+        /// The "Show ACP sessions" preference the picker was opened with.
+        show_acp: bool,
     },
     CloseSessions,
     /// List the models that can be chosen.
@@ -564,6 +583,9 @@ pub struct SessionItem {
     pub cwd: String,
     pub updated_at: u64,
     pub model: String,
+    /// The creation origin the daemon reports (`client`, `acp`, `internal`,
+    /// `unknown`); absent from a daemon that does not report one.
+    pub origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -598,6 +620,11 @@ pub enum CompactReply {
 
 #[allow(dead_code)]
 pub enum Update {
+    /// A queued input the TUI withdrew (`Command::InputControl` with action
+    /// `withdraw`) is deleted: its text goes back into the draft.
+    Withdrawn {
+        input_id: String,
+    },
     /// The session's adopted configuration: `provider / model`, and the
     /// reasoning effort it sends when it carries one, label the status line.
     Ready(Configuration),
@@ -742,8 +769,8 @@ pub trait SessionPort {
     fn drain(&self) -> Vec<Update>;
     /// Closes the connection and gives the worker a moment to wind down.
     fn shutdown(self: Box<Self>);
-    fn submit(&self, text: String) {
-        self.send(Command::Submit(text));
+    fn submit(&self, text: String, mode: SubmitMode) {
+        self.send(Command::Submit(text, mode));
     }
     fn stop(&self) {
         self.send(Command::Stop);

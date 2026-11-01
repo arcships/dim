@@ -1,7 +1,7 @@
 use super::{
     SessionStore, metadata,
     sqlite::error,
-    timeline::{Row, read_sequence},
+    timeline::{Row, read_sequence, stored_origin},
 };
 use crate::protocol::{Catalog, CatalogResult, SessionInfo, SessionSummary};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -144,8 +144,14 @@ impl SessionStore {
         let digest = format!(
             "{:x}",
             Sha256::digest(
-                serde_json::to_vec(&(&request.query, &request.cwd, request.with_preview))
-                    .map_err(error)?
+                serde_json::to_vec(&(
+                    &request.query,
+                    &request.cwd,
+                    request.with_preview,
+                    request.with_internal,
+                    request.with_acp_sessions,
+                ))
+                .map_err(error)?
             )
         );
         let cursor = request
@@ -168,7 +174,8 @@ impl SessionStore {
                 "SELECT c.session_id AS session_id, c.cwd, s.created_at_ms, b.sequence, o.agent_id, \
                  m.revision, m.title, m.title_source, c.preview, c.updated_at_ms AS updated_at_ms, \
                  CASE WHEN json_valid(s.config) THEN json_extract(s.config, '$.model.providerId') END, \
-                 CASE WHEN json_valid(s.config) THEN json_extract(s.config, '$.model.modelId') END \
+                 CASE WHEN json_valid(s.config) THEN json_extract(s.config, '$.model.modelId') END, \
+                 s.origin, s.leader_session_id \
                  FROM session_catalog c INDEXED BY {index} CROSS JOIN agent_sessions s ON s.session_id=c.session_id \
                  CROSS JOIN session_owners o ON o.session_id=c.session_id \
                  CROSS JOIN timeline_branches b ON b.session_id=c.session_id AND b.branch_id='main' \
@@ -178,6 +185,8 @@ impl SessionStore {
             );
             let mut values: Vec<rusqlite::types::Value> = vec![i64::from(version).into(), serde_json::to_string(&hosts).map_err(error)?.into(), serde_json::to_string(&closed).map_err(error)?.into()];
             if request.with_preview { sql.push_str(" AND c.preview IS NOT NULL"); }
+            if !request.with_internal { sql.push_str(" AND s.origin != 'internal'"); }
+            if !request.with_acp_sessions { sql.push_str(" AND s.origin != 'acp'"); }
             if let Some(agent) = agent { values.push(agent.into()); sql.push_str(&format!(" AND o.agent_id=?{}", values.len())); }
             if let Some(cwd) = request.cwd { values.push(cwd.into()); sql.push_str(&format!(" AND c.cwd=?{}", values.len())); }
             if let Some(query) = request.query {
@@ -217,6 +226,7 @@ impl SessionStore {
                             created_at: read_sequence(row, 2).map_err(error)?, sequence: read_sequence(row, 3).map_err(error)?,
                             agent_id: Some(row.get(4).map_err(error)?), title: Some(metadata::decode(row, 5).map_err(error)?.into()),
                             model: ModelId { provider_id: row.get(10).map_err(error)?, model_id: row.get(11).map_err(error)? },
+                            origin: Some(stored_origin(row, 12)?), parent_session_id: row.get(13).map_err(error)?,
                             running: false, attached_clients: 0,
                         }, preview: row.get(8).map_err(error)?, updated_at: read_sequence(row, 9).map_err(error)?,
                     })

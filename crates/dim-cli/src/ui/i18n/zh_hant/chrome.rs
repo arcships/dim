@@ -223,9 +223,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "answer required" => "需要回答",
         "permission required" => "需要授權",
         "esc interrupt" => "esc 中斷",
-        "↑ edit · ctrl+s steer now" => "↑ 編輯 · ctrl+s 立即 steer",
-        "+{count} more · ↑ edit · ctrl+s steer now" => {
-            "還有 {count} 則 · ↑ 編輯 · ctrl+s 立即 steer"
+        "shift+← edit last · ctrl+s steer now" => "shift+← 編輯最後一則 · ctrl+s 立即 steer",
+        "+{count} more · shift+← edit last · ctrl+s steer now" => {
+            "還有 {count} 則 · shift+← 編輯最後一則 · ctrl+s 立即 steer"
         }
         "Queue ({count})" => "佇列（{count}）",
         "Thinking…" => "思考中…",
@@ -420,14 +420,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permission needed: {tool}" => "需要授權：{tool}",
         "Question waiting for your answer" => "有問題等你回答",
         "Notify when agent needs you" => "需要你時通知",
+        "Show ACP sessions" => "顯示 ACP 工作階段",
         // keys.rs
         "show the key bindings" => "顯示快速鍵",
         "Application keys" => "應用程式快速鍵",
-        "Enter submit · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter 送出 · Shift+Enter 或 Ctrl+J 換行 · ↑↓ 歷程"
+        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
+            "Enter 送出或排隊 · 草稿為空時 steer 第一則佇列訊息 · Shift+Enter 或 Ctrl+J 換行 · ↑↓ 歷程"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt or clear · Ctrl+S steer queued · ↑ edit queued" => {
-            "Ctrl+O 或 Ctrl+P 指令 · Esc 中斷或清除 · Ctrl+S steer 佇列訊息 · ↑ 編輯佇列訊息"
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
+            "Ctrl+O 或 Ctrl+P 指令 · Esc 中斷，佇列訊息回到輸入框 · Ctrl+S steer 草稿或第一則佇列訊息 · Shift+← 編輯最後一則佇列訊息"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C 清除，按兩次離開 · 草稿為空時 Ctrl+D 離開"

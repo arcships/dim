@@ -1,3 +1,4 @@
+use super::deletion::Store;
 use super::*;
 use dim_agent_capabilities::prompt_state::PromptSnapshot;
 use dim_agent_runtime::{Agent, CollaborationRole, Session};
@@ -1430,6 +1431,74 @@ async fn temporary_agents_stay_private_during_concurrent_create_and_close() {
     }
     done.cancel();
     assert!(reader.await.unwrap() > 0);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// #557: a Collaboration member records `internal` and its leader as parent,
+/// so the picker can leave it out and a client can open it by id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_is_an_internal_child_of_its_leader() {
+    let store = Store::new();
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let lead = leader(&mut client, allowed()).await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "request", "prompt": "tool:wait {\"millis\":30000}",
+            "profile": {"name": "helper", "description": "temporary", "systemPrompt": "", "tools": ["wait"]}})),
+        "queue",
+    )
+    .await;
+    let started = poll("temporary request", async || {
+        let timeline = events(&lead_session).await;
+        (!results(&timeline).is_empty()).then(|| last_ok(&timeline))
+    })
+    .await;
+    let member = started["sessionId"].as_str().unwrap().to_owned();
+    let ids = |page: &Value| -> Vec<String> {
+        page["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["sessionId"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let page = client.rpc("session.catalog", json!({})).await;
+    assert_ok(&page);
+    assert!(!ids(&page).contains(&member), "{page}");
+    let page = client
+        .rpc("session.catalog", json!({"withInternal":true}))
+        .await;
+    assert_ok(&page);
+    let row = page["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["sessionId"] == member.as_str())
+        .unwrap_or_else(|| panic!("the member is missing: {page}"));
+    assert_eq!(row["origin"], "internal");
+    assert_eq!(row["parentSessionId"], lead);
+    let listed = client.rpc("session.list", json!({})).await;
+    assert_ok(&listed);
+    let row = listed["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["sessionId"] == member.as_str())
+        .unwrap_or_else(|| panic!("the member is missing from session.list: {listed}"));
+    assert_eq!(row["origin"], "internal");
+    assert_eq!(row["parentSessionId"], lead);
+    let attached = client
+        .rpc("session.attach", json!({"sessionId": member}))
+        .await;
+    assert_ok(&attached);
+    assert_eq!(attached["result"]["origin"], "internal");
+    assert_eq!(attached["result"]["parentSessionId"], lead);
+    drop(client);
+    drop(agent);
     server.shutdown();
     server.join().await.unwrap();
 }

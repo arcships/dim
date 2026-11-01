@@ -5,6 +5,7 @@ use crate::{
 use dim_agent_capabilities::file_storage::FileStorage;
 use dim_agent_runtime::{BranchRecord, SessionConfig, StoredEvent};
 use dim_agent_types::*;
+use dim_app_server::protocol::SessionOrigin;
 use dim_app_server::storage::SqliteStorage;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
@@ -481,11 +482,13 @@ impl Native {
         }
         let now = dim_agent_runtime::core::unix_millis();
         tx.execute(
-            "INSERT INTO agent_sessions (session_id, config, created_at_ms) VALUES (?1,?2,?3)",
+            "INSERT INTO agent_sessions (session_id, config, created_at_ms, origin) \
+             VALUES (?1,?2,?3,?4)",
             params![
                 session,
                 serde_json::to_string(&config).map_err(failure)?,
-                i64::try_from(now).map_err(failure)?
+                i64::try_from(now).map_err(failure)?,
+                SessionOrigin::Unknown.as_str(),
             ],
         )
         .map_err(failure)?;

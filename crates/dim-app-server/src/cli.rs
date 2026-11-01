@@ -99,6 +99,23 @@ pub fn run_with(
         ))?;
         return Ok(());
     }
+    if argv.first().map(String::as_str) == Some("--vacuum") {
+        let [flag, database] = &argv[1..] else {
+            return Err("Use --vacuum --database PATH".into());
+        };
+        if flag != "--database" {
+            return Err("Use --vacuum --database PATH".into());
+        }
+        let path = PathBuf::from(database);
+        let vacuumed = crate::storage::vacuum_store(path.clone())?;
+        println!(
+            "Vacuumed {}: {} -> {} bytes",
+            path.display(),
+            vacuumed.before,
+            vacuumed.after
+        );
+        return Ok(());
+    }
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
@@ -180,7 +197,8 @@ pub fn run_with(
             "--help" => {
                 println!(
                     "dim-app-server (--product-home PATH | --model-config PATH | --mock-model) [--unix PATH | --pipe NAME] [--ws HOST:PORT | --no-ws] [--threads COUNT] [--home PATH | --database PATH] [--defaults FILE] [--session-rows FILE] [--node PATH --js-runtime PATH] [--python PATH] [--web-assets PATH]\n\
-                     dim-app-server --export-timeline SESSION_ID --database PATH"
+                     dim-app-server --export-timeline SESSION_ID --database PATH\n\
+                     dim-app-server --vacuum --database PATH"
                 );
                 return Ok(());
             }

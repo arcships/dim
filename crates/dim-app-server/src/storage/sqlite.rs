@@ -6,16 +6,26 @@ use std::{
     fs::File,
     io::Write,
     panic::{AssertUnwindSafe, catch_unwind},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 /// The native store format this daemon creates and opens.
-pub const FORMAT: u32 = 30;
+pub const FORMAT: u32 = 31;
 /// The oldest schema the startup transaction upgrades: the first step of
 /// `UPGRADES`, which is ordered oldest first.
 const MIN_FORMAT: u32 = UPGRADES[0].0;
+/// WAL bytes after which the writer checkpoints, outside its commit. This is
+/// SQLite's own automatic threshold (1000 pages of 4 KiB) moved off the
+/// commit path.
+const CHECKPOINT_BYTES: u64 = 4 * 1024 * 1024;
+/// The WAL file is truncated to this size when a checkpoint restarts it.
+const WAL_LIMIT_BYTES: i64 = 64 * 1024 * 1024;
+/// The process connection's page cache in KiB. A measurement over a 650 MB
+/// store with 2,300 Sessions put their hot tail pages (about 20 MB) in cache
+/// from 32 MiB on; larger caches read no fewer bytes.
+const PAGE_CACHE_KIB: i64 = 32 * 1024;
 const LEGACY_BY_END: (&str, &str) = (
     "timeline_events_by_end",
     "CREATE INDEX timeline_events_by_end ON timeline_events(session_id, branch_id, last_sequence, sequence)",
@@ -23,7 +33,7 @@ const LEGACY_BY_END: (&str, &str) = (
 pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "agent_store_format",
-        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 30))",
+        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 31))",
     ),
     (
         "settings_documents",
@@ -43,7 +53,7 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
     ),
     (
         "agent_sessions",
-        "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id))",
+        "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown')))",
     ),
     (
         "agent_sessions_by_leader",
@@ -150,21 +160,30 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
 /// to recognize a store older than v27.
 const AGENT_SESSIONS_BEFORE_V27: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0))";
 const AGENTS_BEFORE_V27: &str = "CREATE TABLE agents(agent_id TEXT PRIMARY KEY, profile TEXT NOT NULL, is_default INTEGER NOT NULL CHECK(is_default IN (0, 1)))";
-/// The text of `timeline_events` before v28 adds the two reading switches.
-const TIMELINE_EVENTS_BEFORE_V30: &str = "CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id))";
+/// The text of `agent_sessions` from v27 through v29; `schema_of` uses it to
+/// recognize a store older than v30.
+const AGENT_SESSIONS_BEFORE_V30: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id))";
+/// The text of `timeline_events` before v31 adds the two reading switches.
+const TIMELINE_EVENTS_BEFORE_V31: &str = "CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id))";
 /// v27 adds a column to two tables, which `SCHEMA` cannot express as a new
 /// entry: the upgrade alters them before it creates the indexes on them.
 const V27_COLUMNS: &str = "ALTER TABLE agent_sessions ADD COLUMN leader_session_id TEXT REFERENCES agent_sessions(session_id);
 ALTER TABLE agents ADD COLUMN owner_session_id TEXT REFERENCES agent_sessions(session_id);";
-/// v28 adds the two reading switches; the upgrade alters the table before it
+/// v30 adds one column to `agent_sessions` and backfills the rows whose leader
+/// link already records an internal Session. The `ALTER` text must reproduce
+/// `SCHEMA`'s column definition exactly: the startup gate compares the stored
+/// statement character by character.
+const V30_COLUMNS: &str = "ALTER TABLE agent_sessions ADD COLUMN origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown'));
+UPDATE agent_sessions SET origin='internal' WHERE leader_session_id IS NOT NULL;";
+/// v31 adds the two reading switches; the upgrade alters the table before it
 /// creates the partial indexes on them.
-const V30_COLUMNS: &str =
+const V31_COLUMNS: &str =
     "ALTER TABLE timeline_events ADD COLUMN context_render INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE timeline_events ADD COLUMN context_state INTEGER NOT NULL DEFAULT 0;";
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
-const UPGRADES: [(u32, &[&str]); 16] = [
+const UPGRADES: [(u32, &[&str]); 17] = [
     (
         13,
         &[
@@ -214,9 +233,12 @@ const UPGRADES: [(u32, &[&str]); 16] = [
         28,
         &["session_output_owners", "session_output_owners_by_path"],
     ),
+    // #557: a Session's creation origin; the column only, and the step fills
+    // in the rows whose leader link already records one.
+    (29, &[]),
     // #708: the two reading switches on timeline events.
     (
-        29,
+        30,
         &[
             "timeline_events_render",
             "timeline_events_state",
@@ -245,8 +267,9 @@ fn schema_of(version: u32) -> Vec<(&'static str, String)> {
             let sql = match name {
                 "agent_store_format" => format_table(version),
                 "agent_sessions" if version < 27 => AGENT_SESSIONS_BEFORE_V27.to_owned(),
+                "agent_sessions" if version < 30 => AGENT_SESSIONS_BEFORE_V30.to_owned(),
                 "agents" if version < 27 => AGENTS_BEFORE_V27.to_owned(),
-                "timeline_events" if version < 30 => TIMELINE_EVENTS_BEFORE_V30.to_owned(),
+                "timeline_events" if version < 31 => TIMELINE_EVENTS_BEFORE_V31.to_owned(),
                 _ => sql.to_owned(),
             };
             (name, sql)
@@ -513,6 +536,9 @@ impl SqliteStorage {
                     }
                     if *from == 29 {
                         tx.execute_batch(V30_COLUMNS).map_err(storage)?;
+                    }
+                    if *from == 30 {
+                        tx.execute_batch(V31_COLUMNS).map_err(storage)?;
                         let keys = |list: &[&str]| {
                             list.iter()
                                 .map(|key| format!("'{key}'"))
@@ -575,6 +601,15 @@ impl SqliteStorage {
             .map_err(storage)?;
         connection
             .pragma_update(None, "synchronous", "FULL")
+            .map_err(storage)?;
+        connection
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .map_err(storage)?;
+        connection
+            .pragma_update(None, "journal_size_limit", WAL_LIMIT_BYTES)
+            .map_err(storage)?;
+        connection
+            .pragma_update(None, "cache_size", -PAGE_CACHE_KIB)
             .map_err(storage)?;
         connection
             .pragma_update(None, "foreign_keys", true)
@@ -715,6 +750,32 @@ impl SqliteStorage {
         .await
     }
 
+    /// Checkpoints the WAL once it passes `CHECKPOINT_BYTES`. The writer
+    /// calls this after a round committed and published, so the copy runs
+    /// outside the commit path (#600). A passive checkpoint leaves readers
+    /// alone: a read snapshot, such as an export's, keeps the WAL growing
+    /// until it ends, and the next call then copies and restarts it.
+    pub(super) fn checkpoint(&self) {
+        if self.wal_bytes() < CHECKPOINT_BYTES {
+            return;
+        }
+        let mut guard = self
+            .connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(connection) = guard.as_mut() else {
+            return;
+        };
+        if let Err(error) = connection.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(())) {
+            tracing::error!(db_path = %self.path.display(), phase = "checkpoint", pid = std::process::id(), %error, "storage.transaction");
+        }
+    }
+    fn wal_bytes(&self) -> u64 {
+        let mut path = self.path.as_os_str().to_os_string();
+        path.push("-wal");
+        std::fs::metadata(path).map_or(0, |meta| meta.len())
+    }
+
     pub async fn close(self: &Arc<Self>) -> Result<()> {
         self.admission.lock().unwrap().closed = true;
         let db = self.clone();
@@ -733,11 +794,17 @@ impl SqliteStorage {
                     .connection
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(connection) = guard.take()
-                    && let Err((connection, failure)) = connection.close()
-                {
-                    *guard = Some(connection);
-                    return Err(storage(failure));
+                if let Some(connection) = guard.take() {
+                    if let Ok(false) = connection.is_readonly("main")
+                        && let Err(error) =
+                            connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+                    {
+                        tracing::error!(db_path = %db.path.display(), phase = "close", pid = std::process::id(), %error, "storage.transaction");
+                    }
+                    if let Err((connection, failure)) = connection.close() {
+                        *guard = Some(connection);
+                        return Err(storage(failure));
+                    }
                 }
                 let mut admission = db.admission.lock().unwrap();
                 if let Some(lease) = &admission.lease {
@@ -752,6 +819,84 @@ impl SqliteStorage {
         .await
         .map_err(storage)?
     }
+}
+
+/// What `vacuum_store` reclaimed, as bytes on disk before and after.
+pub struct Vacuumed {
+    pub before: u64,
+    pub after: u64,
+}
+
+/// Reclaims free pages in an existing store by rewriting it with `VACUUM`
+/// (#600). It takes the same lease as `open`, so a running daemon makes it
+/// fail, and it requires the current format's exact schema: it never creates
+/// a store, upgrades one or touches an unsupported format. `VACUUM` rewrites
+/// the whole database, so it needs free space about the store's size.
+pub fn vacuum_store(path: PathBuf) -> Result<Vacuumed> {
+    if !path.is_file() {
+        return Err(storage(format!(
+            "No dimcode database at {}",
+            path.display()
+        )));
+    }
+    let path = path.canonicalize().map_err(storage)?;
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let admission = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)
+        .map_err(storage)?;
+    admission.try_lock().map_err(|error| match error {
+        std::fs::TryLockError::WouldBlock => storage(format!(
+            "another process owns the SQLite database: {}",
+            path.display()
+        )),
+        std::fs::TryLockError::Error(error) => storage(error),
+    })?;
+    let _lease = DatabaseLease(admission);
+    let connection = Connection::open(&path).map_err(storage)?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(storage)?;
+    let unsupported = || {
+        storage(format!(
+            "unsupported Timeline storage format at {}; the database was not changed",
+            path.display()
+        ))
+    };
+    if known_format(&schema(&connection)?) != Some(FORMAT)
+        || markers(&connection)? != [i64::from(FORMAT)]
+    {
+        return Err(unsupported());
+    }
+    let before = store_bytes(&path);
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .map_err(storage)?;
+    connection.execute_batch("VACUUM").map_err(storage)?;
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .map_err(storage)?;
+    connection
+        .close()
+        .map_err(|(_, failure)| storage(failure))?;
+    Ok(Vacuumed {
+        before,
+        after: store_bytes(&path),
+    })
+}
+
+fn store_bytes(path: &Path) -> u64 {
+    let mut wal = path.as_os_str().to_os_string();
+    wal.push("-wal");
+    [path, Path::new(&wal)]
+        .into_iter()
+        .filter_map(|path| std::fs::metadata(path).ok())
+        .map(|meta| meta.len())
+        .sum()
 }
 
 pub struct SqliteStoragePlugin {
