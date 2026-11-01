@@ -617,16 +617,8 @@ impl ContextPreparation {
             .rendered_stream(&self.timeline, source.through, 256)
             .await
             .map_err(|error| HostError::failed(error.to_string()))?;
-        let (context, history) = if streamed.fallback {
-            let (context, history) = self
-                .history
-                .rendered_context(&self.timeline, source.through)
-                .await
-                .map_err(|error| HostError::failed(error.to_string()))?;
-            (PolicyContext::from_context(context), history)
-        } else {
-            (PolicyContext::from_stream(&streamed), streamed.history)
-        };
+        let context = PolicyContext::from_stream(&streamed);
+        let history = streamed.history;
         crate::context_policy::check_cancel(&cancel)?;
         let prefix = context.messages(&history);
         if request.messages.len() < prefix.len()

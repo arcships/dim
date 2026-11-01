@@ -4,13 +4,10 @@ use std::sync::Mutex;
 
 #[tokio::test]
 async fn snapshot_codecs_preserve_completed_compaction_even_when_saving_fails() {
-    for mode in ["builder-failure", "encoder-failure", "custom"] {
+    for mode in ["encoder-failure", "custom"] {
         let store = Arc::new(MemoryTimelineStore::default());
         let mut renderer = HistoryRenderer::default();
         match mode {
-            "builder-failure" => {
-                renderer.checkpoint = |_, _| Err("snapshot builder unavailable".into())
-            }
             "encoder-failure" => {
                 renderer.encode_checkpoint = |_, _| Err("snapshot encoder unavailable".into())
             }

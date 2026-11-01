@@ -761,6 +761,44 @@ impl Timeline {
             .collect())
     }
 
+    /// The branch chain the context covers, root first: each ancestor to its
+    /// fixed cut and the local branch to `through`.
+    #[service(skip)]
+    pub fn segments(&self, through: u64) -> Result<Vec<(String, u64)>> {
+        let through = self.through(Some(through))?;
+        Ok(self
+            .0
+            .ancestors
+            .iter()
+            .cloned()
+            .chain(std::iter::once((self.0.key.branch_id.clone(), through)))
+            .filter(|(_, cut)| *cut > 0)
+            .collect())
+    }
+
+    /// One filtered page of `branch`, which may be an ancestor.
+    #[service(skip)]
+    pub async fn stored_context_page_in(
+        &self,
+        branch: &str,
+        after: u64,
+        limit: usize,
+        through: u64,
+    ) -> Result<Vec<Arc<AgentEvent>>> {
+        let key = TimelineKey {
+            session_id: self.0.key.session_id.clone(),
+            branch_id: branch.to_owned(),
+        };
+        Ok(self
+            .0
+            .store
+            .read_context_page(&key, after, limit, through)
+            .await?
+            .into_iter()
+            .map(|record| record.event)
+            .collect())
+    }
+
     /// Reads the rows this projection consumes after an event cursor; a cursor
     /// inside an atomic batch reads that row and filters by sequence. The event
     /// limit is a target: the final batch may exceed it.

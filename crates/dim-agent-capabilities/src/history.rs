@@ -143,51 +143,56 @@ impl HistoryRenderer {
         Ok(snapshot)
     }
 
-    /// Builds the checkpoint for `retain_from` while streaming batches, so a
-    /// compaction snapshot does not need the full `ContextHistory`.
+    /// Builds the checkpoint for `retain_from` by folding the fixed prefix up
+    /// to that event. Used once per completed compaction to save its snapshot.
     pub async fn stream_checkpoint(
         &self,
         timeline: &Timeline,
         through: u64,
         retain_from: &str,
         batch: u64,
-        branch: &str,
     ) -> dim_agent_runtime::Result<ProjectionCheckpoint> {
-        if !timeline.ancestors().is_empty() || batch == 0 {
+        if batch == 0 {
             return Err(AgentError::InvalidInput(
-                "streamed checkpoint needs a local branch".into(),
+                "a stream needs a positive batch size".into(),
             ));
         }
+        let segments = timeline.segments(through)?;
         let mut state: Option<ProjectionCheckpointState> = None;
-        let mut start = 1;
-        while start <= through {
-            let events = timeline
-                .stored_page(start.saturating_sub(1), batch as usize, through)
-                .await?;
-            let end = events.last().map_or(start, |event| event.sequence);
-            if let Some(index) = events.iter().position(|event| event.id == retain_from) {
-                let positions = planned(&events, branch);
-                let mut state = replay(&events[..index], state.as_ref(), &positions[..index])
-                    .map_err(|error| AgentError::fault("History", error))?
-                    .state;
-                state.retain_from = retain_from.to_owned();
-                return Ok(ProjectionCheckpoint {
-                    resume: TimelinePosition {
-                        branch_id: branch.to_owned(),
-                        sequence: events[index].sequence,
-                    },
-                    state,
-                });
+        for (branch, cut) in &segments {
+            let mut cursor = 1;
+            while cursor <= *cut {
+                let events = timeline
+                    .stored_context_page_in(branch, cursor.saturating_sub(1), batch as usize, *cut)
+                    .await?;
+                if events.is_empty() {
+                    break;
+                }
+                let end = events.last().map_or(cursor, |event| event.sequence);
+                if let Some(index) = events.iter().position(|event| event.id == retain_from) {
+                    let positions = planned(&events, branch);
+                    let mut state = replay(&events[..index], state.as_ref(), &positions[..index])
+                        .map_err(|error| AgentError::fault("History", error))?
+                        .state;
+                    state.retain_from = retain_from.to_owned();
+                    return Ok(ProjectionCheckpoint {
+                        resume: TimelinePosition {
+                            branch_id: branch.clone(),
+                            sequence: events[index].sequence,
+                        },
+                        state,
+                    });
+                }
+                state = Some(
+                    project_batch(&events, state.as_ref(), branch)
+                        .map_err(|error| AgentError::fault("History", error))?
+                        .state,
+                );
+                cursor = end + 1;
             }
-            state = Some(
-                project_batch(&events, state.as_ref(), branch)
-                    .map_err(|error| AgentError::fault("History", error))?
-                    .state,
-            );
-            start = end + 1;
         }
         Err(AgentError::InvalidInput(
-            "compaction cut was not read".into(),
+            "Compaction cut is outside the branch".into(),
         ))
     }
 
@@ -243,100 +248,97 @@ impl HistoryRenderer {
         through: u64,
         batch: u64,
     ) -> dim_agent_runtime::Result<StreamedContext> {
-        let ancestors = timeline.ancestors();
-        if !ancestors.is_empty() {
-            return Ok(StreamedContext::fallback());
-        }
         if batch == 0 {
-            return Ok(StreamedContext::fallback());
-        }
-        if !std::ptr::eq(
-            self.render as *const (),
-            project_context_history as *const (),
-        ) {
-            return Ok(StreamedContext::fallback());
+            return Err(AgentError::InvalidInput(
+                "a stream needs a positive batch size".into(),
+            ));
         }
         let policy_order = timeline.policy_order(through).await?;
         let checkpoint = timeline
             .checkpoint(through, self.checkpoint_interpreter, self.decode_checkpoint)
             .await?;
+        let segments = timeline.segments(through)?;
+        let (first, resume) = match &checkpoint {
+            Some(checkpoint) => segments
+                .iter()
+                .position(|(branch, _)| *branch == checkpoint.resume.branch_id)
+                .map(|index| (index, checkpoint.resume.sequence))
+                .ok_or_else(|| {
+                    AgentError::fault(
+                        "History",
+                        "Checkpoint resume is outside the branch chain".to_owned(),
+                    )
+                })?,
+            None => (0, 1),
+        };
         let mut state = checkpoint
             .as_ref()
             .map(|checkpoint| checkpoint.state.clone());
         let mut history = Vec::new();
         let mut compaction = None;
-        let mut streamed_state = None;
-        let mut start = checkpoint
-            .as_ref()
-            .map_or(1, |checkpoint| checkpoint.resume.sequence);
-        while start <= through {
-            let events = match timeline
-                .stored_context_page(start.saturating_sub(1), batch as usize, through)
-                .await
-            {
-                Ok(events) => events,
-                Err(_) => return Ok(StreamedContext::fallback()),
-            };
-            if events.is_empty() {
-                return Ok(StreamedContext::fallback());
+        for (index, (branch, cut)) in segments.iter().enumerate().skip(first) {
+            let mut cursor = if index == first { resume } else { 1 };
+            while cursor <= *cut {
+                let events = timeline
+                    .stored_context_page_in(branch, cursor.saturating_sub(1), batch as usize, *cut)
+                    .await?;
+                if events.is_empty() {
+                    break;
+                }
+                let end = events.last().map_or(cursor, |event| event.sequence);
+                let projected = project_batch(&events, state.as_ref(), branch)
+                    .map_err(|error| AgentError::fault("History", error))?;
+                history.extend(projected.history);
+                if let Some(event) = &projected.compaction
+                    && let EventKind::ContextCompaction(data) = &event.kind
+                    && let ContextCompactionResult::Completed { retain_from, .. } = &data.outcome
+                {
+                    let rank =
+                        |branch: &str| policy_order.branches.iter().position(|name| name == branch);
+                    let cut = policy_order
+                        .events
+                        .iter()
+                        .find(|event| event.id == retain_from.as_str())
+                        .map(|event| (rank(&event.branch_id), event.sequence))
+                        .or_else(|| {
+                            history
+                                .iter()
+                                .find(|entry| entry.event_id == retain_from.as_str())
+                                .map(|entry| {
+                                    (rank(&entry.position.branch_id), entry.position.sequence)
+                                })
+                        })
+                        .ok_or_else(|| {
+                            AgentError::fault(
+                                "History",
+                                "Compaction cut is outside the stream".to_owned(),
+                            )
+                        })?;
+                    let kept = history
+                        .iter()
+                        .position(|entry| {
+                            (rank(&entry.position.branch_id), entry.position.sequence) >= cut
+                        })
+                        .unwrap_or(history.len());
+                    history.drain(..kept);
+                }
+                compaction = projected.compaction.or(compaction);
+                state = Some(projected.state);
+                cursor = end + 1;
             }
-            let end = events.last().map_or(start, |event| event.sequence);
-            let projected = project_batch(&events, state.as_ref(), &timeline.branch_id())
-                .map_err(|error| AgentError::fault("History", error))?;
-            history.extend(projected.history);
-            if projected.compacted
-                && let Some(event) = &projected.compaction
-                && let EventKind::ContextCompaction(data) = &event.kind
-                && let ContextCompactionResult::Completed { retain_from, .. } = &data.outcome
-            {
-                let rank =
-                    |branch: &str| policy_order.branches.iter().position(|name| name == branch);
-                let cut = policy_order
-                    .events
-                    .iter()
-                    .find(|event| event.id == retain_from.as_str())
-                    .map(|event| (rank(&event.branch_id), event.sequence))
-                    .or_else(|| {
-                        history
-                            .iter()
-                            .find(|entry| entry.event_id == retain_from.as_str())
-                            .map(|entry| (rank(&entry.position.branch_id), entry.position.sequence))
-                    });
-                let Some(cut) = cut else {
-                    return Ok(StreamedContext::fallback());
-                };
-                let kept = history
-                    .iter()
-                    .position(|entry| {
-                        (rank(&entry.position.branch_id), entry.position.sequence) >= cut
-                    })
-                    .unwrap_or(history.len());
-                history.drain(..kept);
-            }
-            streamed_state = projected.checkpoint.or(streamed_state);
-            compaction = projected.compaction.or(compaction);
-            state = Some(projected.state);
-            start = end + 1;
         }
         let state = state.unwrap_or_default();
-        let checkpoint = streamed_state.and_then(|streamed| {
-            let entry = history
-                .iter()
-                .find(|entry| entry.event_id == streamed.resume_event)?;
-            Some(ProjectionCheckpoint {
-                resume: entry.position.clone(),
-                state: streamed.state,
-            })
-        });
         Ok(StreamedContext {
             history,
             configuration: state.configuration,
             prompt: PromptSnapshot::from_checkpoint(&state.prompts).revision,
-            ancestry: ancestors.into_iter().map(|(branch, _)| branch).collect(),
+            ancestry: timeline
+                .ancestors()
+                .into_iter()
+                .map(|(branch, _)| branch)
+                .collect(),
             order: policy_order.events,
-            checkpoint,
             compaction,
-            fallback: false,
         })
     }
 }
@@ -349,25 +351,7 @@ pub struct StreamedContext {
     pub prompt: Option<PromptReference>,
     pub ancestry: Vec<String>,
     pub order: Vec<dim_agent_runtime::PolicyOrderEvent>,
-    pub checkpoint: Option<ProjectionCheckpoint>,
     pub compaction: Option<Arc<AgentEvent>>,
-    /// The caller must use the full `rendered_context` path.
-    pub fallback: bool,
-}
-
-impl StreamedContext {
-    fn fallback() -> Self {
-        Self {
-            history: Vec::new(),
-            configuration: None,
-            prompt: None,
-            ancestry: Vec::new(),
-            order: Vec::new(),
-            checkpoint: None,
-            compaction: None,
-            fallback: true,
-        }
-    }
 }
 
 /// Read the shared prompt/input/output projection using its supported cache.
@@ -513,7 +497,6 @@ pub struct ProjectedBatch {
     pub state: ProjectionCheckpointState,
     pub compacted: bool,
     pub compaction: Option<Arc<AgentEvent>>,
-    pub checkpoint: Option<StreamedState>,
 }
 
 /// Projects one contiguous event batch from `initial` without retaining the
@@ -525,7 +508,7 @@ pub fn project_batch(
     branch: &str,
 ) -> Result<ProjectedBatch, String> {
     let positions = planned(events, branch);
-    let mut projection = replay(events, initial, &positions)?;
+    let projection = replay(events, initial, &positions)?;
     let compaction = events.iter().rev().find(|event| {
         matches!(
             &event.kind,
@@ -533,59 +516,11 @@ pub fn project_batch(
                 if matches!(data.outcome, ContextCompactionResult::Completed { .. })
         )
     });
-    let mut checkpoint = None;
-    if let Some(event) = compaction
-        && let EventKind::ContextCompaction(data) = &event.kind
-        && let ContextCompactionResult::Completed { retain_from, .. } = &data.outcome
-    {
-        let order: HashMap<&str, usize> = events
-            .iter()
-            .enumerate()
-            .map(|(index, event)| (event.id.as_str(), index))
-            .collect();
-        let Some(cut) = order.get(retain_from.as_str()).copied() else {
-            return Ok(ProjectedBatch {
-                history: projection.history,
-                state: projection.state,
-                compacted: true,
-                compaction: compaction.cloned(),
-                checkpoint: None,
-            });
-        };
-        let kept = projection
-            .history
-            .iter()
-            .position(|entry| {
-                order
-                    .get(entry.event_id.as_str())
-                    .is_some_and(|index| *index >= cut)
-            })
-            .unwrap_or(projection.history.len());
-        checkpoint = (|| {
-            let resume_event = projection
-                .history
-                .get(kept)
-                .map(|entry| entry.event_id.clone())
-                .or_else(|| events.last().map(|event| event.id.clone()))?;
-            let resume = order.get(resume_event.as_str()).copied()?;
-            let mut state = replay(events[..resume].as_ref(), initial, &positions[..resume])
-                .ok()?
-                .state;
-            state.retain_from = retain_from.clone();
-            Some(StreamedState {
-                resume_event,
-                state,
-            })
-        })();
-        projection.history.drain(..kept);
-        projection.state.retain_from = retain_from.clone();
-    }
     Ok(ProjectedBatch {
         history: projection.history,
         state: projection.state,
         compacted: compaction.is_some(),
         compaction: compaction.cloned(),
-        checkpoint,
     })
 }
 

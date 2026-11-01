@@ -6318,7 +6318,6 @@ async fn streamed_context_reads_complete_batches_across_the_window() {
         .rendered_stream(&timeline, 257, 256)
         .await
         .unwrap();
-    assert!(!streamed.fallback);
     db.close().await.unwrap();
 }
 

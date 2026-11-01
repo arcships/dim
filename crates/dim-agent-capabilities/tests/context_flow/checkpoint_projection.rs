@@ -268,7 +268,6 @@ async fn a_streamed_context_from_a_snapshot_matches_the_full_render() {
         .rendered_stream(&timeline, fact.sequence, 8)
         .await
         .unwrap();
-    assert!(!streamed.fallback);
     assert_eq!(streamed.history, full_history);
     assert_eq!(streamed.history, project_context_history(&full).unwrap());
     assert_eq!(
@@ -321,7 +320,6 @@ async fn a_streamed_context_without_a_snapshot_matches_the_full_render() {
         .rendered_stream(&timeline, through, 8)
         .await
         .unwrap();
-    assert!(!streamed.fallback);
     assert_eq!(streamed.history, full_history);
     assert_eq!(streamed.history, project_context_history(&full).unwrap());
 }

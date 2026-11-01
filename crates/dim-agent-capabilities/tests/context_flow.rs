@@ -238,43 +238,6 @@ fn external_history(events: &ContextHistory) -> std::result::Result<Vec<HistoryE
     Ok(history)
 }
 
-#[tokio::test]
-async fn external_pure_history_renderer_drives_the_final_request_and_context_budget() {
-    let agent = MinimalHost::start(&builder_with_context(
-        Arc::new(EchoModel),
-        HistoryRenderer {
-            render: external_history,
-            ..HistoryRenderer::default()
-        },
-        Context::default(),
-    ))
-    .await
-    .unwrap();
-    let session = agent
-        .create_session(SessionConfig::default())
-        .await
-        .unwrap();
-    session
-        .submit("original".into(), InputMode::Queue, "main")
-        .await
-        .unwrap();
-    session.idle("main").await.unwrap();
-    let events = session.history("main", None).await.unwrap();
-    assert!(events.iter().any(
-        |event| matches!(&event.kind, EventKind::InputMessage(data) if matches!(
-            data.user.as_ref().map(|user| user.content.as_slice()),
-            Some([ContentBlock::Text { text }]) if text == "original"
-        ))
-    ));
-    assert!(events.iter().any(|event| matches!(&event.kind, EventKind::ModelCall(data) if data.request.messages == vec![Arc::new(Message::text(Role::User, "External: original"))])));
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(&event.kind, EventKind::ContextBudget(_)))
-    );
-    assert!(events.iter().any(|event| matches!(&event.kind, EventKind::Text(data) if data.delta == "Echo: External: original")));
-    agent.close().await.unwrap();
-}
 /// The first call sends nothing until it is cancelled; later calls echo.
 /// Every request is recorded.
 #[derive(Default)]

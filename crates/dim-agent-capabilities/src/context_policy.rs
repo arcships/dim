@@ -1,7 +1,7 @@
 use crate::{
     history::{
         HistoryEntry, HistoryRenderer, context_compaction, context_configuration, digest_message,
-        projection_checkpoint, truncate_middle, user_message,
+        truncate_middle, user_message,
     },
     host::*,
 };
@@ -119,7 +119,7 @@ impl PolicyContext {
             compaction,
             order: streamed.order.clone(),
             full: None,
-            checkpoint: streamed.checkpoint.clone(),
+            checkpoint: None,
         }
     }
 
@@ -952,32 +952,13 @@ impl ContextPolicy {
                     (None, Some(checkpoint)) => {
                         Some(self.history.snapshot_from_checkpoint(checkpoint, &fact)?)
                     }
-                    (None, None)
-                        if std::ptr::eq(
-                            self.history.checkpoint as *const (),
-                            projection_checkpoint as *const (),
-                        ) =>
-                    {
+                    (None, None) => {
                         let checkpoint = self
                             .history
-                            .stream_checkpoint(
-                                &self.timeline,
-                                view.facts.through,
-                                retain_from,
-                                256,
-                                &self.timeline.branch_id(),
-                            )
+                            .stream_checkpoint(&self.timeline, view.facts.through, retain_from, 256)
                             .await
                             .map_err(|error| error.to_string())?;
                         Some(self.history.snapshot_from_checkpoint(&checkpoint, &fact)?)
-                    }
-                    (None, None) => {
-                        let (context, _) = self
-                            .history
-                            .rendered_context(&self.timeline, view.facts.through)
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        Some(self.history.snapshot(&context, retain_from, &fact)?)
                     }
                 };
                 let Some(snapshot) = snapshot else {

@@ -1,8 +1,7 @@
 use crate::{
     context_policy::{CompactionStep, ContextPolicy, configured_request},
-    history::{HistoryRenderer, context_configuration},
+    history::HistoryRenderer,
     host::{CompactionStrategyHost, ContextModelHost, HostError, PrepareModelHost},
-    prompt_state::PromptSnapshot,
     steer::REPLACED_BY_STEER,
     tool_binding::ToolBinding,
 };
@@ -676,28 +675,12 @@ impl AgentLoop {
                     .history
                     .rendered_stream(&owner.timeline, through, 256)
                     .await?;
-                let (prefix, entries, configuration, prompt) =
-                    if streamed.fallback {
-                    let (prefix, entries) = owner
-                        .history
-                        .rendered_context(&owner.timeline, through)
-                        .await?;
-                    let configuration = context_configuration(&prefix);
-                    let prompt = PromptSnapshot::from_context(&prefix).revision;
-                    (
-                        crate::context_policy::PolicyContext::from_context(prefix),
-                        entries,
-                        configuration,
-                        prompt,
-                    )
-                } else {
-                    (
-                        crate::context_policy::PolicyContext::from_stream(&streamed),
-                        streamed.history,
-                        streamed.configuration,
-                        streamed.prompt,
-                    )
-                };
+                let (prefix, entries, configuration, prompt) = (
+                    crate::context_policy::PolicyContext::from_stream(&streamed),
+                    streamed.history,
+                    streamed.configuration,
+                    streamed.prompt,
+                );
                 let history = prefix.messages(&entries);
                 let settings = match &configuration {
                     Some(data) => crate::host::ModelSettings {
