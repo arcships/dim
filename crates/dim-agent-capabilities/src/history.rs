@@ -158,18 +158,6 @@ impl HistoryRenderer {
                 "streamed checkpoint needs a local branch".into(),
             ));
         }
-        let order = timeline.policy_order(through).await?;
-        let position = order
-            .events
-            .iter()
-            .find(|event| event.id == retain_from)
-            .ok_or_else(|| {
-                AgentError::InvalidInput("compaction cut is outside the branch".into())
-            })?;
-        let resume = dim_agent_types::TimelinePosition {
-            branch_id: position.branch_id.clone(),
-            sequence: position.sequence,
-        };
         let mut state: Option<ProjectionCheckpointState> = None;
         let mut start = 1;
         while start <= through {
@@ -183,7 +171,13 @@ impl HistoryRenderer {
                     .map_err(|error| AgentError::fault("History", error))?
                     .state;
                 state.retain_from = retain_from.to_owned();
-                return Ok(ProjectionCheckpoint { resume, state });
+                return Ok(ProjectionCheckpoint {
+                    resume: TimelinePosition {
+                        branch_id: branch.to_owned(),
+                        sequence: events[index].sequence,
+                    },
+                    state,
+                });
             }
             state = Some(
                 project_batch(&events, state.as_ref(), branch)
@@ -262,7 +256,7 @@ impl HistoryRenderer {
         ) {
             return Ok(StreamedContext::fallback());
         }
-        let order = timeline.policy_order(through).await?.events;
+        let policy_order = timeline.policy_order(through).await?;
         let checkpoint = timeline
             .checkpoint(through, self.checkpoint_interpreter, self.decode_checkpoint)
             .await?;
@@ -289,30 +283,32 @@ impl HistoryRenderer {
             let end = events.last().map_or(start, |event| event.sequence);
             let projected = project_batch(&events, state.as_ref(), &timeline.branch_id())
                 .map_err(|error| AgentError::fault("History", error))?;
-            if projected.compacted
-                && let Some(event) = &projected.compaction
-                && let EventKind::ContextCompaction(data) = &event.kind
-                && let ContextCompactionResult::Completed { retain_from, .. } = &data.outcome
-                && !order.iter().any(|event| event.id == retain_from.as_str())
-            {
-                return Ok(StreamedContext::fallback());
-            }
             history.extend(projected.history);
             if projected.compacted
                 && let Some(event) = &projected.compaction
                 && let EventKind::ContextCompaction(data) = &event.kind
                 && let ContextCompactionResult::Completed { retain_from, .. } = &data.outcome
-                && let Some(cut) = order
-                    .iter()
-                    .position(|event| event.id == retain_from.as_str())
             {
+                let rank =
+                    |branch: &str| policy_order.branches.iter().position(|name| name == branch);
+                let cut = policy_order
+                    .events
+                    .iter()
+                    .find(|event| event.id == retain_from.as_str())
+                    .map(|event| (rank(&event.branch_id), event.sequence))
+                    .or_else(|| {
+                        history
+                            .iter()
+                            .find(|entry| entry.event_id == retain_from.as_str())
+                            .map(|entry| (rank(&entry.position.branch_id), entry.position.sequence))
+                    });
+                let Some(cut) = cut else {
+                    return Ok(StreamedContext::fallback());
+                };
                 let kept = history
                     .iter()
                     .position(|entry| {
-                        order
-                            .iter()
-                            .position(|event| event.id == entry.event_id)
-                            .is_some_and(|index| index >= cut)
+                        (rank(&entry.position.branch_id), entry.position.sequence) >= cut
                     })
                     .unwrap_or(history.len());
                 history.drain(..kept);
@@ -324,14 +320,11 @@ impl HistoryRenderer {
         }
         let state = state.unwrap_or_default();
         let checkpoint = streamed_state.and_then(|streamed| {
-            let event = order
+            let entry = history
                 .iter()
-                .find(|event| event.id == streamed.resume_event)?;
+                .find(|entry| entry.event_id == streamed.resume_event)?;
             Some(ProjectionCheckpoint {
-                resume: dim_agent_types::TimelinePosition {
-                    branch_id: event.branch_id.clone(),
-                    sequence: event.sequence,
-                },
+                resume: entry.position.clone(),
                 state: streamed.state,
             })
         });
@@ -340,7 +333,7 @@ impl HistoryRenderer {
             configuration: state.configuration,
             prompt: PromptSnapshot::from_checkpoint(&state.prompts).revision,
             ancestry: ancestors.into_iter().map(|(branch, _)| branch).collect(),
-            order,
+            order: policy_order.events,
             checkpoint,
             compaction,
             fallback: false,

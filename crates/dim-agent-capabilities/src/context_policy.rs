@@ -1864,12 +1864,7 @@ fn replanned(
         .map_or(first.replacement.len(), |parts| parts.strategy as usize)
         .min(first.replacement.len());
     let limit = rule.limit(history, &cuts, rule.tokens(&first.replacement[..strategy]))?;
-    let order = |id: &str| policy_order.events.iter().position(|event| event.id == id);
-    let later = match (order(&cuts[limit].retain_from), order(&first.retain_from)) {
-        (Some(later), Some(first)) => later > first,
-        _ => false,
-    };
-    if !later {
+    if cuts[limit].entry == 0 {
         return None;
     }
     for cut in &mut cuts[..=limit] {

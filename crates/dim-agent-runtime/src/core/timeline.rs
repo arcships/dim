@@ -908,7 +908,8 @@ impl Timeline {
                 });
             }
         }
-        events.sort_by_key(|event| event.sequence);
+        let rank = |branch: &str| branches.iter().position(|name| name == branch);
+        events.sort_by_key(|event| (rank(&event.branch_id), event.sequence));
         Ok(PolicyOrder {
             through,
             branches,
