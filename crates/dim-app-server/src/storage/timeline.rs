@@ -2508,6 +2508,45 @@ impl TimelineStore for SqliteTimelineStore {
                 .rfind(|event| event.sequence <= sequence))
         })
     }
+    fn read_context_page<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        after: u64,
+        limit: usize,
+        through: u64,
+    ) -> BoxFuture<'a, Result<Vec<StoredEvent>>> {
+        Box::pin(async move {
+            if after > through || limit == 0 {
+                return Ok(Vec::new());
+            }
+            let mut records = Vec::new();
+            let mut cursor = after.max(1);
+            let mut decoded = 0;
+            while cursor <= through && decoded < limit {
+                let end = cursor.saturating_add(255).min(through);
+                let mut page = self.read_context(key, cursor, end).await?;
+                decoded += page.len();
+                records.append(&mut page);
+                cursor = end + 1;
+            }
+            let mut records: Vec<_> = records
+                .into_iter()
+                .filter(|record| record.event.sequence > after)
+                .collect();
+            if let Some(record) = records.get(limit - 1) {
+                let mut end = record.batch_end;
+                while cursor <= end && cursor <= through {
+                    let window = cursor.saturating_add(255).min(through);
+                    let mut page = self.read_context(key, cursor, window).await?;
+                    end = end.max(page.last().map_or(0, |record| record.batch_end));
+                    cursor = window + 1;
+                    records.append(&mut page);
+                }
+                records.retain(|record| record.event.sequence <= end);
+            }
+            Ok(records)
+        })
+    }
     fn read_context<'a>(
         &'a self,
         key: &'a TimelineKey,
