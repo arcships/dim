@@ -264,9 +264,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "answer required" => "perlu jawaban",
         "permission required" => "perlu izin",
         "esc interrupt" => "esc interupsi",
-        "↑ edit · ctrl+s steer now · /queue" => "↑ edit · ctrl+s steer kini · /queue",
-        "+{count} more · ↑ edit · ctrl+s steer now · /queue" => {
-            "+{count} lagi · ↑ edit · ctrl+s steer kini · /queue"
+        "↑ edit · ctrl+s steer now" => "↑ edit · ctrl+s steer kini",
+        "+{count} more · ↑ edit · ctrl+s steer now" => {
+            "+{count} lagi · ↑ edit · ctrl+s steer kini"
         }
         "Queue ({count})" => "Antrean ({count})",
         "Thinking…" => "Berpikir…",

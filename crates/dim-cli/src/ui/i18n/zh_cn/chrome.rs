@@ -223,9 +223,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "answer required" => "需要回答",
         "permission required" => "需要授权",
         "esc interrupt" => "Esc 中断",
-        "↑ edit · ctrl+s steer now · /queue" => "↑ 编辑 · ctrl+s 立即 steer · /queue",
-        "+{count} more · ↑ edit · ctrl+s steer now · /queue" => {
-            "还有 {count} 条 · ↑ 编辑 · ctrl+s 立即 steer · /queue"
+        "↑ edit · ctrl+s steer now" => "↑ 编辑 · ctrl+s 立即 steer",
+        "+{count} more · ↑ edit · ctrl+s steer now" => {
+            "还有 {count} 条 · ↑ 编辑 · ctrl+s 立即 steer"
         }
         "Queue ({count})" => "队列（{count}）",
         "Thinking…" => "思考中…",

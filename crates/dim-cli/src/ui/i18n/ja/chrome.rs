@@ -246,9 +246,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "answer required" => "要回答",
         "permission required" => "要許可",
         "esc interrupt" => "esc 中断",
-        "↑ edit · ctrl+s steer now · /queue" => "↑ 編集 · ctrl+s 今すぐ steer · /queue",
-        "+{count} more · ↑ edit · ctrl+s steer now · /queue" => {
-            "+{count} 件 · ↑ 編集 · ctrl+s 今すぐ steer · /queue"
+        "↑ edit · ctrl+s steer now" => "↑ 編集 · ctrl+s 今すぐ steer",
+        "+{count} more · ↑ edit · ctrl+s steer now" => {
+            "+{count} 件 · ↑ 編集 · ctrl+s 今すぐ steer"
         }
         "Queue ({count})" => "キュー（{count}）",
         "Thinking…" => "思考中…",

@@ -4633,10 +4633,10 @@ fn queue_strip(items: &[(String, String)], height: usize, cols: usize, p: &Palet
         .collect();
     rows.resize_with(height, String::new);
     let hint = if hidden == 0 {
-        t("↑ edit · ctrl+s steer now · /queue").to_owned()
+        t("↑ edit · ctrl+s steer now").to_owned()
     } else {
         tf(
-            "+{count} more · ↑ edit · ctrl+s steer now · /queue",
+            "+{count} more · ↑ edit · ctrl+s steer now",
             &[("count", &hidden.to_string())],
         )
     };

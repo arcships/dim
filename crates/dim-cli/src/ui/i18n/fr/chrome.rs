@@ -264,9 +264,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "answer required" => "réponse requise",
         "permission required" => "autorisation requise",
         "esc interrupt" => "esc interrompre",
-        "↑ edit · ctrl+s steer now · /queue" => "↑ modifier · ctrl+s orienter · /queue",
-        "+{count} more · ↑ edit · ctrl+s steer now · /queue" => {
-            "+{count} autres · ↑ modifier · ctrl+s orienter · /queue"
+        "↑ edit · ctrl+s steer now" => "↑ modifier · ctrl+s orienter",
+        "+{count} more · ↑ edit · ctrl+s steer now" => {
+            "+{count} autres · ↑ modifier · ctrl+s orienter"
         }
         "Queue ({count})" => "File ({count})",
         "Thinking…" => "Réflexion…",
