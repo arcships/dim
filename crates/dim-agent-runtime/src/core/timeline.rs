@@ -842,12 +842,13 @@ impl Timeline {
         }
         Ok(PolicyFacts { through, events })
     }
-    /// The event order for legal compaction cuts.
+    /// The last event at or before a fixed cut, even inside its atomic batch.
     #[service(skip)]
     async fn boundary_event(&self, key: &TimelineKey, cut: u64) -> Result<Option<Arc<AgentEvent>>> {
         self.0.store.last_event(key, cut).await
     }
 
+    /// The event order for legal compaction cuts.
     #[service(skip)]
     pub async fn policy_order(&self, through: u64) -> Result<PolicyOrder> {
         let through = self.through(Some(through))?;
