@@ -240,6 +240,7 @@ export interface TimelineTrace {
 }
 
 export interface Timeline {
+  branchId(): Promise<string>
   ancestors(): Promise<[string, number | bigint][]>
   /**
    * Appends one event; it is published once its batch commits. Parts in
@@ -261,6 +262,13 @@ export interface Timeline {
   hasPending(): Promise<boolean>
   /** @throws {AgentErrorThrown} */
   history(through?: number | bigint | null): Promise<import('./plugin.js').BranchEvent[]>
+  /**
+   * Reads complete batches of the rows this projection consumes after a
+   * batch-boundary cursor. The event limit is a target: the final batch may
+   * exceed it.
+   * @throws {AgentErrorThrown}
+   */
+  storedContextPage(after: number | bigint, limit: number | bigint, through: number | bigint): Promise<import('./plugin.js').BranchEvent[]>
   /** @throws {AgentErrorThrown} */
   trace(sequence: number | bigint): Promise<TimelineTrace | null>
 }

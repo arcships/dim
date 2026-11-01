@@ -2492,6 +2492,28 @@ impl TimelineStore for SqliteTimelineStore {
             Ok(PolicyFacts { through, events })
         })
     }
+    fn last_event<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        sequence: u64,
+    ) -> BoxFuture<'a, Result<Option<Arc<dim_agent_types::AgentEvent>>>> {
+        Box::pin(async move {
+            let mut reader = self.reader();
+            let records = read_range(
+                &self.db,
+                &mut reader,
+                key,
+                sequence..=sequence,
+                false,
+            )
+            .await?;
+            self.finish(reader);
+            Ok(records
+                .into_iter()
+                .map(|record| record.event)
+                .rfind(|event| event.sequence <= sequence))
+        })
+    }
     fn read_context<'a>(
         &'a self,
         key: &'a TimelineKey,

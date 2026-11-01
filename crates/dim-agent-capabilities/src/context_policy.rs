@@ -168,19 +168,25 @@ impl PolicyContext {
     }
 
     pub fn retained_entry(&self, history: &[HistoryEntry], cut: &str) -> Result<usize, String> {
-        let cut = self
+        if let Some(index) = history.iter().position(|entry| entry.event_id == cut) {
+            return Ok(index);
+        }
+        let mut branches: Vec<&str> = Vec::new();
+        for event in &self.order {
+            if !branches.contains(&event.branch_id.as_str()) {
+                branches.push(&event.branch_id);
+            }
+        }
+        let rank = |branch: &str| branches.iter().position(|name| *name == branch);
+        let event = self
             .order
             .iter()
-            .position(|event| event.id == cut)
+            .find(|event| event.id == cut)
             .ok_or_else(|| format!("Compaction cut {cut} is outside the policy order"))?;
+        let at = (rank(&event.branch_id), event.sequence);
         Ok(history
             .iter()
-            .position(|entry| {
-                self.order
-                    .iter()
-                    .position(|event| event.id == entry.event_id)
-                    .is_some_and(|index| index >= cut)
-            })
+            .position(|entry| (rank(&entry.position.branch_id), entry.position.sequence) >= at)
             .unwrap_or(history.len()))
     }
 

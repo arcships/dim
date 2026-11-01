@@ -1395,6 +1395,15 @@
       ]
     },
     {
+      "id": "dim_agent_types::events::context_flag_tests",
+      "crate": "dim_agent_types",
+      "parent": "dim_agent_types::events",
+      "file": "crates/dim-agent-types/src/events.rs",
+      "unexpandedMacros": [
+        "assert_eq"
+      ]
+    },
+    {
       "id": "dim_agent_types::finite_number",
       "crate": "dim_agent_types",
       "parent": "dim_agent_types",
@@ -2474,6 +2483,7 @@
         "matches",
         "panic",
         "params",
+        "rusqlite::params",
         "tracing::error",
         "vec"
       ]
@@ -8004,9 +8014,9 @@
         "path ProjectionCheckpoint",
         "path ProjectionCheckpointState",
         "path RecoverySnapshot",
+        "path TimelinePosition",
         "path checkpoint",
-        "path dim_agent_types::ProjectionCheckpoint",
-        "path dim_agent_types::TimelinePosition"
+        "path dim_agent_types::ProjectionCheckpoint"
       ]
     },
     {
@@ -13164,12 +13174,14 @@
       "references": [
         "path PolicyFacts",
         "path PolicyOrder",
+        "path PolicyOrderEvent",
         "path PolicyWindow",
         "path StoredEvent",
         "path TimelineKey",
         "path TimelineStore",
         "use crate::PolicyFacts",
         "use crate::PolicyOrder",
+        "use crate::PolicyOrderEvent",
         "use crate::PolicyWindow",
         "use crate::StoredEvent",
         "use crate::TimelineKey",
@@ -13834,6 +13846,13 @@
     },
     {
       "from": "dim_agent_types::events",
+      "to": "dim_agent_types::events::context_flag_tests",
+      "references": [
+        "mod context_flag_tests"
+      ]
+    },
+    {
+      "from": "dim_agent_types::events",
       "to": "dim_agent_types::model",
       "references": [
         "path BaselineSource",
@@ -13877,6 +13896,13 @@
         "path ToolEffect",
         "path ToolResult",
         "path kind"
+      ]
+    },
+    {
+      "from": "dim_agent_types::events::context_flag_tests",
+      "to": "dim_agent_types::events",
+      "references": [
+        "use super::context_flags"
       ]
     },
     {

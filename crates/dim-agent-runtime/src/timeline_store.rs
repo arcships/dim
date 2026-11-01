@@ -194,6 +194,17 @@ pub trait TimelineStore: Send + Sync + 'static {
             Ok(records)
         })
     }
+    /// The event at `sequence`, even when an atomic batch crosses it.
+    fn last_event<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        sequence: u64,
+    ) -> BoxFuture<'a, Result<Option<Arc<AgentEvent>>>> {
+        Box::pin(async move {
+            let records = self.read(key, sequence..=sequence).await?;
+            Ok(records.into_iter().map(|record| record.event).rfind(|event| event.sequence <= sequence))
+        })
+    }
     /// Reads the rows this projection consumes: rows whose render or state
     /// switch is set. Stores may filter before decoding; the default reads the
     /// prefix and keeps the flagged kinds.

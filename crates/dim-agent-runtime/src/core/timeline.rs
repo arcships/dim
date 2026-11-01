@@ -785,15 +785,6 @@ impl Timeline {
             records.append(&mut page);
             cursor = end + 1;
         }
-        if after > 0
-            && records
-                .first()
-                .is_some_and(|record| record.batch_end != after)
-        {
-            return Err(AgentError::InvalidInput(
-                "cursor is inside an atomic batch".into(),
-            ));
-        }
         let mut records: Vec<_> = records
             .into_iter()
             .filter(|record| record.event.sequence > after)
@@ -878,20 +869,8 @@ impl Timeline {
     }
     /// The event order for legal compaction cuts.
     #[service(skip)]
-    #[service(skip)]
     async fn boundary_event(&self, key: &TimelineKey, cut: u64) -> Result<Option<Arc<AgentEvent>>> {
-        let Ok(records) = self
-            .0
-            .store
-            .read_page(key, cut.saturating_sub(1), 1, cut)
-            .await
-        else {
-            return Ok(None);
-        };
-        Ok(records
-            .into_iter()
-            .map(|record| record.event)
-            .rfind(|event| event.sequence <= cut))
+        self.0.store.last_event(key, cut).await
     }
 
     #[service(skip)]
