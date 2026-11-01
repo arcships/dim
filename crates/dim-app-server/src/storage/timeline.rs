@@ -2565,7 +2565,7 @@ fn policy_rows(
     turn_id: &str,
 ) -> Result<Vec<(i64, i64)>> {
     let mut rows = Vec::new();
-    for kind in ["context/configured", "context/compaction"] {
+    for kind in ["context/configured", "context/compaction", "prompt/changed"] {
         let row: Option<(i64, i64)> = connection
             .prepare(
                 "SELECT sequence, MAX(last_sequence, COALESCE(json_extract(body, '$.record.batch_end'), last_sequence)) FROM timeline_events \
@@ -2993,6 +2993,48 @@ impl TimelineStore for SqliteTimelineStore {
                 .filter(|event| event.sequence <= through && is_policy_event(event))
                 .collect();
             Ok(PolicyFacts { through, events })
+        })
+    }
+    fn event_by_id<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<Arc<dim_agent_types::AgentEvent>>>> {
+        Box::pin(async move {
+            let session = key.session_id.clone();
+            let branch = key.branch_id.clone();
+            let wanted = id.to_owned();
+            let sequence: Option<i64> = self
+                .db
+                .run(move |connection| {
+                    connection
+                        .query_row(
+                            "SELECT sequence FROM timeline_events \
+                             WHERE session_id=?1 AND branch_id=?2 AND event_id=?3 LIMIT 1",
+                            rusqlite::params![session, branch, wanted],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(error)
+                })
+                .await?;
+            let Some(sequence) = sequence else {
+                return Ok(None);
+            };
+            let mut reader = self.reader(RequestBodies::Rebuild);
+            let records = read_range(
+                &self.db,
+                &mut reader,
+                key,
+                sequence as u64..=sequence as u64,
+                false,
+            )
+            .await?;
+            self.finish(reader);
+            Ok(records
+                .into_iter()
+                .map(|record| record.event)
+                .find(|event| event.id == id))
         })
     }
     fn last_event<'a>(

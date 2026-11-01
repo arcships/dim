@@ -194,6 +194,20 @@ pub trait TimelineStore: Send + Sync + 'static {
             Ok(records)
         })
     }
+    /// The event with this id, if the store holds it.
+    fn event_by_id<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<Arc<AgentEvent>>>> {
+        Box::pin(async move {
+            let records = self.read(key, 1..=u64::MAX).await?;
+            Ok(records
+                .into_iter()
+                .map(|record| record.event)
+                .find(|event| event.id == id))
+        })
+    }
     /// The event at `sequence`, even when an atomic batch crosses it.
     fn last_event<'a>(
         &'a self,

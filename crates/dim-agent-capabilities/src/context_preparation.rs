@@ -8,7 +8,7 @@ use crate::{
 };
 use dim_agent_runtime::{
     AgentError, BranchLifecycle, BranchPhase, CAPABILITY_RELOADING, Delivery, Dispatcher, Names,
-    Timeline, TimelineIdentity,
+    PolicyFacts, Timeline, TimelineIdentity,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
@@ -879,5 +879,34 @@ impl DynPlugin for ContextPreparationPlugin {
             ctx.provide_at(self.context.clone(), service)?;
             Ok(Effect::Done)
         })
+    }
+}
+
+fn last_usage(facts: &PolicyFacts) -> Option<&dim_agent_types::ModelUsageData> {
+    facts
+        .events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            dim_agent_types::EventKind::ModelUsage(data) => Some(data),
+            _ => None,
+        })
+}
+
+fn last_call<'a>(
+    facts: &'a PolicyFacts,
+    request_id: &str,
+) -> Option<&'a std::sync::Arc<dim_agent_types::AgentEvent>> {
+    facts.events.iter().rev().find(|event| {
+        matches!(&event.kind, dim_agent_types::EventKind::ModelCall(data) if data.request_id == request_id)
+    })
+}
+
+fn canary_request(facts: &PolicyFacts) -> Option<Arc<ModelRequest>> {
+    let usage = last_usage(facts)?;
+    let call = last_call(facts, &usage.request_id)?;
+    match &call.kind {
+        dim_agent_types::EventKind::ModelCall(data) => Some(data.request.clone()),
+        _ => None,
     }
 }
