@@ -177,3 +177,93 @@ async fn node_runtime_manager_starts_rows_once_their_runtime_is_acquired() {
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
+
+/// The configuration is read when an action applies it, not at startup: a file
+/// written after the App Server started reaches `runtime.install`, and one that
+/// does not read fails that call and leaves the running runtime as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires node 22.19+ and the npm registry"]
+async fn node_runtime_manager_reads_the_configuration_when_it_applies_it() {
+    let home = PathBuf::from("/tmp").join(format!("drm-config-{}", uuid::Uuid::new_v4()));
+    let plugins = home.join("sources");
+    std::fs::create_dir_all(&plugins).unwrap();
+    let defaults = home.join("default-plugins.json");
+    std::fs::write(
+        &defaults,
+        r#"{"runtimes": {"node": {"source": "system", "auto": true},
+                         "python": {"source": "system", "auto": false}}}"#,
+    )
+    .unwrap();
+    let marker = home.join("node-started");
+    std::fs::write(
+        plugins.join("probe.mjs"),
+        format!(
+            "import {{ writeFileSync }} from 'node:fs'\n\
+             export default {{ name: 'probe', apply() {{ writeFileSync({:?}, String(process.pid)) }} }}\n",
+            marker
+        ),
+    )
+    .unwrap();
+    let rows = vec![json!({"id": "probe", "name": plugins.join("probe.mjs"), "provides": {}})];
+    let runtimes = Arc::new(
+        Runtimes::load(
+            &home,
+            &dim_app_server::plugin_manager::Defaults::read(&defaults)
+                .unwrap()
+                .runtimes,
+        )
+        .unwrap(),
+    );
+    let server = launch(
+        Arc::new(MockTools),
+        ServerConfig {
+            target_home: Some(home.clone()),
+            session_typescript: Some(SessionTypeScriptConfig::acquired(&home, runtimes, rows)),
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    appears(&marker).await;
+    let ready = status(&mut client, 0, "ready").await;
+
+    std::fs::write(
+        home.join("runtimes/config.json"),
+        r#"{"node": {"source": "elsewhere"}}"#,
+    )
+    .unwrap();
+    let refused = client.rpc("runtime.install", json!({"name": "node"})).await;
+    assert_eq!(
+        refused["error"]["data"]["appError"], "runtime_configuration",
+        "{refused}"
+    );
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("elsewhere")),
+        "{refused}"
+    );
+    assert_eq!(
+        status(&mut client, 0, "ready").await,
+        ready,
+        "the runtime is as it was"
+    );
+
+    std::fs::write(
+        home.join("runtimes/config.json"),
+        r#"{"node": {"source": "system"}}"#,
+    )
+    .unwrap();
+    let applied = client.rpc("runtime.install", json!({"name": "node"})).await;
+    assert_ok(&applied);
+    assert_eq!(
+        status(&mut client, 0, "ready").await,
+        ready,
+        "the same process keeps running"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}

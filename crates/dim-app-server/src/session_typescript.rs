@@ -23,7 +23,7 @@ use serde_json::{Map, Value};
 use std::{
     collections::{HashMap, HashSet},
     io::BufRead,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -282,37 +282,11 @@ impl Parts {
             rows.push(row);
         }
         // The commands rutis-host's launchers use for these packages.
-        let node = ForeignRuntime::new(
-            NODE_ROW,
-            "nodeRuntime",
-            Launcher::new(&config.node)
-                .arg("--import")
-                .arg("tsx")
-                .arg(config.js_runtime.join("src/runner.mjs"))
-                .cwd(&config.js_runtime),
-            config.anchor.clone(),
-        );
+        let node = ForeignRuntime::node(&config.node, &config.js_runtime, config.anchor.clone());
         let python = config.python.as_ref().map(|python| {
-            let inherited = std::env::var_os("PYTHONPATH").filter(|path| !path.is_empty());
-            let entries: Vec<PathBuf> = python
-                .packages
-                .iter()
-                .cloned()
-                .chain([python.project.clone()])
-                .chain(inherited.iter().flat_map(std::env::split_paths))
-                .collect();
-            let path = std::env::join_paths(&entries)
-                .unwrap_or_else(|_| python.project.clone().into_os_string());
-            ForeignRuntime::new(
-                PYTHON_ROW,
-                "pythonRuntime",
-                Launcher::new(&python.interpreter)
-                    .arg("-m")
-                    .arg("rutis")
-                    .env("PYTHONPATH", path)
-                    .env("PYTHONUNBUFFERED", "1")
-                    .env("PYTHONDONTWRITEBYTECODE", "1")
-                    .cwd(&python.project),
+            ForeignRuntime::python(
+                &python.interpreter,
+                python.packages.as_deref(),
                 python.project.clone(),
             )
         });
@@ -371,6 +345,47 @@ impl ForeignRuntime {
             row: self.row,
             command: self.command.clone(),
         }
+    }
+
+    /// The Node runtime's launch command: `node --import tsx <packages>/src/runner.mjs`,
+    /// resolving packages from `anchor`.
+    pub(crate) fn node(interpreter: &Path, js_runtime: &Path, anchor: PathBuf) -> Self {
+        Self::new(
+            NODE_ROW,
+            "nodeRuntime",
+            Launcher::new(interpreter)
+                .arg("--import")
+                .arg("tsx")
+                .arg(js_runtime.join("src/runner.mjs"))
+                .cwd(js_runtime),
+            anchor,
+        )
+    }
+
+    /// The Python runtime's launch command: `python -m rutis`, with the
+    /// installed packages and the project on its `PYTHONPATH`.
+    pub(crate) fn python(interpreter: &Path, packages: Option<&Path>, project: PathBuf) -> Self {
+        let inherited = std::env::var_os("PYTHONPATH").filter(|path| !path.is_empty());
+        let entries: Vec<PathBuf> = packages
+            .iter()
+            .map(|path| path.to_path_buf())
+            .chain([project.clone()])
+            .chain(inherited.iter().flat_map(std::env::split_paths))
+            .collect();
+        let path =
+            std::env::join_paths(&entries).unwrap_or_else(|_| project.clone().into_os_string());
+        Self::new(
+            PYTHON_ROW,
+            "pythonRuntime",
+            Launcher::new(interpreter)
+                .arg("-m")
+                .arg("rutis")
+                .env("PYTHONPATH", path)
+                .env("PYTHONUNBUFFERED", "1")
+                .env("PYTHONDONTWRITEBYTECODE", "1")
+                .cwd(&project),
+            project,
+        )
     }
 }
 

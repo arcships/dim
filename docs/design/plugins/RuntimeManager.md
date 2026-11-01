@@ -83,6 +83,7 @@ The default configuration file ([PluginManager §2.3](PluginManager.md#23-the-de
 - `source`: `download` uses the archive above; `system` uses the interpreter on `PATH` (`node`; `python3`, or `python` on Windows), checked when it is acquired: Node 22.19 or later (the `engines` of `@arcships/rutis-runtime`) with its bundled npm (`npm-cli.js` where the official archives and installers put it; a Node without it fails with a reason naming that path), Python 3.12 or later with pip. A check that fails is that runtime's failure (§3.3).
 - `auto`: `true` acquires the runtime at every start. `false` leaves it off until `runtime.install` (§5); once installed, it is recorded (§2.4) and acquired at every start like an `auto` one.
 - The user overrides the preset in `<home>/runtimes/config.json`, the same shape, merged per runtime and field over the preset. It is in the home, so only the user's local configuration changes it; no project source does.
+- The configuration is read when an action applies it, not once at startup: `runtime.install` reads the file and the environment at that moment (§3.3), so a changed `source` or `auto` applies without restarting the process. `runtime.list` reports the runtime in effect, not the file — a changed file shows up when an action applies it.
 
 ### 2.3 Layout under `<home>/runtimes/`
 
@@ -137,6 +138,8 @@ Nothing unverified is executed: the interpreter that runs npm or pip is the veri
 
 A runtime whose acquisition fails is `failed` with its reason, which lists each source and its error, in `runtime.list`. Nothing was replaced: a partial directory is removed on the next attempt and the previous installed version, if any, stays. Plugin rows needing it stay Pending, waiting for its connection row's session. The next attempt is the next start or `runtime.install` (§5); there is no automatic retry.
 
+A configuration changed while Dim runs applies on `runtime.install`: the call reads `<home>/runtimes/config.json` and the environment again, and when the `source` it gives differs from the one in effect it withdraws that runtime's launch command, disposes the running connection and acquires under the new source, so the connection row starts again with the new interpreter. Nothing else restarts. A configuration that does not read fails the call with its error and leaves the runtime as it was. There is no file watcher: a file no action applies changes nothing.
+
 When the runtime process ends on its own, its session ends and the rows on it go back to Pending. The connection row stays Active and its `RuntimeStatus` is `down` with how the process ended (for example `exited with exit status: 1`); a launch or a greeting that fails is `down` with its error. `runtime.list` shows that status and reason. `runtime.install` of a runtime that is `down` withdraws its launch command and provides it again, so rutis starts the connection row again with a new process.
 
 ### 3.4 Upgrade and rollback
@@ -160,7 +163,7 @@ The rutis Python runtime is one process; a row `py:<module>` is imported with `i
 | `RuntimeStatus` | Kept by each connection row at a Rust-only process key named after the row: `starting`, `ready`, or `down` with its reason. RuntimeManager reads it. |
 | `RuntimeService` (Rust process service) | `list() -> [RuntimeEntry]`; `install(name)`: turns the runtime on and starts its acquisition; does nothing while it is being acquired or is running; after a failed acquisition, acquires again; once its connection is `down`, provides its launch command again. Read with an optional dependency, so RuntimeManager's reload does not reload the caller. |
 | `runtime.list` (management method) | `[{name, source, version, status, reason?}]`; `status` is `off`, `acquiring`, `failed`, or, once the launch command is provided, the connection's `RuntimeStatus`: `starting` (also while the connection row has not started), `ready`, or `down` with its reason. |
-| `runtime.install {name}` (management method, mutating) | `RuntimeService::install`; replies at once with the status. |
+| `runtime.install {name}` (management method, mutating) | `RuntimeService::install`: reads the configuration, applies a changed `source` by restarting the connection row (§3.3), and replies at once with the status; an unreadable configuration is the call's `runtime_configuration` error. |
 | `dimcode runtime list`, `dimcode runtime install <node|python>` | The methods above. |
 
 ## 6. Release

@@ -1530,8 +1530,9 @@ impl Manager {
             // RuntimeManager R1: a Python plugin turned on asks for the Python runtime.
             if is_python(code)
                 && let Some(runtimes) = self.ctx.get_at(&self.runtimes)
+                && let Err(error) = runtimes.install(crate::runtime_manager::Kind::Python)
             {
-                runtimes.install(crate::runtime_manager::Kind::Python);
+                tracing::warn!(%error, "the Python runtime configuration did not read");
             }
             if missing_instance_names(self.state.catalog.get().expect("set at startup"), code)
                 .is_empty()

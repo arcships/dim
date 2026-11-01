@@ -21675,6 +21675,7 @@
       "from": "dim_app_server::runtime_manager",
       "to": "dim_agent_capabilities::methods",
       "references": [
+        "path RpcError::app",
         "path RpcError::invalid",
         "path params",
         "path reply",
@@ -21713,6 +21714,8 @@
       "to": "dim_app_server::session_typescript",
       "references": [
         "path ForeignRuntime",
+        "path ForeignRuntime::node",
+        "path ForeignRuntime::python",
         "path RuntimeState",
         "path RuntimeState::Down",
         "path RuntimeState::Ready",
