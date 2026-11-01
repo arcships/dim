@@ -224,14 +224,20 @@ pub trait TimelineStore: Send + Sync + 'static {
                 .find(|event| event.id == id))
         })
     }
-    /// The event at `sequence`, even when an atomic batch crosses it.
+    /// The event at `sequence`, even when an atomic batch crosses it: the read
+    /// runs to the branch head, which is a batch boundary, and picks the last
+    /// event at or before the cut.
     fn last_event<'a>(
         &'a self,
         key: &'a TimelineKey,
         sequence: u64,
     ) -> BoxFuture<'a, Result<Option<Arc<AgentEvent>>>> {
         Box::pin(async move {
-            let records = self.read(key, sequence..=sequence).await?;
+            let head = self.head(key).await?;
+            if head == 0 {
+                return Ok(None);
+            }
+            let records = self.read(key, 1..=head).await?;
             Ok(records
                 .into_iter()
                 .map(|record| record.event)

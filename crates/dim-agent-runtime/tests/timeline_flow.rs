@@ -702,3 +702,48 @@ async fn a_checkpoint_anchored_inside_an_atomic_batch_is_still_used() {
     );
     assert_eq!(context.events.len(), 13);
 }
+
+#[tokio::test]
+async fn last_event_reads_a_cut_inside_an_atomic_batch() {
+    use dim_agent_runtime::{StoredEvent, TimelineStore};
+    use dim_agent_types::{AgentEvent, EventKind, InputMessageData};
+
+    let store = Arc::new(MemoryTimelineStore::default());
+    store
+        .create_session("session", &SessionConfig::default())
+        .await
+        .unwrap();
+    let key = TimelineKey {
+        session_id: "session".into(),
+        branch_id: "main".into(),
+    };
+    let event = |id: &str, sequence: u64| AgentEvent {
+        id: id.into(),
+        sequence,
+        create_at: 0,
+        tags: None,
+        kind: EventKind::InputMessage(InputMessageData::text(id, None)),
+    };
+    store
+        .append(
+            key.clone(),
+            vec![
+                StoredEvent {
+                    event: Arc::new(event("a", 1)),
+                    batch_end: 2,
+                    trace: None,
+                },
+                StoredEvent {
+                    event: Arc::new(event("b", 2)),
+                    batch_end: 2,
+                    trace: None,
+                },
+            ],
+            Box::new(|_| {}),
+        )
+        .unwrap();
+    let last = store.last_event(&key, 1).await.unwrap().unwrap();
+    assert_eq!(last.sequence, 1);
+    let last = store.last_event(&key, 2).await.unwrap().unwrap();
+    assert_eq!(last.sequence, 2);
+}
