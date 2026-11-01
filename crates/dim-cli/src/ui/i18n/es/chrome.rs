@@ -420,7 +420,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No matching models." => "Sin modelos coincidentes.",
         "current" => "actual",
         "Edit models" => "Editar modelos",
-        "Editing models is not available yet" => "Editar modelos aún no disponible",
         "{provider}: 1 model unavailable · dimcode models {id}" => {
             "{provider}: 1 modelo no disponible · dimcode models {id}"
         }

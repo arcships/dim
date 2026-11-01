@@ -190,6 +190,7 @@ a user can through this control; that write creates no grant and changes no runn
 | `dimcode account PROVIDER` | Print the described account's non-secret state. |
 | `dimcode logout PROVIDER` | Sign the described account out. |
 | `/connect` | List the Providers `provider.management` reports; a described account opens its sign-in or sign-out step, and any other Provider opens the connection form. |
+| `/models` → `Edit models` | Replace the model picker with the same Provider settings panel as `/connect`; no separate model editor. |
 | `/exit` | Detach and exit from the idle interactive prompt. |
 | `!command` / `!!command` | Call the Session's existing `shell.run` in record/private mode, including during a model turn. |
 | `--permission read-only\|workspace-write\|full-access` | Select the preset of a new or resumed Session for `dimcode`, `tui`, `exec` and `exec resume` ([permission controls](#permission-controls)). |

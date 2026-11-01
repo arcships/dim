@@ -402,7 +402,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No matching models." => "Tak ada model cocok.",
         "current" => "saat ini",
         "Edit models" => "Edit model",
-        "Editing models is not available yet" => "Edit model belum tersedia",
         "{provider}: 1 model unavailable · dimcode models {id}" => {
             "{provider}: 1 model tak tersedia · dimcode models {id}"
         }

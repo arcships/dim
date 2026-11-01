@@ -128,6 +128,8 @@ pub enum Effect {
     Connected(String),
     /// Open the `/models` picker in place of this panel.
     OpenModels,
+    /// Open the `/connect` Provider settings in place of this panel.
+    OpenProviders,
     /// Sign this described account out; the host reports its state again.
     Logout(crate::model::session::AccountTarget),
     /// Read this account's state; the host reports it back.

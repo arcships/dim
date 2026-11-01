@@ -1,12 +1,12 @@
 //! The `/models` picker (port of `ModelPanel` and `buildModelRows` for the
-//! models a daemon offers; "Edit models" is not built yet), and its
+//! models a daemon offers; "Edit models" opens Provider settings), and its
 //! "Subagent models" action when the daemon manages that policy:
 //!
 //! ```text
 //! Select a model
 //! > Provider / model          ZDR  ‹ high ›  current
 //!   Other provider / model    low
-//!   Edit models
+//!   Edit models -> Providers (/connect)
 //!   Subagent models: Agent choice
 //! Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close
 //!
@@ -326,9 +326,7 @@ impl ModelsPanel {
                 self.open(View::Policy, Some(FIXED));
                 Effect::None
             }
-            (View::Models, Event::Pick(id)) if id == EDIT_MODELS => {
-                Effect::Notice(t("Editing models is not available yet").to_owned())
-            }
+            (View::Models, Event::Pick(id)) if id == EDIT_MODELS => Effect::OpenProviders,
             (View::Models, Event::Pick(id)) if id == SUBAGENT_MODELS => {
                 self.open(View::Policy, None);
                 Effect::None

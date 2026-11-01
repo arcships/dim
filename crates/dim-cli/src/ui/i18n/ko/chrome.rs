@@ -370,7 +370,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No matching models." => "일치하는 모델 없음",
         "current" => "현재",
         "Edit models" => "모델 편집",
-        "Editing models is not available yet" => "모델 편집 아직 미지원",
         "{provider}: 1 model unavailable · dimcode models {id}" => {
             "{provider}: 모델 1개 사용 불가 · dimcode models {id}"
         }

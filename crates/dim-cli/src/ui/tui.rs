@@ -2571,6 +2571,9 @@ impl App {
                 self.prompt = Some(Prompt::Models(ModelsPanel::new()));
                 self.host.send(Command::ListModels);
             }
+            Effect::OpenProviders => {
+                self.run_command("connect", "");
+            }
             Effect::Logout(target) => self.host.send(Command::Logout(target)),
             Effect::LoginStatus(provider_id) => self.host.send(Command::LoginStatus(provider_id)),
             Effect::LoginUsage(provider_id) => self.host.send(Command::LoginUsage(provider_id)),
@@ -5560,6 +5563,29 @@ mod tests {
             drawn.key(KeyCode::Enter);
             let models = screen(&mut drawn);
             assert!(models.contains("Select a model"), "{models}");
+            drawn
+                .app
+                .apply(Update::Models(Ok(crate::model::session::ModelList {
+                    models: Vec::new(),
+                    current: None,
+                    empty: Vec::new(),
+                    limits: Vec::new(),
+                })));
+            drawn.draw();
+            let models = screen(&mut drawn);
+            assert!(models.contains("Edit models"), "{models}");
+            drawn.key(KeyCode::Enter);
+            let providers = screen(&mut drawn);
+            assert!(providers.contains("Loading providers..."), "{providers}");
+            assert!(!providers.contains("Select a model"), "{providers}");
+            drawn.app.apply(Update::Providers(Ok(Vec::new())));
+            drawn.draw();
+            let providers = screen(&mut drawn);
+            assert!(providers.contains("Add custom provider"), "{providers}");
+            drawn.key(KeyCode::Enter);
+            let form = screen(&mut drawn);
+            assert!(form.contains("Base URL"), "{form}");
+            assert!(form.contains("API Key"), "{form}");
         }
     }
 

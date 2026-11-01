@@ -354,7 +354,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No matching models." => "沒有相符的模型。",
         "current" => "目前",
         "Edit models" => "編輯模型",
-        "Editing models is not available yet" => "尚不支援編輯模型",
         "{provider}: 1 model unavailable · dimcode models {id}" => {
             "{provider}：1 個模型無法使用 · dimcode models {id}"
         }
