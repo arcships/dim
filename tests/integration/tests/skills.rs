@@ -2,17 +2,21 @@ mod local_support;
 
 use dim_agent_capabilities::{
     settings::{SettingsChanged, SettingsScope, settings_changes},
-    skill_settings::{SOURCE, SkillSettings},
+    skill_settings::{SOURCE, SkillInstallSource, SkillInstallation, SkillSettings},
     skills::{
-        CatalogChanged, RefreshTarget, SkillIssue, SkillStatus, SkillsBranch, SkillsError,
-        catalog_changes,
+        CatalogChanged, MemorySkillSettings, RefreshTarget, SelectedSkill, SkillIssue,
+        SkillPreview, SkillStatus, SkillsBranch, SkillsError, catalog_changes,
     },
 };
 use dim_agent_runtime::*;
 use dim_agent_types::*;
 use local_support::*;
 use rutis::host::CtxHost;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 fn list(input: &InputMessageData) -> Option<Option<String>> {
     state_value(input, "dim/skills/list")
@@ -553,6 +557,19 @@ impl SkillSettings for SlowFirstResponse {
     > {
         self.inner.clone().set_plugin(plugin, root, cancel)
     }
+    fn set_installation(
+        self: std::sync::Arc<Self>,
+        id: String,
+        installation: Option<dim_agent_capabilities::skill_settings::SkillInstallation>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> rutis::host::BoxFuture<
+        'static,
+        std::result::Result<String, dim_agent_capabilities::skill_settings::SkillSettingsError>,
+    > {
+        self.inner
+            .clone()
+            .set_installation(id, installation, cancel)
+    }
     fn skills(
         &self,
         cancel: tokio_util::sync::CancellationToken,
@@ -674,6 +691,19 @@ impl SkillSettings for FailingReads {
         std::result::Result<String, dim_agent_capabilities::skill_settings::SkillSettingsError>,
     > {
         self.inner.clone().set_plugin(plugin, root, cancel)
+    }
+    fn set_installation(
+        self: std::sync::Arc<Self>,
+        id: String,
+        installation: Option<dim_agent_capabilities::skill_settings::SkillInstallation>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> rutis::host::BoxFuture<
+        'static,
+        std::result::Result<String, dim_agent_capabilities::skill_settings::SkillSettingsError>,
+    > {
+        self.inner
+            .clone()
+            .set_installation(id, installation, cancel)
     }
     fn skills(
         &self,
@@ -1106,4 +1136,598 @@ async fn a_closing_session_creates_no_content_instances() {
     env.gate.release.notify_one();
     closing.await.unwrap();
     env.agent.close().await.unwrap();
+}
+
+/// A source of three Skills with a bundled file, and no manifest.
+fn installation_source(dirs: &Dirs) -> PathBuf {
+    let root = dirs.dir("src/acme-skills");
+    dirs.write(
+        &root.join("writing/review/SKILL.md"),
+        &skill_file("review", "reviews a change", "REVIEW"),
+    );
+    dirs.write(
+        &root.join("writing/review/references/checklist.md"),
+        "CHECK-1",
+    );
+    dirs.write(
+        &root.join("tooling/lint/SKILL.md"),
+        &skill_file("lint", "lints a change", "LINT"),
+    );
+    dirs.write(
+        &root.join("notes/deploy/SKILL.md"),
+        &skill_file("deploy", "deploys a change", "DEPLOY"),
+    );
+    root.canonicalize().unwrap()
+}
+
+/// An operation directory beside the user root, as the App Server hands one
+/// to the owner.
+fn operation_dir(dirs: &Dirs) -> PathBuf {
+    dirs.dir("operation")
+}
+
+fn user_root(dirs: &Dirs) -> PathBuf {
+    dirs.home.join(".agents/skills")
+}
+
+async fn installation_env(dirs: &Dirs) -> (Env, Arc<MemorySkillSettings>) {
+    let settings = Arc::new(MemorySkillSettings::default());
+    let env = env(
+        dirs,
+        Options {
+            settings: settings.clone(),
+            ..Options::default()
+        },
+    )
+    .await;
+    (env, settings)
+}
+
+async fn recorded(settings: &Arc<MemorySkillSettings>) -> BTreeMap<String, SkillInstallation> {
+    settings
+        .skills(tokio_util::sync::CancellationToken::new())
+        .await
+        .unwrap()
+        .installations
+}
+
+fn selected(preview: &SkillPreview, path: &str) -> SelectedSkill {
+    let skill = preview
+        .skills
+        .iter()
+        .find(|skill| skill.path == path)
+        .unwrap_or_else(|| panic!("{path} in {preview:?}"));
+    SelectedSkill {
+        path: skill.path.clone(),
+        revision: Some(skill.revision.clone()),
+    }
+}
+
+fn path_source(source: &Path) -> SkillInstallSource {
+    SkillInstallSource::Path {
+        path: source.to_owned(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn preview_lists_a_source_without_installing_it() {
+    let dirs = Dirs::new();
+    let source = installation_source(&dirs);
+    let (env, settings) = installation_env(&dirs).await;
+    let catalog = env.catalog();
+    let preview = catalog.preview(&source, "acme-skills").await.unwrap();
+    let paths: Vec<&str> = preview
+        .skills
+        .iter()
+        .map(|skill| skill.path.as_str())
+        .collect();
+    assert_eq!(paths, ["notes/deploy", "tooling/lint", "writing/review"]);
+    let review = preview
+        .skills
+        .iter()
+        .find(|skill| skill.path == "writing/review")
+        .unwrap();
+    assert_eq!(review.name, "review");
+    assert_eq!(review.description, "reviews a change");
+    assert!(review.revision.starts_with("sha256:"), "{review:?}");
+    assert!(preview.conflicts.is_empty(), "{preview:?}");
+    assert!(!user_root(&dirs).join("acme-skills").exists());
+    assert!(recorded(&settings).await.is_empty());
+    assert!(catalog.installations().await.unwrap().is_empty());
+    env.agent.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn install_copies_only_the_selected_skill() {
+    let dirs = Dirs::new();
+    let source = installation_source(&dirs);
+    let (env, settings) = installation_env(&dirs).await;
+    dirs.write(
+        &user_root(&dirs).join("hand/writing/SKILL.md"),
+        &skill_file("writing", "hand written", "HAND"),
+    );
+    let catalog = env.catalog();
+    let preview = catalog.preview(&source, "acme-skills").await.unwrap();
+    let outcome = catalog
+        .install(
+            "acme-skills",
+            path_source(&source),
+            &source,
+            &operation_dir(&dirs),
+            &[selected(&preview, "writing/review")],
+            false,
+        )
+        .await
+        .unwrap();
+    assert!(outcome.previous.is_none());
+    assert_eq!(outcome.installation.skills, ["writing/review"]);
+    assert!(outcome.installation.revision.starts_with("sha256:"));
+    let installed = user_root(&dirs).join("acme-skills");
+    assert!(installed.join("writing/review/SKILL.md").is_file());
+    assert!(
+        installed
+            .join("writing/review/references/checklist.md")
+            .is_file()
+    );
+    assert!(!installed.join("tooling/lint").exists());
+    assert!(!installed.join("notes/deploy").exists());
+    assert!(source.join("tooling/lint/SKILL.md").is_file());
+    assert!(user_root(&dirs).join("hand/writing/SKILL.md").is_file());
+    let view = catalog.query(None).await.unwrap();
+    assert!(
+        view.entries.iter().any(|entry| {
+            entry.definition.id == "user:acme-skills/writing/review"
+                && entry.definition.name == "review"
+        }),
+        "{view:?}"
+    );
+    let record = recorded(&settings).await;
+    assert_eq!(record["acme-skills"].skills, ["writing/review"]);
+    assert_eq!(
+        record["acme-skills"].revision,
+        outcome.installation.revision
+    );
+    env.agent.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_under_a_selected_skill_makes_the_preview_stale() {
+    let dirs = Dirs::new();
+    let source = installation_source(&dirs);
+    let (env, settings) = installation_env(&dirs).await;
+    let catalog = env.catalog();
+    let review = selected(
+        &catalog.preview(&source, "acme-skills").await.unwrap(),
+        "writing/review",
+    );
+    dirs.write(
+        &source.join("writing/review/references/checklist.md"),
+        "CHECK-2",
+    );
+    let stale = catalog
+        .install(
+            "acme-skills",
+            path_source(&source),
+            &source,
+            &operation_dir(&dirs),
+            &[review],
+            false,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(stale, SkillsError::StalePreview { ref path, .. } if path == "writing/review"),
+        "{stale}"
+    );
+    assert!(!user_root(&dirs).join("acme-skills").exists());
+    assert!(recorded(&settings).await.is_empty());
+
+    let review = selected(
+        &catalog.preview(&source, "acme-skills").await.unwrap(),
+        "writing/review",
+    );
+    dirs.write(&source.join("writing/review/SKILL.md"), "not a Skill");
+    let gone = catalog
+        .install(
+            "acme-skills",
+            path_source(&source),
+            &source,
+            &operation_dir(&dirs),
+            &[review],
+            false,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(gone, SkillsError::SelectionInvalid(_)), "{gone}");
+    assert!(!user_root(&dirs).join("acme-skills").exists());
+    env.agent.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn install_refuses_conflicts_and_selections_outside_the_tree() {
+    let dirs = Dirs::new();
+    let source = installation_source(&dirs);
+    dirs.write(
+        &source.join("tooling/lint-copy/SKILL.md"),
+        &skill_file("lint", "a second lint", "LINT-2"),
+    );
+    dirs.write(
+        &source.join("notes/deploy-copy/SKILL.md"),
+        &skill_file("deploy", "a second deploy", "DEPLOY-2"),
+    );
+    dirs.write(
+        &user_root(&dirs).join("hand/lint/SKILL.md"),
+        &skill_file("lint", "hand written", "HAND"),
+    );
+    let (env, settings) = installation_env(&dirs).await;
+    let catalog = env.catalog();
+    let preview = catalog.preview(&source, "acme-skills").await.unwrap();
+    assert_eq!(
+        preview
+            .conflicts
+            .iter()
+            .map(|conflict| conflict.path.as_str())
+            .collect::<Vec<_>>(),
+        ["tooling/lint", "tooling/lint-copy"],
+        "{preview:?}"
+    );
+    assert!(preview.shadows.is_empty(), "{preview:?}");
+
+    let conflict = catalog
+        .install(
+            "acme-skills",
+            path_source(&source),
+            &source,
+            &operation_dir(&dirs),
+            &[selected(&preview, "tooling/lint")],
+            false,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(conflict, SkillsError::InstallConflict(_)),
+        "{conflict}"
+    );
+
+    let twice = catalog
+        .install(
+            "acme-skills",
+            path_source(&source),
+            &source,
+            &operation_dir(&dirs),
+            &[
+                selected(&preview, "notes/deploy"),
+                selected(&preview, "notes/deploy-copy"),
+            ],
+            false,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(twice, SkillsError::SelectionInvalid(_)), "{twice}");
+
+    for path in ["../escape", "/etc", "missing/skill"] {
+        let error = catalog
+            .install(
+                "acme-skills",
+                path_source(&source),
+                &source,
+                &operation_dir(&dirs),
+                &[SelectedSkill {
+                    path: path.into(),
+                    revision: None,
+                }],
+                false,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, SkillsError::SelectionInvalid(_)),
+            "{path}: {error}"
+        );
+    }
+    assert!(!user_root(&dirs).join("acme-skills").exists());
+    assert!(recorded(&settings).await.is_empty());
+
+    #[cfg(unix)]
+    {
+        dirs.write(
+            &source.join("linked/SKILL.md"),
+            &skill_file("linked", "with a link", "LINKED"),
+        );
+        std::os::unix::fs::symlink(
+            source.join("writing/review/SKILL.md"),
+            source.join("linked/review.md"),
+        )
+        .unwrap();
+        let preview = catalog.preview(&source, "acme-skills").await.unwrap();
+        assert!(
+            !preview.skills.iter().any(|skill| skill.path == "linked"),
+            "{preview:?}"
+        );
+        assert!(
+            preview.issues.iter().any(|issue| matches!(
+                issue,
+                SkillIssue::Unreadable { path, .. } if path.ends_with("linked/SKILL.md")
+            )),
+            "{preview:?}"
+        );
+    }
+    env.agent.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn install_replaces_an_installation_only_with_overwrite() {
+    let dirs = Dirs::new();
+    let source = installation_source(&dirs);
+    let (env, settings) = installation_env(&dirs).await;
+    dirs.write(
+        &user_root(&dirs).join("hand/writing/SKILL.md"),
+        &skill_file("writing", "hand written", "HAND"),
+    );
+    let catalog = env.catalog();
+    let first = catalog
+        .install(
+            "acme-skills",
+            path_source(&source),
+            &source,
+            &operation_dir(&dirs),
+            &[selected(
+                &catalog.preview(&source, "acme-skills").await.unwrap(),
+                "writing/review",
+            )],
+            false,
+        )
+        .await
+        .unwrap();
+
+    let preview = catalog.preview(&source, "acme-skills").await.unwrap();
+    assert!(preview.conflicts.is_empty(), "{preview:?}");
+    let refused = catalog
+        .install(
+            "acme-skills",
+            path_source(&source),
+            &source,
+            &operation_dir(&dirs),
+            &[selected(&preview, "tooling/lint")],
+            false,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, SkillsError::InstallationExists(ref id) if id == "acme-skills"),
+        "{refused}"
+    );
+    assert!(
+        user_root(&dirs)
+            .join("acme-skills/writing/review/SKILL.md")
+            .is_file()
+    );
+
+    let outcome = catalog
+        .install(
+            "acme-skills",
+            path_source(&source),
+            &source,
+            &operation_dir(&dirs),
+            &[selected(&preview, "tooling/lint")],
+            true,
+        )
+        .await
+        .unwrap();
+    let previous = outcome.previous.expect("the replaced record");
+    assert_eq!(previous.skills, ["writing/review"]);
+    assert_eq!(previous.revision, first.installation.revision);
+    let installed = user_root(&dirs).join("acme-skills");
+    assert!(!installed.join("writing/review").exists());
+    assert!(installed.join("tooling/lint/SKILL.md").is_file());
+    assert!(user_root(&dirs).join("hand/writing/SKILL.md").is_file());
+    assert_eq!(
+        recorded(&settings).await["acme-skills"].skills,
+        ["tooling/lint"]
+    );
+    env.agent.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_keeps_the_selection_and_reports_the_previous_record() {
+    let dirs = Dirs::new();
+    let source = installation_source(&dirs);
+    let (env, settings) = installation_env(&dirs).await;
+    let catalog = env.catalog();
+    let preview = catalog.preview(&source, "acme-skills").await.unwrap();
+    let installed = catalog
+        .install(
+            "acme-skills",
+            path_source(&source),
+            &source,
+            &operation_dir(&dirs),
+            &[
+                selected(&preview, "writing/review"),
+                selected(&preview, "tooling/lint"),
+            ],
+            false,
+        )
+        .await
+        .unwrap();
+    let record = catalog.installation("acme-skills").await.unwrap().unwrap();
+    assert_eq!(record.skills, ["writing/review", "tooling/lint"]);
+    dirs.write(
+        &source.join("tooling/lint/SKILL.md"),
+        &skill_file("lint", "lints a change", "LINT-2"),
+    );
+    let selection: Vec<SelectedSkill> = record
+        .skills
+        .iter()
+        .map(|path| SelectedSkill {
+            path: path.clone(),
+            revision: None,
+        })
+        .collect();
+    let updated = catalog
+        .install(
+            "acme-skills",
+            path_source(&source),
+            &source,
+            &operation_dir(&dirs),
+            &selection,
+            true,
+        )
+        .await
+        .unwrap();
+    let previous = updated.previous.clone().expect("the previous record");
+    assert_eq!(previous.revision, installed.installation.revision);
+    assert_eq!(previous.skills, record.skills);
+    assert_eq!(updated.installation.skills, record.skills);
+    assert_ne!(updated.installation.revision, previous.revision);
+    assert!(
+        std::fs::read_to_string(user_root(&dirs).join("acme-skills/tooling/lint/SKILL.md"))
+            .unwrap()
+            .contains("LINT-2")
+    );
+
+    std::fs::remove_dir_all(source.join("writing/review")).unwrap();
+    let missing = catalog
+        .install(
+            "acme-skills",
+            path_source(&source),
+            &source,
+            &operation_dir(&dirs),
+            &selection,
+            true,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(missing, SkillsError::SelectionInvalid(_)),
+        "{missing}"
+    );
+    assert!(
+        user_root(&dirs)
+            .join("acme-skills/writing/review/SKILL.md")
+            .is_file()
+    );
+    assert_eq!(
+        recorded(&settings).await["acme-skills"].revision,
+        updated.installation.revision
+    );
+    env.agent.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_deletes_only_what_the_record_owns() {
+    let dirs = Dirs::new();
+    let source = installation_source(&dirs);
+    let (env, settings) = installation_env(&dirs).await;
+    dirs.write(
+        &user_root(&dirs).join("hand/writing/SKILL.md"),
+        &skill_file("writing", "hand written", "HAND"),
+    );
+    let catalog = env.catalog();
+    let preview = catalog.preview(&source, "acme-skills").await.unwrap();
+    catalog
+        .install(
+            "acme-skills",
+            path_source(&source),
+            &source,
+            &operation_dir(&dirs),
+            &[selected(&preview, "notes/deploy")],
+            false,
+        )
+        .await
+        .unwrap();
+    catalog
+        .install(
+            "other-skills",
+            path_source(&source),
+            &source,
+            &operation_dir(&dirs),
+            &[selected(&preview, "tooling/lint")],
+            false,
+        )
+        .await
+        .unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(user_root(&dirs), std::fs::Permissions::from_mode(0o500)).unwrap();
+        let failed = catalog.uninstall("acme-skills").await.unwrap_err();
+        assert!(matches!(failed, SkillsError::RemoveFailed(_)), "{failed}");
+        assert_eq!(
+            recorded(&settings)
+                .await
+                .get("acme-skills")
+                .map(|record| record.skills.clone()),
+            Some(vec!["notes/deploy".to_string()])
+        );
+        std::fs::set_permissions(user_root(&dirs), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let (removed, version) = catalog.uninstall("acme-skills").await.unwrap();
+    assert_eq!(removed.skills, ["notes/deploy"]);
+    assert_eq!(version, catalog.query(None).await.unwrap().version);
+    assert!(!user_root(&dirs).join("acme-skills").exists());
+    assert!(user_root(&dirs).join("other-skills/tooling/lint").exists());
+    assert!(user_root(&dirs).join("hand/writing/SKILL.md").is_file());
+    assert!(!recorded(&settings).await.contains_key("acme-skills"));
+    let unknown = catalog.uninstall("acme-skills").await.unwrap_err();
+    assert!(
+        matches!(unknown, SkillsError::UnknownInstallation(_)),
+        "{unknown}"
+    );
+    env.agent.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_catalog_restores_installations_from_settings() {
+    use dim_agent_capabilities::{host_platform::HostPlatform, skill_settings::SkillSettingsHost};
+
+    let dirs = Dirs::new();
+    let source = installation_source(&dirs);
+    let (env, settings) = installation_env(&dirs).await;
+    let catalog = env.catalog();
+    catalog
+        .install(
+            "acme-skills",
+            path_source(&source),
+            &source,
+            &operation_dir(&dirs),
+            &[selected(
+                &catalog.preview(&source, "acme-skills").await.unwrap(),
+                "writing/review",
+            )],
+            false,
+        )
+        .await
+        .unwrap();
+    env.agent.close().await.unwrap();
+
+    let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
+    root.provide_as::<HostPlatform>(Arc::new(platform(&dirs.home)))
+        .unwrap();
+    let settings: Arc<dyn SkillSettings> = settings;
+    root.provide_as::<SkillSettingsHost>(Arc::new(SkillSettingsHost(settings)))
+        .unwrap();
+    root.provide_as::<dim_agent_runtime::PartRegistry>(Arc::new(
+        dim_agent_runtime::PartRegistry::default(),
+    ))
+    .unwrap();
+    let services = dim_agent_capabilities::catalog();
+    let build = rutis_loader::resolve::Build::default();
+    let names = dim_agent_runtime::Names::copy(&services, &build);
+    (&root.plugin(dim_agent_capabilities::skills::SkillsCatalogPlugin::new(&names).unwrap()))
+        .await
+        .unwrap();
+    let restored = root
+        .get::<dim_agent_capabilities::skills::SkillsCatalog>()
+        .unwrap();
+    let installations = restored.installations().await.unwrap();
+    assert_eq!(installations["acme-skills"].skills, ["writing/review"]);
+    let view = restored.query(None).await.unwrap();
+    assert!(
+        view.entries
+            .iter()
+            .any(|entry| entry.definition.id == "user:acme-skills/writing/review")
+    );
+    root.shutdown().await.unwrap();
 }

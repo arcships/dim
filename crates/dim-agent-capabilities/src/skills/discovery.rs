@@ -17,6 +17,8 @@ pub(crate) enum RootKind {
     Project,
     /// A plugin's skills root, registered under the plugin id.
     Plugin(String),
+    /// A source a preview or an installation reads; never catalogued.
+    Preview,
 }
 
 /// One scanned root: parsed skills in traversal order and per-file issues.
@@ -126,6 +128,7 @@ fn skill_id(skill_dir: &Path, root: &Path, kind: &RootKind) -> String {
             root.to_string_lossy().replace('\\', "/")
         ),
         RootKind::Plugin(plugin) => format!("plugin:{plugin}:{rel}"),
+        RootKind::Preview => format!("preview:{rel}"),
     }
 }
 

@@ -806,6 +806,10 @@ pub struct HostPlatformConfig {
     /// `exec-shell.json`: FileStorage root index and relative path. `None`
     /// means the profile has no home; the shell is resolved automatically.
     pub exec_shell_file: Option<(usize, PathBuf)>,
+    /// The user home the platform reports. `None` uses the process home; a
+    /// host that runs with an isolated home sets it, so every capability
+    /// resolves `~` and the user Skill root inside that home.
+    pub home: Option<PathBuf>,
 }
 
 /// Process plugin providing `P:HostPlatform`.
@@ -863,6 +867,9 @@ impl DynPlugin for HostPlatformPlugin {
             let shell = resolve_shell(config.clone(), &env).await;
             let mut platform = HostPlatform::current(shell)
                 .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
+            if let Some(home) = &self.config.home {
+                platform.home = home.clone();
+            }
             platform.shell_file = shell_file;
             let execution = ctx.require_at(&self.execution)?;
             platform.execution = Some(execution.0.clone());

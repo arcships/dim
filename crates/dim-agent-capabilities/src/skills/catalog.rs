@@ -1,13 +1,15 @@
 use super::{
-    CatalogEntry, CatalogVersion, CatalogView, RefreshTarget, SkillIssue, SkillStatus, SkillsError,
+    CatalogEntry, CatalogVersion, CatalogView, InstallOutcome, PreviewConflict, PreviewShadow,
+    PreviewSkill, RefreshTarget, SelectedSkill, SkillIssue, SkillPreview, SkillStatus, SkillsError,
     discovery::{RootKind, RootSnapshot, scan_root},
+    install,
 };
 use crate::{
     host_platform::HostPlatform,
     settings::{SettingsChanged, settings_changes},
     skill_settings::{
-        SOURCE, SettingsVersion, SkillSettings, SkillSettingsError, SkillSettingsHost,
-        SkillSettingsSnapshot,
+        SOURCE, SettingsVersion, SkillInstallSource, SkillInstallation, SkillSettings,
+        SkillSettingsError, SkillSettingsHost, SkillSettingsSnapshot,
     },
 };
 use dim_agent_runtime::{Names, PartRegistry};
@@ -58,6 +60,9 @@ pub struct SkillsCatalog {
     /// Serializes settings reloads so a later read is never overwritten by
     /// an earlier one.
     reloading: tokio::sync::Mutex<()>,
+    /// Serializes the scans of the roots with an installation placing or
+    /// removing files, so no view is built from a half-swapped directory.
+    operating: tokio::sync::Mutex<()>,
     /// The owner's context, which announces catalog changes.
     events: Ctx,
     closed: CancellationToken,
@@ -104,6 +109,13 @@ impl SkillsCatalog {
 
     pub async fn query(&self, cwd: Option<&Path>) -> Result<CatalogView, SkillsError> {
         self.check_open()?;
+        let _operating = self.operating.lock().await;
+        self.view(cwd).await
+    }
+
+    /// The assembled view; the caller holds the operating lock (or is the
+    /// query that took it).
+    async fn view(&self, cwd: Option<&Path>) -> Result<CatalogView, SkillsError> {
         if self.state.lock().await.settings.is_err() {
             self.reload_settings().await?;
         }
@@ -187,13 +199,19 @@ impl SkillsCatalog {
             .await
             .map_err(|error| SkillsError::SettingsRead(error.to_string()));
         let mut state = self.state.lock().await;
-        let changed = state
-            .settings
-            .as_ref()
-            .map(|settings| (&settings.disabled, &settings.plugins))
-            != snapshot
-                .as_ref()
-                .map(|settings| (&settings.disabled, &settings.plugins));
+        let changed = state.settings.as_ref().map(|settings| {
+            (
+                &settings.disabled,
+                &settings.plugins,
+                &settings.installations,
+            )
+        }) != snapshot.as_ref().map(|settings| {
+            (
+                &settings.disabled,
+                &settings.plugins,
+                &settings.installations,
+            )
+        });
         let result = snapshot.as_ref().map(|_| ()).map_err(Clone::clone);
         state.settings = snapshot;
         if changed {
@@ -306,6 +324,7 @@ impl SkillsCatalog {
         target: RefreshTarget,
     ) -> Result<(CatalogVersion, Vec<SkillIssue>), SkillsError> {
         self.check_open()?;
+        let _operating = self.operating.lock().await;
         self.reload_settings().await?;
         let mut state = self.state.lock().await;
         let root_error = |issue| match issue {
@@ -340,6 +359,304 @@ impl SkillsCatalog {
         }
         Ok((self.advance(&mut state), issues))
     }
+
+    /// The Skills a source tree holds, what installing them as `id` would
+    /// collide with, and what it would hide. Nothing is written.
+    pub async fn preview(&self, root: &Path, id: &str) -> Result<SkillPreview, SkillsError> {
+        self.check_open()?;
+        let view = {
+            let _operating = self.operating.lock().await;
+            self.view(None).await?
+        };
+        let snapshot = scan(root.to_owned(), RootKind::Preview)
+            .await
+            .map_err(root_error)?;
+        let owned = format!("user:{id}/");
+        let mut skills = Vec::new();
+        let mut conflicts = Vec::new();
+        let mut shadows = Vec::new();
+        let mut issues = snapshot.issues.clone();
+        for skill in &snapshot.skills {
+            let Some(dir) = skill.file_path.parent() else {
+                continue;
+            };
+            let path = dir
+                .strip_prefix(root)
+                .map(|path| path.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| ".".into());
+            let revision = match install::revision(dir) {
+                Ok(revision) => revision,
+                Err(error) => {
+                    issues.push(SkillIssue::Unreadable {
+                        path: skill.file_path.clone(),
+                        reason: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let conflict = view.entries.iter().find(|entry| {
+                entry.definition.name == skill.name
+                    && entry.definition.id.starts_with("user:")
+                    && !entry.definition.id.starts_with(&owned)
+            });
+            if let Some(entry) = conflict {
+                conflicts.push(PreviewConflict {
+                    path: path.clone(),
+                    name: skill.name.clone(),
+                    by: entry.definition.id.clone(),
+                });
+            }
+            let shadow = view.entries.iter().find(|entry| {
+                entry.definition.name == skill.name
+                    && !entry.definition.id.starts_with("user:")
+                    && entry.status == SkillStatus::Active
+            });
+            if let Some(entry) = shadow {
+                shadows.push(PreviewShadow {
+                    path: path.clone(),
+                    name: skill.name.clone(),
+                    by: entry.definition.id.clone(),
+                });
+            }
+            skills.push(PreviewSkill {
+                path,
+                name: skill.name.clone(),
+                description: skill.description.clone(),
+                revision,
+            });
+        }
+        Ok(SkillPreview {
+            skills,
+            conflicts,
+            shadows,
+            issues,
+        })
+    }
+
+    /// Installs `selection` from the acquired tree `root` as `id`, replacing
+    /// the recorded installation only with `overwrite`. The files, then the
+    /// record, then the catalog view: a listener never sees an installation
+    /// the record does not hold.
+    pub async fn install(
+        &self,
+        id: &str,
+        source: SkillInstallSource,
+        root: &Path,
+        operation_dir: &Path,
+        selection: &[SelectedSkill],
+        overwrite: bool,
+    ) -> Result<InstallOutcome, SkillsError> {
+        self.check_open()?;
+        if !install::valid_id(id) {
+            return Err(SkillsError::SelectionInvalid(format!(
+                "{id:?} is not an installation id"
+            )));
+        }
+        let selected = validate_selection(selection)?;
+        let _operating = self.operating.lock().await;
+        self.reload_settings().await?;
+        let recorded = self.installations_locked().await?;
+        let previous = recorded.get(id).cloned();
+        if !overwrite && (previous.is_some() || self.user_root.join(id).exists()) {
+            return Err(SkillsError::InstallationExists(id.into()));
+        }
+        let view = self.view(None).await?;
+        let snapshot = scan(root.to_owned(), RootKind::Preview)
+            .await
+            .map_err(root_error)?;
+        let mut found: BTreeMap<String, Arc<super::SkillDefinition>> = BTreeMap::new();
+        for skill in &snapshot.skills {
+            let Some(dir) = skill.file_path.parent() else {
+                continue;
+            };
+            let path = dir
+                .strip_prefix(root)
+                .map(|path| path.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| ".".into());
+            found.insert(path, skill.clone());
+        }
+        let owned = format!("user:{id}/");
+        let mut names = BTreeSet::new();
+        let mut revisions = Vec::new();
+        let mut placements = Vec::new();
+        for skill in &selected {
+            let definition = found.get(&skill.path).ok_or_else(|| {
+                SkillsError::SelectionInvalid(format!(
+                    "{:?} is not a Skill in the source",
+                    skill.path
+                ))
+            })?;
+            if !names.insert(definition.name.clone()) {
+                return Err(SkillsError::SelectionInvalid(format!(
+                    "{:?} is selected twice",
+                    definition.name
+                )));
+            }
+            if let Some(entry) = view.entries.iter().find(|entry| {
+                entry.definition.id.starts_with("user:")
+                    && !entry.definition.id.starts_with(&owned)
+                    && entry.definition.name == definition.name
+            }) {
+                return Err(SkillsError::InstallConflict(format!(
+                    "{} ({})",
+                    definition.name, entry.definition.id
+                )));
+            }
+            let dir = definition
+                .file_path
+                .parent()
+                .expect("a Skill has a directory");
+            let revision = install::revision(dir)?;
+            if let Some(expected) = &skill.revision
+                && expected != &revision
+            {
+                return Err(SkillsError::StalePreview {
+                    path: skill.path.clone(),
+                    expected: expected.clone(),
+                    found: revision,
+                });
+            }
+            revisions.push((skill.path.clone(), revision));
+            placements.push((dir.to_owned(), skill.path.clone()));
+        }
+        let placed = install::place(&self.user_root, id, operation_dir, &placements)?;
+        let installation = SkillInstallation {
+            source,
+            revision: install::selection_revision(&revisions),
+            skills: selected.iter().map(|skill| skill.path.clone()).collect(),
+            extra: BTreeMap::new(),
+        };
+        let written = self
+            .settings
+            .clone()
+            .set_installation(
+                id.into(),
+                Some(installation.clone()),
+                self.closed.child_token(),
+            )
+            .await;
+        if let Err(error) = written {
+            placed.revert();
+            return Err(write_error(error));
+        }
+        self.reload_settings()
+            .await
+            .map_err(|error| SkillsError::SettingsSync(error.to_string()))?;
+        let (version, issues) = self.rescan_user().await?;
+        Ok(InstallOutcome {
+            installation,
+            previous,
+            version,
+            issues,
+        })
+    }
+
+    /// Removes the files of installation `id`, then its record. A failed
+    /// deletion keeps the record: it is the only proof of what was installed.
+    pub async fn uninstall(
+        &self,
+        id: &str,
+    ) -> Result<(SkillInstallation, CatalogVersion), SkillsError> {
+        self.check_open()?;
+        if !install::valid_id(id) {
+            return Err(SkillsError::UnknownInstallation(id.into()));
+        }
+        let _operating = self.operating.lock().await;
+        self.reload_settings().await?;
+        let recorded = self.installations_locked().await?;
+        let previous = recorded
+            .get(id)
+            .cloned()
+            .ok_or_else(|| SkillsError::UnknownInstallation(id.into()))?;
+        install::remove(&self.user_root, id)?;
+        self.settings
+            .clone()
+            .set_installation(id.into(), None, self.closed.child_token())
+            .await
+            .map_err(write_error)?;
+        self.reload_settings()
+            .await
+            .map_err(|error| SkillsError::SettingsSync(error.to_string()))?;
+        let (version, _) = self.rescan_user().await?;
+        Ok((previous, version))
+    }
+
+    /// The installations the user made, by id.
+    pub async fn installations(&self) -> Result<BTreeMap<String, SkillInstallation>, SkillsError> {
+        self.query(None).await?;
+        self.installations_locked().await
+    }
+
+    /// One recorded installation.
+    pub async fn installation(&self, id: &str) -> Result<Option<SkillInstallation>, SkillsError> {
+        self.query(None).await?;
+        Ok(self.installations_locked().await?.get(id).cloned())
+    }
+
+    async fn installations_locked(
+        &self,
+    ) -> Result<BTreeMap<String, SkillInstallation>, SkillsError> {
+        Ok(self
+            .state
+            .lock()
+            .await
+            .settings
+            .as_ref()
+            .map_err(Clone::clone)?
+            .installations
+            .clone())
+    }
+
+    /// Rescans the user root and advances the version; the caller holds the
+    /// operating lock.
+    async fn rescan_user(&self) -> Result<(CatalogVersion, Vec<SkillIssue>), SkillsError> {
+        let snapshot = scan(self.user_root.clone(), RootKind::User)
+            .await
+            .map_err(root_error)?;
+        let issues = snapshot.issues.clone();
+        let mut state = self.state.lock().await;
+        state.user = Some(Arc::new(snapshot));
+        Ok((self.advance(&mut state), issues))
+    }
+}
+
+/// A scan failure of a root the caller named.
+fn root_error(issue: SkillIssue) -> SkillsError {
+    match issue {
+        SkillIssue::RootUnreadable { root, reason } => SkillsError::RootUnreadable { root, reason },
+        _ => unreachable!("scan_root fails only for an unreadable root"),
+    }
+}
+
+fn write_error(error: SkillSettingsError) -> SkillsError {
+    match error {
+        SkillSettingsError::Conflict => SkillsError::SettingsConflict,
+        SkillSettingsError::Closed | SkillSettingsError::Cancelled => SkillsError::Closed,
+        other => SkillsError::SettingsWrite(other.to_string()),
+    }
+}
+
+/// A non-empty selection of distinct relative paths.
+fn validate_selection(selection: &[SelectedSkill]) -> Result<Vec<SelectedSkill>, SkillsError> {
+    if selection.is_empty() {
+        return Err(SkillsError::SelectionInvalid("no Skills selected".into()));
+    }
+    let mut seen = BTreeSet::new();
+    for skill in selection {
+        if install::relative(&skill.path).is_none() {
+            return Err(SkillsError::SelectionInvalid(format!(
+                "{:?} is not a relative path",
+                skill.path
+            )));
+        }
+        if !seen.insert(skill.path.clone()) {
+            return Err(SkillsError::SelectionInvalid(format!(
+                "{:?} is selected twice",
+                skill.path
+            )));
+        }
+    }
+    Ok(selection.to_vec())
 }
 
 /// The Skills plugin: `SkillsCatalog` at the process, and the Session and
@@ -413,6 +730,7 @@ impl SkillsCatalogPlugin {
                 version: 0,
             }),
             reloading: tokio::sync::Mutex::new(()),
+            operating: tokio::sync::Mutex::new(()),
             events: ctx.clone(),
             closed: lifecycle.clone(),
         });
@@ -452,6 +770,7 @@ impl Default for MemorySkillSettings {
                 version: "0".into(),
                 disabled: BTreeSet::new(),
                 plugins: BTreeMap::new(),
+                installations: BTreeMap::new(),
             }),
         }
     }
@@ -497,6 +816,23 @@ impl SkillSettings for MemorySkillSettings {
             match root {
                 Some(root) => state.plugins.insert(plugin, root),
                 None => state.plugins.remove(&plugin),
+            };
+            let next = state.version.parse::<u64>().unwrap_or_default() + 1;
+            state.version = next.to_string();
+            Ok(state.version.clone())
+        })
+    }
+    fn set_installation(
+        self: Arc<Self>,
+        id: String,
+        installation: Option<SkillInstallation>,
+        _: CancellationToken,
+    ) -> BoxFuture<'static, Result<SettingsVersion, SkillSettingsError>> {
+        Box::pin(async move {
+            let mut state = self.state.lock().unwrap();
+            match installation {
+                Some(installation) => state.installations.insert(id, installation),
+                None => state.installations.remove(&id),
             };
             let next = state.version.parse::<u64>().unwrap_or_default() + 1;
             state.version = next.to_string();

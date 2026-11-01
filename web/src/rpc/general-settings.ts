@@ -87,6 +87,68 @@ export function readSkills(value: unknown): SkillsView {
   }) }
 }
 
+export type SkillSource = { path: string } | { git: string; ref: string | undefined; commit: string }
+function readSkillSource(value: unknown): SkillSource {
+  const source = object(value)
+  const path = optionalString(source.path)
+  if (path !== undefined) return { path }
+  return { git: string(source.git), ref: optionalString(source.ref), commit: string(source.commit) }
+}
+export function readSkillSourceText(source: SkillSource): string {
+  if ("path" in source) return source.path
+  return `${source.git}${source.ref === undefined ? "" : ` (${source.ref})`} @${source.commit.slice(0, 8)}`
+}
+export type SkillPreviewSkill = { path: string; name: string; description: string; revision: string }
+export type SkillPreviewNamed = { path: string; name: string; by: string }
+export type SkillPreview = { source: SkillSource; skills: SkillPreviewSkill[]; conflicts: SkillPreviewNamed[]; shadows: SkillPreviewNamed[]; issues: SkillIssue[] }
+export function readSkillPreview(value: unknown): SkillPreview {
+  const preview = object(value)
+  const named = (item: unknown) => {
+    const entry = object(item)
+    return { path: string(entry.path), name: string(entry.name), by: string(entry.by) }
+  }
+  return {
+    source: readSkillSource(preview.source),
+    skills: array(preview.skills, (item) => {
+      const skill = object(item)
+      return { path: string(skill.path), name: string(skill.name), description: string(skill.description), revision: string(skill.revision) }
+    }),
+    conflicts: array(preview.conflicts, named),
+    shadows: array(preview.shadows, named),
+    issues: array(preview.issues, (item) => {
+      const issue = object(item)
+      return { path: string(issue.path), message: string(issue.message) }
+    }),
+  }
+}
+export type SkillInstallation = { id: string; source: SkillSource; revision: string; skills: { path: string; id: string }[] }
+function readSkillInstallation(value: unknown): SkillInstallation {
+  const installation = object(value)
+  return {
+    id: string(installation.id), source: readSkillSource(installation.source), revision: string(installation.revision),
+    skills: array(installation.skills, (item) => {
+      const skill = object(item)
+      return { path: string(skill.path), id: string(skill.id) }
+    }),
+  }
+}
+export function readSkillInstallations(value: unknown): SkillInstallation[] {
+  return array(object(value).installations, readSkillInstallation)
+}
+export type SkillInstallResult = { installation: SkillInstallation; previous: SkillInstallation | undefined; version: number; issues: SkillIssue[] }
+export function readSkillInstall(value: unknown): SkillInstallResult {
+  const result = object(value)
+  return {
+    installation: readSkillInstallation(result.installation),
+    previous: result.previous === undefined ? undefined : readSkillInstallation(result.previous),
+    version: number(result.version),
+    issues: array(result.issues, (item) => {
+      const issue = object(item)
+      return { path: string(issue.path), message: string(issue.message) }
+    }),
+  }
+}
+
 export type PluginEntry = {
   name: string; use: string | undefined; off: boolean; locked: boolean; status: string | undefined; error: string | undefined
   candidates: { id: string; kinds: string[]; git: string | undefined }[]

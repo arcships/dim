@@ -416,6 +416,11 @@ async fn web_entry_admits_token_holders_to_sessions_and_safe_management() {
         "plugin.list",
         "plugin.install",
         "skills.catalog",
+        "skills.preview",
+        "skills.install",
+        "skills.update",
+        "skills.remove",
+        "skills.installations",
     ] {
         assert!(features.contains(&json!(method)), "{method}");
     }
@@ -453,11 +458,22 @@ async fn web_entry_admits_token_holders_to_sessions_and_safe_management() {
             json!({"providerId":"018ec73f-0000-7000-8000-000000000011"}),
         ),
         ("provider.selection", json!({"cwd":home})),
+        ("skills.installations", json!({})),
     ] {
         let reply = web.rpc(method, params).await;
         assert_ok(&reply);
         assert!(!reply.to_string().contains("fixture-secret"), "{method}");
     }
+    let refused = web
+        .rpc(
+            "skills.preview",
+            json!({"source": {"path": "relative/skills"}}),
+        )
+        .await;
+    assert_eq!(
+        refused["error"]["data"]["appError"], "skills_source_invalid",
+        "{refused}"
+    );
     let created = web.rpc("provider.create", json!({
         "providerId":"018ec73f-0000-7000-8000-000000000012", "displayName":"Web fixture",
         "connection":{"driverKind":"openai-compatible", "baseUrl":"http://127.0.0.1:1/v1",

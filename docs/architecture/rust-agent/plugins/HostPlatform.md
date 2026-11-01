@@ -31,6 +31,9 @@ captured service environment, never a caller's environment.
 
 When no shell file is configured, `exec_shell()` returns the supplied initial snapshot.
 FileStorage is disabled when `exec_shell_file` is not configured.
+The plugin's configuration may name the user home it reports (`home`); the App Server sets it from
+`ServerConfig::platform_home` so a host that runs with an isolated home resolves `~` and the user
+Skill root inside that home, and leaves it unset otherwise.
 `HostPlatform::current`
 constructs such a platform, with public facts that hosts/tests may customize;
 the preference source and shell snapshot are private. A value that runs commands

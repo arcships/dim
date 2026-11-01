@@ -46,6 +46,26 @@ after its reload; registering scans the root at once and returns its issues, and
 `plugin_issues(plugin)` reads them later. Its Skills have ids
 `plugin:<plugin id>:<path>`.
 
+### Installations
+
+A Skill installation records a source the user chose, the Skills taken from it and the files it
+owns under the user root ([design](../../../design/plugins/Skills.md)). It is a member of the same
+Skills document (`installations`), read and written through the same port; its files live under
+`<user root>/<installation id>/<source-relative path>`.
+
+| Operation | Behavior |
+| --- | --- |
+| `preview(root, id)` | Scans an acquired source tree, digests each Skill directory, and reports the user-root Skills a selection would conflict with and the plugin or project Skills it would hide. Writes nothing. |
+| `install(id, source, root, operation_dir, selection, overwrite)` | Digests the selected Skills and refuses a changed one (`StalePreview`), copies them into `<operation_dir>/place`, swaps them into place, commits the record, then rescans the user root and advances the version. |
+| `uninstall(id)` | Deletes `<user root>/<id>` after a directory and link check, then the record, then rescans. A failed deletion keeps the record, the only proof of what the installation owns. |
+| `installation(id)`, `installations()` | The record, after a query. |
+
+A Skill's revision is a digest over its regular files, by relative path and bytes, with `.git`
+skipped and symbolic links refused; an installation's revision digests its ordered path and
+revision pairs. A separate `operating` lock serializes every root scan with an installation's
+placement, so no view is built from a half-swapped directory. Files are written before the record
+and the record before the version advances.
+
 First use scans roots via blocking work; explicit refresh updates cached
 discovery. Cancellation closes the catalog; cleanup joins its reader. Reload
 creates fresh discovery caches. Read failures remain explicit and queries can
@@ -58,9 +78,20 @@ settings mutation was durably saved.
 `discovery_precedence_and_list_injection`,
 `enablement_changes_the_list_and_loading`,
 `a_late_update_response_does_not_overwrite_a_newer_setting`,
-`a_failed_read_back_is_reported_and_recovered_by_the_next_query`;
+`a_failed_read_back_is_reported_and_recovered_by_the_next_query`,
+`preview_lists_a_source_without_installing_it`,
+`install_copies_only_the_selected_skill`,
+`a_change_under_a_selected_skill_makes_the_preview_stale`,
+`install_refuses_conflicts_and_selections_outside_the_tree`,
+`install_replaces_an_installation_only_with_overwrite`,
+`update_keeps_the_selection_and_reports_the_previous_record`,
+`remove_deletes_only_what_the_record_owns`,
+`a_new_catalog_restores_installations_from_settings`;
 [plugin_manager.rs](../../../../crates/dim-app-server/tests/transport_flow/plugin_manager.rs):
-`plugin_content_reaches_sessions_through_its_owners`.
+`plugin_content_reaches_sessions_through_its_owners`;
+[skills_installation.rs](../../../../crates/dim-app-server/tests/transport_flow/skills_installation.rs):
+`skills_preview_install_update_and_remove_a_repository`,
+`skills_replies_and_the_user_document_stay_safe`.
 
 <!-- generated:plugin SkillsCatalog — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |

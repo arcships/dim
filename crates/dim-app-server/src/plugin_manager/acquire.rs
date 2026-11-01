@@ -231,6 +231,14 @@ impl PluginsDir {
 pub struct Staging(Option<PathBuf>);
 
 impl Staging {
+    /// An empty operation directory under `root`, created when missing.
+    pub fn in_root(root: &Path) -> Result<Self, PluginError> {
+        std::fs::create_dir_all(root).map_err(acquire_failed)?;
+        let dir = root.join(uuid::Uuid::new_v4().simple().to_string());
+        std::fs::create_dir(&dir).map_err(acquire_failed)?;
+        Ok(Staging(Some(dir)))
+    }
+
     pub fn path(&self) -> &Path {
         self.0.as_deref().expect("staging directory")
     }
@@ -286,6 +294,21 @@ fn outside(dir: impl std::fmt::Debug) -> PluginError {
 
 fn acquire_failed(error: impl std::fmt::Display) -> PluginError {
     PluginError::new("acquire_failed", error.to_string())
+}
+
+/// A Git URL safe to hand to a client: no user information, query or
+/// fragment, and a value that is not such a URL becomes a placeholder.
+pub fn git_url_safe(git: &str) -> String {
+    match url::Url::parse(git) {
+        Ok(mut url) if matches!(url.scheme(), "https" | "ssh") && url.host_str().is_some() => {
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.set_query(None);
+            url.set_fragment(None);
+            url.to_string()
+        }
+        _ => "Git repository".into(),
+    }
 }
 
 /// `https://` or `ssh://` only; nothing Git could read as an option.
@@ -388,7 +411,7 @@ pub fn work_dir(staging: &Staging) -> PathBuf {
     staging.path().join("work")
 }
 
-fn check_links(root: &Path, dir: &Path) -> Result<(), PluginError> {
+pub fn check_links(root: &Path, dir: &Path) -> Result<(), PluginError> {
     for entry in std::fs::read_dir(dir).map_err(acquire_failed)? {
         let entry = entry.map_err(acquire_failed)?;
         let path = entry.path();
