@@ -1146,7 +1146,54 @@ impl From<ExtensionEvent> for ExtensionWire {
     }
 }
 
+/// Event keys whose rows the default projection consumes for rendering.
+pub const CONTEXT_RENDER_KEYS: &[&str] = &[
+    "input/consumed",
+    "context/compaction",
+    "step/thinking",
+    "step/text",
+    "step/tool-use-start",
+    "step/tool-use",
+    "step/model-content",
+    "step/model-output-end",
+    "step/tool-result",
+];
+
+/// Event keys whose rows the default projection consumes for checkpoint state.
+pub const CONTEXT_STATE_KEYS: &[&str] = &[
+    "input/message",
+    "input/consumed",
+    "context/configured",
+    "context/compaction",
+    "branch/start",
+    "prompt/changed",
+    "turn/start",
+    "turn/end",
+    "context/scope",
+    "step/model-start",
+    "step/thinking",
+    "step/text",
+    "step/tool-use-start",
+    "step/tool-use",
+    "step/model-content",
+    "step/model-output-end",
+    "step/tool-result",
+];
+
+/// The two reading switches for a row with this event key. Unknown keys,
+/// including extension events, are off until a renderer claims them.
+pub fn context_flags(key: &str) -> (bool, bool) {
+    (
+        CONTEXT_RENDER_KEYS.contains(&key),
+        CONTEXT_STATE_KEYS.contains(&key),
+    )
+}
+
 impl EventKind {
+    pub fn context_flags(&self) -> (bool, bool) {
+        context_flags(self.key())
+    }
+
     pub fn key(&self) -> &str {
         match self {
             Self::InputMessage(_) => "input/message",
@@ -1849,5 +1896,21 @@ impl Serialize for EventKind {
             }
         }
         state.end()
+    }
+}
+
+#[cfg(test)]
+mod context_flag_tests {
+    use super::context_flags;
+
+    #[test]
+    fn reading_switches_follow_the_default_projection() {
+        assert_eq!(context_flags("input/consumed"), (true, true));
+        assert_eq!(context_flags("step/text"), (true, true));
+        assert_eq!(context_flags("step/tool-result"), (true, true));
+        assert_eq!(context_flags("prompt/changed"), (false, true));
+        assert_eq!(context_flags("model/call"), (false, false));
+        assert_eq!(context_flags("context/prepare"), (false, false));
+        assert_eq!(context_flags("domain/unknown"), (false, false));
     }
 }

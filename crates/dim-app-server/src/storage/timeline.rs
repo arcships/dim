@@ -1606,7 +1606,7 @@ fn insert_event(
 ) -> Result<usize> {
     let body = serde_json::to_string(row).map_err(error)?;
     connection
-        .prepare_cached("INSERT INTO timeline_events VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, 0, 0)")
+        .prepare_cached("INSERT INTO timeline_events VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?8)")
         .map_err(error)?
         .execute(params![
             key.session_id,
@@ -1617,7 +1617,9 @@ fn insert_event(
             match row {
                 Row::Event { record } => record.event["id"].as_str(),
                 Row::Output { .. } => None,
-            }
+            },
+            i64::from(dim_agent_types::context_flags(kind).0),
+            i64::from(dim_agent_types::context_flags(kind).1),
         ])
         .map_err(error)?;
     Ok(body.len())

@@ -2789,6 +2789,22 @@ async fn upgrades_in_place_once(database: &Database, connection: Connection, fro
     let connection = Connection::open(&database.0).unwrap();
     assert_eq!(schema(&connection), schema_of(28));
     assert_eq!(marker(&connection), [28]);
+    let text: (i64, i64) = connection
+        .query_row(
+            "SELECT context_render, context_state FROM timeline_events WHERE kind = 'step/text' LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(text, (1, 1));
+    let call: (i64, i64) = connection
+        .query_row(
+            "SELECT context_render, context_state FROM timeline_events WHERE kind = 'model/call' LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(call, (0, 0));
     let after: Vec<_> = kept.iter().map(|table| rows(&connection, table)).collect();
     assert_eq!(after, before);
     for table in added {

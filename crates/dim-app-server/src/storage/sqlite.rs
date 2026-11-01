@@ -374,6 +374,22 @@ impl SqliteStorage {
                     }
                     if *from == 27 {
                         tx.execute_batch(V28_COLUMNS).map_err(storage)?;
+                        let keys = |list: &[&str]| {
+                            list.iter()
+                                .map(|key| format!("'{key}'"))
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        };
+                        tx.execute_batch(&format!(
+                            "UPDATE timeline_events SET context_render=1 WHERE kind IN ({});",
+                            keys(dim_agent_types::CONTEXT_RENDER_KEYS)
+                        ))
+                        .map_err(storage)?;
+                        tx.execute_batch(&format!(
+                            "UPDATE timeline_events SET context_state=1 WHERE kind IN ({});",
+                            keys(dim_agent_types::CONTEXT_STATE_KEYS)
+                        ))
+                        .map_err(storage)?;
                     }
                     for (_, sql) in SCHEMA.iter().filter(|(name, _)| added.contains(name)) {
                         tx.execute_batch(sql).map_err(storage)?;
