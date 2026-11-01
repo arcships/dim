@@ -436,7 +436,7 @@ ProjectionCheckpoint = {
 
 [上下文读取开关与裁剪点](../../design/context-read-and-compaction.md)（#708）的格式决定：升级到 **v28**，从 v27 原地升级。若在本实现之前另有格式变更先合入，实现取当时的下一个编号，本节其余内容与列定义不随编号改变。
 
-- **只加两个可空默认 0 的列与两个部分索引**：`timeline_events.context_render INTEGER NOT NULL DEFAULT 0`、`timeline_events.context_state INTEGER NOT NULL DEFAULT 0`，以及 `timeline_events_render`、`timeline_events_state`（`WHERE` 对应列为 1）。事件正文、内容寻址、快照与既有索引不变，冻结的 wire fixture 不变。
+- **只加两个可空默认 0 的列与三个部分索引**：`timeline_events.context_render INTEGER NOT NULL DEFAULT 0`、`timeline_events.context_state INTEGER NOT NULL DEFAULT 0`，以及 `timeline_events_render`、`timeline_events_state`（`WHERE` 对应列为 1）与 `timeline_events_positions`（`WHERE kind IN ('turn/start','context/compaction-start','context/compaction')`，供策略定位）。事件正文、内容寻址、快照与既有索引不变，冻结的 wire fixture 不变。
   - 两列是冗余开关，不携带内容：`context_render=1` 表示该行参与渲染，`context_state=1` 表示该行参与 checkpoint 状态计算；真相仍是渲染与 checkpoint 逻辑对事件的处理，开关只用于不解析正文地筛行。
   - 一行可以同时为 1/1；开关由写事件的一方按渲染/状态逻辑给出。
 - **升级**：启动准入事务内先 `ALTER TABLE` 两列，再按事件 key 集合 `UPDATE` 为 1；事务提交前库不可用，提交后整体生效，没有部分迁移的状态。开关是事件 key 的纯函数，等价性由差分测试证明，不按会话暂存或比对。
