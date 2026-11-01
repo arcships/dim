@@ -53,10 +53,10 @@ local or `ext` transport, and a tree in which no symbolic link leads outside it 
 that resolves to a directory and passes the same link check.
 
 Each operation owns one directory, `<home>/.agents/.staging/<random>`, outside every scanned root
-and on the same file system as the user skills root: the acquired tree under `src`, the
-installation being prepared under `place`. The whole directory is deleted when the operation
-settles, however it ends. Apart from that directory, an installation creates and deletes nothing
-outside the user skills root.
+and on the same file system as the user skills root: the acquired tree under `work`, the
+installation being prepared under `place` and the one it replaces under `old`. The whole directory
+is deleted when the operation settles, however it ends. Apart from that directory, an installation
+creates and deletes nothing outside the user skills root.
 
 Every reply and error is a safe projection: a Git URL is reported without user information, query
 or fragment, and Git's own error text is never forwarded. The record keeps the URL as given, like
