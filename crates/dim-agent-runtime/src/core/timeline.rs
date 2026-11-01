@@ -1,7 +1,7 @@
 use super::keys::KeyFilter;
 use crate::{
-    AgentError, BoxFuture, BranchLifecycle, FaultReporter, PolicyFacts, PolicyOrder, PolicyWindow,
-    Result, StoredEvent, TimelineKey, TimelineStore,
+    AgentError, BoxFuture, BranchLifecycle, FaultReporter, PolicyFacts, PolicyOrder,
+    PolicyOrderEvent, PolicyWindow, Result, StoredEvent, TimelineKey, TimelineStore,
 };
 use dim_agent_types::{
     AgentEvent, EventDraft, EventKind, InputMessageData, ProjectionCheckpoint, RecoverySnapshot,
@@ -205,6 +205,10 @@ impl Timeline {
     pub(crate) fn key(&self) -> &TimelineKey {
         &self.0.key
     }
+    pub fn branch_id(&self) -> String {
+        self.0.key.branch_id.clone()
+    }
+
     pub fn ancestors(&self) -> Vec<(String, u64)> {
         self.0.ancestors.clone()
     }
@@ -855,6 +859,23 @@ impl Timeline {
     }
     /// The event order for legal compaction cuts.
     #[service(skip)]
+    #[service(skip)]
+    async fn boundary_event(&self, key: &TimelineKey, cut: u64) -> Result<Option<Arc<AgentEvent>>> {
+        let Ok(records) = self
+            .0
+            .store
+            .read_page(key, cut.saturating_sub(1), 1, cut)
+            .await
+        else {
+            return Ok(None);
+        };
+        Ok(records
+            .into_iter()
+            .map(|record| record.event)
+            .rfind(|event| event.sequence <= cut))
+    }
+
+    #[service(skip)]
     pub async fn policy_order(&self, through: u64) -> Result<PolicyOrder> {
         let through = self.through(Some(through))?;
         let segments: Vec<_> = self
@@ -865,17 +886,34 @@ impl Timeline {
             .chain(std::iter::once((self.0.key.branch_id.clone(), through)))
             .collect();
         let mut events = Vec::new();
+        let mut branches = Vec::new();
         for (branch, cut) in segments {
             if cut == 0 {
                 continue;
             }
             let key = TimelineKey {
                 session_id: self.0.key.session_id.clone(),
-                branch_id: branch,
+                branch_id: branch.clone(),
             };
+            branches.push(branch.clone());
             events.extend(self.0.store.policy_order(&key, cut).await?.events);
+            if let Some(boundary) = self.boundary_event(&key, cut).await? {
+                events.push(PolicyOrderEvent {
+                    id: boundary.id.clone(),
+                    branch_id: branch,
+                    sequence: boundary.sequence,
+                    turn_start: matches!(boundary.kind, EventKind::TurnStart(_)),
+                    compaction_start: None,
+                    boundary: true,
+                });
+            }
         }
-        Ok(PolicyOrder { through, events })
+        events.sort_by_key(|event| event.sequence);
+        Ok(PolicyOrder {
+            through,
+            branches,
+            events,
+        })
     }
 
     /// The anchor and turn window for a known compaction cut.

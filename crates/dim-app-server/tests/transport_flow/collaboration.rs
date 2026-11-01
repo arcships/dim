@@ -440,7 +440,7 @@ async fn large_report_readback_survives_member_close_and_is_branch_local() {
             .unwrap();
         assert!(wake.user.is_none());
         assert!(serde_json::to_vec(wake).unwrap().len() < 17 * 1024);
-        let projected = dim_agent_capabilities::history::project_history(&timeline).unwrap();
+        let projected = dim_agent_capabilities::history::project_history(&timeline, "main").unwrap();
         let preview = projected
             .iter()
             .find_map(|entry| match &entry.message.content {

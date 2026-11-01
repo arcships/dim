@@ -94,6 +94,7 @@ impl PolicyContext {
                     EventKind::ContextCompactionStart(data) => Some(data.through),
                     _ => None,
                 },
+                boundary: index + 1 == context.events.len(),
             })
             .collect();
         Self {
@@ -177,7 +178,7 @@ impl PolicyContext {
             .position(|entry| {
                 self.order
                     .iter()
-                    .position(|event| event.id == entry.source)
+                    .position(|event| event.id == entry.event_id)
                     .is_some_and(|index| index >= cut)
             })
             .unwrap_or(history.len()))
@@ -953,7 +954,13 @@ impl ContextPolicy {
                     {
                         let checkpoint = self
                             .history
-                            .stream_checkpoint(&self.timeline, view.facts.through, retain_from, 256)
+                            .stream_checkpoint(
+                                &self.timeline,
+                                view.facts.through,
+                                retain_from,
+                                256,
+                                &self.timeline.branch_id(),
+                            )
                             .await
                             .map_err(|error| error.to_string())?;
                         Some(self.history.snapshot_from_checkpoint(&checkpoint, &fact)?)
@@ -1673,27 +1680,21 @@ fn regrown(view: &View, order: &PolicyOrder, model: &dyn ContextModel) -> bool {
         return true;
     };
     let branch = &order.events[start].branch_id;
-    let boundary = order.events[..start]
-        .iter()
-        .rposition(|event| event.branch_id == *branch && event.sequence <= through);
-    let positions: HashMap<&str, usize> = order
-        .events
-        .iter()
-        .enumerate()
-        .map(|(index, event)| (event.id.as_str(), index))
-        .collect();
+    let rank = |branch: &str| order.branches.iter().position(|name| name == branch);
+    let boundary = rank(branch);
     let count = |messages: Vec<Message>| model.count_tokens(&ModelRequest::new("", "", messages));
     let empty = count(Vec::new());
     let new: f64 = view
         .history
         .iter()
-        .filter(|entry| {
-            positions
-                .get(entry.source.as_str())
-                .is_some_and(|index| match boundary {
-                    Some(boundary) => *index > boundary,
-                    None => true,
-                })
+        .filter(|entry| match rank(&entry.position.branch_id) {
+            Some(index) => match boundary {
+                Some(boundary) => {
+                    index > boundary || (index == boundary && entry.position.sequence > through)
+                }
+                None => true,
+            },
+            None => true,
         })
         .map(|entry| count(vec![entry.message.as_ref().clone()]) - empty)
         .sum();
@@ -2040,37 +2041,33 @@ fn recovery_overflow(
 /// place entries and the boundary's own last event (replacing everything),
 /// in order. None is marked within the retention limit yet.
 fn legal_cuts(order: &PolicyOrder, history: &[HistoryEntry]) -> Vec<CompactionCut> {
-    let sources: HashMap<&str, ()> = history
-        .iter()
-        .map(|entry| (entry.source.as_str(), ()))
-        .collect();
-    let mut kept = 0;
-    let positions: HashMap<&str, usize> = order
+    let rank = |branch: &str| order.branches.iter().position(|name| name == branch);
+    let position = |branch: &str, sequence: u64| (rank(branch).unwrap_or(usize::MAX), sequence);
+    let mut candidates: Vec<((usize, u64), String)> = order
         .events
         .iter()
-        .enumerate()
-        .map(|(index, event)| (event.id.as_str(), index))
+        .filter(|event| event.turn_start || event.boundary)
+        .map(|event| (position(&event.branch_id, event.sequence), event.id.clone()))
+        .chain(history.iter().map(|entry| {
+            (
+                position(&entry.position.branch_id, entry.position.sequence),
+                entry.event_id.clone(),
+            )
+        }))
         .collect();
+    candidates.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    candidates.dedup_by(|a, b| a.1 == b.1);
     let mut cuts = Vec::new();
-    for (index, event) in order.events.iter().enumerate() {
-        if !event.turn_start
-            && !sources.contains_key(event.id.as_str())
-            && index + 1 != order.events.len()
-        {
-            continue;
-        }
-        while kept < history.len()
-            && positions
-                .get(history[kept].source.as_str())
-                .is_some_and(|source| *source < index)
-        {
-            kept += 1;
-        }
+    for (at, id) in candidates {
+        let kept = history
+            .iter()
+            .filter(|entry| position(&entry.position.branch_id, entry.position.sequence) < at)
+            .count();
         if kept == 0 || !separates_nothing(history, kept) {
             continue;
         }
         cuts.push(CompactionCut {
-            retain_from: event.id.clone(),
+            retain_from: id,
             entry: kept,
             within_limit: false,
         });

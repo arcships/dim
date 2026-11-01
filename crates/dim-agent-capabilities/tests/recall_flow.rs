@@ -604,9 +604,9 @@ async fn only_the_kinds_of_the_allowlist_are_told_and_nothing_in_context_is_miss
                 .unwrap_or_else(|| panic!("the live history holds no {key}"));
             assert!(!narrative.tells(&event.id), "{key} is told");
         }
-        for entry in project_history(&events).unwrap() {
+        for entry in project_history(&events, "main").unwrap() {
             assert!(
-                narrative.tells(&entry.source),
+                narrative.tells(&entry.event_id),
                 "context entry {} comes from an untold event",
                 entry.id
             );
@@ -988,10 +988,11 @@ impl Recorded {
         let narrative = self.narrative();
         // A history the Loop could not have written proves nothing, and
         // nothing context assembly places may go untold (§14 flow 4).
-        let placed = project_history(&self.events).expect("a history context assembly projects");
+        let placed =
+            project_history(&self.events, "main").expect("a history context assembly projects");
         for entry in placed {
             assert!(
-                narrative.tells(&entry.source),
+                narrative.tells(&entry.event_id),
                 "context entry {} comes from an untold event",
                 entry.id
             );

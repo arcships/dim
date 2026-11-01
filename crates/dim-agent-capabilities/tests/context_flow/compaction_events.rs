@@ -231,7 +231,7 @@ impl DynPlugin for RewriteCompaction {
                         Edit::None => {}
                         Edit::Summary | Edit::FirstCursor | Edit::Completed => {
                             let retain_from = if matches!(edit, Edit::FirstCursor) {
-                                history[1].source.clone()
+                                history[1].event_id.clone()
                             } else {
                                 context.events.last().unwrap().id.clone()
                             };
@@ -401,6 +401,7 @@ async fn committed_cursor_preserves_the_history_after_its_cutoff() {
             .history("main", Some(compaction.through))
             .await
             .unwrap(),
+        "main",
     )
     .unwrap();
     let ContextCompactionResult::Completed {
@@ -411,7 +412,7 @@ async fn committed_cursor_preserves_the_history_after_its_cutoff() {
     else {
         panic!("expected compaction")
     };
-    assert_eq!(retain_from, &history[1].source);
+    assert_eq!(retain_from, &history[1].event_id);
     let expected: Vec<_> = replacement
         .iter()
         .cloned()

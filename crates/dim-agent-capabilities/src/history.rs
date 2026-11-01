@@ -15,7 +15,9 @@ pub struct HistoryEntry {
     pub baseline: Arc<[ContextBaselineEntry]>,
     /// Id of the Timeline event that placed this entry; compaction cuts are
     /// event ids, so they do not depend on the entry id scheme.
-    pub source: String,
+    pub event_id: String,
+    /// Position of that event: the Timeline primary key's two columns.
+    pub position: TimelinePosition,
 }
 
 /// A stateless transformation of a fixed event prefix. Implementations must be
@@ -149,6 +151,7 @@ impl HistoryRenderer {
         through: u64,
         retain_from: &str,
         batch: u64,
+        branch: &str,
     ) -> dim_agent_runtime::Result<ProjectionCheckpoint> {
         if !timeline.ancestors().is_empty() || batch == 0 {
             return Err(AgentError::InvalidInput(
@@ -175,14 +178,15 @@ impl HistoryRenderer {
                 .await?;
             let end = events.last().map_or(start, |event| event.sequence);
             if let Some(index) = events.iter().position(|event| event.id == retain_from) {
-                let mut state = replay(&events[..index], state.as_ref())
+                let positions = planned(&events, branch);
+                let mut state = replay(&events[..index], state.as_ref(), &positions[..index])
                     .map_err(|error| AgentError::fault("History", error))?
                     .state;
                 state.retain_from = retain_from.to_owned();
                 return Ok(ProjectionCheckpoint { resume, state });
             }
             state = Some(
-                project_batch(&events, state.as_ref())
+                project_batch(&events, state.as_ref(), branch)
                     .map_err(|error| AgentError::fault("History", error))?
                     .state,
             );
@@ -283,7 +287,7 @@ impl HistoryRenderer {
                 return Ok(StreamedContext::fallback());
             }
             let end = events.last().map_or(start, |event| event.sequence);
-            let projected = project_batch(&events, state.as_ref())
+            let projected = project_batch(&events, state.as_ref(), &timeline.branch_id())
                 .map_err(|error| AgentError::fault("History", error))?;
             if projected.compacted
                 && let Some(event) = &projected.compaction
@@ -307,7 +311,7 @@ impl HistoryRenderer {
                     .position(|entry| {
                         order
                             .iter()
-                            .position(|event| event.id == entry.source)
+                            .position(|event| event.id == entry.event_id)
                             .is_some_and(|index| index >= cut)
                     })
                     .unwrap_or(history.len());
@@ -464,14 +468,27 @@ pub(crate) fn user_message(user: &UserInput) -> Message {
     }
 }
 
-pub fn project_history(events: &[Arc<AgentEvent>]) -> Result<Vec<HistoryEntry>, String> {
-    replay(events, None).map(|projection| projection.history)
+pub fn project_history(
+    events: &[Arc<AgentEvent>],
+    branch: &str,
+) -> Result<Vec<HistoryEntry>, String> {
+    replay(events, None, &planned(events, branch)).map(|projection| projection.history)
+}
+
+fn planned(events: &[Arc<AgentEvent>], branch: &str) -> Vec<TimelinePosition> {
+    events
+        .iter()
+        .map(|event| TimelinePosition {
+            branch_id: branch.to_owned(),
+            sequence: event.sequence,
+        })
+        .collect()
 }
 
 /// Verifies that a fixed prefix can be inherited without splitting a causal
 /// model/tool block or leaving a consumed input without its source.
-pub fn validate_history_boundary(events: &[Arc<AgentEvent>]) -> Result<(), String> {
-    boundary(&replay(events, None)?.state)
+pub fn validate_history_boundary(events: &[Arc<AgentEvent>], branch: &str) -> Result<(), String> {
+    boundary(&replay(events, None, &planned(events, branch))?.state)
 }
 
 /// Every started call has its closing result and no model output is open.
@@ -512,8 +529,10 @@ pub struct ProjectedBatch {
 pub fn project_batch(
     events: &[Arc<AgentEvent>],
     initial: Option<&ProjectionCheckpointState>,
+    branch: &str,
 ) -> Result<ProjectedBatch, String> {
-    let mut projection = replay(events, initial)?;
+    let positions = planned(events, branch);
+    let mut projection = replay(events, initial, &positions)?;
     let compaction = events.iter().rev().find(|event| {
         matches!(
             &event.kind,
@@ -545,7 +564,7 @@ pub fn project_batch(
             .iter()
             .position(|entry| {
                 order
-                    .get(entry.source.as_str())
+                    .get(entry.event_id.as_str())
                     .is_some_and(|index| *index >= cut)
             })
             .unwrap_or(projection.history.len());
@@ -553,10 +572,12 @@ pub fn project_batch(
             let resume_event = projection
                 .history
                 .get(kept)
-                .map(|entry| entry.source.clone())
+                .map(|entry| entry.event_id.clone())
                 .or_else(|| events.last().map(|event| event.id.clone()))?;
             let resume = order.get(resume_event.as_str()).copied()?;
-            let mut state = replay(events[..resume].as_ref(), initial).ok()?.state;
+            let mut state = replay(events[..resume].as_ref(), initial, &positions[..resume])
+                .ok()?
+                .state;
             state.retain_from = retain_from.clone();
             Some(StreamedState {
                 resume_event,
@@ -578,6 +599,7 @@ pub fn project_batch(
 fn replay(
     events: &[Arc<AgentEvent>],
     initial: Option<&ProjectionCheckpointState>,
+    positions: &[TimelinePosition],
 ) -> Result<Projection, String> {
     let restored = initial.cloned().unwrap_or_default();
     let mut inputs: HashMap<String, InputMessageData> = restored.inputs.into_iter().collect();
@@ -737,7 +759,10 @@ fn replay(
             _ => {}
         }
         for entry in &mut history[previous_length..] {
-            entry.source.clone_from(&event.id);
+            entry.event_id.clone_from(&event.id);
+            if let Some(position) = positions.get(event_index) {
+                entry.position.clone_from(position);
+            }
         }
         origins.extend(std::iter::repeat_n(
             event_index,
@@ -818,14 +843,14 @@ pub(crate) fn retained_entry(
         .iter()
         .position(|entry| {
             order
-                .get(entry.source.as_str())
+                .get(entry.event_id.as_str())
                 .is_some_and(|index| *index >= cut)
         })
         .unwrap_or(history.len()))
 }
 
 pub fn project_context_history(context: &ContextHistory) -> Result<Vec<HistoryEntry>, String> {
-    let mut history = replay(&context.events, initial_state(context))?.history;
+    let mut history = replay(&context.events, initial_state(context), &context.positions)?.history;
     if let Some(ContextCompactionData {
         outcome: ContextCompactionResult::Completed { retain_from, .. },
         ..
@@ -892,7 +917,7 @@ pub fn projection_checkpoint(
     context: &ContextHistory,
     retain_from: &str,
 ) -> Result<ProjectionCheckpoint, String> {
-    let projection = replay(&context.events, initial_state(context))?;
+    let projection = replay(&context.events, initial_state(context), &context.positions)?;
     let kept = retained_entry(context, &projection.history, retain_from)?;
     let resume = projection
         .origins
@@ -904,7 +929,12 @@ pub fn projection_checkpoint(
         .get(resume)
         .cloned()
         .ok_or_else(|| "Compaction checkpoint has no resume event.".to_owned())?;
-    let mut state = replay(&context.events[..resume], initial_state(context))?.state;
+    let mut state = replay(
+        &context.events[..resume],
+        initial_state(context),
+        &context.positions[..resume],
+    )?
+    .state;
     state.retain_from = retain_from.to_owned();
     Ok(ProjectionCheckpoint {
         resume: position,
@@ -913,7 +943,7 @@ pub fn projection_checkpoint(
 }
 
 pub fn validate_context_boundary(context: &ContextHistory) -> Result<(), String> {
-    boundary(&replay(&context.events, initial_state(context))?.state)
+    boundary(&replay(&context.events, initial_state(context), &context.positions)?.state)
 }
 
 fn assistant(
@@ -957,7 +987,11 @@ fn entry(
         message: Arc::new(message),
         tool_context,
         baseline,
-        source: String::new(),
+        event_id: String::new(),
+        position: TimelinePosition {
+            branch_id: String::new(),
+            sequence: 0,
+        },
     }
 }
 
@@ -1051,8 +1085,8 @@ fn digest_line(entry: &ToolEffect) -> String {
     }
 }
 
-pub fn project_messages(events: &[Arc<AgentEvent>]) -> Result<Vec<Message>, String> {
-    Ok(project_history(events)?
+pub fn project_messages(events: &[Arc<AgentEvent>], branch: &str) -> Result<Vec<Message>, String> {
+    Ok(project_history(events, branch)?
         .into_iter()
         .map(|entry| Arc::unwrap_or_clone(entry.message))
         .collect())

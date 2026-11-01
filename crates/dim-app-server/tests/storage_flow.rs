@@ -291,6 +291,7 @@ const TIMELINE_EVENTS_V28: &str = "CREATE TABLE timeline_events (session_id TEXT
 const V28_ADDITIONS: &[&str] = &[
     "CREATE INDEX timeline_events_render ON timeline_events(session_id, branch_id, sequence) WHERE context_render = 1",
     "CREATE INDEX timeline_events_state ON timeline_events(session_id, branch_id, sequence) WHERE context_state = 1",
+    "CREATE INDEX timeline_events_positions ON timeline_events(session_id, branch_id, kind, sequence) WHERE kind IN ('turn/start', 'context/compaction-start', 'context/compaction')",
 ];
 const V23_ADDITIONS: &[&str] = &[
     "CREATE TABLE session_catalog (session_id TEXT NOT NULL PRIMARY KEY REFERENCES agent_sessions(session_id), updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0), preview TEXT, cwd TEXT NOT NULL)",
@@ -532,7 +533,7 @@ async fn documented_native_records_restore_with_legacy_snapshot_bypassed() {
         .unwrap();
     let saved: ProjectionCheckpoint = serde_json::from_str(&saved.state).unwrap();
     assert_eq!(saved, generated);
-    let full = project_history(&main.history(Some(7)).await.unwrap()).unwrap();
+    let full = project_history(&main.history(Some(7)).await.unwrap(), "main").unwrap();
     let recovered = read_context(&main, 7).await.unwrap();
     assert!(recovered.checkpoint.is_none());
     let compacted = project_context_history(&recovered).unwrap();

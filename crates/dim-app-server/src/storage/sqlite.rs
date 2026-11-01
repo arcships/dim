@@ -94,6 +94,10 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
         "CREATE INDEX timeline_events_state ON timeline_events(session_id, branch_id, sequence) WHERE context_state = 1",
     ),
     (
+        "timeline_events_positions",
+        "CREATE INDEX timeline_events_positions ON timeline_events(session_id, branch_id, kind, sequence) WHERE kind IN ('turn/start', 'context/compaction-start', 'context/compaction')",
+    ),
+    (
         "timeline_tool_use_starts",
         "CREATE INDEX timeline_tool_use_starts ON timeline_events(session_id, json_extract(body, '$.record.event.data.request_id'), json_extract(body, '$.record.event.data.call_id')) WHERE branch_id = 'main' AND kind = 'step/tool-use-start'",
     ),
@@ -188,7 +192,14 @@ const UPGRADES: [(u32, &[&str]); 14] = [
     // #593: a delegation's owner and a member Session's leader.
     (26, &["agents_by_owner", "agent_sessions_by_leader"]),
     // #708: the two reading switches on timeline events.
-    (27, &["timeline_events_render", "timeline_events_state"]),
+    (
+        27,
+        &[
+            "timeline_events_render",
+            "timeline_events_state",
+            "timeline_events_positions",
+        ],
+    ),
 ];
 
 fn format_table(version: u32) -> String {

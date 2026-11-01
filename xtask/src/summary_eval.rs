@@ -771,7 +771,11 @@ impl PreparedStep {
                 message: Arc::new(message.clone()),
                 tool_context: message.role == Role::ToolResult,
                 baseline: Arc::from([]),
-                source: format!("m{index}"),
+                event_id: format!("m{index}"),
+                position: dim_agent_types::TimelinePosition {
+                    branch_id: "main".into(),
+                    sequence: index as u64 + 1,
+                },
             })
             .collect();
         Ok(Self {

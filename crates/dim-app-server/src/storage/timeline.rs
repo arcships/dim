@@ -2353,6 +2353,7 @@ impl TimelineStore for SqliteTimelineStore {
                          FROM timeline_events \
                          WHERE session_id=?1 AND branch_id=?2 AND sequence<=?3 \
                          AND event_id IS NOT NULL \
+                         AND kind IN ('turn/start', 'context/compaction-start', 'context/compaction') \
                          ORDER BY sequence",
                     )
                     .map_err(error)?;
@@ -2374,6 +2375,7 @@ impl TimelineStore for SqliteTimelineStore {
             };
             Ok(PolicyOrder {
                 through,
+                branches: Vec::new(),
                 events: rows
                     .into_iter()
                     .map(|(id, kind, sequence, through)| PolicyOrderEvent {
@@ -2384,6 +2386,7 @@ impl TimelineStore for SqliteTimelineStore {
                         compaction_start: (kind == "context/compaction-start")
                             .then_some(through.map(|value| value as u64))
                             .flatten(),
+                        boundary: false,
                     })
                     .collect(),
             })

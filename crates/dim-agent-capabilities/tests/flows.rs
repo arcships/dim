@@ -28,7 +28,7 @@ async fn echo_tools_and_observable_state_follow_the_public_flow() {
         session.idle("main").await.unwrap();
         let events = session.history("main", None).await.unwrap();
         assert!(events.iter().any(|e| matches!(&e.kind, EventKind::ToolResult(data) if data.results[0].result.content == ToolContent::Text("tool-result".into()))));
-        let messages = project_messages(&events).unwrap();
+        let messages = project_messages(&events, "main").unwrap();
         assert!(messages.iter().any(|m| m.role == Role::ToolResult));
         session.close().await.unwrap();
         session.close().await.unwrap();

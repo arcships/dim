@@ -107,7 +107,7 @@ impl CompactionStrategy for Context {
                         MessageContent::Text(_) => false,
                     })
                     .unwrap();
-                input.history[call + 1].source.clone()
+                input.history[call + 1].event_id.clone()
             } else {
                 match input.cut() {
                     Some(cut) => cut.retain_from.clone(),
@@ -392,7 +392,7 @@ async fn a_steer_before_any_model_output_ends_the_request_and_continues_the_turn
                 .iter()
                 .all(|message| message.role != Role::Assistant)
         );
-        dim_agent_capabilities::history::validate_history_boundary(&events).unwrap();
+        dim_agent_capabilities::history::validate_history_boundary(&events, "main").unwrap();
         agent.close().await.unwrap();
     })
     .await

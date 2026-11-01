@@ -47,6 +47,8 @@ pub struct PolicyWindow {
 #[derive(Debug, Clone, Default)]
 pub struct PolicyOrder {
     pub through: u64,
+    /// Branch chain from root to the current branch; positions compare by it.
+    pub branches: Vec<String>,
     pub events: Vec<PolicyOrderEvent>,
 }
 
@@ -57,6 +59,8 @@ pub struct PolicyOrderEvent {
     pub sequence: u64,
     pub turn_start: bool,
     pub compaction_start: Option<u64>,
+    /// The branch's last event at its fixed cut: the cut that replaces everything.
+    pub boundary: bool,
 }
 
 fn window_event(event: &AgentEvent) -> bool {
@@ -331,21 +335,27 @@ pub trait TimelineStore: Send + Sync + 'static {
         Box::pin(async move {
             let records = self.read(key, 1..=through).await?;
             let branch_id = key.branch_id.clone();
+            let mut events: Vec<PolicyOrderEvent> = records
+                .into_iter()
+                .map(|record| PolicyOrderEvent {
+                    turn_start: matches!(&record.event.kind, EventKind::TurnStart(_)),
+                    compaction_start: match &record.event.kind {
+                        EventKind::ContextCompactionStart(data) => Some(data.through),
+                        _ => None,
+                    },
+                    boundary: false,
+                    id: record.event.id.clone(),
+                    branch_id: branch_id.clone(),
+                    sequence: record.event.sequence,
+                })
+                .collect();
+            if let Some(last) = events.last_mut() {
+                last.boundary = true;
+            }
             Ok(PolicyOrder {
                 through,
-                events: records
-                    .into_iter()
-                    .map(|record| PolicyOrderEvent {
-                        turn_start: matches!(&record.event.kind, EventKind::TurnStart(_)),
-                        compaction_start: match &record.event.kind {
-                            EventKind::ContextCompactionStart(data) => Some(data.through),
-                            _ => None,
-                        },
-                        id: record.event.id.clone(),
-                        branch_id: branch_id.clone(),
-                        sequence: record.event.sequence,
-                    })
-                    .collect(),
+                branches: vec![branch_id],
+                events,
             })
         })
     }

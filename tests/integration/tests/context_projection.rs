@@ -42,7 +42,7 @@ fn mode(value: &str) -> InputBlock {
 }
 
 fn texts(events: &[Arc<AgentEvent>]) -> Vec<String> {
-    project_history(events)
+    project_history(events, "main")
         .unwrap()
         .into_iter()
         .map(|entry| match &entry.message.content {
@@ -56,7 +56,7 @@ fn texts(events: &[Arc<AgentEvent>]) -> Vec<String> {
 fn keyed_block_baseline_belongs_to_each_entry_not_the_latest_prefix() {
     let mut events = input(1, "first", vec![mode("plan")]).to_vec();
     events.extend(input(3, "second", vec![mode("execute")]));
-    let history = project_history(&events).unwrap();
+    let history = project_history(&events, "main").unwrap();
     let first = history
         .iter()
         .find(|entry| entry.id == "event-2:block:0")
@@ -83,7 +83,7 @@ fn a_retired_key_leaves_the_baseline_after_its_block_is_delivered() {
     )
     .to_vec();
     events.extend(input(3, "", vec![retire("<b-ended/>".into(), "b".into())]));
-    let history = project_history(&events).unwrap();
+    let history = project_history(&events, "main").unwrap();
     let last = history.last().unwrap();
     assert_eq!(
         last.message.as_ref().clone(),
@@ -110,7 +110,7 @@ fn the_baseline_keeps_each_live_key_at_its_first_delivery_with_its_latest_block(
     )
     .to_vec();
     events.extend(input(3, "", vec![raw("<b-2/>".into(), Some("b".into()))]));
-    let history = project_history(&events).unwrap();
+    let history = project_history(&events, "main").unwrap();
     assert_eq!(
         history
             .last()
@@ -167,7 +167,7 @@ fn prompt_changes_and_scope_ends_are_not_projected() {
             }),
         ),
     ];
-    assert!(project_history(&events).unwrap().is_empty());
+    assert!(project_history(&events, "main").unwrap().is_empty());
 }
 
 #[test]
@@ -188,7 +188,7 @@ fn input_consumed_while_a_request_is_open_projects_at_its_position_and_branch_re
         }),
     ));
     events.extend(input(5, "child input", Vec::new()));
-    let history = project_history(&events).unwrap();
+    let history = project_history(&events, "main").unwrap();
     assert_eq!(
         history
             .iter()
@@ -258,7 +258,7 @@ fn input_consumed_during_a_failed_model_output_keeps_its_position() {
             }),
         ),
     ];
-    let history = project_history(&events).unwrap();
+    let history = project_history(&events, "main").unwrap();
     assert_eq!(
         history
             .iter()

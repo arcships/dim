@@ -1,7 +1,9 @@
 use super::*;
 use dim_agent_capabilities::{
     context_block,
-    history::{context_configuration, context_messages, project_context_history, projection_checkpoint},
+    history::{
+        context_configuration, context_messages, project_context_history, projection_checkpoint,
+    },
     prompt_state::PromptSnapshot,
 };
 
@@ -315,7 +317,10 @@ async fn a_streamed_context_without_a_snapshot_matches_the_full_render() {
     let through = timeline.sequence();
     let renderer = HistoryRenderer::default();
     let (full, full_history) = renderer.rendered_context(&timeline, through).await.unwrap();
-    let streamed = renderer.rendered_stream(&timeline, through, 8).await.unwrap();
+    let streamed = renderer
+        .rendered_stream(&timeline, through, 8)
+        .await
+        .unwrap();
     assert!(!streamed.fallback);
     assert_eq!(streamed.history, full_history);
     assert_eq!(streamed.history, project_context_history(&full).unwrap());
@@ -737,7 +742,7 @@ fn completed_compaction_survives_missing_or_older_recovery_checkpoint() {
         );
         assert!(history.last().unwrap().baseline.is_empty());
     }
-    assert_eq!(project_history(&context.events).unwrap().len(), 6);
+    assert_eq!(project_history(&context.events, "main").unwrap().len(), 6);
 }
 
 #[test]
@@ -930,7 +935,7 @@ fn checkpoint_replay_preserves_prompt_configuration_pending_input_and_internal_t
         let resumed = resume(&context, retain_from);
         let kept = whole
             .iter()
-            .position(|entry| entry.source == retain_from)
+            .position(|entry| entry.event_id == retain_from)
             .unwrap();
         assert_eq!(project_context_history(&resumed).unwrap(), whole[kept..]);
         assert_eq!(
@@ -1098,10 +1103,10 @@ fn result_of(entry: &HistoryEntry) -> (&str, &str) {
 fn assert_checkpoints_match(context: &ContextHistory) {
     let whole = project_context_history(context).unwrap();
     for (kept, entry) in whole.iter().enumerate().skip(1) {
-        if entry.source == whole[kept - 1].source {
+        if entry.event_id == whole[kept - 1].event_id {
             continue;
         }
-        let mut resumed = resume(context, &entry.source);
+        let mut resumed = resume(context, &entry.event_id);
         let renderer = HistoryRenderer::default();
         let anchor = resumed.events.last().unwrap().clone();
         let mut snapshot = RecoverySnapshot {
@@ -1117,7 +1122,7 @@ fn assert_checkpoints_match(context: &ContextHistory) {
             project_context_history(&resumed).unwrap(),
             whole[kept..],
             "cut {}",
-            entry.source
+            entry.event_id
         );
     }
 }
@@ -1175,7 +1180,7 @@ fn an_interrupted_output_keeps_its_text_and_started_calls_and_drops_its_thinking
         ("a", "Tool was not executed: the model output ended")
     );
     assert_eq!(result_of(&history[3]).0, "b");
-    dim_agent_capabilities::history::validate_history_boundary(&context.events).unwrap();
+    dim_agent_capabilities::history::validate_history_boundary(&context.events, "main").unwrap();
     assert_checkpoints_match(&context);
 
     let failed = ModelOutputOutcome::Failed {
@@ -1236,7 +1241,7 @@ fn a_completed_output_closed_by_the_loop_before_turn_end_keeps_its_thinking() {
         result_of(&history[1]),
         ("a", "Tool was not executed: stopped")
     );
-    dim_agent_capabilities::history::validate_history_boundary(&context.events).unwrap();
+    dim_agent_capabilities::history::validate_history_boundary(&context.events, "main").unwrap();
     assert_checkpoints_match(&context);
 }
 
