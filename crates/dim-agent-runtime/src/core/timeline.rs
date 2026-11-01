@@ -769,11 +769,22 @@ impl Timeline {
         through: u64,
     ) -> Result<Vec<Arc<AgentEvent>>> {
         let through = self.through(Some(through))?;
-        let records = self
-            .0
-            .store
-            .read_context(&self.0.key, after.max(1), through)
-            .await?;
+        if after > through {
+            return Err(AgentError::InvalidInput("future Timeline cursor".into()));
+        }
+        if limit == 0 {
+            return Ok(vec![]);
+        }
+        let mut records = Vec::new();
+        let mut cursor = after.max(1);
+        let mut decoded = 0;
+        while cursor <= through && decoded < limit {
+            let end = cursor.saturating_add(255).min(through);
+            let mut page = self.0.store.read_context(&self.0.key, cursor, end).await?;
+            decoded += page.len();
+            records.append(&mut page);
+            cursor = end + 1;
+        }
         if after > 0
             && records
                 .first()
@@ -783,15 +794,23 @@ impl Timeline {
                 "cursor is inside an atomic batch".into(),
             ));
         }
-        if limit == 0 {
-            return Ok(vec![]);
-        }
         let mut records: Vec<_> = records
             .into_iter()
             .filter(|record| record.event.sequence > after)
             .collect();
         if let Some(record) = records.get(limit - 1) {
-            let end = record.batch_end;
+            let mut end = record.batch_end;
+            while cursor <= end && cursor <= through {
+                let window = cursor.saturating_add(255).min(through);
+                let mut page = self
+                    .0
+                    .store
+                    .read_context(&self.0.key, cursor, window)
+                    .await?;
+                end = end.max(page.last().map_or(0, |record| record.batch_end));
+                cursor = window + 1;
+                records.append(&mut page);
+            }
             records.retain(|record| record.event.sequence <= end);
         }
         Ok(records.into_iter().map(|record| record.event).collect())

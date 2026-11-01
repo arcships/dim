@@ -2517,7 +2517,10 @@ impl TimelineStore for SqliteTimelineStore {
                             let mut query = connection
                                 .prepare(
                                     "SELECT sequence, last_sequence, kind, body, event_id FROM timeline_events \
-                             WHERE session_id=?1 AND branch_id=?2 AND sequence>=?3 AND sequence<=?4 \
+                             WHERE session_id=?1 AND branch_id=?2 \
+                             AND sequence >= coalesce((SELECT max(sequence) FROM timeline_events \
+                               WHERE session_id=?1 AND branch_id=?2 AND sequence <= ?3), ?3) \
+                             AND sequence<=?4 AND last_sequence >= ?3 \
                              AND (context_render=1 OR context_state=1) ORDER BY sequence"
                                 )
                                 .map_err(error)?;
@@ -2537,7 +2540,8 @@ impl TimelineStore for SqliteTimelineStore {
             .await?;
             self.finish(reader);
             let mut rows = rows.expect("a finished read fetched its rows");
-            rows.records(&(from..=through), false)
+            let records = rows.records(&(from..=through), false)?;
+            Ok(records)
         })
     }
     fn read_segments<'a>(
