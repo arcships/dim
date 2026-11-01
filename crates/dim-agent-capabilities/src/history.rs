@@ -29,10 +29,6 @@ pub type EncodeProjectionCheckpoint =
     fn(&RecoverySnapshot, &ProjectionCheckpoint) -> Result<String, String>;
 pub struct HistoryRenderer {
     pub render: RenderHistory,
-    /// The renderer's own streaming fold. `None` falls back to the full
-    /// render, because a stream built with another fold would not match what
-    /// `render` produces.
-    pub stream: Option<StreamHistory>,
     pub checkpoint: BuildProjectionCheckpoint,
     /// Identifies the saved projection semantics, independently of store format.
     pub checkpoint_interpreter: &'static str,
@@ -48,11 +44,6 @@ pub struct HistoryRenderer {
 }
 pub type DecodeProjectionCheckpoint =
     fn(&RecoverySnapshot, &AgentEvent) -> Option<ProjectionCheckpoint>;
-pub type StreamHistory = fn(
-    &[std::sync::Arc<dim_agent_types::AgentEvent>],
-    Option<&dim_agent_types::ProjectionCheckpointState>,
-    &str,
-) -> Result<ProjectedBatch, String>;
 
 #[derive(Serialize, Deserialize)]
 struct CheckpointEnvelope {
@@ -110,7 +101,6 @@ impl Default for HistoryRenderer {
     fn default() -> Self {
         Self {
             render: project_context_history,
-            stream: Some(project_batch),
             checkpoint: projection_checkpoint,
             checkpoint_interpreter: "dim/context-projection/v3",
             encode_checkpoint,
@@ -168,16 +158,6 @@ impl HistoryRenderer {
                 "streamed checkpoint needs a local branch".into(),
             ));
         }
-        let stream = self
-            .stream
-            .filter(|stream| {
-                !std::ptr::eq(*stream as *const (), project_batch as *const ())
-                    || std::ptr::eq(
-                        self.render as *const (),
-                        project_context_history as *const (),
-                    )
-            })
-            .ok_or_else(|| AgentError::InvalidInput("renderer has no streaming fold".into()))?;
         let mut state: Option<ProjectionCheckpointState> = None;
         let mut start = 1;
         while start <= through {
@@ -200,7 +180,7 @@ impl HistoryRenderer {
                 });
             }
             state = Some(
-                stream(&events, state.as_ref(), branch)
+                project_batch(&events, state.as_ref(), branch)
                     .map_err(|error| AgentError::fault("History", error))?
                     .state,
             );
@@ -270,15 +250,10 @@ impl HistoryRenderer {
         if batch == 0 {
             return Ok(StreamedContext::fallback());
         }
-        let Some(stream) = self.stream else {
-            return Ok(StreamedContext::fallback());
-        };
-        if std::ptr::eq(stream as *const (), project_batch as *const ())
-            && !std::ptr::eq(
-                self.render as *const (),
-                project_context_history as *const (),
-            )
-        {
+        if !std::ptr::eq(
+            self.render as *const (),
+            project_context_history as *const (),
+        ) {
             return Ok(StreamedContext::fallback());
         }
         let policy_order = timeline.policy_order(through).await?;
@@ -306,7 +281,7 @@ impl HistoryRenderer {
                 return Ok(StreamedContext::fallback());
             }
             let end = events.last().map_or(start, |event| event.sequence);
-            let projected = stream(&events, state.as_ref(), &timeline.branch_id())
+            let projected = project_batch(&events, state.as_ref(), &timeline.branch_id())
                 .map_err(|error| AgentError::fault("History", error))?;
             history.extend(projected.history);
             if projected.compacted
