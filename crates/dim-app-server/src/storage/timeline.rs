@@ -2499,14 +2499,8 @@ impl TimelineStore for SqliteTimelineStore {
     ) -> BoxFuture<'a, Result<Option<Arc<dim_agent_types::AgentEvent>>>> {
         Box::pin(async move {
             let mut reader = self.reader();
-            let records = read_range(
-                &self.db,
-                &mut reader,
-                key,
-                sequence..=sequence,
-                false,
-            )
-            .await?;
+            let records =
+                read_range(&self.db, &mut reader, key, sequence..=sequence, false).await?;
             self.finish(reader);
             Ok(records
                 .into_iter()

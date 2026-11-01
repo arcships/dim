@@ -1260,7 +1260,9 @@ struct Pinned {
 /// (ContextCompaction §5.3, §5.9).
 struct CarriedPins {
     pins: Vec<Pin>,
-    from: u64,
+    /// The event id and sequence of the in-effect compaction's cut.
+    from: String,
+    sequence: u64,
 }
 
 impl CarriedPins {
@@ -1277,8 +1279,18 @@ impl CarriedPins {
         });
         let ids = ids.filter(|ids| ids.len() == pinned.len());
         let pins = group_pins(pinned, ids);
-        let from = view.context.sequence(retain_from).unwrap_or(0);
-        Self { pins, from }
+        let sequence = view
+            .history
+            .iter()
+            .find(|entry| entry.event_id == retain_from)
+            .map(|entry| entry.position.sequence)
+            .or_else(|| view.context.sequence(retain_from))
+            .unwrap_or(0);
+        Self {
+            pins,
+            from: retain_from.to_owned(),
+            sequence,
+        }
     }
 }
 
@@ -1508,11 +1520,15 @@ fn pinned_inputs(
     let start = events[..cut].iter().rposition(
         |event| matches!(&event.kind, EventKind::TurnStart(data) if data.turn_id == turn_id),
     );
-    let carried_from = carried.map(|carried| {
+    let carried_from = carried.and_then(|carried| {
         events
             .iter()
-            .position(|event| event.sequence >= carried.from)
-            .unwrap_or(cut)
+            .position(|event| event.id == carried.from)
+            .or_else(|| {
+                events
+                    .iter()
+                    .position(|event| event.sequence >= carried.sequence)
+            })
     });
     let from = match (carried_from, start) {
         (Some(carried), Some(start)) => carried.max(start + 1),

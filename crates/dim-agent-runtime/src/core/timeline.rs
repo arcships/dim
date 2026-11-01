@@ -759,9 +759,9 @@ impl Timeline {
             .collect())
     }
 
-    /// Reads complete batches of the rows this projection consumes after a
-    /// batch-boundary cursor. The event limit is a target: the final batch may
-    /// exceed it.
+    /// Reads the rows this projection consumes after an event cursor; a cursor
+    /// inside an atomic batch reads that row and filters by sequence. The event
+    /// limit is a target: the final batch may exceed it.
     pub async fn stored_context_page(
         &self,
         after: u64,
@@ -970,9 +970,6 @@ impl Timeline {
         window.cut_sequence = cut_sequence;
         Ok(window)
     }
-    /// Select an interpreter-compatible cache before decoding or trimming facts.
-    /// Invalid caches are disposable; failures reading required facts are not.
-    #[service(skip)]
     /// The latest interpreter-compatible checkpoint at `through`, if one is
     /// valid for this branch and its fixed ancestor chain.
     #[service(skip)]

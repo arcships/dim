@@ -263,9 +263,9 @@ export interface Timeline {
   /** @throws {AgentErrorThrown} */
   history(through?: number | bigint | null): Promise<import('./plugin.js').BranchEvent[]>
   /**
-   * Reads complete batches of the rows this projection consumes after a
-   * batch-boundary cursor. The event limit is a target: the final batch may
-   * exceed it.
+   * Reads the rows this projection consumes after an event cursor; a cursor
+   * inside an atomic batch reads that row and filters by sequence. The event
+   * limit is a target: the final batch may exceed it.
    * @throws {AgentErrorThrown}
    */
   storedContextPage(after: number | bigint, limit: number | bigint, through: number | bigint): Promise<import('./plugin.js').BranchEvent[]>
