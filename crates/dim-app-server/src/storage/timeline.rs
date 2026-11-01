@@ -1159,8 +1159,8 @@ impl SessionStore {
                     .map_err(error)?;
                 }
                 tx.execute(
-                    "INSERT INTO timeline_events (session_id, branch_id, sequence, last_sequence, kind, body, event_id, contributes) \
-                     SELECT ?2, branch_id, sequence, last_sequence, kind, body, event_id, contributes FROM timeline_events \
+                    "INSERT INTO timeline_events (session_id, branch_id, sequence, last_sequence, kind, body, event_id, context_render, context_state) \
+                     SELECT ?2, branch_id, sequence, last_sequence, kind, body, event_id, context_render, context_state FROM timeline_events \
                      WHERE session_id=?1 AND branch_id='main' AND sequence<=?3",
                     params![source, fork, cut],
                 )
@@ -1214,7 +1214,6 @@ impl SessionStore {
                             create_at: dim_agent_runtime::core::unix_millis(),
                             tags: None,
                             kind: EventKind::SessionForked(SessionForkedData {}),
-                                                                                                                                                                                                                                                                                                                                          contributions: None,
                         }),
                         trace: None,
                         batch_end: at + 1,
@@ -1607,7 +1606,7 @@ fn insert_event(
 ) -> Result<usize> {
     let body = serde_json::to_string(row).map_err(error)?;
     connection
-        .prepare_cached("INSERT INTO timeline_events VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7)")
+        .prepare_cached("INSERT INTO timeline_events VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, 0, 0)")
         .map_err(error)?
         .execute(params![
             key.session_id,
@@ -1618,10 +1617,7 @@ fn insert_event(
             match row {
                 Row::Event { record } => record.event["id"].as_str(),
                 Row::Output { .. } => None,
-            },
-            i64::from(
-                matches!(row, Row::Event { record } if record.event.get("contributions").is_some())
-            ),
+            }
         ])
         .map_err(error)?;
     Ok(body.len())
@@ -2848,7 +2844,6 @@ async fn storage_panic_flow_preserves_connection_and_settles_accepted_batches() 
                 create_at: dim_agent_runtime::core::unix_millis(),
                 tags: None,
                 kind: EventKind::InputMessage(InputMessageData::text("saved", None)),
-                                                                                                                                                                                                                                                                                      contributions: None,
             }),
             trace: None,
             batch_end: sequence,
@@ -2972,7 +2967,6 @@ async fn release_flow_preserves_history_and_tolerates_a_stopped_writer() {
             create_at: dim_agent_runtime::core::unix_millis(),
             tags: None,
             kind: EventKind::InputMessage(dim_agent_types::InputMessageData::text("saved", None)),
-            contributions: None,
         }),
         trace: None,
         batch_end: sequence,

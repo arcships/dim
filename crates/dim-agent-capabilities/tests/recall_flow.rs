@@ -980,7 +980,6 @@ impl Recorded {
             create_at: self.time,
             tags: None,
             kind,
-            contributions: None,
         }));
         id
     }

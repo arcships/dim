@@ -100,7 +100,6 @@ fn every_internal_control_is_excluded_by_the_shared_v1_boundary() {
             create_at: 1750000000123,
             tags: None,
             kind,
-            contributions: None,
         });
         assert!(v1::EventRef::new(&event).is_none());
         assert!(v1::SharedEvent::new(event.clone()).is_none());
@@ -124,7 +123,6 @@ fn a_fork_records_its_copy_boundary_as_an_internal_fact() {
         create_at: 1750000000123,
         tags: None,
         kind: forked,
-        contributions: None,
     });
     assert!(v1::EventRef::new(&event).is_none());
 }
@@ -176,7 +174,6 @@ fn an_end_command_and_its_result_are_internal_branch_facts() {
             create_at: 1750000000123,
             tags: None,
             kind,
-            contributions: None,
         });
         assert_eq!(serde_json::to_value(&event.kind).unwrap(), payload);
         let mut envelope = payload.clone();

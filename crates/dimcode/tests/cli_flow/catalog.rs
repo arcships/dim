@@ -170,7 +170,7 @@ fn a_cold_ui_leaf_submits_its_first_message_with_a_large_native_catalog() {
             "INSERT INTO session_owners SELECT ?1,agent_id,protocol_version FROM session_owners WHERE session_id=?2",
             "INSERT INTO timeline_branches SELECT ?1,branch_id,info,sequence FROM timeline_branches WHERE session_id=?2",
             "INSERT INTO timeline_content SELECT ?1,hash,kind,body FROM timeline_content WHERE session_id=?2",
-            "INSERT INTO timeline_events SELECT ?1,branch_id,sequence,last_sequence,kind,body,event_id FROM timeline_events WHERE session_id=?2",
+            "INSERT INTO timeline_events SELECT ?1,branch_id,sequence,last_sequence,kind,body,event_id,context_render,context_state FROM timeline_events WHERE session_id=?2",
             "INSERT INTO timeline_snapshots SELECT ?1,branch_id,sequence,interpreter,event_id,state FROM timeline_snapshots WHERE session_id=?2",
             "INSERT INTO session_metadata SELECT ?1,revision,title,title_source FROM session_metadata WHERE session_id=?2",
             "INSERT INTO session_catalog SELECT ?1,updated_at_ms,preview,cwd FROM session_catalog WHERE session_id=?2",

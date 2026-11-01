@@ -332,7 +332,6 @@ impl Timeline {
                 create_at: unix_millis(),
                 tags: draft.tags,
                 kind: draft.kind,
-                contributions: None,
             });
             let trace = (!steps.is_empty()).then(|| TimelineTrace {
                 event_id: event.id.clone(),

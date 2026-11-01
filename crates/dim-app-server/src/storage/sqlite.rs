@@ -71,7 +71,7 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
     ),
     (
         "timeline_events",
-        "CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, contributes INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id))",
+        "CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, context_render INTEGER NOT NULL DEFAULT 0, context_state INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id))",
     ),
     (
         "timeline_snapshots",
@@ -86,8 +86,12 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
         "CREATE INDEX timeline_events_by_id ON timeline_events(session_id, event_id) WHERE event_id IS NOT NULL",
     ),
     (
-        "timeline_events_contributions",
-        "CREATE INDEX timeline_events_contributions ON timeline_events(session_id, branch_id, contributes, sequence)",
+        "timeline_events_render",
+        "CREATE INDEX timeline_events_render ON timeline_events(session_id, branch_id, sequence) WHERE context_render = 1",
+    ),
+    (
+        "timeline_events_state",
+        "CREATE INDEX timeline_events_state ON timeline_events(session_id, branch_id, sequence) WHERE context_state = 1",
     ),
     (
         "timeline_tool_use_starts",
@@ -126,16 +130,17 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
 /// to recognize a store older than v27.
 const AGENT_SESSIONS_BEFORE_V27: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0))";
 const AGENTS_BEFORE_V27: &str = "CREATE TABLE agents(agent_id TEXT PRIMARY KEY, profile TEXT NOT NULL, is_default INTEGER NOT NULL CHECK(is_default IN (0, 1)))";
-/// The text of `timeline_events` before v28 adds the derived contribution flag.
+/// The text of `timeline_events` before v28 adds the two reading switches.
 const TIMELINE_EVENTS_BEFORE_V28: &str = "CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id))";
 /// v27 adds a column to two tables, which `SCHEMA` cannot express as a new
 /// entry: the upgrade alters them before it creates the indexes on them.
 const V27_COLUMNS: &str = "ALTER TABLE agent_sessions ADD COLUMN leader_session_id TEXT REFERENCES agent_sessions(session_id);
 ALTER TABLE agents ADD COLUMN owner_session_id TEXT REFERENCES agent_sessions(session_id);";
-/// v28 adds the derived contribution flag to `timeline_events`; the upgrade
-/// alters the table before it creates the index on the column.
+/// v28 adds the two reading switches; the upgrade alters the table before it
+/// creates the partial indexes on them.
 const V28_COLUMNS: &str =
-    "ALTER TABLE timeline_events ADD COLUMN contributes INTEGER NOT NULL DEFAULT 0;";
+    "ALTER TABLE timeline_events ADD COLUMN context_render INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE timeline_events ADD COLUMN context_state INTEGER NOT NULL DEFAULT 0;";
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
@@ -182,8 +187,8 @@ const UPGRADES: [(u32, &[&str]); 14] = [
     (25, &[]),
     // #593: a delegation's owner and a member Session's leader.
     (26, &["agents_by_owner", "agent_sessions_by_leader"]),
-    // #708: the derived contribution flag on timeline events.
-    (27, &["timeline_events_contributions"]),
+    // #708: the two reading switches on timeline events.
+    (27, &["timeline_events_render", "timeline_events_state"]),
 ];
 
 fn format_table(version: u32) -> String {

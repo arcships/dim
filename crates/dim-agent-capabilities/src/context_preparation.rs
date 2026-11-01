@@ -141,7 +141,6 @@ impl ConfigurationPublisher {
                 create_at: 0,
                 tags: None,
                 kind: EventKind::PromptChanged(data.clone()),
-                contributions: None,
             };
             let mut after = before.clone();
             after.apply(&synthetic);

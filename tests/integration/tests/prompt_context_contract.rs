@@ -84,7 +84,6 @@ fn v1_boundary_rejects_new_fields_and_hides_new_events() {
             reason: PromptChangeReason::Initialize,
             changes: Vec::new(),
         }),
-        contributions: None,
     };
     assert!(v1::EventRef::new(&event).is_none());
 }

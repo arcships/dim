@@ -12,7 +12,6 @@ fn event(sequence: u64, kind: EventKind) -> Arc<AgentEvent> {
         create_at: sequence,
         tags: None,
         kind,
-        contributions: None,
     })
 }
 

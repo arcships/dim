@@ -70,7 +70,6 @@ fn internal_controls_use_the_common_event_envelope() {
             create_at: 1_750_000_000_123,
             tags: None,
             kind,
-            contributions: None,
         };
         let mut expected = payload;
         expected["id"] = json!(event.id);
@@ -129,7 +128,6 @@ fn native_product_events_round_trip_without_a_v1_view() {
             create_at: 1,
             tags: None,
             kind: draft.kind,
-            contributions: None,
         };
         assert_eq!(
             serde_json::from_value::<AgentEvent>(serde_json::to_value(&event).unwrap()).unwrap(),

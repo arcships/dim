@@ -1445,7 +1445,6 @@ async fn stored(harness: &Harness, session_id: &str, kinds: Vec<EventKind>) -> V
             create_at: 0,
             tags: None,
             kind,
-            contributions: None,
         });
         ids.push(event.id.clone());
         let (sent, committed) = tokio::sync::oneshot::channel();

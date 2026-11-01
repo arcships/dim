@@ -16,7 +16,6 @@ fn fixed(events: Vec<EventKind>) -> ContextHistory {
                 create_at: index as u64,
                 tags: None,
                 kind,
-                contributions: None,
             })
         })
         .collect();
@@ -532,7 +531,6 @@ fn resume(context: &ContextHistory, cut: &str) -> ContextHistory {
             create_at: 0,
             tags: None,
             kind: completed(cut, "summary", through, Vec::new()),
-            contributions: None,
         }));
         resumed.positions.push(TimelinePosition {
             branch_id: "main".into(),

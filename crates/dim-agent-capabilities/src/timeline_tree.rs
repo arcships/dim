@@ -379,7 +379,6 @@ impl TimelineTree {
             create_at: dim_agent_runtime::core::unix_millis(),
             tags: None,
             kind: EventKind::BranchEnded(data),
-            contributions: None,
         });
         let (published, wait) = oneshot::channel();
         self.store.append(
@@ -2736,7 +2735,6 @@ mod tests {
             create_at: 1_750_000_000_000 + sequence,
             tags: None,
             kind,
-            contributions: None,
         })
     }
     fn call(sequence: u64, id: &str, name: &str, input: serde_json::Value) -> Arc<AgentEvent> {
