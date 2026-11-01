@@ -158,9 +158,32 @@ impl HistoryRenderer {
             ));
         }
         let segments = timeline.segments(through)?;
-        let mut state: Option<ProjectionCheckpointState> = None;
-        for (branch, cut) in &segments {
-            let mut cursor = 1;
+        let checkpoint = timeline
+            .checkpoint(through, self.checkpoint_interpreter, self.decode_checkpoint)
+            .await?;
+        let cut_event = timeline.event_by_id(retain_from).await?;
+        let local = segments.len().saturating_sub(1);
+        let (first, start, mut state) = match (&checkpoint, &cut_event) {
+            (Some(checkpoint), Some(event)) => {
+                let index = segments
+                    .iter()
+                    .position(|(branch, _)| *branch == checkpoint.resume.branch_id);
+                let before = index.is_some_and(|index| {
+                    index < local || (index == local && checkpoint.resume.sequence < event.sequence)
+                });
+                match index {
+                    Some(index) if before => (
+                        index,
+                        checkpoint.resume.sequence,
+                        Some(checkpoint.state.clone()),
+                    ),
+                    _ => (0, 1, None),
+                }
+            }
+            _ => (0, 1, None),
+        };
+        for (index, (branch, cut)) in segments.iter().enumerate().skip(first) {
+            let mut cursor = if index == first { start } else { 1 };
             while cursor <= *cut {
                 let events = timeline
                     .stored_context_page_in(branch, cursor.saturating_sub(1), batch as usize, *cut)

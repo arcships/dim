@@ -2995,6 +2995,57 @@ impl TimelineStore for SqliteTimelineStore {
             Ok(PolicyFacts { through, events })
         })
     }
+    fn events_of_kind<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        kind: &'a str,
+        through: u64,
+    ) -> BoxFuture<'a, Result<Vec<Arc<dim_agent_types::AgentEvent>>>> {
+        Box::pin(async move {
+            let session = key.session_id.clone();
+            let branch = key.branch_id.clone();
+            let wanted = kind.to_owned();
+            let end = sql_sequence(through)?;
+            let mut reader = self.reader(RequestBodies::Rebuild);
+            let rows = holds(
+                &self.db,
+                &mut reader,
+                None,
+                move |connection, reader, rows: &mut Option<Rows>| {
+                    let rows = match rows {
+                        Some(rows) => rows,
+                        None => {
+                            let mut query = connection
+                                .prepare(
+                                    "SELECT sequence, last_sequence, kind, body, event_id \
+                                     FROM timeline_events \
+                                     WHERE session_id=?1 AND branch_id=?2 AND kind=?3 AND sequence<=?4 \
+                                     ORDER BY sequence",
+                                )
+                                .map_err(error)?;
+                            rows.insert(Rows {
+                                fetched: query_fetched(
+                                    &mut query,
+                                    rusqlite::params![session, branch, wanted, end],
+                                )?
+                                .into(),
+                                decoded: vec![],
+                            })
+                        }
+                    };
+                    rows.advance(connection, &session, reader)
+                },
+            )
+            .await?;
+            self.finish(reader);
+            let mut rows = rows.expect("a finished read fetched its rows");
+            Ok(rows
+                .records(&(1..=through), false)?
+                .into_iter()
+                .map(|record| record.event)
+                .collect())
+        })
+    }
     fn event_by_id<'a>(
         &'a self,
         key: &'a TimelineKey,

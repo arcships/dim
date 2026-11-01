@@ -6314,7 +6314,7 @@ async fn streamed_context_reads_complete_batches_across_the_window() {
     )
     .await
     .unwrap();
-    let streamed = HistoryRenderer::default()
+    HistoryRenderer::default()
         .rendered_stream(&timeline, 257, 256)
         .await
         .unwrap();

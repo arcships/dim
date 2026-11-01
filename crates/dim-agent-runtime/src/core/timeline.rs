@@ -776,6 +776,29 @@ impl Timeline {
             .collect())
     }
 
+    /// The ancestor events of one kind, root first.
+    #[service(skip)]
+    pub async fn ancestor_events_of_kind(&self, kind: &str) -> Result<Vec<Arc<AgentEvent>>> {
+        let mut events = Vec::new();
+        for (branch, cut) in &self.0.ancestors {
+            if *cut == 0 {
+                continue;
+            }
+            let key = TimelineKey {
+                session_id: self.0.key.session_id.clone(),
+                branch_id: branch.clone(),
+            };
+            events.extend(self.0.store.events_of_kind(&key, kind, *cut).await?);
+        }
+        Ok(events)
+    }
+
+    /// The event with this id on the local branch.
+    #[service(skip)]
+    pub async fn event_by_id(&self, id: &str) -> Result<Option<Arc<AgentEvent>>> {
+        self.0.store.event_by_id(&self.0.key, id).await
+    }
+
     /// One filtered page of `branch`, which may be an ancestor.
     #[service(skip)]
     pub async fn stored_context_page_in(

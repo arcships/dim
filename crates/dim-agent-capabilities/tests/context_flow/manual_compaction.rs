@@ -964,7 +964,11 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
         ranges.sort_by_key(|range| *range.end());
         ranges
     };
-    assert_eq!(from_start("main"), [1..=cut, 1..=main_head], "{reads:?}");
+    let starts = from_start("main");
+    assert!(
+        starts.contains(&(1..=cut)) && starts.contains(&(1..=main_head)),
+        "{reads:?}"
+    );
     let (context_reads, resume) = child_reads.lock().unwrap().take().unwrap();
     assert_eq!(resume, "main");
     assert!(

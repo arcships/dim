@@ -520,7 +520,10 @@ impl Permission {
     }
     /// Folds the ancestor prefix, then this branch's own events.
     async fn rebuild(&self, local: &[Arc<AgentEvent>]) -> dim_agent_runtime::Result<()> {
-        let inherited = self.timeline.history(Some(0)).await?;
+        let inherited = self
+            .timeline
+            .ancestor_events_of_kind("permission/changed")
+            .await?;
         let mut state = self.state.get();
         for event in &inherited {
             if let EventKind::PermissionChanged(data) = &event.kind {

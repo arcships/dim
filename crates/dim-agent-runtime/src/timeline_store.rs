@@ -194,6 +194,22 @@ pub trait TimelineStore: Send + Sync + 'static {
             Ok(records)
         })
     }
+    /// The events of one kind up to `through`.
+    fn events_of_kind<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        kind: &'a str,
+        through: u64,
+    ) -> BoxFuture<'a, Result<Vec<Arc<AgentEvent>>>> {
+        Box::pin(async move {
+            let records = self.read(key, 1..=through).await?;
+            Ok(records
+                .into_iter()
+                .map(|record| record.event)
+                .filter(|event| event.kind.key() == kind)
+                .collect())
+        })
+    }
     /// The event with this id, if the store holds it.
     fn event_by_id<'a>(
         &'a self,

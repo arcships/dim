@@ -544,6 +544,31 @@ impl ContextPreparation {
             ContextOpError::Model(HostError::failed("Context compaction is not available"))
         })?;
         let through = self.timeline.committed();
+        let facts = self
+            .timeline
+            .policy_facts(through, "")
+            .await
+            .map_err(ContextOpError::Read)?;
+        if let Some(request) = canary_request(&facts) {
+            let model = policy
+                .resolver
+                .resolve(request.clone(), cancel.clone())
+                .await
+                .map_err(ContextOpError::Model)?;
+            if let Some(input) = self
+                .incremental_usage(&facts, through, &request, model.as_ref())
+                .await?
+            {
+                return Ok(ContextUsage {
+                    through,
+                    context_window: model.context_window(),
+                    output_tokens: model.output_tokens(),
+                    threshold_tokens: model.threshold_tokens(),
+                    estimated_input_tokens: input,
+                    baseline_source: BaselineSource::ProviderBaseline,
+                });
+            }
+        }
         let streamed = self
             .history
             .rendered_stream(&self.timeline, through, 256)
@@ -568,6 +593,81 @@ impl ContextPreparation {
             baseline_source: estimate.source,
         })
     }
+    /// The last provider measurement plus the messages written after it, when
+    /// the request's system and tools are unchanged since that call.
+    async fn incremental_usage(
+        &self,
+        facts: &PolicyFacts,
+        through: u64,
+        request: &Arc<ModelRequest>,
+        model: &dyn crate::host::ContextModel,
+    ) -> std::result::Result<Option<f64>, ContextOpError> {
+        let Some(usage) = last_usage(facts) else {
+            return Ok(None);
+        };
+        let Some(call) = last_call(facts, &usage.request_id) else {
+            return Ok(None);
+        };
+        if facts.events.iter().any(|event| {
+            event.sequence > call.sequence
+                && matches!(
+                    &event.kind,
+                    dim_agent_types::EventKind::ContextConfigured(_)
+                        | dim_agent_types::EventKind::PromptChanged(_)
+                )
+        }) {
+            return Ok(None);
+        }
+        let branch = self.timeline.branch_id();
+        let mut events = Vec::new();
+        let mut cursor = call.sequence + 1;
+        while cursor <= through {
+            let page = self
+                .timeline
+                .stored_context_page_in(&branch, cursor - 1, 256, through)
+                .await
+                .map_err(ContextOpError::Read)?;
+            if page.is_empty() {
+                break;
+            }
+            let end = page.last().map_or(cursor, |event| event.sequence);
+            events.extend(page);
+            cursor = end + 1;
+        }
+        let mut supplied: Vec<Arc<dim_agent_types::AgentEvent>> = Vec::new();
+        for event in &events {
+            if let dim_agent_types::EventKind::InputConsumed(data) = &event.kind
+                && !events.iter().any(|seen| {
+                    seen.id == data.input_id
+                        && matches!(seen.kind, dim_agent_types::EventKind::InputMessage(_))
+                })
+                && !supplied.iter().any(|seen| seen.id == data.input_id)
+                && let Some(input) = self
+                    .timeline
+                    .event_by_id(&data.input_id)
+                    .await
+                    .map_err(ContextOpError::Read)?
+            {
+                supplied.push(input);
+            }
+        }
+        supplied.sort_by_key(|event| event.sequence);
+        let mut all = supplied;
+        all.extend(events);
+        let history = crate::history::project_batch(&all, None, &branch)
+            .map_err(|error| ContextOpError::Model(HostError::failed(error)))?
+            .history;
+        let messages = history
+            .into_iter()
+            .map(|entry| entry.message.clone())
+            .collect();
+        let count = model.count_tokens(&ModelRequest {
+            messages,
+            ..ModelRequest::new(&request.provider_id, &request.model_id, Vec::new())
+        });
+        Ok(Some(usage.usage.prompt_tokens + count))
+    }
+
     async fn prepare(
         &self,
         source: ContextPrepareData,
