@@ -18,7 +18,7 @@ Rules: [design rules](../architecture/rust-agent/principles.md)、[ADR 002](../a
 
 非目标（都归各自的文档或实现）：
 
-- 渲染逻辑本身：事件怎么变成消息，由 `HistoryRenderer` 决定；核心与插件事件一视同仁，扩展事件由自带渲染器处理。
+- 渲染逻辑本身：事件怎么变成消息，由 `HistoryRenderer` 决定。扩展事件不进入模型上下文（模型只读被采用的输入和工具结果），没有按事件类型注册的渲染器。
 - checkpoint 的内容与计算：状态怎么 set/revoke/prune，由渲染器的 checkpoint 回调决定。
 - 压缩策略、状态机、超时与退避（[压缩需求](compaction-quality.md)、[ContextCompaction](plugins/ContextCompaction.md)）。
 - 界面、协议、提示词内容。
