@@ -2534,11 +2534,10 @@ impl TimelineStore for SqliteTimelineStore {
                 .filter(|record| record.event.sequence > after)
                 .collect();
             if let Some(record) = records.get(limit - 1) {
-                let mut end = record.batch_end;
+                let end = record.batch_end;
                 while cursor <= end && cursor <= through {
                     let window = cursor.saturating_add(255).min(through);
                     let mut page = self.read_context(key, cursor, window).await?;
-                    end = end.max(page.last().map_or(0, |record| record.batch_end));
                     cursor = window + 1;
                     records.append(&mut page);
                 }
