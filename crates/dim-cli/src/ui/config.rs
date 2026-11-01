@@ -96,15 +96,9 @@ pub fn save_fullscreen(home: &Path, fullscreen: bool) -> Option<String> {
 
 const PERMISSION_KEY: &str = "permissionPreset";
 
-/// The permission preset the user last chose in `/approval` or `/approvals`,
-/// the default for the sessions the terminal UI creates or resumes.
+/// The legacy default for sessions the terminal UI creates or resumes.
 pub fn saved_permission(home: &Path) -> Option<String> {
     read(home, PERMISSION_KEY).and_then(|value| value.as_str().map(str::to_owned))
-}
-
-/// Remembers the chosen preset; the error text on failure.
-pub fn save_permission(home: &Path, preset: &str) -> Option<String> {
-    write(home, PERMISSION_KEY, preset.into())
 }
 
 fn path(home: &Path) -> PathBuf {

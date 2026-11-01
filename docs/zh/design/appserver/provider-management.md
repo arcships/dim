@@ -20,6 +20,7 @@
 | 账号与用量 | 复用账号 owner、合同与错误；不增加静态 Provider 用量配置 |
 | 多客户端 | 记录 CAS，打开及自身写入后重读，不推送变更通知 |
 | 旧配置导入 | 显式只读导入，映射来源、逐项返回结果并保留源字节 |
+| 进程 owner | Provider 提供一次读取，列出实际会被服务的模型及其 provider/model ID 与已声明能力；路由 owner 用它代替复制可用性判断（§3.6） |
 
 源码入口：[Provider owner](../../../../crates/dim-app-server/src/provider.rs)、
 [管理方法](../../../../crates/dim-app-server/src/provider/management.rs)、
@@ -38,6 +39,7 @@ Provider 拥有进程配置、目录、覆盖、偏好、校验、安全投影�
 | 表面 | 消费者与改动 |
 | --- | --- |
 | `managementMethods`，process，命名空间 `provider` | 本地 v3 Desktop/CLI 和受信任进程调用者；§3 沿既有命名空间扩展 |
+| Provider host 端口 `SelectableModelsHost`（core `dim-agent-capabilities`），由 Provider 提供 | 按模型能力路由的进程内 owner（Modality）；§3.6 增加一次读取，不是管理方法或 RPC 方法 |
 | `account`、`account.codex`、`account.grok` | 复用账号调用，不新增账号方法、事件或 managed host capability |
 | `ProviderConnectionResolver`、`ModelSelectionHost` | Provider 沿现有类型处理目录和路由，不增加 core 端口 |
 | `auxiliaryModel.complete` | S4 由调用者显式选模型的合同不变 |
@@ -317,6 +319,85 @@ Session 保留已采用的能力快照。模型变为未声明的 Session 仍可
 是引入它的格式决定，§6 说明升级对既有记录做了什么：清单投影的模型在 `metadata.raw` 中保留它来自的清单项目，
 因此该项目声明的上限即使存储条目没有标记也仍是声明，只删除没有任何来源声明的上限。
 
+### 3.6 供进程 owner 读取的可选模型
+
+按模型能力路由工作的进程 owner 不能自留一份 Provider 可用性规则。Provider 只提供一次
+无副作用的读取，返回它会服务的模型，以及路由决策需要的标识和已声明能力。这次读取是进程
+host 端口，不是管理方法：不在 `provider` 命名空间上，不经 RPC 提供，也不改变 `provider.catalog`。
+
+**为什么是端口而不是 `ProviderService` 上的方法。** 消费方插件在自己的 crate 中，
+`xtask check` 拒绝依赖装配层 `dim-app-server`，因此消费方无法命名 `ProviderService`。
+端口及其数据类型放在 Provider 与消费方都依赖的 `dim-agent-capabilities`；注册为进程名后，
+消费方声明 `Keyed<SelectableModelsHost>`，由 catalog 解析。依赖从扩展指向 core，符合
+[ADR 002 D3](../../adr/002-plugin-scope.md)，实现、目录和规则仍留在 Provider。
+
+**合同（语言中立）。** 进程 host 端口，无实例键，由 Provider 提供：操作 `selectableModels`，
+异步，请求 `{}`，回复 `{models: ModelCapabilitySnapshot[]}`。元素就是既有
+`ModelCapabilitySnapshot`——`{target: {providerId, modelId}, capabilities:
+ModelCapabilities, reasoning?, serviceTier?}`——不是新的模型类型：它已经携带 provider/model
+标识与已声明能力，就是执行时采用的那份描述。可选模型一定声明了两项上限（§3.5），因此既有
+`capability_snapshot` 转换不会失败。调用方传入自己的取消 token；取消它即取消本次读取并返回
+`Cancelled`。
+
+**应用的规则。** 候选 provider 与默认解析一致：托管包公布的每个账号 provider，以及
+`provider.list` 返回的每个静态 provider。每个模型来自与 `provider.catalog` 相同的单 provider
+目录读取（`catalog_for`），所以捆绑替换、descriptor 覆盖、用户模型、路由、禁用和账号状态
+都是执行时看到的那一份。模型只有在既有 `ProviderCatalog::selectable` 接受时才出现：
+`unavailableReason` 缺失，且 ID 不在 `disabledModelIds` 中。该原因已覆盖全部排除项：
+`ModelStatus::Unavailable` 的模型、未声明 `text` modality 的模型、在 `new-api-router`
+之外的 driver 上的非 chat 模型、禁用的 Provider 记录、没有路由的模型、已登出的账号、
+缺凭据的静态记录，以及未声明上限（`limits_undeclared`）。读取不增加第二个谓词。模型出现，
+意味着同一快照下 `select`、`configuration`、`apply_preferences`、每请求检查和
+`auxiliaryModel` 都会接受它。执行仍是权威：之后的写入可使其不可选，消费方把 ID 交回
+Provider，由后者重新检查。
+
+这次读取不是 [#560](https://github.com/arcships/dim/issues/560) 的校验合同。后者接收一条
+持久化的原生记录和显式模型 ID，回答该选择能否执行；本次读取没有输入，只枚举当前可用项。
+两者定义在同一目录和同一可选性谓词上，因此对同一个模型不会给出不同答案。
+
+**快照与一致性。** 一次调用对每个 provider 各读一次。没有跨 provider 事务、没有版本、
+没有缓存：并发的 `provider.*` 写入可能对部分 provider 可见、对另一部分不可见，下一次调用
+返回新状态。不发起实时请求：不 refresh、不列 provider 端点，也不写记录、选择或偏好；账号
+状态沿用 `provider.catalog` 的同一读取。回复是派生数据，消费方不得持久化，也不得当作已
+采用的快照。采用仍走模型选择，后者只解析一次配置。
+
+**错误。** 本次读取没有自己的错误码，返回 Provider 既有错误：调用方取消传入的 token 时
+`Cancelled`，Provider 卸载时 `Failed` 且 `HostErrorKind::OwnerClosed`，Provider 存储不可读时
+`Failed`。单个 provider 的记录或账号状态不可读时按默认解析的方式跳过；它不会遮蔽其他
+provider，读取也不返回逐项错误列表。需要该 provider 诊断的调用方使用 `provider.list` 或
+`provider.management`。
+
+**消费方。** Modality 用它计算每个操作的选项和自动默认值：把返回的 ID 与已收集 adapter
+声明支持的操作求交，并在配置的模型不在其中时报告 "no adapter for the configured model"。
+它不调用 `provider.catalog`，也不自留可用性谓词。回复只带 ID 和能力，不带显示名：渲染选项
+的客户端用 `provider.catalog` 或 `provider.management` 的模型列表按 ID join，Modality 不复制
+名称。Provider 不增加逐消费方的键、配置或过滤器：读取没有输入，需要单个 provider 的调用方
+自行筛选回复。
+
+**不变的部分。** `provider.catalog`、`provider.management`、`provider.select`、模型选择、
+采用、偏好及其错误；客户端协议与 `PROTOCOL_VERSION`；持久化及其格式；Timeline、
+Dispatcher、before 回调、Session 与分支部件；driver、路由和非 chat 规则。读取不增加状态、
+缓存、通知、crate 或模块。
+
+**Rust 绑定。** 端口定义在 `crates/dim-agent-capabilities/src/host.rs`，`ModelSelectionHost`
+旁。Provider 在 `ProviderPlugin::apply` 中提供该端口，App Server 的 catalog 以 Rust-only 名字
+`selectableModelsHost` 注册它（[#4](https://github.com/arcships/dim/issues/4) 之前没有跨语言绑定）：
+
+```rust
+pub trait SelectableModels: Send + Sync + 'static {
+    fn selectable(
+        &self,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, Vec<ModelCapabilitySnapshot>>;
+}
+pub struct SelectableModelsHost(pub Arc<dyn SelectableModels>);
+```
+
+owner 实现是 `ProviderService::selectable_models`，`ProductResolver` 转调它。消费方在 `Deps`
+中声明 `Keyed<SelectableModelsHost>`；消费方不直接读取 `ProviderService`。非 Rust 消费方在
+运行时按名暴露服务的要求（[#4](https://github.com/arcships/dim/issues/4)）交付后按名访问；
+该要求已在 [Modality §9](../plugins/Modality.md#9-向机制所有者提出的需求) 提出，这里不重复提出。
+
 ## 4. 客户端集成
 
 ```text
@@ -509,6 +590,7 @@ provider_selections 同样共用一次转换：工作区作用域是已存在目
 | Probe | 未保存探测、合并当前记录且不检查版本、换 host 使用原凭据前校验，失败/超时/卸载无写入，过期回复丢弃，不宣称客户端可取消 |
 | 偏好 | 独立 set/clear、重启，空 patch/不支持值为业务错误，格式错误为边界错误；参数与准确目标一起采用，不可用不回退，无目标 F3 和消费方选择不变 |
 | 模型上限 | 描述未声明上限的探测模型带 missingLimits 列出，被选择、采用和偏好拒绝；CLI 声明两项后变为可选，已采用快照带上声明的窗口；捆绑目录匹配保持已声明；托管模型缺上限时保留原因而不是替代窗口；模型文件配置仍拒绝缺任一项的条目 |
+| 可选读取 | 同一快照下，读取结果与 `select`/`configuration` 对同一批 provider 接受的集合一致；禁用模型、禁用 Provider、不可用模型、未声明 `text` modality、其他 driver 上的非 chat 模型、无路由模型和已登出账号不出现，而其 Provider 仍可应答；每个返回项的 `capabilities.modalities` 与目录模型的声明集合一致；缺上限的模型不出现，读取不因此报错；托管与静态 provider 都出现；mock 端点未收到请求；写入改变下一次读取而不改变更早的回复；取消传入 token 与 Provider 关闭使用既有错误 |
 | 账号 | 既有登录/登出/用量；托管目录同账号 refresh 保留偏好、descriptor 覆盖和禁用项，换账号则一起清空；方法已公布但包缺实现的实际错误；Usage 不变，无静态用量配置 |
 | 并发/恢复 | 新旧写方法双客户端类型化冲突；丢 create 回复按规范 UUID 恢复；拒绝非规范 create ID，其他方法仍支持已有非 UUID ID；重复 create 冲突；坏条目/草稿保留 |
 | 存储/导入 | 旧 v19 读取并重写新记录含 reseed；bundled 升级与内置 Provider 的用户新增模型冲突时 Provider 激活，该记录/定义/fingerprint/version 不变，其他记录更新，管理返回冲突；显式删除后保留需重启提示，启动再采用新定义；删除禁用用户模型时清理遗留禁用项，新内置项为启用状态；用已消失默认模型的 ID 新建用户模型时，新项启用且不继承原默认项的 descriptor 覆盖、偏好或端点覆盖；有效/非法/重复导入及源保留，均用一次性数据库 |
@@ -530,15 +612,15 @@ RPC 流程覆盖 CAS 与丢失 create 回复后的恢复。Desktop UI 验收归�
 | §4.4 | core/Rpc/Dispatcher 不加 Provider 分支 |
 | §4.5 | 自有模型/选择/偏好/路由同事务；既有采用原子性不变 |
 | §4.6 | 管理数据不进模型上下文，配置只沿现有采用路径 |
-| §4.7 | 账号沿公开方法，不跨写其他 owner 引用 |
-| §4.8 | §5 无机制需求，复用 metadata 和 v19 顶层 JSON |
+| §4.7 | 账号沿公开方法，Modality 经 §3.6 的 core host 端口读取可选模型，不跨写其他 owner 引用 |
+| §4.8 | §5 无机制需求，复用 metadata 和 v19 顶层 JSON；§3.6 不增加需求，非 Rust 消费方使用 Modality 已提出的 [#4](https://github.com/arcships/dim/issues/4) |
 | §4.9 | 不加 Timeline 事件或进程推送通知 |
 | §1 | 扩展现有进程 Provider，不增 Capability/接线插件 |
 | ADR 002 D1 | 进程记录归 Provider，已采用分支状态归原 owner，草稿归客户端 |
 | ADR 002 D2 | 复用 namespace/resolver，不增管理插件或注册表 |
 | ADR 002 D3 | 可选账号失败只影响自身能力，不加 core 依赖 |
 | ADR 002 D4 | 业务配置归 owner，修改不 reload |
-| ADR 002 D5 | §3 明确字段、方法、mutating/interruption、错误，不只写 Rust trait |
+| ADR 002 D5 | §3 明确字段、方法、mutating/interruption、错误，不只写 Rust trait；§3.6 以中立形式给出进程读取，core host 端口是消费方声明的绑定 |
 
 ## 9. 消融检查
 
@@ -547,4 +629,7 @@ identity、保留秘密的局部写和未保存网络探测；Disconnect 复用 
 用于区分默认覆盖并让新增项可执行；路由标记沿已有 metadata 保留采用时协议含义。
 声明的上限不需要新状态：目录已有的标记与匹配说明值是否存在，缺失由目录类型承载，原因在投影处
 推导，因此不增加平行模型列表、第二份目录或 `limits` 实体。
+可选模型读取不增加状态、缓存、事件或模型类型：它把既有 `ProviderCatalog::selectable`
+应用到同一份单 provider 目录，并返回既有 `ModelCapabilitySnapshot`，因此没有第二个可用性
+谓词或平行目录。
 不需要通知、跨删除版本服务、模板实体、凭据抽象或第二份客户端配置。

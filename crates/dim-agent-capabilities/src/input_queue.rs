@@ -1,9 +1,11 @@
 use crate::{
-    methods::{Interruption, MethodDecl, SessionMethods, params, reply},
+    host::HostFuture,
+    methods::{Interruption, MethodDecl, RpcError, SessionMethods, params, reply},
     timeline_tree::TreeCommands,
 };
 use dim_agent_runtime::{
-    AgentError, Delivery, Dispatcher, InputSnapshot, Names, Result, StateCell, Timeline,
+    AgentError, Delivery, Dispatcher, InputSnapshot, Names, Registrations, Result, StateCell,
+    Timeline,
 };
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -337,6 +339,129 @@ impl DynPlugin for InputQueuePlugin {
 /// The Session method namespace InputQueue provides through `sessionMethods`.
 pub const INPUT_METHODS: &str = "session.input";
 
+/// The operator-input entry that asks the submit checks (Hooks A.6.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubmitEntry {
+    /// Rpc `session.submit`.
+    Submit,
+    /// Rpc `session.branch_create`, whose prompt becomes the branch's first
+    /// input.
+    Branch,
+    /// `session.input.withdraw` with `steer`.
+    Steer,
+}
+impl SubmitEntry {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Submit => "submit",
+            Self::Branch => "branch",
+            Self::Steer => "steer",
+        }
+    }
+}
+
+/// The input an entry is about to write, as its checks see it (Hooks A.6.2).
+#[derive(Clone, Debug)]
+pub struct SubmitCheckRequest {
+    pub entry: SubmitEntry,
+    pub branch_id: String,
+    /// The operator's own content; `session.branch_create` passes the prompt.
+    pub user: Option<UserInput>,
+    pub mode: InputMode,
+}
+
+/// What one check decided for the input (Hooks A.6.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SubmitCheckReply {
+    /// The input may be written; these contexts go after the operator's own
+    /// content, in name order.
+    Proceed { blocks: Vec<String> },
+    /// The input must not be written; the message is the caller's error.
+    Block { message: String },
+}
+
+/// A check of operator input, registered with [`SubmitChecks`] by the part
+/// that answers it. An error is no opinion and counts as proceed.
+pub trait CheckSubmission: Send + Sync + 'static {
+    fn check(
+        &self,
+        request: SubmitCheckRequest,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, SubmitCheckReply>;
+}
+
+/// The entry's own call was interrupted; the input must not be written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckInterrupted;
+
+/// The Session table of submit checks (Hooks A.6.2), provided by InputQueue's
+/// Session part. Session parts register checks with it while they run, and
+/// the operator-input entries call them before writing anything. No check is
+/// registered unless a part registers one, and then the entries write
+/// unchecked.
+#[derive(Default)]
+pub struct SubmitChecks {
+    checks: Arc<Registrations<Arc<dyn CheckSubmission>>>,
+}
+impl SubmitChecks {
+    /// Registers `check` under `name` on behalf of the part that owns `ctx`,
+    /// until that part unloads. A second check of the same name fails.
+    pub fn register(
+        &self,
+        ctx: &Ctx,
+        name: &str,
+        check: Arc<dyn CheckSubmission>,
+    ) -> std::result::Result<(), Error> {
+        self.checks.register(ctx, name, check).map(|_| ())
+    }
+
+    /// Calls each registered check in name order. The first block in name
+    /// order is the answer; otherwise every check's blocks are returned in
+    /// name order. `Err` means the entry's own call was interrupted while a
+    /// check ran, and nothing may be written.
+    pub async fn check(
+        &self,
+        request: &SubmitCheckRequest,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<SubmitCheckReply, CheckInterrupted> {
+        let mut blocks = Vec::new();
+        for registration in self.checks.all() {
+            if cancel.is_cancelled() {
+                return Err(CheckInterrupted);
+            }
+            match registration
+                .value
+                .check(request.clone(), cancel.clone())
+                .await
+            {
+                Ok(SubmitCheckReply::Proceed { blocks: added }) => blocks.extend(added),
+                Ok(SubmitCheckReply::Block { message }) => {
+                    return Ok(SubmitCheckReply::Block { message });
+                }
+                Err(_) if cancel.is_cancelled() => return Err(CheckInterrupted),
+                Err(_) => {}
+            }
+        }
+        if cancel.is_cancelled() {
+            return Err(CheckInterrupted);
+        }
+        Ok(SubmitCheckReply::Proceed { blocks })
+    }
+}
+
+/// Appends the checks' contexts after the operator's own content (Hooks
+/// A.6.2); an input with no user content takes none.
+pub fn append_blocks(user: &mut Option<UserInput>, blocks: Vec<String>) {
+    let Some(user) = user else {
+        if !blocks.is_empty() {
+            tracing::warn!("submit check contexts dropped: the input has no user content");
+        }
+        return;
+    };
+    user.content
+        .extend(blocks.into_iter().map(|text| ContentBlock::Text { text }));
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WithdrawParams {
@@ -357,12 +482,14 @@ struct WithdrawParams {
 pub struct InputMethodsPlugin {
     tree: Key<TreeCommands>,
     methods: Key<SessionMethods>,
+    checks: Key<SubmitChecks>,
 }
 impl InputMethodsPlugin {
     pub fn new(names: &Names<'_>) -> std::result::Result<Self, Error> {
         Ok(Self {
             tree: names.key()?,
             methods: names.key()?,
+            checks: names.key()?,
         })
     }
 }
@@ -377,6 +504,8 @@ impl DynPlugin for InputMethodsPlugin {
         Box::pin(async move {
             let tree = ctx.require_at(&self.tree)?;
             let methods = ctx.require_at(&self.methods)?;
+            let checks = Arc::new(SubmitChecks::default());
+            ctx.provide_at(self.checks.clone(), checks.clone())?;
             methods.register(
                 ctx,
                 INPUT_METHODS,
@@ -385,16 +514,43 @@ impl DynPlugin for InputMethodsPlugin {
                     true,
                     Interruption::Report,
                 )],
-                Arc::new(move |_, value, _cancel, _| {
+                Arc::new(move |_, value, cancel, _| {
                     let tree = tree.clone();
+                    let checks = checks.clone();
                     Box::pin(async move {
                         let p: WithdrawParams = params(value)?;
                         let queue = tree.get(&p.branch_id)?.service::<InputQueue>()?;
-                        let steer = p.steer.map(|user| InputMessageData {
+                        let mut steer = p.steer.map(|user| InputMessageData {
                             user: Some(user),
                             mode: Some(InputMode::Steer),
                             ..Default::default()
                         });
+                        if let Some(input) = &steer {
+                            // A blocked steer writes neither the withdrawal nor
+                            // the new input (Hooks A.6.2).
+                            match checks
+                                .check(
+                                    &SubmitCheckRequest {
+                                        entry: SubmitEntry::Steer,
+                                        branch_id: p.branch_id.clone(),
+                                        user: input.user.clone(),
+                                        mode: InputMode::Steer,
+                                    },
+                                    &cancel,
+                                )
+                                .await
+                            {
+                                Err(CheckInterrupted) => return Err(RpcError::interrupted()),
+                                Ok(SubmitCheckReply::Block { message }) => {
+                                    return Err(RpcError::app(-32000, "input_blocked", message));
+                                }
+                                Ok(SubmitCheckReply::Proceed { blocks }) => {
+                                    if let Some(steer) = &mut steer {
+                                        append_blocks(&mut steer.user, blocks);
+                                    }
+                                }
+                            }
+                        }
                         let (answer, replacement) = queue
                             .withdraw(
                                 InputWithdrawData {
@@ -419,5 +575,368 @@ impl DynPlugin for InputMethodsPlugin {
             )?;
             Ok(Effect::Done)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::HostError;
+    use rutis::Plugin;
+    use rutis::host::{CtxHost, FiberState, FiberView};
+    use std::sync::Mutex;
+    use tokio::sync::Notify;
+
+    /// How a [`TestCheck`] answers; `Gate` records that it is running, then
+    /// waits for the token it was handed and reports that the token fired.
+    enum Answer {
+        Proceed(Vec<String>),
+        Block(String),
+        Fail,
+        Gate {
+            entered: Arc<Notify>,
+            /// Set once the check saw its own token cancelled.
+            cancelled: Arc<Mutex<bool>>,
+        },
+    }
+
+    /// One check: it records every call in its label, in call order, then
+    /// answers as told.
+    struct TestCheck {
+        label: &'static str,
+        log: Arc<Mutex<Vec<&'static str>>>,
+        answer: Answer,
+    }
+    impl CheckSubmission for TestCheck {
+        fn check(
+            &self,
+            _: SubmitCheckRequest,
+            cancel: CancellationToken,
+        ) -> HostFuture<'_, SubmitCheckReply> {
+            self.log.lock().unwrap().push(self.label);
+            match &self.answer {
+                Answer::Proceed(blocks) => {
+                    let blocks = blocks.clone();
+                    Box::pin(async move { Ok(SubmitCheckReply::Proceed { blocks }) })
+                }
+                Answer::Block(message) => {
+                    let message = message.clone();
+                    Box::pin(async move { Ok(SubmitCheckReply::Block { message }) })
+                }
+                Answer::Fail => Box::pin(async move { Err(HostError::failed("the check failed")) }),
+                Answer::Gate { entered, cancelled } => {
+                    let (entered, cancelled) = (entered.clone(), cancelled.clone());
+                    Box::pin(async move {
+                        entered.notify_one();
+                        cancel.cancelled().await;
+                        *cancelled.lock().unwrap() = true;
+                        Err(HostError::failed("cancelled while running"))
+                    })
+                }
+            }
+        }
+    }
+
+    fn request() -> SubmitCheckRequest {
+        SubmitCheckRequest {
+            entry: SubmitEntry::Submit,
+            branch_id: "main".into(),
+            user: None,
+            mode: InputMode::Queue,
+        }
+    }
+
+    fn check(
+        log: &Arc<Mutex<Vec<&'static str>>>,
+        label: &'static str,
+        answer: Answer,
+    ) -> Arc<dyn CheckSubmission> {
+        Arc::new(TestCheck {
+            label,
+            log: log.clone(),
+            answer,
+        })
+    }
+    fn proceed(blocks: &[&str]) -> Answer {
+        Answer::Proceed(blocks.iter().map(|block| (*block).to_owned()).collect())
+    }
+
+    /// A part that registers its checks on apply, as an owner does.
+    struct ChecksPart {
+        checks: Arc<SubmitChecks>,
+        entries: Vec<(&'static str, Arc<dyn CheckSubmission>)>,
+    }
+    impl Plugin for ChecksPart {
+        type Deps = ();
+        fn name(&self) -> &str {
+            "TestSubmitChecks"
+        }
+        async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
+            for (name, check) in &self.entries {
+                self.checks.register(ctx, name, check.clone())?;
+            }
+            Ok(())
+        }
+    }
+
+    async fn mount(
+        root: &Ctx,
+        checks: &Arc<SubmitChecks>,
+        entries: Vec<(&'static str, Arc<dyn CheckSubmission>)>,
+    ) -> FiberView {
+        let part = root.plugin(ChecksPart {
+            checks: checks.clone(),
+            entries,
+        });
+        (&part).await.unwrap();
+        assert_eq!(part.state().state, FiberState::Active);
+        part
+    }
+
+    /// A.6.2: the checks run in name order; the first block answers and the
+    /// checks after it are not called.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn checks_run_in_name_order_and_the_first_block_answers() {
+        let root = Ctx::root().unwrap();
+        let checks = Arc::new(SubmitChecks::default());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let part = mount(
+            &root,
+            &checks,
+            vec![
+                ("zeta", check(&log, "zeta", proceed(&["z"]))),
+                (
+                    "alpha",
+                    check(&log, "alpha", Answer::Block("no prompts".into())),
+                ),
+                ("mid", check(&log, "mid", proceed(&["m"]))),
+            ],
+        )
+        .await;
+        assert_eq!(
+            checks.check(&request(), &CancellationToken::new()).await,
+            Ok(SubmitCheckReply::Block {
+                message: "no prompts".into()
+            })
+        );
+        assert_eq!(*log.lock().unwrap(), ["alpha"]);
+        part.shutdown().await.unwrap();
+        root.shutdown().await.unwrap();
+    }
+
+    /// A.6.2: without a block every check's contexts come back, in name
+    /// order, and every check is called.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn proceeding_checks_add_their_blocks_in_name_order() {
+        let root = Ctx::root().unwrap();
+        let checks = Arc::new(SubmitChecks::default());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let part = mount(
+            &root,
+            &checks,
+            vec![
+                ("zeta", check(&log, "zeta", proceed(&["3"]))),
+                ("alpha", check(&log, "alpha", proceed(&["1"]))),
+                ("mid", check(&log, "mid", proceed(&["2"]))),
+            ],
+        )
+        .await;
+        assert_eq!(
+            checks.check(&request(), &CancellationToken::new()).await,
+            Ok(SubmitCheckReply::Proceed {
+                blocks: vec!["1".into(), "2".into(), "3".into()]
+            })
+        );
+        assert_eq!(*log.lock().unwrap(), ["alpha", "mid", "zeta"]);
+        part.shutdown().await.unwrap();
+        root.shutdown().await.unwrap();
+    }
+
+    /// A.6.2: a check that fails is no opinion; the other checks still run
+    /// and the entry proceeds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_check_that_fails_counts_as_proceed() {
+        let root = Ctx::root().unwrap();
+        let checks = Arc::new(SubmitChecks::default());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let part = mount(
+            &root,
+            &checks,
+            vec![
+                ("alpha", check(&log, "alpha", Answer::Fail)),
+                ("beta", check(&log, "beta", proceed(&["b"]))),
+            ],
+        )
+        .await;
+        assert_eq!(
+            checks.check(&request(), &CancellationToken::new()).await,
+            Ok(SubmitCheckReply::Proceed {
+                blocks: vec!["b".into()]
+            })
+        );
+        assert_eq!(*log.lock().unwrap(), ["alpha", "beta"]);
+        part.shutdown().await.unwrap();
+        root.shutdown().await.unwrap();
+    }
+
+    /// A.6.2: a call already interrupted runs no check and reports it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_interrupted_call_runs_no_check() {
+        let root = Ctx::root().unwrap();
+        let checks = Arc::new(SubmitChecks::default());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let part = mount(
+            &root,
+            &checks,
+            vec![("alpha", check(&log, "alpha", proceed(&[])))],
+        )
+        .await;
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert_eq!(
+            checks.check(&request(), &cancel).await,
+            Err(CheckInterrupted)
+        );
+        assert!(log.lock().unwrap().is_empty());
+        part.shutdown().await.unwrap();
+        root.shutdown().await.unwrap();
+    }
+
+    /// A.6.2: interrupting the call while a check runs reaches the check
+    /// through its token, stops it and reports the interruption instead of a
+    /// proceed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_interrupted_call_stops_a_running_check() {
+        let root = Ctx::root().unwrap();
+        let checks = Arc::new(SubmitChecks::default());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let entered = Arc::new(Notify::new());
+        let cancelled = Arc::new(Mutex::new(false));
+        let part = mount(
+            &root,
+            &checks,
+            vec![(
+                "alpha",
+                check(
+                    &log,
+                    "alpha",
+                    Answer::Gate {
+                        entered: entered.clone(),
+                        cancelled: cancelled.clone(),
+                    },
+                ),
+            )],
+        )
+        .await;
+        let cancel = CancellationToken::new();
+        let running = tokio::spawn({
+            let checks = checks.clone();
+            let cancel = cancel.clone();
+            async move { checks.check(&request(), &cancel).await }
+        });
+        entered.notified().await;
+        cancel.cancel();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), running)
+            .await
+            .expect("the interrupted call did not return");
+        assert_eq!(outcome.unwrap(), Err(CheckInterrupted));
+        assert!(
+            *cancelled.lock().unwrap(),
+            "the check did not see its token cancelled"
+        );
+        part.shutdown().await.unwrap();
+        root.shutdown().await.unwrap();
+    }
+
+    /// A.6.2: a name belongs to one check; a second registration of the same
+    /// name fails, and the name is free once that part unloads.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_second_check_under_a_name_fails_until_its_part_unloads() {
+        struct DuplicatePart {
+            checks: Arc<SubmitChecks>,
+            second: Arc<Mutex<Option<bool>>>,
+        }
+        impl Plugin for DuplicatePart {
+            type Deps = ();
+            fn name(&self) -> &str {
+                "DuplicateChecks"
+            }
+            async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
+                let check: Arc<dyn CheckSubmission> = Arc::new(TestCheck {
+                    label: "dup",
+                    log: Arc::new(Mutex::new(Vec::new())),
+                    answer: proceed(&[]),
+                });
+                self.checks.register(ctx, "dup", check.clone())?;
+                *self.second.lock().unwrap() =
+                    Some(self.checks.register(ctx, "dup", check).is_err());
+                Ok(())
+            }
+        }
+        let root = Ctx::root().unwrap();
+        let checks = Arc::new(SubmitChecks::default());
+        let second = Arc::new(Mutex::new(None));
+        let part = root.plugin(DuplicatePart {
+            checks: checks.clone(),
+            second: second.clone(),
+        });
+        (&part).await.unwrap();
+        assert_eq!(
+            *second.lock().unwrap(),
+            Some(true),
+            "a second duplicate name registered"
+        );
+        part.shutdown().await.unwrap();
+
+        // The unloaded part's registration is withdrawn, so the name is free.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let again = mount(
+            &root,
+            &checks,
+            vec![("dup", check(&log, "dup", proceed(&[])))],
+        )
+        .await;
+        assert_eq!(
+            checks.check(&request(), &CancellationToken::new()).await,
+            Ok(SubmitCheckReply::Proceed { blocks: Vec::new() })
+        );
+        assert_eq!(*log.lock().unwrap(), ["dup"]);
+        again.shutdown().await.unwrap();
+        root.shutdown().await.unwrap();
+    }
+
+    /// A.6.2: unloading the registering part withdraws its checks; the entry
+    /// then writes unchecked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unloaded_part_withdraws_its_checks() {
+        let root = Ctx::root().unwrap();
+        let checks = Arc::new(SubmitChecks::default());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let part = mount(
+            &root,
+            &checks,
+            vec![(
+                "alpha",
+                check(&log, "alpha", Answer::Block("no prompts".into())),
+            )],
+        )
+        .await;
+        assert_eq!(
+            checks.check(&request(), &CancellationToken::new()).await,
+            Ok(SubmitCheckReply::Block {
+                message: "no prompts".into()
+            })
+        );
+        part.shutdown().await.unwrap();
+        assert_eq!(
+            checks.check(&request(), &CancellationToken::new()).await,
+            Ok(SubmitCheckReply::Proceed { blocks: Vec::new() })
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            ["alpha"],
+            "the withdrawn check still ran"
+        );
+        root.shutdown().await.unwrap();
     }
 }

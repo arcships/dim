@@ -99,7 +99,7 @@ async function fixture(t, options = {}) {
         state.sessions.set(sessionId, [])
         await state.onLaunch?.(request, sessionId)
         return ok({ sessionId, policy: request.starter
-          ? { preset: 'workspace-write', allowedTools: [], disallowedTools: [] }
+          ? state.launchPolicy ?? { preset: 'workspace-write', allowedTools: [], disallowedTools: [] }
           : request.policy ?? { preset: 'read-only', allowedTools: [], disallowedTools: [] } })
       },
       async input(request) {
@@ -198,7 +198,9 @@ async function fixture(t, options = {}) {
 }
 
 test('tool and management run sequential/parallel steps with a frozen definition and first-launch policy', async t => {
-  const f = await fixture(t)
+  const launchPolicy = { preset: 'full-access', fileAccess: 'read-only', toolApproval: 'ask',
+    allowedTools: ['read'], disallowedTools: ['execute_process'] }
+  const f = await fixture(t, { launchPolicy })
   const saved = await f.method('save', { source: 'user', document: definition('review', [
     { stage: { id: 'analyze', prompt: '{{params.target}}' } },
     { parallel: [{ id: 'a', prompt: 'a={{stages.analyze.result}}' }, { id: 'b', prompt: 'b={{stages.analyze.result}}' }] },
@@ -219,6 +221,7 @@ test('tool and management run sequential/parallel steps with a frozen definition
   f.state.document.definitions.review.steps[0].stage.prompt = 'changed source'
   const result = await f.settled(id)
   assert.equal(result.state, 'completed')
+  assert.deepEqual(result.policy_cap, launchPolicy)
   assert.equal(result.stages[3].result_text, 'a=file.ts / b=file.ts')
   assert.equal(new Set(result.stages.map(stage => stage.session_id)).size, 4)
   assert.ok(f.state.launches.every(request => request.agent === undefined && request.model === undefined), 'omitted selections use Agents defaults')
@@ -232,6 +235,11 @@ test('tool and management run sequential/parallel steps with a frozen definition
   assert.ok(report.rawBlocks[0].text.includes(id))
   assert.deepEqual(report.content, [], 'the report is one raw context block without a duplicate user message')
   assert.deepEqual(JSON.parse(f.state.stored).version, 2)
+  await until(() => JSON.parse(f.state.stored).runs[0].report.state === 'delivered')
+  const inputs = f.state.inputs.length
+  await f.reload()
+  assert.deepEqual((await f.method('status', { run_id: id })).value.policy_cap, launchPolicy)
+  assert.equal(f.state.inputs.length, inputs, 'reload neither resubmits stages nor repeats delivered reports')
 })
 
 test('source validation, project enablement and diagnostics run through management and the tool', async t => {
@@ -449,7 +457,9 @@ test('status and stop bound model text while preserving full stored results for 
 })
 
 test('startup recovery records lost stages and delivers reports without contacting their old Sessions', async t => {
-  const source = await fixture(t)
+  const launchPolicy = { preset: 'workspace-write', fileAccess: 'read-only', toolApproval: 'bypass',
+    allowedTools: [], disallowedTools: ['blocked'] }
+  const source = await fixture(t, { launchPolicy })
   await source.method('save', { source: 'user', document: definition('recover', [{ stage: { id: 'one', prompt: 'done' } }]) })
   const id = (await source.execute({ action: 'start', name: 'recover' })).structuredContent.run_id
   await source.settled(id)
@@ -468,6 +478,7 @@ test('startup recovery records lost stages and delivers reports without contacti
   assert.equal(result.stages[0].state, 'lost')
   assert.equal(result.stages[0].reason, 'owner_interrupted')
   assert.equal(result.stages[0].session_id, run.stages[0].session_id)
+  assert.deepEqual(result.policy_cap, launchPolicy)
   assert.equal(recovered.state.launches.length, 0)
   assert.equal(recovered.state.stops.length, 0)
   assert.equal(recovered.state.histories.length, 0)

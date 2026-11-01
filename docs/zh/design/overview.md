@@ -341,7 +341,7 @@ sequenceDiagram
 
 ### 6.3 多节点
 
-rutis 节点通过连接行相连：连接把一个通道交给 rutis session，两个内核以各自的 id（`LocalId`）互相握手。session 把每个进程级共享名字导出给远端，并宣告自己的监听名，因此事件能到达任一端的监听器；插件以 loader 行 `<row>:<plugin>` 在远端运行，其中 `<row>` 是该连接的行。rutis-host 的 `dial` 和 `listen` 行就是这样的连接；Dim 目前都不使用（[rutis 0.19 迁移](https://github.com/arcships/rutis/blob/v0.19.2/docs/migration-0.19.en.md)，[#5](https://github.com/arcships/dim/issues/5)）。
+rutis 节点通过连接行相连：连接把一个通道交给 rutis session，两个内核以各自的 id（`LocalId`）互相握手。session 把每个进程级共享名字导出给远端，并宣告自己的监听名，因此事件能到达任一端的监听器；插件以 loader 行 `<row>:<plugin>` 在远端运行，其中 `<row>` 是该连接的行。rutis-host 的 `dial` 和 `listen` 行就是这样的连接；Dim 目前都不使用（[rutis 0.19 迁移](https://github.com/arcships/rutis/blob/v0.19.3/docs/migration-0.19.en.md)，[#5](https://github.com/arcships/dim/issues/5)）。
 
 | 规则 | 内容 |
 | --- | --- |

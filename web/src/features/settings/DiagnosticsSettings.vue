@@ -4,7 +4,7 @@ import { useSettingsText } from "../../i18n/settings-general"
 import { readModelRecording, readPing, type ModelRecording } from "../../rpc/general-settings"
 import { useConnectionStore } from "../../stores/connection"
 import GeneralSettingsStatus from "./GeneralSettingsStatus.vue"
-import { bindSettingsDirty, messageFrom } from "./context"
+import { bindSettingsDirty, messageFrom, reloadSettingsOnReconnect } from "./context"
 
 const s = useSettingsText()
 const connection = useConnectionStore()
@@ -49,6 +49,7 @@ async function saveRecording(): Promise<void> {
   } catch (cause) { error.value = messageFrom(cause) }
   finally { busy.value = false }
 }
+reloadSettingsOnReconnect(connection, refresh, dirty)
 onMounted(refresh)
 </script>
 

@@ -1087,7 +1087,7 @@ fn roster(open: &[(&str, &str)], ended: Option<&str>) -> EventKind {
                 "dim-branch-lines",
                 &[("branch", "main")],
                 &format!(
-                    "Lines you opened that are still open. Each is you, working in parallel from the point you opened it; it does not see your work after that point unless you message it.\n{listed}\nThey message you when they find something, need you, or end. Use the branch tool to message or read them, and wait to wait for them."
+                    "Lines you opened that are still open. Each is you, working in parallel from the point you opened it; it does not see your work after that point unless you message it.\n{listed}\nThey message you when they find something, need you, or end. Use the branch tool to message or read them, and the `wait` tool to wait for them; end the wait when your lines have nothing left to tell you."
                 ),
             ),
             key,
@@ -1450,6 +1450,14 @@ fn a_permission_change_and_an_interrupt_are_lines_of_their_own() {
     recorded.push(consumed(&input));
     recorded.at(4, 5);
     let changed = recorded.push(permission(PermissionPreset::FullAccess));
+    let separate = recorded.push(EventKind::PermissionChanged(PermissionChangedData {
+        policy: PermissionPolicy {
+            preset: PermissionPreset::FullAccess,
+            file_access: Some(FileAccess::WorkspaceReadWrite),
+            tool_approval: Some(ToolApproval::Ask),
+            ..Default::default()
+        },
+    }));
     recorded.at(4, 6);
     let stopped = recorded.push(interrupted());
     recorded.push(turn_ends(
@@ -1467,6 +1475,9 @@ fn a_permission_change_and_an_interrupt_are_lines_of_their_own() {
             "2026-10-17 (UTC)",
             &format!("04:00 {input} user: go"),
             &format!("04:05 {changed} permission mode changed to full-access"),
+            &format!(
+                "04:05 {separate} permission mode changed to files=workspace-read-write, tools=ask"
+            ),
             &format!("04:06 {stopped} the user interrupted the turn"),
             &format!("End of turn. Open one: open={input}."),
         ]

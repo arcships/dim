@@ -24,8 +24,8 @@ history quotes it and history never changes.
 - **Format.** The native store moves to version 15, with two new tables. A v13 store is upgraded
   in place at startup.
 - **Interface.** Attachments reaches the store through the process service `sessionFiles`.
-- **Reading.** The model reads a file with `read`, like any file: no prompt, no grant, and no
-  authority added (§11).
+- **Reading.** The model reads a file with `read`, like any file: ownership satisfies file
+  scope without a grant, but does not bypass Tool approval Ask (§11).
 
 No Timeline event, no new plugin, no change to the runtime, rutis or the Session facade.
 
@@ -400,6 +400,12 @@ to the old daemon's refusal.
 `session_files`; v15 already holds everything those steps read and write. A v16 could only come
 from a change to S5c's own Session records, not from Session files.
 
+**Host output is a second table at v29.** [ADR 013](../../adr/013-command-output-ownership.md)
+adds `session_output_owners(session_id, path)` and its index for command output, offloaded `read`
+results and shell logs. It is not a Session-file table: those paths have no `session_files` row or
+id, and a directory is removed by the delete of its last owning Session. A fork copies its rows
+like `session_file_owners`, so output stays readable after the source is deleted.
+
 ## 9. Interface
 
 ### 9.1 Language-neutral (ADR 002 D5)
@@ -409,9 +415,15 @@ from a change to S5c's own Session records, not from Session files.
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
 | `put` | async | `{sessionId: string, name: string, content: string}`, where `content` is the bytes in base64 | `{fileId: string, path: string, bytes: u64}` |
+| `register` | async | `{sessionId: string, path: string}` (ADR 013) | `{}`; a missing Session is `not_found` |
+| `owns` | async | `{sessionId: string, path: string}` | `{owned: bool}` |
+| `owned_paths` | async | `{sessionId: string}` | `{paths: string[]}`, a Session file's directory and each output path |
 
 - `path` is absolute on the Session's resource node, the way `read` resolves it for the Session.
   `bytes` is the stored length.
+- `register`, `owns` and `owned_paths` are ADR 013's ownership interface. `register` resolves the
+  path and records it before the caller hands it to the model; `owns` answers from both ownership
+  tables, and ADR 014 reads it as the session-owned fact for writes.
 - Cancellation is a protocol action: the caller drops the call or sends the bridge's cancel
   request. It takes effect up to txn 2. After that the file is committed and the reply stands.
 - Errors are data, `{code, message}` (§10).
@@ -479,67 +491,86 @@ history, as moving a workspace breaks paths into it.
 
 ### 11.1 Reading a Session file
 
-**Decision: the model reads a Session file the way it reads any file. The read never asks,
-records no grant, and S5a adds no authority, rule or exception.** Permission, Approval and
-WorkspaceTools stay unchanged.
+**Decision: the model reads a Session file the way it reads any file. A Session-owned artifact
+is one of the fixed facts, so its read passes file scope without recording a grant. Tool approval
+is independent: explicit Ask can still ask for that read.** The
+[Permission contract](../../architecture/rust-agent/plugins/Permission.md#policy-contract) owns
+the two gates and legacy behavior; ownership is not an explicit tool allow.
+[ADR 014](../../adr/014-file-access-facts.md) decides file reads and writes from the workspace,
+system roots, Session-owned artifacts and grants; [ADR 013](../../adr/013-command-output-ownership.md)
+adds the second ownership table, so `owns` also answers for command output and a read of it is
+allowed under `read-only` and `workspace-write` without an approval.
 
 ```
  model: read {path: "<database directory>/<db>.session-files/<fileId>/paste.txt"}
    |
    v
- ToolExecutor -> Approval.admit -> Permission.decide(tool "read", risk "read_filesystem")
-                                   (no path input)
-   "read" in disallowedTools --------------------------> Deny, for every path
-   "read" in allowedTools -----------------------------> Allow
-   preset read-only, workspace-write or full-access ---> Allow, no approval/request
+ ToolExecutor -> Approval.admit -> Permission.decide(tool "read", risk "read_filesystem", path)
+                                   resolve (~, cwd, .., symlinks), then fileAccessFacts(read)
+   "read" in disallowedTools ---------------------------> Deny, for every path
+   Read only or Workspace read/write, inside facts -----> pass file scope
+   Read only or Workspace read/write, outside facts ----> scope Ask
+   Unrestricted ----------------------------------------> pass file scope
+   tool gate -------------------------------------------> Ask unless allowed or bypassed;
+                                                         legacy risk behavior if override absent
+   scope Ask + tool Ask --------------------------------> one approval (exec denies and exits 3)
    |
    v
- WorkspaceTools read: resolve the path (~, join with cwd, realpath), refuse binary files
+ WorkspaceTools read: the same canonical target, refuses binary files
 ```
 
-What happens today, from [permission.rs](../../../crates/dim-agent-capabilities/src/permission.rs)
-`decide` and [approval.rs](../../../crates/dim-agent-capabilities/src/approval.rs) `admit`:
+The admission contract, owned by [permission.rs](../../../crates/dim-agent-capabilities/src/permission.rs)
+`decide`, [file_access.rs](../../../crates/dim-agent-capabilities/src/file_access.rs) and
+[approval.rs](../../../crates/dim-agent-capabilities/src/approval.rs) `admit`:
 
-- **No prompt.** Read admission uses the tool name and risk category, so
-  a path outside the working directory is decided like one inside it. Write admission under
-  `workspace-write` separately checks the [workspace target](../../architecture/rust-agent/plugins/Permission.md#workspace-write-targets). `read` declares
-  `read_filesystem`, which every preset allows; the product profile's default preset is
-  `workspace-write` ([main.rs](../../../crates/dim-app-server/src/main.rs)). The model therefore
-  reads a pasted file without an approval prompt, as Attachments needs. A policy that lists
-  `read` in `disallowedTools` denies it, like every other `read`.
-- **No grant to widen.** An approval answer is `allow` or `deny` for one call, and Dim records
-  no "always allow" ([AcpGateway](../plugins/AcpGateway.md) never offers `allow_always`). A policy
-  change (`session.permission.update`, written as `permission/changed`) holds a preset and tool
-  names, never a path. Remembered decisions (`/approvals`) are planned but not designed; none
-  can come from a `read` that never asks, and §11.2 keeps it that way. A Session file read is allowed without an approval request, so it leaves nothing
-  behind that could cover `dimcode.sqlite`, the database directory or `~/.dimcode`.
+- **An owned artifact needs no scope prompt.** `SessionFiles.owns` reports the Session's attachment
+  rows and ADR 013's output rows, so the facts' `owned` field is true for a path a `put`
+  returned or a producer registered. Under `read-only` and `workspace-read-write` file access
+  it is inside the facts. Reading it records no grant; explicit Tool approval Ask still asks
+  unless the tool is allowed. §11.2's two properties hold for the rows `owns` reads.
+- **Reads outside the facts ask.** A read whose resolved path is not the workspace, a system
+  root, a Session-owned artifact or a grant asks under Read only and Workspace read/write file access
+  ([ADR 014 D2/D4](../../adr/014-file-access-facts.md#d2-read-and-write)). The CLI offers "Allow
+  for this session", which writes a read grant for the resolved path; `exec` answers with the
+  ordinary denial, stops the turn and exits 3. Unrestricted passes read scope, not the tool gate. The
+  path check runs before the tool lists and `allowedTools`, so an allowed tool does not bypass a
+  path fact. A `grep` or `glob` without a `path` searches the Session cwd, which is the
+  workspace.
+- **A grant.** A read grant or write grant satisfies read scope for the resolved path; it cannot
+  answer explicit Tool approval Ask or turn a read grant into write authority. A policy change
+  (`session.permission.update`, written as `permission/changed`) holds policy values, never a
+  path. The FileStorage root and remembered decisions confer no read authority.
 - **The FileStorage root confers nothing.** Registering the database directory as a FileStorage
-  root (§3.1) lets SessionStore write there through FileStorage. `read` never consults
-  FileStorage roots, and file-root authorization confers nothing beyond that
-  ([ADR 003](../../adr/003-approval-scope.md) D5).
+  root (§3.1) lets SessionStore write there through FileStorage. `read` consults no FileStorage
+  root; the Session-owned fact is `sessionFiles.owns`, not file-root authorization.
 - **Not new.** WorkspaceTools already writes oversized `read` results and `exec` output to
   `<database directory>/command-output/<sessionId>/` and gives the model that path
   ([read.rs](../../../crates/dim-agent-capabilities/src/workspace_tools/files/read.rs)
-  `offload`). In the product profile both directories sit next to `dimcode.sqlite`.
+  `offload`). In the product profile both directories sit next to `dimcode.sqlite`. ADR 013
+  registers those paths, and the persistent shell's `.dim/exec/<sessionId>/<branchId>/` logs,
+  in `session_output_owners` before the result hands them to the model. Registration is a guard
+  among trusted parts, not a read rule: `read` still asks nothing for these paths.
 
 ```
  ~/.dimcode/                            product home: auth.json and others
    rust/                                database directory, a FileStorage root
      dimcode.sqlite                     native store; read refuses .sqlite as binary
-     command-output/<sessionId>/        WorkspaceTools output, already read by path
+     command-output/<sessionId>/        WorkspaceTools output; owned by this Session
      dimcode.sqlite.session-files/
        <fileId S owns>/paste.txt        path returned by a put for S
-       <fileId T owns>/notes.md         Session T's file
+       <fileId T owns>/notes.md         Session T's file, unowned here
 ```
 
-**What Permission does not do.** Permission's read admission is path-independent; it is not isolation
+**What Permission does not do.** The facts decide tool admission, not isolation
 ([Permission](../../architecture/rust-agent/plugins/Permission.md), ADR 001 "Trust and
-cross-language calls"). Under every preset, `read`, `glob` and `grep` reach any text file the
-daemon's user can read: T's file above, other Sessions' command output, `~/.dimcode/auth.json`.
-`read` refuses `dimcode.sqlite` only because its binary guard rejects the `.sqlite` extension.
-S5a does not widen this boundary. It does not narrow it with an exception for its own directory
-either, since that would guard one App Server directory and leave the rest of the product home
-as it is. What S5a guarantees by construction:
+cross-language calls"). They do not scope process mounts (ADR 010 and ADR 012 own them) or
+prevent a concurrent filesystem change after a path is resolved. S's model can still reach T's
+file above by asking to read it and having the user approve, by a grant the user writes, under
+`full-access`, or through a process whose mounts allow it. `read` refuses `dimcode.sqlite` only
+because its binary guard rejects the `.sqlite` extension, not because of these facts. S5a does
+not widen this boundary. It does not narrow it with an exception for its own directory either,
+since the generic ownership fact covers the paths a `put` returns. What S5a guarantees by
+construction:
 
 - Every path `put` returns is `<db>.session-files/<fileId>/<name>`, with `fileId` a random UUID
   v4 and `name` one validated component. No returned path names the database, its companions
@@ -548,31 +579,31 @@ as it is. What S5a guarantees by construction:
   fork owns every file its source owned, so the paths its inherited history got from `put` stay
   owned (§4).
 
-Confining a Session's reads to the files it owns needs path-scoped file access, which §11.2
-leaves to its owner.
-
 ### 11.2 Requirement for path-scoped file access
 
-No item scopes in-process file reads by path today: F2
-([#73](https://github.com/arcships/dim/issues/73)) covers command rules, and F5
-([#76](https://github.com/arcships/dim/issues/76)) isolates processes at start. Whichever item
-first confines file access by path, for tools or for processes, must keep the two properties
-below. They are a generic file-access need, not a Session-files exception: WorkspaceTools'
-command output has the same shape, data a Session's own capabilities hand to its model by path,
-outside the workspace.
+Whichever mechanism confines in-process file access by path, for tools or for processes, must
+keep the two properties below. [ADR 014](../../adr/014-file-access-facts.md) implements them for
+file tools: it resolves `read`, `grep` and `glob` before admission and consults
+`SessionFiles.owns`. F2 ([#73](https://github.com/arcships/dim/issues/73)) covers command rules,
+and F5 ([#76](https://github.com/arcships/dim/issues/76)) isolates processes at start. They are a
+generic file-access need, not a Session-files exception: WorkspaceTools' command output has the
+same shape, data a Session's own capabilities hand to its model by path, outside the workspace.
 
-1. **Owned files are read without asking.** A Session reads the Session files it owns with no
-   approval and no recorded decision, so Attachments never prompts. No grant is derived from
-   such a read.
+1. **Owned files need no scope approval.** Ownership satisfies read scope without a recorded
+   grant; it does not answer an independent tool-approval question (§11.1). No grant is derived
+   from such a read.
 2. **Ownership, not location, decides.** Session S may read `<db>.session-files/<fileId>/` for
    each file S owns in SessionStore's rows when access is decided, or when an isolated process
    starts. The set never covers `<db>.session-files/` as a whole, the database directory or the
    product home, and it includes another Session's file only if S owns it (a fork owns its
    source's files).
 
-SessionStore answers "which files does S own" from `session_file_owners`, whose primary key
-`(session_id, file_id)` serves that lookup, so v15 needs no change for it. The query is added
-with that item's design; nothing calls it before then.
+SessionStore answers "which files does S own" from both ownership tables (ADR 013): a Session
+file from `session_file_owners`, whose primary key `(session_id, file_id)` serves that lookup,
+and registered command output from `session_output_owners`. `SessionFiles.owns(session_id, path)`
+is that query; [ADR 014](../../adr/014-file-access-facts.md) reads it as the session-owned fact
+for reads and writes. `owned_paths(session_id)` lists the owned Session-file directories and
+output paths.
 
 Rejected alternatives:
 
@@ -580,7 +611,7 @@ Rejected alternatives:
 | --- | --- |
 | Register the Session-files directory as a read-only root that `read` accepts | `read` consults no roots, so nothing would change today, and file-root authorization may confer no tool authority (ADR 003 D5, AGENTS.md rule 11). A root also covers the whole directory, every Session's files |
 | Attachments puts the text in context, or a dedicated tool reads by `fileId` | Inlining puts up to 10 MiB into context at submit, which Attachments exists to avoid. A second read tool duplicates `read` (offsets, encodings, offload) while the path stays readable by `read` |
-| A Permission rule "a Session may read its own files" now | Permission has no path input, so the rule would exempt nothing; it would be a Session-files case inside a path-agnostic Permission. Its generic form is §11.2 |
+| A Permission rule "a Session may read its own files" now | A Session-files case inside a path-agnostic Permission, which would exempt nothing else. Its generic form is §11.2's ownership fact, implemented by [ADR 014](../../adr/014-file-access-facts.md) |
 | `read` refuses the database directory except Session files | An exception in WorkspaceTools for one App Server directory. It covers `dimcode.sqlite`, already refused as binary, but not `auth.json` or the rest of the product home |
 
 ## 12. Timing and conflicts
@@ -621,7 +652,7 @@ RPC. S5a implements those steps and tests them at SessionStore's Rust API.
 | Principles §4 rule 5 (batch) | Not applicable: no event. |
 | Principles §4 rule 6 (context from handed-over events) | The model sees a path only in adopted user input, and file content only in a `read` result. |
 | Principles §4 rule 7 (public events and services only) | Attachments uses `sessionFiles`; SessionStore uses FileStorage's public operations and reads no plugin's internals. |
-| Principles §4 rule 8 (requirements to mechanism owners) | No change to the Timeline, Dispatcher, event format, rutis, assembly or the Session facade, and nothing raised to rutis. The format change belongs to SessionStore's own store and is recorded as a format decision. `create_directory` is a FileStorage supplement inside its own module, agreed in the S6 review. Permission, Approval and WorkspaceTools are unchanged (§11.1); §11.2 is a generic requirement for the item that makes file access path-scoped, not a Session-files exception. |
+| Principles §4 rule 8 (requirements to mechanism owners) | No change to the Timeline, Dispatcher, event format, rutis, assembly or the Session facade, and nothing raised to rutis. The format change belongs to SessionStore's own store and is recorded as a format decision. `create_directory` is a FileStorage supplement inside its own module, agreed in the S6 review. Permission admits file-tool reads and writes through the fixed facts (§11.1); §11.2 is the generic requirement it implements, not a Session-files exception. |
 | Principles §4 rule 9 (only facts later decisions use) | No Timeline event. Ownership is process-level state in SessionStore's rows. |
 | Principles §1 (Capability and App Server boundary) | Session files are SessionStore data (overview B.2); no new plugin. The paste feature stays in Attachments' own crate. |
 | ADR 002 D1 (scope follows state) | Process scope: a file outlives the Session that put it and is shared across Sessions. |
@@ -641,7 +672,7 @@ None to the runtime or rutis. Supplements and requirements to other owners:
 | App Server assembly (`serve` in lib.rs) | Register the database directory as a FileStorage root when it is not one, and pass its index to `SessionStorePlugin` (§3.1) | A few lines in S5a's implementation, appended after the assembly lane's work like other registrations |
 | Attachments (P2 design refinement) | Map `sessionFiles` `storage` to an `attachment.put` code. Attachments lists none today; SessionTitle maps SessionStore `storage` to `storage_failed` | Decided: `storage_failed`, recorded in [#66](https://github.com/arcships/dim/issues/66); applied in P2's design review |
 | S5c | Delete owner rows inside the delete transaction, after closing the Session and before `agent_sessions`; copy owner rows inside the fork transaction; schedule a sweep after a delete | Contract for S5c (§5.2, §5.3) |
-| The item that first scopes file access by path (F5 [#76](https://github.com/arcships/dim/issues/76) for processes; no item yet for in-process tools) | §11.2: a Session reads the files it owns without asking, and ownership decides, never the Session-files directory as a whole, the database directory or the product home | Not needed by S5a, since Permission has no path input. Applies when that item is designed; SessionStore then adds the ownership query |
+| The item that first scopes file access by path (F5 [#76](https://github.com/arcships/dim/issues/76) for processes; [ADR 014](../../adr/014-file-access-facts.md) for in-process file tools) | §11.2: a Session's owned files need no scope approval; ownership decides, never the Session-files directory as a whole, the database directory or the product home. Tool approval remains independent | S5a needed none. ADR 014 reads `sessionFiles.owns` for reads and writes; §11.1 admits a file-tool read by path |
 
 ## 16. Acceptance (flow tests)
 
@@ -671,7 +702,7 @@ None to the runtime or rutis. Supplements and requirements to other owners:
    returned path, under the product default `workspace-write` and under `read-only`, returns
    the content; the branch writes no `approval/request`, and its permission state (version and
    policy) is unchanged. Denying another Session's file or the database directory is acceptance
-   of the item in §11.2, because `read` is not path-scoped (§11.1).
+   of §11.1's outside-facts read ask: neither path is in the Session's facts.
 
 Tests: items 1, 3 (unknown Session), 5, 6 (names, size, a cancelled call), 4 and 9 are flow
 tests through `sessionFiles` in
@@ -707,12 +738,24 @@ App Server type:
 pub struct StoredSessionFile { pub file_id: String, pub path: PathBuf, pub bytes: u64 }
 pub enum SessionFileErrorCode { NotFound, Invalid, TooLarge, NodeUnavailable, Cancelled, Storage }
 pub struct SessionFileError { pub code: SessionFileErrorCode, pub message: String }
-pub trait PutSessionFile: Send + Sync + 'static {
+pub trait SessionFilesService: Send + Sync + 'static {
     fn put(&self, session_id: String, name: String, content: Vec<u8>, cancel: CancellationToken)
         -> Pin<Box<dyn Future<Output = Result<StoredSessionFile, SessionFileError>> + Send + '_>>;
+    fn register(&self, session_id: String, path: PathBuf)
+        -> Pin<Box<dyn Future<Output = Result<(), SessionFileError>> + Send + '_>>;
+    fn owns(&self, session_id: String, path: PathBuf)
+        -> Pin<Box<dyn Future<Output = Result<bool, SessionFileError>> + Send + '_>>;
+    fn owned_paths(&self, session_id: String)
+        -> Pin<Box<dyn Future<Output = Result<Vec<PathBuf>, SessionFileError>> + Send + '_>>;
 }
-pub struct SessionFilesHost(pub Arc<dyn PutSessionFile>);
+pub struct SessionFilesHost(pub Arc<dyn SessionFilesService>);
 ```
+
+`register` stores a resolved output path; the producer has checked it against its own root.
+`owns` takes the resolved absolute path and reads both ownership tables: an exact
+`session_output_owners` row, or the `session_file_owners` row of an attachment whose path lies
+in `<db>.session-files/<fileId>/`. A query failure is an error that denies access.
+`owned_paths` lists the owned file-id directories and output paths.
 
 `SessionStorePlugin` takes the database directory's root index, provides `SessionFilesHost`, and
 reads `FileStorage` with `ctx.get_as` on each call. The fork, release and sweep steps are

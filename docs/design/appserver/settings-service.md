@@ -320,10 +320,12 @@ impl SettingsService {
   row's context.
 - `execution` is user scope only: it declares no project file, so a project-scope read or write is
   refused. It holds two booleans, `sandbox` and `network`, both defaulting to `false`, and its
-  revisions are the ordinary CAS ones. `/settings > Execution` and any local management client use
+  revisions are the ordinary CAS ones. The TUI's `Process isolation` control and any local management client use
   `settings.read`/`settings.update`; the owner's reader reaches the document through the
   `ExecutionSettingsHost` port, which is an in-process read contract and not a management method
-  ([ADR 011](../../adr/011-execution-settings.md) D1).
+  ([ADR 011](../../adr/011-execution-settings.md) D1). The visible choices map to these existing
+  booleans as defined by [process isolation](../host-platform-isolation.md#process-isolation);
+  File access and Tool approval do not write this source.
 - The file and native paths are shared with `BusinessDocument`, keyed by source name instead of
   `D::NAMESPACE`. CAS, the gate, leases, the unsynced case and `publish` stay as they are.
 - `SettingsError` gains `UnknownSource`, `UserOnlyField(pointer)`, `InvalidScope` and

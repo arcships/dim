@@ -16,17 +16,17 @@ member's approval is not a user.
 
 ### D1. The grant and its storage
 
-The `SessionGrants` Session part owns the service and registers `session.grants.add`, `remove`,
-`list` and `lookup` in the session method namespace. SessionStore owns the native
+The `SessionGrants` Session part owns the service and registers `session.grants.add` and `remove`
+in the session method namespace. SessionStore owns the native
 `session_grants` table, keyed `(session_id, path)`. A row is `{session_id, path, kind, mode}`:
 `path` is canonical, `kind` is `file` or `dir`, `mode` is `read` or `write`, and a write grant
 also permits reads.
 
 `add(session_id, path, kind, mode)` upserts. A `read` add never lowers an existing `write`; a
-`write` add raises it. `remove(session_id, path)` drops both modes; `list(session_id)` lets a user
-revoke a remembered path. The method owner resolves `~`, relative paths, `..` and symlinks, and
-rejects an unresolvable path. A file that does not exist yet is resolved by its parent and final
-name and stored with `kind: file`; the caller passes the kind it is approving.
+`write` add raises it. `remove(session_id, path)` drops both modes. The method owner resolves `~`,
+relative paths, `..` and symlinks, and rejects an unresolvable path. A file that does not exist
+yet is resolved by its parent and final name and stored with `kind: file`; the caller passes the
+kind it is approving.
 
 A grant applies only to its session, survives a restore (it is stored configuration read at use
 time), and is removed with the session in the same delete transaction. A fork is a new session
@@ -39,9 +39,9 @@ damaged or unloaded session is still cleaned.
 
 ### D2. Permission applies the grant
 
-The grant is a `Permission` fact, not an `Approval` decision. `Permission` calls
-`lookup(session_id, path, mode)` and applies a matching grant only at the `Ask` step; it never
-turns a `Deny` into `Allow`, and a write grant is inert under `read-only`. A lookup failure
+The grant is a `Permission` fact, not an `Approval` decision. `Permission` reads the Session's
+grants through `SessionGrants` and applies a matching grant only at the `Ask` step; it never
+turns a `Deny` into `Allow`, and a write grant is inert under `read-only`. A grant read failure
 denies. `Approval` remains the one admission point and re-checks through `Permission` after the
 user answers. At process start, a write grant is mounted writable and a read grant read-only.
 
@@ -74,7 +74,7 @@ too. It is not a property of this decision.
 
 ## Consequences
 
-- A native `session_grants` table, the `SessionGrants` part, `add`/`remove`/`list`/`lookup` and a
+- A native `session_grants` table, the `SessionGrants` part, `add`/`remove` and a
   native format upgrade.
 - `native-storage-format.md`, `session-deletion-and-fork.md`, `session-boundary.md`,
   `session-files.md`, `overview.md` B.1/B.2, `Permission.md` and the CLI tables are updated under
@@ -106,10 +106,10 @@ remains as written.
 | §4 rule 4 | No core mechanism change. |
 | §4 rule 5 | No Timeline batch. |
 | §4 rule 6 | No context-input change. |
-| §4 rule 7 | `Permission` calls `lookup`; `Approval` does not write the table. |
+| §4 rule 7 | `Permission` reads the `SessionGrants` part; `Approval` does not write the table. |
 | §4 rule 8 | No new infrastructure; the native table is a storage format change owned by SessionStore. |
 | §4 rule 9 | No new Timeline fact; grants stay outside the Timeline. |
 | ADR 002 D2 | No wiring plugin. |
 | ADR 002 D3 | Grants are Session-scoped; `Permission` depends on the service. |
 | ADR 002 D4 | Business configuration, read at use time. |
-| ADR 002 D5 | `session.grants.add/remove/list/lookup` are language-neutral contracts carrying paths, kinds and modes. |
+| ADR 002 D5 | `session.grants.add/remove` are language-neutral contracts carrying paths, kinds and modes. |

@@ -270,6 +270,27 @@ Provider creation and detail use route-addressable dialogs over the provider lis
 matching the reference implementation. Unsaved changes require confirmation when
 leaving. English and Chinese labels follow the existing locale choice.
 
+Forms use the shared page-content width and control size ladder. Action buttons
+fit their labels with horizontal padding rather than stretching with a grid;
+action groups wrap on narrow screens. Checkbox labels stay beside their controls.
+Save actions follow all fields they submit, including model preferences. Provider
+list and add-dialog searches are independent; the custom-provider form can return
+to the picker, confirming before discarding a changed draft. Dialog close buttons
+remain square at the top right.
+
+Loading and failure states, including retry actions, remain inside the active
+dialog rather than behind it. Error banners wrap long server messages without
+widening the page. Account refresh retains the last successful usage and referral
+display while loading or on failure; changing identity or signing out clears it.
+
+During a connection loss, host-backed forms are disabled while navigation and
+browser-owned appearance settings remain available. Provider dialogs show the
+reconnection status inside the dialog and keep their close control available.
+Reconnection reloads the current page unless it would replace an unsaved draft or
+active MCP editor/authorization. Interrupted writes retain their error and draft;
+they are not replayed automatically. Login status polling resumes with the same
+authorization attempt rather than starting another login.
+
 ```text
 ┌──────────────────────┬────────────────────────────────────────────┐
 │ ← Back               │ Providers                    [+ Add]       │
@@ -327,7 +348,7 @@ optional account feature must not prevent identity or usage from loading.
 | MCP | List, add/edit transports, enable/disable, test, authentication/sign-out and confirmed removal, preserving secret fields omitted from edits |
 | Plugins | List, enable/disable, installation/update/removal and the owner's typed settings surfaces |
 | Skills | List, enable/disable, source installation, update and confirmed removal |
-| Permissions | Default execution/network settings and command-rule management, with confirmation for privilege increases |
+| Permissions | Default execution/network settings and command-rule management, with confirmation for privilege increases. The Execution card reads `host.execution.backend` and shows the owner's sandbox-backend reason when the host has none; the browser never infers the platform |
 | Archived sessions | Search, restore/open and confirmed permanent deletion |
 | Diagnostics | Safe version, protocol, connection and logging information with refresh and supported logging controls |
 

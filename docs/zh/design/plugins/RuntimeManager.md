@@ -207,7 +207,7 @@ RuntimeManager 不是 Capability：它没有 Timeline 状态，不写 Timeline �
 
 ## 9. 向机制所有者提出的需求
 
-对 rutis 没有：连接行要等启动命令提供后才启动进程，行按 rutis-loader 0.19.2 已有的依赖等待来等它的会话。
+对 rutis 没有：连接行要等启动命令提供后才启动进程，行按 rutis-loader 0.19.3 已有的依赖等待来等它的会话。
 
 **R1. PluginManager：Python 链接和运行时请求（M1）。**
 

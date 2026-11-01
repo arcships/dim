@@ -80,9 +80,107 @@
       "presetWithin": true,
       "within": false,
       "usage": "job-save-and-launch"
+    },
+    {
+      "name": "explicit file bound with unchanged full-access preset",
+      "requested": {"preset":"full-access","fileAccess":"unrestricted","toolApproval":"bypass","allowedTools":[],"disallowedTools":[]},
+      "bound": {"preset":"full-access","fileAccess":"read-only","toolApproval":"bypass","allowedTools":[],"disallowedTools":[]},
+      "capped": {"preset":"full-access","fileAccess":"read-only","toolApproval":"bypass","allowedTools":[],"disallowedTools":[]},
+      "presetWithin": true, "within": false, "usage": "launch-only"
+    },
+    {
+      "name": "explicit Ask intersects Bypass and denies win",
+      "requested": {"preset":"full-access","fileAccess":"workspace-read-write","toolApproval":"bypass","allowedTools":["shared","blocked"],"disallowedTools":["other"]},
+      "bound": {"preset":"full-access","fileAccess":"unrestricted","toolApproval":"ask","allowedTools":["shared","extra","blocked"],"disallowedTools":["blocked"]},
+      "capped": {"preset":"full-access","fileAccess":"workspace-read-write","toolApproval":"ask","allowedTools":["shared","extra"],"disallowedTools":["other","blocked"]},
+      "presetWithin": true, "within": false, "usage": "launch-only"
+    },
+    {
+      "name": "explicit Ask does not inherit full-access unconditional grants",
+      "requested": {"preset":"full-access","toolApproval":"ask","allowedTools":["requested","shared"],"disallowedTools":[]},
+      "bound": {"preset":"full-access","toolApproval":"ask","allowedTools":["bound","shared"],"disallowedTools":[]},
+      "capped": {"preset":"full-access","toolApproval":"ask","allowedTools":["shared"],"disallowedTools":[]},
+      "presetWithin": true, "within": false, "usage": "launch-only"
+    },
+    {
+      "name": "explicit request under legacy workspace bound",
+      "requested": {"preset":"full-access","fileAccess":"unrestricted","toolApproval":"bypass","allowedTools":[],"disallowedTools":[]},
+      "bound": {"preset":"workspace-write","allowedTools":[],"disallowedTools":[]},
+      "capped": {"preset":"workspace-write","fileAccess":"workspace-read-write","toolApproval":"ask","allowedTools":[],"disallowedTools":[]},
+      "presetWithin": false, "within": false, "usage": "launch-only"
+    },
+    {
+      "name": "legacy read-only tool rules survive explicit Bypass",
+      "requested": {"preset":"full-access","fileAccess":"unrestricted","toolApproval":"bypass","allowedTools":[],"disallowedTools":[]},
+      "bound": {"preset":"read-only","allowedTools":[],"disallowedTools":[]},
+      "capped": {"preset":"read-only","fileAccess":"read-only","allowedTools":[],"disallowedTools":[]},
+      "presetWithin": false, "within": false, "usage": "launch-only"
+    },
+    {
+      "name": "preset-only job retains explicit independent bound",
+      "requested": {"preset":"workspace-write","allowedTools":[],"disallowedTools":[]},
+      "bound": {"preset":"full-access","fileAccess":"read-only","toolApproval":"bypass","allowedTools":[],"disallowedTools":[]},
+      "capped": {"preset":"workspace-write","fileAccess":"read-only","toolApproval":"ask","allowedTools":[],"disallowedTools":[]},
+      "presetWithin": true, "within": false, "usage": "job-save-and-launch"
+    },
+    {
+      "name": "explicit Bypass is unconditional even with read-only preset",
+      "requested": {"preset":"read-only","toolApproval":"bypass","allowedTools":["custom"],"disallowedTools":[]},
+      "bound": {"preset":"workspace-write","toolApproval":"bypass","allowedTools":["extra"],"disallowedTools":["blocked"]},
+      "capped": {"preset":"read-only","toolApproval":"bypass","allowedTools":["custom","extra"],"disallowedTools":["blocked"]},
+      "presetWithin": true, "within": false, "usage": "launch-only"
+    },
+    {
+      "name": "explicit equivalent legacy dimensions stay within",
+      "requested": {"preset":"workspace-write","allowedTools":[],"disallowedTools":[]},
+      "bound": {"preset":"workspace-write","fileAccess":"workspace-read-write","toolApproval":"ask","allowedTools":[],"disallowedTools":[]},
+      "capped": {"preset":"workspace-write","fileAccess":"workspace-read-write","toolApproval":"ask","allowedTools":[],"disallowedTools":[]},
+      "presetWithin": true, "within": true, "usage": "job-save-and-launch"
+    }
+  ],
+  "reject": [
+    {
+      "name": "legacy read-only requested against explicit Ask",
+      "requested": {"preset":"read-only","allowedTools":[],"disallowedTools":[]},
+      "bound": {"preset":"full-access","toolApproval":"ask","allowedTools":[],"disallowedTools":[]},
+      "usage": "job-save-and-launch"
+    },
+    {
+      "name": "explicit Ask requested against legacy read-only",
+      "requested": {"preset":"full-access","toolApproval":"ask","allowedTools":[],"disallowedTools":[]},
+      "bound": {"preset":"read-only","allowedTools":[],"disallowedTools":[]},
+      "usage": "launch-only"
     }
   ],
   "reuse": [
+    {
+      "name": "same preset wider file scope fails saved bound",
+      "x": {"preset":"full-access","fileAccess":"unrestricted","toolApproval":"bypass","allowedTools":[],"disallowedTools":[]},
+      "savedEffective": {"preset":"full-access","fileAccess":"read-only","toolApproval":"bypass","allowedTools":[],"disallowedTools":[]},
+      "liveBound": {"preset":"full-access","allowedTools":[],"disallowedTools":[]},
+      "withinSaved": false, "withinLive": true
+    },
+    {
+      "name": "same preset Bypass fails saved Ask bound",
+      "x": {"preset":"full-access","toolApproval":"bypass","allowedTools":[],"disallowedTools":[]},
+      "savedEffective": {"preset":"full-access","toolApproval":"ask","allowedTools":[],"disallowedTools":[]},
+      "liveBound": {"preset":"full-access","allowedTools":[],"disallowedTools":[]},
+      "withinSaved": false, "withinLive": true
+    },
+    {
+      "name": "same preset wider file scope fails live bound",
+      "x": {"preset":"full-access","fileAccess":"unrestricted","toolApproval":"bypass","allowedTools":[],"disallowedTools":[]},
+      "savedEffective": {"preset":"full-access","allowedTools":[],"disallowedTools":[]},
+      "liveBound": {"preset":"full-access","fileAccess":"read-only","toolApproval":"bypass","allowedTools":[],"disallowedTools":[]},
+      "withinSaved": true, "withinLive": false
+    },
+    {
+      "name": "narrow explicit dimensions satisfy both bounds",
+      "x": {"preset":"full-access","fileAccess":"read-only","toolApproval":"ask","allowedTools":[],"disallowedTools":[]},
+      "savedEffective": {"preset":"full-access","fileAccess":"workspace-read-write","toolApproval":"bypass","allowedTools":[],"disallowedTools":[]},
+      "liveBound": {"preset":"full-access","fileAccess":"unrestricted","toolApproval":"bypass","allowedTools":[],"disallowedTools":[]},
+      "withinSaved": true, "withinLive": true
+    },
     {
       "name": "live starter narrowed after save",
       "x": {"preset":"workspace-write","allowedTools":[],"disallowedTools":[]},

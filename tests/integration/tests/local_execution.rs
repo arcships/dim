@@ -1021,10 +1021,15 @@ async fn a_cancelled_command_reaches_the_digest_without_an_exit_status() {
     else {
         panic!("a command entry: {:?}", entries.entries[0])
     };
-    assert!(
-        (command.len() <= 200 && listed == &command)
-            || (listed.starts_with(&command[..200]) && listed.ends_with('…')),
-        "{listed}"
+    let kept = command
+        .char_indices()
+        .nth(200)
+        .map_or(command.clone(), |(index, _)| {
+            format!("{}…", &command[..index])
+        });
+    assert_eq!(
+        listed, &kept,
+        "the digest lists the command cut at 200 characters"
     );
     assert_eq!(
         (exit_code, signal),

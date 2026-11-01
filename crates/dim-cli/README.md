@@ -223,7 +223,7 @@ cargo build --locked -p dimcode
 target/debug/dimcode --help
 ```
 
-Help and version commands do not start a daemon or read credentials. This crate is a library; the `dimcode` crate builds the single executable, which runs the CLI and, as `dimcode app-server`, the App Server. The CLI starts its daemon by running its own executable with `app-server`, through a `dimcode-server` link to it in `<home>/rust` so that process lists (`ps`, `pgrep dimcode-server`, Activity Monitor) tell the daemon from the clients that share the executable; `--server PATH` selects an explicit App Server binary instead and runs it by its own name.
+Help and version commands do not start a daemon or read credentials. This crate is a library; the `dimcode` crate builds the single executable, which runs the CLI and, as `dimcode app-server`, the App Server. The CLI starts its daemon by running its own executable with `app-server`, through a `dimcode-server` link to it in `<home>/rust` so that process lists (`ps`, `pgrep dimcode-server`, Activity Monitor) tell the daemon from the clients that share the executable; `--server PATH` names a standalone `dim-app-server` binary, which the CLI runs by its own name, while the default instead runs this executable's `app-server` subcommand. Naming this executable is an error: it serves the App Server only behind that subcommand; a path that does not exist, a program that exits before serving, or one that does not start serving in time is reported with the same requirement.
 
 ## API-key configuration
 
@@ -346,10 +346,23 @@ See the [MCP OAuth contract](../../docs/design/appserver/mcp-oauth.md#13-require
 
 ## Permission presets and approvals
 
-The App Server decides each tool call by the branch's preset and the user's command rules; the
-CLI selects them through existing methods and never decides a call itself. A preset or approval
-decides whether a command runs; the user's [sandbox switch](#execution-boundary) limits what it can
-reach once it runs, and neither one widens the other.
+The App Server decides each tool call; the CLI selects settings and never decides a call itself.
+`/permissions` opens three independent controls, also available under `/settings`:
+
+```text
+Permissions
+  File access         Read only / Workspace read/write / Unrestricted
+  Tool approval       Ask / Bypass
+  Process isolation   Off / Sandboxed · No network / Sandboxed · Network allowed
+```
+
+Choosing File access writes only `fileAccess`; choosing Tool approval writes only `toolApproval`.
+The UI preserves the branch's legacy preset and tool lists, and saves the chosen field alone in
+`config.json` for new sessions, keeping other configuration keys. Ask asks about all tools except
+explicitly allowed tools and commands; Bypass skips only tool questions, not file restrictions,
+deny rules or process isolation. The picker identifies legacy risk-based behavior until an
+explicit tool-approval choice is made. Existing `permissionPreset` configuration and `--permission`
+remain compatibility seeds, with this behavior when the independent fields are omitted:
 
 | Preset | Reads | File writes | Commands, network, unclassified tools |
 | --- | --- | --- | --- |
@@ -368,8 +381,10 @@ retrying a version conflict. Without the flag a resumed Session keeps its preset
 shows the preset; `exec` prints it to stderr only when the flag is given. A live change on
 `main`, from any client, prints `[permission] main branch preset: ...`.
 
-At the idle prompt, `/approvals` (alias `/permissions`) shows the `main` preset and the user's
-command rules. `/approvals PRESET` switches `main`; `full-access` asks `[y/N]` and only `y`/`yes`
+At the line-mode idle prompt, `/permissions` (aliases `/approvals` and `/approval`) shows the
+independent controls, the legacy preset seed and the user's command rules. It accepts
+`file-access read-only|workspace-read-write|unrestricted` and `tool-approval ask|bypass` for the
+active main branch. `/approvals PRESET` still switches the legacy seed; `full-access` asks `[y/N]` and only `y`/`yes`
 confirms. `/approvals allow|deny exact|prefix COMMAND` adds a rule and `/approvals remove N`
 removes rule N of the list printed last; both print the new numbered list. A preset or rule list
 that changed since it was shown is reported and nothing is written. Child branches and native members created later from the changed branch inherit its current policy;
@@ -400,8 +415,11 @@ conflict, and then answers allow. If the write fails it prints `[rule not saved]
 
 ## Execution boundary
 
-The sandbox is a setting, and it is off by default. `/settings > Execution` has two switches,
-`Sandbox` and `Network`; both start off, and Network applies only while Sandbox is on. The switch
+The sandbox is a setting, and it is off by default. `/permissions > Process isolation` and
+`/settings > Process isolation` open the same picker: Off, Sandboxed · No network, or
+Sandboxed · Network allowed. Save, Reset and Reload reuse the existing user-scope execution settings
+and their revision conflict checks. The stored `sandbox` and `network` switches both start off;
+Network applies only while Sandbox is on. The setting
 is read whenever a command starts, so it applies to the next command or new persistent shell
 without restarting the daemon, and a running process keeps the boundary it started with. Approving
 a command and choosing `full-access` do not change the boundary; the model cannot change it at all.
@@ -433,7 +451,7 @@ A denied operation fails inside the command as an ordinary error: `Operation not
 macOS; on Linux, `No such file or directory` for an ungranted path and `Read-only file system`
 for a read-only one. When a sandboxed command fails with a typical denial, its result tells the
 model that the sandbox may be the cause and that you change the switches in
-`/settings > Execution`.
+`/settings > Process isolation`.
 
 There is no policy file, and the `host-isolation.json` that earlier releases read is ignored: a
 daemon that finds one names it on stderr at startup and asks you to delete it. The switches are
@@ -724,11 +742,11 @@ Pickers (`/resume`, `/models`, `/connect`, `/login`, `/approvals`, `/theme`, `/l
 
 Both scrollback and fullscreen palettes list slash commands, grouped by category and sorted alphabetically by canonical English category and command name. Each row shows its category, `/command`, description and any command shortcut. Commands requiring a session are faint and marked `(unavailable)` until one exists. Keyboard-only actions are omitted from both menus; `/keys` lists `Esc` interrupt, `Ctrl+S` steer, and the fullscreen `Home` / `End` scroll and `Tab` message picker bindings.
 
-`/approvals` is the visible permission entry; the hidden `/approval` still opens its own menu when typed exactly. Selecting an incomplete `exit` or `suspend` match only fills the command name; its exact name or alias is required before dispatch. Thus `/` + Enter completes `/exit` without quitting, and another Enter executes the completed command.
+`/permissions` is the single visible permission entry; `/approvals` and `/approval` are compatibility aliases for the same unified flow. Selecting an incomplete `exit` or `suspend` match only fills the command name; its exact name or alias is required before dispatch. Thus `/` + Enter completes `/exit` without quitting, and another Enter executes the completed command.
 
 Typing ranks the matches: the exact name, a name prefix, an alias prefix, a prefix of a name part (`reload-skills` for `sk`), a name containing the query, a description word starting with it, then three or more letters in order through the name (`stg` for `settings`); a match inside a description word does not count. Equally ranked matches use the category/name order. See the [command menu design](../../docs/design/cli-commands.md#command-menu).
 
-`/settings` gathers the interface settings: theme and language (each opens its picker and comes back), the startup form (`tuiMode`), tool details (`tuiToolDetailsExpanded`: expanded by default in both modes; collapsed shows each tool group as its header, folds thoughts and closes a compaction row's summary, digest and kept input, and `/tools` flips it too), the fullscreen mouse (`tuiMouseMode`: off hands selection and the wheel to the terminal), notifications (`tuiNotifyOnComplete`, on by default), tool approvals and the model. Switches flip with `Enter`, `←`/`→` or `Space` and are saved to `config.json` at once.
+`/settings` gathers the interface settings: theme and language (each opens its picker and comes back), the startup form (`tuiMode`), tool details (`tuiToolDetailsExpanded`: expanded by default in both modes; collapsed shows each tool group as its header, folds thoughts and closes a compaction row's summary, digest and kept input, and `/tools` flips it too), the fullscreen mouse (`tuiMouseMode`: off hands selection and the wheel to the terminal), notifications (`tuiNotifyOnComplete`, on by default), tool approvals and execution settings. Model selection stays in `/model` (`/models`). Switches flip with `Enter`, `←`/`→` or `Space` and are saved to `config.json` at once.
 
 Notifications reach a user who switched windows when the run finishes or waits on a permission or a question (each request once): iTerm2 gets `OSC 9`, kitty `OSC 99`, Ghostty, WezTerm and foot `OSC 777`; tmux and any other terminal get a bell, which tmux forwards and terminals turn into a Dock bounce, a taskbar flash or a tab badge.
 
@@ -782,7 +800,17 @@ A bar means a run is under way or held up, so a finished or failed run removes i
 
 `/language` (`/lang`, `/locale`) picks the interface language: the system default (`LC_ALL`, `LC_MESSAGES`, `LANG`) or one of English, 简体中文, 日本語, 한국어, 繁體中文, Bahasa Indonesia, Deutsch, Français, Español, Português (Brasil) and Português (Portugal). Moving previews, `Enter` saves it as `locale` in `config.json`, `Esc` restores. Every language is translated; a string missing from a table reads as English. Rows already in the transcript keep their language.
 
-In the default theme (`System`) every colour is the terminal's own default foreground, a slot of its 16-colour palette (`ansi:N`) or the faint attribute, so it follows the terminal's colour scheme on dark and light backgrounds alike. Yellow is the accent (titles, the selected row, inline code), green the user's messages and successes, blue first-level and cyan second-level headings, red errors; muted text is faint, table rules bright black, and code is highlighted in the terminal's base colours (keywords and types blue, calls cyan, numbers yellow, strings green).
+Without a saved `themeId`, a dark terminal with truecolour or 256-colour support defaults to `Dim Dark`. Light backgrounds and 16-colour terminals use `System`. Apple Terminal (`TERM_PROGRAM=Apple_Terminal` or `TERM=nsterm…`) also uses `System` when its background is unknown; it only defaults to `Dim Dark` when an OSC 11 background report, `COLORFGBG` or an explicit `DIM_TERMINAL_APPEARANCE=dark` (also `DIMCODE_TERMINAL_APPEARANCE`) identifies a dark background. Detection keeps that precedence: explicit appearance override, OSC 11, then `COLORFGBG`. A saved theme choice is preserved; detection does not write it to configuration.
+
+```text
+ no saved theme
+   dark + truecolour/256 colours  -> Dim Dark
+   light / 16 colours            -> System
+   Apple Terminal, unknown bg    -> System
+ saved theme                     -> saved choice (existing compatibility checks)
+```
+
+In `System` on a dark background every colour is the terminal's own default foreground, a slot of its 16-colour palette (`ansi:N`) or the faint attribute, so it follows the terminal's colour scheme. Yellow is the accent (titles, the selected row, inline code), green the user's messages and successes, blue first-level and cyan second-level headings, red errors; muted text is faint, table rules bright black, and code is highlighted in the terminal's base colours (keywords and types blue, calls cyan, numbers yellow, strings green).
 
 On a light background (Terminal.app's default profile among them) the coloured roles do not come from the 16-colour slots: a light profile's ochre yellow and sea-green cyan were not chosen for reading on white. As in the TS build, each hue takes a fixed lightness that carries it on paper (amber, olive green, blue, teal, red) and is held to the contrast floors against the background the terminal reported (an off-white when it did not answer); muted and faint take fixed greys too, since the faint attribute is a pale grey on white, and the selected row carries white text; text and border stay the terminal's own, which it already pairs with its background. 16-colour terminals keep the slots. `Dim Light` takes the same ramp.
 
@@ -952,7 +980,7 @@ The terminal UI reaches the same Session methods as the line client:
 | `/plugins` (`/plugin`) | Lists every plugin name from `plugin.list` (built-in, default, installed): the candidate in use, its state, whether it is locked, and for the selected one its candidates and any error, wait or refused content. `Enter` turns an off plugin on (`plugin.enable`) or, after a confirmation, turns it off (`plugin.disable`); a locked one says why it cannot be turned off. `r` reloads it (`plugin.reload`), `Ctrl+R` lists again. The list is read again after each change, and a failed call shows the method's message |
 | `/plugins install PATH` | Installs and turns on the plugin directory at `PATH`, relative to the workspace (`plugin.install`), then opens the list with the outcome, including when a restart is required. Git installs, update and remove are `dimcode plugin ...` |
 | `/login` | Opens the Dim sign-in panel. It shows the account from `account.status` as a status line; signed out, its entries are browser, enterprise-email or device sign-in through `account.login.*` at the entry's account directory (below), each entering its own flow (`Esc` after a failure returns to the entries); signed in, it shows the account's name and email, its plan, credits, token windows and feature meters from `account.usage` (`Ctrl+R` asks again; a plugin without the method shows why), and its entries open `/models`, open the plan page at the account directory's `/console/subscription` in the browser, or sign out with `account.logout`, after which the panel shows the sign-in entries again. Browser sign-in redirects to `http://localhost:54321/auth/callback` (`--redirect-uri` overrides it), catches the callback on a loopback listener when that port is free and opens the authorization URL (neither over SSH); a callback URL pasted in the panel completes it too; device sign-in shows the code and polls the attempt every second. `Esc` closes the panel and cancels a pending attempt. On success the catalog is refreshed with `provider.refresh` and `/models` opens |
-| `/connect` | Reads safe connection snapshots with `provider.management`. `Test + apply` probes the unsaved draft, then updates only changed fields at the form's original version with `provider.update`; a record whose models are its own has them replaced by the new endpoint's listing in that same write when the edit changes `baseUrl`, `credential` or `headers`, so the catalog follows the new endpoint, while a proxy or timeout edit saves alone and a builtin whose models are the bundled catalog's keeps them; unsupported model listing still permits saving and reports that the key was not tested. Other probe failures keep the draft. `Disconnect` atomically clears credentials and disables the record, and a catalog of the record's own goes with it, because the listing taken with that key is that key's view; the next connect lists the endpoint again. Enable/Disable update only that flag. `Add custom provider` probes a Name, Base URL and API Key draft, then calls `provider.create` with the form's retained UUID and discovered defaults. IDs never derive from names. Failures retain edits; rereads update the safe status/version and require confirmation before retrying. `Ctrl+R` rereads without discarding the draft. Fields and filters use the composer's line editor. Account sign-in retains its existing owner |
+| `/connect` | Reads safe connection snapshots with `provider.management`. `Test + apply` probes the unsaved draft, then updates only changed fields at the form's original version with `provider.update`; a record whose models are its own has them replaced by the new endpoint's listing in that same write when the edit changes `baseUrl`, `credential` or `headers`, so the catalog follows the new endpoint, while a proxy or timeout edit saves alone and a builtin whose models are the bundled catalog's keeps them; unsupported model listing still permits saving and reports that the key was not tested. Other probe failures keep the draft. `Disconnect` atomically clears credentials and disables the record, and a catalog of the record's own goes with it, because the listing taken with that key is that key's view; the next connect lists the endpoint again. Enable/Disable update only that flag. `Add custom provider` probes a Name, Base URL and API Key draft, then calls `provider.create` with the form's retained UUID and discovered defaults. IDs never derive from names. Failures retain edits; rereads update the safe status/version and require confirmation before retrying. `Ctrl+R` rereads without discarding the draft. Fields and filters use the composer's line editor. A row whose entry carries an `account` descriptor opens the account step instead of the form: signed out, its row says `Sign in` and opening it starts the only flow the descriptor's `loginMethods` list, and signed in, it shows `Signed in` and signs out through `<namespace>.logout`; a daemon that does not advertise the method reports that instead; a row whose namespace is `account` opens the Dim account's `/login` panel instead |
 | `/resume` | Lists saved Sessions across workspaces, 50 at a time through `session.catalog`; moving near the end loads the next page. The filter searches the server after 150 ms, including Sessions not loaded yet. Ctrl+R refreshes; closing, refreshing or replacing a search cancels the pending read when the daemon advertises `session.catalog.cancel`. Older daemons use `session.summaries` and local filtering |
 | `/models` | Lists enabled, executable models from `provider.list`/`provider.catalog`; a model whose context window or maximum output no source declares is not offered. Every provider with such a model keeps one muted row after its models, counting them and naming `dimcode models PROVIDER --set-missing-limits`; when the provider has nothing selectable, that row replaces its empty-provider row. A static provider whose catalog holds no models is asked to fill it with `provider.refresh` once per catalog version in a connection when the daemon says its models can be listed, and the picker shows what the catalog then holds, because the Provider owner decides what a catalog holds; a successful refresh records the version it wrote, so a listing that comes back empty is not asked for again, and a write to the record asks once more; the picker re-reads the list when such a refresh returns while it is open, and a reply that arrives after it closed is shown by the next open. A provider that offers nothing selectable keeps a muted row saying why: no models with `dimcode models PROVIDER --refresh` when the daemon says its models can be listed, no models with `provider.models.create` when it cannot, an unreadable catalog, or how many models are unavailable, disabled, or both, and `dimcode models PROVIDER` for the details. An explicit pick sends the saved effort/tier preferences for that exact `{providerId, modelId}` with `session.create` or `session.model.update`, then saves the scoped default with `provider.select`. The adopted model stays in effect even when saving the default fails; the failure is reported as a notice. Unsupported saved preferences are reported and retained for the user to edit or clear; there is no silent fallback. When the daemon advertises `collaboration.model_policy`/`collaboration.set_model_policy`, a "Subagent models" row chooses Agent choice, Inherit requesting branch or a fixed model (from the same model list) for new Collaboration members; it writes only `collaboration.set_model_policy` with the revision it read, and after a revision conflict the next choice rereads before saving ([subagent model policy](../../docs/design/subagent-model-policy.md#5-native-cli-interaction)) |
 | `/lines` | Lists `main` and every line under the line it was opened from, ordered by where it was cut and labelled `after message N`, each with its state (working, waiting, ended itself, ended by an operation, creation failed); while a line is shown the composer's bottom border names its path from `main` (`line main ▸ b-91 · after message 4`); Enter shows the selected line's conversation in place of `main`'s, and the composer, `!command` and the interrupt then address that line; `x`, then `y`, ends the selected line through `session.branch_end`, refused on `main` |
@@ -1045,25 +1073,31 @@ cannot be stored, nothing is sent and the notice names the paste; the cleared dr
 
 ## Accounts
 
-The Dim account is a [managed provider plugin](../dim-app-server/README.md#managed-provider-plugins) compiled into the account build of `dimcode` (built with `DIM_OAUTH_CLIENT_ID_CN` and `DIM_OAUTH_CLIENT_ID_GLOBAL` set); no Node runtime, plugin package or extraction is involved. The public build supports API-key providers only.
+`dimcode login [PROVIDER]`, `dimcode account PROVIDER` and `dimcode logout PROVIDER` work on every Provider whose `provider.management` entry carries an `account` descriptor ([Provider management §3.1](../../docs/design/appserver/provider-management.md#31-read-models)). The descriptor's `namespace` names the methods (`<namespace>.login.begin` for device, `<namespace>.login.browser.begin`, `.login.browser.complete`, `.login.status`, `.login.cancel` and `<namespace>.logout`), and its `loginMethods` say which flow a Provider offers. No Provider id is compared. Without a PROVIDER, `login` lists the described accounts; `--help` lists the forms without starting a daemon.
+
+The `account` namespace is the Dim account, a [managed provider plugin](../dim-app-server/README.md#managed-provider-plugins) compiled into the account build of `dimcode` (built with `DIM_OAUTH_CLIENT_ID_CN` and `DIM_OAUTH_CLIENT_ID_GLOBAL` set); no Node runtime, plugin package or extraction is involved. Its calls also carry `providerId` and the account directory. Browser login opens the authorization URL when desktop integration is available, and also prints it. Paste the callback URL into the hidden prompt; `--redirect-uri URI` supplies the provider's registered redirect address. The default is Dim's registered `http://localhost:54321/auth/callback`. No local callback listener is started. The server validates state and performs the exchange. EOF, `Ctrl+C` or expiration cancels an uncompleted attempt.
 
 ```bash
 target/debug/dimcode --home /path/to/development-home \
   login dimcode-api-oauth --directory https://account-directory.example
 ```
 
-The provider advertises browser/device methods through `account.providers`. Browser login opens the authorization URL when desktop integration is available, and also prints it. Paste the callback URL into the hidden prompt; `--redirect-uri URI` supplies the provider's registered redirect address. The default is Dim's registered `http://localhost:54321/auth/callback`. No local callback listener is started. The server validates state and performs the exchange. EOF, `Ctrl+C` or expiration cancels an uncompleted attempt.
+The other namespaces are native OAuth accounts: `account.codex` signs in by browser and `account.grok` by device code. Their calls carry no provider target, and their browser redirect is the owner's own, so the callback is always pasted.
 
 ```bash
-dimcode --home /path/to/plugin-home login PROVIDER \
-  --directory https://account-directory.example --device
-dimcode --home /path/to/plugin-home account PROVIDER
-dimcode --home /path/to/plugin-home logout PROVIDER
+dimcode --home /path/to/plugin-home login openai-codex
+dimcode --home /path/to/plugin-home login grok-build --device
+dimcode --home /path/to/plugin-home account openai-codex
+dimcode --home /path/to/plugin-home logout openai-codex
 dimcode --home /path/to/plugin-home models PROVIDER --refresh
 dimcode --home /path/to/plugin-home --provider PROVIDER --model MODEL_ID
 ```
 
-Device login prints the verification address and device code, then polls the attempt. `Ctrl+C` cancels it. Account output is a non-secret identity view; the CLI never requests token/credential lease APIs. An already accepted browser exchange is owned by the plugin: if the waiter leaves during settlement, inspect it with `account PROVIDER` before starting another login.
+Device login prints the verification address and device code, then polls the attempt. `Ctrl+C` cancels it. Account output is a non-secret state view; the CLI never requests token/credential lease APIs. An already accepted browser exchange is owned by the plugin: if the waiter leaves during settlement, inspect it with `account PROVIDER` before starting another login.
+
+A build without the Dim account provider says so from `account`, `login` and `logout`: the Dim account is unavailable and an API-key Provider can be used instead. A Provider the daemon reports without an `account` descriptor does not offer sign-in, and the command says that instead.
+
+The terminal UI's `/connect` row for a described account opens the same flow: a signed-out account starts its only flow, and a signed-in one shows `Signed in` and a `Sign out` entry. A row whose namespace is `account` opens `/login`'s Dim panel (identity, plan, usage, enterprise email) instead.
 
 `models PROVIDER` reads the cached catalog; `--refresh` obtains and persists a fresh catalog through the provider. Each line contains the model ID, display name and `available`, `disabled`, `unavailable` or `undeclared`, separated by tabs; `undeclared` means no source declares the model's context window or maximum output, either of which keeps it from being selected. `--set-limits MODEL --context-window N --max-output-tokens N` declares both for one model, and `--set-missing-limits --context-window N --max-output-tokens N` declares them for every model the list marks `undeclared` — an enabled model whose missing limits are its only blocker, so a disabled model or one unavailable for another reason is not written; both named values are required with either form, both write through `models.edit` at the current record version, and both print the catalog afterwards. When a listed model still needs a window, the command names the declaration below its rows. Credential/account fields and private failure details are not printed. A missing cached catalog gives sign-in and refresh guidance, and a cached catalog that holds no models is named on standard error with the refresh command that fills it; a `--refresh` that lists nothing says the provider listed none. Select an available model with `--provider PROVIDER --model MODEL_ID` for a new session.
 

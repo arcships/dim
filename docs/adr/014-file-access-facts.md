@@ -36,7 +36,7 @@ not facts.
 The `FileAccessFacts` Session part registers the service `fileAccessFacts`. Its query is
 `facts(session_id, preset, path, mode) -> FileFacts`, with `workspace`, `system`, `owned` and
 `grant` fields; it calls `SessionFiles.owns` (both ownership tables, including command output)
-and `SessionGrants.lookup`. It does not import
+and reads the Session's grants through `SessionGrants`. It does not import
 SessionStore. `Permission` passes the branch preset and applies the table below. A query failure
 denies. The service holds no state; it reads at use time, so a restart changes nothing.
 

@@ -199,6 +199,20 @@ impl TimelineStore for Probe {
             Vec::len,
         )
     }
+    fn read_page_without_request_bodies<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        after: u64,
+        limit: usize,
+        through: u64,
+    ) -> BoxFuture<'a, Result<Vec<StoredEvent>>> {
+        self.timed(
+            Op::Read,
+            self.inner
+                .read_page_without_request_bodies(key, after, limit, through),
+            Vec::len,
+        )
+    }
     fn read_segments<'a>(
         &'a self,
         id: &'a str,

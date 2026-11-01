@@ -9,7 +9,11 @@ fn catalog_backfill_failure_preserves_the_legacy_store() {
         &BUSINESS_TABLES
             .iter()
             .copied()
-            .filter(|table| *table != "session_catalog")
+            .filter(|table| {
+                *table != "session_catalog"
+                    && !V28_TABLES.contains(table)
+                    && !V29_TABLES.contains(table)
+            })
             .collect::<Vec<_>>(),
     );
     connection.execute("UPDATE timeline_events SET body='damaged' WHERE session_id='s1' AND branch_id='main' AND sequence=8", []).unwrap();

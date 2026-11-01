@@ -39,6 +39,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permission required" => "許可が必要",
         "Allow once" => "今回のみ許可",
         "Allow always" => "常に許可",
+        "Allow for this session" => "このセッションで許可",
         "Reject" => "拒否",
         "Approve for me" => "自動承認",
         "Full access" => "フルアクセス",

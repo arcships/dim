@@ -39,6 +39,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permission required" => "Permissão necessária",
         "Allow once" => "Permitir uma vez",
         "Allow always" => "Sempre permitir",
+        "Allow for this session" => "Permitir para esta sessão",
         "Reject" => "Rejeitar",
         "Approve for me" => "Aprovar por mim",
         "Full access" => "Acesso total",

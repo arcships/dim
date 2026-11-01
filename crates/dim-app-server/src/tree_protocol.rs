@@ -144,6 +144,10 @@ pub struct HistoryResult {
     pub through: u64,
     pub next_after: u64,
     pub done: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_before: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_start: Option<u64>,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

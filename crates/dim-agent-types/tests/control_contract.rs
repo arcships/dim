@@ -99,6 +99,8 @@ fn controls_reject_ambiguous_or_unknown_payloads() {
         json!({"type":"exec","name":"ended","data":{"task_id":"t","status":"running","result":{"content":"output"}}}),
         json!({"type":"exec","name":"started","data":{"turn_id":"t","request_id":"r","call_id":"c","task_id":"e","description":"command"}}),
         json!({"type":"permission","name":"changed","data":{"policy":{"preset":"allow-all"}}}),
+        json!({"type":"permission","name":"changed","data":{"policy":{"toolApproval":"auto"}}}),
+        json!({"type":"permission","name":"changed","data":{"policy":{"fileAccess":"workspace-write"}}}),
         json!({"type":"step","name":"tool-use-start","data":{"turn_id":"t","request_id":"r","call_id":"c"}}),
         json!({"type":"step","name":"tool-result","data":{"turn_id":"t","request_id":"r","call_event_id":null,"results":[]}}),
     ] {
@@ -113,6 +115,8 @@ fn controls_reject_ambiguous_or_unknown_payloads() {
 fn native_product_events_round_trip_without_a_v1_view() {
     for payload in [
         json!({"type":"permission","name":"changed","data":{"policy":{"preset":"workspace-write","allowedTools":["read"],"disallowedTools":["exec"]}}}),
+        json!({"type":"permission","name":"changed","data":{"policy":{"preset":"workspace-write","fileAccess":"read-only","toolApproval":"bypass","allowedTools":[],"disallowedTools":["exec"]}}}),
+        json!({"type":"permission","name":"changed","data":{"policy":{"preset":"full-access","fileAccess":"workspace-read-write","toolApproval":"ask","allowedTools":["read"],"disallowedTools":[]}}}),
         json!({"type":"exec","name":"started","data":{"turn_id":"t","request_id":"r","call_id":"c","task_id":"exec-id","description":"cargo test","output_path":"/tmp/output.log"}}),
         json!({"type":"exec","name":"ended","data":{"task_id":"exec-id","status":"completed","result":{"content":"Output path: /tmp/output.log"}}}),
         json!({"type":"exec","name":"ended","data":{"task_id":"exec-id","status":"failed","result":{"content":"exit code 1"}}}),

@@ -8,7 +8,7 @@ import { readAccountDescriptors, readLoginAttempt, readLoginStatus, type LoginAt
 import { readAck } from "../../rpc/read"
 import { useConnectionStore } from "../../stores/connection"
 import { useModelsStore } from "../../stores/models"
-import { messageFrom } from "./context"
+import { messageFrom, reloadSettingsOnReconnect } from "./context"
 
 const props = defineProps<{ provider: ManagementProvider }>()
 const emit = defineEmits<{ finished: [] }>()
@@ -21,6 +21,7 @@ const email = ref("")
 const callback = ref("")
 const attempt = ref<LoginAttempt>()
 const busy = ref(false)
+const polling = ref(false)
 const error = ref("")
 let timer: ReturnType<typeof setTimeout> | undefined
 let generation = 0
@@ -43,7 +44,9 @@ async function cancelAttempt(current: LoginAttempt): Promise<void> {
 async function poll(): Promise<void> {
   const current = attempt.value
   const epoch = generation
-  if (!current || busy.value) return
+  if (!current || busy.value || polling.value || connection.phase !== "connected") return
+  clearTimeout(timer)
+  polling.value = true
   error.value = ""
   try {
     const status = await connection.client.call(`${namespace}.login.status`, { ...target, attemptId: current.attemptId }, readLoginStatus)
@@ -61,11 +64,14 @@ async function poll(): Promise<void> {
     }
   } catch (cause) {
     if (mounted && generation === epoch) error.value = messageFrom(cause)
+  } finally {
+    if (mounted && generation === epoch) polling.value = false
   }
 }
 async function start(): Promise<void> {
   if (busy.value || attempt.value) return
   busy.value = true
+  polling.value = false
   error.value = ""
   const epoch = ++generation
   try {
@@ -87,6 +93,7 @@ async function finish(): Promise<void> {
   if (!current || busy.value || !callback.value.trim()) return
   clearTimeout(timer)
   busy.value = true
+  polling.value = false
   error.value = ""
   const epoch = ++generation
   try {
@@ -106,6 +113,7 @@ async function cancel(): Promise<void> {
   attempt.value = undefined
   callback.value = ""
   busy.value = false
+  polling.value = false
   if (!current) return
   try { await cancelAttempt(current) } catch (cause) { error.value = messageFrom(cause) }
 }
@@ -114,6 +122,7 @@ async function copy(): Promise<void> {
   if (!url.value) return
   try { await copyText(url.value) } catch (cause) { error.value = messageFrom(cause) }
 }
+reloadSettingsOnReconnect(connection, poll)
 onBeforeUnmount(() => {
   mounted = false
   ++generation
@@ -150,10 +159,10 @@ onBeforeUnmount(() => {
         <p class="settings-help">{{ t("callbackHint") }}</p>
       </template>
       <div class="settings-inline-actions">
-        <button v-if="mode === 'browser'" class="ui-button" data-variant="primary" type="submit" :disabled="busy || !callback.trim()">{{ t("finish") }}</button>
+        <button v-if="mode === 'browser'" class="ui-button" data-variant="primary" type="submit" :disabled="busy || !callback.trim() || connection.phase !== 'connected'">{{ t("finish") }}</button>
         <button class="ui-button" data-variant="secondary" type="button" :disabled="busy" @click="cancel">{{ t("cancel") }}</button>
       </div>
     </template>
-    <p v-if="error" class="ui-banner" data-tone="danger" role="alert">{{ error }} <button v-if="attempt && !busy" class="ui-button" data-variant="ghost" type="button" @click="poll">{{ t("retry") }}</button></p>
+    <p v-if="error" class="ui-banner" data-tone="danger" role="alert">{{ error }} <button v-if="attempt && !busy" class="ui-button" data-variant="ghost" type="button" :disabled="polling || connection.phase !== 'connected'" @click="poll">{{ t("retry") }}</button></p>
   </form>
 </template>

@@ -696,6 +696,8 @@ async fn offline_import_reopens_with_unchanged_native_consumers_and_preserves_co
              CREATE INDEX timeline_events_by_end ON timeline_events(session_id, branch_id, last_sequence, sequence);
              CREATE INDEX timeline_events_by_id ON timeline_events(session_id, event_id) WHERE event_id IS NOT NULL;
              CREATE INDEX timeline_tool_use_starts ON timeline_events(session_id, json_extract(body, '$.record.event.data.request_id'), json_extract(body, '$.record.event.data.call_id')) WHERE branch_id = 'main' AND kind = 'step/tool-use-start';
+             DROP TABLE session_output_owners;
+             DROP TABLE session_grants;
              DROP TABLE agent_store_format;
              CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 23));
              INSERT INTO agent_store_format VALUES (23);",

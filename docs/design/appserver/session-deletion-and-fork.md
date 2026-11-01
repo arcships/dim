@@ -109,15 +109,26 @@ are Rust methods over the native store, not services: only Agents calls them.
    member requests. A close that reports cleanup errors is logged and the delete continues: the facts it could not
    write are removed with the rest. From the close on, S's slot is closed: S does not load again in this process,
    whether or not its rows go (step 6).
-3. **Command output.** SessionStore removes `<database directory>/command-output/<S>/`, where WorkspaceTools keeps
-   exec output and oversized `read` results ([read.rs](../../../crates/dim-agent-capabilities/src/workspace_tools/files/read.rs)
-   `offload`), through the FileStorage of S's resource node, looked up per call as in S5a. An absent directory counts
-   as removed. The removal must be durable before step 4 (§4), so FileStorage's `remove` syncs the parent of the
-   removed entry (§14). A failure ends the delete before any row changes (§3.5). SessionStore removes the directory
-   only while its database has rows of S: `command-output/` is shared by every database in the directory, so the
-   directory of an id without rows here may belong to another database's Session (§4).
-4. **Rows.** One `IMMEDIATE` transaction removes every row of S: `session_file_owners`, `timeline_snapshots`,
-   `timeline_events`, `timeline_branches`, `timeline_content`, `session_owners`, `session_catalog` and
+3. **Command output.** SessionStore removes the Session's output directories before any row changes
+   (ADR 013 D4): its own `<database directory>/command-output/<S>/`, and the directory of every
+   path it has a row for, so inherited `command-output/<parent>/` and
+   `.dim/exec/<parent>/<branch>/` directories a fork copied are covered. A directory is removed
+   only if no row of another Session in this database names a path under it. SessionStore
+   serializes this removal with step 4's row deletion across Sessions with its ownership lock:
+   two concurrent deletes could otherwise both see the other's rows, both keep the shared
+   directory, and leave it with no owner after both commits. The fork step takes the same lock
+   while it copies every current output row; the lock, not a file-existence check, keeps fork and
+   delete consistent, so the row a running command registered before writing its file is copied
+   and F owns the file the command creates. `command-output`
+   directories go through the FileStorage of S's resource node, looked up per call as in S5a;
+   HostPlatform removes the `.dim/exec` directories it owns. HostPlatform does not read ownership
+   rows. An absent directory counts as removed. Each removal must be durable before step 4 (§4).
+   A failure ends the delete before any row changes (§3.5). SessionStore removes its own
+   `command-output/<S>/` only while its database has rows of S: `command-output/` is shared by
+   every database in the directory, so the directory of an id without rows here may belong to
+   another database's Session (§4).
+4. **Rows.** One `IMMEDIATE` transaction removes every row of S: `session_file_owners`, `session_output_owners`, `timeline_snapshots`,
+   `timeline_events`, `timeline_branches`, `timeline_content`, `session_grants`, `session_owners`, `session_catalog` and
    `agent_sessions`, in this order because of the foreign keys, plus S5b's title metadata (§14). `session_catalog` is
    the derived row of [#556's catalog projection](native-storage-format.md#556-v23-格式决定). This is the operation a
    creation rollback runs today ([timeline.rs](../../../crates/dim-app-server/src/storage/timeline.rs)
@@ -140,7 +151,9 @@ are Rust methods over the native store, not services: only Agents calls them.
 | Session record, owner, branches, events, content, snapshots | Native store | Step 4, one transaction |
 | Session-file ownership | `session_file_owners` (S5a) | Step 4. Files left without an owner go in S5a's sweep |
 | Title metadata | Native store, S5b's `session_metadata` row ([title metadata](session-title-metadata.md#9-lifecycle)) | Step 4, same transaction |
-| Exec output and offloaded `read` results | `<database directory>/command-output/<S>/` | Step 3 |
+| File grants | Native store, `session_grants` rows (v28, [ADR 012](../../adr/012-session-grants.md) D1) | Step 4, same transaction |
+| Output ownership | Native store, `session_output_owners` rows (v29, [ADR 013](../../adr/013-command-output-ownership.md) D1) | Step 4, same transaction |
+| Exec output, offloaded `read` results and persistent shell logs | `<database directory>/command-output/<S>/` and every directory named by S's output rows | Step 3. A directory another Session in this database still names is kept |
 | Loaded instance, leases, subscriptions, in-flight uses | Process memory | Step 2 |
 | Protocol version, admission slot, unavailable-Session entry | Agents, in memory | Step 6 |
 | Collaboration relations that name S, the member Sessions S leads and the Agents S owns | Durable: `agent_sessions.leader_session_id` and `agents.owner_session_id` ([Collaboration §6](../plugins/Collaboration.md#6-delegation-ownership-and-lifetime)); Collaboration's relations are rebuilt from them | Agents deletes a leader with its Team: each member's own delete, in which SessionStore removes that Session's rows, then the Agent records Agents owns, then S. Collaboration drops a relation when it observes a member's close ([collaboration.rs](../../../crates/dim-app-server/src/collaboration.rs) `session_ended`) or the delete of an unloaded member, and rebuilds the rest when it loads ([idle unload §7](idle-unload.md#7-races-and-interactions)) |
@@ -201,14 +214,16 @@ gone.
 | After the commit, before the reply | No rows | No directory; S's files unowned | The client's retry finds no rows, so it removes no directory, replies `{}` and schedules the sweep again; otherwise S5a's next trigger (another delete, or the first put of a later generation) removes the files |
 | During the sweep | S5a's states | — | [Session files §6](session-files.md#6-deletion-crash-recovery-and-serialization) |
 
-**Why the directory goes before the commit.** No row records the command output directory. Once the rows are gone,
-an orphaned directory could only be found by listing `command-output/`, and that directory is shared by every
-database in the database directory (two `--database` files in one directory), so a listing cannot tell a deleted
-Session's directory from another store's. Removing it first means no committed delete ever leaves one behind. S5a's
-files follow the opposite order because their rows record them and the sweep can find them. FileStorage removal was
-not synced ([S6](https://github.com/arcships/dim/pull/87)): after a power loss a removed directory could reappear while
-the later commit, made with `synchronous=FULL`, stays. `remove` now syncs the parent before it returns (§14), which
-closes that gap.
+**Why the directory goes before the commit.** The Session's own `command-output/<S>/` directory has no row of its
+own (only the files in it may). Once the rows are gone, an orphaned directory could only be found by listing
+`command-output/`, and that directory is shared by every database in the database directory (two `--database` files
+in one directory), so a listing cannot tell a deleted Session's directory from another store's. Removing it first
+means no committed delete ever leaves one behind. A directory another Session in this database still names is kept
+(ADR 013 D4): it is found again through that Session's rows, so the next delete removes it. S5a's files follow the
+opposite order because their rows record them and the sweep can find them. FileStorage removal was not synced
+([S6](https://github.com/arcships/dim/pull/87)): after a power loss a removed directory could reappear while the later
+commit, made with `synchronous=FULL`, stays. `remove` now syncs the parent before it returns (§14), which closes that
+gap; HostPlatform syncs the parent of a removed `.dim/exec` directory the same way.
 
 **Only an id with rows here.** For the same reason a delete removes the directory only while its own database has
 rows of the id. Two daemons on `a.sqlite` and `b.sqlite` in one directory share `command-output/`; a
@@ -324,6 +339,8 @@ fork's conversation would then not be its `main`, which clients, `session.list` 
 | `timeline_content` | The rows the copied events reference, by the references the codec writes for requests and their before traces, and every list node those references reach (format v17). The `session/forked` row references no content |
 | `timeline_snapshots` | The rows anchored on copied `main` events. They are derived from the same facts, so F's first load uses them instead of replaying from the start |
 | `session_file_owners` | One row for F per file S owns ([Session files §4](session-files.md#4-sharing-on-fork)) |
+| `session_output_owners` | One row for F per output path S owns, including a row registered by a command still running at the fork (ADR 013 D4). No file is copied; F reads the current content and keeps it after S is deleted |
+| `session_grants` | None: a fork is a new Session and does not inherit grants ([ADR 012](../../adr/012-session-grants.md) D1) |
 | Title metadata (S5b) | None: a fork starts untitled ([SessionTitle](../plugins/SessionTitle.md) A7) |
 
 **Why child branches come without their events.** A child's events are not ordered against `main`'s cut, so no prefix
@@ -361,8 +378,9 @@ length grows with `main`'s copied prefix.
 | Events of child branches, and the branches below them | Not ordered against the cut, and a reload would run their pending work again (§6.3). Their work stays in S |
 | The loaded instance, leases, subscriptions, attached clients, in-flight requests | Runtime state, not stored; F builds its own |
 | An input still being submitted | Not committed, so not a fact |
-| The command output directory | WorkspaceTools' per-Session directory. F's copied tool results quote paths under `command-output/<S>/`, readable while S exists (§6.6) |
+| The command output directory | The bytes are not copied; F's `session_output_owners` rows name the same files under `command-output/<S>/` or `.dim/exec/<S>/<branch>/` and keep them readable after S is deleted (ADR 013 D4, §6.6) |
 | Title metadata | SessionTitle A7 |
+| File grants | A grant is a per-Session approval; F is a new Session and does not inherit S's grants ([ADR 012](../../adr/012-session-grants.md) D1). The user answers for F separately |
 | Collaboration relations and temporary Agents | Process memory of the source's team. F leads no member, and S's temporary Agents stay invisible to F |
 | Host configuration | Never part of a Session |
 
@@ -444,20 +462,15 @@ crash between F's commit and that start would still leave F with `branch/resume`
   its own for it.
 - **Provenance.** F records no source: no column, and `session/forked` carries no data. Nothing decides with it today, and session access A.3
   adds the Session's origin (`createdBy`) when something does, with its own format decision.
-- **Paths.** Session files are shared through owner rows and stay valid while any owner exists (S5a). Command output
-  is not shared: F's copied tool results quote `command-output/<S>/…`, which F reads while S exists. After S is
-  deleted, reading such a path fails as file not found, and the results keep their previews. What the user sees: an
-  exec output or a large `read` result that a copied tool result truncated to a preview can no longer be read in
-  full in F, by the model or by a client. Session files behave differently: their owner rows let them outlive the
-  Session that wrote them.
+- **Paths.** Session files and command output are shared through owner rows and stay valid while any owner exists
+  (S5a, ADR 013). F's copied tool results quote `command-output/<S>/…` and `.dim/exec/<S>/<branch>/…`; the output
+  rows the fork copied let F read the current content after S is deleted, and the delete keeps the directories
+  while F names a path under them. A command output log may grow after the fork; F reads its current content. A
+  point-in-time copy is a separate concern.
 
-Rejected for S5c: keeping S's command output until S's forks are deleted. The delete would need to know S's forks,
-through a fork relation in the store (a format change), and WorkspaceTools' per-Session output would gain owners it
-does not have.
-
-**Future improvement.** Give command output owner rows as S5a gives Session files: a fork would share the source's
-output, and the delete of its last owner would remove it. That moves WorkspaceTools' output from a per-Session
-directory to owned entries and needs its own format decision, so it stays outside S5c.
+Rejected for S5c: keeping S's command output until S's forks are deleted. ADR 013 reverses that decision: a fork
+copies the source's output rows, and a directory is removed by the delete of its last owning Session in this database,
+so no fork relation is needed.
 
 ### 6.7 Errors
 
@@ -503,6 +516,8 @@ transactions order them (S5a §6); no in-memory lock is added.
 
 **Decision: no format change of its own** (S5c itself added no change; #222 added one event row at v16 without a version
 bump, and format v17 keeps it). Recorded in [native-storage-format.md](native-storage-format.md#s5c-格式决定).
+[ADR 013](../../adr/013-command-output-ownership.md) adds `session_output_owners` at v29; this page's delete and fork
+steps read and write those rows with the steps above.
 
 - A delete removes rows from existing tables and, since [#556's catalog projection](native-storage-format.md#556-v23-格式决定),
   the derived `session_catalog` row.
@@ -532,6 +547,7 @@ bump, and format v17 keeps it). Recorded in [native-storage-format.md](native-st
 | Creation from another Session's cut | Agents (`AgentIndex::fork`), the Agents supplement in overview B.2 | Rpc |
 | Command output removal, row removal, fork transaction | SessionStore, Rust methods | Agents |
 | Session-file rows and sweep | SessionStore (S5a) | `sessionFiles.put`, `delete_session` |
+| Output ownership rows | SessionStore (v29, ADR 013) | `sessionFiles.register`, `delete_session`, `session.fork` |
 
 **S2 ([#62](https://github.com/arcships/dim/issues/62)).** S2's `sessions.launch` creates a Session from a profile
 and a policy capped by its starter; it does not create from a cut. Agents keeps one creation path for both: prepared
@@ -544,7 +560,8 @@ policy by its starter as `launch` does, because a process caller must not get a 
 - A fork copies the permission preset and never widens it. The preset at the cut is one the source held, and the
   caller could already change the source's preset with `session.permission.update`.
 - Copied approval facts are decisions about calls that are already settled. Approval rechecks the current policy on
-  every answer and records no standing grant, so no authority comes from them.
+  every answer and itself records no standing grant, so no authority comes from them. A client-written Session
+  grant is separate and is not copied by the fork (§6.4, [ADR 012](../../adr/012-session-grants.md) D1).
 - Host security settings never enter the Timeline, so a fork neither restores nor widens them (ADR 003 D5).
 - Owning the source's Session files adds no authority ([Session files §11](session-files.md#11-security)).
 - Copied references to another Session's resources (member Session ids, task ids, paths) confer nothing: an owner
@@ -634,9 +651,9 @@ stop would deadlock that reload, and delaying release would let a later member i
    consumed), for an unknown source, and on a v2 connection, and creates nothing.
 7. Fork a leader while its request to a member is open at the cut: F records a failed result, posts no report input
    and starts no turn, and the source's member keeps running ([#127](https://github.com/arcships/dim/issues/127)).
-8. Fork, then delete the source: F loads and reads its Session files; deleting F removes them. A delete and a fork of
-   the same source raced: either F exists with the files or the fork fails `session_closed`; never a fork without its
-   files.
+8. Fork, then delete the source: F loads and reads its Session files and the output paths it copied; deleting F
+   removes them. A delete and a fork of the same source raced: either F exists with the files or the fork fails
+   `session_closed`; never a fork without its files.
 9. On disposable stores: a Session whose command output directory is gone but whose rows remain loads, and a delete
    then completes; unowned file rows left by a delete commit are swept on the next generation's first put.
 10. A delete that fails after it closed a loaded leader, because its command output cannot be removed, replies
@@ -655,7 +672,10 @@ Tests: 1 and 2 are `delete_closes_a_running_session_and_removes_what_it_stored` 
 model of 5, and the background and batch cuts of 6, with the real BackgroundExec),
 `a_fork_is_refused_unless_the_cut_is_a_rest_point` (6, and the inputs D1 lets rest at a cut: a withdrawn Queue input
 and a Steer input stopped before it was consumed), `a_fork_of_a_leader_does_not_stop_the_source_member` (7) and
-`a_fork_shares_session_files_and_outlives_its_source` (8). `a_fork_copies_main_through_the_cut_with_its_content_and_snapshots` in
+`a_fork_shares_session_files_and_outlives_its_source` (8). `output_ownership_survives_a_fork_and_a_source_delete` in
+[storage_flow.rs](../../../crates/dim-app-server/tests/storage_flow.rs) checks the output rows, the shared directory
+after the source's delete and both ownership tables (8, ADR 013).
+`a_fork_copies_main_through_the_cut_with_its_content_and_snapshots` in
 [storage_flow.rs](../../../crates/dim-app-server/tests/storage_flow.rs) checks the content rows and snapshots of 3 at
 the store, including content that only a before trace references. 9 is
 `an_interrupted_delete_converges_on_retry_and_the_next_sweep` in
@@ -709,12 +729,19 @@ impl SessionStore {
     /// `ctx` gives each file step the node's FileStorage; `files_root` is the
     /// database directory's root.
     pub fn new(db: Arc<SqliteStorage>, ctx: Ctx, files_root: usize) -> Self;
-    /// Removes `command-output/<id>` (synced) while this database has rows of
-    /// the id, then every row in one transaction; schedules the Session-file
-    /// sweep. Returns whether this database had rows of the id.
+    /// Removes every output directory the id names, except one another
+    /// Session in this database still names (ADR 013 D4), then every row in
+    /// one transaction; schedules the Session-file sweep. Returns whether
+    /// this database had rows of the id.
     pub async fn delete_session(&self, id: &str) -> Result<bool>;
     /// Prepare step of a fork: copies the rows of §6.3 in one transaction.
     pub async fn fork_session(&self, source: &str, fork: &str, at: u64) -> Result<()>;
+    /// `sessionFiles.register` (ADR 013 D2): records `path` as output owned
+    /// by `session_id`; a missing Session fails.
+    pub async fn register(&self, session_id: &str, path: PathBuf) -> Result<()>;
+    /// `sessionFiles.owns` and `owned_paths` (ADR 013 D3).
+    pub async fn owns(&self, session_id: &str, path: PathBuf) -> Result<bool>;
+    pub async fn owned_paths(&self, session_id: &str) -> Result<Vec<PathBuf>>;
 }
 /// In `storage`: the output root's name below the database directory.
 pub const COMMAND_OUTPUT_DIRECTORY: &str = "command-output";

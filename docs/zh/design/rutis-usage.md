@@ -195,7 +195,7 @@ Dim 在此之上增加发布与关闭两个阶段（[插件契约 §7](plugin-co
 
 Dim 的部件如何消费总线事件，以及 Dim 定义了哪些公开总线事件，见[插件契约 §5.3](plugin-contract.md#53-总线事件)。
 
-*现状：*Dim 已在 rutis 0.19.2 上，本节成立。总线跨越每个 rutis session：两端各自宣告自己的监听名，事件到达任一端
+*现状：*Dim 已在 rutis 0.19.3 上，本节成立。总线跨越每个 rutis session：两端各自宣告自己的监听名，事件到达任一端
 该名称的监听器，语言运行时的每次 emit 都经过宿主。
 
 ## 6. 向机制所有者提出的需求
@@ -412,7 +412,7 @@ App Server 的根提供 `rutis_bridge::LocalId("dim-daemon")`，它与每个 ses
 路径时，准入等待每个运行时的行（`SessionRows::key(row)`）；RuntimeManager 取得的运行时是可选的，所以启动从不等下载。
 `plugin.reload` 就是 `Loader::reload(row)`；没有解析器缓存。
 
-rutis-loader 的 `LoaderPlugin` 还提供带标记的服务 `loader`。注入它的外来行可以 `reload` 一行、读取 `status`；
+rutis-loader 的 `LoaderPlugin` 还提供带标记的服务 `rutis/loader`。注入它的外来行可以 `reload` 一行、读取 `status`；
 `create` 和 `remove` 会被拒绝，因为 Dim 不配置可编辑的层，所以 PluginManager 仍是行的唯一写入者。
 
 ## 附录 B. TypeScript 与 Python 绑定

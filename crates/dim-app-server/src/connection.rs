@@ -1118,12 +1118,12 @@ impl Connection {
                                 model_id,
                             }),
                             Some(PathBuf::from(&session.config().cwd)),
-                            p.model_preferences,
+                            p.model_preferences.values(),
                         )
                         .await?
                     }
                     (None, None) => {
-                        if p.model_preferences == crate::provider::ModelPreferences::default() {
+                        if p.model_preferences.is_empty() {
                             return Err(RpcError::invalid("Supply at least one model preference"));
                         }
                         if rpc.config.product_home.is_none() {
@@ -1148,7 +1148,7 @@ impl Connection {
                             .get::<crate::provider::ProviderService>()
                             .ok_or_else(RpcError::reloading)?;
                         provider
-                            .apply_preferences(&current, p.model_preferences, &rpc.unloading)
+                            .apply_preferences(&current, &p.model_preferences, &rpc.unloading)
                             .await
                             .map_err(provider_error)?
                     }

@@ -2,7 +2,9 @@
 //! static provider. The management snapshot supplies safe connection fields
 //! and the record version used for partial writes.
 
-use crate::model::session::{DIM_OAUTH_ID, OauthEvent, ProviderAction, ProviderEntry};
+use crate::model::session::{
+    ACCOUNT_NAMESPACE, Account, OauthEvent, ProviderAction, ProviderEntry, Usage,
+};
 use crate::ui::i18n::{t, tf};
 use crate::ui::line_input::{LineInput, window};
 use crate::ui::list_panel::{Event, Item, ListPanel};
@@ -177,6 +179,28 @@ impl ProvidersPanel {
         self.oauth.as_ref().is_some_and(OauthView::native_selection)
     }
 
+    /// The Dim account's state from the host, shown while its panel is open.
+    pub fn set_account(&mut self, account: Result<Option<Account>, String>) {
+        if let Some(view) = self.oauth.as_mut().filter(|view| view.dim_panel()) {
+            view.set_account(account);
+        }
+    }
+
+    /// The Dim account's usage from the host.
+    pub fn set_usage(&mut self, usage: Result<Usage, String>) {
+        if let Some(view) = self.oauth.as_mut().filter(|view| view.dim_panel()) {
+            view.set_usage(usage);
+        }
+    }
+
+    /// The provider id of the open Dim panel.
+    pub fn dim_provider_id(&self) -> Option<&str> {
+        self.oauth
+            .as_ref()
+            .filter(|view| view.dim_panel())
+            .map(OauthView::provider_id)
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
         if let Some(view) = &mut self.oauth {
             return match view.handle_key(key) {
@@ -187,6 +211,10 @@ impl ProvidersPanel {
                 Effect::OauthCancel => {
                     self.oauth = None;
                     Effect::OauthCancel
+                }
+                Effect::Logout(target) => {
+                    self.oauth = None;
+                    Effect::Logout(target)
                 }
                 other => other,
             };
@@ -225,11 +253,9 @@ impl ProvidersPanel {
                 let Some(entry) = self.providers.iter().find(|p| p.id == provider_id) else {
                     return Effect::None;
                 };
-                if matches!(entry.id.as_str(), "openai-codex" | "grok-build")
-                    && entry.status == "disconnected"
-                {
-                    let (id, name) = (entry.id.clone(), entry.name.clone());
-                    return self.open_oauth(&id, &name);
+                if entry.account.is_some() {
+                    let entry = entry.clone();
+                    return self.open_oauth(&entry);
                 }
                 self.form = Some(Form {
                     provider_id: entry.id.clone(),
@@ -250,9 +276,28 @@ impl ProvidersPanel {
         }
     }
 
-    fn open_oauth(&mut self, provider_id: &str, name: &str) -> Effect {
-        let mut view = OauthView::new(provider_id, name, self.attempts);
-        let effect = view.auto_start();
+    fn open_oauth(&mut self, entry: &ProviderEntry) -> Effect {
+        let account = entry
+            .account
+            .as_ref()
+            .expect("only a described account opens the sign-in step");
+        let dim = account.namespace == ACCOUNT_NAMESPACE;
+        let mut view = if dim {
+            OauthView::dim(&entry.id, &entry.name, self.attempts)
+        } else {
+            OauthView::described(
+                &entry.id,
+                account,
+                &entry.name,
+                entry.status == "connected",
+                self.attempts,
+            )
+        };
+        let effect = if dim {
+            Effect::LoginStatus(entry.id.clone())
+        } else {
+            view.auto_start()
+        };
         self.attempts += 1_000;
         self.oauth = Some(view);
         effect
@@ -513,7 +558,7 @@ fn build_rows(providers: &[ProviderEntry]) -> Vec<Item> {
     heading.sticky = true;
     rows.push(heading);
     let mut seen: std::collections::HashMap<&str, usize> = Default::default();
-    for provider in providers.iter().filter(|p| p.id != DIM_OAUTH_ID) {
+    for provider in providers {
         let count = seen.entry(provider.name.as_str()).or_insert(0);
         *count += 1;
         let label = if *count > 1 {
@@ -521,11 +566,13 @@ fn build_rows(providers: &[ProviderEntry]) -> Vec<Item> {
         } else {
             provider.name.clone()
         };
+        let signs_in = provider
+            .account
+            .as_ref()
+            .is_some_and(|account| !account.login_methods.is_empty());
         let detail = t(if provider.is_current {
             "current"
-        } else if matches!(provider.id.as_str(), "openai-codex" | "grok-build")
-            && provider.status == "disconnected"
-        {
+        } else if signs_in && provider.status == "disconnected" {
             "Sign in"
         } else {
             match provider.status.as_str() {
@@ -642,6 +689,32 @@ mod tests {
             custom: false,
             base_url: None,
             api_key_preview: None,
+            account: None,
+        }
+    }
+
+    fn described(
+        id: &str,
+        name: &str,
+        namespace: &str,
+        methods: &[&str],
+        signed_in: bool,
+    ) -> ProviderEntry {
+        ProviderEntry {
+            account: Some(crate::model::session::AccountDescriptor {
+                namespace: namespace.into(),
+                login_methods: methods.iter().map(|method| (*method).to_owned()).collect(),
+            }),
+            ..entry(
+                id,
+                name,
+                if signed_in {
+                    "connected"
+                } else {
+                    "disconnected"
+                },
+                false,
+            )
         }
     }
 
@@ -651,9 +724,22 @@ mod tests {
             entry("mock", "mock", "connected", true),
             entry("a", "Alpha", "disabled", false),
             entry("b", "Alpha", "connected", false),
-            entry("openai-codex", "Codex", "disconnected", false),
-            entry("grok-build", "Grok Build", "disconnected", false),
-            entry(DIM_OAUTH_ID, "DimAgent", "connected", false),
+            described(
+                "openai-codex",
+                "Codex",
+                "account.codex",
+                &["browser"],
+                false,
+            ),
+            described(
+                "xai-grok-build",
+                "Grok Build",
+                "account.grok",
+                &["device"],
+                false,
+            ),
+            described("readonly", "Read-only", "account.none", &[], false),
+            entry("api", "API key", "disconnected", false),
         ]);
         let labels: Vec<(&str, &str)> = rows
             .iter()
@@ -668,10 +754,99 @@ mod tests {
                 ("Alpha (2)", "ready"),
                 ("Codex", "Sign in"),
                 ("Grok Build", "Sign in"),
+                ("Read-only", "not connected"),
+                ("API key", "not connected"),
                 ("Add custom provider", ""),
             ]
         );
         assert!(rows[0].heading);
+    }
+
+    /// A described account opens its sign-in step, signed in or not; a
+    /// provider without a descriptor keeps the connection form.
+    #[test]
+    fn a_described_account_opens_sign_in_and_others_keep_the_form() {
+        let mut panel = ProvidersPanel::new();
+        panel.set_providers(Ok(vec![
+            described(
+                "xai-grok-build",
+                "Grok Build",
+                "account.grok",
+                &["device"],
+                false,
+            ),
+            described("openai-codex", "Codex", "account.codex", &["browser"], true),
+            entry("api", "API key", "connected", false),
+        ]));
+        let key = |code| KeyEvent::new(code, Modifiers::NONE);
+        assert_eq!(panel.list.selected_id().as_deref(), Some("xai-grok-build"));
+        assert!(matches!(
+            panel.handle_key(key(KeyCode::Enter)),
+            Effect::OauthStart(start) if start.provider_id == "xai-grok-build"
+                && start.namespace == "account.grok"
+                && start.device
+        ));
+        panel.oauth = None;
+        panel.handle_key(key(KeyCode::Down));
+        assert!(matches!(
+            panel.handle_key(key(KeyCode::Enter)),
+            Effect::None
+        ));
+        assert!(matches!(
+            panel.handle_key(key(KeyCode::Enter)),
+            Effect::Logout(target) if target.provider_id == "openai-codex"
+        ));
+        assert!(panel.oauth.is_none());
+        panel.handle_key(key(KeyCode::Down));
+        assert!(matches!(
+            panel.handle_key(key(KeyCode::Enter)),
+            Effect::None
+        ));
+        assert!(panel.form.is_some());
+    }
+
+    /// The managed `account` namespace opens the Dim account's own panel;
+    /// every other namespace opens the generic sign-in step.
+    #[test]
+    fn the_account_namespace_opens_the_dim_panel() {
+        let mut panel = ProvidersPanel::new();
+        panel.set_providers(Ok(vec![
+            described(
+                "dimcode-api-oauth",
+                "DimAgent",
+                "account",
+                &["device"],
+                false,
+            ),
+            described(
+                "openai-codex",
+                "Codex",
+                "account.codex",
+                &["browser"],
+                false,
+            ),
+        ]));
+        let key = |code| KeyEvent::new(code, Modifiers::NONE);
+        assert_eq!(
+            panel.list.selected_id().as_deref(),
+            Some("dimcode-api-oauth")
+        );
+        assert!(matches!(
+            panel.handle_key(key(KeyCode::Enter)),
+            Effect::LoginStatus(id) if id == "dimcode-api-oauth"
+        ));
+        let p = terminal_palette(ColorMode::TrueColor, Appearance::Dark);
+        let rendered = panel.render(60, 16, &p).join("\n");
+        assert!(rendered.contains("Login with DimAgent"), "{rendered}");
+        assert!(rendered.contains("Enterprise login"), "{rendered}");
+        panel.oauth = None;
+        panel.handle_key(key(KeyCode::Down));
+        assert!(matches!(
+            panel.handle_key(key(KeyCode::Enter)),
+            Effect::OauthStart(start) if start.provider_id == "openai-codex"
+                && start.namespace == "account.codex"
+                && !start.device
+        ));
     }
 
     #[test]

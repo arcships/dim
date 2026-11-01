@@ -15,7 +15,9 @@ use dim_agent_runtime::{testing::MinimalHost, *};
 use dim_agent_types::*;
 use serde_json::json;
 use std::{
+    future::Future,
     path::PathBuf,
+    pin::Pin,
     sync::{Arc, Mutex},
 };
 use tokio_util::sync::CancellationToken;
@@ -194,6 +196,136 @@ async fn read_image_reaches_a_vision_model_and_becomes_text_for_others() {
         );
         session.close().await.unwrap();
     }
+    agent.close().await.unwrap();
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// Captures what WorkspaceTools registers, as SessionStore's `sessionFiles`
+/// service would receive it.
+struct RecordedOutputs(Arc<Mutex<Vec<PathBuf>>>);
+impl SessionFilesService for RecordedOutputs {
+    fn put(
+        &self,
+        _: String,
+        _: String,
+        _: Vec<u8>,
+        _: CancellationToken,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = std::result::Result<StoredSessionFile, SessionFileError>>
+                + Send
+                + '_,
+        >,
+    > {
+        unreachable!("this flow stores no Session file")
+    }
+    fn register(
+        &self,
+        _: String,
+        path: PathBuf,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<(), SessionFileError>> + Send + '_>> {
+        self.0.lock().unwrap().push(path);
+        Box::pin(async { Ok(()) })
+    }
+    fn owns(
+        &self,
+        _: String,
+        _: PathBuf,
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<bool, SessionFileError>> + Send + '_>>
+    {
+        Box::pin(async { Ok(false) })
+    }
+    fn owned_paths(
+        &self,
+        _: String,
+    ) -> Pin<
+        Box<dyn Future<Output = std::result::Result<Vec<PathBuf>, SessionFileError>> + Send + '_>,
+    > {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
+/// ADR 013 D2: an offloaded `read` result registers its path before the
+/// result reaches the model, through the Session part's process service.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_offloaded_read_result_registers_its_output_path() {
+    let home = home();
+    let work = home.join("work");
+    std::fs::write(
+        work.join("large.txt"),
+        format!("{}\n", "x".repeat(500)).repeat(100),
+    )
+    .unwrap();
+
+    let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+        code: "OFFLOAD_FLOW",
+        reason: "Reading a fixture runs no command".into(),
+    })
+    .unwrap();
+    platform.home = home.clone();
+    let registered = Arc::new(Mutex::new(Vec::new()));
+    let owner = Arc::new(SessionFilesHost(Arc::new(RecordedOutputs(
+        registered.clone(),
+    ))));
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    defaults::install(&mut builder);
+    defaults::mock_model_hosts(&mut builder);
+    workspace_tools::install(
+        &mut builder,
+        WorkspaceToolsConfig {
+            output_root: home.join("command-output"),
+        },
+    );
+    let agent = MinimalHost::start_with(&builder, move |root, _| {
+        root.provide_as::<HostPlatform>(Arc::new(platform))?;
+        root.provide_as::<SessionFilesHost>(owner)?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    let session = agent
+        .create_session(SessionConfig {
+            cwd: work.to_string_lossy().into_owned(),
+            tools: Some(vec!["read".into()]),
+            permission_policy: PermissionPolicy {
+                preset: PermissionPreset::FullAccess,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    session
+        .submit(
+            format!("tool:read {}", json!({ "path": "large.txt" })),
+            InputMode::Queue,
+            "main",
+        )
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let history = session.history("main", None).await.unwrap();
+    let output_path = history
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ToolResult(data) => data.results[0]
+                .result
+                .structured_content
+                .as_ref()?
+                .get("outputPath")?
+                .as_str()
+                .map(PathBuf::from),
+            _ => None,
+        })
+        .expect("the read result names its offloaded output");
+    assert!(output_path.exists(), "{}", output_path.display());
+    assert_eq!(
+        registered.lock().unwrap().as_slice(),
+        std::slice::from_ref(&output_path)
+    );
+
+    session.close().await.unwrap();
     agent.close().await.unwrap();
     std::fs::remove_dir_all(&home).unwrap();
 }

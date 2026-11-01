@@ -12,8 +12,10 @@ use dim_agent_capabilities::{
     execution_settings::ExecutionSettingsHost,
     file_storage::FileStorage,
     file_storage::FileStoragePlugin,
+    hooks::{HookSourcesHost, NoHookSources},
     host::{
-        PutSessionFile, SessionFileError, SessionFileErrorCode, SessionFilesHost, StoredSessionFile,
+        SessionFileError, SessionFileErrorCode, SessionFilesHost, SessionFilesService,
+        StoredSessionFile,
     },
     host_platform::{HostPlatform, ShellStatus},
     model_provider::ModelProviderPlugin,
@@ -89,7 +91,7 @@ impl DynPlugin for GraphPlatform {
 /// Graph-only `sessionFiles`, which SessionStore provides in a host with
 /// native storage. The graph stores no files.
 struct GraphFiles;
-impl PutSessionFile for GraphFiles {
+impl SessionFilesService for GraphFiles {
     fn put(
         &self,
         _: String,
@@ -110,6 +112,50 @@ impl PutSessionFile for GraphFiles {
                 message: "Graph generation stores no files".into(),
             })
         })
+    }
+
+    fn register(
+        &self,
+        _: String,
+        _: PathBuf,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = std::result::Result<(), SessionFileError>> + Send + '_,
+        >,
+    > {
+        Box::pin(async {
+            Err(SessionFileError {
+                code: SessionFileErrorCode::NodeUnavailable,
+                message: "Graph generation stores no output".into(),
+            })
+        })
+    }
+
+    fn owns(
+        &self,
+        _: String,
+        _: PathBuf,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = std::result::Result<bool, SessionFileError>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async { Ok(false) })
+    }
+
+    fn owned_paths(
+        &self,
+        _: String,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = std::result::Result<Vec<PathBuf>, SessionFileError>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async { Ok(Vec::new()) })
     }
 }
 
@@ -148,6 +194,7 @@ pub async fn local_graph() -> Result<BTreeMap<&'static str, Value>> {
     });
     defaults::mock_model_hosts(&mut builder);
     builder.session_value(Arc::new(CommandRulesHost(Arc::new(NoCommandRules))));
+    builder.session_value(Arc::new(HookSourcesHost(Arc::new(NoHookSources))));
     defaults::install_local_execution(
         &mut builder,
         ModelProviderPlugin::new,
@@ -156,6 +203,7 @@ pub async fn local_graph() -> Result<BTreeMap<&'static str, Value>> {
         },
         dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
     );
+    dim_agent_capabilities::hooks::install(&mut builder);
     dim_agent_attachments::install(&mut builder);
     dim_agent_questions::install(&mut builder);
     builder.plugin(|names| Ok(Box::new(SkillsCatalogPlugin::new(names)?)));

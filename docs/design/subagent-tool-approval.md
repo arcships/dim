@@ -32,7 +32,9 @@ Questions from `ask_user` are a separate contract, not tool approvals.
 When the leader branch consumes the committed `collaboration/request` for a **new** native
 member, Collaboration reads that branch's public Permission state before starting asynchronous
 creation. That read is the sampling point. It copies the complete `policy` (preset,
-`allowedTools`, `disallowedTools`) into the member's creation configuration. The member starts
+optional `fileAccess` and `toolApproval`, `allowedTools`, `disallowedTools`) into the member's
+creation configuration, preserving absent overrides as absent under
+[Permission's compatibility contract](../architecture/rust-agent/plugins/Permission.md#policy-contract). The member starts
 its own policy version; the leader's version number is not copied. The operation retains this
 snapshot across profile/model selection and Session creation waits. A later leader update affects
 subsequent requests, not a creation already sampled.
@@ -51,7 +53,8 @@ a member or confer authority on another Session.
 
 Consequences visible to users:
 
-- Switching the leader from Full Access to Ask/read-only affects members created by later requests.
+- Changing the leader's File access or Tool approval affects members created by later requests,
+  without changing process isolation.
 - Existing members retain their policy. Reusing a member does not refresh it; create a new member
   to obtain the current leader policy. Permission-switch confirmation states this explicitly.
 - The leader's current policy still decides every later member-allow tool call. A member's own

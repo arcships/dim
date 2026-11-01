@@ -9,5 +9,6 @@
     "resolveJsonModule": true,
     "paths": { "@arcships/rutis": ["./node_modules/@arcships/rutis/src/index.d.ts"] },
     "types": ["node"]
-  }
+  },
+  "include": ["*.ts", "../../fixtures/plugin-test.ts"]
 }

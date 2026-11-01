@@ -39,6 +39,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permission required" => "권한 필요",
         "Allow once" => "한 번 허용",
         "Allow always" => "항상 허용",
+        "Allow for this session" => "이 세션에서 허용",
         "Reject" => "거부",
         "Approve for me" => "스마트 권한",
         "Full access" => "전체 액세스",

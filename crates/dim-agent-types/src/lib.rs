@@ -3,6 +3,7 @@
 mod checkpoint;
 mod content;
 mod events;
+pub mod grant;
 mod member_approval;
 mod model;
 mod permission;

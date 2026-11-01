@@ -323,7 +323,7 @@ select.ui-field:disabled { background-color: var(--muted); }
 .ui-dialog-footer { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-4); }
 /* Header: optional tone icon, the title/description block, optional close button. */
 .ui-dialog-header { display: flex; align-items: flex-start; gap: var(--space-3); }
-.ui-dialog-header > :not(.ui-dialog-icon, .ui-dialog-close) { min-width: 0; flex: 1; }
+.ui-dialog-header > :not(.ui-dialog-icon, .ui-button, .ui-icon-button) { min-width: 0; flex: 1; }
 .ui-dialog-icon {
   display: inline-flex; width: 36px; height: 36px; flex: none; align-items: center; justify-content: center;
   border-radius: var(--control-lg-radius); background: var(--muted); color: var(--fg-2);

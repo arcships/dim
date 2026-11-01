@@ -196,7 +196,7 @@ async fn missing_dependency_and_undeclared_read_fail_before_session_publication(
     let mut missing = builder();
     test_extension_a::register_names(missing.catalog_mut());
     missing
-        .startup_timeout(Duration::from_millis(50))
+        .startup_timeout(Duration::from_secs(2))
         .require_feature(consumer(true));
     let agent = MinimalHost::start(&missing).await.unwrap();
     let error = agent
@@ -204,7 +204,7 @@ async fn missing_dependency_and_undeclared_read_fail_before_session_publication(
         .await
         .err()
         .unwrap();
-    assert!(error.to_string().contains("ExternalConsumer"));
+    assert!(error.to_string().contains("ExternalConsumer"), "{error}");
     assert!(agent.sessions().is_empty());
     agent.close().await.unwrap();
 

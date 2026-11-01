@@ -12,7 +12,7 @@ pub mod file_reads;
 pub mod files;
 
 use crate::{
-    host::{HostError, HostFuture, ToolDriver, ToolExecutionContext, ToolHost},
+    host::{HostError, HostFuture, SessionFilesHost, ToolDriver, ToolExecutionContext, ToolHost},
     host_platform::HostPlatform,
     methods::{Interruption, MethodDecl, RpcError, SessionMethods, params},
     timeline_tree::TreeCommands,
@@ -68,6 +68,10 @@ pub(crate) struct WorkspaceTools {
     platform: Arc<HostPlatform>,
     cwd: PathBuf,
     output_dir: PathBuf,
+    /// SessionStore's output ownership (ADR 013); absent in hosts without
+    /// native storage, where no output has an owner.
+    owner: Option<Arc<SessionFilesHost>>,
+    session_id: String,
     /// Collaboration members keep commands in the foreground: the leader
     /// treats member idle as the end of a request, so a backgrounded command
     /// would finish after its result. Member asynchronous execution is a
@@ -122,12 +126,41 @@ impl WorkspaceTools {
             result = work => result,
             _ = link => unreachable!("the link never completes"),
         };
-        match result {
+        let result = match result {
             Err(HostError::Cancelled(_)) if self.lifecycle.is_cancelled() => {
-                Err(HostError::Cancelled(CAPABILITY_RELOADING.into()))
+                return Err(HostError::Cancelled(CAPABILITY_RELOADING.into()));
             }
-            result => result,
+            result => result?,
+        };
+        self.register_output(&result).await?;
+        Ok(result)
+    }
+
+    /// ADR 013 D2: an output path the result hands to the model is registered
+    /// before that result leaves this part. The model's path is the file's
+    /// path; a registration failure fails the call.
+    async fn register_output(&self, result: &ToolResult) -> Result<(), HostError> {
+        let Some(owner) = &self.owner else {
+            return Ok(());
+        };
+        let Some(fields) = &result.structured_content else {
+            return Ok(());
+        };
+        let Some(path) = fields.get("outputPath").and_then(|value| value.as_str()) else {
+            return Ok(());
+        };
+        let path = PathBuf::from(path);
+        if !path.starts_with(&self.output_dir) {
+            return Err(HostError::failed(format!(
+                "Output path {} is outside the Session's output directory",
+                path.display()
+            )));
         }
+        owner
+            .0
+            .register(self.session_id.clone(), path)
+            .await
+            .map_err(|failure| HostError::failed(failure.to_string()))
     }
 }
 
@@ -241,6 +274,8 @@ impl DynPlugin for WorkspaceToolsPlugin {
                     self.coordinator.clone(),
                 ),
                 output_dir,
+                owner: ctx.get::<SessionFilesHost>(),
+                session_id: identity.session_id.clone(),
                 member: config.collaboration_role == CollaborationRole::Member,
                 cwd,
                 platform,

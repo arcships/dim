@@ -5,7 +5,7 @@ import { readDefaultSelection, readExecShell, readModelPolicy, readRevision, rea
 import { useConnectionStore } from "../../stores/connection"
 import { useModelsStore } from "../../stores/models"
 import GeneralSettingsStatus from "./GeneralSettingsStatus.vue"
-import { bindSettingsDirty, messageFrom } from "./context"
+import { bindSettingsDirty, messageFrom, reloadSettingsOnReconnect } from "./context"
 
 const s = useSettingsText()
 const connection = useConnectionStore()
@@ -75,6 +75,7 @@ async function save(): Promise<void> {
   } catch (cause) { error.value = messageFrom(cause) }
   finally { busy.value = false }
 }
+reloadSettingsOnReconnect(connection, load, dirty)
 onMounted(load)
 </script>
 

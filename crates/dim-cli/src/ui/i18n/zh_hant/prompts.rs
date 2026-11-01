@@ -39,6 +39,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permission required" => "需要授權",
         "Allow once" => "允許一次",
         "Allow always" => "一律允許",
+        "Allow for this session" => "本次工作階段內允許",
         "Reject" => "拒絕",
         "Approve for me" => "智慧權限",
         "Full access" => "完整存取權限",

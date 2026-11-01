@@ -210,7 +210,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Nothing is running" => "当前没有运行",
         "No queued message" => "没有队列消息",
         "Only in fullscreen (/tui)" => "仅在全屏界面可用（/tui）",
-        "/{name} is not yet available" => "/{name} 尚不可用",
         "new session" => "新会话",
         "resumed {id} · {count} messages" => "已恢复 {id} · {count} 条消息",
         " · earlier history: /timeline" => " · 更早历史：/timeline",
@@ -223,9 +222,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "answer required" => "需要回答",
         "permission required" => "需要授权",
         "esc interrupt" => "Esc 中断",
-        "↑ edit · ctrl+s steer now · /queue" => "↑ 编辑 · ctrl+s 立即 steer · /queue",
-        "+{count} more · ↑ edit · ctrl+s steer now · /queue" => {
-            "还有 {count} 条 · ↑ 编辑 · ctrl+s 立即 steer · /queue"
+        "↑ edit · ctrl+s steer now" => "↑ 编辑 · ctrl+s 立即 steer",
+        "+{count} more · ↑ edit · ctrl+s steer now" => {
+            "还有 {count} 条 · ↑ 编辑 · ctrl+s 立即 steer"
         }
         "Queue ({count})" => "队列（{count}）",
         "Thinking…" => "思考中…",
@@ -314,8 +313,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Tool approvals" => "工具审批",
         "Execution" => "执行",
         "Models" => "模型",
-        "Model" => "模型",
-        "not set" => "未设置",
         "Settings" => "设置",
         "↑↓ move · Enter select · ←→/Space change · Esc close" => {
             "↑↓ 移动 · Enter 选择 · ←→/Space 修改 · Esc 关闭"

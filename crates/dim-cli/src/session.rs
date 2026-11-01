@@ -11,7 +11,7 @@ use crate::{
     mcp, permission, permission_command,
     question::line::Questions,
 };
-use dim_agent_types::{ApprovalCallData, ContentBlock, ModelId, UserInput};
+use dim_agent_types::{ApprovalCallData, ContentBlock, ModelId, PermissionPolicy, UserInput};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -243,16 +243,20 @@ pub async fn chat(
         }
         created.session_id
     };
-    if let (Some(preset), Some(_)) = (options.permission, &options.resume) {
+    let selected = if let (Some(preset), Some(_)) = (options.permission, &options.resume) {
         if !client.supports(&permission::PRESET_METHODS) {
             return Err(
                 "This daemon cannot change a Session's permission preset; omit --permission".into(),
             );
         }
-        permission::select(client, &session_id, preset)
-            .await
-            .map_err(|error| format!("Cannot set the permission preset: {error}"))?;
-    }
+        Some(
+            permission::select(client, &session_id, preset)
+                .await
+                .map_err(|error| format!("Cannot set the permission preset: {error}"))?,
+        )
+    } else {
+        None
+    };
     display.record(&format!(
         "{}: {}\nsession: {}",
         if interactive {
@@ -263,17 +267,28 @@ pub async fn chat(
         options.cwd.display(),
         session_id
     ))?;
-    let preset = match options.permission {
-        Some(preset) => Some(Ok(preset)),
-        None if interactive && client.supports(&["session.permission.get"]) => Some(
+    let policy = match (selected, options.permission) {
+        (Some(policy), _) => Some(Ok(policy)),
+        (None, Some(preset)) => Some(Ok(PermissionPolicy {
+            preset,
+            ..Default::default()
+        })),
+        (None, None) if interactive && client.supports(&["session.permission.get"]) => Some(
             permission::read(client, &session_id)
                 .await
-                .map(|state| state.policy.preset),
+                .map(|state| state.policy),
         ),
-        None => None,
+        (None, None) => None,
     };
-    match preset {
-        Some(Ok(preset)) => display.record(&format!("permission: {}", permission::name(preset)))?,
+    match policy {
+        Some(Ok(policy)) => {
+            display.record(&format!("permission: {}", permission::name(policy.preset)))?;
+            display.record(&format!(
+                "File access: {}; Tool approval: {}",
+                permission::file_label(policy.file_access()),
+                permission::tool_policy_label(&policy)
+            ))?;
+        }
         Some(Err(error)) => display.record(&format!("permission: unavailable ({error})"))?,
         None => {}
     }
@@ -347,14 +362,7 @@ pub async fn chat(
                     draft.clear();
                     continue;
                 }
-                Some("/approval") => {
-                    display.record(
-                        "/approval chooses ask or full access in the terminal UI. At this prompt use /approvals.",
-                    )?;
-                    draft.clear();
-                    continue;
-                }
-                Some("/approvals" | "/permissions") => {
+                Some("/approvals" | "/permissions" | "/approval") => {
                     let text = text.as_deref().expect("plain approvals command");
                     if let Err(error) = permission_command::command(client, reader, &mut interrupts, &session_id, text, &mut display, &mut listing).await {
                         display.record(&format!("Error: {error}"))?;
@@ -874,7 +882,7 @@ async fn wait_turn(
             Message::Response { id, result } if Some(id) == submit => {
                 if let Err(error) = result {
                     match error.data.as_ref().and_then(|data| data.get("appError")).and_then(Value::as_str) {
-                        Some("invalid_params" | "session_invalid_input" | "session_closed" | "session_build_failed" | "service_reloading" | "unknown_method") => return Err(error.into()),
+                        Some("invalid_params" | "session_invalid_input" | "session_closed" | "session_build_failed" | "service_reloading" | "unknown_method" | "input_blocked") => return Err(error.into()),
                         _ => return Err(format!("Submission outcome could not be confirmed: {error}. The input may already be queued; resume the session instead of sending it again").into()),
                     }
                 }
@@ -1143,12 +1151,14 @@ fn render(notice: Message, session_id: &str, display: &mut Display) -> Result<()
             let changed = permission::changed(&params["event"]);
             let notice: EventNotice = decode(params, &method)?;
             if notice.session_id == session_id && notice.branch_id == "main" {
-                if let Some((sequence, preset)) = changed
+                if let Some((sequence, policy)) = changed
                     && sequence > display.cursor.max(display.permission_seen)
                 {
                     display.record(&format!(
-                        "[permission] main branch preset: {}",
-                        permission::name(preset)
+                        "[permission] main branch preset: {}; File access: {}; Tool approval: {}",
+                        permission::name(policy.preset),
+                        permission::file_label(policy.file_access()),
+                        permission::tool_policy_label(&policy)
                     ))?;
                     display.permission_seen = sequence;
                 }

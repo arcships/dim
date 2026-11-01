@@ -21,6 +21,7 @@ dim-oauth = { path = "../dim-oauth" }
 
 [dev-dependencies]
 dim-agent-capabilities.workspace = true
+dim-agent-runtime.workspace = true
 agent-client-protocol-schema = { version = "=1.12.0", default-features = false }
 base64 = "0.22.1"
 sha2 = "0.10.9"

@@ -8,7 +8,7 @@ Rules: [design rules](../architecture/rust-agent/principles.md), [ADR 002](../ad
 [ADR 004](../adr/004-loader-plugin-management.md), [ADR 006](../adr/006-plugin-contract.md) D3, D4 and D6,
 [How Dim uses rutis §2](rutis-usage.md#2-plugins-are-rows-instances-mount-their-parts).
 
-Builds on: rutis 0.19.2, which the 0.19 upgrade ([#730](https://github.com/arcships/dim/pull/730)) pins
+Builds on: rutis 0.19.3, which the 0.19 upgrade ([#730](https://github.com/arcships/dim/pull/730)) pins
 and has landed. It replaces the "one row per instance" draft of this design, and the row-handle
 read [#645](https://github.com/arcships/dim/pull/645) added goes with it.
 Decision: [ADR 015](../adr/015-scopes-are-plugins.md) (Proposed).
@@ -37,8 +37,8 @@ costs this:
 
 rutis 0.19.1 removes the reason ([rutis#948](https://github.com/arcships/rutis/issues/948),
 [rutis#961](https://github.com/arcships/rutis/pull/961)). `Definition::at` takes a copy's instances
-from its position in the plugin tree (`ctx.scope()`; rutis-loader 0.19.2 `loader/mod.rs:334`), and
-`mark_scope(group)` is a public method on `Ctx` (rutis 0.19.2 `ctx.rs:1000`). A host mounts a plain
+from its position in the plugin tree (`ctx.scope()`; rutis-loader 0.19.3 `loader/mod.rs:334`), and
+`mark_scope(group)` is a public method on `Ctx` (rutis 0.19.3 `ctx.rs:1000`). A host mounts a plain
 plugin with `ctx.plugin`, marks it as the scope of a group, and foreign copies inside it resolve that
 group's names to it.
 
@@ -125,10 +125,10 @@ tree shows where their content sits.
   check already does (`Names::check`). The catalog still says which group a name belongs to.
   - `key::<T>()` gives `Key::<T>::of().instance(id)`, as today (`names.rs:195`).
   - `named(name)` gives `host_key_in(name, id)` for a shared instance name, which is the key the
-    catalog gives it today (`host_key` is `Key::dynamic(name)`, rutis-bridge 0.19.2
+    catalog gives it today (`host_key` is `Key::dynamic(name)`, rutis-bridge 0.19.3
     `session/services.rs:48-54`). A Rust-typed instance name is read with `key::<T>()`, and `named`
     refuses one, naming `key::<T>()`. Every `named` caller today reads a shared name.
-- **Foreign copies** are mounted with `Definition::at` under a mounter, as today. In 0.19.2 it takes
+- **Foreign copies** are mounted with `Definition::at` under a mounter, as today. In 0.19.3 it takes
   the copy's instances from `ctx.scope()`, so `session` and `branch` names resolve to the enclosing
   scopes, and each copy is isolated per instance as today.
 - **Creation waits in three steps.** Without the loader's `settle`, nothing waits unless creation
@@ -211,16 +211,16 @@ durable identities, so Session and branch ids are unaffected.
 
 ## 4. Dependencies
 
-- **rutis 0.19.2:** `ctx.plugin`, fiber views and states, `ctx.scope()`, and the public `mark_scope`.
-- **rutis-loader 0.19.2:** `Definition::at` through its mounter, by the copy's position in the tree;
+- **rutis 0.19.3:** `ctx.plugin`, fiber views and states, `ctx.scope()`, and the public `mark_scope`.
+- **rutis-loader 0.19.3:** `Definition::at` through its mounter, by the copy's position in the tree;
   `ServiceCatalog::key_in`, to tell a name's group; the Agent group as an instanced group.
 - **rutis-bridge:** `host_key_in`.
 - The part registry and the mounters, as in How Dim uses rutis §2.
-- The 0.19 upgrade (#730), which pins 0.19.2 and has landed.
+- The 0.19 upgrade (#730), which pins 0.19.3 and has landed.
 
 ## 5. Cross-module requirements
 
-None. rutis 0.19.2, which #730 pins, has everything this design uses: a foreign copy resolves its
+None. rutis 0.19.3, which #730 pins, has everything this design uses: a foreign copy resolves its
 instances from its position in the tree, and a host marks its own scopes with `mark_scope`
 ([rutis#948](https://github.com/arcships/rutis/issues/948), raised for this design and released in
 0.19.1). Rust parts qualify their keys themselves.
@@ -234,7 +234,7 @@ instances from its position in the tree, and a host marks its own scopes with `m
 | §4 rules 2, 3, 5, 6, 9 | Not applicable: no handover, `before` transform, batch, context path or Timeline fact changes |
 | §4 rule 4 (core mechanisms without business meaning) | Creation and the scope treat every part and extension plugin alike. Skills contents and MCP connections are their parts' business; no core code knows them |
 | §4 rule 7 (public events and services) | No service is added; `SessionLoader` goes. Creation reads only the views the scope and the mounters hand it, not the loader's table |
-| §4 rule 8 (infrastructure unchanged by default) | The need is the assembly's own (#594's creation cost), and it closes inside the assembly, using rutis 0.19.2 as #730 pins it. Nothing is asked of rutis (§5) |
+| §4 rule 8 (infrastructure unchanged by default) | The need is the assembly's own (#594's creation cost), and it closes inside the assembly, using rutis 0.19.3 as #730 pins it. Nothing is asked of rutis (§5) |
 | ADR 002 D1–D5 | Parts stay in their Session or branch. No wiring module, configuration or language contract changes; foreign parts still resolve their names |
 | ADR 004 | Its ownership stands: connections belong to a Session, closing a Session closes only its generations, configuration stays private and immutable, and no second loader or lifecycle manager comes in. Its mechanism, a connection generation as an instanced group with the loader owning disposal, is superseded by [ADR 015](../adr/015-scopes-are-plugins.md) |
 | ADR 006 D3 | The instance still mounts the parts registered for it, from its scope. The scope and the mounters are the instance's mounting mechanism, built by Dim, with no configuration, enablement or reload of their own, so "a plugin is one row" does not cover them. "Inside a part" now holds literally for McpSession and Skills |
@@ -249,7 +249,7 @@ instances from its position in the tree, and a host marks its own scopes with `m
   - a failed optional mounter or part stays local, and optional parts settle before publication;
   - registrations follow open instances.
 - The foreign part flows (SessionTitle, Scheduler, Workflow and Goal, and the Node-backed App Server
-  flows) on rutis 0.19.2: copies resolve `session` and `branch` names inside their scope.
+  flows) on rutis 0.19.3: copies resolve `session` and `branch` names inside their scope.
 - Requested extensions (`tests/integration/tests/extensions.rs:884-974`): Active, Failed, Pending and
   a wrong value type keep their outcomes. `transport_flow/reload.rs` drops its "reserved extension
   group" assertion.

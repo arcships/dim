@@ -3,6 +3,23 @@ use super::{HostPlatform, Isolation, ProcessSpec, ProcessSpecError, TemporaryDir
 use std::path::Path;
 use std::{ffi::OsString, path::PathBuf};
 
+#[cfg(not(target_os = "macos"))]
+pub(super) const BWRAP_UNAVAILABLE: &str = "bubblewrap (bwrap) is not installed on the captured host PATH. Install bubblewrap, or select Off in /permissions > Process isolation";
+
+/// The bubblewrap executable preparation would run, from the captured host
+/// `PATH`. The availability report and preparation share this resolution.
+#[cfg(not(target_os = "macos"))]
+pub(super) fn bubblewrap(env: &[(OsString, OsString)]) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    super::path_entries(env)
+        .into_iter()
+        .map(|path| path.join("bwrap"))
+        .find(|path| {
+            std::fs::metadata(path)
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+}
+
 /// Resolves the system roots once at the sandbox boundary, each with its
 /// requested path and canonical source. Returns the directories, parents
 /// before children, and the regular files, which only read-only roots
@@ -101,26 +118,16 @@ impl HostPlatform {
         .map(str::to_owned)
         .collect();
         let (read_only_paths, default_files) = {
-            #[cfg(target_os = "macos")]
-            let paths = [
-                "/System",
-                "/usr",
-                "/bin",
-                "/sbin",
-                "/Library/Apple",
-                "/private/etc",
-                "/etc",
-                "/var/select",
-            ];
-            #[cfg(not(target_os = "macos"))]
-            let paths = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"];
             let mut installed = Vec::new();
-            for path in paths {
+            for path in &self.platform_roots {
                 match tokio::fs::metadata(path).await {
-                    Ok(_) => installed.push(path.into()),
+                    Ok(_) => installed.push(path.clone()),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => {
-                        return Err(invalid(format!("System isolation root {path}: {error}")));
+                        return Err(invalid(format!(
+                            "System isolation root {}: {error}",
+                            path.display()
+                        )));
                     }
                 }
             }
@@ -159,7 +166,7 @@ impl HostPlatform {
                 .map_err(|error| ProcessSpecError {
                     code: "isolation_unavailable",
                     reason: format!(
-                        "Isolated temporary directory: {error}; turn Sandbox off in /settings > Execution"
+                        "Isolated temporary directory: {error}; select Off in /permissions > Process isolation"
                     ),
                 })?;
             writable.push((temporary.0.clone(), temporary.0.clone()));
@@ -327,18 +334,10 @@ fn prepare(
     writable: &[(PathBuf, PathBuf)],
     network: bool,
 ) -> Result<ProcessSpec, ProcessSpecError> {
-    use std::os::unix::fs::PermissionsExt;
-    let executable = super::path_entries(&host.env)
-        .into_iter()
-        .map(|path| path.join("bwrap"))
-        .find(|path| {
-            std::fs::metadata(path)
-                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        })
-        .ok_or_else(|| ProcessSpecError {
-            code: "isolation_unavailable",
-            reason: "bubblewrap (bwrap) is not installed on the captured host PATH. Install bubblewrap, or turn the sandbox off in /settings > Execution".into(),
-        })?;
+    let executable = bubblewrap(&host.env).ok_or_else(|| ProcessSpecError {
+        code: "isolation_unavailable",
+        reason: BWRAP_UNAVAILABLE.into(),
+    })?;
     let mut args: Vec<OsString> = [
         "--unshare-user",
         "--unshare-pid",
@@ -451,4 +450,74 @@ async fn bubblewrap_binds_file_roots_after_the_directories_that_contain_them() {
     .collect();
     assert_eq!(binds(&read_only, &read_only_files, &writable), expected);
     std::fs::remove_dir_all(base).unwrap();
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+#[tokio::test]
+async fn bubblewrap_unshares_the_network_only_when_the_switch_is_off() {
+    use std::os::unix::fs::PermissionsExt;
+    let base = tokio::fs::canonicalize(std::env::temp_dir())
+        .await
+        .unwrap()
+        .join(format!(
+            "dim-isolation-net-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+    std::fs::create_dir_all(&base).unwrap();
+    let bwrap = base.join("bwrap");
+    std::fs::write(&bwrap, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&bwrap, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut host = HostPlatform::current(super::ShellStatus::Unavailable {
+        code: "test",
+        reason: String::new(),
+    })
+    .unwrap();
+    host.env = vec![(OsString::from("PATH"), base.clone().into_os_string())];
+    let spec = || ProcessSpec {
+        executable: "/bin/true".into(),
+        args: Vec::new(),
+        cwd: "/".into(),
+        env: Vec::new(),
+    };
+    let isolated = prepare(&host, spec(), &[], &[], &[], false).unwrap();
+    assert!(
+        isolated
+            .args
+            .iter()
+            .any(|arg| arg.to_str() == Some("--unshare-net"))
+    );
+    let networked = prepare(&host, spec(), &[], &[], &[], true).unwrap();
+    assert!(
+        !networked
+            .args
+            .iter()
+            .any(|arg| arg.to_str() == Some("--unshare-net"))
+    );
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn seatbelt_allows_network_only_when_the_switch_is_on() {
+    let host = HostPlatform::current(super::ShellStatus::Unavailable {
+        code: "test",
+        reason: String::new(),
+    })
+    .unwrap();
+    let spec = || ProcessSpec {
+        executable: "/bin/true".into(),
+        args: Vec::new(),
+        cwd: "/".into(),
+        env: Vec::new(),
+    };
+    let isolated = prepare(&host, spec(), &[], &[], &[], false).unwrap();
+    assert!(!isolated.args.iter().any(|arg| {
+        arg.to_str()
+            .is_some_and(|arg| arg.contains("(allow network*"))
+    }));
+    let networked = prepare(&host, spec(), &[], &[], &[], true).unwrap();
+    assert!(networked.args.iter().any(|arg| {
+        arg.to_str()
+            .is_some_and(|arg| arg.contains("(allow network*"))
+    }));
 }

@@ -347,9 +347,10 @@ Session-handle diagnostic and exit behavior for these errors instead of offering
 Connection loss can also leave a put or submission outcome unknown and uses that same exit
 behavior. No automatic retry, lookup-based recovery or persistent local recovery store is added.
 Only a proven pre-commit rejection is safely resubmittable. For v3 `session.submit`,
-`error.data.appError` values `invalid_params`, `session_invalid_input`, `session_closed`,
-`session_build_failed`, `service_reloading` and `unknown_method` are the server's explicit
-[pre-commit guarantee](../../crates/dim-app-server/README.md#session-submission-errors).
+`error.data.appError` is one of the seven
+[guaranteed pre-commit rejections](../../crates/dim-app-server/README.md#session-submission-errors):
+`invalid_params`, `session_invalid_input`, `session_closed`, `session_build_failed`,
+`service_reloading`, `unknown_method` or `input_blocked`.
 They retain their ordinary error diagnostics; every other error, including `submission_unknown`
 and opaque publication/storage failures, retains the uncertain-outcome exit without resending.
 This does not promise that an unchanged rejected request will succeed or add automatic retry.

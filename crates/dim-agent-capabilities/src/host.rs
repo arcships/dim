@@ -570,6 +570,15 @@ pub trait ResolveModelSelection: Send + Sync + 'static {
 }
 pub struct ModelSelectionHost(pub Arc<dyn ResolveModelSelection>);
 
+/// Enumerates the models the owner would serve: the same selectability rules as
+/// execution, one read, no live request. The caller passes its cancellation
+/// token; cancelling it cancels the read.
+pub trait SelectableModels: Send + Sync + 'static {
+    fn selectable(&self, cancel: CancellationToken)
+    -> HostFuture<'_, Vec<ModelCapabilitySnapshot>>;
+}
+pub struct SelectableModelsHost(pub Arc<dyn SelectableModels>);
+
 /// One non-streaming request outside any Session: no tools, no Timeline.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -836,10 +845,12 @@ pub struct SessionFileError {
     pub code: SessionFileErrorCode,
     pub message: String,
 }
-/// `sessionFiles.put`: stores `content` once, read-only, as the file `name`
-/// owned by `session_id`. Cancellation takes effect until the file is
-/// committed; afterwards the reply stands.
-pub trait PutSessionFile: Send + Sync + 'static {
+/// The process service `sessionFiles`, provided by SessionStore: it stores a
+/// Session file and answers which artifacts a Session owns (ADR 013 D1).
+pub trait SessionFilesService: Send + Sync + 'static {
+    /// Stores `content` once, read-only, as the file `name` owned by
+    /// `session_id`. Cancellation takes effect until the file is committed;
+    /// afterwards the reply stands.
     fn put(
         &self,
         session_id: String,
@@ -847,10 +858,32 @@ pub trait PutSessionFile: Send + Sync + 'static {
         content: Vec<u8>,
         cancel: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<StoredSessionFile, SessionFileError>> + Send + '_>>;
+    /// Records `path` as output owned by `session_id`; a repeated path is a
+    /// no-op. The caller has checked the path against its own output root.
+    fn register(
+        &self,
+        session_id: String,
+        path: std::path::PathBuf,
+    ) -> Pin<Box<dyn Future<Output = Result<(), SessionFileError>> + Send + '_>>;
+    /// Whether `session_id` owns the artifact at `path`, a resolved absolute
+    /// path: an exact registered output path, or an attachment path inside
+    /// the directory of an owned file id (ADR 013 D3). A query failure is an
+    /// error, which denies access.
+    fn owns(
+        &self,
+        session_id: String,
+        path: std::path::PathBuf,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, SessionFileError>> + Send + '_>>;
+    /// Every path `session_id` owns: a Session file's directory and each
+    /// registered output path.
+    fn owned_paths(
+        &self,
+        session_id: String,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<std::path::PathBuf>, SessionFileError>> + Send + '_>>;
 }
 /// The process service `sessionFiles`, provided by SessionStore, so that its
 /// consumers name no App Server type.
-pub struct SessionFilesHost(pub Arc<dyn PutSessionFile>);
+pub struct SessionFilesHost(pub Arc<dyn SessionFilesService>);
 
 pub struct IdentityContext;
 impl PrepareContext for IdentityContext {

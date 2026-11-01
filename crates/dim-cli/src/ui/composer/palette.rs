@@ -417,7 +417,7 @@ mod tests {
     fn both_modes_list_only_visible_slash_commands_in_category_and_name_order() {
         let all = names("/", FULLSCREEN);
         assert_eq!(&all[..2], ["exit", "keys"]);
-        assert_eq!(all.len(), COMMANDS.len() - 6);
+        assert_eq!(all.len(), COMMANDS.len() - 5);
         let scrollback = names("/", SCROLLBACK);
         assert!(!scrollback.contains(&"scroll-top"));
         for context in [
@@ -439,12 +439,13 @@ mod tests {
                 (pair[0].category, pair[0].name) < (pair[1].category, pair[1].name)
             }));
             let listed = names("/", context);
-            assert!(listed.contains(&"approvals"));
+            assert!(listed.contains(&"permissions"));
             assert!(commands.iter().all(|command| command.slash));
             for hidden in [
                 "interrupt",
                 "steer",
                 "approval",
+                "approvals",
                 "pick-message",
                 "scroll-bottom",
                 "scroll-top",
@@ -460,18 +461,8 @@ mod tests {
         assert_eq!(
             names("/se", SCROLLBACK),
             [
-                "settings",
-                "resume",
-                "agent",
-                "approvals",
-                "effort",
-                "fast",
-                "mcp",
-                "models",
-                "fork",
-                "lines",
-                "new",
-                "web"
+                "settings", "resume", "agent", "effort", "fast", "mcp", "models", "fork", "lines",
+                "new", "web"
             ]
         );
         assert_eq!(names("/stg", SCROLLBACK), ["settings"]);

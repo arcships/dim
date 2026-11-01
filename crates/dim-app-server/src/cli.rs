@@ -1,7 +1,7 @@
 //! The App Server command line, shared by `dim-app-server` and `dimcode app-server`.
 
 use crate::{
-    ServerConfig, ShutdownReason, collaboration, permission_rules,
+    ServerConfig, ShutdownReason, collaboration, hooks_settings, permission_rules,
     runtime_manager::Runtimes,
     serve,
     session_typescript::{PythonConfig, SessionTypeScriptConfig},
@@ -322,6 +322,10 @@ pub fn run_with(
                 dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
             );
             permission_rules::install(&mut builder);
+            hooks_settings::install(&mut builder, config.product_home.clone());
+            dim_agent_capabilities::hooks::install(&mut builder);
+            crate::session_grants::install(&mut builder);
+            dim_agent_capabilities::file_access::install(&mut builder);
             builder
                 .session_value(Arc::new(HistoryRenderer::default()))
                 .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))));

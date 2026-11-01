@@ -2,7 +2,7 @@
 
 状态：草案，2026-10-27 已与维护者对齐。需求：[插件管理](../../../design/plugin-management.md)（[#432](https://github.com/arcships/dim/issues/432)）。Issue：[#3](https://github.com/arcships/dim/issues/3)、[#384](https://github.com/arcships/dim/issues/384)。作用域：[ADR 002](../../adr/002-plugin-scope.md)（进程：安装按宿主进行）。语言：Rust。里程碑：§0 中标出的部分属于 M1。
 
-PluginManager 保存一个宿主的插件配置：装了哪些插件，它们从哪里来，每个名字使用哪个插件，哪些名字被关闭。它把这份配置保存在自己的文件 `plugins.json` 中，格式是 Dim 自己的格式。它不保存运行时状态。插件是否已加载、正在运行或已失败，是 rutis 的状态，从 rutis-loader 读取。一个所有者持有什么内容（skill、MCP 服务器、hook），是该所有者的状态。PluginManager 通过向所有者下达命令来执行配置变更：插件代码交给 rutis-loader，内容交给 SkillsCatalog、Mcp 和 Hooks。每个所有者自己做决定，自己保存状态。
+PluginManager 保存一个宿主的插件配置：装了哪些插件，它们从哪里来，每个名字使用哪个插件，哪些名字被关闭。它把这份配置保存在自己的文件 `plugins.json` 中，格式是 Dim 自己的格式。它不保存运行时状态，只在内存中记下它自己拒绝的内容（§3.7）。插件是否已加载、正在运行或已失败，是 rutis 的状态，从 rutis-loader 读取。一个所有者持有什么内容（skill、MCP 服务器、hook），是该所有者的状态。PluginManager 通过向所有者下达命令来执行配置变更：插件代码交给 rutis-loader，内容交给 SkillsCatalog、Mcp 和 Hooks。每个所有者自己做决定，自己保存状态。
 
 一个插件是一个带有清单的目录。它可以带代码（TypeScript 或 Python 写的 rutis 插件），可以带内容（skill、MCP 配置、hook），也可以两者都带。插件按**名字**识别。可以安装多个同名插件，但同一时间只使用其中一个。打开另一个，就会替换正在使用的那个。内置插件就是这样被替换的。
 
@@ -191,7 +191,7 @@ TypeScript 的行以入口文件的绝对路径命名。Python 插件通过 Plug
 2. App Server 对 `[assembly, plugins]` 进行 reconcile。被关闭的内置插件从不启动。
 3. PluginManager 的行 apply，向 `managementMethods` 登记 `plugin`，向 `partRegistry` 登记 `PluginTools`，然后在激活之后，删除残留的暂存目录，以及没有任何已安装条目引用的 Git 克隆。
 
-默认插件或已安装插件的行失败时，启动不失败；`plugin.list` 把它显示为失败，并带上 rutis 的错误。进程行全部就绪之后、接纳客户端之前，App Server 调用 PluginManager 的内容启动步骤，让每个存在的所有者与记录一致（§3.7）。
+默认插件或已安装插件的行失败时，启动不失败；`plugin.list` 把它显示为失败，并带上 rutis 的错误。正在使用的插件，其清单无法读取时什么都不运行：它没有行，每种内容都从每个存在的所有者那里撤回。进程行全部就绪之后、接纳客户端之前，App Server 调用 PluginManager 的内容启动步骤，让每个存在的所有者与记录一致（§3.7）。
 
 ### 3.2 安装
 
@@ -215,7 +215,7 @@ TypeScript 的行以入口文件的绝对路径命名。Python 插件通过 Plug
 
 `plugin.reload {name}` 重新加载该名字使用的插件。宿主不监视任何文件；这个调用就是表示有东西变了的信号。
 
-1. 再次读取清单。如果名字变了，拒绝（`name_changed`）；用户用新名字重新安装它。
+1. 再次读取清单。读取失败时，这次重新加载在任何改动之前就被拒绝（`invalid_manifest`）：插件保留上一份可用的行和内容，直到记录的下一次变更（来自任何命令）或一次重启；这两者都会再次读取清单，并在清单无法读取期间不运行该插件的任何内容（§3.1）。如果名字变了，拒绝（`name_changed`）；用户用新名字重新安装它。
 2. 代码：只调用 `Loader::reload("plugin:<name>")`：没有要清的解析器缓存，运行时在每次解析时都重新描述模块。rutis 重新导入插件的入口模块（它导入的模块不会被重新导入；[需求 3](../../../design/plugin-management.md)），并开始一个新的世代；它在 Session 和分支中的部件被替换，它的依赖方被重新加载。如果清单的 `code` 字段变了，PluginManager reconcile 推导出的层，层里的这一行带着新字段。
 3. 内容：把每种内容重新登记到存在的所有者；新文档替换旧文档。清单不再带有的种类被撤回。
 4. 如果 `kinds` 变了，更新 `plugins.json` 中的 `kinds`。
@@ -235,7 +235,7 @@ Git 插件使用 `plugin.update {id, ref?}`：像 §3.2 那样获取新 commit�
 
 对于 P 带有的每种内容和每个存在的所有者，PluginManager 调用该所有者的 `register({plugin, dir, document})`；撤回时调用 `withdraw({plugin})`，其中 `plugin` 是插件的 id：已安装插件的 id，或默认插件的名字（§7），因此可以安全地用在服务器 id 和文件名中。一个名字从一个插件切换到另一个插件时，撤回旧插件的内容；插件不再带有的种类被撤回。所有者把登记的内容作为自己的状态保存，持久化它，并在自己重新加载后恢复它。PluginManager 不监视所有者，也不代替它们再次登记任何东西。PluginManager 要调用某个所有者而它不存在时，跳过它；回复中列出被跳过的种类。所有者报告它持有哪些插件 id 的内容。在启动时，以及 PluginManager 打开某个所有者的名字时，PluginManager 为每个正在使用的插件登记该种类的内容，并为该所有者持有的其他 id 撤回这种内容；所有者从不查找插件。因此，所有者关闭期间被删除的插件，或进程在写入 `plugins.json` 之后、向所有者发命令之前停止而留下的内容，都不会再次运行；拒绝的原因在重启后会再次报告。
 
-所有者校验交给它的内容。它拒绝的内容（不通过 Mcp 校验的 MCP 文档，`SKILL.md` 无法解析的 Skill）不影响插件的其他内容和代码：回复在 `refused` 中列出它，`plugin.list` 显示调用时各所有者对该插件报告的内容。
+所有者校验交给它的内容。它拒绝的内容（不通过 Mcp 校验的 MCP 文档，`SKILL.md` 无法解析的 Skill）不影响插件的其他内容和代码：回复在 `refused` 中列出它，`plugin.list` 显示调用时各所有者对该插件报告的内容。PluginManager 拒绝无法读取或不是合法 JSON 的 JSON 内容文件。它把这种拒绝保存在内存中，按插件 id 和种类记录，只在该种类最近一次读取失败期间保留：之后对该种类的任何处理，只要不读取或读取成功，都会清除它（文档已交给所有者、清单不再带有该种类、该种类因所有者不在场而被跳过），撤回该种类和移除插件也会清除。`plugin.list` 在同一个 `refused` 条目中显示它，代替所有者的拒绝，且只在该种类的所有者在场时显示；`plugin.install`、`plugin.enable`、`plugin.reload` 和 `plugin.update` 的回复也在 `refused` 中列出它。启动和所有者打开时的 reconcile 中的拒绝，按插件 id、种类和错误记录为 `warn` 日志。
 
 ## 4. 时序与冲突
 
@@ -300,7 +300,7 @@ PluginManager 不是 Capability：它没有 Timeline 状态，不写 Timeline �
 
 ## 9. 向机制所有者提出的需求
 
-没有向 rutis 提出的需求：用到的每个 loader 操作在 rutis-loader 0.19.2 中都已存在。
+没有向 rutis 提出的需求：用到的每个 loader 操作在 rutis-loader 0.19.3 中都已存在。
 
 **R1. Settings：在运行时登记来源（M1）。**
 

@@ -43,9 +43,10 @@ export class Jobs {
       ...(candidate.enabled ? { enabled_at: old?.enabled ? oldAnchor! : new Date().toISOString() } : {}),
     }
     validateJob(job)
+    const transition = { from: authority(old), to: authority(job) }
     const jobs = old ? snapshot.document.jobs.map(value => value.id === old.id ? job : value) : [...snapshot.document.jobs, job]
     await this.write(snapshot, jobs)
-    return { job, transition: { from: authority(old), to: authority(job) } }
+    return { job, transition }
   }
 
   async get(id: string): Promise<Job> {

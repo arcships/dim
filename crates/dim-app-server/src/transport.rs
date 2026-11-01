@@ -714,6 +714,7 @@ async fn run_connection(
                                         ]);
                                         if hub.config().database_path.is_some() {
                                             features.push("session.fork");
+                                            features.push("session.history.latestTurn");
                                         }
                                     }
                                     if trusted && hub.config().local_execution() {

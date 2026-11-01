@@ -15,7 +15,7 @@ SessionStore 为 Session 保存不可变文件。调用方为某个 Session 交�
 - **FileStorage。** S5a 只新增一个操作 `create_directory`。共享不需要建链接的操作。
 - **格式。** 原生存储升级到 15 版，新增两张表；v13 存储在启动时原地升级。
 - **接口。** Attachments 通过进程服务 `sessionFiles` 使用它。
-- **读取。** 模型像读其他文件一样用 `read` 读取这些文件：不弹审批，不留授权，也不新增任何权限（§11）。
+- **读取。** 模型像读其他文件一样用 `read` 读取这些文件：所有权无需授权即可满足文件范围，但不绕过 Tool approval Ask（§11）。
 
 不新增 Timeline 事件，不新增插件，不改运行时、rutis 或 Session 门面。
 
@@ -281,6 +281,8 @@ CREATE INDEX session_file_owners_by_file ON session_file_owners(file_id)
 
 **S5c 不需要为 Session 文件再改格式。** 它的分叉步骤只插入 `session_file_owners` 行（§4），删除步骤只删除这些行（§5.3），清扫读取 `session_files`；这些步骤读写的内容 v15 都已具备。v16 只可能来自 S5c 对它自己的 Session 记录的改动，不会来自 Session 文件。
 
+**宿主输出是 v29 的第二张表。** [ADR 013](../../adr/013-command-output-ownership.md) 为命令输出、转存的 `read` 结果和 shell 日志新增 `session_output_owners(session_id, path)` 及其索引。它不是 Session 文件表：这些路径没有 `session_files` 行或 id，目录由最后一个拥有它的 Session 删除时移除。分叉像复制 `session_file_owners` 一样复制它的行，因此源 Session 删除后输出仍可读。
+
 ## 9. 接口
 
 ### 9.1 语言中立形式（ADR 002 D5）
@@ -290,8 +292,12 @@ CREATE INDEX session_file_owners_by_file ON session_file_owners(file_id)
 | 方法 | 方式 | 请求 | 回复 |
 | --- | --- | --- | --- |
 | `put` | async | `{sessionId: string, name: string, content: string}`，`content` 是字节的 base64 | `{fileId: string, path: string, bytes: u64}` |
+| `register` | async | `{sessionId: string, path: string}`（ADR 013） | `{}`；Session 不存在时为 `not_found` |
+| `owns` | async | `{sessionId: string, path: string}` | `{owned: bool}` |
+| `owned_paths` | async | `{sessionId: string}` | `{paths: string[]}`，一个 Session 文件目录及每条输出路径 |
 
 - `path` 是 Session 资源节点上的绝对路径，与 `read` 为该 Session 解析的结果一致；`bytes` 是保存的长度。
+- `register`、`owns` 和 `owned_paths` 是 ADR 013 的所有权接口。`register` 解析路径并在调用方把路径交给模型之前记录；`owns` 同时读取两张所有权表，ADR 014 把它读作写入的 Session 自有事实。
 - 取消是协议动作：调用方放弃调用，或发送桥接协议的取消请求。取消在 txn 2 之前有效；之后文件已提交，回复有效。
 - 错误是数据 `{code, message}`（§10）。
 - SessionStore 不提供修改、重命名或移除单个文件的操作。共享和释放只发生在 S5c 的分叉和删除事务内，它们是 SessionStore 自己的 Rust 步骤，不是服务方法。
@@ -339,54 +345,59 @@ Attachments（[A.2](../plugins/Attachments.md#a2-attachmentput)）在 `Deps` 中
 
 ### 11.1 读取 Session 文件
 
-**决定：模型读取 Session 文件与读取任何文件相同。读取从不询问，不记录任何授权，S5a 也不新增任何权限、规则或例外。** Permission、Approval 和 WorkspaceTools 保持不变。
+**决定：模型读取 Session 文件与读取任何文件相同。Session 自有文件是固定事实之一，所以读取通过文件范围检查且不记录授权。工具审批独立，显式 Ask 仍可对读取询问。**
+[Permission 合同](../../../architecture/rust-agent/plugins/Permission.md#policy-contract)拥有两个闸门与旧行为；
+所有权不是显式工具允许。[ADR 014](../../../adr/014-file-access-facts.md) 根据工作区、系统目录、Session 自有文件和授权决定文件读写；[ADR 013](../../../adr/013-command-output-ownership.md) 增加第二张所有权表，所以 `owns` 也回答命令输出。
 
 ```
  model: read {path: "<database directory>/<db>.session-files/<fileId>/paste.txt"}
    |
    v
- ToolExecutor -> Approval.admit -> Permission.decide(tool "read", risk "read_filesystem")
-                                   (no path input)
-   "read" in disallowedTools --------------------------> Deny, for every path
-   "read" in allowedTools -----------------------------> Allow
-   preset read-only, workspace-write or full-access ---> Allow, no approval/request
+ ToolExecutor -> Approval.admit -> Permission.decide(tool "read", risk "read_filesystem", path)
+                                   resolve (~, cwd, .., symlinks), then fileAccessFacts(read)
+   "read" in disallowedTools ---------------------------> Deny, for every path
+   Read only or Workspace read/write, inside facts -----> pass file scope
+   Read only or Workspace read/write, outside facts ----> scope Ask
+   Unrestricted ----------------------------------------> pass file scope
+   tool gate -------------------------------------------> Ask unless allowed or bypassed;
+                                                         legacy risk behavior if override absent
+   scope Ask + tool Ask --------------------------------> one approval (exec denies and exits 3)
    |
    v
- WorkspaceTools read: resolve the path (~, join with cwd, realpath), refuse binary files
+ WorkspaceTools read: the same canonical target, refuses binary files
 ```
 
-今天的实际行为，依据 [permission.rs](../../../../crates/dim-agent-capabilities/src/permission.rs) 的 `decide` 和 [approval.rs](../../../../crates/dim-agent-capabilities/src/approval.rs) 的 `admit`：
+准入合同由 [permission.rs](../../../../crates/dim-agent-capabilities/src/permission.rs) 的 `decide`、[file_access.rs](../../../../crates/dim-agent-capabilities/src/file_access.rs) 和 [approval.rs](../../../../crates/dim-agent-capabilities/src/approval.rs) 的 `admit` 拥有：
 
-- **不询问。** 读取准入按工具名和风险类别决定，工作目录以外的读取与目录内的读取决定方式相同。`workspace-write` 的写入准入另行检查[工作区目标](../../../architecture/rust-agent/plugins/Permission.md#workspace-write-targets)。`read` 声明的风险是 `read_filesystem`，所有预设都允许；产品配置的默认预设是 `workspace-write`（[main.rs](../../../../crates/dim-app-server/src/main.rs)）。因此模型读取粘贴文件时不会弹出审批，符合 Attachments 的需要。把 `read` 列入 `disallowedTools` 的策略会拒绝它，与拒绝其他任何 `read` 一样。
-- **没有可以扩大的授权。** 审批的回答是对单次调用的 `allow` 或 `deny`，Dim 不记录"以后都允许"（[AcpGateway](../plugins/AcpGateway.md) 从不提供 `allow_always`）。策略变更（`session.permission.update`，写成 `permission/changed`）只包含预设和工具名，从不包含路径。记住的决定（`/approvals`）在计划中，尚未设计；从不询问的 `read` 不会产生它们，§11.2 保证这一点不变。读取 Session 文件不经审批请求就被允许，所以不会留下任何可能覆盖 `dimcode.sqlite`、数据库目录或 `~/.dimcode` 的东西。
-- **FileStorage 根不授予任何东西。** 把数据库目录登记为 FileStorage 根（§3.1），只是让 SessionStore 能通过 FileStorage 在那里写入。`read` 从不查询 FileStorage 根，文件根授权也不授予除此之外的任何东西（[ADR 003](../../adr/003-approval-scope.md) D5）。
-- **不是新情况。** WorkspaceTools 已经把超长的 `read` 结果和 `exec` 输出写到 `<数据库目录>/command-output/<sessionId>/`，并把路径交给模型（[read.rs](../../../../crates/dim-agent-capabilities/src/workspace_tools/files/read.rs) 的 `offload`）。在产品配置下，这两个目录都紧挨着 `dimcode.sqlite`。
+- **自有文件不需要范围询问。** `SessionFiles.owns` 读出本 Session 的附件行和 ADR 013 的输出行，所以 `put` 返回的路径和登记的输出路径在事实中 `owned` 为真。在 `read-only` 和 `workspace-read-write` 文件访问下它位于事实之内。读取不记录授权；除非工具已允许，显式 Tool approval Ask 仍会询问。§11.2 的两条性质对 `owns` 读出的行成立。
+- **事实之外的读取需要询问。** 解析后的路径既不是工作区、系统目录、Session 自有文件，也没有授权覆盖时，Read only 和 Workspace read/write 文件访问下需要范围询问（[ADR 014 D2/D4](../../../adr/014-file-access-facts.md#d2-read-and-write)）。CLI 提供 `Allow for this session`，为解析后的路径写入 read 授权；`exec` 以普通拒绝作答、停止回合并以 3 退出。Unrestricted 通过读取范围检查，不回答工具闸门。路径检查在工具列表和 `allowedTools` 之前，显式允许的工具不能绕过路径事实。`grep` 或 `glob` 没有 `path` 时搜索 Session cwd，也就是工作区。
+- **授权。** 覆盖解析后路径的 read 或 write 授权满足读取范围，不能回答显式 Tool approval Ask，也不能把 read 授权变成写入权限。策略变更（`session.permission.update`，写成 `permission/changed`）包含策略值，从不包含路径。FileStorage 根和记住的决定都不授予读取权限。
+- **FileStorage 根不授予任何东西。** 把数据库目录登记为 FileStorage 根（§3.1），只是让 SessionStore 能通过 FileStorage 在那里写入。`read` 从不查询 FileStorage 根；Session 自有事实来自 `sessionFiles.owns`，不是文件根授权。
+- **不是新情况。** WorkspaceTools 已经把超长的 `read` 结果和 `exec` 输出写到 `<数据库目录>/command-output/<sessionId>/`，并把路径交给模型（[read.rs](../../../../crates/dim-agent-capabilities/src/workspace_tools/files/read.rs) 的 `offload`）。在产品配置下，这两个目录都紧挨着 `dimcode.sqlite`。ADR 013 在结果把路径交给模型之前，把这些路径和持久 shell 的 `.dim/exec/<sessionId>/<branchId>/` 日志登记进 `session_output_owners`。登记是可信部件之间的防护，不是读取规则：`read` 仍然不为这些路径询问。
 
 ```
  ~/.dimcode/                            product home: auth.json and others
    rust/                                database directory, a FileStorage root
      dimcode.sqlite                     native store; read refuses .sqlite as binary
-     command-output/<sessionId>/        WorkspaceTools output, already read by path
+     command-output/<sessionId>/        WorkspaceTools output; owned by this Session
      dimcode.sqlite.session-files/
        <fileId S owns>/paste.txt        path returned by a put for S
-       <fileId T owns>/notes.md         Session T's file
+       <fileId T owns>/notes.md         Session T's file, unowned here
 ```
 
-**Permission 不做什么。** Permission 的读取准入不按路径限定，不是隔离（[Permission](../../../architecture/rust-agent/plugins/Permission.md)，ADR 001 的 "Trust and cross-language calls" 一节）。在任何预设下，`read`、`glob` 和 `grep` 都能读到守护进程用户可读的任何文本文件：上图中 T 的文件、其他 Session 的命令输出、`~/.dimcode/auth.json`。`read` 拒绝 `dimcode.sqlite`，只是因为它的二进制防护拒绝 `.sqlite` 扩展名。S5a 不扩大这个边界，也不为自己的目录开例外去收窄它：那样只护住一个 App Server 目录，产品目录的其余部分照旧。S5a 在构造上保证的是：
+**Permission 不做什么。** 事实决定的是工具准入，不是隔离（[Permission](../../../architecture/rust-agent/plugins/Permission.md)，ADR 001 的 "Trust and cross-language calls" 一节）。它们不限定进程挂载（由 ADR 010 和 ADR 012 拥有），也不阻止路径解析之后的并发文件系统变更。S 的模型仍可以通过请求读取 T 的文件并由用户批准、使用用户写入的授权、在 `full-access` 下，或通过挂载允许的进程读到它。`read` 拒绝 `dimcode.sqlite`，只是因为它的二进制防护拒绝 `.sqlite` 扩展名，与这些事实无关。S5a 不扩大这个边界，也不为自己的目录开例外去收窄它：通用所有权事实已经覆盖 `put` 返回的路径。S5a 在构造上保证的是：
 
 - `put` 返回的每个路径都是 `<db>.session-files/<fileId>/<name>`，其中 `fileId` 是随机 UUID v4，`name` 是一个经过校验的组成部分。返回的路径不会指向数据库、它的伴随文件或数据库目录中的其他条目。
 - SessionStore 只把路径返回给一次 `put`，该文件随即归这次 `put` 所针对的 Session 所有；分叉拥有源拥有的每个文件，所以它继承的历史中来自 `put` 的路径仍归它所有（§4）。
 
-要把一个 Session 的读取限制在它拥有的文件上，需要按路径限定的文件访问，§11.2 把它留给其所有者。
-
 ### 11.2 对按路径限定的文件访问的需求
 
-目前没有哪一项按路径限定进程内的文件读取：F2（[#73](https://github.com/arcships/dim/issues/73)）负责命令规则，F5（[#76](https://github.com/arcships/dim/issues/76)）在启动时隔离进程。无论哪一项首先按路径限定文件访问，无论针对工具还是进程，都必须保持下面两条性质。这是文件访问的通用需求，不是 Session 文件的例外：WorkspaceTools 的命令输出也是同样的形态，即 Session 自己的能力在工作区以外按路径交给模型的数据。
+无论哪种机制按路径限定进程内的文件访问，无论针对工具还是进程，都必须保持下面两条性质。[ADR 014](../../../adr/014-file-access-facts.md) 为文件工具实现了它们：在准入前解析 `read`、`grep` 和 `glob`，并查询 `SessionFiles.owns`。F2（[#73](https://github.com/arcships/dim/issues/73)）负责命令规则，F5（[#76](https://github.com/arcships/dim/issues/76)）在启动时隔离进程。这是文件访问的通用需求，不是 Session 文件的例外：WorkspaceTools 的命令输出也是同样的形态，即 Session 自己的能力在工作区以外按路径交给模型的数据。
 
-1. **拥有的文件读取时不询问。** Session 读取它拥有的 Session 文件时不审批、不记录决定，所以 Attachments 从不弹出审批。这样的读取不派生任何授权。
+1. **拥有的文件无需范围审批。** 所有权满足读取范围，不记录授权；它不回答独立的工具审批问题（§11.1）。这样的读取不派生任何授权。
 2. **由所有权而不是位置决定。** 在决定访问时，或在隔离进程启动时，Session S 可以读取 SessionStore 的行中 S 拥有的每个文件的 `<db>.session-files/<fileId>/`。这个集合从不覆盖整个 `<db>.session-files/`、数据库目录或产品目录；只有 S 拥有另一个 Session 的文件时才包含它（分叉拥有源的文件）。
 
-SessionStore 从 `session_file_owners` 回答"S 拥有哪些文件"，其主键 `(session_id, file_id)` 服务这个查询，所以 v15 不需要为此修改。这个查询随该项的设计加入；在那之前没有调用方。
+SessionStore 从两张所有权表回答"S 拥有哪些文件"（ADR 013）：Session 文件来自 `session_file_owners`，其主键 `(session_id, file_id)` 服务这个查询；登记的命令输出来自 `session_output_owners`。`SessionFiles.owns(session_id, path)` 就是这个查询；[ADR 014](../../../adr/014-file-access-facts.md) 把它作为读写共用的 Session 自有事实。`owned_paths(session_id)` 列出拥有的 Session 文件目录和输出路径。
 
 被否决的方案：
 
@@ -394,7 +405,7 @@ SessionStore 从 `session_file_owners` 回答"S 拥有哪些文件"，其主键 
 | --- | --- |
 | 把 Session 文件目录登记为 `read` 接受的只读根 | `read` 不查询任何根，今天什么都不会改变；文件根授权也不得授予工具权限（ADR 003 D5，AGENTS.md 第 11 条）。而且一个根覆盖整个目录，即所有 Session 的文件 |
 | Attachments 把文本放进上下文，或用专门的工具按 `fileId` 读取 | 内联会在提交时把最多 10 MiB 放进上下文，而 Attachments 正是为避免这一点而存在。第二个读取工具重复 `read`（偏移、编码、卸载），路径仍然可以被 `read` 读取 |
-| 现在就给 Permission 加一条"Session 可以读取自己的文件"规则 | Permission 没有路径输入，这条规则什么也豁免不了；它会成为路径无关的 Permission 里的 Session 文件特例。它的通用形式就是 §11.2 |
+| 现在就给 Permission 加一条"Session 可以读取自己的文件"规则 | 它会成为路径无关的 Permission 里的 Session 文件特例，豁免不了其他同类数据。它的通用形式就是 §11.2 的自有事实，由 [ADR 014](../../../adr/014-file-access-facts.md) 实现 |
 | `read` 拒绝数据库目录，Session 文件除外 | 在 WorkspaceTools 里为一个 App Server 目录开例外。它覆盖 `dimcode.sqlite`（已经作为二进制被拒绝），却覆盖不到 `auth.json` 和产品目录的其余部分 |
 
 ## 12. 时序与冲突
@@ -434,7 +445,7 @@ S5c 在 §5.2、§5.3 和 §5.4 的基础上实现 `session.fork` 和 `session.d
 | 原则 §4 第 5 条（批次） | 不适用：没有事件。 |
 | 原则 §4 第 6 条（上下文来自交接后的事件） | 模型只在已采用的用户输入里看到路径，只在 `read` 结果里看到文件内容。 |
 | 原则 §4 第 7 条（只用公开的事件和服务） | Attachments 使用 `sessionFiles`；SessionStore 使用 FileStorage 的公开操作，不读任何插件的内部状态。 |
-| 原则 §4 第 8 条（向机制所有者提需求） | 不改 Timeline、Dispatcher、事件格式、rutis、装配或 Session 门面，也不向 rutis 提需求。格式变化属于 SessionStore 自己的存储，记录为格式决定。`create_directory` 是 FileStorage 在自己模块内的补充，已在 S6 评审中同意。Permission、Approval 和 WorkspaceTools 不变（§11.1）；§11.2 是对按路径限定文件访问的那一项提出的通用需求，不是 Session 文件的例外。 |
+| 原则 §4 第 8 条（向机制所有者提需求） | 不改 Timeline、Dispatcher、事件格式、rutis、装配或 Session 门面，也不向 rutis 提需求。格式变化属于 SessionStore 自己的存储，记录为格式决定。`create_directory` 是 FileStorage 在自己模块内的补充，已在 S6 评审中同意。Permission 通过固定事实准入文件工具的读写（§11.1）；§11.2 是它实现的通用需求，不是 Session 文件的例外。 |
 | 原则 §4 第 9 条（只有后续决定要用的事实进 Timeline） | 没有 Timeline 事件。所有权是 SessionStore 行中的进程级状态。 |
 | 原则 §1（Capability 与 App Server 边界） | Session 文件是 SessionStore 的数据（总体设计 B.2）；不新增插件。粘贴功能留在 Attachments 自己的 crate 中。 |
 | ADR 002 D1（作用域跟随状态） | 进程作用域：文件比写入它的 Session 活得更久，并在 Session 之间共享。 |
@@ -454,7 +465,7 @@ S5c 在 §5.2、§5.3 和 §5.4 的基础上实现 `session.fork` 和 `session.d
 | App Server 装配（lib.rs 中的 `serve`） | 数据库目录还不是 FileStorage 根时注册它，并把索引交给 `SessionStorePlugin`（§3.1） | S5a 实现中的几行改动，像其他登记一样在装配线的工作之后追加 |
 | Attachments（P2 设计细化） | 把 `sessionFiles` 的 `storage` 映射为 `attachment.put` 的某个码。Attachments 目前没有；SessionTitle 把 SessionStore 的 `storage` 映射为 `storage_failed` | 已决定：`storage_failed`，记录在 [#66](https://github.com/arcships/dim/issues/66)；在 P2 的设计复核中落实 |
 | S5c | 在删除事务内、关闭 Session 之后、删除 `agent_sessions` 之前删除所有者行；在分叉事务内复制所有者行；删除后安排清扫 | S5c 的合同（§5.2、§5.3） |
-| 首先按路径限定文件访问的那一项（进程方面为 F5 [#76](https://github.com/arcships/dim/issues/76)；进程内工具方面尚无条目） | §11.2：Session 读取它拥有的文件时不询问；由所有权决定，从不是整个 Session 文件目录、数据库目录或产品目录 | S5a 不需要，因为 Permission 没有路径输入。在该项设计时适用；届时 SessionStore 加入所有权查询 |
+| 首先按路径限定文件访问的那一项（进程方面为 F5 [#76](https://github.com/arcships/dim/issues/76)；进程内文件工具为 [ADR 014](../../../adr/014-file-access-facts.md)） | §11.2：Session 自有文件无需范围审批；由所有权决定，从不是整个 Session 文件目录、数据库目录或产品目录。工具审批仍独立 | S5a 不需要。ADR 014 为读写读取 `sessionFiles.owns`；§11.1 按路径准入文件工具读取 |
 
 ## 16. 验收（流程测试）
 
@@ -466,7 +477,7 @@ S5c 在 §5.2、§5.3 和 §5.4 的基础上实现 `session.fork` 和 `session.d
 6. 在 txn 2 之前取消：不拥有任何文件；目录被清扫。文件名无效（包括 `AUTH.JSON`）或内容超过 16 MiB：`invalid` 或 `too_large`；什么都不写。
 7. 空库建为 v15。一次性 v13 库原地升级为精确的 v15 结构，所有业务行不变，再次打开时为 v15。执行升级的那次打开报告升级，§8 的日志行由此而来；再次打开不报告。分支专用 v14 和未知结构被拒绝并保留。
 8. FileStorage 流程：`create_directory` 以 `0700` 创建并同步父目录；已存在的目录成功；父目录缺失以 `NotFound` 失败。保留名、保留目录的大小写别名，以及（在大小写不敏感的文件系统上）`auth.json.lock` 的大小写别名，都以 `InvalidPath` 失败且不创建任何东西。已存在的文件或链接被拒绝且不改动。创建前取消则什么都不创建。
-9. 读取准入，经由 Session 的工具路径：`put` 之后，在产品默认的 `workspace-write` 和 `read-only` 下，该 Session 对返回路径的 `read` 返回内容；分支不写 `approval/request`，它的权限状态（版本和策略）不变。拒绝读取另一个 Session 的文件或数据库目录属于 §11.2 那一项的验收，因为 `read` 不按路径限定（§11.1）。
+9. 读取准入，经由 Session 的工具路径：`put` 之后，在产品默认的 `workspace-write` 和 `read-only` 下，该 Session 对返回路径的 `read` 返回内容；分支不写 `approval/request`，它的权限状态（版本和策略）不变。拒绝读取另一个 Session 的文件或数据库目录属于 §11.1 事实之外读取询问的验收：两者都不在该 Session 的事实中。
 
 测试：第 1、3（未知 Session）、5、6（名字、大小、已取消的调用）、4、9 项是经由 `sessionFiles` 的流程测试，位于 [session_files_flow.rs](../../../../crates/dim-app-server/tests/session_files_flow.rs)；第 2 项，以及写入与 txn 2 之间的第 3、6 项，在 [files/tests.rs](../../../../crates/dim-app-server/src/storage/files/tests.rs) 中运行 S5c 的分叉步骤和该处的钩子；第 7 项是 [storage_flow.rs](../../../../crates/dim-app-server/tests/storage_flow.rs) 中的 `a_v13_store_upgrades_in_place_once`、`the_daemon_reports_a_v13_upgrade_on_stderr_once` 和拒绝用例；第 8 项是 [file_storage_flow.rs](../../../../crates/dim-agent-capabilities/tests/file_storage_flow.rs) 中的 `directory_creation_stays_inside_the_authorized_root`。
 
@@ -490,12 +501,20 @@ S5c 在 §5.2、§5.3 和 §5.4 的基础上实现 `session.fork` 和 `session.d
 pub struct StoredSessionFile { pub file_id: String, pub path: PathBuf, pub bytes: u64 }
 pub enum SessionFileErrorCode { NotFound, Invalid, TooLarge, NodeUnavailable, Cancelled, Storage }
 pub struct SessionFileError { pub code: SessionFileErrorCode, pub message: String }
-pub trait PutSessionFile: Send + Sync + 'static {
+pub trait SessionFilesService: Send + Sync + 'static {
     fn put(&self, session_id: String, name: String, content: Vec<u8>, cancel: CancellationToken)
         -> Pin<Box<dyn Future<Output = Result<StoredSessionFile, SessionFileError>> + Send + '_>>;
+    fn register(&self, session_id: String, path: PathBuf)
+        -> Pin<Box<dyn Future<Output = Result<(), SessionFileError>> + Send + '_>>;
+    fn owns(&self, session_id: String, path: PathBuf)
+        -> Pin<Box<dyn Future<Output = Result<bool, SessionFileError>> + Send + '_>>;
+    fn owned_paths(&self, session_id: String)
+        -> Pin<Box<dyn Future<Output = Result<Vec<PathBuf>, SessionFileError>> + Send + '_>>;
 }
-pub struct SessionFilesHost(pub Arc<dyn PutSessionFile>);
+pub struct SessionFilesHost(pub Arc<dyn SessionFilesService>);
 ```
+
+`register` 保存解析后的输出路径；生产者已按自己的根检查过它。`owns` 接收解析后的绝对路径并读取两张所有权表：`session_output_owners` 的精确行，或路径位于 `<db>.session-files/<fileId>/` 内且 `session_file_owners` 拥有该 fileId。查询失败是错误，会导致拒绝访问。`owned_paths` 列出拥有的 fileId 目录和输出路径。
 
 `SessionStorePlugin` 接收数据库目录的根索引，提供 `SessionFilesHost`，并在每次调用时用 `ctx.get_as` 读取 `FileStorage`。分叉、释放和清扫步骤是 SessionStore 基于原生存储连接的方法，供 S5c 使用。
 

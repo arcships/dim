@@ -5,10 +5,12 @@ import { useI18n } from "vue-i18n"
 import { Activity, Archive, ArrowLeft, Box, Brain, Palette, Plug, Settings2, ShieldCheck, SlidersHorizontal, UserCircle, Wrench } from "lucide-vue-next"
 import ConfirmDialog from "../../components/ConfirmDialog.vue"
 import { settingsMessages } from "../../i18n/settings"
+import { useConnectionStore } from "../../stores/connection"
 import { useUiStore } from "../../stores/ui"
 import { settingsDirtyKey } from "./context"
 
 const { t } = useI18n({ messages: settingsMessages })
+const connection = useConnectionStore()
 const ui = useUiStore()
 const route = useRoute()
 const router = useRouter()
@@ -57,7 +59,9 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload))
         <RouterLink class="ui-icon-button" data-variant="ghost" :to="parent" :aria-label="t('back')"><ArrowLeft aria-hidden="true" /></RouterLink>
         <span>{{ t(category ?? 'settings') }}</span>
       </div>
-      <RouterView v-slot="{ Component }"><component :is="Component" :key="category === 'providers' ? 'providers' : route.path" /></RouterView>
+      <fieldset class="settings-content" :disabled="connection.phase !== 'connected' && !['appearance', 'account', 'providers'].includes(category ?? '')">
+        <RouterView v-slot="{ Component }"><component :is="Component" :key="category === 'providers' ? 'providers' : route.path" /></RouterView>
+      </fieldset>
     </div>
   </section>
 </template>

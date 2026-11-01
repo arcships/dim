@@ -28,12 +28,12 @@ jobs:
       scripts: ${{ steps.groups.outputs.scripts }}
       dependencies: ${{ steps.groups.outputs.dependencies }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # The merge commit and its base parent.
           fetch-depth: 2
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
           package-manager-cache: false
@@ -54,7 +54,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUSTC_WRAPPER: ""
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
       - name: Install cargo-deny
@@ -70,7 +70,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUSTC_WRAPPER: ""
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
       - name: Verify native Windows CLI boundaries
@@ -87,10 +87,10 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUSTC_WRAPPER: ""
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
           package-manager-cache: false
@@ -136,18 +136,19 @@ jobs:
           # 0.19's TypeScript test tool runs plugins on a real rutis-host; the
           # tests run from the repository root, so name it explicitly.
           export RUTIS_HOST="$PWD/runtime/node_modules/.bin/rutis-host"
+          npm ci --prefix runtime/plugins/goal --ignore-scripts --registry=https://registry.npmjs.org
           npm ci --prefix runtime/plugins/session-title --ignore-scripts --registry=https://registry.npmjs.org
           npm ci --prefix runtime/plugins/scheduler --ignore-scripts --registry=https://registry.npmjs.org
           npm ci --prefix runtime/plugins/workflow --ignore-scripts --registry=https://registry.npmjs.org
-          (cd runtime && npm install --no-save --ignore-scripts --install-links ./plugins/session-title ./plugins/scheduler ./plugins/workflow)
+          (cd runtime && npm install --no-save --ignore-scripts --install-links ./plugins/goal ./plugins/session-title ./plugins/scheduler ./plugins/workflow)
           node --test runtime/plugin-sdk.test.mjs
-          # The goal, session-title, scheduler and workflow plugin tests are off
-          # until rutis's 0.19 TypeScript test tool stops deadlocking when a
-          # callback and a fake call interleave (rutis#987), stops ending the
-          # host on one failed provide (rutis#988), and leaves `sessions` to the
-          # host (rutis#986). The Node-backed Rust flows below still load these
-          # plugins for real. `tsc` checks session-title, scheduler and
-          # workflow; goal has no tsconfig.
+          node --test runtime/plugins/goal/goal.test.mjs
+          node --test runtime/plugins/session-title/session-title.test.mjs
+          # The scheduler and workflow plugin tests stay off: no double of a
+          # test's can receive the plugin definition they register, because
+          # 0.19.3's test tool does not take one (rutis-0.19-upgrade M10). The
+          # Node-backed Rust flows below still load them for real, and `tsc`
+          # checks them; goal has no tsconfig.
           node runtime/node_modules/typescript/bin/tsc -p runtime/plugins/session-title/tsconfig.json
           node runtime/node_modules/typescript/bin/tsc -p runtime/plugins/scheduler/tsconfig.json
           node runtime/node_modules/typescript/bin/tsc -p runtime/plugins/workflow/tsconfig.json
@@ -180,10 +181,10 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUSTC_WRAPPER: ""
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .node-version
           package-manager-cache: false
@@ -207,7 +208,7 @@ jobs:
             exit 1
           fi
           cargo build --locked -p dimcode
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           repository: agentclientprotocol/registry
           ref: 49f768659a8089f07874f56a0d474312695ad861
@@ -216,7 +217,7 @@ jobs:
       - name: Verify upstream Registry authentication and protocol
         shell: bash
         run: node scripts/check-acp-registry.mjs target/debug/dimcode .acp-registry "$RUNNER_TEMP/acp-registry-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: acp-registry

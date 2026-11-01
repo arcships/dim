@@ -198,12 +198,12 @@ sequenceDiagram
   HB->>HB: 对照已消费事件复核
   alt 仍然有效
     HB->>TL: Branch::input：Append（PostToolUse、SessionStart）或 Queue（Stop 续跑）
-  else 已消费中断或更新的操作者输入
+  else 已消费中断、更新的操作者输入，或 SessionStart 时已开始的回合
     HB->>HB: 丢弃输出，记诊断
   end
 ```
 
-`PostToolUse` 对 `step/tool-result` 批次中结果不是错误的每个匹配调用运行，`PostToolUseFailure` 对结果为 `is_error` 的每个匹配调用运行；一个批次写一个 Append 输入。`Stop` 在结果为 `completed` 的 `turn/end` 上运行；阻止会写一个携带原因的 Queue 续跑输入，连续最多 3 次（A8）。`SessionStart` 在 `main` 的历史中没有 `turn/start` 且没有 `hooks:session-start/*` 带键块时运行一次；其 Append 输入与任何空闲 Append 一样，等待第一个驱动输入。`Notification` 在 `approval/request` 上运行，不写任何东西。带 `async: true` 的处理器可在上述任何点运行，没有任何东西等待或读取它们的输出。`HooksBranch` 还从它消费的已采用 `context/configured` 中，记下每个已声明 MCP 工具的迁移别名（G.2）。
+`PostToolUse` 对 `step/tool-result` 批次中结果不是错误的每个匹配调用运行，`PostToolUseFailure` 对结果为 `is_error` 的每个匹配调用运行；一个批次写一个 Append 输入。`Stop` 在结果为 `completed` 的 `turn/end` 上运行；阻止会写一个携带原因的 Queue 续跑输入，连续最多 3 次（A8）。`SessionStart` 在 `main` 的历史中没有 `turn/start` 且没有 `hooks:session-start/*` 带键块时运行一次；其 Append 输入与任何空闲 Append 一样，等待第一个驱动输入。分支上已有回合开始时，`SessionStart` 的输出同样被丢弃，因为该块必须先于第一个回合。`Notification` 在 `approval/request` 上运行，不写任何东西。带 `async: true` 的处理器可在上述任何点运行，没有任何东西等待或读取它们的输出。`HooksBranch` 还从它消费的已采用 `context/configured` 中，记下每个已声明 MCP 工具的迁移别名（G.2）。
 
 ## 4. 时序与冲突
 
@@ -287,7 +287,8 @@ Hook 命令因配置而运行，不是 agent 的决定，因此无需批准，�
 - Permission 与 Approval：向分支的 Permission 登记（`permission.registerAdvice`）并在准入决定中调用的建议方，由 Approval 传入调用的 `source`（A.6.1）。
 - InputQueue（Session 表 `submitChecks`，以及负责 `session.input.withdraw {steer}` 的 `InputMethods`）、Rpc（`session.submit`、`session.branch_create`）与原生 CLI：向 `submitChecks` 登记并在写入操作者输入之前调用的检查、`input_blocked` 错误，以及它在保证未提交任何东西的 `session.submit` 错误中的位置（A.6.2）。
 - HostPlatform：启动进程时把给定字节写入其 stdin，然后关闭（A.6.3）。
-AcpGateway 已经把 `session.submit` 的 `input_blocked` 映射为停止原因 `refusal`，消息作为文本（决定 9）。不属于需求的：Settings 来源 `hooks`（仅用户作用域）、`hooks-projects` 与 `hooks-plugins` 是 `BusinessDocument` 来源（现有机制，v13 中新增 `user/<source>` 行），且 `hooks-plugins` 只由所有者操作写入，任何 `hooks.*` 方法都不写它；`.dimcode/hooks.json` 是目录中的项目文件，由其所有者在 Settings 授权的根下经 FileStorage 读取，与 Workflow 的定义文件相同（[总览](../overview.md)，配置）；`hooks.*` 方法使用现有的 `ManagementMethods`；HostPlatform 的 shell 形式 `build_process_spec` 已覆盖 `command`（不支持 exec 形式的 `args`，附录 G）。
+
+AcpGateway 自己的设计把 Hooks 对 `session.submit` 的 `input_blocked` 拒绝报告为拒绝消息加停止原因 `refusal`（[AcpGateway §4.2](AcpGateway.md#42-prompt-与取消)），因此 Hooks 不对它提出需求（决定 9）。不属于需求的：Settings 来源 `hooks`（仅用户作用域）、`hooks-projects` 与 `hooks-plugins` 是 `BusinessDocument` 来源（现有机制，v13 中新增 `user/<source>` 行），且 `hooks-plugins` 只由所有者操作写入，任何 `hooks.*` 方法都不写它；`.dimcode/hooks.json` 是目录中的项目文件，由其所有者在 Settings 授权的根下经 FileStorage 读取，与 Workflow 的定义文件相同（[总览](../overview.md)，配置）；`hooks.*` 方法使用现有的 `ManagementMethods`；HostPlatform 的 shell 形式 `build_process_spec` 已覆盖 `command`（不支持 exec 形式的 `args`，附录 G）。
 
 ## 10. 决定
 
@@ -374,7 +375,7 @@ AcpGateway 已经把 `session.submit` 的 `input_blocked` 映射为停止原因 
 
 插件文档保存在 Settings 来源 `hooks-plugins` 中，每个插件 id 一条 `{dir, hooks}`，如同 Mcp 保存 `mcp-plugins`；`plugins()` 列出 Hooks 持有的 id，Hooks 在自身重载后恢复它们。登记的文档与其他文档一样校验（A.1）：Hooks 拒绝的文档以 `refused` 报告给 PluginManager，不留任何条目，其中的 Hook 都不运行。插件来源的命令获得指向 `dir` 的 `DIM_PLUGIN_ROOT`（A.3），其目录条目的 `path` 就是该 `dir`，另列启用状态。
 
-`HookSources.read(cwd, cancel)` 按来源返回其 id、路径、启用状态与文档或错误。工作区是 Settings 为 `cwd` 授权的项目根，如同 `mcp.catalog` 的解析方式；没有项目的 `cwd` 没有项目来源。目录顺序为表中顺序，再按文档顺序。同一 Hook 点上 `command` 字符串相同的处理器只运行一次。文档在每个 Hook 点读取；缺失的项目文件视为空，无法读取或无效的文件列为 `invalid` 并记诊断，其中的 Hook 都不运行。
+`HookSources.read(cwd, cancel)` 按来源返回其 id、路径、启用状态与文档或错误。工作区是 Settings 为 `cwd` 授权的项目根，如同 `mcp.catalog` 的解析方式；没有项目的 `cwd` 没有项目来源。目录顺序为表中顺序，再按文档顺序。同一 Hook 点上 `command` 字符串与插件目录都相同的处理器只运行一次；插件之间的命令从不合并，因为 `DIM_PLUGIN_ROOT` 赋予它们不同的含义（A.3）。文档在每个 Hook 点读取；缺失的项目文件视为空，无法读取或无效的文件列为 `invalid` 并记诊断，其中的 Hook 都不运行。
 
 ### A.3 命令协议
 
@@ -382,7 +383,7 @@ AcpGateway 已经把 `session.submit` 的 `input_blocked` 映射为停止原因 
 | --- | --- |
 | stdin | 一个 UTF-8 JSON 对象，然后 EOF。公共字段：`hook_event_name`、`session_id`、`cwd`、`permission_mode`（Dim 预设：`read-only`、`workspace-write`、`full-access`）、turn 范围内时的 `turn_id`，以及 Dim 字段 `branch_id`、`dim_source`（`user`、`project` 或 `plugin:<id>`）。没有 `transcript_path` |
 | 环境 | HostPlatform 的基础环境，加 `DIM_PROJECT_DIR`、`DIM_HOOK_EVENT`、`DIM_SESSION_ID` 与 `DIMCODE_HOME`；仅插件来源加 `DIM_PLUGIN_ROOT` |
-| 退出 0 | stdout 为空、一个 JSON 对象（A.4），或纯文本（对 `SessionStart` 与 `UserPromptSubmit` 为上下文，其他忽略） |
+| 退出 0 | stdout 为空、一个 JSON 对象（A.4），或纯文本——凡不是单个 JSON 对象的值，包括其他 JSON 值——对 `SessionStart` 与 `UserPromptSubmit` 为上下文，其他事件忽略 |
 | 退出 2 | 该事件的阻止结果（A.4）；stderr（前 2 KiB）为原因 |
 | 其他退出码、信号、超时、启动失败、stdout 超过 64 KiB、`node_unavailable` | 失败：记诊断，然后按处理器的 `onFailure`（A.5） |
 
@@ -416,6 +417,8 @@ AcpGateway 已经把 `session.submit` 的 `input_blocked` 映射为停止原因 
 | `SessionStart` | `hookSpecificOutput.additionalContext` | 失败 | 带键 Append 块 |
 | `Notification` | — | 失败 | — |
 
+`Stop` 的阻止若原因为空（退出 2 而无 stderr，或 `decision: "block"` 没有 `reason`），不写续跑输入；运行器记一条警告，写明处理器的来源与事件。
+
 上下文与原因每个 Hook 各最多 16 KiB。Dim 不支持的字段（`updatedInput`、`updatedPermissions`、`updatedToolOutput`、`message`、`continue`、`stopReason`、`suppressOutput`、`systemMessage`、`initialUserMessage`、`sessionTitle`）被忽略并记诊断。
 
 ### A.5 并发、合并、超时与失败
@@ -425,7 +428,7 @@ AcpGateway 已经把 `session.submit` 的 `input_blocked` 映射为停止原因 
 | 并发 | 一个 Hook 点上匹配的处理器并发运行；结果按目录顺序合并，因此结果与所选原因都与完成顺序无关 |
 | `PreToolUse` | 任一拒绝 → 拒绝；否则任一提问 → 提问；否则任一允许 → 允许；否则无意见。原因取目录顺序中第一个拒绝：一旦得知拒绝，目录顺序中排在它之后的处理器被终止，排在它之前的处理器运行到结束，因为它们的拒绝将优先 |
 | `PermissionRequest` | 任一拒绝 → 拒绝；否则任一允许 → 允许；否则不做任何事 |
-| `UserPromptSubmit` | 任一阻止 → 阻止（目录顺序中第一个阻止，适用相同的提前终止规则）；否则放行，每个上下文为操作者内容之后的一个文本块，按目录顺序 |
+| `UserPromptSubmit` | 任一阻止 → 阻止（目录顺序中第一个阻止，适用相同的提前终止规则）；否则放行，每个上下文为操作者内容之后的一个文本块，按目录顺序。`async` 处理器不参与决定，也不会被阻止终止：它在自己的超时、入口调用被中断或 Hooks 的部件卸载时结束 |
 | `PostToolUse(Failure)`、`Stop` | 全部输出按目录顺序合为一个输入 |
 | 超时 | 每个处理器的 `timeout`；终止进程树 |
 | 失败 | 失败、超时与取消按处理器的 `onFailure` 映射：`continue` = 无意见（`PreToolUse`）、不做任何事（`PermissionRequest`）、不带其上下文地放行（`UserPromptSubmit`）；`block` = 拒绝、拒绝、以 `Hook <source> did not finish` 阻止。观察类 Hook：只记诊断 |
@@ -449,8 +452,8 @@ AcpGateway 已经把 `session.submit` 的 `input_blocked` 映射为停止原因 
 | --- | --- |
 | 被什么挡住 | `UserPromptSubmit` 命令必须在操作者输入被写入之前作出决定：一旦提交，InputQueue 会在同一个 Dispatcher 步骤内应用 Steer、Append 或空闲 Queue 输入（规则 2），而 §4 规则 3 禁止在 before 回调中等待。Session 输入不一定是操作者的（Goal、Scheduler、Collaboration、ShellInput、Hooks 也会写输入），所以 Timeline 层面的 Hook 分不清用户提示词与其他输入。只有操作者输入到达的入口才知道。目前 `session.submit`、`session.branch_create {prompt}`（其提示词作为操作者的话成为新分支的第一条输入）与 `session.input.withdraw {steer}` 写入时不询问任何人。 |
 | 考虑过的现有机制 | 异步 before（已撤回，#21）；用新的 `hold` 字段与 `input/release` 指令扣住输入的同步 before 回调（上一版：需要改 InputQueue、历史与持久化格式，并且除了看有没有标记之外分不清操作者输入与其他输入）；事后的 `input/withdraw`（应用之后不可靠）；在客户端内检查（CLI、网关：每个客户端都得实现，且没有一个可靠）。向所有者登记，与工具向 ToolRegistry 登记相同（[rutis 使用 R6](../rutis-usage.md#r6-贡献向所有者登记)）：检查沿用它。 |
-| 需要的通用能力 | Session 的提交检查是 Session 表 `submitChecks`，它是 InputQueue 的 Session 部件提供的 Session 服务，由操作者输入入口读取。Session 部件在运行期间向它登记检查：`submitChecks.register(name, check)`。登记属于发起调用的部件，在它卸载时撤下；同名的第二个检查登记失败。`HooksSession` 登记 `hooks`。在写入操作者输入之前，`session.submit` 与 `session.branch_create`（Rpc）以及带 `steer` 的 `session.input.withdraw`（InputQueue 的 `InputMethods`）按名称顺序调用此刻已登记的每个检查：`check {entry: "submit" \| "branch" \| "steer", branchId, user, mode}` → `{decision: "proceed", blocks?: [text]} \| {decision: "block", message}`（异步；入口的调用等待）。`session.branch_create` 以 `{entry: "branch", branchId: parentBranchId, user: {content: [prompt]}, mode: "queue"}` 检查其提示词。调用方断开不取消任何东西，与任何已接受的调用一样（[session-boundary A.1](../contracts/session-boundary.md#a1-方法贡献)）；只有入口自身调用的中断（Rpc 装载或入口的提供方卸载、Session 关闭）才取消检查，此时什么都不写，调用以该中断已有的错误失败。任一 block → 调用以应用错误 `input_blocked`（`-32000`，`data.appError` 为 `input_blocked`，消息 = 回复中的 `message`）失败，什么都不写（带 `steer` 时，撤回与新输入都不写；`branch` 时不创建分支）。`input_blocked` 加入协议 v3 中保证未提交任何东西的 `session.submit` 错误（App Server README 的提交错误，以及原生 CLI 中对应的列表，否则 CLI 会提示输入可能已入队）。否则入口写入输入，所有 `blocks` 作为文本块按名称顺序追加到其 `user` 内容中、操作者自己的内容之后；输入不为它们带 raw 块，所以仍是操作者输入。`session.branch_create` 无法附加它们，因为分支的第一条输入只由提示词构成，所以不带它们创建分支。提供方错误视为放行。入口不依赖任何检查；`HooksSession` 依赖 `submitChecks`。不带业务含义：任何 Session 部件都可登记检查。 |
-| 对序号、批次、中断、重载的影响 | 序号：输入在检查之后写入时才取得序号；其他来源的输入不受影响。批次：steer 批次仍是一个批次，写或不写。中断：对运行中的检查无影响。重载：调用中途撤下的检查在撤下前回答，或其回答被丢弃并视为放行；没有已登记的检查时，入口不经检查直接写入操作者输入。持久化：无；`user` 内容中的文本块是现有形式。一次提交的延迟增加检查所需时间。 |
+| 需要的通用能力 | Session 的提交检查是 Session 表 `submitChecks`，它是 InputQueue 的 Session 部件提供的 Session 服务，由操作者输入入口读取。Session 部件在运行期间向它登记检查：`submitChecks.register(name, check)`。登记属于发起调用的部件，在它卸载时撤下；同名的第二个检查登记失败。`HooksSession` 登记 `hooks`。在写入操作者输入之前，`session.submit` 与 `session.branch_create`（Rpc）以及带 `steer` 的 `session.input.withdraw`（InputQueue 的 `InputMethods`）按名称顺序调用此刻已登记的每个检查：`check {entry: "submit" \| "branch" \| "steer", branchId, user, mode}` → `{decision: "proceed", blocks?: [text]} \| {decision: "block", message}`（异步；入口的调用等待）。第一个 block 结束调用：名称顺序中排在它之后的检查不再被调用。`session.branch_create` 以 `{entry: "branch", branchId: parentBranchId, user: {content: [prompt]}, mode: "queue"}` 检查其提示词。调用方断开不取消任何东西，与任何已接受的调用一样（[session-boundary A.1](../contracts/session-boundary.md#a1-方法贡献)）；只有入口自身调用的中断（Rpc 装载或入口的提供方卸载、Session 关闭）才取消检查，此时什么都不写，调用以该中断已有的错误失败。任一 block → 调用以应用错误 `input_blocked`（`-32000`，`data.appError` 为 `input_blocked`，消息 = 回复中的 `message`）失败，什么都不写（带 `steer` 时，撤回与新输入都不写；`branch` 时不创建分支）。`input_blocked` 加入协议 v3 中保证未提交任何东西的 `session.submit` 错误（App Server README 的提交错误，以及原生 CLI 中对应的列表，否则 CLI 会提示输入可能已入队）。否则入口写入输入，所有 `blocks` 作为文本块按名称顺序追加到其 `user` 内容中、操作者自己的内容之后；输入不为它们带 raw 块，所以仍是操作者输入。`session.branch_create` 无法附加它们，因为分支的第一条输入只由提示词构成，所以不带它们创建分支。提供方错误视为放行。入口不依赖任何检查；`HooksSession` 依赖 `submitChecks`。不带业务含义：任何 Session 部件都可登记检查。 |
+| 对序号、批次、中断、重载的影响 | 序号：输入在检查之后写入时才取得序号；其他来源的输入不受影响。批次：steer 批次仍是一个批次，写或不写。中断：对运行中的检查无影响。重载：调用中途撤下的检查在撤下前回答，或其回答被丢弃并视为放行。当 `submitChecks` 表本身不存在（InputQueue 的 Session 部件正处于两代之间）时，`session.submit` 与 `session.branch_create` 返回 `service_reloading` 且不写入任何内容，`session.input.withdraw {steer}` 同样返回 `service_reloading`，因为它的 `session.input` 命名空间随该部件一同撤下（该部件失败后则为 `service_unavailable`）；此时没有入口不经检查直接写入。表存在但没有已登记的检查（Hooks 已卸载）时，入口不经检查直接写入操作者输入（A9）。持久化：无；`user` 内容中的文本块是现有形式。一次提交的延迟增加检查所需时间。 |
 | 由谁实现与 issue | App Server 的 Rpc（`session.submit`、`session.branch_create`）、InputQueue（`submitChecks`、`InputMethods`）与原生 CLI（`dim-app-server`、`dim-agent-capabilities`、`dim-cli`）；`input_blocked` 加入 Rpc 错误表与未提交错误集合；[#757](https://github.com/arcships/dim/issues/757)（§10.2）。 |
 
 #### A.6.3 带初始 stdin 的进程启动

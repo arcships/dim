@@ -91,7 +91,7 @@ impl Plugin for Probe {
 
 /// Reads `source` once its owner row has started and registered it: the
 /// row applies after native startup, and the source appears only then.
-async fn registered(client: &mut Client, source: &str) -> Value {
+pub(super) async fn registered(client: &mut Client, source: &str) -> Value {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let read = client

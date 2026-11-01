@@ -216,11 +216,18 @@ export class Scheduler {
 
   private async submit(snapshot: Job, accepted: Run) {
     if (!await this.check(snapshot, accepted.run_id)) return
+    let requested
+    try { requested = effective(snapshot) }
+    catch (error) {
+      if (!(error instanceof ScheduleError)) throw error
+      await this.finish(accepted.run_id, 'failed', error.code)
+      return
+    }
     let sessionId: string
     if (snapshot.mode === 'create' || !snapshot.session_id) {
       let reply
       try {
-        reply = await this.sessions.launch({ cwd: snapshot.cwd, policy: effective(snapshot),
+        reply = await this.sessions.launch({ cwd: snapshot.cwd, policy: requested,
           ...(snapshot.agent_id ? { agent: snapshot.agent_id } : {}), ...(snapshot.model ? { model: snapshot.model } : {}),
           ...(snapshot.created_by === 'user' ? {} : { starter: {
             sessionId: snapshot.created_by.tool.session_id, branchId: snapshot.created_by.tool.branch_id,
@@ -256,7 +263,7 @@ export class Scheduler {
           missing ? 'failed' : 'skipped', missing ?? 'policy_read_failed')
         return
       }
-      if (!within(actual, effective(snapshot)) || !within(actual, live)) {
+      if (!within(actual, requested) || !within(actual, live)) {
         if (await this.check(snapshot, accepted.run_id)) await this.finish(accepted.run_id, 'skipped', 'policy')
         return
       }

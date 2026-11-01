@@ -15,9 +15,10 @@
 //! │   Mouse                  on                  │
 //! │   Notify when agent ...  on                  │
 //! │   Permissions                                │
-//! │   Tool approvals         default ›           │
-//! │   Execution              ›                  │
-//! │ 1 / 8 · ↑↓ move · enter select · ←→/space change · esc close │
+//! │   File access            Workspace read/write › │
+//! │   Tool approval          Ask ›               │
+//! │   Process isolation      ›                   │
+//! │ 1 / 9 · ↑↓ move · enter select · ←→/space change · esc close │
 //! ╰──────────────────────────────────────────────╯
 //! ```
 
@@ -35,8 +36,8 @@ pub struct Values {
     pub tools_expanded: bool,
     pub mouse: bool,
     pub notify: bool,
+    pub file_access: String,
     pub approvals: String,
-    pub model: Option<String>,
 }
 
 /// One row: a switch flips in place, a link opens its picker.
@@ -48,9 +49,9 @@ pub enum Setting {
     ToolDetails,
     Mouse,
     Notify,
+    FileAccess,
     Approvals,
     Isolation,
-    Model,
 }
 
 const ROWS: [(Setting, &str); 9] = [
@@ -60,9 +61,9 @@ const ROWS: [(Setting, &str); 9] = [
     (Setting::ToolDetails, "tool-details"),
     (Setting::Mouse, "mouse"),
     (Setting::Notify, "notify"),
+    (Setting::FileAccess, "file-access"),
     (Setting::Approvals, "approvals"),
     (Setting::Isolation, "isolation"),
-    (Setting::Model, "model"),
 ];
 
 impl Setting {
@@ -132,17 +133,12 @@ impl SettingsPanel {
             ),
             Item::heading(t("Permissions")),
             row(
-                Setting::Approvals,
-                "Tool approvals",
-                link(&values.approvals),
+                Setting::FileAccess,
+                "File access",
+                link(&values.file_access),
             ),
-            row(Setting::Isolation, "Execution", link("")),
-            Item::heading(t("Models")),
-            row(
-                Setting::Model,
-                "Model",
-                link(values.model.as_deref().unwrap_or(t("not set"))),
-            ),
+            row(Setting::Approvals, "Tool approval", link(&values.approvals)),
+            row(Setting::Isolation, "Process isolation", link("")),
         ];
         let mut list = ListPanel::new(
             "Settings",
@@ -162,10 +158,16 @@ impl SettingsPanel {
         self.list.paste(text);
     }
 
+    pub fn selected(&self) -> Setting {
+        self.list
+            .selected_id()
+            .and_then(|id| Setting::of(&id))
+            .unwrap()
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
-        let selected = self.list.selected_id().and_then(|id| Setting::of(&id));
-        if let Some(setting) = selected
-            && setting.switch()
+        let setting = self.selected();
+        if setting.switch()
             && key.mods.0 == 0
             && matches!(
                 key.code,

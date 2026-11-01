@@ -1,7 +1,7 @@
 # Permission 命令规则
 
 状态：已实现（实现中发现的修正见 [§12](#12-实现说明)）。路线图项 F2（[#73](https://github.com/arcships/dim/issues/73)）。
-总体设计：[§3 `/approvals`、命令规则行](../overview.md#3-基于现有机制的集成)与
+总体设计：[§3 命令规则行](../overview.md#3-基于现有机制的集成)与
 [附录 B.1 Permission 行](../overview.md#b1-session-与分支-capability)。作用域：
 [ADR 002](../../adr/002-plugin-scope.md)（对现有分支级 Permission 的补充，存储归 App Server 内的所有者）与
 [ADR 003](../../adr/003-approval-scope.md)（只管 agent 决策）。
@@ -13,17 +13,18 @@
 "启动进程的工具"（`risk: "execute_process"`）且输入带字符串 `command` 的调用时读取这份列表。
 不缓存、不重载、不订阅。
 
-- 命中的 `deny` 规则在任何预设下都拒绝该调用。
-- 命中的 `allow` 规则只回答 Approval 本来要问的问题：把 `Ask` 变成 `Allow`，绝不把预设的 `Deny`
-  变成 `Allow`。
+- 命中的 `deny` 规则在任何预设和显式工具审批选择下都拒绝该调用。
+- 命中的 `allow` 规则只回答 Approval 本来要问的问题：把 `Ask` 变成 `Allow`，绝不把策略的 `Deny`
+  变成 `Allow`，也不绕过文件检查。
 - `allow` 只匹配简单命令（不含 shell 分隔、重定向或替换）；`deny` 对命令被分隔后的每一段检查。
 
 规则有两条写入途径，都经同一个所有者：客户端管理方法 `permission.rules` 与 `permission.set_rules`
 （以 Settings 修订号做 CAS）；"总是允许"也由此实现：客户端先 `set_rules` 写入，再发普通的
 `approval.respond allow`。Approval 的事件和方法不变。
 
-不新增 Timeline 事件，不改 `PermissionPolicy` 与 `permission/changed`，不改 Timeline、Dispatcher、
-rutis、Settings 和装配。
+命令规则不新增 Timeline 事件或策略字段，也不改变 Timeline、Dispatcher、rutis、Settings 或装配机制。
+独立策略字段属于 [Permission 合同](../../../architecture/rust-agent/plugins/Permission.md#policy-contract)
+（[ADR 017](../../../adr/017-independent-permission-controls.md)），不属于此规则来源。
 
 ### 1.1 不做什么
 
@@ -188,19 +189,23 @@ WorkspaceTools 的 `exec` 和 ShellTools 的 `execute`，两者都已接收 `com
   2. 是命令调用？读取规则（每次都读）
        读取失败                                    -> Deny "Command rules could not be read: <error>"
        某条 deny 规则命中某一段                    -> Deny "Command denied by command rule `<command>` (<match>)"
-  3. call.name 在 allowedTools 中                   -> Allow  （现有）
-  4. 按风险走预设                                   -> Allow | Ask | Deny（现有）
-  5. 结果为 Ask 且某条 allow 规则命中该简单命令     -> Allow
+  3. 文件调用的文件范围闸门                        -> Deny | Ask，或继续
+  4. call.name 在 allowedTools 中                   -> Allow
+  5. 显式 toolApproval，否则使用旧风险判定          -> Allow | Ask | Deny
+  6. 工具结果为 Ask 且 allow 规则命中该简单命令      -> Allow
 ```
 
-| 预设 | 现在的 `execute_process` | 命中 allow 规则 | 命中 deny 规则 |
+文件范围和工具询问合并为一次针对本次调用的审批。命令 allow 只回答工具问题；文件闸门和隔离不属于命令规则策略。
+
+| 旧预设（无显式工具覆盖） | `execute_process` | 命中 allow 规则 | 命中 deny 规则 |
 | --- | --- | --- | --- |
 | read-only | Deny | Deny | Deny |
 | workspace-write | Ask | Allow | Deny |
 | full-access | Allow | Allow | Deny |
 
-因此 allow 规则永远不会把 Session 提到预设之上：上限为 read-only 的自动化 Session 仍是 read-only。
-读取失败按关闭处理，因为可能存在 deny 规则。
+allow 规则不能解除旧风险拒绝。显式 `toolApproval: "ask"` 下，无论种子预设为何，命令都询问，
+匹配的 allow 回答此问题。显式 `"bypass"` 下命令无需工具询问，但 deny 规则仍优先。
+两者都不改变文件访问或进程隔离。读取失败按关闭处理，因为可能存在 deny 规则。
 
 ### 5.3 准入
 
@@ -259,19 +264,19 @@ WorkspaceTools 的 `exec` 和 ShellTools 的 `execute`，两者都已接收 `com
 - 只有用户作用域，因此项目文件无法给自己授予 allow 规则。项目作用域已暂缓（§10）。
 - 规则是宿主安全设置：从不进入 Timeline，重放或 fork 从不恢复或放宽，配对设备不能写入（管理方法
   只在本地提供）。
-- allow 规则不能超出预设；deny 规则在所有预设下生效；读取失败即拒绝。
+- allow 规则不能解除策略拒绝或文件检查；deny 规则在所有工具审批选择下生效；读取失败即拒绝。
 - 匹配对 `allow` 刻意保守，对 `deny` 刻意宽泛；§5.1 写明了它的边界。它不是隔离。
 
 ## 8. 与现有部分的关系
 
 | 部分 | 关系 |
 | --- | --- |
-| Permission | 补充：`decide` 接收调用，对命令调用读取规则；新增 Session 依赖 `CommandRulesHost`。`PermissionPolicy`、`permission/changed`、版本和 `session.permission.*` 不变 |
+| Permission | 补充：`decide` 接收调用，对命令调用读取规则；Session 依赖 `CommandRulesHost`。规则不增加策略字段，不改变策略版本或方法；独立控件遵循 Permission 自身的合同 |
 | Approval | 在现有两处把调用传给 `decide`，并传递被取消的读取。事件、`approval.respond`、重放和恢复不变 |
 | ToolExecutor、WorkspaceTools、ShellTools | 不变；`exec` 与 `execute` 已声明 `execute_process` 并接收 `command` |
 | Settings | 不变；新增一个来源 `permission`（用户文件、原生行）。它的 `settings.changed` 与任何来源一样照常发出；F2 不监听 |
 | Timeline、Dispatcher、rutis、装配 | 不变 |
-| CLI `/approvals` | 不属于 F2。CLI 承接的需求：`/approvals` 面板经 `permission.rules`/`permission.set_rules` 列出、添加、删除规则，并在审批提示中为简单的 `exec`/`execute` 命令提供"总是"选项（§5.4）。由 CLI 权限控制交付（[#257](https://github.com/arcships/dim/issues/257)，[CLI 设计](../cli-commands.md#权限控制)） |
+| CLI `/permissions` | CLI 拥有经 `permission.rules`/`permission.set_rules` 列出、添加、删除规则的面板，以及审批提示中简单 `exec`/`execute` 命令的"总是"选项（§5.4）。`/approvals` 和 `/approval` 为兼容别名（[CLI 设计](../cli-commands.md#权限控制)） |
 | HostPlatform | 执行 Shell 仍是它自己的业务配置；不属于 F2 |
 | RemoteGateway | 配对设备可以回答审批，但不能读写规则 |
 | Collaboration、Scheduler、Workflow | 规则是宿主级的，在每个 Session 中生效；由于 allow 只回答 `Ask`，上限为 read-only 的自动化 Session 不会被放宽 |
@@ -317,7 +322,7 @@ WorkspaceTools 的 `exec` 和 ShellTools 的 `execute`，两者都已接收 `com
    `permission.rules`/`permission.set_rules`。
 6. **绑定：** 按配置在 Session 级绑定端口 `Keyed<CommandRulesHost>`（§4.2），不依赖进程服务；
    现有测试不变。
-7. **范围：** F2 只做服务端：规则来源、Permission 检查、管理方法和流程测试。CLI `/approvals` 面板和
+7. **范围：** F2 只做服务端：规则来源、Permission 检查、管理方法和流程测试。CLI `/permissions` 面板和
    "总是"选项属于 F6（CLI），作为它承接的需求（§5.4、§8）；CLI 已在 [#257](https://github.com/arcships/dim/issues/257) 交付。
 
 ## 11. 验收（流程测试）

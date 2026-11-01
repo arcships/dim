@@ -61,6 +61,7 @@ flowchart LR
   p33 -->|"dim_agent_runtime::timeline_context::BranchOpening@main"| p43
   p21 -->|"dim_agent_capabilities::permission::CommandRulesHost@session"| p42
   p21 -->|"dim_agent_runtime::config::SessionConfig@session"| p42
+  p21 -->|"dim_agent_runtime::config::SessionIdentity@session"| p42
   p33 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p42
   p33 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p42
   p38 -->|"dim_agent_capabilities::context_preparation::ContextPreparation@main"| p41

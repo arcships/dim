@@ -366,8 +366,7 @@ impl Agent {
                     }
                 }
                 match result.borrow().clone() {
-                    Some(Err(AgentError::Cancelled(_) | AgentError::Closed(_))) => {}
-                    Some(Err(error)) => errors.push(error),
+                    Some(Err(error)) => errors.extend(error.without_cancellation()),
                     None => errors.push(AgentError::fault(
                         "session build",
                         "build ended without a result",
@@ -528,6 +527,9 @@ impl Session {
     }
     /// Reads a local page of complete batches without exceeding the line's
     /// head: its published head while it is open, its fixed head once it ended.
+    /// A paging read does not rebuild stored requests: `context/prepare` and
+    /// `model/call` records carry an empty request. Use [`Self::local`] for
+    /// complete events.
     pub async fn local_page(
         &self,
         branch: &str,
@@ -547,7 +549,7 @@ impl Session {
             .owner
             .assembly
             .store
-            .read_page(&key, after, limit, through)
+            .read_page_without_request_bodies(&key, after, limit, through)
             .await?
             .into_iter()
             .map(|record| record.event)

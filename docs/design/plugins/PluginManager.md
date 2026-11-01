@@ -2,7 +2,7 @@
 
 Status: Draft, aligned with the maintainer on 2026-10-27. Requirements: [plugin management](../plugin-management.md) ([#432](https://github.com/arcships/dim/issues/432)). Issues: [#3](https://github.com/arcships/dim/issues/3), [#384](https://github.com/arcships/dim/issues/384). Scope: [ADR 002](../../adr/002-plugin-scope.md) (process: installation is per host). Language: Rust. Milestone: M1 for the parts marked in §0.
 
-PluginManager keeps the plugin configuration of a host: which plugins are installed, where they came from, which plugin each name uses, and which names are turned off. It keeps this configuration in its own file, `plugins.json`, in Dim's own format. It keeps no runtime state. Whether a plugin is loaded, running or failed is rutis' state, read from rutis-loader. What content an owner holds (skills, MCP servers, hooks) is that owner's state. PluginManager carries out a configuration change by giving commands to the owners: rutis-loader for plugin code, and SkillsCatalog, Mcp and Hooks for content. Each owner decides and keeps its own state.
+PluginManager keeps the plugin configuration of a host: which plugins are installed, where they came from, which plugin each name uses, and which names are turned off. It keeps this configuration in its own file, `plugins.json`, in Dim's own format. It keeps no runtime state, except, in memory, the content it refused itself (§3.7). Whether a plugin is loaded, running or failed is rutis' state, read from rutis-loader. What content an owner holds (skills, MCP servers, hooks) is that owner's state. PluginManager carries out a configuration change by giving commands to the owners: rutis-loader for plugin code, and SkillsCatalog, Mcp and Hooks for content. Each owner decides and keeps its own state.
 
 A plugin is a directory with a manifest. It may carry code (a rutis plugin in TypeScript or Python), content (skills, MCP configuration, hooks), or both. Plugins are identified by **name**. Several plugins with the same name may be installed, but only one of them is used at a time. Turning another one on replaces the one in use. This is how a built-in plugin is replaced.
 
@@ -191,7 +191,7 @@ Content follows the same switch: when name N stops using P, PluginManager withdr
 2. The App Server reconciles `[assembly, plugins]`. A built-in that is off never starts.
 3. PluginManager's row applies, registers `plugin` with `managementMethods` and `PluginTools` with `partRegistry`, then, after activation, deletes leftover staging directories and Git clones no installed entry refers to.
 
-A default or installed plugin whose row fails does not fail startup; `plugin.list` shows it as failed with rutis' error. Once the process rows are up, before clients are admitted, the App Server calls PluginManager's content startup, which brings every present owner to the record (§3.7).
+A default or installed plugin whose row fails does not fail startup; `plugin.list` shows it as failed with rutis' error. A used plugin whose manifest cannot be read runs nothing: it gets no row, and its content of every kind is withdrawn from every present owner. Once the process rows are up, before clients are admitted, the App Server calls PluginManager's content startup, which brings every present owner to the record (§3.7).
 
 ### 3.2 Install
 
@@ -215,7 +215,7 @@ When a content owner itself is turned on (Hooks, for example), PluginManager reg
 
 `plugin.reload {name}` reloads the plugin the name uses. The host watches no files; the call is the signal that something changed.
 
-1. Read the manifest again. If its name changed, refuse (`name_changed`); the user installs it again under the new name.
+1. Read the manifest again. A read that fails refuses the reload (`invalid_manifest`) before changing anything: the plugin keeps its last good row and content until the next change of the record, from any command, or a restart. Both read the manifest again and run none of the plugin's content while it cannot be read (§3.1). If its name changed, refuse (`name_changed`); the user installs it again under the new name.
 2. Code: `Loader::reload("plugin:<name>")`, and nothing else: there is no resolver cache to clear, since the runtime describes the module again at every resolution. rutis re-imports the plugin's entry module (modules it imports are not re-imported; [requirement 3](../plugin-management.md)) and starts a new generation; its parts in Sessions and branches are replaced and its dependents reload. If the manifest's `code` fields changed, PluginManager reconciles the derived layer, which carries the row with the new fields.
 3. Content: register each kind again with its present owner; the new document replaces the old one. A kind the manifest no longer carries is withdrawn.
 4. Update `kinds` in `plugins.json` if they changed.
@@ -235,7 +235,7 @@ A name using a built-in Rust plugin cannot be reloaded (`not_reloadable`): it ne
 
 For each kind P carries and each owner present, PluginManager calls the owner's `register({plugin, dir, document})` and, to withdraw, `withdraw({plugin})`, where `plugin` is the plugin's id: its installed id, or a default plugin's name (§7), so it is safe in server ids and file names. When a name switches from one plugin to another, the old plugin's content is withdrawn; a kind the plugin no longer carries is withdrawn. The owner keeps what was registered as its own state, persists it, and restores it after its own reload. PluginManager does not watch owners and registers nothing again on their behalf. An owner that is absent when PluginManager would call it is skipped; the reply names the skipped kinds. An owner reports the plugin ids it holds. At startup, and when PluginManager turns an owner's name on, PluginManager registers that kind of content of every plugin in use and withdraws it for every other id the owner holds; owners never look for plugins. So content restored by an owner for a plugin removed while the owner was off, or left by a process that stopped between writing `plugins.json` and commanding the owner, does not run again, and a refusal is reported again after a restart.
 
-An owner validates what it is given. Content it refuses (an MCP document that fails Mcp's validation, a Skill whose `SKILL.md` does not parse) does not stop the plugin's other content or code: the reply names it under `refused`, and `plugin.list` shows what the owners report for the plugin at the time of the call.
+An owner validates what it is given. Content it refuses (an MCP document that fails Mcp's validation, a Skill whose `SKILL.md` does not parse) does not stop the plugin's other content or code: the reply names it under `refused`, and `plugin.list` shows what the owners report for the plugin at the time of the call. PluginManager refuses a JSON content file it cannot read or that is not JSON. It keeps that refusal in memory, keyed by plugin id and kind, only while the last read of that kind failed: any later handling of the kind that reads nothing or reads it successfully clears it (the document handed over, the manifest no longer naming the kind, the kind skipped because its owner is absent), as do withdrawing the kind and removing the plugin. `plugin.list` shows it in the same `refused` entry, in place of the owner's, and only while the kind's owner is present; the replies of `plugin.install`, `plugin.enable`, `plugin.reload` and `plugin.update` name it under `refused`. A refusal in the startup or owner-on reconcile is logged at `warn` with the plugin id, the kind and the error.
 
 ## 4. Timing and conflicts
 
@@ -300,7 +300,7 @@ PluginManager is not a Capability: it has no Timeline state, writes no Timeline 
 
 ## 9. Requirements raised to mechanism owners
 
-None to rutis: every loader operation used exists in rutis-loader 0.19.2.
+None to rutis: every loader operation used exists in rutis-loader 0.19.3.
 
 **R1. Settings: sources registered at run time (M1).**
 

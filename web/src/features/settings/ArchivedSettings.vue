@@ -8,7 +8,7 @@ import type { SessionSummary } from "../../rpc/protocol"
 import { useConnectionStore } from "../../stores/connection"
 import { useSessionsStore } from "../../stores/sessions"
 import GeneralSettingsStatus from "./GeneralSettingsStatus.vue"
-import { messageFrom } from "./context"
+import { messageFrom, reloadSettingsOnReconnect } from "./context"
 
 const s = useSettingsText()
 const connection = useConnectionStore()
@@ -45,6 +45,7 @@ async function remove(session: SessionSummary): Promise<void> {
   } catch (cause) { error.value = messageFrom(cause) }
   finally { busy.value = false }
 }
+reloadSettingsOnReconnect(connection, () => load())
 onMounted(() => load())
 </script>
 

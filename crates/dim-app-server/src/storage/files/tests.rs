@@ -7,9 +7,11 @@
 use super::*;
 use crate::storage::{SessionStore, SqliteTimelineStore};
 use dim_agent_capabilities::file_storage::FileStoragePlugin;
+use dim_agent_capabilities::host_platform::{HostPlatform, ShellStatus};
 use dim_agent_runtime::{SessionConfig, TimelineStore};
 use rutis::host::CtxHost;
 use std::path::PathBuf;
+use tokio::sync::Semaphore;
 
 /// Hooks that run once, for the named Session, right before the
 /// cancellation check that precedes txn 2.
@@ -36,15 +38,48 @@ fn on_commit(session_id: &str, hook: impl FnOnce() + Send + 'static) {
 /// Sessions whose next delete stops after its output removal.
 static STOP_AFTER_OUTPUT: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-pub(super) fn after_output_removal(session_id: &str) -> dim_agent_runtime::Result<()> {
-    let mut stops = STOP_AFTER_OUTPUT.lock().unwrap();
-    match stops.iter().position(|stopped| stopped == session_id) {
-        Some(index) => {
-            stops.swap_remove(index);
-            Err(error("stopped after the output removal"))
-        }
-        None => Ok(()),
+/// Sessions whose next delete waits after its output removal: the first
+/// semaphore is signalled when the delete reaches the pause, the second
+/// releases it.
+type OutputPause = (String, Arc<Semaphore>, Arc<Semaphore>);
+static PAUSE_AFTER_OUTPUT: Mutex<Vec<OutputPause>> = Mutex::new(Vec::new());
+
+fn pause_after_output_removal(session_id: &str) -> (Arc<Semaphore>, Arc<Semaphore>) {
+    let reached = Arc::new(Semaphore::new(0));
+    let release = Arc::new(Semaphore::new(0));
+    PAUSE_AFTER_OUTPUT
+        .lock()
+        .unwrap()
+        .push((session_id.into(), reached.clone(), release.clone()));
+    (reached, release)
+}
+
+pub(super) async fn after_output_removal(session_id: &str) -> dim_agent_runtime::Result<()> {
+    let stopped = {
+        let mut stops = STOP_AFTER_OUTPUT.lock().unwrap();
+        stops
+            .iter()
+            .position(|stopped| stopped == session_id)
+            .map(|index| stops.swap_remove(index))
+    };
+    if stopped.is_some() {
+        return Err(error("stopped after the output removal"));
     }
+    let paused = {
+        let mut pauses = PAUSE_AFTER_OUTPUT.lock().unwrap();
+        pauses
+            .iter()
+            .position(|(paused, _, _)| paused == session_id)
+            .map(|index| pauses.swap_remove(index))
+    };
+    if let Some((_, reached, release)) = paused {
+        reached.add_permits(1);
+        let _released = release
+            .acquire()
+            .await
+            .map_err(|_| error("the test released no delete"))?;
+    }
+    Ok(())
 }
 
 struct Fixture {
@@ -326,6 +361,214 @@ async fn an_interrupted_delete_converges_on_retry_and_the_next_sweep() {
     assert_eq!(fixture.rows(), [format!("{}|-|1", kept.file_id)]);
     assert_eq!(fixture.entries(), [kept.file_id]);
     next.close().await;
+    drop(store);
+    fixture.close().await;
+}
+
+/// ADR 013 D4: the fork copies every output row, including one for a file
+/// that does not exist yet. `run_background` registers the output path before
+/// its command writes it, so the fork must own the file the command creates
+/// and keep it after the source delete.
+#[tokio::test]
+async fn a_fork_owns_output_registered_before_the_file_exists() {
+    let fixture = Fixture::new().await;
+    let store = SessionStore::new(fixture.db.clone(), fixture.root.clone(), 0);
+    fixture.session("running-source").await;
+    let log = fixture.home.join("command-output/running-source/exec.log");
+    fixture
+        .files
+        .register("running-source".into(), log.clone())
+        .await
+        .unwrap();
+    assert!(!log.exists());
+
+    store
+        .fork_session("running-source", "running-fork", 0)
+        .await
+        .unwrap();
+    std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+    std::fs::write(&log, b"output").unwrap();
+
+    assert!(store.delete_session("running-source").await.unwrap());
+    assert_eq!(std::fs::read(&log).unwrap(), b"output");
+    let owned: i64 = fixture
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM session_output_owners WHERE session_id='running-fork'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(owned, 1, "the fork owns the file the command created");
+
+    drop(store);
+    fixture.close().await;
+}
+
+/// ADR 013 D4: a fork and a delete serialize on the ownership lock. A fork
+/// admitted while the delete is removing output cannot copy a row for it.
+#[tokio::test]
+async fn a_fork_waits_for_a_delete_that_removed_output() {
+    let fixture = Fixture::new().await;
+    let store = SessionStore::new(fixture.db.clone(), fixture.root.clone(), 0);
+    fixture.session("paused-source").await;
+    let log = fixture.home.join("command-output/paused-source/exec.log");
+    std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+    std::fs::write(&log, b"output").unwrap();
+    fixture
+        .files
+        .register("paused-source".into(), log.clone())
+        .await
+        .unwrap();
+
+    let (reached, release) = pause_after_output_removal("paused-source");
+    let deleting = {
+        let store = store.clone();
+        tokio::spawn(async move { store.delete_session("paused-source").await })
+    };
+    let _reached = reached.acquire().await.unwrap();
+    let forking = {
+        let store = store.clone();
+        tokio::spawn(async move { store.fork_session("paused-source", "paused-fork", 0).await })
+    };
+    release.add_permits(1);
+    assert!(deleting.await.unwrap().unwrap());
+    assert!(forking.await.unwrap().is_err(), "the source is gone");
+    let copied: i64 = fixture
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM session_output_owners WHERE session_id='paused-fork'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(copied, 0, "the fork owns no removed output");
+    assert!(!log.exists());
+
+    drop(store);
+    fixture.close().await;
+}
+
+/// ADR 013 D4 on Windows: the directory separator is also the LIKE escape
+/// character, so it must be escaped before the wildcard is appended.
+#[test]
+fn a_windows_style_directory_pattern_matches_a_nested_row() {
+    let pattern = like_prefix(Path::new(r"C:\data\command-output\S"), '\\');
+    assert_eq!(pattern, r"C:\\data\\command-output\\S\\%");
+    let connection = Connection::open_in_memory().unwrap();
+    let matched: bool = connection
+        .query_row(
+            "SELECT ?1 LIKE ?2 ESCAPE '\\'",
+            rusqlite::params![r"C:\data\command-output\S\exec.log", pattern],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(matched);
+}
+
+/// ADR 013 D4: two concurrent deletes of a source and its copy must not both
+/// keep the shared directory and leave it without an owner.
+#[tokio::test]
+async fn concurrent_deletes_remove_a_shared_output_directory() {
+    let fixture = Fixture::new().await;
+    let store = SessionStore::new(fixture.db.clone(), fixture.root.clone(), 0);
+    fixture.session("source").await;
+    let log = fixture.home.join("command-output/source/exec.log");
+    std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+    std::fs::write(&log, b"output").unwrap();
+    fixture
+        .files
+        .register("source".into(), log.clone())
+        .await
+        .unwrap();
+    store.fork_session("source", "fork", 0).await.unwrap();
+
+    let (source, fork) = tokio::join!(store.delete_session("source"), store.delete_session("fork"));
+    assert!(source.unwrap());
+    assert!(fork.unwrap());
+    assert!(
+        !log.exists(),
+        "the last owner's delete removes the directory"
+    );
+    let remaining: i64 = fixture
+        .connection()
+        .query_row("SELECT COUNT(*) FROM session_output_owners", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(remaining, 0);
+
+    drop(store);
+    fixture.close().await;
+}
+
+/// ADR 013 D4: a shell output directory goes through HostPlatform, is kept
+/// while another Session names a path under it, and is removed by the last
+/// owner's delete.
+#[tokio::test]
+async fn a_delete_removes_shell_output_of_its_last_owner() {
+    let fixture = Fixture::new().await;
+    let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+        code: "DELETE_FLOW",
+        reason: "Deleting output runs no command".into(),
+    })
+    .unwrap();
+    platform.home = fixture.home.clone();
+    fixture
+        .root
+        .provide_as::<HostPlatform>(Arc::new(platform))
+        .unwrap();
+    let store = SessionStore::new(fixture.db.clone(), fixture.root.clone(), 0);
+    fixture.session("source").await;
+    let log = fixture.home.join(".dim/exec/source/main/exec-1.log");
+    std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+    std::fs::write(&log, b"output").unwrap();
+    fixture
+        .files
+        .register("source".into(), log.clone())
+        .await
+        .unwrap();
+    store.fork_session("source", "fork", 0).await.unwrap();
+
+    assert!(store.delete_session("source").await.unwrap());
+    assert!(log.exists());
+    assert!(store.delete_session("fork").await.unwrap());
+    assert!(!log.exists());
+
+    drop(store);
+    fixture.close().await;
+}
+
+/// ADR 012 D1: a delete removes the Session's grants in the same transaction
+/// as its other rows.
+#[tokio::test]
+async fn a_delete_removes_the_sessions_grants() {
+    use dim_agent_types::grant::{GrantKind, GrantMode};
+
+    let fixture = Fixture::new().await;
+    let store = SessionStore::new(fixture.db.clone(), fixture.root.clone(), 0);
+    fixture.session("deleted").await;
+    store
+        .add_grant(
+            "deleted",
+            PathBuf::from("/work/notes.md"),
+            GrantKind::File,
+            GrantMode::Write,
+        )
+        .await
+        .unwrap();
+    store
+        .add_grant(
+            "deleted",
+            PathBuf::from("/work/notes"),
+            GrantKind::Dir,
+            GrantMode::Write,
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.grants("deleted").await.unwrap().len(), 2);
+    assert!(store.delete_session("deleted").await.unwrap());
+    assert!(store.grants("deleted").await.unwrap().is_empty());
     drop(store);
     fixture.close().await;
 }

@@ -6,14 +6,14 @@ state the rules in any language; this guide shows how to write them today. Dim i
 shapes change with the phase that needs them, together with this guide.
 
 Dim loads trusted JavaScript/TypeScript plugins through rutis. Match `@arcships/rutis`
-to the host's pinned runtime: main uses 0.19.2.
+to the host's pinned runtime: main uses 0.19.3.
 Use type-only imports from `dimcode/plugin` for Dim's implemented named services.
 These declarations add no runtime wrapper or service.
 The source declaration is [npm/plugin.d.ts](../npm/plugin.d.ts). The types of the services Dim's
 Rust types serve to other languages are generated into
 [npm/branch-services.d.ts](../npm/branch-services.d.ts) and re-exported through the same entry
 point as `Services`.
-The pinned rutis 0.19.2 declarations pass `tsc --strict` without `skipLibCheck`.
+The pinned rutis 0.19.3 declarations pass `tsc --strict` without `skipLibCheck`.
 This does not disable checking a plugin's calls against the service interfaces.
 
 ## Available services

@@ -14,6 +14,11 @@ use crate::wire::Configuration;
 /// The Dim account provider, signed in with `/login`.
 pub const DIM_OAUTH_ID: &str = "dimcode-api-oauth";
 
+/// The namespace of the Dim account's calls: they target a provider id and
+/// name the account directory. A native OAuth namespace has one account and
+/// takes no target.
+pub const ACCOUNT_NAMESPACE: &str = "account";
+
 /// One piece of a draft sent with [`Command::SubmitDraft`], in order.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DraftPart {
@@ -27,10 +32,46 @@ pub enum DraftPart {
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GrantRequest {
+    pub path: String,
+    pub kind: String,
+    pub mode: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecutionSnapshot {
     pub revision: String,
     pub sandbox: bool,
     pub network: bool,
+}
+
+/// The host's answer to `host.execution.backend`; the Execution panel shows
+/// the reason when the platform has no sandbox backend.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SandboxBackend {
+    Available,
+    Unavailable { reason: String },
+}
+
+impl<'de> serde::Deserialize<'de> for SandboxBackend {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct Reply {
+            available: bool,
+            #[serde(default)]
+            reason: Option<String>,
+        }
+        let reply = Reply::deserialize(deserializer)?;
+        if reply.available {
+            Ok(Self::Available)
+        } else {
+            Ok(Self::Unavailable {
+                reason: reply
+                    .reason
+                    .ok_or_else(|| serde::de::Error::missing_field("reason"))?,
+            })
+        }
+    }
 }
 
 pub enum Command {
@@ -44,6 +85,7 @@ pub enum Command {
         branch_id: String,
         allow: bool,
         remember: bool,
+        grant: Option<GrantRequest>,
     },
     RetryApproval {
         request_id: String,
@@ -160,8 +202,7 @@ pub enum Command {
     Usage,
     /// `/compact`: ask the shown line to compact its context.
     Compact,
-    /// Set the default tool-approval mode.
-    SetApprovals(String),
+    SetPermission(crate::permission::Change),
     /// List the providers of the `/connect` panel.
     ListProviders,
     /// Change one provider.
@@ -178,8 +219,8 @@ pub enum Command {
     LoginUsage(String),
     /// `/web`: flip the daemon-owned Web entry switch.
     ToggleWeb,
-    /// `/logout`: sign the provider's account out.
-    Logout(String),
+    /// Sign the described account out.
+    Logout(AccountTarget),
     /// Run a shell-mode command through the App Server; `private` (`!!`)
     /// keeps its result out of the session.
     ShellRun {
@@ -281,8 +322,25 @@ pub struct PluginReply {
 pub struct OauthStart {
     pub attempt: u64,
     pub provider_id: String,
+    /// The account namespace the provider's sign-in methods belong to.
+    pub namespace: String,
     pub device: bool,
     pub email: Option<String>,
+}
+
+/// A described account operation: the provider and its account namespace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountTarget {
+    pub provider_id: String,
+    pub namespace: String,
+}
+
+/// A Provider entry's `account` descriptor (`provider.management`): the
+/// namespace its account methods live in and the sign-in methods it offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountDescriptor {
+    pub namespace: String,
+    pub login_methods: Vec<String>,
 }
 
 /// How a sign-in is going.
@@ -404,6 +462,9 @@ pub struct ProviderEntry {
     pub custom: bool,
     pub base_url: Option<String>,
     pub api_key_preview: Option<String>,
+    /// Present when the daemon describes an account this provider signs in
+    /// through.
+    pub account: Option<AccountDescriptor>,
 }
 
 /// One model the picker offers.
@@ -600,10 +661,13 @@ pub enum Update {
     /// Sent only by a daemon that advertises the policy methods.
     ModelPolicy(ModelPolicyUpdate),
     Isolation(Result<ExecutionSnapshot, String>),
+    /// Read once with the switches; a failed read adds no line and leaves the
+    /// switches usable.
+    IsolationBackend(Result<SandboxBackend, String>),
     /// A transient status-line message.
     Toast(String),
-    /// The default tool-approval mode (wire name).
-    Approvals(Result<String, String>),
+    Permissions(Result<dim_agent_types::PermissionPolicy, String>),
+    PermissionSelected(crate::permission::Change),
     Providers(Result<Vec<ProviderEntry>, String>),
     /// What a provider change came to.
     ProviderResult {

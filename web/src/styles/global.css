@@ -467,7 +467,7 @@ code { font-family: var(--font-mono); }
   /* The timeline chevrons also fade color; keep that, drop the rotation. */
   .timeline-work-group-toggle svg, .timeline-work-item-toggle svg { transition: color var(--duration-press) ease !important; }
   /* The skip link appears instantly instead of sliding in. */
-  .skip-link { transform: none; transition: none; }
+  .skip-link { transition: none; }
 }
 
 /* Task 005 chat workspace */

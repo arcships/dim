@@ -207,7 +207,7 @@ RuntimeManager is not a Capability: it has no Timeline state, writes no Timeline
 
 ## 9. Requirements raised to mechanism owners
 
-None to rutis: a connection row starts its process only once its launch command is provided, and rows wait for its session under rutis-loader 0.19.2's existing gating.
+None to rutis: a connection row starts its process only once its launch command is provided, and rows wait for its session under rutis-loader 0.19.3's existing gating.
 
 **R1. PluginManager: Python links and the runtime request (M1).**
 

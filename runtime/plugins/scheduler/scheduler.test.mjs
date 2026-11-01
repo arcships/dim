@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
+import { z } from 'zod'
 import { load } from '@arcships/rutis/testing'
 import processPlugin from './index.ts'
 import sessionPlugin from './session.ts'
@@ -61,7 +62,10 @@ async function host(t, initial = {}) {
     managementMethods: { async register(namespace, declarations, call) { h.methods = call } },
     partRegistry: { async registerDefinition(scope, name, definition) { h.part = { scope, name, definition } } },
     settings: {
-      async register(declaration) { assert.equal(declaration.source, 'schedule') },
+      async register(declaration) {
+        assert.equal(declaration.source, 'schedule')
+        h.policySchema = z.fromJSONSchema(declaration.schema.properties.jobs.items.properties.policy_cap)
+      },
       async read() {
         h.settingsReads++
         const snapshot = { revision: String(h.revision), document: copy(h.document) }
@@ -82,6 +86,7 @@ async function host(t, initial = {}) {
         if (h.saveConflict || request.expectedRevision !== String(h.revision)) return failure('conflict')
         if (h.writeFailure) return failure(h.writeFailure)
         assert.equal(request.document.max_concurrent_runs, h.document.max_concurrent_runs)
+        for (const job of request.document.jobs) h.policySchema.parse(job.policy_cap)
         h.document = copy(request.document); h.revision++
         await h.owner.parallel('settings/schedule', { source: 'schedule' })
         if (h.afterWriteFailure === 'bridge') throw new Error('reply lost after commit')
@@ -308,6 +313,34 @@ test('job preset saves and launched policies follow the shared cap contract', as
     await until(() => h.runs().find(value => value.run_id === run.run_id)?.state === 'completed', vector.name)
     assert.deepEqual(h.launches.at(-1).policy, vector.capped, vector.name)
   }
+  for (const vector of vectors.reject.filter(vector => vector.usage === 'job-save-and-launch')) {
+    h.policies.set('a', vector.bound)
+    const before = copy(h.document), writes = h.updates.length
+    for (const request of [
+      { action: 'create', job: { ...seed, policy: vector.requested.preset } },
+      { action: 'update', job_id: h.document.jobs.at(-1).id, job: { policy: vector.requested.preset } },
+    ]) {
+      const reply = await h.tool(request)
+      assert.equal(reply.isError, true, vector.name)
+      assert.match(reply.content, /schedule_invalid/)
+    }
+    assert.deepEqual(h.document, before)
+    assert.equal(h.updates.length, writes, 'unrepresentable caps fail before the Settings CAS')
+  }
+  const invalid = h.document.jobs.at(-1)
+  invalid.policy = 'read-only'
+  h.policies.set('a', policy('full-access'))
+  const before = copy(h.document), writes = h.updates.length
+  const reply = await h.tool({ action: 'update', job_id: invalid.id, job: { policy: 'workspace-write' } })
+  assert.equal(reply.isError, true)
+  assert.deepEqual(h.document, before, 'an unrepresentable old transition also fails before commit')
+  assert.equal(h.updates.length, writes)
+  const launches = h.launches.length, inputs = h.inputs.filter(input => input.mode === 'queue').length
+  const run = await h.call('run_now', { job_id: invalid.id })
+  await until(() => h.runs().find(value => value.run_id === run.run_id)?.state === 'failed', 'configured invalid cap fails closed')
+  assert.equal(h.runs().find(value => value.run_id === run.run_id).detail, 'schedule_invalid')
+  assert.equal(h.launches.length, launches)
+  assert.equal(h.inputs.filter(input => input.mode === 'queue').length, inputs)
 })
 
 test('tool scope and schema are enforced before the process owner sees a save', async t => {
@@ -328,8 +361,12 @@ test('tool scope and schema are enforced before the process owner sees a save', 
 test('reuse checks every shared full-policy vector and both independent saved/live bounds before input', async t => {
   const h = await host(t)
   const cases = [
-    ...vectors.cap.map(vector => ({ name: vector.name, x: vector.requested, savedEffective: vector.bound,
-      liveBound: policy('full-access'), permitted: vector.within })),
+    ...[...vectors.cap, ...vectors.reject].flatMap(vector => [
+      { name: `${vector.name} saved`, x: vector.requested, savedEffective: vector.bound,
+        liveBound: policy('full-access'), permitted: vector.within ?? false },
+      { name: `${vector.name} live`, x: vector.requested, savedEffective: vector.requested,
+        liveBound: vector.bound, permitted: vector.within ?? false },
+    ]),
     ...vectors.reuse.map(vector => ({ ...vector, permitted: vector.withinSaved && vector.withinLive })),
   ]
   for (const [index, vector] of cases.entries()) {
@@ -535,10 +572,14 @@ test('a reused policy reply received after the deadline is recorded without gran
 
 test('reload resumes accepted history without duplicate input, deadline reset or terminal report replay', async t => {
   const h = await host(t, { mode: 'running' })
+  const explicit = { ...policy('full-access'), fileAccess: 'read-only', toolApproval: 'bypass' }
+  h.policies.set('a', explicit)
   const job = JSON.parse((await h.tool({ action: 'create', job: seed })).content).job
+  assert.deepEqual(job.policy_cap, explicit)
   const run = await h.call('run_now', { job_id: job.id })
   await until(() => h.runs()[0]?.state === 'running', 'run is tracked before reload')
   const before = copy(h.runs()[0])
+  assert.deepEqual(before.policy, explicit)
   await h.reopen()
   h.append(before.session_id, 'turn', 'end', { status: 'completed' })
   await h.advance(1000)
@@ -547,6 +588,8 @@ test('reload resumes accepted history without duplicate input, deadline reset or
   assert.equal(h.inputs.filter(input => input.mode === 'queue').length, 1)
   assert.equal(h.runs()[0].deadline_at, before.deadline_at)
   assert.equal(h.runs()[0].run_id, run.run_id)
+  assert.deepEqual(h.runs()[0].policy, explicit)
+  assert.equal(JSON.parse(h.text).version, 1)
   await h.reopen()
   assert.equal(h.inputs.filter(input => input.mode === 'steer').length, 1)
   assert.equal(h.document.jobs[0].enabled_at, job.enabled_at)

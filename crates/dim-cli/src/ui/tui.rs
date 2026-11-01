@@ -16,8 +16,9 @@ use crate::model::shell::ShellRun;
 use crate::model::view::{
     CompactionState, LineState, LineView, RowKind, SideLine, TaskTarget, ViewRow, ViewSnapshot,
 };
+use crate::permission::{file_label, tool_label, tool_policy_label};
 use crate::ui::Env;
-use crate::ui::approvals_panel::{ApprovalsPanel, status_label};
+use crate::ui::approvals_panel::ApprovalsPanel;
 use crate::ui::commands::{COMMANDS, Context as CommandContext, Needs};
 use crate::ui::composer::{Composer, Outcome as ComposerOutcome, Shell, history};
 use crate::ui::i18n::{self, t, tf};
@@ -186,7 +187,9 @@ pub fn print_web_panel(opened: &WebOpened) {
         println!("Press Ctrl+C to stop the Web workspace.");
         return;
     }
-    let palette = Theme::detect(&detect::env_from_process(), true, None).palette;
+    let palette = Theme::detect(&detect::env_from_process(), true, None)
+        .1
+        .palette;
     let cols = crate::ui::terminal::window_size().map_or(80, |(cols, _)| usize::from(cols));
     print!("{}", web_panel(cols, &palette, opened));
     if let Some(url) = opened.sign_in {
@@ -230,7 +233,7 @@ fn run_terminal(
     let env = detect::env_from_process();
     let mut progress = ProgressBar::from_env(&env);
     let mut title = WindowTitle::new(crate::ui::title::apple_terminal(), Instant::now());
-    let detected = Theme::detect(&env, true, background.as_deref());
+    let (default_id, detected) = Theme::detect(&env, true, background.as_deref());
     let saved = crate::ui::theme_panel::saved_theme_id(&surroundings.home);
     let theme = match &saved {
         Some(id) => Theme::named(
@@ -257,7 +260,7 @@ fn run_terminal(
         mode: detected.mode,
         appearance: detected.appearance,
         background,
-        active: saved.unwrap_or_else(|| crate::ui::theme_panel::SYSTEM.to_owned()),
+        active: saved.unwrap_or_else(|| default_id.to_owned()),
     });
     let mut dirty = true;
     let mut last_frame: Option<Instant> = None;
@@ -791,10 +794,7 @@ struct App {
     /// The second their running time was last drawn for.
     card_second: u64,
     session_id: String,
-    /// The default tool-approval mode (wire name).
-    approvals: String,
-    /// The next approvals reading is the answer to a change: say so.
-    approvals_toast: bool,
+    permission_policy: dim_agent_types::PermissionPolicy,
     /// The main branch's context use.
     context: Option<ContextReading>,
     /// The first attempt tag of the next `/login` panel, so a closed panel's
@@ -835,6 +835,7 @@ struct App {
     /// The `/settings` row a picker was opened from: closing the picker
     /// goes back to it.
     settings_return: Option<Setting>,
+    isolation_return_permissions: bool,
     /// Fullscreen reads the mouse (`tuiMouseMode`); off leaves selection
     /// and the wheel to the terminal.
     pub mouse: bool,
@@ -1007,9 +1008,11 @@ impl App {
             message_blocks: Vec::new(),
             card_second: 0,
             session_id: String::new(),
-            approvals: "workspace-write".to_owned(),
+            permission_policy: dim_agent_types::PermissionPolicy {
+                preset: dim_agent_types::PermissionPreset::WorkspaceWrite,
+                ..Default::default()
+            },
             context: None,
-            approvals_toast: false,
             login_attempts: 0,
             theme_context: None,
             reflow_requested: false,
@@ -1027,6 +1030,7 @@ impl App {
             service_tiers: false,
             jump: None,
             settings_return: None,
+            isolation_return_permissions: false,
             mouse,
             notify,
             notifications: Vec::new(),
@@ -1547,25 +1551,34 @@ impl App {
                     self.notices.push("Web interface off".to_owned());
                 }
             }
-            Update::Approvals(mode) => match mode {
-                Ok(mode) => {
-                    if std::mem::take(&mut self.approvals_toast) {
-                        let title = crate::ui::approvals_panel::announced_title(&mode);
-                        match crate::ui::config::save_permission(&self.home, &mode) {
-                            Some(error) => self.set_notice(error),
-                            None => self.set_notice(tf(
-                                "Tool approvals: {title} (also for new sessions)",
-                                &[("title", title)],
-                            )),
-                        }
-                        if !self.session_id.is_empty() {
-                            self.notices.push(t("New members from main inherit this policy; existing members retain theirs.").to_owned());
-                        }
+            Update::Permissions(policy) => match policy {
+                Ok(policy) => {
+                    if let Some(Prompt::Approvals(panel)) = &mut self.prompt {
+                        panel.set_policy(&policy);
                     }
-                    self.approvals = mode;
+                    self.permission_policy = policy;
+                    if let Some(Prompt::Settings(panel)) = &self.prompt {
+                        self.open_settings(panel.selected());
+                    }
                 }
                 Err(error) => self.notices.push(error),
             },
+            Update::PermissionSelected(change) => {
+                let (key, value) = change.config();
+                let label = match change {
+                    crate::permission::Change::FileAccess(value) => {
+                        format!("File access: {}", file_label(value))
+                    }
+                    crate::permission::Change::ToolApproval(value) => {
+                        format!("Tool approval: {}", tool_label(value))
+                    }
+                };
+                let message = crate::ui::config::write(&self.home, key, value).map_or_else(
+                    || format!("{label} (also for new sessions)"),
+                    |error| format!("{label} applied, but default could not be saved: {error}"),
+                );
+                self.set_notice(message);
+            }
             Update::Providers(providers) => {
                 if let Some(Prompt::Providers(panel)) = &mut self.prompt {
                     panel.set_providers(providers);
@@ -1588,18 +1601,26 @@ impl App {
             Update::Login(account) => {
                 let signed_in = matches!(account, Ok(Some(_)));
                 self.signed_in = signed_in;
-                if let Some(Prompt::Login(view)) = &mut self.prompt {
-                    view.set_account(account);
-                    if signed_in {
-                        self.host.send(Command::LoginUsage(DIM_OAUTH_ID.into()));
+                let dim = match &mut self.prompt {
+                    Some(Prompt::Login(view)) => {
+                        view.set_account(account);
+                        Some(DIM_OAUTH_ID.to_owned())
                     }
+                    Some(Prompt::Providers(panel)) => {
+                        panel.set_account(account);
+                        panel.dim_provider_id().map(str::to_owned)
+                    }
+                    _ => None,
+                };
+                if signed_in && let Some(provider_id) = dim {
+                    self.host.send(Command::LoginUsage(provider_id));
                 }
             }
-            Update::Usage(usage) => {
-                if let Some(Prompt::Login(view)) = &mut self.prompt {
-                    view.set_usage(usage);
-                }
-            }
+            Update::Usage(usage) => match &mut self.prompt {
+                Some(Prompt::Login(view)) => view.set_usage(usage),
+                Some(Prompt::Providers(panel)) => panel.set_usage(usage),
+                _ => {}
+            },
             Update::UsageReport(usage) => self.reports.push(match usage {
                 Ok(usage) => Block::AccountUsage(usage),
                 Err(reason) => Block::Status {
@@ -1661,6 +1682,11 @@ impl App {
             Update::Isolation(result) => {
                 if let Some(Prompt::Isolation(panel)) = &mut self.prompt {
                     panel.set_snapshot(result);
+                }
+            }
+            Update::IsolationBackend(result) => {
+                if let Some(Prompt::Isolation(panel)) = &mut self.prompt {
+                    panel.set_backend(result);
                 }
             }
             Update::ModelPolicy(update) => {
@@ -2328,7 +2354,6 @@ impl App {
                     self.host.send(Command::CloseSessions);
                 }
                 self.prompt = None;
-                self.reopen_upgrade();
             }
             Effect::Exit => return Outcome::Exit(130),
             Effect::Restart { confirmed } => {
@@ -2367,6 +2392,7 @@ impl App {
                 branch_id,
                 allow,
                 remember,
+                grant,
             } => {
                 self.answered
                     .insert((branch_id.clone(), request_id.clone()));
@@ -2375,6 +2401,7 @@ impl App {
                     branch_id,
                     allow,
                     remember,
+                    grant,
                 });
                 self.prompt = None;
                 self.sync_prompt();
@@ -2435,43 +2462,10 @@ impl App {
                 }
                 _ => {}
             },
-            Effect::FullAccess {
-                request_id,
-                branch_id,
-            } => {
-                self.approvals_toast = true;
-                self.host.send(Command::SetApprovals("full-access".into()));
-                let mut pending = vec![(request_id, branch_id)];
-                if let Some(snapshot) = &self.snapshot {
-                    pending.extend(
-                        snapshot
-                            .approvals
-                            .iter()
-                            .filter(|a| {
-                                a.tool_name != dim_agent_types::MEMBER_APPROVAL_ALLOW
-                                    && !self
-                                        .answered
-                                        .contains(&(a.branch_id.clone(), a.request_id.clone()))
-                            })
-                            .map(|a| (a.request_id.clone(), a.branch_id.clone())),
-                    );
-                }
-                for (request_id, branch_id) in pending {
-                    if !self
-                        .answered
-                        .insert((branch_id.clone(), request_id.clone()))
-                    {
-                        continue;
-                    }
-                    self.host.send(Command::Approval {
-                        request_id,
-                        branch_id,
-                        allow: true,
-                        remember: false,
-                    });
-                }
-                self.prompt = None;
-                self.sync_prompt();
+            Effect::OpenPermissions => {
+                self.open_prompt(Prompt::Approvals(ApprovalsPanel::new(
+                    &self.permission_policy,
+                )));
             }
             Effect::StopTask {
                 session_id,
@@ -2533,7 +2527,16 @@ impl App {
                     (None, None) => t("Language set to system default").to_owned(),
                 });
             }
-            Effect::Setting(setting) => self.setting(setting),
+            Effect::Setting(setting) => {
+                let from_permissions = setting == Setting::Isolation
+                    && self.settings_return.is_none()
+                    && matches!(self.prompt, Some(Prompt::Approvals(_)));
+                self.setting(setting);
+                if from_permissions {
+                    self.settings_return = None;
+                    self.isolation_return_permissions = true;
+                }
+            }
             Effect::ThemePreview(id) => self.paint_theme(&id),
             Effect::ThemeRestore(id) => {
                 self.prompt = None;
@@ -2546,10 +2549,9 @@ impl App {
                     self.set_notice(error);
                 }
             }
-            Effect::SetApprovals(mode) => {
+            Effect::SetPermission(change) => {
                 self.prompt = None;
-                self.approvals_toast = true;
-                self.host.send(Command::SetApprovals(mode));
+                self.host.send(Command::SetPermission(change));
             }
             Effect::Provider(action) => self.host.send(Command::Provider(action)),
             Effect::Plugin(action) => self.host.send(Command::Plugin(action)),
@@ -2569,7 +2571,8 @@ impl App {
                 self.prompt = Some(Prompt::Models(ModelsPanel::new()));
                 self.host.send(Command::ListModels);
             }
-            Effect::Logout(provider_id) => self.host.send(Command::Logout(provider_id)),
+            Effect::Logout(target) => self.host.send(Command::Logout(target)),
+            Effect::LoginStatus(provider_id) => self.host.send(Command::LoginStatus(provider_id)),
             Effect::LoginUsage(provider_id) => self.host.send(Command::LoginUsage(provider_id)),
             Effect::OpenUrl(url) => {
                 let opened = crate::browser::open(&url);
@@ -2622,10 +2625,19 @@ impl App {
                 policy,
             }),
         }
+        if self.prompt.is_none() && std::mem::take(&mut self.isolation_return_permissions) {
+            self.open_prompt(Prompt::Approvals(ApprovalsPanel::new(
+                &self.permission_policy,
+            )));
+        }
         if self.prompt.is_none()
             && let Some(setting) = self.settings_return.take()
         {
             self.open_settings(setting);
+        }
+        if self.prompt.is_none() {
+            self.sync_prompt();
+            self.reopen_upgrade();
         }
         Outcome::Continue
     }
@@ -2758,8 +2770,8 @@ impl App {
             tools_expanded: self.tool_detail == Detail::Expanded,
             mouse: self.mouse,
             notify: self.notify,
-            approvals: t(status_label(&self.approvals)).to_owned(),
-            model: self.label.as_ref().map(ModelLabel::full),
+            file_access: file_label(self.permission_policy.file_access()).to_owned(),
+            approvals: tool_policy_label(&self.permission_policy).to_owned(),
         };
         self.open_prompt(Prompt::Settings(SettingsPanel::new(&values, select)));
     }
@@ -2778,18 +2790,18 @@ impl App {
                     &self.home,
                 ))));
             }
+            Setting::FileAccess => {
+                let panel = ApprovalsPanel::file(&self.permission_policy);
+                self.open_prompt(Prompt::Approvals(panel));
+            }
             Setting::Approvals => {
-                let panel = ApprovalsPanel::new(&self.approvals);
+                let panel = ApprovalsPanel::tool(&self.permission_policy);
                 self.open_prompt(Prompt::Approvals(panel));
             }
             Setting::Isolation => {
-                let panel = crate::ui::isolation_panel::IsolationPanel::new(&self.approvals);
+                let panel = crate::ui::isolation_panel::IsolationPanel::new();
                 self.open_prompt(Prompt::Isolation(Box::new(panel)));
                 self.host.send(Command::ReadIsolation);
-            }
-            Setting::Model => {
-                self.open_prompt(Prompt::Models(ModelsPanel::new()));
-                self.host.send(Command::ListModels);
             }
             Setting::StartupForm => {
                 let fullscreen = !crate::ui::config::saved_fullscreen(&self.home);
@@ -2994,12 +3006,8 @@ impl App {
                 }
                 Outcome::Continue
             }
-            "approval" => {
-                self.prompt = Some(Prompt::Approvals(ApprovalsPanel::choice(&self.approvals)));
-                Outcome::Continue
-            }
-            "approvals" => {
-                let panel = ApprovalsPanel::new(&self.approvals);
+            "permissions" | "approvals" | "approval" => {
+                let panel = ApprovalsPanel::new(&self.permission_policy);
                 self.open_prompt(Prompt::Approvals(panel));
                 Outcome::Continue
             }
@@ -3014,7 +3022,7 @@ impl App {
             }
             "login" => {
                 self.login_attempts += 1_000;
-                self.open_prompt(Prompt::Login(Box::new(OauthView::new(
+                self.open_prompt(Prompt::Login(Box::new(OauthView::dim(
                     DIM_OAUTH_ID,
                     "DimAgent",
                     self.login_attempts,
@@ -3049,11 +3057,7 @@ impl App {
                 ))));
                 Outcome::Continue
             }
-            other => {
-                self.notices
-                    .push(tf("/{name} is not yet available", &[("name", other)]));
-                Outcome::Continue
-            }
+            other => unreachable!("{other} is not in the command table"),
         }
     }
 
@@ -4434,8 +4438,8 @@ impl App {
             };
             parts.push(fg(&slot, color));
         }
-        if self.approvals != "workspace-write" {
-            let mode = status_label(&self.approvals);
+        if self.permission_policy.tool_approval() == dim_agent_types::ToolApproval::Bypass {
+            let mode = tool_policy_label(&self.permission_policy);
             parts.push(fg(&format!("\u{23f5}\u{23f5} {mode}"), &p.muted));
         }
         if let Some(context) = self.context_label() {
@@ -4451,11 +4455,14 @@ impl App {
 
     fn status_line(&self, cols: usize) -> String {
         let slot = self.slot();
-        let mut left = format!(
-            "{}AGENT  \u{23f5}\u{23f5} {}",
-            " ".repeat(MARGIN),
-            t(status_label(&self.approvals))
-        );
+        let approval = if self.permission_policy.tool_approval.is_none()
+            && self.permission_policy.tool_approval() == dim_agent_types::ToolApproval::Ask
+        {
+            "Ask (legacy)"
+        } else {
+            tool_policy_label(&self.permission_policy)
+        };
+        let mut left = format!("{}AGENT  \u{23f5}\u{23f5} {}", " ".repeat(MARGIN), approval);
         if let Some(context) = self.context_label() {
             left.push_str("  ");
             left.push_str(&context);
@@ -4601,6 +4608,11 @@ fn format_elapsed(elapsed: Duration) -> String {
 /// Message rows the queue strip shows at most.
 const QUEUE_ROWS: usize = 5;
 
+/// The queue strip's hint, and its form when messages are not shown. Every
+/// `/name` it can draw is a command in the table.
+const QUEUE_HINT: &str = "↑ edit · ctrl+s steer now";
+const QUEUE_HINT_MORE: &str = "+{count} more · ↑ edit · ctrl+s steer now";
+
 /// The queue, drawn in a titled border above the composer: the next message
 /// to run reads at the top. `height` message rows are drawn (at least the
 /// queue's, at most [`QUEUE_ROWS`]), blank past the queue's end, so the
@@ -4622,12 +4634,9 @@ fn queue_strip(items: &[(String, String)], height: usize, cols: usize, p: &Palet
         .collect();
     rows.resize_with(height, String::new);
     let hint = if hidden == 0 {
-        t("↑ edit · ctrl+s steer now · /queue").to_owned()
+        t(QUEUE_HINT).to_owned()
     } else {
-        tf(
-            "+{count} more · ↑ edit · ctrl+s steer now · /queue",
-            &[("count", &hidden.to_string())],
-        )
+        tf(QUEUE_HINT_MORE, &[("count", &hidden.to_string())])
     };
     rows.push(fg(&truncate_cells(&hint, inner), &p.muted));
     let title = paint(
@@ -5519,6 +5528,40 @@ mod tests {
     }
 
     #[test]
+    fn settings_omits_model_selection_and_model_command_keeps_it() {
+        for fullscreen in [false, true] {
+            let mut drawn = Drawn::new((100, 32), None, true);
+            drawn.app.fullscreen = fullscreen;
+            let screen = |drawn: &mut Drawn| {
+                if fullscreen {
+                    let frame = drawn.app.frame(drawn.size);
+                    let mut screen = FullScreen::new(drawn.size, true);
+                    let bytes = screen.render(&frame, drawn.size, &drawn.app.palette, &drawn.app);
+                    let mut terminal = crate::ui::render::testterm::Emu::new(100, 32);
+                    terminal.feed(&bytes);
+                    terminal.rows_text().join("\n")
+                } else {
+                    drawn.emu.rows_text().join("\n")
+                }
+            };
+            typed(&mut drawn.app, "/settings");
+            drawn.key(KeyCode::Enter);
+            let settings = screen(&mut drawn);
+            assert!(settings.contains("Settings"), "{settings}");
+            assert!(settings.contains("Process isolation"), "{settings}");
+            assert!(settings.contains("File access"), "{settings}");
+            assert!(settings.contains("Tool approval"), "{settings}");
+            assert!(!settings.contains("Execution"), "{settings}");
+            assert!(!settings.contains("Model"), "{settings}");
+            drawn.key(KeyCode::Esc);
+            typed(&mut drawn.app, "/model");
+            drawn.key(KeyCode::Enter);
+            let models = screen(&mut drawn);
+            assert!(models.contains("Select a model"), "{models}");
+        }
+    }
+
+    #[test]
     fn account_usage_stays_safe_and_fits_after_reflow_and_in_login() {
         use crate::model::session::Usage;
         use crate::ui::render::panel::{strip_escapes, visible_width};
@@ -5574,7 +5617,7 @@ mod tests {
             plan.price_amount = Some(100.0);
             plan.price_currency = Some("\u{1b}]2;injected-title\u{7}custom".into());
             plan.price_interval = Some("\u{1b}[2Jperiod".into());
-            let mut view = OauthView::new(DIM_OAUTH_ID, "DimAgent", 0);
+            let mut view = OauthView::dim(DIM_OAUTH_ID, "DimAgent", 0);
             view.set_account(Ok(Some(crate::model::session::Account {
                 issuer: "fixture".into(),
                 subject: "signed-in".into(),
@@ -5599,7 +5642,7 @@ mod tests {
     }
 
     #[test]
-    fn execution_settings_toggle_and_save() {
+    fn process_isolation_select_and_save() {
         use crate::model::session::ExecutionSnapshot;
         let home = tempfile::tempdir().unwrap();
         let theme = test_theme();
@@ -5613,7 +5656,7 @@ mod tests {
         );
         let key = |code| InputEvent::Key(crate::ui::terminal::KeyEvent::new(code, Modifiers::NONE));
         app.run_command("settings", "");
-        for _ in 0..7 {
+        for _ in 0..8 {
             app.handle_input(key(KeyCode::Down));
         }
         app.handle_input(key(KeyCode::Enter));
@@ -5623,6 +5666,7 @@ mod tests {
             sandbox: false,
             network: false,
         })));
+        app.handle_input(key(KeyCode::Down));
         app.handle_input(key(KeyCode::Enter));
         app.handle_input(key(KeyCode::Down));
         app.handle_input(key(KeyCode::Down));
@@ -5635,6 +5679,208 @@ mod tests {
                 network: false,
             }) if expected_revision == "r1"
         ));
+    }
+
+    #[test]
+    fn permission_controls_refresh_the_full_policy_and_keep_their_own_fields() {
+        use crate::permission::Change;
+        use dim_agent_types::{FileAccess, PermissionPolicy, PermissionPreset, ToolApproval};
+        for fullscreen in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            let theme = test_theme();
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut app = App::new(
+                Box::new(Recorder(sent.clone())),
+                MarkdownRenderer::new(&theme),
+                theme.palette.clone(),
+                home.path().to_path_buf(),
+                "/work".into(),
+            );
+            app.fullscreen = fullscreen;
+            let key =
+                |code| InputEvent::Key(crate::ui::terminal::KeyEvent::new(code, Modifiers::NONE));
+            for alias in ["permissions", "approvals", "approval"] {
+                app.run_command(alias, "");
+                app.handle_input(key(KeyCode::Tab));
+                app.handle_input(key(KeyCode::BackTab));
+                app.handle_input(key(KeyCode::Tab));
+                app.handle_input(key(KeyCode::Enter));
+                let rendered = app.frame((64, 40));
+                let frame = rendered
+                    .overlay
+                    .as_ref()
+                    .map_or(&rendered.live, |overlay| &overlay.rows)
+                    .join("\n");
+                assert!(frame.find("Bypass").unwrap() < frame.find("Hint:").unwrap());
+                assert_eq!(frame.matches("Hint:").count(), 1);
+                app.handle_input(key(KeyCode::Enter));
+                assert!(matches!(
+                    sent.borrow().last(),
+                    Some(Command::SetPermission(Change::ToolApproval(
+                        ToolApproval::Ask
+                    )))
+                ));
+            }
+            app.run_command("permissions", "");
+            app.apply(Update::Permissions(Ok(PermissionPolicy {
+                preset: PermissionPreset::ReadOnly,
+                file_access: Some(FileAccess::Unrestricted),
+                tool_approval: Some(ToolApproval::Bypass),
+                allowed_tools: vec!["read".into()],
+                disallowed_tools: vec!["blocked".into()],
+            })));
+            app.handle_input(key(KeyCode::Enter));
+            for width in [40, 64, 112] {
+                let rendered = app.frame((width, 40));
+                let lines: Vec<_> = rendered
+                    .overlay
+                    .as_ref()
+                    .map_or(&rendered.live, |overlay| &overlay.rows)
+                    .iter()
+                    .map(|line| crate::ui::render::panel::strip_escapes(line))
+                    .collect();
+                let hint = lines
+                    .iter()
+                    .position(|line| line.contains("Hint:"))
+                    .unwrap();
+                assert!(
+                    lines[..hint]
+                        .iter()
+                        .any(|line| line.contains("Unrestricted"))
+                );
+                assert!(lines[hint - 1].trim().trim_matches('│').trim().is_empty());
+                let text = lines
+                    .iter()
+                    .map(|line| line.trim().trim_matches('│').trim())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                assert!(text.contains("Read only: no writes."));
+                assert!(text.contains("writes inside; asks outside."));
+                assert!(text.contains("System and session files stay protected."));
+                assert!(text.contains("Tool approval still applies."));
+            }
+            app.handle_input(key(KeyCode::Up));
+            app.handle_input(key(KeyCode::Enter));
+            assert!(matches!(
+                sent.borrow().last(),
+                Some(Command::SetPermission(Change::FileAccess(
+                    FileAccess::WorkspaceReadWrite
+                )))
+            ));
+            assert_eq!(app.permission_policy.preset, PermissionPreset::ReadOnly);
+            assert_eq!(
+                app.permission_policy.tool_approval,
+                Some(ToolApproval::Bypass)
+            );
+            assert_eq!(app.permission_policy.disallowed_tools, ["blocked"]);
+            std::fs::write(
+                home.path().join("config.json"),
+                r#"{"permissionPreset":"read-only","toolApproval":"bypass","kept":true}"#,
+            )
+            .unwrap();
+            app.apply(Update::PermissionSelected(Change::FileAccess(
+                FileAccess::WorkspaceReadWrite,
+            )));
+            let saved: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(home.path().join("config.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                saved,
+                serde_json::json!({"permissionPreset":"read-only","toolApproval":"bypass","fileAccess":"workspace-read-write","kept":true})
+            );
+            app.apply(Update::PermissionSelected(Change::ToolApproval(
+                ToolApproval::Ask,
+            )));
+            let saved: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(home.path().join("config.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                saved,
+                serde_json::json!({"permissionPreset":"read-only","toolApproval":"ask","fileAccess":"workspace-read-write","kept":true})
+            );
+            app.open_settings(Setting::Approvals);
+            app.apply(Update::Permissions(Ok(PermissionPolicy {
+                preset: PermissionPreset::ReadOnly,
+                file_access: Some(FileAccess::ReadOnly),
+                tool_approval: Some(ToolApproval::Ask),
+                ..Default::default()
+            })));
+            let rendered = app.frame((112, 40));
+            let frame = rendered
+                .overlay
+                .as_ref()
+                .map_or(&rendered.live, |overlay| &overlay.rows)
+                .join("\n");
+            assert!(frame.contains("Read only") && !frame.contains("Unrestricted"));
+            assert!(frame.contains("Ask") && !frame.contains("Bypass"));
+            app.handle_input(key(KeyCode::Enter));
+            let rendered = app.frame((112, 40));
+            let frame = rendered
+                .overlay
+                .as_ref()
+                .map_or(&rendered.live, |overlay| &overlay.rows)
+                .join("\n");
+            assert!(
+                frame.contains("Bypass"),
+                "Settings retains the Tool approval selection"
+            );
+            app.handle_input(key(KeyCode::Esc));
+            app.handle_input(key(KeyCode::Esc));
+            app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                approvals: vec![crate::model::view::ApprovalView {
+                    member: None,
+                    request_id: "pending-exec".into(),
+                    branch_id: "main".into(),
+                    reason: "shell command".into(),
+                    tool_name: "exec".into(),
+                    tool_input: serde_json::json!({"command":"npm test"}),
+                    always: None,
+                }],
+                ..Default::default()
+            })));
+            app.handle_input(key(KeyCode::BackTab));
+            app.handle_input(key(KeyCode::Enter));
+            assert!(matches!(app.prompt, Some(Prompt::Approvals(_))));
+            app.handle_input(key(KeyCode::Down));
+            app.handle_input(key(KeyCode::Down));
+            app.handle_input(key(KeyCode::Enter));
+            app.apply(Update::Isolation(Ok(
+                crate::model::session::ExecutionSnapshot {
+                    revision: "r1".into(),
+                    sandbox: false,
+                    network: false,
+                },
+            )));
+            let rendered = app.frame((112, 34));
+            let frame = rendered
+                .overlay
+                .as_ref()
+                .map_or(&rendered.live, |overlay| &overlay.rows)
+                .join("\n");
+            assert!(frame.contains("commands use your OS permissions, not file-tool limits."));
+            assert!(frame.find("Reload").unwrap() < frame.find("Hint:").unwrap());
+            app.handle_input(key(KeyCode::Esc));
+            assert!(matches!(app.prompt, Some(Prompt::Approvals(_))));
+            app.handle_input(key(KeyCode::Esc));
+            let rendered = app.frame((112, 40));
+            let frame = rendered
+                .overlay
+                .as_ref()
+                .map_or(&rendered.live, |overlay| &overlay.rows)
+                .join("\n");
+            assert!(
+                frame.contains("npm test"),
+                "The pending approval returns without another snapshot"
+            );
+            app.handle_input(key(KeyCode::Enter));
+            assert!(matches!(
+                sent.borrow().last(),
+                Some(Command::Approval { request_id, .. }) if request_id == "pending-exec"
+            ));
+        }
     }
 
     /// A picked message opens a line of the shown line with the submitted
@@ -7094,6 +7340,33 @@ mod tests {
         let three: Vec<_> = (1..=3).map(item).collect();
         let full = queue_strip(&three, 3, 80, p);
         assert_eq!(queue_strip(&three[..1], 3, 80, p).len(), full.len());
+    }
+
+    /// The queue strip names only commands the table has, in every locale.
+    #[test]
+    fn the_queue_strip_names_only_commands_that_exist() {
+        let previous = i18n::active();
+        for (locale, code, _) in i18n::LOCALES {
+            i18n::set(locale);
+            for hint in [QUEUE_HINT, QUEUE_HINT_MORE] {
+                let text = t(hint);
+                for (at, _) in text.match_indices('/') {
+                    let name: String = text[at + 1..]
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                        .collect();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    assert!(
+                        COMMANDS.iter().any(|command| command.slash
+                            && (command.name == name || command.aliases.contains(&name.as_str()))),
+                        "{code}: {text:?} names /{name}, which is not a command"
+                    );
+                }
+            }
+        }
+        i18n::set(previous);
     }
 
     /// A finished command keeps the status row its running block had.

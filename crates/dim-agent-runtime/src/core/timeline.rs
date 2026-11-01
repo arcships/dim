@@ -740,7 +740,9 @@ impl Timeline {
         self.records(&self.0.key.branch_id, start, end).await
     }
     /// Reads complete batches after `after`, targeting `limit` events and
-    /// never ending inside an atomic batch.
+    /// never ending inside an atomic batch. Projection reads do not use
+    /// stored requests, so `context/prepare` and `model/call` records carry
+    /// an empty request.
     #[service(skip)]
     pub async fn stored_page(
         &self,
@@ -752,7 +754,7 @@ impl Timeline {
         Ok(self
             .0
             .store
-            .read_page(&self.0.key, after, limit, through)
+            .read_page_without_request_bodies(&self.0.key, after, limit, through)
             .await?
             .into_iter()
             .map(|record| record.event)

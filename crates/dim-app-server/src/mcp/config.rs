@@ -78,6 +78,15 @@ pub enum McpServerSettings {
         extra: BTreeMap<String, serde_json::Value>,
     },
 }
+impl McpServerSettings {
+    /// The enablement an entry's own field states; a project entry ignores it
+    /// (`config::effective`).
+    pub fn enabled(&self) -> bool {
+        match self {
+            Self::Stdio { enabled, .. } | Self::Remote { enabled, .. } => enabled.unwrap_or(true),
+        }
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -322,6 +331,20 @@ impl McpPluginServers {
                     (format!("{plugin}:{id}"), config)
                 })
         })
+    }
+
+    /// One entry as its plugin registered it, before the plugin directory
+    /// resolves a stdio `cwd`.
+    pub(crate) fn declared(self, run_id: &str) -> Option<McpServerSettings> {
+        self.plugins
+            .into_iter()
+            .flat_map(|(plugin, document)| {
+                document
+                    .mcp_servers
+                    .into_iter()
+                    .map(move |(id, config)| (format!("{plugin}:{id}"), config))
+            })
+            .find_map(|(id, config)| (id == run_id).then_some(config))
     }
 }
 impl BusinessDocument for McpPluginServers {

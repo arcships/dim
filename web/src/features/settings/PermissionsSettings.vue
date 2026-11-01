@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue"
 import { useSettingsText } from "../../i18n/settings-general"
-import { readExecutionSettings, readRevision, readRules, type CommandRule, type ExecutionSettings, type RulesView } from "../../rpc/general-settings"
+import { readExecutionSettings, readRevision, readRules, readSandboxBackend, type CommandRule, type ExecutionSettings, type RulesView, type SandboxBackend } from "../../rpc/general-settings"
 import { useConnectionStore } from "../../stores/connection"
 import GeneralSettingsStatus from "./GeneralSettingsStatus.vue"
-import { bindSettingsDirty, messageFrom } from "./context"
+import { bindSettingsDirty, messageFrom, reloadSettingsOnReconnect } from "./context"
 
 const s = useSettingsText()
 const connection = useConnectionStore()
@@ -16,6 +16,7 @@ const saved = ref(false)
 const execution = ref<ExecutionSettings>()
 const sandbox = ref(false)
 const network = ref(false)
+const sandboxBackend = ref<SandboxBackend>()
 const executionError = ref("")
 const executionDirty = computed(() => execution.value !== undefined && (sandbox.value !== execution.value.sandbox || network.value !== execution.value.network))
 const rulesDirty = computed(() => snapshot.value !== undefined && JSON.stringify(rules.value) !== JSON.stringify(snapshot.value.commandRules))
@@ -39,6 +40,9 @@ async function load(): Promise<void> {
       execution.value = await connection.client.call("settings.read", { source: "execution", scope: "user" }, readExecutionSettings)
       sandbox.value = execution.value.sandbox
       network.value = execution.value.network
+    }
+    if (connection.supports("host.execution.backend")) {
+      sandboxBackend.value = await connection.client.call("host.execution.backend", {}, readSandboxBackend)
     }
   } catch (cause) { executionError.value = messageFrom(cause) }
   busy.value = false
@@ -77,6 +81,7 @@ async function saveExecution(): Promise<void> {
   } catch (cause) { executionError.value = messageFrom(cause) }
   finally { busy.value = false }
 }
+reloadSettingsOnReconnect(connection, load, dirty)
 onMounted(load)
 </script>
 
@@ -88,6 +93,7 @@ onMounted(load)
     <form v-if="execution" class="settings-card settings-form" @submit.prevent="saveExecution()">
       <h3>{{ s('Execution', '执行') }}</h3>
       <p>{{ s('Applies to new commands on this execution host. Running processes keep their boundary. A platform without a sandbox backend fails the command instead of running it unsandboxed.', '适用于此执行主机上的新命令。已运行的进程保留原边界。没有沙盒后端的平台会让命令失败，而不是不加隔离地运行。') }}</p>
+      <p v-if="sandboxBackend && sandboxBackend.available === false" class="ui-banner settings-banner" data-tone="warning">{{ s('Sandbox is unavailable on this host: ', '此主机上沙盒不可用：') }}{{ sandboxBackend.reason }}</p>
       <fieldset class="settings-form" :disabled="busy || !connection.supports('settings.update')">
         <label><input v-model="sandbox" type="checkbox" />{{ s('Sandbox — run commands isolated from the host', '沙盒 — 在隔离环境中运行命令') }}</label>
         <label><input v-model="network" type="checkbox" />{{ s('Network — allow outbound connections while sandboxed', '网络 — 沙盒内允许出站连接') }}</label>

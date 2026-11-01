@@ -320,7 +320,7 @@ async fn node_a_second_provider_of_a_name_in_one_instance_fails() {
     server.join().await.unwrap();
 }
 
-/// A row that injects `loader` (rutis 0.19 upgrade M5) reads the rows'
+/// A row that injects `rutis/loader` (rutis 0.19 upgrade M5) reads the rows'
 /// status and reloads a row, but cannot add or remove one: Dim configures no
 /// editable layer, so PluginManager stays the only writer of rows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -344,7 +344,7 @@ async fn node_a_row_injecting_loader_reloads_and_reads_but_cannot_add_or_remove_
 import json
 import pathlib
 
-inject = ["loader"]
+inject = ["rutis/loader"]
 tasks = []
 
 
@@ -363,11 +363,14 @@ async def script(loader):
     await attempt("reload", loader.reload("target"))
     await attempt("create", loader.create({{"id": "added", "name": "py:target"}}))
     await attempt("remove", loader.remove("target"))
-    pathlib.Path({:?}).write_text(json.dumps(outcome))
+    result = pathlib.Path({:?})
+    temporary = result.with_suffix(".tmp")
+    temporary.write_text(json.dumps(outcome))
+    temporary.replace(result)
 
 
 def apply(ctx, config):
-    tasks.append(asyncio.get_running_loop().create_task(script(ctx.use("loader"))))
+    tasks.append(asyncio.get_running_loop().create_task(script(ctx.use("rutis/loader"))))
 "#,
             outcome.to_str().unwrap()
         ),

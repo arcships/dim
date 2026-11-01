@@ -339,6 +339,15 @@ pub struct McpCatalogResult {
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct McpConfigurationResult {
+    /// Absent for a plugin entry, which has no Settings source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    pub enabled: bool,
+    pub configuration: serde_json::Value,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpCatalogEntry {
     pub id: String,
     pub source: McpScope,
@@ -481,14 +490,18 @@ pub(super) fn provide(
                                 return Err(RpcError::invalid("A new test configuration must be user-supplied and cannot include a patch"));
                             }
                             configuration
-                        } else {
-                            let mut entry = target(&directory, source, p.id.clone(), &stopping).await?;
-                            if !matches!(source, McpSource::User) && !entry.enabled() {
+                        } else if let Some(patch) = p.patch {
+                            let scope = writable(source)?;
+                            let mut entry = directory.editable(source, p.id.clone(), &stopping).await.map_err(error)?;
+                            if !matches!(source, McpSource::User) && !entry.enabled {
                                 return Err(error(McpError::Disabled));
                             }
-                            if let Some(patch) = p.patch {
-                                writable(source)?;
-                                patch_configuration(&mut entry.configuration, patch)?;
+                            patch_configuration(&mut entry.configuration, patch)?;
+                            directory.effective(scope, p.id.clone(), entry.configuration, &stopping).await.map_err(error)?
+                        } else {
+                            let entry = target(&directory, source, p.id.clone(), &stopping).await?;
+                            if !matches!(source, McpSource::User) && !entry.enabled() {
+                                return Err(error(McpError::Disabled));
                             }
                             entry.configuration
                         };
@@ -496,20 +509,24 @@ pub(super) fn provide(
                         document.mcp_servers.insert(p.id.clone(), configuration);
                         document.validate().map_err(|e| error(e.into()))?;
                         let configuration = document.mcp_servers.remove(&p.id).unwrap();
-                        let tools = directory.test(context, p.id, configuration, &stopping).await.map_err(error)?;
-                        return Ok(serde_json::json!({"tools": tools}));
+                        let probe = directory.test(context, p.id, configuration, &stopping).await.map_err(error)?;
+                        return reply(probe);
                     }
                     "mcp.configuration" => {
                         let p: McpTarget = params(value)?;
                         let source = source(p.source, project(&settings, p.cwd, &stopping).await?)?;
-                        let entry = target(&directory, source, p.id, &stopping).await?;
-                        return configuration_view(entry.configuration);
+                        let entry = directory.editable(source, p.id, &stopping).await.map_err(error)?;
+                        return reply(McpConfigurationResult {
+                            revision: entry.revision,
+                            enabled: entry.enabled,
+                            configuration: configuration_view(entry.configuration)?,
+                        });
                     }
                     "mcp.update" => {
                         let p: UpdateMcp = params(value)?;
                         let source = source(p.source, project(&settings, p.cwd, &stopping).await?)?;
                         let scope = writable(source)?;
-                        let mut entry = target(&directory, source, p.id.clone(), &stopping).await?;
+                        let mut entry = directory.editable(source, p.id.clone(), &stopping).await.map_err(error)?;
                         patch_configuration(&mut entry.configuration, p.patch)?;
                         directory.update(scope, p.expected_version, p.id, McpChange::Put(entry.configuration), &stopping).await.map_err(error)?;
                     }

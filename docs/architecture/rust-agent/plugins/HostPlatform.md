@@ -48,6 +48,12 @@ has members. Dropping a `ProcessTree` signals only when the tree was neither
 confirmed terminated nor reaped on its own; otherwise a recycled pid or reused
 group could receive `SIGKILL`.
 
+`exec_root()` is `<home>/.dim/exec`, the persistent shell's own directory.
+`remove_exec_directory(path)` removes one directory below it and syncs the
+parent on Unix; it never reads ownership rows. SessionStore calls it during a
+delete after deciding with `session_output_owners` that no Session still needs
+the directory (ADR 013 D4). An absent directory counts as removed.
+
 `read_exec_shell_settings(cancel)` reads the current version-1 preference and
 detected shell choices, returning the byte revision, optional explicit executable
 and any parse error. `update_exec_shell_settings(expected_revision, executable_path,
@@ -61,7 +67,12 @@ dependency or assembly changes are needed for these owner operations.
 
 The [process isolation design](../../../design/host-platform-isolation.md) owns the boundary
 contract: the two switches, their defaults, each platform's roots, the temporary
-directory and the failure note. `prepare_isolated_process(spec, workspace, output_dir)` reads
+directory and the failure note. `HostPlatform::current` captures the fixed platform-roots list
+as `platform_roots` when the platform mounts; the sandbox builder filters it to the roots
+installed on this host, and the `FileAccessFacts` service reads the same list, so the system fact
+is non-empty with the sandbox off. The effective developer directory and git's global
+configuration are added by the builder per process and are not facts.
+`prepare_isolated_process(spec, workspace, output_dir)` reads
 the switches through the port at every call, selects the existing environment values and wraps
 the argv in Seatbelt or bubblewrap. The immutable Session workspace, not the command cwd,
 supplies default writes; ShellSession also supplies its owned output directory, WorkspaceTools
@@ -76,17 +87,25 @@ sandbox off, the original spec comes back with neither value.
 A missing port or an unreadable source fails preparation as `isolation_config_invalid` before any
 payload starts; it never runs unsandboxed. Sandbox on without a backend fails as
 `isolation_unavailable`: always on Windows, and on Linux when bubblewrap is not on the captured
-`PATH`, whose reason says to install bubblewrap or turn Sandbox off in `/settings > Execution`.
+`PATH`, whose reason says to install bubblewrap or select Off in `/permissions > Process isolation`
+(also available in `/settings > Process isolation`).
+`HostPlatform::sandbox_backend()` reports the same decision before a process starts: `Available`,
+or `Unavailable` with that reason. On Linux it uses the same captured-`PATH` bubblewrap resolution
+as preparation. The App Server's `ExecutionBackend` part exposes it as `host.execution.backend`;
+the TUI's `Process isolation` control and the legacy Web Execution rows display the reason. The availability report does not replace
+the preparation failure. The method is a separate part because `ExecutionSettings` provides the
+`ExecutionSettingsHost` port that `HostPlatform` reads; adding `HostPlatform` to
+`ExecutionSettings` would close a dependency cycle.
 There is no policy file, no tier and no fallback. Ordinary user ShellInput does not call this
 operation. No process, task, lock, watcher or Timeline fact is added by preparation.
 
 The crate-local `ISOLATION_SUMMARY` is the static declaration line, `None` on Windows; on macOS it
-also names `$TMPDIR` as writable. It says the user decides in `/settings > Execution` whether
+also names `$TMPDIR` as writable. It says the user decides in `/permissions > Process isolation` whether
 commands run sandboxed, what the sandbox blocks, and that the model cannot change it. The exec and
 persistent-shell execute declarations add it after their environment line. It does not read the
 switches: declarations are read once, while each process start reads them.
 `Isolation::failure_hint(output)` returns a note when the output shows a typical denial; it names
-the switches in `/settings > Execution` and distinguishes the sandbox from command approval.
+`Process isolation` in `/permissions` and distinguishes the sandbox from Tool approval.
 
 For a persistent shell, background PIDs enter through the
 existing PTY marker. `PtyProcessTree::job_pid` uses portable-pty's foreground-group handle and
@@ -104,6 +123,11 @@ same selection used to build the process, so callers can apply shell-specific
 policies without another read. `cwd` is an already resolved working directory.
 The builder preserves shell flags, forced environment overrides and runtime PATH
 prefixes, including Git Bash mapping. It does not start the user's command.
+
+`spawn` closes the child's standard input. `spawn_with_stdin(spec, bytes)`
+starts the same tree and writes `bytes` to that input from a task of the
+caller's runtime, then closes it; a child that exits without reading the bytes
+does not fail the start. Hooks is its consumer.
 
 Refusals are `ProcessSpecError { code, reason }` data: malformed/unreadable
 preferences (`EXEC_SHELL_CONFIG_INVALID`), unavailable shells
@@ -135,10 +159,15 @@ boundary.
 [host_platform_flow.rs](../../../../crates/dim-agent-capabilities/tests/host_platform_flow.rs):
 `shell_resolution_follows_the_preference_and_never_fails_the_service`,
 `spawn_isolates_the_environment_and_terminate_releases_the_tree`,
-`unchanged_shell_preferences_reuse_detection_and_edits_recover`.
+`spawn_with_stdin_delivers_the_bytes_and_closes_the_pipe`,
+`unchanged_shell_preferences_reuse_detection_and_edits_recover`, and
+`sandbox_backend_reports_the_bubblewrap_preparation_uses`.
 The unit test `bubblewrap_binds_file_roots_after_the_directories_that_contain_them` in
 [isolation.rs](../../../../crates/dim-agent-capabilities/src/host_platform/isolation.rs) checks
-that file roots are bound after the directories that contain them.
+that file roots are bound after the directories that contain them;
+`bubblewrap_unshares_the_network_only_when_the_switch_is_off` (Linux) and
+`seatbelt_allows_network_only_when_the_switch_is_on` (macOS) cover the platform's network
+flag binding.
 [local_execution.rs](../../../../tests/integration/tests/local_execution.rs):
 `the_local_execution_assembly_passes_the_assembly_check` and
 `exec_and_external_shell_callers_use_live_shell_preferences` exercise the real
@@ -153,8 +182,9 @@ shell and current selection after shell exit. `foreground_echo_returns_output` c
 declaration's boundary line.
 [execution_settings.rs](../../../../crates/dim-app-server/tests/transport_flow/execution_settings.rs):
 `execution_settings_decide_the_next_process_boundary` writes the switches over the client
-methods, then runs a sandboxed command that cannot write outside the workspace and the same
-command with the sandbox off.
+methods, checks the backend report against the platform, covers an unreadable source failing
+preparation, then runs a sandboxed command with Network off and on that cannot write outside the
+workspace, and the same command with the sandbox off.
 
 <!-- generated:plugin HostPlatform — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
@@ -162,5 +192,5 @@ command with the sandbox off.
 | 作用域 | 进程 |
 | 注入 | `P:ExecutionSettingsHost`、`P:FileStorage` |
 | 提供 | `P:HostPlatform` |
-| 被注入于 | `PromptSources`、`ShellInput`、`SkillsCatalog`、`WorkspaceTools` |
+| 被注入于 | `HooksSession`、`PromptSources`、`ShellInput`、`SkillsCatalog`、`WorkspaceTools` |
 <!-- /generated -->

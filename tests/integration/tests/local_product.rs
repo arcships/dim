@@ -172,6 +172,7 @@ async fn workspace_write_asks_for_each_external_mutation() {
                 preset: PermissionPreset::WorkspaceWrite,
                 allowed_tools: vec!["write".into(), "edit".into()],
                 disallowed_tools: vec![],
+                ..Default::default()
             },
         )
         .await
@@ -263,7 +264,7 @@ async fn workspace_write_asks_for_each_external_mutation() {
             let request = approval_request(&session).await;
             assert_eq!(
                 request.call.name, "edit",
-                "outside reads still run without asking"
+                "outside reads run without asking when the facts are absent"
             );
             assert_ne!(request.approval_id, first.approval_id);
             assert_eq!(std::fs::read_to_string(&target).unwrap(), old);
@@ -467,7 +468,8 @@ async fn a_turn_reads_writes_and_runs_an_approved_command_with_real_tools() {
         .collect();
     assert!(exec.len() > 1 && exec.iter().all(|description| *description == exec[0]));
     assert_eq!(
-        exec[0].contains("Isolation: the user decides") && !exec[0].contains("host-isolation.json"),
+        exec[0].contains("Process isolation in /permissions")
+            && !exec[0].contains("host-isolation.json"),
         cfg!(unix),
         "{}",
         exec[0]

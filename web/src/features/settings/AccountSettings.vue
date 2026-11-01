@@ -44,7 +44,11 @@ const meters = computed(() => {
   for (const f of current.features) rows.push({ id: f.key, label: f.key, used: f.used, total: f.allowance, remaining: f.remaining, unlimited: f.unlimited, expires: f.periodEnd })
   return rows
 })
-watch(() => identity.value && `${identity.value.issuer}/${identity.value.subject}`, () => { pendingReset.value = undefined })
+watch([() => provider.value?.providerId, () => identity.value?.issuer, () => identity.value?.subject, signedIn], () => {
+  pendingReset.value = undefined
+  usage.value = undefined
+  referral.value = undefined
+}, { flush: "sync" })
 async function load(): Promise<void> {
   loading.value = true
   error.value = ""
@@ -53,8 +57,6 @@ async function load(): Promise<void> {
   try {
     const view = await connection.client.call("provider.management", {}, readManagement)
     provider.value = view.providers.find((p) => p.credentialAuthority === "account")
-    usage.value = undefined
-    referral.value = undefined
     batches.value = undefined
     referralError.value = ""
     if (provider.value?.account?.state.authenticated) {
@@ -98,7 +100,7 @@ async function copyInvite(): Promise<void> {
   catch (cause) { referralError.value = messageFrom(cause) }
 }
 async function loadBatches(): Promise<void> {
-  if (!provider.value) return
+  if (!provider.value || connection.phase !== "connected") return
   resetError.value = ""
   try { batches.value = await connection.client.call("account.reset_batches", { providerId: provider.value.providerId }, readResetBatches) }
   catch (cause) { resetError.value = messageFrom(cause) }
@@ -127,16 +129,16 @@ onMounted(load)
   <article class="settings-page">
     <ConfirmDialog ref="confirm" />
     <header><h2 data-route-heading tabindex="-1">{{ t("account") }}</h2><p>{{ t("accountDescription") }}</p></header>
-    <p v-if="error" class="ui-banner settings-banner" data-tone="danger" role="alert">{{ error }} <button class="ui-button" data-variant="ghost" @click="load">{{ t("retry") }}</button></p>
-    <button v-if="recoveryProvider && connection.supports('account.recover')" class="ui-button" data-variant="secondary" :disabled="saving || loading" @click="recover">{{ text("Recover stored sign-in", "恢复已保存的登录") }}</button>
-    <p v-if="loading && !provider" class="ui-banner" role="status">{{ t("loading") }}</p>
+    <p v-if="error" class="ui-banner settings-banner" data-tone="danger" role="alert">{{ error }} <button class="ui-button" data-variant="ghost" :disabled="loading || connection.phase !== 'connected'" @click="load">{{ t("retry") }}</button></p>
+    <button v-if="recoveryProvider && connection.supports('account.recover')" class="ui-button" data-variant="secondary" :disabled="saving || loading || connection.phase !== 'connected'" @click="recover">{{ text("Recover stored sign-in", "恢复已保存的登录") }}</button>
+    <p v-if="loading" class="ui-banner settings-banner" role="status">{{ t("loading") }}</p>
     <section v-else-if="!provider && !error" class="settings-card"><p class="settings-help">{{ t("accountUnavailable") }}</p></section>
     <template v-if="provider">
       <section class="settings-card">
         <div v-if="signedIn" class="settings-identity">
           <span class="settings-avatar">{{ title.slice(0, 2).toUpperCase() }}</span>
           <div class="settings-identity-text"><strong>{{ title }}</strong><p v-if="identity?.email">{{ identity.email }}</p><p v-if="identity?.subject">{{ t("uid") }}: {{ identity.subject }}</p></div>
-          <button class="ui-button" data-variant="ghost" :disabled="saving || loading" @click="logout">{{ t("signOut") }}</button>
+          <button class="ui-button" data-variant="ghost" :disabled="saving || loading || connection.phase !== 'connected'" @click="logout">{{ t("signOut") }}</button>
         </div>
         <template v-else>
           <div class="account-login-heading"><BrandMark aria-hidden="true" /><h3>{{ t("signIn") }}</h3></div>
@@ -144,7 +146,7 @@ onMounted(load)
         </template>
       </section>
       <section v-if="signedIn" class="settings-card settings-usage">
-        <div class="settings-list-toolbar"><h3>{{ t("plan") }}</h3><button class="ui-icon-button" data-variant="ghost" :aria-label="t('refresh')" :disabled="loading" @click="load"><RefreshCw :class="{ 'account-refreshing': loading }" aria-hidden="true" /></button></div>
+        <div class="settings-list-toolbar"><h3>{{ t("plan") }}</h3><button class="ui-icon-button" data-variant="ghost" :aria-label="t('refresh')" :disabled="loading || connection.phase !== 'connected'" @click="load"><RefreshCw :class="{ 'account-refreshing': loading }" aria-hidden="true" /></button></div>
         <p v-if="usageError" class="ui-banner" data-tone="danger" role="alert">{{ usageError }}</p>
         <div v-if="usage?.plan" class="settings-identity"><div class="settings-identity-text"><strong>{{ usage.plan.name }}</strong><p>{{ usage.plan.status }}<span v-if="usage.plan.expiresAt"> · {{ new Date(usage.plan.expiresAt).toLocaleDateString() }}</span></p><p v-if="usage.plan.priceAmount !== undefined">{{ (usage.plan.priceAmount / 100).toLocaleString(locale, { minimumFractionDigits: 2 }) }} {{ usage.plan.priceCurrency }}<template v-if="usage.plan.priceInterval"> / {{ usage.plan.priceInterval }}</template></p><p v-if="usage.plan.cancelAtPeriodEnd">{{ text("Cancels at the end of this term", "将在本期结束后取消") }}</p><p v-if="usage.plan.lastTermStatus">{{ text("Previous term", "上一周期") }}: {{ usage.plan.lastTermStatus }} · {{ usage.plan.lastTermStart }} — {{ usage.plan.lastTermEnd }}</p></div></div>
         <div v-for="meter in meters" :key="meter.id" class="settings-meter">
@@ -159,7 +161,7 @@ onMounted(load)
         <p v-if="resetError" class="ui-banner" data-tone="danger" role="alert">{{ resetError }}</p>
         <div v-for="kind in (['window', 'monthlyFull'] as const)" :key="kind" class="settings-row">
           <div class="settings-row-main"><strong>{{ kind === 'window' ? text('Window reset', '窗口重置') : text('Monthly full reset', '每月全量重置') }} · {{ usage.resets[kind].availableCount }}</strong><small v-if="usage.resets[kind].nearestExpiresAt">{{ t("expires") }}: {{ new Date(usage.resets[kind].nearestExpiresAt!).toLocaleString() }}</small></div>
-          <button class="ui-button" data-variant="secondary" :disabled="saving || loading || (pendingReset ? pendingReset.resetType !== (kind === 'window' ? 'window' : 'monthly_full') : !usage.resets[kind].availableCount) || usage.subscriptionId === undefined" @click="applyReset(kind === 'window' ? 'window' : 'monthly_full')">{{ t("reset") }}</button>
+          <button class="ui-button" data-variant="secondary" :disabled="saving || loading || connection.phase !== 'connected' || (pendingReset ? pendingReset.resetType !== (kind === 'window' ? 'window' : 'monthly_full') : !usage.resets[kind].availableCount) || usage.subscriptionId === undefined" @click="applyReset(kind === 'window' ? 'window' : 'monthly_full')">{{ t("reset") }}</button>
         </div>
         <details @toggle="batchesOpen = ($event.target as HTMLDetailsElement).open; batchesOpen && loadBatches()"><summary>{{ text("Credit batches and expiry", "重置额度批次与有效期") }}</summary><template v-if="batches"><div v-for="kind in (['window', 'monthlyFull'] as const)" :key="kind"><h4>{{ kind === 'window' ? text('Window', '窗口') : text('Monthly', '每月') }}</h4><p v-for="batch in batches[kind]" :key="batch.grantId" class="settings-help">{{ batch.sourceType }} · {{ batch.remaining }} · {{ batch.scopeType }} {{ batch.subscriptionId }} · {{ new Date(batch.expiresAt).toLocaleString() }}</p><p v-if="!batches[kind].length" class="settings-help">{{ text("No credits", "暂无额度") }}</p></div></template></details>
       </section>

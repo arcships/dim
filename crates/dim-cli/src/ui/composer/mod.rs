@@ -1973,7 +1973,7 @@ mod tests {
         assert_eq!(
             c.handle_key(key(KeyCode::Enter)),
             Outcome::Command {
-                name: "approval".into(),
+                name: "permissions".into(),
                 args: String::new(),
             }
         );

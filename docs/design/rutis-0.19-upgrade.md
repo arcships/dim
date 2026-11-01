@@ -1,4 +1,4 @@
-# Upgrading to rutis 0.19.2
+# Upgrading to rutis 0.19.3
 
 Status: Ready.
 
@@ -9,9 +9,9 @@ Rules: [design rules](../architecture/rust-agent/principles.md), [ADR 002](../ad
 [中文](../zh/design/rutis-0.19-upgrade.md)
 
 The upgrade moves `rutis`, `rutis-loader`, `rutis-bridge`, the bundled Node runtime, the repository's
-TypeScript plugins and the Python SDK from 0.17.1 to 0.19.2. rutis 0.18 and 0.19 both break
-compatibility ([0.18 migration](https://github.com/arcships/rutis/blob/v0.19.2/docs/migration-0.18.en.md),
-[0.19 migration](https://github.com/arcships/rutis/blob/v0.19.2/docs/migration-0.19.en.md)). The upgrade
+TypeScript plugins and the Python SDK from 0.17.1 to 0.19.3. rutis 0.18 and 0.19 both break
+compatibility ([0.18 migration](https://github.com/arcships/rutis/blob/v0.19.3/docs/migration-0.18.en.md),
+[0.19 migration](https://github.com/arcships/rutis/blob/v0.19.3/docs/migration-0.19.en.md)). The upgrade
 keeps no compatibility path. Where rutis removed an API, Dim adopts the form rutis prescribes and adds
 no wrapper that rebuilds the old one.
 
@@ -19,14 +19,14 @@ no wrapper that rebuilds the old one.
 
 | Item | Now | Target |
 | --- | --- | --- |
-| `Cargo.toml` workspace dependencies | `rutis`, `rutis-bridge` 0.17.1; `rutis-loader` 0.17.1 with `node`, `python` | 0.19.2; `rutis-loader` with `node` only (0.19 has no `python` feature; `node` enables `runtimes`) |
+| `Cargo.toml` workspace dependencies | `rutis`, `rutis-bridge` 0.17.1; `rutis-loader` 0.17.1 with `node`, `python` | 0.19.3; `rutis-loader` with `node` only (0.19 has no `python` feature; `node` enables `runtimes`) |
 | New dependency | — | None. Dim starts its runtimes itself (M4); the npm `@arcships/rutis-host` is a test-only development dependency (M10) |
-| `xtask` | `rutis-bridge` with `exports` | `rutis-types` 0.19.2 |
-| `runtime/package.json` and lock | `@arcships/rutis-runtime`, `@arcships/rutis` 0.17.1 | 0.19.2; plus `@arcships/rutis-host` 0.19.2 as a development dependency (M10) |
-| `runtime/plugins/{goal,scheduler,session-title,workflow}/package.json` and locks | `@arcships/rutis` 0.17.1 | 0.19.2 |
+| `xtask` | `rutis-bridge` with `exports` | `rutis-types` 0.19.3 |
+| `runtime/package.json` and lock | `@arcships/rutis-runtime`, `@arcships/rutis` 0.17.1 | 0.19.3; plus `@arcships/rutis-host` 0.19.3 as a development dependency (M10) |
+| `runtime/plugins/{goal,scheduler,session-title,workflow}/package.json` and locks | `@arcships/rutis` 0.17.1 | 0.19.3 |
 | `npm/package.json` peer dependency | `@arcships/rutis` `~0.17.0` | `~0.19.0` |
-| `runtime/python-requirements.txt` | `rutis==0.17.1` with its hash | `rutis==0.19.2` with its hash |
-| Authoring pin | [authoring guide](../typescript-plugin-authoring.md) | 0.19.2 |
+| `runtime/python-requirements.txt` | `rutis==0.17.1` with its hash | `rutis==0.19.3` with its hash |
+| Authoring pin | [authoring guide](../typescript-plugin-authoring.md) | 0.19.3 |
 | `.github/workflows/ci.yml` | The Node bindings step runs the plugin tests on 0.17.1's test tool | It exports `RUTIS_HOST` for 0.19's test tool (M10) |
 
 0.19 speaks session protocol 4 and refuses 0.18 and older ends at the handshake, in both directions.
@@ -36,19 +36,24 @@ to connect.
 
 The target is 0.19, not 0.18. Most of 0.18's breaks (diagnostics, configuration checks) carry
 into 0.19 unchanged, while the APIs Dim would have adapted to on 0.18 (links, `LocalRuntime`,
-`RuntimeResolver`) are removed by 0.19. The pins are 0.19.2. 0.19.1, released on 2026-10-30 on
+`RuntimeResolver`) are removed by 0.19. The pins are 0.19.3. 0.19.1, released on 2026-10-30 on
 crates.io, npm and PyPI, adds the synchronous waterfall M2 needs
 ([rutis#947](https://github.com/arcships/rutis/pull/947)) and the public `mark_scope` that
 [#684](https://github.com/arcships/dim/pull/684) builds on
 ([rutis#948](https://github.com/arcships/rutis/issues/948)). It speaks the same protocol as 0.19.0,
 so the `npm` peer range stays `~0.19.0`. 0.19.2 fixes bugs only and adds no API; the upgrade takes
 it for the linear close peak of [rutis#978](https://github.com/arcships/rutis/pull/978) (#714).
+0.19.3 renames rutis's own two services, `loader` and `sessions`, to `rutis/loader` and
+`rutis/sessions` ([rutis#986](https://github.com/arcships/rutis/issues/986)), so that a host keeps
+both names for its own services, and returns the cleanup errors of a construction that a dispose or
+a subtree shutdown cancels ([rutis#983](https://github.com/arcships/rutis/issues/983)); the upgrade
+takes it for both.
 
 Not in scope: Go, Swift and Kotlin runtimes, dylib plugins, remote runtimes and node connection rows
 (`rutis-host/dial`, `rutis-host/listen`), the `rutis-host` command, and Cordis hosts. Dim uses none
 of them. `rutis-migrate` stops at 0.18 and is not used.
 
-## 2. What changed between 0.17.1 and 0.19.2
+## 2. What changed between 0.17.1 and 0.19.3
 
 | Version | What matters to Dim |
 | --- | --- |
@@ -57,10 +62,11 @@ of them. `rutis-migrate` stops at 0.18 and is not used.
 | 0.19 | A local runtime is the far end of a session; the link, peer, transport and identity layer is gone; the catalog shares every unregistered name; runtime rows honour `isolate`; every runtime emit goes through the host; `LoaderPlugin` provides the service `loader`; one `rutis/row` listener per loader instead of one per row ([rutis#808](https://github.com/arcships/rutis/pull/808), the fix [#518](https://github.com/arcships/dim/issues/518) waits for); the SDK test tools run on a real `rutis-host`; Python 3.12 or later; `CordisError` is `Error` on the wire |
 | 0.19.1 | The synchronous waterfall is back as `waterfall(event).sync(terminal)` (M2); foreign definition copies resolve in a host's own instances, and `mark_scope` is public (rutis#948, used by #684); `Loader::instance_rows`; a `reconcile` after a runtime's `ready()` loads its rows; rutis-host's runtime plugin is Starting from when it is made (rutis#964; Dim does not use it, M4) |
 | 0.19.2 | Bug fixes, no API: the close peak of many instances is linear (rutis#978); a loading plugin the driver cancels returns to Pending, and its cleanup errors go to the error sink only (rutis#969, see §8); an abandoned `reconcile` no longer holds later operations; the TypeScript test tool unloads at the end of each test |
+| 0.19.3 | The breaking rename of rutis's own services: `loader` becomes `rutis/loader`, `sessions` becomes `rutis/sessions`, and only code that injects or uses them changes (rutis#986); a construction a dispose or a subtree shutdown cancels unloads to `Disposed` and that dispose or shutdown returns its cleanup errors again (rutis#983); the TypeScript test tool returns when a callback and a fake call interleave (rutis#987), and a failed fake provide ends only its `load` (rutis#988) |
 
 ### 2.1 Kernel APIs Dim calls
 
-| 0.17.1 | 0.19.2 |
+| 0.17.1 | 0.19.3 |
 | --- | --- |
 | `Ctx::waterfall_sync(event, terminal)` | Removed in 0.19.0, which names `waterfall` (asynchronous) or the synchronous `bail`; neither fits the `before` chain. 0.19.1 adds `ctx.waterfall(event).sync(terminal)` (rutis#946), which M2 uses |
 | `SyncCall::next()` in a synchronous listener | Always `Err(WaterfallNext)`: a synchronous listener has no rest of the chain to run |
@@ -72,7 +78,7 @@ of them. `rutis-migrate` stops at 0.18 and is not used.
 
 ### 2.2 Bridge and loader APIs Dim calls
 
-| 0.17.1 | 0.19.2 |
+| 0.17.1 | 0.19.3 |
 | --- | --- |
 | `rutis_bridge::runtime::LocalRuntime` (`node`, `python`, `named`, `interpreter`, `python_path`, stdio, `handle`) | A connection row of the host's own: `rutis_bridge::runtime::Launcher`, `pipe::greeted`, `Session::new`, `pipe::Processes`. The guide's `rutis_host::connect::SpawnPlugin` is not used (M4) |
 | `RuntimePlugin`, the service `runtime::Runtime` | Removed; the connection plugin keeps its runtime's `RuntimeStatus` (M4) |
@@ -89,7 +95,7 @@ of them. `rutis-migrate` stops at 0.18 and is not used.
 | `Closer::close(&str)` | `Closer::close(Close)` |
 | `StaticCatalog::with(name, Described { .. }, factory)` | `StaticCatalog::with(name, Installed::new(factory))`, provided at `catalog_key()`; not used: the leaf offers no catalog (M8) |
 | `rutis_bridge::build::Exports` | `rutis_types::Exports`, same API; the generated header changes |
-| `LoaderPlugin` provides `Loader` and the mounter | Also the marked service `loader` and the session catalog at `catalog_key()` |
+| `LoaderPlugin` provides `Loader` and the mounter | Also the marked service `rutis/loader` and the session catalog at `catalog_key()` |
 
 `host_key`, `HostDispatch`, `Build`, `ServiceCatalog`, `Builtins`, `Resolved`, `mounter_key`,
 `session::Error` and `settle` keep their contracts.
@@ -204,7 +210,7 @@ process through `SessionHandle::process()`, which rutis-bridge hides (`#[doc(hid
 rutis-loader). Dim is a host itself and needs neither. In 0.19 a runtime, local or remote, is a
 connection row: a connection of one's own is a plugin that hands a `Channel` to `Session::new`, and a
 runtime its host starts takes `<channel> --id <name> <project>`
-([0.19 migration](https://github.com/arcships/rutis/blob/v0.19.2/docs/migration-0.19.en.md) "Upgrade
+([0.19 migration](https://github.com/arcships/rutis/blob/v0.19.3/docs/migration-0.19.en.md) "Upgrade
 together"). The plugin that starts the process is the one that knows whether it runs, so it keeps
 that state itself. Dim links no `rutis-host` and copies none of `SpawnPlugin`.
 
@@ -279,22 +285,21 @@ that state itself. Dim links no `rutis-host` and copies none of `SpawnPlugin`.
   Node runtime describes the module again at every resolution.
 - **Python.** The system interpreter check requires 3.12.
 
-### M5. `loader` reaches foreign rows; rows stay PluginManager's record
+### M5. `rutis/loader` reaches foreign rows; rows stay PluginManager's record
 
-0.19's `LoaderPlugin` serves the marked service `loader` (`create`, `reload`, `remove`, `status`) at
-`host_key("loader")` (rutis-loader `loader/plugins.rs:189-191`). Dim's catalog registers `loader` as
-the Rust `Loader` type, which is not a shared name. The loader therefore keys a foreign row's injected
-`loader` at `host_key("loader")` (`runtime.rs:808-810`, `catalog.rs:236-239`), and the row gets rutis's
-row service. rutis's own `tests/loader_service.rs` has a Python row do this.
+0.19.3's `LoaderPlugin` serves the marked service `rutis/loader` (`create`, `reload`, `remove`,
+`status`) at `host_key("rutis/loader")`. The loader registers the name in the catalog Dim gives it,
+so a foreign row injects `rutis/loader` and gets rutis's row service; Dim registers no such name of
+its own. rutis's own `tests/loader_service.rs` has a Python row do this.
 
 - Dim configures no editable layer: both of its reconciles pass none. `create` and `remove` are
   refused ("this host keeps no editable configuration, so rows cannot be added or removed"). `reload`
   and `status` work, and a reload changes no layer.
 - Dim accepts this under rule 11: installed plugins are trusted code, and nothing they can do through
-  `loader` changes configuration. PluginManager stays the only writer of rows, from `plugins.json`
-  ([PluginManager](plugins/PluginManager.md)).
-- `LoaderPlugin` is a platform plugin, so no session exports `loader` to its far end. No Dim row
-  provides a service named `loader`.
+  `rutis/loader` changes configuration. PluginManager stays the only writer of rows, from
+  `plugins.json` ([PluginManager](plugins/PluginManager.md)).
+- `LoaderPlugin` is a platform plugin, so no session exports `rutis/loader` to its far end. No Dim row
+  provides a service named `rutis/loader`.
 
 ### M6. A loader is per host, and an Agent is built in one
 
@@ -506,13 +511,27 @@ daemon root (LocalId dim-daemon)                 dimcode leaf root
 - `load(plugin, { config, services })` keeps its shape. A value now crosses between the test and the
   plugin by the rules between processes, and an event the test observes arrives after the emitter
   returns. Tests that read a result right after an `emit` wait for it.
-- The goal, session-title, scheduler and workflow plugin tests do not run in CI yet. On 0.19.2 the test
-  tool deadlocks when a callback the test calls and a fake the plugin calls interleave
-  ([rutis#987](https://github.com/arcships/rutis/issues/987)), one failed provide ends the test host
-  ([rutis#988](https://github.com/arcships/rutis/issues/988)), and rutis-host's own `sessions` takes
-  the name Dim's plugins inject ([rutis#986](https://github.com/arcships/rutis/issues/986)). `tsc`
-  still checks the plugins, and the Node-backed flows of §6 still load them for real. The tests come
-  back once rutis fixes these.
+- A test drives a function a plugin handed it through the runtime, not by calling it itself: the
+  test's own call of such a function is a synchronous session call, and a plugin cannot await a
+  service of the test inside one (`SyncWaitCycle`). `runtime/fixtures/plugin-test.ts` is the row
+  that calls it from the runtime and asynchronously; the goal and session-title tests load it next
+  to the plugin.
+- Those two tests wait for the plugin to stop instead of for one turn of their own event loop: they
+  count the calls the plugin makes of the test's services, which crosses between processes.
+- The goal and session-title plugin tests run in CI again. 0.19.3 fixes the three test-tool problems
+  the upgrade parked the four tests for ([rutis#986](https://github.com/arcships/rutis/issues/986),
+  [#987](https://github.com/arcships/rutis/issues/987),
+  [#988](https://github.com/arcships/rutis/issues/988)); the two suites were then moved to the
+  crossing rules above. Session-title's generation-budget test is skipped: the 30 s budget is a
+  timer of the runtime the plugin runs in, and a test cannot advance it.
+- The scheduler and workflow plugin tests stay off in CI: 0.19.3's TypeScript test tool cannot
+  receive a plugin definition, and both register a part before anything else —
+  `partRegistry.registerDefinition` fails with "cannot send a plugin definition: the far end does
+  not accept plugin definitions (it did not declare the capability plugins)". The capability is
+  Rust's, and the test process declares none, so no double of the test's can receive what the plugin
+  registers, although rutis's own design has a test double receive a definition and load it
+  ([plugin values R10](https://github.com/arcships/rutis/blob/main/docs/design-plugin-values-2026-10-25.en.md)).
+  `tsc` still checks the two plugins, and the Node-backed flows of §6 still load them for real.
 - zod's `z.toJSONSchema` result also carries `~standard`, which 0.19's `definePlugin` refuses as a
   Standard Schema, so the goal, scheduler and workflow plugins pass it as plain JSON.
 
@@ -525,7 +544,7 @@ in one pull request. Each step is its own commit.
 | Step | Work | Gate |
 | --- | --- | --- |
 | 0 (own pull request, on 0.17.1) | M6: one placement API, the minimal host, and the 41 files moved to it | `cargo test --workspace --locked`; `xtask check` and `graph` with the step 0 graph diff of §6; the placement checks of §6 |
-| 1 | Pins and lock files (M1), to 0.19.2; the authoring pin | `cargo metadata` resolves; the lock files name 0.19.2 |
+| 1 | Pins and lock files (M1), to 0.19.3; the authoring pin | `cargo metadata` resolves; the lock files name 0.19.3 |
 | 2 | Kernel and catalog: M2, M3 | The tests of the crates below `dim-app-server` and of `tests/integration` (`extensions.rs` follows in step 3); the Timeline `before` checks of §6 |
 | 3 | Runtimes: M4, M5, M9 | Node- and Python-backed flow tests of the App Server and `tests/integration` |
 | 4 | Leaf: M7, M8 | `cargo test -p dimcode --test ui_leaf`; `transport_flow ui_host::` |
@@ -556,7 +575,8 @@ The checks `.github/workflows/ci.yml` runs, at the workspace root, in its order:
    `DIM_TEST_APP_SERVER` and `DIM_TEST_NPM_WRAPPER`
 6. The public Node bindings:
    - `runtime/plugin-sdk.test.mjs`;
-   - the four plugin tests and their `tsc` checks, now with `RUTIS_HOST` (M10);
+   - the goal and session-title plugin tests, the scheduler and workflow `tsc` checks, now with
+     `RUTIS_HOST` (M10);
    - the Python environment from `runtime/python-requirements.txt`.
 7. The Node- and Python-backed Rust flows, with `DIM_TEST_NODE`, `DIM_TEST_JS_RUNTIME`,
    `DIM_TEST_RUTIS_SDK` and `DIM_TEST_PYTHON`:
@@ -579,8 +599,8 @@ Flow checks the suite must cover; extend existing tests only where the contract 
   - `plugin.reload` picks up a changed module.
 - **Snapshot rows (M4):** a row resolved while its runtime is down is accepted against its `provides`
   snapshot.
-- **`loader` (M5):** a TypeScript row that injects `loader` can `reload` a row and read `status`;
-  `create` and `remove` are refused because Dim configures no editable layer.
+- **`rutis/loader` (M5):** a TypeScript row that injects `rutis/loader` can `reload` a row and read
+  `status`; `create` and `remove` are refused because Dim configures no editable layer.
 - **Placement (M6):** the tests moved to the minimal host keep their assertions.
   - `agents_of_one_builder_mount_only_their_own_plugins_parts` changes purpose. With one placement
     API, a registry belongs to a host, and two self-placed Agents in one host no longer exist. It now
@@ -651,7 +671,7 @@ Flow checks the suite must cover; extend existing tests only where the contract 
 | --- | --- |
 | Versions drift across the host, the runtimes and the leaf (the handshake refuses) | M1 bumps every pin in one commit; `ui.leaf.2` keeps a mismatched CLI and daemon on the direct TUI |
 | The daemon's services become reachable from a leaf | M8: the private address only (a Unix socket, or loopback TCP with a one-time token), an isolated session catalog, id checks; Tui §8 states the full set, and why `isolate` does not fit |
-| Installed plugins reach exported services and `loader` | Accepted: they are trusted code (rule 11); `loader` cannot add or remove rows without an editable layer (M5) |
+| Installed plugins reach exported services and `rutis/loader` | Accepted: they are trusted code (rule 11); `rutis/loader` cannot add or remove rows without an editable layer (M5) |
 | A leaf starts its session but its `Tui` never attaches | Closed after `START`; a replacement keeps the old interface until the new one attaches (M8) |
 | A host gets a second loader | M6: a loader is per host and an Agent never creates one; the App Server and each minimal host hold one |
 | Moving 159 calls changes what a test or a graph checks | Each moved test keeps its assertions; M6 lands alone on 0.17.1, so its diff carries no upgrade change; §6 states its expected graph diff |
@@ -660,8 +680,8 @@ Flow checks the suite must cover; extend existing tests only where the contract 
 | TypeScript plugin configurations that did not match their schema now fail | The plugin tests and the Node-backed flows run with the shipped configurations |
 | Unknown npm names wait instead of failing | `RuntimeManager`'s status shows the wait; M9 adjusts the test that relied on the failure |
 | The launch commands Dim keeps drift from the runtime packages | They are pinned with those packages (`runtime/package.json`, `runtime/python-requirements.txt`), and the Node- and Python-backed flows start both runtimes |
-| A Session plugin's cleanup fails while a close cancels its construction | On 0.19.2 the failure reaches only the error sink, not `Agent::close`'s result (rutis#969). Accepted for the close-peak fix; reported as [rutis#983](https://github.com/arcships/rutis/issues/983), and `lifecycle_review`'s two tests are ignored until it is fixed |
-| The TypeScript plugin tests are off in CI | `tsc` and the Node-backed flows still cover the plugins; the tests return with rutis#986–#988 (M10) |
+| A Session plugin's cleanup fails while a close cancels its construction | 0.19.3 returns the cleanup error from the dispose or subtree shutdown that cancelled the construction, and the runtime keeps it in `Agent::close`'s result; the cancellation itself is not reported as a close failure. `lifecycle_review` checks both |
+| The scheduler and workflow plugin tests are off in CI | `tsc` and the Node-backed flows still cover the plugins; their doubles cannot receive the plugin definition they register until rutis's test tool takes one (M10) |
 
 Rollback: revert the upgrade change and the pins. No persisted format moves; Timeline, storage and
 wire fixtures are untouched.
@@ -671,7 +691,7 @@ wire fixtures are untouched.
 One, answered: a synchronous waterfall for the Timeline's `before` chain (M2),
 [rutis#946](https://github.com/arcships/rutis/issues/946), merged in
 [rutis#947](https://github.com/arcships/rutis/pull/947) and released in 0.19.1; the upgrade targets
-0.19.2. Every other decision uses rutis as it is. One limit is accepted rather than raised (M8).
+0.19.3. Every other decision uses rutis as it is. One limit is accepted rather than raised (M8).
 `LoaderService`'s key cannot be isolated, which fits a loader being per host (M6).
 
 ## 10. Rule check
@@ -681,7 +701,7 @@ The upgrade adds no part, event or fact.
 | Rule | Answer |
 | --- | --- |
 | Principles §4 rules 1–3, 5–7, 9 | Unchanged: no command, handover, `before` contract, batch, context path or fact changes; M2 keeps the `before` contract, its order and its failure rule |
-| AGENTS rule 4 (state ownership) | PluginManager stays the only writer of rows: without an editable layer, a plugin can reload a row through `loader` but not add or remove one (M5). A runtime's state is its connection plugin's `RuntimeStatus`, which that plugin writes and RuntimeManager reads; RuntimeManager keeps only the state of acquiring the runtime (M4) |
+| AGENTS rule 4 (state ownership) | PluginManager stays the only writer of rows: without an editable layer, a plugin can reload a row through `rutis/loader` but not add or remove one (M5). A runtime's state is its connection plugin's `RuntimeStatus`, which that plugin writes and RuntimeManager reads; RuntimeManager keeps only the state of acquiring the runtime (M4) |
 | §4 rule 8 (infrastructure unchanged by default) | The changes come from the dependency upgrade and close inside the runtime crate, the App Server and the CLI; the one requirement on rutis is M2's, answered by rutis#947 in 0.19.1 (§9) |
 | AGENTS rule 11 (trusted plugins, explicit boundaries) | M8 states what the leaf link exposes and keeps the boundary at the local user; no approval or permission changes |
 | AGENTS rule 6 (frozen fixtures) | `crates/dim-agent-types/tests/fixtures/` is not touched |

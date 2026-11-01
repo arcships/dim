@@ -1,5 +1,5 @@
 use crate::{request, stream};
-use aimux_core::{AbortSignal, language_model::LanguageModel};
+use aimux_core::{AbortSignal, AiMuxError, language_model::LanguageModel};
 use dim_agent_capabilities::host::*;
 use dim_agent_types::ModelRequest;
 use futures_util::Stream;
@@ -12,6 +12,64 @@ use std::{
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const OPENAI_CODEX_PRESET: &str = "openai-codex";
+const MAX_REDIRECTS: usize = 10;
+
+fn redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let keeps_method = matches!(attempt.status().as_u16(), 307 | 308);
+        let same_origin = attempt
+            .previous()
+            .last()
+            .is_some_and(|previous| previous.origin() == attempt.url().origin());
+        if keeps_method && same_origin && attempt.previous().len() <= MAX_REDIRECTS {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
+/// Restates a redirect that the client did not follow with its target, which
+/// the provider's own error text does not name.
+fn name_redirect_target(mut error: AiMuxError) -> AiMuxError {
+    let AiMuxError::ApiCall(detail) = &mut error else {
+        return error;
+    };
+    let Some(status) = detail.status_code else {
+        return error;
+    };
+    if !matches!(status, 301 | 302 | 303 | 307 | 308) {
+        return error;
+    }
+    let Some(location) = detail
+        .response_headers
+        .as_ref()
+        .and_then(|headers| headers.get("location"))
+        .cloned()
+    else {
+        return error;
+    };
+    let Ok(base) = url::Url::parse(&detail.url) else {
+        return error;
+    };
+    let Ok(target) = base.join(&location) else {
+        return error;
+    };
+    let reason = if target.origin() != base.origin() {
+        "the target is a different origin"
+    } else if !matches!(status, 307 | 308) {
+        "the request would be re-sent as a GET without its body; update the provider URL to the target"
+    } else {
+        "the redirect limit was reached"
+    };
+    let mut target = target;
+    target.set_query(None);
+    target.set_fragment(None);
+    let _ = target.set_username("");
+    let _ = target.set_password(None);
+    detail.message = format!("redirect to {target} was not followed: {reason}");
+    error
+}
 
 fn client(network: &ModelNetwork) -> Result<reqwest::Client, HostError> {
     let mut builder = reqwest::Client::builder()
@@ -19,7 +77,7 @@ fn client(network: &ModelNetwork) -> Result<reqwest::Client, HostError> {
         .pool_max_idle_per_host(10)
         .pool_idle_timeout(Duration::from_secs(30))
         .tcp_keepalive(Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::none());
+        .redirect(redirect_policy());
     if let Some(proxy) = &network.proxy {
         builder = builder.proxy(reqwest::Proxy::all(proxy).map_err(|_| {
             HostError::classified(HostErrorKind::InvalidRequest, "Invalid model proxy")
@@ -271,7 +329,7 @@ impl ModelDriver for AimuxDriver {
                         }
                         ModelConnection::Local => unreachable!(),
                     }
-                } => match result.map_err(|error| stream::error(error, &cancel)) {
+                } => match result.map_err(|error| stream::error(name_redirect_target(error), &cancel)) {
                     Ok(result) => result,
                     Err(error) => {
                         if let Some(pending) = pending.as_mut() {

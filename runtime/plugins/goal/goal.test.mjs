@@ -3,7 +3,8 @@
 // demand are fixed here by sequence; goal.rs runs the same plugin in Node.
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { load } from '@arcships/rutis/testing'
+import { host } from '@arcships/rutis/testing'
+import driveCallback, { counted, flush, measure } from '../../fixtures/plugin-test.ts'
 import goalBranch from './branch.ts'
 import manifest from './dim-plugin.json' with { type: 'json' }
 import { Fold, changes, conclusionOf, decideConclusion, decideEvaluatedContinuation, decideEvaluation, decideInterrupt, decideTurnEnd, evaluatorPrompt, replyConclusion, truncate, writes } from './goal.ts'
@@ -68,7 +69,6 @@ function started(objective = 'ship it') {
 }
 
 const settingsDocument = maxContinuations => ({ ok: true, value: { document: { maxContinuations } } })
-const flush = () => new Promise(resolve => setImmediate(resolve))
 
 /**
  * The branch plugin across its declared Dispatcher, Settings, input and
@@ -77,6 +77,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve))
  * tree's creation (it receives the default one as its fourth argument).
  */
 async function loadGoalBranch(read, options = {}) {
+  measure()
   const branchId = options.branchId ?? B
   const branch = new Branch()
   if (options.before) options.before(branch)
@@ -88,9 +89,10 @@ async function loadGoalBranch(read, options = {}) {
   const sessionLifecycle = options.sessionLifecycle ?? { activated: async () => true }
   const closing = Promise.withResolvers()
   let listener
+  let call
   const emit = async (type, name, data) => {
     const event = branch.commit(type, name, data)
-    await listener(event)
+    await call(listener, [{ live: event }])
     return event
   }
   const create = options.create ?? defaultCreate
@@ -103,21 +105,18 @@ async function loadGoalBranch(read, options = {}) {
     })
     return id
   }
-  const loaded = await load(goalBranch, { config: TEXTS, services: {
+  const h = host({ services: {
     timelineIdentity: { get: async () => ({ branchId }) },
     branchLifecycle: { activated: async () => true, closing: () => closing.promise },
     sessionLifecycle,
-    dispatcher: {
-      consume: async (_name, _keys, handler) => {
-        await handler({ replay: [...branch.events] })
-        listener = event => handler({ live: event })
-      },
+    dispatcher: counted({
+      consume: async (_name, _keys, handler) => { listener = handler },
       local: async (start, through) => branch.events.filter(event => event.sequence >= BigInt(start) && event.sequence <= BigInt(through)),
       history: async through => branch.events.filter(event => event.sequence <= BigInt(through)),
       committed: async () => branch.sequence,
-    },
-    settings: { read },
-    treeCommands: {
+    }),
+    settings: counted({ read }),
+    treeCommands: counted({
       input: async (id, input) => {
         if (id !== branchId) {
           sent.push({ branch: id, input })
@@ -138,9 +137,14 @@ async function loadGoalBranch(read, options = {}) {
         ends.push({ id, source })
         await emit('branch', 'ended', { branch: id, endEvent: Number(branch.sequence), source })
       },
-    },
+    }),
   } })
-  return { unload: async () => { closing.resolve(); await loaded.unload() }, branch, emit, writes, sent, creates, ends,
+  await h.load(goalBranch, { config: TEXTS })
+  const driver = await h.load(driveCallback)
+  call = (fn, args) => driver.service('driveCallback').call(fn, args)
+  await call(listener, [{ replay: [...branch.events] }])
+  let unloaded = false
+  return { unload: async () => { if (unloaded) return; unloaded = true; closing.resolve(); await h.unload() }, branch, emit, writes, sent, creates, ends,
     turn: async input => {
       await emit('turn', 'start', {})
       await emit('input', 'consumed', { input_id: input.id })
@@ -693,6 +697,7 @@ test('Pursuit 13 E1: the evaluator role comes from the line source, not its prom
   await flush()
   assert.equal(foreign.sent.length, 0, 'a host line that is not an evaluation reports nothing')
   assert.equal(foreign.writes.length, 0)
+  await foreign.unload()
   const evaluator = await evaluatorBranch(async () => settingsDocument(20))
   t.after(() => evaluator.unload())
   await flush()
@@ -963,6 +968,7 @@ test('Pursuit 2: a CONTINUE conclusion writes one Pursuit continuation, or Goal 
   assert.match(continuation, new RegExp(`^<dim-goal kind="continuation" count="2" limit="20" after="${end.sequence}" evaluation="${end.sequence}" branch="main">`))
   assert.match(continuation, /\nAn evaluator checked your report that the goal for branch main is completed and found it is not achieved yet\./)
 
+  await goal.unload()
   const limited = await loadGoalBranch(async () => settingsDocument(1))
   t.after(() => limited.unload())
   const limitedEnd = await completionRequested(limited)
@@ -981,6 +987,7 @@ test('Pursuit 5: a failed conclusion, a failed creation and a throwing create gi
   assert.match(goal.writes.at(-1).data.blocks[0].text, new RegExp(`op="pause" reason="evaluation_failed" after="${end.sequence}"`))
   assert.equal(goal.branch.fold.status.reason, 'evaluation_failed')
 
+  await goal.unload()
   goal = await loadGoalBranch(async () => settingsDocument(20))
   t.after(() => goal.unload())
   end = await completionRequested(goal)
@@ -989,12 +996,14 @@ test('Pursuit 5: a failed conclusion, a failed creation and a throwing create gi
   assert.equal(goal.writes.length, 2)
   assert.match(goal.writes[1].data.blocks[0].text, /op="pause" reason="evaluation_failed"/)
 
+  await goal.unload()
   goal = await loadGoalBranch(async () => settingsDocument(20), { create: async () => { throw new Error('boom') } })
   t.after(() => goal.unload())
   end = await completionRequested(goal)
   assert.equal(goal.writes.length, 2)
   assert.match(goal.writes[1].data.blocks[0].text, new RegExp(`reason="evaluation_failed" after="${end.sequence}"`))
 
+  await goal.unload()
   goal = await loadGoalBranch(async () => settingsDocument(20), {
     create: async (parent, at, options, id, create) => {
       await create(parent, at, options, id)
@@ -1083,6 +1092,7 @@ test('Pursuit 5: a failed or cancelled evaluator turn reports failed', async t =
     assert.equal(evaluator.sent.length, 1, status)
     assert.match(evaluator.sent[0].input.blocks[0].text, /result="failed" evaluation="7"/)
     assert.match(evaluator.sent[0].input.blocks[0].text, /the evaluator's turn did not complete/)
+    await evaluator.unload()
   }
 })
 

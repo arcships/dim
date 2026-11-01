@@ -21,7 +21,7 @@ use crate::{
 };
 use dim_agent_types::{
     ApprovalCallData, COMMAND_SEPARATORS, CommandMatch, CommandRule, CommandRuleDecision,
-    PermissionChangedData, PermissionPolicy, PermissionPreset,
+    FileAccess, PermissionChangedData, PermissionPolicy, PermissionPreset, ToolApproval,
 };
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -33,6 +33,98 @@ pub const PRESETS: [PermissionPreset; 3] = [
 ];
 pub const PRESET_METHODS: [&str; 2] = ["session.permission.get", "session.permission.update"];
 pub const RULE_METHODS: [&str; 2] = ["permission.rules", "permission.set_rules"];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    FileAccess(FileAccess),
+    ToolApproval(ToolApproval),
+}
+
+impl Change {
+    pub fn apply(self, policy: &mut PermissionPolicy) -> bool {
+        match self {
+            Self::FileAccess(value) => policy.file_access.replace(value) != Some(value),
+            Self::ToolApproval(value) => policy.tool_approval.replace(value) != Some(value),
+        }
+    }
+
+    pub fn config(self) -> (&'static str, Value) {
+        match self {
+            Self::FileAccess(value) => ("fileAccess", json!(value)),
+            Self::ToolApproval(value) => ("toolApproval", json!(value)),
+        }
+    }
+}
+
+pub fn file_label(value: FileAccess) -> &'static str {
+    match value {
+        FileAccess::ReadOnly => "Read only",
+        FileAccess::WorkspaceReadWrite => "Workspace read/write",
+        FileAccess::Unrestricted => "Unrestricted",
+    }
+}
+
+pub fn tool_label(value: ToolApproval) -> &'static str {
+    match value {
+        ToolApproval::Ask => "Ask",
+        ToolApproval::Bypass => "Bypass",
+    }
+}
+
+pub fn tool_policy_label(policy: &PermissionPolicy) -> &'static str {
+    if policy.tool_approval.is_none() && policy.preset != PermissionPreset::FullAccess {
+        "Ask (legacy tool exceptions)"
+    } else {
+        tool_label(policy.tool_approval())
+    }
+}
+
+pub fn creation_policy(options: &crate::args::Options) -> Option<Value> {
+    if options.permission.is_none()
+        && options.file_access.is_none()
+        && options.tool_approval.is_none()
+    {
+        return None;
+    }
+    let mut policy =
+        json!({"preset": options.permission.unwrap_or(PermissionPreset::WorkspaceWrite)});
+    if let Some(value) = options.file_access {
+        policy["fileAccess"] = json!(value);
+    }
+    if let Some(value) = options.tool_approval {
+        policy["toolApproval"] = json!(value);
+    }
+    Some(policy)
+}
+
+pub async fn select_control(
+    client: &mut Client,
+    session_id: &str,
+    change: Change,
+) -> Result<PermissionPolicy> {
+    #[derive(Deserialize)]
+    struct Updated {
+        #[serde(rename = "version")]
+        _version: u64,
+    }
+    let mut state = read(client, session_id).await?;
+    for _ in 0..ATTEMPTS {
+        if !change.apply(&mut state.policy) {
+            return Ok(state.policy);
+        }
+        match client.typed::<Updated>(
+            "session.permission.update",
+            json!({"sessionId":session_id,"branchId":"main","expectedVersion":state.version,"policy":state.policy}),
+        ).await {
+            Ok(_) => return Ok(state.policy),
+            Err(error) if client::app_error(&error) == Some("permission_conflict") => {
+                state = read(client, session_id).await?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err("The Session's permissions kept changing; try again".into())
+}
 /// Attempts for a write whose outcome does not depend on what was read.
 const ATTEMPTS: usize = 3;
 
@@ -50,19 +142,6 @@ pub fn name(preset: PermissionPreset) -> &'static str {
         PermissionPreset::ReadOnly => "read-only",
         PermissionPreset::WorkspaceWrite => "workspace-write",
         PermissionPreset::FullAccess => "full-access",
-    }
-}
-
-/// What Permission's preset step decides, by risk category.
-pub fn summary(preset: PermissionPreset) -> &'static str {
-    match preset {
-        PermissionPreset::ReadOnly => {
-            "reads run; writes, commands, network and unclassified tools are denied"
-        }
-        PermissionPreset::WorkspaceWrite => {
-            "reads and workspace file writes run; outside writes, commands, network and unclassified tools ask"
-        }
-        PermissionPreset::FullAccess => "every tool call runs without asking",
     }
 }
 
@@ -140,25 +219,32 @@ pub async fn switch(
 /// Selects `preset` for `main` whatever it was before, as a startup choice
 /// does: the preset does not depend on the read, so a version conflict reads
 /// again and retries.
-pub async fn select(client: &mut Client, session_id: &str, preset: PermissionPreset) -> Result<()> {
+pub async fn select(
+    client: &mut Client,
+    session_id: &str,
+    preset: PermissionPreset,
+) -> Result<PermissionPolicy> {
     let mut state = read(client, session_id).await?;
     for _ in 0..ATTEMPTS {
         match switch(client, session_id, &state, preset).await? {
             Switch::Conflict(current) => state = current,
-            Switch::Unchanged | Switch::Switched(_) => return Ok(()),
+            Switch::Unchanged | Switch::Switched(_) => {
+                state.policy.preset = preset;
+                return Ok(state.policy);
+            }
         }
     }
     Err("The Session's permission preset kept changing; try again".into())
 }
 
-/// The preset a `permission/changed` event in its wire form gives, with the
+/// The policy a `permission/changed` event in its wire form gives, with the
 /// event's sequence.
-pub fn changed(event: &Value) -> Option<(u64, PermissionPreset)> {
+pub fn changed(event: &Value) -> Option<(u64, PermissionPolicy)> {
     if event["type"] != "permission" || event["name"] != "changed" {
         return None;
     }
     let data = PermissionChangedData::deserialize(&event["data"]).ok()?;
-    Some((event["sequence"].as_u64()?, data.policy.preset))
+    Some((event["sequence"].as_u64()?, data.policy))
 }
 
 /// The user's command rules and the Settings revision a write must expect.

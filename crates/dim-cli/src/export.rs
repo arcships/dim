@@ -1,4 +1,10 @@
-use crate::{Result, args::Options, client, client::Client, session};
+use crate::{
+    Result,
+    args::{Options, SERVER_REQUIREMENT},
+    client,
+    client::Client,
+    session,
+};
 use dim_agent_types::{
     BranchCreateData, BranchCreateFailedData, ContentBlock, InputBlock, InputMessageData, TextData,
     ToolResultData, ToolUseData,
@@ -92,10 +98,18 @@ pub async fn timeline(
 ) -> Result<()> {
     let server = client::server(options)?;
     if !server.program.is_file() {
-        return Err(format!(
-            "App Server binary is missing at {}; build dim-app-server or supply --server PATH",
-            server.program.display()
-        )
+        return Err(if server.embedded {
+            format!(
+                "App Server binary is missing at {}; build dim-app-server or supply --server PATH",
+                server.program.display()
+            )
+        } else {
+            format!(
+                "{}; {} is missing",
+                SERVER_REQUIREMENT,
+                server.program.display()
+            )
+        }
         .into());
     }
     let database = database

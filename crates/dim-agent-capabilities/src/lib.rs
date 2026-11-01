@@ -10,8 +10,10 @@ pub mod context_preparation;
 pub mod defaults;
 pub mod exec_stop;
 pub mod execution_settings;
+pub mod file_access;
 pub mod file_storage;
 pub mod history;
+pub mod hooks;
 pub mod host;
 pub mod host_platform;
 pub mod images;
@@ -27,6 +29,7 @@ pub mod prompt_sources;
 pub mod prompt_state;
 pub mod recall;
 pub mod session_broadcast;
+pub mod session_grants;
 pub mod settings;
 pub mod shell_input;
 pub mod shell_session;
@@ -77,6 +80,11 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<host::PromptHost>(catalog, session);
     register::<host::ToolHost>(catalog, session);
     register::<permission::CommandRulesHost>(catalog, session);
+    register::<hooks::HookSourcesHost>(catalog, session);
+    register::<hooks::HooksRuntime>(catalog, session);
+    register::<input_queue::SubmitChecks>(catalog, session);
+    register::<session_grants::SessionGrantsHost>(catalog, session);
+    register::<file_access::FileAccessFacts>(catalog, session);
     register::<methods::SessionMethods>(catalog, session);
     let branch = Some(BRANCH_GROUP);
     register::<input_queue::InputQueue>(catalog, branch);
@@ -108,6 +116,7 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
 }
 impl PublicService for approval::Approval {}
 impl PublicService for input_queue::InputQueue {}
+impl PublicService for input_queue::SubmitChecks {}
 impl PublicService for permission::Permission {}
 impl PublicService for workspace_tools::background::BackgroundExec {}
 impl PublicService for shell_session::ShellSession {}

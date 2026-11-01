@@ -9,15 +9,51 @@ pub enum PermissionPreset {
     FullAccess,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FileAccess {
+    ReadOnly,
+    WorkspaceReadWrite,
+    Unrestricted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolApproval {
+    Ask,
+    Bypass,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PermissionPolicy {
     #[serde(default)]
     pub preset: PermissionPreset,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_access: Option<FileAccess>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_approval: Option<ToolApproval>,
     #[serde(default)]
     pub allowed_tools: Vec<String>,
     #[serde(default)]
     pub disallowed_tools: Vec<String>,
+}
+
+impl PermissionPolicy {
+    pub fn file_access(&self) -> FileAccess {
+        self.file_access.unwrap_or(match self.preset {
+            PermissionPreset::ReadOnly => FileAccess::ReadOnly,
+            PermissionPreset::WorkspaceWrite => FileAccess::WorkspaceReadWrite,
+            PermissionPreset::FullAccess => FileAccess::Unrestricted,
+        })
+    }
+
+    pub fn tool_approval(&self) -> ToolApproval {
+        self.tool_approval.unwrap_or(match self.preset {
+            PermissionPreset::FullAccess => ToolApproval::Bypass,
+            _ => ToolApproval::Ask,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

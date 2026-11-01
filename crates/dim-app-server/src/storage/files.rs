@@ -15,16 +15,18 @@
 use super::{SqliteStorage, sqlite::error};
 use dim_agent_capabilities::{
     file_storage::{FileStorage, FileStorageError},
-    host::{PutSessionFile, SessionFileError, SessionFileErrorCode, StoredSessionFile},
+    host::{SessionFileError, SessionFileErrorCode, SessionFilesService, StoredSessionFile},
+    host_platform::HostPlatform,
 };
 use rusqlite::{Connection, TransactionBehavior, params};
 use rutis::Ctx;
 use std::{
+    collections::BTreeSet,
     ffi::OsString,
     fs::Permissions,
     future::Future,
     ops::ControlFlow,
-    path::Path,
+    path::{Component, Path, PathBuf},
     pin::Pin,
     sync::{
         Arc, Mutex,
@@ -128,6 +130,76 @@ fn session_exists(connection: &Connection, session_id: &str) -> rusqlite::Result
     )
 }
 
+/// The resolved form used by registration: the longest existing prefix is
+/// canonicalized and the remaining normal components are appended. A relative
+/// path, `.`, `..`, or an unresolvable prefix has no form (ADR 013 D3).
+fn resolve(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() || has_relative_component(path) {
+        return None;
+    }
+    let mut suffix: Vec<OsString> = Vec::new();
+    let mut current = path;
+    loop {
+        match std::fs::canonicalize(current) {
+            Ok(mut resolved) => {
+                for name in suffix.iter().rev() {
+                    resolved.push(name);
+                }
+                return Some(resolved);
+            }
+            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
+                let name = current.file_name()?;
+                if Path::new(name)
+                    .components()
+                    .any(|component| !matches!(component, Component::Normal(_)))
+                {
+                    return None;
+                }
+                suffix.push(name.to_os_string());
+                current = current.parent()?;
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// The canonical form of an existing path that reaches its target without a
+/// symlink. `owns` uses it: a `..` or a symlinked component has no owned form
+/// (ADR 013 D3). Registration stores the canonical form, so `owns` receives
+/// one from a caller that resolved the path first.
+fn owned_path(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() || has_relative_component(path) {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(path).ok()?;
+    (canonical == path).then_some(canonical)
+}
+
+fn has_relative_component(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+}
+
+/// `path` followed by `separator` and `%`, escaped for a `LIKE` pattern with
+/// `ESCAPE '\'`. The separator is escaped like any other literal: on Windows
+/// it is `\`, which would otherwise escape the wildcard (ADR 013 D4).
+fn like_prefix(path: &Path, separator: char) -> String {
+    let mut prefix = String::new();
+    for character in path.to_string_lossy().chars() {
+        push_like_literal(&mut prefix, character);
+    }
+    push_like_literal(&mut prefix, separator);
+    prefix.push('%');
+    prefix
+}
+
+fn push_like_literal(pattern: &mut String, character: char) {
+    if matches!(character, '\\' | '%' | '_') {
+        pattern.push('\\');
+    }
+    pattern.push(character);
+}
+
 /// How txn 2 ended.
 enum Commit {
     Owned,
@@ -142,6 +214,19 @@ enum Commit {
 pub(super) fn share(connection: &Connection, source: &str, fork: &str) -> rusqlite::Result<usize> {
     connection.execute(
         "INSERT INTO session_file_owners (session_id, file_id) SELECT ?2, file_id FROM session_file_owners WHERE session_id = ?1",
+        params![source, fork],
+    )
+}
+/// ADR 013 D4: the fork copies the source's output rows in its transaction.
+/// A registered path need not exist yet: `run_background` registers an output
+/// path before the command writes it.
+pub(super) fn share_output(
+    connection: &Connection,
+    source: &str,
+    fork: &str,
+) -> rusqlite::Result<usize> {
+    connection.execute(
+        "INSERT INTO session_output_owners (session_id, path) SELECT ?2, path FROM session_output_owners WHERE session_id = ?1",
         params![source, fork],
     )
 }
@@ -207,39 +292,273 @@ impl SessionFiles {
         self.0.tasks.wait().await;
     }
 
-    /// S5c's delete step: removes `command-output/<session_id>` below the
-    /// database directory through the node's FileStorage. An absent directory
-    /// counts as removed. FileStorage syncs the parent before it returns, so
-    /// the caller commits the row deletion only after a durable removal.
-    /// Fails without the node's FileStorage, or with `Locked` or
+    /// S5c's delete step: removes every output directory the Session needs
+    /// (ADR 013 D4): its own `<database directory>/command-output/<session>`
+    /// and the directory of every path it has a row for, except one another
+    /// Session of this database still names a path under. An absent directory
+    /// counts as removed. Each removal is durable before the caller commits
+    /// the row deletion. Fails without the node's FileStorage, without
+    /// HostPlatform for a shell directory, or with `Locked` or
     /// `DirectoryNotEmpty` while a writer outside the closed Session holds
     /// an entry; the delete is then retried.
-    pub(super) async fn remove_command_output(
-        &self,
-        session_id: &str,
-    ) -> dim_agent_runtime::Result<()> {
+    pub(super) async fn remove_output(&self, session_id: &str) -> dim_agent_runtime::Result<()> {
+        let session = session_id.to_owned();
+        let own = self
+            .0
+            .db
+            .path
+            .parent()
+            .map(|directory| {
+                directory
+                    .join(super::COMMAND_OUTPUT_DIRECTORY)
+                    .join(session_id)
+            })
+            .ok_or_else(|| error("the native store path has no directory"))?;
+        let candidates = self
+            .0
+            .db
+            .run(move |connection| {
+                let mut candidates = BTreeSet::from([own]);
+                let mut query = connection
+                    .prepare("SELECT DISTINCT path FROM session_output_owners WHERE session_id = ?1")
+                    .map_err(error)?;
+                let rows = query
+                    .query_map([&session], |row| row.get::<_, String>(0))
+                    .map_err(error)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(error)?;
+                for path in rows {
+                    if let Some(directory) = Path::new(&path).parent() {
+                        candidates.insert(directory.to_path_buf());
+                    }
+                }
+                let mut kept = Vec::new();
+                for candidate in candidates {
+                    let text = candidate.to_string_lossy().into_owned();
+                    let shared: bool = connection
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM session_output_owners WHERE session_id <> ?1 AND (path = ?2 OR path LIKE ?3 ESCAPE '\\'))",
+                            params![session, text, like_prefix(&candidate, std::path::MAIN_SEPARATOR)],
+                            |row| row.get(0),
+                        )
+                        .map_err(error)?;
+                    if !shared {
+                        kept.push(candidate);
+                    }
+                }
+                Ok(kept)
+            })
+            .await?;
         let storage = self
             .0
             .ctx
             .get::<FileStorage>()
             .ok_or_else(|| error("the Session's resource node storage is unavailable"))?;
-        let path = storage
-            .path(
-                self.0.root,
-                Path::new(super::COMMAND_OUTPUT_DIRECTORY).join(session_id),
-            )
-            .map_err(error)?;
-        storage
-            .remove(&path, &self.0.stopping)
-            .await
-            .map_err(error)?;
+        let host = self.0.ctx.get::<HostPlatform>();
+        for candidate in candidates {
+            if let Some(host) = host
+                .as_ref()
+                .filter(|host| candidate.starts_with(host.exec_root()))
+            {
+                let path = candidate.clone();
+                let host = host.clone();
+                tokio::task::spawn_blocking(move || host.remove_exec_directory(&path))
+                    .await
+                    .map_err(error)?
+                    .map_err(error)?;
+                continue;
+            }
+            let relative = candidate
+                .strip_prefix(storage.root_path(self.0.root).map_err(error)?)
+                .map_err(|_| {
+                    error(format!(
+                        "output directory {} is outside the resource node's roots",
+                        candidate.display()
+                    ))
+                })?;
+            if !relative.starts_with(super::COMMAND_OUTPUT_DIRECTORY)
+                || relative == Path::new(super::COMMAND_OUTPUT_DIRECTORY)
+            {
+                return Err(error(format!(
+                    "output directory {} is not a command output directory",
+                    candidate.display()
+                )));
+            }
+            let path = storage.path(self.0.root, relative).map_err(error)?;
+            storage
+                .remove(&path, &self.0.stopping)
+                .await
+                .map_err(error)?;
+        }
         #[cfg(test)]
-        tests::after_output_removal(session_id)?;
+        tests::after_output_removal(session_id).await?;
         Ok(())
+    }
+
+    /// ADR 013 D2: records `path` as output owned by `session_id` before the
+    /// tool result hands it to the model. A repeated path is a no-op; a
+    /// missing Session fails.
+    pub(super) async fn register(
+        &self,
+        session_id: String,
+        path: PathBuf,
+    ) -> Result<(), SessionFileError> {
+        let resolved = resolve(&path).ok_or_else(|| {
+            file_error(
+                SessionFileErrorCode::Invalid,
+                "an output path must be absolute and resolvable",
+            )
+        })?;
+        let path = resolved.into_os_string().into_string().map_err(|_| {
+            file_error(
+                SessionFileErrorCode::Invalid,
+                "an output path must be UTF-8",
+            )
+        })?;
+        let session = session_id.clone();
+        let registered = self
+            .0
+            .db
+            .run(move |connection| {
+                let tx = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(error)?;
+                if !session_exists(&tx, &session).map_err(error)? {
+                    return Ok(false);
+                }
+                tx.execute(
+                    "INSERT INTO session_output_owners (session_id, path) VALUES (?1, ?2) ON CONFLICT(session_id, path) DO NOTHING",
+                    params![session, path],
+                )
+                .map_err(error)?;
+                tx.commit().map_err(error)?;
+                Ok(true)
+            })
+            .await
+            .map_err(|failure| file_error(SessionFileErrorCode::Storage, failure))?;
+        if registered { Ok(()) } else { Err(not_found()) }
+    }
+
+    /// ADR 013 D3: resolves `path` and answers from both ownership tables.
+    /// An exact output row owns its path; a Session file path is owned while
+    /// it stays inside `<db>.session-files/<fileId>/` of an owned file id.
+    /// An unresolvable path is unowned.
+    pub(super) async fn owns(
+        &self,
+        session_id: String,
+        path: PathBuf,
+    ) -> Result<bool, SessionFileError> {
+        if path.components().any(|component| {
+            !matches!(
+                component,
+                Component::Prefix(_) | Component::RootDir | Component::Normal(_)
+            )
+        }) {
+            return Ok(false);
+        }
+        if let Some(output) = owned_path(&path) {
+            let id = session_id.clone();
+            let text = output.to_string_lossy().into_owned();
+            let owned = self
+                .0
+                .db
+                .run(move |connection| {
+                    connection
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM session_output_owners WHERE session_id = ?1 AND path = ?2)",
+                            params![id, text],
+                            |row| row.get(0),
+                        )
+                        .map_err(error)
+                })
+                .await
+                .map_err(|failure| file_error(SessionFileErrorCode::Storage, failure))?;
+            if owned {
+                return Ok(true);
+            }
+        }
+
+        let storage = self
+            .0
+            .ctx
+            .get::<FileStorage>()
+            .ok_or_else(node_unavailable)?;
+        let directory = storage
+            .root_path(self.0.root)
+            .map_err(storage_failure)?
+            .join(&self.0.directory);
+        let directory = match tokio::fs::canonicalize(&directory).await {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(file_error(SessionFileErrorCode::Storage, error)),
+        };
+        let Some(rest) = path.strip_prefix(&directory).ok() else {
+            return Ok(false);
+        };
+        let Some(Component::Normal(name)) = rest.components().next() else {
+            return Ok(false);
+        };
+        let Some(file_id) = name.to_str() else {
+            return Ok(false);
+        };
+        let file_id = file_id.to_owned();
+        self.0
+            .db
+            .run(move |connection| {
+                connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM session_file_owners WHERE session_id = ?1 AND file_id = ?2)",
+                        params![session_id, file_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(error)
+            })
+            .await
+            .map_err(|failure| file_error(SessionFileErrorCode::Storage, failure))
+    }
+
+    /// ADR 013 D3: the directory of every Session file the Session owns and
+    /// every output path it owns.
+    pub(super) async fn owned_paths(
+        &self,
+        session_id: String,
+    ) -> Result<Vec<PathBuf>, SessionFileError> {
+        let directory = self.session_files_directory();
+        let (files, outputs) = self
+            .0
+            .db
+            .run(move |connection| {
+                let files: Vec<String> = connection
+                    .prepare("SELECT file_id FROM session_file_owners WHERE session_id = ?1 ORDER BY file_id")
+                    .map_err(error)?
+                    .query_map([&session_id], |row| row.get(0))
+                    .map_err(error)?
+                    .collect::<rusqlite::Result<_>>()
+                    .map_err(error)?;
+                let outputs: Vec<String> = connection
+                    .prepare("SELECT path FROM session_output_owners WHERE session_id = ?1 ORDER BY path")
+                    .map_err(error)?
+                    .query_map([&session_id], |row| row.get(0))
+                    .map_err(error)?
+                    .collect::<rusqlite::Result<_>>()
+                    .map_err(error)?;
+                Ok((files, outputs))
+            })
+            .await
+            .map_err(|failure| file_error(SessionFileErrorCode::Storage, failure))?;
+        Ok(files
+            .into_iter()
+            .map(|file_id| directory.join(file_id))
+            .chain(outputs.into_iter().map(PathBuf::from))
+            .collect())
+    }
+
+    fn session_files_directory(&self) -> PathBuf {
+        self.0.db.path.with_file_name(&self.0.directory)
     }
 }
 
-impl PutSessionFile for SessionFiles {
+impl SessionFilesService for SessionFiles {
     fn put(
         &self,
         session_id: String,
@@ -277,6 +596,29 @@ impl PutSessionFile for SessionFiles {
             task.await
                 .unwrap_or_else(|join| Err(file_error(SessionFileErrorCode::Storage, join)))
         })
+    }
+
+    fn register(
+        &self,
+        session_id: String,
+        path: PathBuf,
+    ) -> Pin<Box<dyn Future<Output = Result<(), SessionFileError>> + Send + '_>> {
+        Box::pin(SessionFiles::register(self, session_id, path))
+    }
+
+    fn owns(
+        &self,
+        session_id: String,
+        path: PathBuf,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, SessionFileError>> + Send + '_>> {
+        Box::pin(SessionFiles::owns(self, session_id, path))
+    }
+
+    fn owned_paths(
+        &self,
+        session_id: String,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PathBuf>, SessionFileError>> + Send + '_>> {
+        Box::pin(SessionFiles::owned_paths(self, session_id))
     }
 }
 

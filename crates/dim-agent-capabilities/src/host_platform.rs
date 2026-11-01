@@ -17,7 +17,7 @@ use std::{
     sync::Arc,
 };
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     process::{Child, ChildStderr, ChildStdout},
     sync::Mutex,
 };
@@ -31,17 +31,21 @@ pub use exec_shell_settings::{ExecShellSettings, ExecShellSettingsError, ShellCh
 pub const EXEC_SHELL_CONFIG_INVALID: &str = "EXEC_SHELL_CONFIG_INVALID";
 pub const EXEC_SHELL_UNAVAILABLE: &str = "EXEC_SHELL_UNAVAILABLE";
 
+#[cfg(windows)]
+const WINDOWS_SANDBOX_UNAVAILABLE: &str =
+    "The sandbox has no backend on Windows; select Off in /permissions > Process isolation";
+
 /// The declaration line for the tools that start processes; `None` where the
 /// platform has no sandbox backend. It is static because declarations are read
 /// once, while each process start reads the current switches. Only the macOS
 /// default gives each process tree a writable TMPDIR.
 pub(crate) const ISOLATION_SUMMARY: Option<&str> = if cfg!(target_os = "macos") {
     Some(
-        "Isolation: the user decides in /settings > Execution whether commands run sandboxed. When the sandbox is on, commands can write only inside the session workspace and $TMPDIR, read only there and in system directories, and have no network access unless the user also turned Network on. You cannot change the boundary; retrying or an approval does not lift it.",
+        "Isolation: the user selects Process isolation in /permissions. When sandboxed, commands can write only inside the session workspace and $TMPDIR, read only there and in system directories, and have no network access unless Network allowed is selected. You cannot change the boundary; retrying or an approval does not lift it.",
     )
 } else if cfg!(unix) {
     Some(
-        "Isolation: the user decides in /settings > Execution whether commands run sandboxed. When the sandbox is on, commands can write only inside the session workspace, read only there and in system directories, and have no network access unless the user also turned Network on. You cannot change the boundary; retrying or an approval does not lift it.",
+        "Isolation: the user selects Process isolation in /permissions. When sandboxed, commands can write only inside the session workspace, read only there and in system directories, and have no network access unless Network allowed is selected. You cannot change the boundary; retrying or an approval does not lift it.",
     )
 } else {
     None
@@ -141,6 +145,47 @@ pub enum ShellStatus {
     Unavailable { code: &'static str, reason: String },
 }
 
+/// ADR 014 D1's fixed system roots: the sandbox builder mounts them read-only
+/// and file access treats them as read-only facts. macOS names `/private/etc`
+/// and its `/etc` alias; Windows has no sandbox backend and no roots.
+const PLATFORM_ROOTS: &[&str] = {
+    if cfg!(target_os = "macos") {
+        &[
+            "/System",
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/Library/Apple",
+            "/private/etc",
+            "/etc",
+            "/var/select",
+        ]
+    } else if cfg!(unix) {
+        &["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"]
+    } else {
+        &[]
+    }
+};
+
+/// The fixed roots at their requested paths and, where the host resolves a
+/// symlink or firmlink, their canonical forms: the sandbox binds the requested
+/// destination and the facts compare a resolved path.
+fn platform_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for path in PLATFORM_ROOTS {
+        let path = PathBuf::from(path);
+        if !roots.contains(&path) {
+            roots.push(path.clone());
+        }
+        if let Ok(canonical) = std::fs::canonicalize(&path)
+            && !roots.contains(&canonical)
+        {
+            roots.push(canonical);
+        }
+    }
+    roots
+}
+
 /// Process facts and the source of the exec shell preference.
 #[derive(Clone)]
 pub struct HostPlatform {
@@ -153,6 +198,9 @@ pub struct HostPlatform {
     pub timezone: Option<String>,
     /// Environment of the service process at start; never a client's.
     pub env: Vec<(OsString, OsString)>,
+    /// The fixed system roots, captured when the platform mounts. The sandbox
+    /// and file-access facts read this one list.
+    pub platform_roots: Vec<PathBuf>,
     shell: Arc<Mutex<ResolvedShell>>,
     shell_file: Option<(Arc<FileStorage>, usize, PathBuf)>,
     pub(crate) execution: Option<Arc<dyn ExecutionSettingsSource>>,
@@ -195,6 +243,14 @@ pub struct ProcessSpecError {
     pub reason: String,
 }
 
+/// Whether a new process can be sandboxed on this host, or why it cannot. The
+/// Process isolation control shows this; preparation reads the same backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxBackend {
+    Available,
+    Unavailable { reason: &'static str },
+}
+
 /// What a consumer keeps for a process that
 /// [`HostPlatform::prepare_isolated_process`] sandboxed.
 #[cfg_attr(windows, allow(dead_code))]
@@ -227,7 +283,7 @@ impl Isolation {
         DENIALS.iter().any(|denial| lower.contains(denial)).then(
             || {
                 format!(
-                    "This command ran under the sandbox the user turned on, which may have caused the failure. It blocks network access and file access outside {reach}. Retrying or an approval does not lift it. Ask the user to change Sandbox or Network in /settings > Execution."
+                    "This command ran under the sandbox the user turned on, which may have caused the failure. It blocks network access and file access outside {reach}. Retrying or an approval does not lift it. Ask the user to change Process isolation in /permissions."
                 )
             },
         )
@@ -267,6 +323,7 @@ impl HostPlatform {
             .into(),
             timezone: iana_time_zone::get_timezone().ok(),
             env,
+            platform_roots: platform_roots(),
             shell: Arc::new(Mutex::new(ResolvedShell {
                 config: Ok(None),
                 status: shell,
@@ -303,18 +360,35 @@ impl HostPlatform {
         }
         resolved.status.clone()
     }
-    /// Starts `spec` as the root of its own process tree.
-    pub fn spawn(&self, spec: ProcessSpec) -> io::Result<ProcessTree> {
+    /// The command for `spec`: its own tree, a cleared environment and piped
+    /// stdout and stderr. `stdin` is the caller's choice.
+    fn command(spec: &ProcessSpec, stdin: Stdio) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&spec.executable);
         command
             .args(&spec.args)
             .current_dir(&spec.cwd)
             .env_clear()
             .envs(spec.env.iter().map(|(key, value)| (key, value)))
-            .stdin(Stdio::null())
+            .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        native::spawn(command)
+        command
+    }
+    /// Starts `spec` as the root of its own process tree.
+    pub fn spawn(&self, spec: ProcessSpec) -> io::Result<ProcessTree> {
+        native::spawn(Self::command(&spec, Stdio::null()))
+    }
+    /// [`Self::spawn`] with `stdin` written to the child's standard input,
+    /// which then closes. A child that exits before reading it does not fail
+    /// the start.
+    pub fn spawn_with_stdin(&self, spec: ProcessSpec, stdin: Vec<u8>) -> io::Result<ProcessTree> {
+        let mut tree = native::spawn(Self::command(&spec, Stdio::piped()))?;
+        if let Some(mut pipe) = tree.child.stdin.take() {
+            tokio::spawn(async move {
+                let _ = pipe.write_all(&stdin).await;
+            });
+        }
+        Ok(tree)
     }
 
     /// The execution switches as they stand before this process starts. A host
@@ -337,6 +411,34 @@ impl HostPlatform {
             })
     }
 
+    /// The sandbox backend a new process would use. Preparation reads the same
+    /// backend, so this report and the next process start cannot disagree.
+    #[cfg(windows)]
+    pub fn sandbox_backend(&self) -> SandboxBackend {
+        SandboxBackend::Unavailable {
+            reason: WINDOWS_SANDBOX_UNAVAILABLE,
+        }
+    }
+
+    /// The sandbox backend a new process would use. macOS always has
+    /// `sandbox-exec`.
+    #[cfg(target_os = "macos")]
+    pub fn sandbox_backend(&self) -> SandboxBackend {
+        SandboxBackend::Available
+    }
+
+    /// The sandbox backend a new process would use: the same bubblewrap
+    /// preparation resolves from the captured `PATH`.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    pub fn sandbox_backend(&self) -> SandboxBackend {
+        match isolation::bubblewrap(&self.env) {
+            Some(_) => SandboxBackend::Available,
+            None => SandboxBackend::Unavailable {
+                reason: isolation::BWRAP_UNAVAILABLE,
+            },
+        }
+    }
+
     #[cfg(windows)]
     pub(crate) async fn prepare_isolated_process(
         &self,
@@ -350,9 +452,7 @@ impl HostPlatform {
         }
         Err(ProcessSpecError {
             code: "isolation_unavailable",
-            reason:
-                "The sandbox has no backend on Windows; turn Sandbox off in /settings > Execution"
-                    .into(),
+            reason: WINDOWS_SANDBOX_UNAVAILABLE.into(),
         })
     }
 }
@@ -1977,6 +2077,36 @@ impl HostPlatform {
             reaped: false,
             temporary: None,
         })
+    }
+
+    /// The directory the persistent shell owns: `<home>/.dim/exec`.
+    pub fn exec_root(&self) -> PathBuf {
+        let root = self.home.join(".dim").join("exec");
+        std::fs::canonicalize(&root).unwrap_or(root)
+    }
+
+    /// Removes `path`, one persistent shell output directory below
+    /// [`exec_root`](Self::exec_root), and syncs its parent. An absent
+    /// directory counts as removed. The caller has decided with the
+    /// ownership rows that no Session still needs it (ADR 013 D4).
+    pub fn remove_exec_directory(&self, path: &Path) -> io::Result<()> {
+        let root = self.exec_root();
+        if path == root || !path.starts_with(&root) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a persistent shell output directory",
+            ));
+        }
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        #[cfg(unix)]
+        if let Some(parent) = path.parent() {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
+        Ok(())
     }
 }
 

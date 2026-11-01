@@ -251,7 +251,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Nothing is running" => "Tak ada yang berjalan",
         "No queued message" => "Antrean kosong",
         "Only in fullscreen (/tui)" => "Hanya di layar penuh (/tui)",
-        "/{name} is not yet available" => "/{name} belum tersedia",
         "new session" => "sesi baru",
         "resumed {id} · {count} messages" => "lanjut {id} · {count} pesan",
         " · earlier history: /timeline" => " · riwayat lama: /timeline",
@@ -264,9 +263,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "answer required" => "perlu jawaban",
         "permission required" => "perlu izin",
         "esc interrupt" => "esc interupsi",
-        "↑ edit · ctrl+s steer now · /queue" => "↑ edit · ctrl+s steer kini · /queue",
-        "+{count} more · ↑ edit · ctrl+s steer now · /queue" => {
-            "+{count} lagi · ↑ edit · ctrl+s steer kini · /queue"
+        "↑ edit · ctrl+s steer now" => "↑ edit · ctrl+s steer kini",
+        "+{count} more · ↑ edit · ctrl+s steer now" => {
+            "+{count} lagi · ↑ edit · ctrl+s steer kini"
         }
         "Queue ({count})" => "Antrean ({count})",
         "Thinking…" => "Berpikir…",
@@ -364,8 +363,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Tool approvals" => "Persetujuan tool",
         "Execution" => "Eksekusi",
         "Models" => "Model",
-        "Model" => "Model",
-        "not set" => "belum diatur",
         "Settings" => "Pengaturan",
         "↑↓ move · Enter select · ←→/Space change · Esc close" => {
             "↑↓ pindah · Enter pilih · ←→/Space ubah · Esc tutup"

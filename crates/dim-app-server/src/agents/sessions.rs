@@ -299,7 +299,22 @@ fn settlement(error: AgentError) -> SessionsError {
 /// The launch cap (sessions service §6.1): the lower preset, the union of the
 /// disallowed tools, and only the allowed tools both sides allow
 /// unconditionally. It is never wider than either side.
-fn cap(requested: &PermissionPolicy, bound: &PermissionPolicy) -> PermissionPolicy {
+fn cap(
+    requested: &PermissionPolicy,
+    bound: &PermissionPolicy,
+) -> Result<PermissionPolicy, SessionsError> {
+    let legacy_read_only = [requested, bound].iter().any(|policy| {
+        policy.tool_approval.is_none() && policy.preset == PermissionPreset::ReadOnly
+    });
+    if legacy_read_only
+        && [requested, bound]
+            .iter()
+            .any(|policy| policy.tool_approval == Some(dim_agent_types::ToolApproval::Ask))
+    {
+        return Err(SessionsError::rejected(
+            "Explicit Ask tool approval cannot be capped by a legacy read-only policy; select explicit tool approval on the legacy policy first",
+        ));
+    }
     fn rank(preset: PermissionPreset) -> u8 {
         match preset {
             PermissionPreset::ReadOnly => 0,
@@ -308,7 +323,8 @@ fn cap(requested: &PermissionPolicy, bound: &PermissionPolicy) -> PermissionPoli
         }
     }
     fn allows(policy: &PermissionPolicy, tool: &String) -> bool {
-        policy.preset == PermissionPreset::FullAccess || policy.allowed_tools.contains(tool)
+        policy.tool_approval() == dim_agent_types::ToolApproval::Bypass
+            || policy.allowed_tools.contains(tool)
     }
     let mut disallowed_tools = Vec::new();
     for tool in requested
@@ -330,11 +346,28 @@ fn cap(requested: &PermissionPolicy, bound: &PermissionPolicy) -> PermissionPoli
             allowed_tools.push(tool.clone());
         }
     }
-    PermissionPolicy {
+    Ok(PermissionPolicy {
         preset: std::cmp::min_by_key(requested.preset, bound.preset, |preset| rank(*preset)),
+        file_access: (requested.file_access.is_some() || bound.file_access.is_some())
+            .then(|| requested.file_access().min(bound.file_access())),
+        tool_approval: if legacy_read_only {
+            None
+        } else if requested.tool_approval.is_some() || bound.tool_approval.is_some() {
+            Some(
+                if requested.tool_approval() == dim_agent_types::ToolApproval::Bypass
+                    && bound.tool_approval() == dim_agent_types::ToolApproval::Bypass
+                {
+                    dim_agent_types::ToolApproval::Bypass
+                } else {
+                    dim_agent_types::ToolApproval::Ask
+                },
+            )
+        } else {
+            None
+        },
         allowed_tools,
         disallowed_tools,
-    }
+    })
 }
 
 impl AgentIndex {
@@ -397,7 +430,7 @@ impl AgentIndex {
                     None if request.starter.is_some() => bound.clone(),
                     None => PermissionPolicy::default(),
                 };
-                let policy = cap(&requested, &bound);
+                let policy = cap(&requested, &bound)?;
                 let mut config = super::session_config(&host.profile, &self.session_defaults);
                 config.cwd = cwd;
                 config.permission_policy = policy.clone();

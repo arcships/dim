@@ -977,7 +977,7 @@ fn tui_commands_run_over_a_pending_question() {
 
         terminal.write(b"\x0f");
         terminal.write(b"permissions\r");
-        terminal.until("Tool Approvals");
+        terminal.until("Process isolation");
         terminal.write(&[0x1b]);
         terminal.until("production");
         terminal.write(b"\r");

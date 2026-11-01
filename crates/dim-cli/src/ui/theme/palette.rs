@@ -1,5 +1,5 @@
-//! Colour roles and the default theme. Every role is a colour spec (see
-//! [`super::ansi`]). The default is the terminal's own foreground,
+//! Colour roles and the System theme. Every role is a colour spec (see
+//! [`super::ansi`]). System uses the terminal's own foreground,
 //! slots of its palette and the faint attribute, so it follows whatever
 //! colour scheme the terminal has, on dark and light backgrounds alike.
 

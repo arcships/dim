@@ -647,7 +647,7 @@ async fn foreground_echo_returns_output() {
         })
         .unwrap();
     assert!(
-        declared.contains("Isolation: the user decides")
+        declared.contains("Process isolation in /permissions")
             && !declared.contains("host-isolation.json"),
         "{declared}"
     );

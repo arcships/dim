@@ -566,12 +566,25 @@ struct Walk {
     position: usize,
     loaded: Vec<(String, Arc<Message>)>,
 }
+/// Whether a read rebuilds the request bodies it returns: the `request` of
+/// `context/prepare` and `model/call` records.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum RequestBodies {
+    /// Rebuild every request from its references (§7 of the request storage
+    /// design).
+    Rebuild,
+    /// Leave every request as its record holds it: no messages and, where
+    /// the record has them, no `tools` or `system`. For readers that discard
+    /// these records or use only their other fields (§7.5).
+    Unused,
+}
 /// The decoding state of one read call or validation pass, carried across
-/// its connection holds: the content cache, the last event request rebuilt
-/// from a list with its node addresses (§7.1 of the request storage
-/// design), and, when a hold ran out of node loads, the record being
-/// decoded and its interrupted walk.
+/// its connection holds: what it does with request bodies, the content cache, the
+/// last event request rebuilt from a list with its node addresses (§7.1 of
+/// the request storage design), and, when a hold ran out of node loads, the
+/// record being decoded and its interrupted walk.
 pub(super) struct Reader {
+    request_bodies: RequestBodies,
     cache: ContentCache,
     kept: Vec<Arc<Message>>,
     kept_nodes: Vec<String>,
@@ -590,7 +603,15 @@ impl Default for Reader {
 }
 impl Reader {
     pub(super) fn new(budget: usize) -> Self {
+        Self::with_request_bodies(budget, RequestBodies::Rebuild)
+    }
+    /// A reader that does not rebuild the requests it returns.
+    pub(super) fn without_request_bodies(budget: usize) -> Self {
+        Self::with_request_bodies(budget, RequestBodies::Unused)
+    }
+    fn with_request_bodies(budget: usize, request_bodies: RequestBodies) -> Self {
         Self {
+            request_bodies,
             cache: ContentCache::new(budget),
             kept: vec![],
             kept_nodes: vec![],
@@ -831,13 +852,22 @@ impl Reader {
     /// Decodes `wire`, or hands it back when a list walk ran out of this
     /// hold's node loads: the next call with the same record continues
     /// where it stopped. The event request is rebuilt first and becomes
-    /// the kept request; each draft is rebuilt against it.
+    /// the kept request; each draft is rebuilt against it. A reader that
+    /// does not rebuild requests loads no content and leaves each request
+    /// as its record holds it.
     pub(super) fn decode(
         &mut self,
         connection: &Connection,
         session: &str,
         wire: WireEvent,
     ) -> Result<std::result::Result<StoredEvent, WireEvent>> {
+        if self.request_bodies == RequestBodies::Unused {
+            let requests: Vec<_> = wire
+                .lists()
+                .map(|refs| refs.map_or(Request::None, |_| Request::Unused))
+                .collect();
+            return Ok(Ok(finish(wire, requests.into_iter())?));
+        }
         loop {
             let index = self.rebuilt.len();
             let Some(refs) = wire.lists().nth(index) else {
@@ -852,50 +882,67 @@ impl Reader {
             };
             self.rebuilt.push(rebuilt);
         }
-        let mut rebuilt = std::mem::take(&mut self.rebuilt).into_iter();
-        let mut event: AgentEvent = serde_json::from_value(wire.event).map_err(error)?;
-        restore(&mut event.kind, rebuilt.next().flatten())?;
-        let mut draft = |wire: WireDraft| {
-            let mut draft: EventDraft = serde_json::from_value(wire.event).map_err(error)?;
-            restore(&mut draft.kind, rebuilt.next().flatten())?;
-            Ok::<_, dim_agent_runtime::AgentError>(draft)
-        };
-        let trace = wire
-            .trace
-            .map(|trace| {
-                Ok::<_, dim_agent_runtime::AgentError>(TimelineTrace {
-                    event_id: trace.event_id,
-                    original: draft(trace.original)?,
-                    steps: trace
-                        .steps
-                        .into_iter()
-                        .map(|step| {
-                            Ok(TraceStep {
-                                handler: step.handler,
-                                result: step.result.map(&mut draft).transpose()?,
-                            })
-                        })
-                        .collect::<Result<_>>()?,
-                })
-            })
-            .transpose()?;
-        Ok(Ok(StoredEvent {
-            event: Arc::new(event),
-            trace,
-            batch_end: wire.batch_end,
-        }))
+        let requests = std::mem::take(&mut self.rebuilt)
+            .into_iter()
+            .map(|rebuilt| rebuilt.map_or(Request::None, Request::Rebuilt));
+        Ok(Ok(finish(wire, requests)?))
     }
 }
-fn restore(kind: &mut EventKind, rebuilt: Option<Rebuilt>) -> Result<()> {
-    match (request_mut(kind), rebuilt) {
-        (Some(target), Some(rebuilt)) => {
+/// What a read made of one stored request.
+enum Request {
+    /// Rebuilt from its references.
+    Rebuilt(Rebuilt),
+    /// Present in the record, not rebuilt because the read does not use
+    /// request bodies.
+    Unused,
+    /// The record or draft is not a request.
+    None,
+}
+/// The record of `wire` with each request settled in order: the event's,
+/// then each draft's of its trace.
+fn finish(wire: WireEvent, mut requests: impl Iterator<Item = Request>) -> Result<StoredEvent> {
+    let mut event: AgentEvent = serde_json::from_value(wire.event).map_err(error)?;
+    settle(&mut event.kind, requests.next())?;
+    let mut draft = |wire: WireDraft| {
+        let mut draft: EventDraft = serde_json::from_value(wire.event).map_err(error)?;
+        settle(&mut draft.kind, requests.next())?;
+        Ok::<_, dim_agent_runtime::AgentError>(draft)
+    };
+    let trace = wire
+        .trace
+        .map(|trace| {
+            Ok::<_, dim_agent_runtime::AgentError>(TimelineTrace {
+                event_id: trace.event_id,
+                original: draft(trace.original)?,
+                steps: trace
+                    .steps
+                    .into_iter()
+                    .map(|step| {
+                        Ok(TraceStep {
+                            handler: step.handler,
+                            result: step.result.map(&mut draft).transpose()?,
+                        })
+                    })
+                    .collect::<Result<_>>()?,
+            })
+        })
+        .transpose()?;
+    Ok(StoredEvent {
+        event: Arc::new(event),
+        trace,
+        batch_end: wire.batch_end,
+    })
+}
+fn settle(kind: &mut EventKind, request: Option<Request>) -> Result<()> {
+    match (request_mut(kind), request) {
+        (Some(target), Some(Request::Rebuilt(rebuilt))) => {
             let target = Arc::make_mut(target);
             target.messages = rebuilt.messages;
             target.tools = rebuilt.tools;
             target.system = rebuilt.system;
             Ok(())
         }
-        (None, None) => Ok(()),
+        (Some(_), Some(Request::Unused)) | (None, Some(Request::None)) => Ok(()),
         _ => Err(error("event request references do not match event kind")),
     }
 }

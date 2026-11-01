@@ -1,5 +1,5 @@
-//! Colour roles of the terminal interface: the default theme (following the terminal's own colours), the named themes with contrast
-//! floors against the real background, detection.
+//! Colour roles of the terminal interface, named themes with contrast floors
+//! against the real background, and default theme detection.
 
 pub mod ansi;
 pub mod contrast;
@@ -27,7 +27,7 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// The `system` theme: the default, in the terminal's own colours.
+    /// The `system` theme, in the terminal's own colours.
     /// A dark terminal needs no contrast floors: its scheme already pairs
     /// its palette with its background. A light terminal's hex ramp is held
     /// to the floors against the reported background (an off-white when the
@@ -113,12 +113,28 @@ impl Theme {
         }
     }
 
-    /// Detects mode and appearance from the environment (and an OSC 11
-    /// report, when the terminal answered one).
-    pub fn detect(env: &detect::Env, is_tty: bool, osc11: Option<&str>) -> Self {
+    /// Detects the default theme id and palette from terminal capabilities
+    /// and background. Apple Terminal without a background signal uses System.
+    pub fn detect(env: &detect::Env, is_tty: bool, osc11: Option<&str>) -> (&'static str, Self) {
         let mode = detect::color_mode(env, is_tty);
         let (appearance, background) = detect::resolve_appearance(env, osc11);
-        Self::system(mode, appearance, background.as_deref())
+        let apple_terminal = env
+            .get("TERM_PROGRAM")
+            .is_some_and(|v| v == "Apple_Terminal")
+            || env.get("TERM").is_some_and(|v| v.starts_with("nsterm"));
+        let unknown_apple_background = apple_terminal
+            && background.is_none()
+            && detect::appearance_from_override(env).is_none()
+            && detect::appearance_from_colorfgbg(env).is_none();
+        let id = if matches!(mode, ColorMode::TrueColor | ColorMode::Ansi256)
+            && appearance == Appearance::Dark
+            && !unknown_apple_background
+        {
+            "dim-dark"
+        } else {
+            "system"
+        };
+        (id, Self::named(id, mode, appearance, background.as_deref()))
     }
 }
 
@@ -188,7 +204,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_default_theme_is_the_terminals_own_colours() {
+    fn the_system_theme_is_the_terminals_own_colours() {
         for mode in [ColorMode::TrueColor, ColorMode::Ansi256, ColorMode::Ansi16] {
             let theme = Theme::system(mode, Appearance::Dark, None);
             assert_eq!(theme.palette.accent, "ansi:3");

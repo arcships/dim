@@ -355,8 +355,7 @@ fn builder(probe: &Arc<Probe>) -> AgentBuilder {
 
 /// [`builder`] with the branch texts at a candidate's factory configuration
 /// ([timeline branches §12.4](../../../docs/design/timeline-branches.md#124-texts-and-their-classes)):
-/// #636 evaluates the roster's closing sentence, which BranchLine reads from
-/// its member.
+/// BranchLine reads the roster's closing sentence from its member.
 fn builder_with_branch_config(probe: &Arc<Probe>, config: BranchToolConfig) -> AgentBuilder {
     builder_with(probe, move |builder| {
         defaults::install_with_branch_config(builder, config)
@@ -2942,9 +2941,10 @@ async fn main_lists_its_open_tool_lines_under_one_key() {
     assert!(
         text.contains(
             "\nThey message you when they find something, need you, or end. Use the branch \
-             tool to message or read them, and wait to wait for them.\n"
+             tool to message or read them, and the `wait` tool to wait for them; end the wait \
+             when your lines have nothing left to tell you.\n"
         ),
-        "the built-in closing sentence is unchanged: {text}"
+        "the roster carries the built-in closing sentence: {text}"
     );
     let history = session.history(&first, None).await.unwrap();
     let (identity, retired) = line_block(&history).unwrap();
@@ -2965,7 +2965,7 @@ async fn main_lists_its_open_tool_lines_under_one_key() {
     soon(agent.close()).await.unwrap();
 }
 
-/// #636: the roster's closing sentence is the factory member
+/// The roster's closing sentence is the factory member
 /// `BranchToolConfig::roster_closing`, and a configured value reaches the
 /// roster byte for byte in place of the built-in sentence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -229,6 +229,10 @@
   },
   {
     "from": "dimcode",
+    "to": "dim-agent-runtime"
+  },
+  {
+    "from": "dimcode",
     "to": "dim-agent-types"
   },
   {

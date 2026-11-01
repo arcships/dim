@@ -7,6 +7,7 @@ mod composer;
 mod configure;
 mod display;
 mod export;
+mod hooks_command;
 mod images;
 mod input;
 mod leaf;
@@ -181,8 +182,8 @@ async fn open_tui_leaf(root: &rutis::Ctx, options: &Options) -> Result<i32> {
             }
             target = Some((provider.clone(), model.clone()));
         }
-        if let Some(preset) = options.permission {
-            params["permissionPolicy"] = serde_json::json!({ "preset": preset });
+        if let Some(policy) = permission::creation_policy(options) {
+            params["permissionPolicy"] = policy;
         }
         let created: Created = match client.typed("session.create", params).await {
             Ok(created) => created,
@@ -576,7 +577,7 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
             .ok_or("App Server did not start")?;
         let (provider, device) = dim_acp::auth::terminal_method(&mut client, method).await?;
         options.device = device;
-        return login::login(&mut client, &options, &provider).await;
+        return login::login(&mut client, &options, Some(&provider)).await;
     }
     if let Action::Acp { agent_id, .. } = &options.action {
         return run_acp(root, &options, agent_id.clone()).await;
@@ -589,6 +590,10 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
         if options.permission.is_none() {
             options.permission = ui::config::saved_permission(&options.home)
                 .and_then(|preset| permission::parse_preset(&preset).ok());
+            options.file_access = ui::config::read(&options.home, "fileAccess")
+                .and_then(|value| serde_json::from_value(value).ok());
+            options.tool_approval = ui::config::read(&options.home, "toolApproval")
+                .and_then(|value| serde_json::from_value(value).ok());
         }
         return open_tui_leaf(root, &options).await;
     }
@@ -644,37 +649,9 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
             export::write(&mut client, session_id, *format, output.as_deref()).await?;
             Ok(0)
         }
-        Action::Login(provider) => login::login(&mut client, &options, provider).await,
-        Action::Account(provider) => {
-            #[derive(serde::Deserialize)]
-            struct Snapshot {
-                account: Option<Identity>,
-            }
-            #[derive(serde::Deserialize)]
-            struct Identity {
-                issuer: String,
-                subject: String,
-            }
-            let snapshot: Snapshot = client
-                .typed("account.status", serde_json::json!({"providerId":provider}))
-                .await?;
-            match snapshot.account {
-                Some(account) => println!(
-                    "Signed in: {} ({})",
-                    crate::sanitize::safe(&account.subject),
-                    crate::sanitize::safe(&account.issuer)
-                ),
-                None => println!("Signed out."),
-            }
-            Ok(0)
-        }
-        Action::Logout(provider) => {
-            client
-                .rpc("account.logout", serde_json::json!({"providerId":provider}))
-                .await?;
-            println!("Signed out.");
-            Ok(0)
-        }
+        Action::Login(provider) => login::login(&mut client, &options, provider.as_deref()).await,
+        Action::Account(provider) => login::account(&mut client, provider).await,
+        Action::Logout(provider) => login::logout(&mut client, provider).await,
         Action::Models(provider) => {
             crate::ui::i18n::set(
                 crate::ui::i18n::saved_locale(&options.home)
@@ -831,6 +808,14 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
             let (rows, notes) =
                 mcp_command::set_enabled(&mut client, &options, id, *enabled).await?;
             mcp_command::print_report(rows, notes);
+            Ok(0)
+        }
+        Action::HooksList => {
+            hooks_command::list(&mut client, &options).await?;
+            Ok(0)
+        }
+        Action::HooksEnable { enabled } => {
+            hooks_command::set_enabled(&mut client, &options, *enabled).await?;
             Ok(0)
         }
         Action::Recording { enabled } => recording::run(&mut client, &options, *enabled).await,

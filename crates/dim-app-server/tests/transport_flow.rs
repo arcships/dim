@@ -42,6 +42,9 @@ mod branch_end;
 #[path = "transport_flow/tree.rs"]
 mod tree;
 
+#[path = "transport_flow/history_window.rs"]
+mod history_window;
+
 #[path = "transport_flow/reload.rs"]
 mod reload;
 
@@ -77,6 +80,9 @@ mod management;
 #[path = "transport_flow/permission_rules.rs"]
 mod permission_rules;
 
+#[path = "transport_flow/session_grants.rs"]
+mod session_grants;
+
 #[path = "transport_flow/exec_shell_settings.rs"]
 mod exec_shell_settings;
 
@@ -85,6 +91,9 @@ mod execution_settings;
 
 #[path = "transport_flow/session_methods.rs"]
 mod session_methods;
+
+#[path = "transport_flow/submit_checks.rs"]
+mod submit_checks;
 
 #[path = "transport_flow/session_ids.rs"]
 mod session_ids;

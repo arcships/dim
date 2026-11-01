@@ -62,7 +62,7 @@ impl Command {
 
     /// Whether the menu offers this command in the current context.
     pub fn listed(&self, context: Context) -> bool {
-        if !self.slash || self.name == "approval" {
+        if !self.slash {
             return false;
         }
         if self.name == "fast" {
@@ -286,17 +286,10 @@ pub const COMMANDS: &[Command] = &[
         Needs::Nothing,
     ),
     slash(
-        "approval",
+        "permissions",
         "model",
-        "choose ask or full access",
-        &[],
-        Needs::Nothing,
-    ),
-    slash(
-        "approvals",
-        "model",
-        "set the session's permission preset",
-        &["permissions"],
+        "configure file access, tool approval and process isolation",
+        &["approvals", "approval"],
         Needs::Nothing,
     ),
     slash("settings", "app", "open settings", &[], Needs::Nothing),

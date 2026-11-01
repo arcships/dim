@@ -13,7 +13,7 @@
 use crate::workspace_tools::background::{wake_input, wakes};
 use crate::{
     exec_stop::{ExecStop, TaskError},
-    host::HostError,
+    host::{HostError, SessionFilesHost},
     host_platform::{
         HostPlatform, PtyProcessTree, PtySize, ShellEdition, ShellStatus, kill_job, stop_job,
     },
@@ -159,6 +159,10 @@ pub struct ShellSession {
     timeline: Arc<Timeline>,
     #[allow(dead_code)]
     dispatcher: Arc<Dispatcher>,
+    /// SessionStore's output ownership (ADR 013); absent in hosts without
+    /// native storage, where shell output has no owner.
+    owner: Option<Arc<SessionFilesHost>>,
+    session_id: String,
     tasks: Arc<tokio::sync::Mutex<TaskTracker>>,
 }
 
@@ -168,6 +172,8 @@ impl ShellSession {
         host: Arc<HostPlatform>,
         timeline: Arc<Timeline>,
         dispatcher: Arc<Dispatcher>,
+        owner: Option<Arc<SessionFilesHost>>,
+        session_id: String,
     ) -> Self {
         Self {
             inner: tokio::sync::Mutex::new(Inner {
@@ -190,6 +196,8 @@ impl ShellSession {
             host,
             timeline,
             dispatcher,
+            owner,
+            session_id,
             tasks: Arc::new(tokio::sync::Mutex::new(TaskTracker::new())),
         }
     }
@@ -860,6 +868,26 @@ impl ShellSession {
         }
     }
 
+    /// ADR 013 D2: a task log the model is given is registered before the
+    /// result leaves this part. The shell owns only paths under its own
+    /// output directory; a registration failure fails the call.
+    async fn register_output(&self, path: &Path) -> Result<(), String> {
+        let Some(owner) = &self.owner else {
+            return Ok(());
+        };
+        if !path.starts_with(&self.config.output_dir) {
+            return Err(format!(
+                "Shell output path {} is outside the branch's output directory",
+                path.display()
+            ));
+        }
+        owner
+            .0
+            .register(self.session_id.clone(), path.to_path_buf())
+            .await
+            .map_err(|failure| failure.to_string())
+    }
+
     /// Registers the running command as the occupying task and reports it.
     async fn occupy_current(
         self: &Arc<Self>,
@@ -870,6 +898,7 @@ impl ShellSession {
     ) -> Result<ToolResult, String> {
         let task_id = format!("exec-{}", uuid::Uuid::new_v4().simple());
         let output_path = self.config.output_dir.join(format!("{task_id}.log"));
+        self.register_output(&output_path).await?;
         let description = describe(command);
         let task = OccupyingTask {
             task_id: task_id.clone(),
@@ -942,6 +971,7 @@ impl ShellSession {
     ) -> Result<ToolResult, String> {
         let task_id = format!("exec-{}", uuid::Uuid::new_v4().simple());
         let output_path = self.config.output_dir.join(format!("{task_id}.log"));
+        self.register_output(&output_path).await?;
         let completion = marker_pair().1;
         let pid_marker = marker_pair().1;
         let description = describe(command);
@@ -1333,6 +1363,7 @@ impl DynPlugin for ShellSessionPlugin {
             let host = ctx.require_at(&self.host)?;
             let config = ctx.require_at(&self.session_config)?;
             let identity = ctx.require_at(&self.identity)?;
+            let owner = ctx.get::<SessionFilesHost>();
             let session = Arc::new(ShellSession::new(
                 self.config.clone().unwrap_or_else(|| ShellSessionConfig {
                     cwd: PathBuf::from(&config.cwd),
@@ -1347,6 +1378,8 @@ impl DynPlugin for ShellSessionPlugin {
                 host,
                 timeline,
                 dispatcher,
+                owner,
+                identity.session_id.clone(),
             ));
             let service = session.clone();
             ctx.effect(move || async move {

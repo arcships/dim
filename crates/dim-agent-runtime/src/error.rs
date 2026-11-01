@@ -100,6 +100,26 @@ impl AgentError {
     pub fn with_cleanup(self, cleanup: Self) -> Self {
         Self::aggregate(vec![self, cleanup]).expect_err("construction and cleanup failed")
     }
+    /// Drops the causes a close answers itself, a cancelled or closed scope,
+    /// and keeps what failed besides them: a build the close interrupted
+    /// reports its cleanup failures.
+    pub(crate) fn without_cancellation(self) -> Option<Self> {
+        match self {
+            Self::Cancelled(_) | Self::Closed(_) => None,
+            Self::Multiple(errors) => {
+                let mut rest: Vec<_> = errors
+                    .into_iter()
+                    .filter_map(Self::without_cancellation)
+                    .collect();
+                match rest.len() {
+                    0 => None,
+                    1 => rest.pop(),
+                    _ => Some(Self::Multiple(rest)),
+                }
+            }
+            error => Some(error),
+        }
+    }
 }
 
 /// Renders a caught panic payload into a diagnostic message.

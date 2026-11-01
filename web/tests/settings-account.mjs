@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs"
 import { registerHooks, stripTypeScriptTypes } from "node:module"
 import test from "node:test"
 import { compileScript, parse } from "vue/compiler-sfc"
-import { createRenderer, nextTick } from "vue"
+import { createRenderer, nextTick, reactive } from "vue"
 
 registerHooks({
   resolve(specifier, context, next) {
@@ -81,5 +81,51 @@ test("an uncertain reset reuses its key after a usage refresh, even when no cred
     assert.deepEqual(requests[1], requests[0])
     assert.equal(resetButtons()[0].props.disabled, true)
     assert.equal(resetButtons()[1].props.disabled, false)
+  } finally { app.unmount(); delete globalThis.settingsConnection }
+})
+
+test("account refresh retains usage on failure and reconnect never exposes the previous identity's usage", async () => {
+  let subject = "first"
+  let holdUsage = false
+  let resolveUsage, rejectUsage
+  globalThis.settingsConnection = reactive({ phase: "connected", client: { call: async (method, params, read) => {
+    if (method === "provider.management") return read({ drivers: [], errors: [], providers: [{
+      providerId: "dimcode-api-oauth", displayName: "Dim", source: "managed", credentialAuthority: "account", version: null, enabled: true, actions: [], connection: null, models: null, preferences: {},
+      account: { namespace: "account", loginMethods: ["browser"], state: { account: { issuer: "https://example.test", subject } } },
+    }] })
+    if (method === "account.usage") {
+      if (holdUsage) return new Promise((resolve, reject) => { resolveUsage = (value) => resolve(read(value)); rejectUsage = reject })
+      return read({ plan: { name: "First account plan" }, windows: [], features: [] })
+    }
+    assert.equal(method, "account.referral")
+    return read({ enabled: false, eligible: false, invitedCount: 0, paidCount: 0, inviterRebateBp: 0, inviteeRebateBp: 0 })
+  } } })
+  const root = node("root")
+  const app = renderer.createApp(AccountSettings)
+  app.mount(root)
+  try {
+    await flush()
+    const refresh = () => all(root).find((element) => element.type === "button" && element.props["aria-label"] === "refresh").props.onClick()
+    assert.match(text(root), /First account plan/)
+    holdUsage = true
+    const refreshing = refresh()
+    await flush()
+    assert.match(text(root), /First account plan/)
+    rejectUsage(new Error("Usage temporarily unavailable"))
+    await refreshing; await flush()
+    assert.match(text(root), /Usage temporarily unavailable/)
+    assert.match(text(root), /First account plan/)
+    globalThis.settingsConnection.phase = "reconnecting"
+    await flush()
+    assert.equal(all(root).find((element) => element.type === "button" && element.props["aria-label"] === "refresh").props.disabled, true)
+    assert.match(text(root), /First account plan/)
+    subject = "second"
+    globalThis.settingsConnection.phase = "connected"
+    await flush()
+    assert.doesNotMatch(text(root), /First account plan/)
+    resolveUsage({ plan: { name: "Second account plan" }, windows: [], features: [] })
+    await flush()
+    assert.match(text(root), /Second account plan/)
+    assert.doesNotMatch(text(root), /First account plan/)
   } finally { app.unmount(); delete globalThis.settingsConnection }
 })

@@ -82,7 +82,7 @@ An ACP prompt becomes one Queue `session.submit` with a unique submission id. Th
 
 Cancellation respects the handover from InputQueue to Loop: try the existing withdrawal entry while held, then use `session.stop`. The gateway cannot guarantee a stop targets one expected turn, or that an adopted but unconsumed input was deleted; these are limitations of the existing native contracts. [Plan §5](../acp-gateway-implementation.md#5-prompt回放和响应关联) and [§6.4](../acp-gateway-implementation.md#64-取消的交接边界) define response ordering and the races.
 
-The gateway's own cancel must end the prompt with ACP `cancelled` even if cancellation exposes an underlying error. A Hooks `input_blocked` rejection, if supplied by a future native implementation, is a message plus `refusal`; Hooks is not implemented by this gateway.
+The gateway's own cancel must end the prompt with ACP `cancelled` even if cancellation exposes an underlying error. A Hooks `input_blocked` rejection from `session.submit` is shown as the message and ends with `refusal`; Hooks is not implemented by this gateway.
 
 ### 4.3 Approvals and questions
 

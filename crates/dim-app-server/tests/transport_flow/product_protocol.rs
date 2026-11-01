@@ -158,6 +158,10 @@ async fn mcp_editor_preserves_redacts_and_removes_credentials_with_source_cas() 
             .rpc("mcp.configuration", json!({"source":"user","id":id}))
             .await;
         assert_ok(&view);
+        assert_eq!(
+            view["result"]["revision"], before["result"]["userRevision"],
+            "the edit read carries the source revision the catalog reports"
+        );
         let inspection = client
             .rpc("mcp.inspect", json!({"source":"user","id":id}))
             .await;
@@ -211,8 +215,8 @@ async fn mcp_editor_preserves_redacts_and_removes_credentials_with_source_cas() 
         assert_eq!(stored["extension"], "preserved");
         if id == "command" {
             assert_eq!(stored["args"], configuration["args"]);
-            assert_eq!(view["result"]["argsCount"], 1);
-            assert!(view["result"].get("args").is_none());
+            assert_eq!(view["result"]["configuration"]["argsCount"], 1);
+            assert!(view["result"]["configuration"].get("args").is_none());
         }
         if id == "remote" {
             assert_eq!(stored["auth"], configuration["auth"]);
@@ -220,15 +224,18 @@ async fn mcp_editor_preserves_redacts_and_removes_credentials_with_source_cas() 
                 stored["url"], configuration["url"],
                 "an omitted URL must preserve hidden credentials"
             );
-            assert_eq!(view["result"]["endpoint"], "https://example.invalid");
-            assert!(view["result"].get("url").is_none());
+            assert_eq!(
+                view["result"]["configuration"]["endpoint"],
+                "https://example.invalid"
+            );
+            assert!(view["result"]["configuration"].get("url").is_none());
             let current = client.rpc("mcp.catalog", json!({})).await;
             assert_ok(&client.rpc("mcp.update", json!({"source":"user","id":id,"expectedVersion":current["result"]["userRevision"],"patch":{"bearer":{"action":"set","token":"replacement-bearer-fixture"}}})).await);
             let view = client
                 .rpc("mcp.configuration", json!({"source":"user","id":id}))
                 .await;
             assert_ok(&view);
-            assert_eq!(view["result"]["authConfigured"], true);
+            assert_eq!(view["result"]["configuration"]["authConfigured"], true);
             assert!(!view.to_string().contains("replacement-bearer-fixture"));
             let document: String = db
                 .query_row(
@@ -257,16 +264,16 @@ async fn mcp_editor_preserves_redacts_and_removes_credentials_with_source_cas() 
             .await;
         assert_ok(&view);
         let names = if id == "command" {
-            &view["result"]["envNames"]
+            &view["result"]["configuration"]["envNames"]
         } else {
-            &view["result"]["headerNames"]
+            &view["result"]["configuration"]["headerNames"]
         };
         assert_eq!(names, &json!([]));
         if id == "command" {
-            assert_eq!(view["result"]["argsCount"], 0);
+            assert_eq!(view["result"]["configuration"]["argsCount"], 0);
         }
         if id == "remote" {
-            assert_eq!(view["result"]["authConfigured"], false);
+            assert_eq!(view["result"]["configuration"]["authConfigured"], false);
             let document: String = db
                 .query_row(
                     "SELECT document FROM settings_documents WHERE source='user/mcp'",
@@ -278,6 +285,127 @@ async fn mcp_editor_preserves_redacts_and_removes_credentials_with_source_cas() 
             assert!(document["mcpServers"][id].get("auth").is_none());
         }
     }
+    let current = client.rpc("mcp.catalog", json!({})).await;
+    let refused = client
+        .rpc(
+            "mcp.update",
+            json!({"source":"plugin","id":"kit:docs","expectedVersion":current["result"]["userRevision"],"patch":{"command":"other"}}),
+        )
+        .await;
+    assert_eq!(refused["error"]["data"]["appError"], "invalid_params");
+    assert_eq!(
+        refused["error"]["message"],
+        "plugin MCP entries change through their plugin"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_entry_edits_keep_the_declared_configuration() {
+    let home = std::path::PathBuf::from("/tmp").join(format!("dp-{}", uuid::Uuid::new_v4()));
+    let project = home.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let project = std::fs::canonicalize(&project).unwrap();
+    std::fs::write(
+        project.join(".mcp.json"),
+        json!({"mcpServers":{"local":{"command":"never-start-this-fixture","args":["--flag"]}}})
+            .to_string(),
+    )
+    .unwrap();
+    let (server, _) = launch_with_agent(
+        Arc::new(MockTools),
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("native")),
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let catalog = client.rpc("mcp.catalog", json!({"cwd":project})).await;
+    assert_ok(&catalog);
+    assert_eq!(catalog["result"]["servers"][0]["id"], "local");
+    assert_eq!(catalog["result"]["servers"][0]["enabled"], false);
+    let before = client
+        .rpc(
+            "mcp.configuration",
+            json!({"source":"project","id":"local","cwd":project}),
+        )
+        .await;
+    assert_ok(&before);
+    assert_eq!(
+        before["result"]["revision"], catalog["result"]["projectRevision"],
+        "the edit read and the catalog report the same source revision"
+    );
+    assert_eq!(before["result"]["enabled"], false);
+    assert!(
+        before["result"]["configuration"]["cwd"].is_null(),
+        "the edit read keeps the declared configuration"
+    );
+    let inspection = client
+        .rpc(
+            "mcp.inspect",
+            json!({"source":"project","id":"local","cwd":project}),
+        )
+        .await;
+    assert_ok(&inspection);
+    assert_eq!(
+        inspection["result"]["configuration"]["cwd"],
+        project.to_str().unwrap(),
+        "a running entry resolves the workspace working directory"
+    );
+
+    assert_ok(&client.rpc("mcp.update", json!({"source":"project","id":"local","cwd":project,"expectedVersion":before["result"]["revision"],"patch":{"command":"never-start-this-fixture-2"}})).await);
+    let stored: Value =
+        serde_json::from_slice(&std::fs::read(project.join(".mcp.json")).unwrap()).unwrap();
+    assert_eq!(
+        stored["mcpServers"]["local"],
+        json!({"command":"never-start-this-fixture-2","args":["--flag"]}),
+        "an edit writes the patched field and leaves the declared entry otherwise unchanged"
+    );
+    assert!(
+        stored["mcpServers"]["local"].get("cwd").is_none(),
+        "an edit must not write the resolved workspace path into the project file"
+    );
+    assert!(
+        stored["mcpServers"]["local"].get("enabled").is_none(),
+        "an edit must not write the user record's enablement into the project file"
+    );
+    assert!(
+        !stored.to_string().contains(project.to_str().unwrap()),
+        "the project file names no workspace path"
+    );
+    let after = client
+        .rpc(
+            "mcp.configuration",
+            json!({"source":"project","id":"local","cwd":project}),
+        )
+        .await;
+    assert_ok(&after);
+    assert_ne!(after["result"]["revision"], before["result"]["revision"]);
+    assert_eq!(
+        client.rpc("mcp.update", json!({"source":"project","id":"local","cwd":project,"expectedVersion":before["result"]["revision"],"patch":{"command":"stale"}})).await["error"]["data"]["appError"],
+        "mcp_settings_conflict"
+    );
+
+    assert_ok(&client.rpc("mcp.set_enabled", json!({"source":"project","id":"local","cwd":project,"expectedVersion":after["result"]["revision"],"enabled":true})).await);
+    let view = client
+        .rpc(
+            "mcp.configuration",
+            json!({"source":"project","id":"local","cwd":project}),
+        )
+        .await;
+    assert_ok(&view);
+    assert_eq!(view["result"]["enabled"], true);
+    assert!(
+        view["result"]["configuration"].get("enabled").is_none(),
+        "enablement is reported beside the configuration, never inside it"
+    );
+    let stored: Value =
+        serde_json::from_slice(&std::fs::read(project.join(".mcp.json")).unwrap()).unwrap();
+    assert!(stored["mcpServers"]["local"].get("enabled").is_none());
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
@@ -341,6 +469,11 @@ finally:
         )
         .await;
     assert_ok(&tested);
+    assert_eq!(tested["result"]["status"], "connected", "{tested}");
+    assert!(
+        tested["result"]["latencyMs"].as_u64().is_some(),
+        "a probe reports the latency of its attempt: {tested}"
+    );
     assert_eq!(tested["result"]["tools"][0]["name"], "inspect");
     assert_eq!(
         tested["result"]["tools"][0]["description"],
@@ -373,11 +506,26 @@ finally:
     assert_eq!(inspected["result"]["connections"], json!([]));
     assert!(!inspected.to_string().contains("probe-secret-value"));
     let failed = client.rpc("mcp.test", json!({"source":"user","id":"probe","patch":{"command":"missing-probe-secret-command"}})).await;
-    assert_eq!(failed["error"]["data"]["appError"], "mcp_unavailable");
+    assert_ok(&failed);
+    assert_eq!(failed["result"]["status"], "failed", "{failed}");
+    assert_eq!(failed["result"]["reason"], "unavailable", "{failed}");
+    assert!(failed["result"]["tools"].is_null(), "{failed}");
+    assert!(
+        failed["result"]["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty()),
+        "a failed probe explains itself: {failed}"
+    );
+    assert!(
+        failed["result"]["latencyMs"].as_u64().is_some(),
+        "a failed probe reports its latency: {failed}"
+    );
     assert!(!failed.to_string().contains("missing-probe-secret-command"));
     std::fs::remove_file(marker.with_extension("closed")).unwrap();
     let failed = client.rpc("mcp.test", json!({"source":"user","id":"probe","patch":{"args":["-u","-c",script,marker,"fail-discovery"]}})).await;
-    assert_eq!(failed["error"]["data"]["appError"], "mcp_unavailable");
+    assert_ok(&failed);
+    assert_eq!(failed["result"]["status"], "failed", "{failed}");
+    assert!(failed["result"]["tools"].is_null(), "{failed}");
     assert!(!failed.to_string().contains("discovery-secret-failure"));
     assert!(
         marker.with_extension("closed").exists(),
@@ -385,9 +533,11 @@ finally:
     );
     std::fs::remove_file(marker.with_extension("closed")).unwrap();
     let refused = client.rpc("mcp.test", json!({"source":"user","id":"probe","patch":{"args":["-u","-c",script,marker,"bad-schema"]}})).await;
-    assert_eq!(refused["error"]["data"]["appError"], "mcp_unavailable");
+    assert_ok(&refused);
+    assert_eq!(refused["result"]["status"], "failed", "{refused}");
+    assert_eq!(refused["result"]["reason"], "response", "{refused}");
     assert_eq!(
-        refused["error"]["message"],
+        refused["result"]["message"],
         "invalid MCP server response: tool broken: inputSchema.properties.x.type[1]: unknown variant `file`, expected one of `object`, `array`, `string`, `number`, `integer`, `boolean`, `null`"
     );
     assert!(
@@ -412,6 +562,27 @@ finally:
     );
     let refused = client.rpc("mcp.test", json!({"source":"project","id":"new","cwd":home.join("project"),"configuration":configuration})).await;
     assert_eq!(refused["error"]["data"]["appError"], "invalid_params");
+    for (request, expected) in [
+        (
+            json!({"source":"user","id":" ","configuration":configuration}),
+            "invalid_params",
+        ),
+        (json!({"source":"user","id":"absent"}), "mcp_unknown_server"),
+        (
+            json!({"source":"plugin","id":"kit:docs","patch":{"command":"other"}}),
+            "invalid_params",
+        ),
+        (
+            json!({"source":"user","id":"probe","patch":{"url":"https://example.invalid"}}),
+            "invalid_params",
+        ),
+    ] {
+        let refused = client.rpc("mcp.test", request).await;
+        assert_eq!(
+            refused["error"]["data"]["appError"], expected,
+            "a request refused before contact stays an error: {refused}"
+        );
+    }
     let catalog = client
         .rpc("mcp.catalog", json!({"cwd":home.join("project")}))
         .await;
@@ -1583,6 +1754,10 @@ async fn local_product_operations_use_real_tools_and_survive_rpc_reload() {
         json!({"modelId":"beta"}),
         json!({"providerId":null,"modelId":null}),
         json!({"modelPreferences":{"reasoningEffort":"unsupported"}}),
+        json!({"modelPreferences":{"reasoningEffort":null}}),
+        json!({"modelPreferences":{"reasoningEffort":{"action":"set"}}}),
+        json!({"modelPreferences":{"reasoningEffort":{"action":"clear","value":"high"}}}),
+        json!({"modelPreferences":{"reasoningEffort":{"action":"nope"}}}),
     ] {
         let mut request = branch.clone();
         request
@@ -1876,6 +2051,91 @@ async fn the_configured_view_reads_back_the_adopted_model_preferences() {
         adopted
     );
 
+    // The attach reply names the adopted model and values, not the creation
+    // configuration.
+    let attached = client
+        .rpc("session.attach", json!({"sessionId":session_id}))
+        .await;
+    assert_eq!(attached["result"]["model"]["modelId"], "reasoning");
+    assert_eq!(
+        attached["result"]["modelPreferences"], adopted,
+        "{attached}"
+    );
+
+    // Clearing one field keeps the other.
+    assert_ok(
+        &client
+            .rpc(
+                "session.model.update",
+                json!({"sessionId":session_id,"branchId":"main",
+                    "modelPreferences":{"reasoningEffort":{"action":"clear"}}}),
+            )
+            .await,
+    );
+    let tier_only = json!({"serviceTier":"priority"});
+    assert_eq!(
+        configured(&mut client, &session_id).await["model_preferences"],
+        tier_only
+    );
+    let attached = client
+        .rpc("session.attach", json!({"sessionId":session_id}))
+        .await;
+    assert_eq!(
+        attached["result"]["modelPreferences"], tier_only,
+        "{attached}"
+    );
+
+    // Repeating the clear changes nothing and publishes no new configured fact.
+    let revision = configured(&mut client, &session_id).await["revision"].clone();
+    let repeated = client
+        .rpc(
+            "session.model.update",
+            json!({"sessionId":session_id,"branchId":"main",
+                "modelPreferences":{"reasoningEffort":{"action":"clear"}}}),
+        )
+        .await;
+    assert_eq!(repeated["result"]["outcome"], "unchanged", "{repeated}");
+    let data = configured(&mut client, &session_id).await;
+    assert_eq!(data["revision"], revision);
+    assert_eq!(data["model_preferences"], tier_only);
+
+    // A set beside a clear in one request applies both.
+    assert_ok(
+        &client
+            .rpc(
+                "session.model.update",
+                json!({"sessionId":session_id,"branchId":"main",
+                    "modelPreferences":{"reasoningEffort":"low",
+                        "serviceTier":{"action":"clear"}}}),
+            )
+            .await,
+    );
+    assert_eq!(
+        configured(&mut client, &session_id).await["model_preferences"],
+        json!({"reasoningEffort":"low"})
+    );
+
+    // Clearing the other field leaves no value, and the attach reply agrees.
+    assert_ok(
+        &client
+            .rpc(
+                "session.model.update",
+                json!({"sessionId":session_id,"branchId":"main",
+                    "modelPreferences":{"reasoningEffort":{"action":"clear"}}}),
+            )
+            .await,
+    );
+    let data = configured(&mut client, &session_id).await;
+    assert!(data.get("model_preferences").is_none(), "{data}");
+    let attached = client
+        .rpc("session.attach", json!({"sessionId":session_id}))
+        .await;
+    assert!(
+        attached["result"].get("modelPreferences").is_none(),
+        "{attached}"
+    );
+    assert_eq!(attached["result"]["model"]["modelId"], "reasoning");
+
     // A model whose configuration carries no preference shows no field.
     assert_ok(
         &client
@@ -1889,6 +2149,17 @@ async fn the_configured_view_reads_back_the_adopted_model_preferences() {
     let data = configured(&mut client, &session_id).await;
     assert_eq!(data["model_id"], "plain");
     assert!(data.get("model_preferences").is_none(), "{data}");
+    let attached = client
+        .rpc("session.attach", json!({"sessionId":session_id}))
+        .await;
+    assert_eq!(
+        attached["result"]["model"]["modelId"], "plain",
+        "{attached}"
+    );
+    assert!(
+        attached["result"].get("modelPreferences").is_none(),
+        "{attached}"
+    );
 
     server.shutdown();
     server.join().await.unwrap();

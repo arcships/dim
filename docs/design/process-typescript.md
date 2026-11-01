@@ -321,7 +321,7 @@ Status: the feature binding is accepted by the maintainer in
 with the dependency and recovery constraints below. This replaces #35's per-call
 owner replacement requirement. Full Scheduler/Workflow Ready remains separate.
 
-Use the current rutis 0.19.2 row dependencies. The Scheduler Session tool row
+Use the current rutis 0.19.3 row dependencies. The Scheduler Session tool row
 module declares `scheduleJobs` in `definePlugin.inject`; the Workflow Session
 tool module declares `workflowRuns`. This is the dependency description the
 runtime resolver uses to gate the row; a loader option alone is not a replacement

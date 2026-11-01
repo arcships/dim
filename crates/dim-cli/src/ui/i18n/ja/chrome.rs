@@ -233,7 +233,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Nothing is running" => "実行中の処理なし",
         "No queued message" => "キューは空",
         "Only in fullscreen (/tui)" => "全画面のみ（/tui）",
-        "/{name} is not yet available" => "/{name} はまだ利用不可",
         "new session" => "新規セッション",
         "resumed {id} · {count} messages" => "{id} を再開 · {count} 件",
         " · earlier history: /timeline" => " · 過去の履歴：/timeline",
@@ -246,9 +245,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "answer required" => "要回答",
         "permission required" => "要許可",
         "esc interrupt" => "esc 中断",
-        "↑ edit · ctrl+s steer now · /queue" => "↑ 編集 · ctrl+s 今すぐ steer · /queue",
-        "+{count} more · ↑ edit · ctrl+s steer now · /queue" => {
-            "+{count} 件 · ↑ 編集 · ctrl+s 今すぐ steer · /queue"
+        "↑ edit · ctrl+s steer now" => "↑ 編集 · ctrl+s 今すぐ steer",
+        "+{count} more · ↑ edit · ctrl+s steer now" => {
+            "+{count} 件 · ↑ 編集 · ctrl+s 今すぐ steer"
         }
         "Queue ({count})" => "キュー（{count}）",
         "Thinking…" => "思考中…",
@@ -346,8 +345,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Tool approvals" => "ツール承認",
         "Execution" => "実行",
         "Models" => "モデル",
-        "Model" => "モデル",
-        "not set" => "未設定",
         "Settings" => "設定",
         "↑↓ move · Enter select · ←→/Space change · Esc close" => {
             "↑↓ 移動 · Enter 選択 · ←→/Space 変更 · Esc 閉じる"

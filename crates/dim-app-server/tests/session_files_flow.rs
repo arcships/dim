@@ -137,6 +137,13 @@ impl Store {
             .await
             .map_err(|error| error.code)
     }
+    async fn owns(&self, session: &str, path: &std::path::Path) -> bool {
+        self.files
+            .0
+            .owns(session.into(), path.to_path_buf())
+            .await
+            .unwrap()
+    }
 }
 
 #[tokio::test]
@@ -183,6 +190,19 @@ async fn a_put_stores_an_immutable_file_its_session_owns() {
     let again = store.put("s1", "paste.txt", b"pasted text").await.unwrap();
     assert_ne!(again.file_id, stored.file_id);
     assert_eq!(home.entries().len(), 2);
+
+    // Ownership reads the attachment table: only the Session that owns the
+    // file id owns its path, and only a path inside that file's directory.
+    store.session("s2").await;
+    assert!(store.owns("s1", &stored.path).await);
+    assert!(store.owns("s1", &again.path).await);
+    assert!(!store.owns("s2", &stored.path).await);
+    assert!(!store.owns("s1", &home.0.join("outside.txt")).await);
+    let stranger = home
+        .files()
+        .join(uuid::Uuid::new_v4().to_string())
+        .join("paste.txt");
+    assert!(!store.owns("s1", &stranger).await);
 
     let rows = |home: &Home| {
         (
@@ -243,6 +263,7 @@ async fn a_put_stores_an_immutable_file_its_session_owns() {
         home.rows("SELECT file_id FROM session_file_owners")
             .is_empty()
     );
+    assert!(!store.owns("s1", &stored.path).await);
     assert_eq!(
         store.put("s1", "paste.txt", b"x").await,
         Err(SessionFileErrorCode::NotFound)

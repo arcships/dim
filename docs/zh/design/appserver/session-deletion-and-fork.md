@@ -12,7 +12,7 @@
 
 客户端用 `session.delete` 删除 Session，用 `session.fork` 分叉 Session。两者都是协议 v3 的 Rpc 内建方法，调用 Agents；Agents 负责加载、关闭和创建 Session，SessionStore 执行行与文件的步骤。
 
-- **删除。** Agents 不再加载该 Session；若它已加载，就关闭它，让各能力结算在途工作并释放所持资源。随后 SessionStore 移除该 Session 的命令输出目录，并在一个事务内删除存储为它保存的所有行，包括 Session 文件的所有者行。失去最后一个所有者的文件由 S5a 的清扫移除。删除不存在的 Session 也成功。
+- **删除。** Agents 不再加载该 Session；若它已加载，就关闭它，让各能力结算在途工作并释放所持资源。随后 SessionStore 移除该 Session 的输出目录：它自己的 `command-output/<S>/`，以及它每一行路径所在的目录；另一个 Session 仍在该目录下有行时保留（ADR 013 D4）。然后在同一个事务内删除存储为它保存的所有行，包括 Session 文件和输出所有权行。失去最后一个所有者的文件由 S5a 的清扫移除。删除不存在的 Session 也成功。
 - **清理。** 一次删除移除该 Session 拥有的一切（§3.3）。按时间或保留数量清理并预览，由 CLI 组合 `session.summaries` 与 `session.delete` 完成，没有对应的服务端方法。
 - **崩溃安全。** 目录的移除在行事务提交之前落盘，Session 文件按 S5a 的行处理。删除在任何一步中断，都只会留下完整的 Session 或者它的行全部消失，重试或下一次清扫会完成剩余工作（§4）。
 - **分叉。** 分叉在一个事务内把源 Session 的 `main` 截至某个切点的部分按存储的字节复制到一个新 Session，并共享源的 Session 文件。切点必须是 `main` 的静止点，`main` 到那时创建的分支只复制目录、不带事件，因此客户端给分叉发送输入之前，分叉不会自己开始任何工作（§6.5）。分叉的 `main` 以 `branch/resume` 打开：分叉就是源的对话在切点处、以新 id 恢复。分叉紧接在复制的事实之后写下自己的一个事实 `session/forked`，让折叠分支自身历史的所有者知道复制到哪里为止（§6.5）。`SessionConfig` 整体复制，`interactive` 和权限预设随之带过去，不放宽任何权限。
@@ -81,8 +81,8 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 
 1. **准入。** Agents 检查 id（D3），并取得 S 的准入门，即 `acquire` 恢复 Session 时持有、创建在其构建的 Session 发布之前一直持有的 `SessionSlot` 门（§7）。删除进行期间没有请求、订阅或分叉能加载 S，删除仍在构建的 Session 时会等构建结束。已经持有 S 使用权的请求继续持有，由第 2 步的关闭结束其工作。
 2. **关闭。** 若 S 已加载，Agents 像 `session.close` 那样关闭它：业务关闭，不是卸载。各能力结算已接受的工作，写出终态事实，释放进程、FileStorage 租约和成员请求。关闭报告清理错误时记日志并继续删除：未能写出的事实会随其余部分一起删除。从关闭起 S 的槽位即关闭：无论行最终是否删除，S 在本进程内都不再加载（第 6 步）。
-3. **命令输出。** SessionStore 通过 S 的资源节点上的 FileStorage（与 S5a 一样每次调用时查找）移除 `<数据库目录>/command-output/<S>/`，WorkspaceTools 在这里保存 exec 输出和过大的 `read` 结果（[read.rs](../../../../crates/dim-agent-capabilities/src/workspace_tools/files/read.rs) 的 `offload`）。目录不存在视为已移除。移除必须在第 4 步之前落盘（§4），因此 FileStorage 的 `remove` 要同步被移除条目的父目录（§14）。失败时删除在改动任何行之前结束（§3.5）。只有本数据库有 S 的行时，SessionStore 才移除这个目录：`command-output/` 由同一目录下的所有数据库共用，本库没有行的 id，其目录可能属于另一个数据库的 Session（§4）。
-4. **行。** 一个 `IMMEDIATE` 事务删除 S 的全部行：`session_file_owners`、`timeline_snapshots`、`timeline_events`、`timeline_branches`、`timeline_content`、`session_owners`、`session_catalog` 和 `agent_sessions`，因外键按此顺序，另加 S5b 的标题元数据（§14）。`session_catalog` 是 [#556 的目录投影](../../../design/appserver/native-storage-format.md#556-v23-格式决定)的派生行。这就是如今创建回滚执行的操作（[timeline.rs](../../../../crates/dim-app-server/src/storage/timeline.rs) 的 `rollback_creation`），S5a 为它加上所有者行；删除与回滚共用它。它像回滚一样在 Timeline 写线程上执行，因此排在已为 S 排队的所有追加之后，并清除 S 记下的写入失败。
+3. **命令输出。** SessionStore 在改动任何行之前移除该 Session 的输出目录（ADR 013 D4）：它自己的 `<数据库目录>/command-output/<S>/`，以及它每一行路径所在的目录，因此分叉复制来的 `command-output/<parent>/` 和 `.dim/exec/<parent>/<branch>/` 目录也覆盖在内。另一个 Session 仍在该目录下有行时，目录保留。SessionStore 的所有权锁把这次移除与第 4 步的删行跨 Session 串行化：否则两个并发删除可能都看到对方的行，都保留共享目录，提交后目录没有所有者。分叉步骤在复制时持有同一把锁并复制当前的全部输出行；一致由锁保证，而不是靠检查文件是否存在，因此运行中的命令在写出文件之前登记的行也会被复制，该命令创建的文件归分叉所有。`command-output` 目录通过 S 的资源节点上的 FileStorage（与 S5a 一样每次调用时查找）移除；`.dim/exec` 目录由 HostPlatform 移除，HostPlatform 不读取所有权行。目录不存在视为已移除。每次移除必须在第 4 步之前落盘（§4），因此 FileStorage 的 `remove` 要同步被移除条目的父目录（§14）。失败时删除在改动任何行之前结束（§3.5）。只有本数据库有 S 的行时，SessionStore 才移除自己的 `command-output/<S>/`：`command-output/` 由同一目录下的所有数据库共用，本库没有行的 id，其目录可能属于另一个数据库的 Session（§4）。
+4. **行。** 一个 `IMMEDIATE` 事务删除 S 的全部行：`session_file_owners`、`session_output_owners`、`timeline_snapshots`、`timeline_events`、`timeline_branches`、`timeline_content`、`session_grants`、`session_owners`、`session_catalog` 和 `agent_sessions`，因外键按此顺序，另加 S5b 的标题元数据（§14）。`session_catalog` 是 [#556 的目录投影](../../../design/appserver/native-storage-format.md#556-v23-格式决定)的派生行。这就是如今创建回滚执行的操作（[timeline.rs](../../../../crates/dim-app-server/src/storage/timeline.rs) 的 `rollback_creation`），S5a 为它加上所有者行；删除与回滚共用它。它像回滚一样在 Timeline 写线程上执行，因此排在已为 S 排队的所有追加之后，并清除 S 记下的写入失败。
 5. **清扫。** SessionStore 安排 S5a 的清扫（[Session 文件 §5.4](session-files.md#54-清扫)）。最后一个所有者是 S 的文件在清扫中移除；仍有分叉拥有的文件保留。
 6. **忘记。** Agents 删除 S 的协议版本和不可用 Session 条目，把 S 的槽位标为已关闭、已删除，并在没有其他东西持有它时移除它（[空闲卸载 §6.4](idle-unload.md#64-准入槽)）。仍在准入门处等待的调用方会看到槽位已关闭，之后的调用方会发现 S 既没有所有者也没有行：两种情况下 `acquire` 都回答 `session_closed`。在第 4 步之前失败的删除则释放准入门。被它关闭的 Session 保持 `session.close` 之后的状态：行还在，`session.list` 不列出它，本进程内不再加载，重试即可删除；重启后它照常加载。删除没有关闭的 Session 在下次使用时照常加载（§16 D5）。
 
@@ -92,8 +92,9 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 | --- | --- | --- |
 | Session 记录、所有者、分支、事件、内容、快照 | 原生存储 | 第 4 步，一个事务 |
 | Session 文件的所有权 | `session_file_owners`（S5a） | 第 4 步。失去所有者的文件由 S5a 的清扫处理 |
+| 输出所有权 | 原生存储，`session_output_owners` 行（v29，[ADR 013](../../../adr/013-command-output-ownership.md) D1） | 第 4 步，同一事务 |
 | 标题元数据 | 原生存储，S5b 的 `session_metadata` 行（[标题元数据](session-title-metadata.md#9-生命周期)） | 第 4 步，同一事务 |
-| exec 输出和转存的 `read` 结果 | `<数据库目录>/command-output/<S>/` | 第 3 步 |
+| exec 输出、转存的 `read` 结果和持久 shell 日志 | `<数据库目录>/command-output/<S>/` 及 S 的输出行命名的每个目录 | 第 3 步。本数据库另一个 Session 仍命名的目录保留 |
 | 已加载实例、租约、订阅、在途使用 | 进程内存 | 第 2 步 |
 | 协议版本、准入槽位、不可用 Session 条目 | Agents 内存 | 第 6 步 |
 | 指向 S 的 Collaboration 关系、S 领导的成员 Session 与 S 拥有的 Agent | 持久：`agent_sessions.leader_session_id` 与 `agents.owner_session_id`（[Collaboration §6](../plugins/Collaboration.md#6-委派的所有权与寿命)）；Collaboration 的关系由它们重建 | Agents 随 leader 一起删除 Team：每个成员自己的删除（其行由 SessionStore 删除）、Agents 拥有的 Agent 记录，最后是 S。Collaboration 在观察到成员关闭（[collaboration.rs](../../../../crates/dim-app-server/src/collaboration.rs) 的 `session_ended`）或删除已卸载成员时移除关系，装载时重建其余（[空闲卸载 §7](idle-unload.md#7-竞争与交互)） |
@@ -145,7 +146,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 | 提交之后、回复之前 | 无行 | 目录已无；S 的文件无所有者 | 客户端重试时本库已无行，不移除目录，得到 `{}` 并再次安排清扫；否则由 S5a 的下一次触发（另一次删除，或之后某一代的第一次写入）移除文件 |
 | 清扫期间 | S5a 的状态 | — | [Session 文件 §6](session-files.md) 的崩溃恢复表 |
 
-**为什么目录在提交之前移除。** 没有任何行记录命令输出目录。行删除之后，孤立的目录只能靠列出 `command-output/` 找到，而这个目录由同一数据库目录下的所有数据库共用（一个目录下两个 `--database` 文件），列目录无法区分已删除 Session 的目录和另一个存储的目录。先移除目录，任何已提交的删除都不会留下它。S5a 的文件采用相反的顺序，因为有行记录它们，清扫能找到。FileStorage 的移除原本不同步（[S6](https://github.com/arcships/dim/pull/87)）：断电后，被移除的目录可能重新出现，而之后以 `synchronous=FULL` 提交的事务仍然有效。现在 `remove` 在返回前同步父目录（§14），消除了这个窗口。
+**为什么目录在提交之前移除。** S 自己的 `command-output/<S>/` 目录没有自己的行（只有其中的文件可能有）。行删除之后，孤立的目录只能靠列出 `command-output/` 找到，而这个目录由同一数据库目录下的所有数据库共用（一个目录下两个 `--database` 文件），列目录无法区分已删除 Session 的目录和另一个存储的目录。先移除目录，任何已提交的删除都不会留下它。本数据库另一个 Session 仍命名的目录保留（ADR 013 D4）：它仍能通过那个 Session 的行找到，下一次删除再移除它。S5a 的文件采用相反的顺序，因为有行记录它们，清扫能找到。FileStorage 的移除原本不同步（[S6](https://github.com/arcships/dim/pull/87)）：断电后，被移除的目录可能重新出现，而之后以 `synchronous=FULL` 提交的事务仍然有效。现在 `remove` 在返回前同步父目录（§14），消除了这个窗口；HostPlatform 对移除的 `.dim/exec` 目录也同步父目录。
 
 **只移除本库有行的 id。** 出于同样的原因，只有本数据库有该 id 的行时，删除才移除它的目录。同一目录下 `a.sqlite` 和 `b.sqlite` 两个守护进程共用 `command-output/`；把 `session.delete {S_b}` 发给前者（例如 CLI 用错了 `--database`）时，它回复 `{}`，不能移除仍在后者中运行的 S_b 的输出。这个检查不影响收敛：目录在行之前移除，所以本库没有 S 的行时，也已没有 S 的目录可移除；Agents 的准入门保证同一 id 的两次删除不会交错。因此提交之后的重试什么都不移除，也不需要移除。
 
@@ -228,6 +229,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 | `timeline_content` | 被复制事件按编解码器写入的引用（请求及其 before 轨迹）所引用的行，以及这些引用到达的每个列表节点（格式 v17）。`session/forked` 行不引用内容 |
 | `timeline_snapshots` | 锚定在被复制的 `main` 事件上的行。它们由相同的事实派生，F 首次加载时可以直接使用，不必从头重放 |
 | `session_file_owners` | S 拥有的每个文件给 F 一行（[Session 文件 §4](session-files.md#4-分叉时共享)） |
+| `session_output_owners` | S 拥有的每条输出路径给 F 一行，包括分叉时仍在运行的命令登记的行（ADR 013 D4）。不复制文件；F 读取当前内容，并在 S 删除后继续保留 |
 | 标题元数据（S5b） | 不复制：分叉没有标题（[SessionTitle](../plugins/SessionTitle.md) A7） |
 
 **为什么子分支不带事件。** 子分支的事件与 `main` 的切点之间没有先后顺序，子分支没有哪个前缀对应 `at`。整体复制的子分支带着切点之后发生的事，它待处理的工作（尚未开始的第一个输入、Queue 或 Steer 输入、后台任务的唤醒）会在 F 中启动轮次，在同一个 `cwd` 里重做源已经做过或正在做的工作（§6.5）。存储仍要求每个 `branch/create` 都有对应分支的目录，并在加载 Session 时检查（[timeline.rs](../../../../crates/dim-app-server/src/storage/timeline.rs) 的 `validate_session`）；头部为 0 的目录能通过检查。TimelineTree 把缺少 `branch/start` 和第一个 Queue 输入的子分支当作从未开始的创建（[timeline_tree.rs](../../../../crates/dim-agent-capabilities/src/timeline_tree.rs) 的 `restore`）：F 首次加载时，它在 F 的 `main` 上写 `branch/create-failed`（`error: "branch creation failed"`），不构建这个分支；之后的加载看到这条事实就跳过它。创建已提交、子分支尚未开始时崩溃，走的就是这条路径。在 F 中，这条事实表示该分支不属于 F；分支和它的工作留在 S 中，客户端可以在那里继续。这条事实不进入模型上下文，切点处的提示词前缀不变。
@@ -253,7 +255,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 | 子分支的事件，以及其下的分支 | 与切点之间没有先后顺序，重载还会重新执行其中待处理的工作（§6.3）。它们的工作留在 S 中 |
 | 已加载实例、租约、订阅、已附着的客户端、在途请求 | 运行时状态，不存储；F 自己建立 |
 | 正在提交中的输入 | 尚未提交，不是事实 |
-| 命令输出目录 | WorkspaceTools 的每 Session 目录。F 复制来的工具结果引用 `command-output/<S>/` 下的路径，S 存在期间可读（§6.6） |
+| 命令输出目录 | 不复制字节；F 的 `session_output_owners` 行命名 `command-output/<S>/` 或 `.dim/exec/<S>/<branch>/` 下的同一批文件，S 删除后仍可读（ADR 013 D4，§6.6） |
 | 标题元数据 | SessionTitle A7 |
 | Collaboration 关系和临时 Agent | 源团队的进程内存。F 不领导任何成员，S 的临时 Agent 对 F 不可见 |
 | 宿主配置 | 从不属于 Session |
@@ -312,11 +314,9 @@ TimelineTree 以 `branch/resume` 打开已有事件的根分支（[timeline_tree
 - **其他 id。** 分支、轮次、请求、调用、任务和审批 id 都保留，它们同样按 Session 划分。复制来的任务 id 指向一个在切点处已经结束的任务（§6.2）：BackgroundExec 从复制来的事实重建它，`session.exec.stop` 返回它记录的结果，不停止任何东西。
 - **`submission_id`。** 它随 `input/message` 复制，`session.input_lookup` 读取 F 的历史，因此能在 F 上找到复制来的输入。[#32](https://github.com/arcships/dim/issues/32) 决定把该字段留在事件中（[sessions 服务 §6.3](sessions-service.md#提交标识存放在哪里)），分叉不需要为它另设记录。
 - **来源。** F 不记录源：没有列，`session/forked` 也不带数据。目前没有任何决定使用它；Session 访问 A.3 规定 Session 的来源（`createdBy`）在有使用方时连同其格式决定一起加入。
-- **路径。** Session 文件通过所有者行共享，只要还有所有者就有效（S5a）。命令输出不共享：F 复制来的工具结果引用 `command-output/<S>/…`，S 存在期间 F 可以读取。S 删除之后，读取这些路径会得到文件不存在，工具结果中的预览仍在。用户看到的后果：复制来的工具结果中被截成预览的 exec 输出或较大的 `read` 结果，在 F 中再也无法完整读取，模型和客户端都读不到。Session 文件不同：所有者行让它们比写入它们的 Session 活得更久。
+- **路径。** Session 文件和命令输出通过所有者行共享，只要还有所有者就有效（S5a、ADR 013）。F 复制来的工具结果引用 `command-output/<S>/…` 和 `.dim/exec/<S>/<branch>/…`；分叉复制来的输出行让 F 在 S 删除后读取当前内容，删除时只要 F 仍命名该路径下的文件就保留目录。命令输出日志在分叉后可能继续增长；F 读取当前内容。时点副本是另一个问题。
 
-S5c 中被否决：在 S 的分叉都删除之前保留 S 的命令输出。删除需要知道 S 有哪些分叉，就得在存储中加分叉关系（改格式），WorkspaceTools 的每 Session 输出也会多出它本没有的所有者。
-
-**以后的改进。** 像 S5a 对 Session 文件那样，给命令输出加所有者行：分叉共享源的输出，最后一个所有者删除时才移除它。这要把 WorkspaceTools 的输出从每 Session 目录改为有所有者的条目，并需要单独的格式决定，因此不在 S5c 之内。
+S5c 中被否决：在 S 的分叉都删除之前保留 S 的命令输出。ADR 013 推翻了这一决定：分叉复制源的输出行，目录由本数据库中最后一个拥有它的 Session 删除时移除，因此不需要分叉关系。
 
 ### 6.7 错误
 
@@ -355,8 +355,9 @@ S5c 中被否决：在 S 的分叉都删除之前保留 S 的命令输出。删�
 
 **决定：不单独改格式**（S5c 本身不改格式；#222 在 v16 下新增一种事件行，没有升版本号，格式 v17 原样保留它）。记录在
 [native-storage-format.md](../../../design/appserver/native-storage-format.md#s5c-格式决定)。
+[ADR 013](../../../adr/013-command-output-ownership.md) 在 v29 新增 `session_output_owners`；本页的删除与分叉步骤读写该表的行。
 
-- 删除只从现有表中删行，以及 [#556 的目录投影](../../../design/appserver/native-storage-format.md#556-v23-格式决定)的派生行 `session_catalog`。
+- 删除从现有表中删行，包括 `session_file_owners` 与 `session_output_owners`，以及 [#556 的目录投影](../../../design/appserver/native-storage-format.md#556-v23-格式决定)的派生行 `session_catalog`。
 - 分叉向现有表插入行，按字节复制存储的文本，然后在 `at + 1` 插入一行 `session/forked`（数据为空），并在同一事务内按它写入的行写下 F 的 `session_catalog` 行。头部为 0、没有事件的子分支目录是存储已经接受的状态：子分支尚未开始的创建。
 - 事件 id 在所属 Session 内唯一，分叉在另一个 Session 中重复源的 id。存储本就按 Session 检查和索引 id；S5c 把这一点写明为不变量，不是格式变化。
 - 不加来源列、不写墓碑，原因见 §4 和 §6.6。

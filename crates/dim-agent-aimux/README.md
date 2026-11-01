@@ -22,6 +22,12 @@
 
 Aimux 无目录或 Session 依赖，独占可释放的 HTTP client。卸载关闭准入、释放未读取或停止读取的原生流、排空已受理调用，再释放池；旧宿主和流返回 `OwnerClosed`。HTTP 失败保留类型化 status/code，恢复由调用方决定，adapter 不重试。产品 Provider/OAuth 另行实施。
 
+## 模型端点的重定向
+
+模型 HTTP client 只在同源（scheme、host、port 相同）时跟随 307 与 308，最多 10 跳。301、302、303 一律不跟随：模型请求是带 JSON body 的 POST，而 reqwest 的重定向层在策略之前就把这三种状态下的 POST 改写成不带 body 的 GET，跟随后服务器收到的已不是模型请求；端点要搬迁就返回 307 或 308。任何跨源跳转也不跟随：凭据只发给配置的那个源，reqwest 只在 host 变化时剥离 `Authorization`、`Cookie` 等少数敏感头，`x-api-key`、`x-goog-api-key` 等 provider 自己的头不在其列。
+
+没被跟随的跳转让请求照常失败，错误里点名状态码与目标 URL，并说明原因：跨源、跟随会丢掉方法与 body，或超过跳数上限。目标不带查询串、URL 里的 userinfo 已隐去；reqwest 把跳转错误压成固定文案不带目标，补写发生在 `src/driver.rs` 的错误路径上。流式与普通请求走同一条路径。
+
 ## Anthropic 提示缓存断点
 
 请求的 `ModelProtocol` 是 anthropic 时，`src/request.rs` 的转换器在请求里最多标两个提示缓存断点；其他协议不带断点，Bedrock 不变。放在哪里是 dim 的产品决定：aimux 只负责线上编码（part 或消息上的 `providerOptions.anthropic.cacheControl`，每个请求至多四个断点），自己不放断点。

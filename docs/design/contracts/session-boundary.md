@@ -6,7 +6,7 @@ This contract defines three registration services in the language-neutral form o
 
 | Service | Scope | Registers | Registered by | Read by |
 | --- | --- | --- | --- | --- |
-| `sessionMethods` | Session | method namespaces | Session parts (Questions, Goal, SessionTitle, Attachments, ShellInput, InputQueue's `session.input`, ...) | Rpc, through the Session, per call |
+| `sessionMethods` | Session | method namespaces | Session parts (Questions, Goal, SessionTitle, Attachments, ShellInput, SessionGrants, InputQueue's `session.input`, ...) | Rpc, through the Session, per call |
 | `managementMethods` | Process | method namespaces | Process parts only (Mcp, Provider, SkillsCatalog, Settings, ...) | Rpc, per call |
 | `toolRegistry` | Session | tools | Session parts (Questions, Goal, Web, Scheduler, Workflow), each registering its own tools | ToolRegistry, which owns `toolRegistry` (supplement: tool registration) |
 

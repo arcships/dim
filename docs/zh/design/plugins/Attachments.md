@@ -48,7 +48,7 @@ Attachments 从不写 Timeline，从不看到图片，也不拥有任何数据�
 - `sessionMethods` 的分发、错误与调用归属（C1，[session-boundary A.1](../contracts/session-boundary.md#a1-方法贡献)）：Rpc 授权 `sessionId`，获取 Session（未加载时恢复它），在调用结算前一直持有它，并从该 Session 的方法表读取提供方。Attachments 使用 `drain` 中断方式（A.2），不使用进度。
 - SessionStore 的 `sessionFiles.put`（S5a，[Session 文件 §9](../appserver/session-files.md#9-接口)）：`{sessionId, name, content} -> {fileId, path, bytes}`，错误码 `not_found`、`invalid`、`too_large`、`node_unavailable`、`cancelled`、`storage`。名称规则和 16 MiB 上限归 SessionStore，它在提交（txn 2）之前检查取消。
 - FileStorage（S6，[#87](https://github.com/arcships/dim/pull/87)）：只经 SessionStore 访问，SessionStore 每次调用时按 Session 的节点查找它（#38）。Attachments 不引用任何 FileStorage 操作。
-- `read`（WorkspaceTools，已实现）：读取绝对路径；它的风险类别 `read_filesystem` 在每个权限预设下都被允许（[permission.rs](../../../../crates/dim-agent-capabilities/src/permission.rs)）。
+- `read`（WorkspaceTools）：读取绝对路径；`put` 返回的文件是 Session 自有文件，无需授权即可满足文件范围，显式 Tool approval Ask 仍生效（[Permission 合同](../../../architecture/rust-agent/plugins/Permission.md#policy-contract)）。
 - ModelProvider 构建请求时对图片的处理（S11；需求见 [A.4](#a4-对其他所有者的需求)）。
 - 传输帧限制，每个请求 16 MiB（`MAX_FRAME_BYTES`，[outbound.rs](../../../../crates/dim-app-server/src/outbound.rs)）。
 
@@ -181,7 +181,7 @@ Client      Rpc        Branch Timeline                      Model           Work
 
 ## 7. 安全
 
-CLI 只为检查头部和限制而解码图片；ModelProvider 只为检查请求的适配器能否接收而解码；Rpc 不检查图片。文本附件由 SessionStore 写在它的 Session 文件目录下，从不写到客户端选择的路径：`name` 是一个文件名，由 SessionStore 校验。路径不授予任何权限：`read` 本来就在 Session 的权限策略下读取绝对路径，风险类别 `read_filesystem` 在每个预设下都被允许，因此读取文件从不弹出审批，也不记录任何授权（读取如何准入、以及按路径限定的文件访问必须保持什么，见 [Session 文件 §11](../appserver/session-files.md#11-安全)）。`attachment.put` 是用户的操作，不是 agent 的决定，因此不涉及 Approval（[ADR 003](../../adr/003-approval-scope.md) D1）。分叉共享其源 Session 拥有的每个文件（[Session 文件 §4](../appserver/session-files.md#4-分叉时共享)）；它的模型只从继承的历史中得知路径。内容是重放给模型的用户数据；CLI 不得隐式附加机密。错误消息和诊断不含内容。
+CLI 只为检查头部和限制而解码图片；ModelProvider 只为检查请求的适配器能否接收而解码；Rpc 不检查图片。文本附件由 SessionStore 写在它的 Session 文件目录下，从不写到客户端选择的路径：`name` 是一个文件名，由 SessionStore 校验。路径本身不授予任何权限：`put` 返回的文件是 Session 自有文件，无需授权即可满足读取范围，但不绕过 Tool approval Ask（[Session 文件 §11](../appserver/session-files.md#11-安全)）。`attachment.put` 是用户的操作，不是 agent 的决定，因此不涉及 Approval（[ADR 003](../../adr/003-approval-scope.md) D1）。分叉共享其源 Session 拥有的每个文件（[Session 文件 §4](../appserver/session-files.md#4-分叉时共享)）；它的模型只从继承的历史中得知路径。内容是重放给模型的用户数据；CLI 不得隐式附加机密。错误消息和诊断不含内容。
 
 ## 8. 规则检查
 
@@ -411,6 +411,6 @@ Attachments 用 Rust 实现，放在自己的 crate `dim-agent-attachments` 中�
 | 安装 | `dim_agent_attachments::install(builder)`：`builder.require_feature(Feature::new("Attachments").session("Attachments", |names| names.part(AttachmentsPlugin)))`，一个登记自己 Session 部件的插件，由装配配置要求。`serve` 在设置了 `native_home` 时调用它；xtask 生成本地执行图时也调用它 |
 | 命名空间 `attachment` | 在 `Keyed<SessionMethods>` 依赖上调用 `methods.register(ctx, "attachment", vec![MethodDecl::new("attachment.put", true, Interruption::Drain)], handler)`（`dim_agent_capabilities::methods`），在 `apply` 中、插件自己的 effect 之后调用。`Handler` 接受 `(method, params, CancellationToken, Progress)`；不使用 `Progress`（`progress: false`） |
 | 参数与回复 | `methods::params::<T>(params)`（形状错误时为 `invalid_params`，包括未知字段）和 `methods::reply(value)` |
-| `sessionFiles.put` | `SessionFilesHost(Arc<dyn PutSessionFile>)`：`put(session_id, name, content: Vec<u8>, cancel)` 返回 `StoredSessionFile {file_id, path, bytes}` 或 `SessionFileError {code: SessionFileErrorCode, message}`（[Session 文件附录 A](../appserver/session-files.md#附录-a-rust-绑定)）；`session_id` 来自 `SessionIdentity`，`cancel` 是处理函数的令牌 |
+| `sessionFiles.put` | `SessionFilesHost(Arc<dyn SessionFilesService>)`：`put(session_id, name, content: Vec<u8>, cancel)` 返回 `StoredSessionFile {file_id, path, bytes}` 或 `SessionFileError {code: SessionFileErrorCode, message}`（[Session 文件附录 A](../appserver/session-files.md#附录-a-rust-绑定)）；`session_id` 来自 `SessionIdentity`，`cancel` 是处理函数的令牌 |
 | 错误 | `NotFound` → `RpcError::closed()`；`Cancelled` → `RpcError::reloading()`；`Invalid`、`TooLarge`、`NodeUnavailable`、`Storage` 以及 Attachments 自己的检查 → `RpcError::app(-32000, code, message)`，码见 A.2 |
 | 图片内容块 | `ContentBlock::Image { source: ImageSource { source_type: Base64 \| Url, media_type, data, url } }`（[content.rs](../../../../crates/dim-agent-types/src/content.rs)） |

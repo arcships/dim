@@ -40,6 +40,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Allow once" => "允许一次",
         "Allow always" => "始终允许",
+        "Allow for this session" => "本次会话内允许",
         "Reject" => "拒绝",
         "Approve for me" => "智能权限",
         "Full access" => "完全访问权限",

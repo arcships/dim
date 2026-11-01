@@ -93,7 +93,9 @@ fn tui_shows_context_usage_the_hello_does_not_list() {
     shown.send(()).unwrap();
     terminal.write(b"hello\r");
     terminal.until("answered");
-    terminal.until("64K / 256K");
+    // The border is redrawn as the turn ends, while the answer's text is
+    // still revealing.
+    terminal.until_anywhere("64K / 256K");
     terminal.write(b"/exit\r");
     terminal.until("Bye!");
     assert!(terminal.wait().success());

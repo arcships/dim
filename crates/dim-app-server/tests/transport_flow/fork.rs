@@ -135,14 +135,16 @@ async fn a_fork_copies_main_through_a_rest_point_and_starts_nothing() {
             .unwrap(),
         "first"
     );
-    let fork = agent.get_session(&fid).unwrap();
-    assert_eq!(
-        reply["result"]["sequence"].as_u64().unwrap(),
-        fork.sequence("main").unwrap()
-    );
-
     let mut children = vec![done.clone(), running.clone(), steered.clone()];
     children.sort();
+    let fork = agent.get_session(&fid).unwrap();
+    let reply_sequence = reply["result"]["sequence"].as_u64().unwrap();
+    // The reply is read from the published fork after its build returns, so a copied child's
+    // branch/create-failed may already be published; branch/resume at at + 2 is the floor.
+    assert!(
+        (at + 2..=at + 2 + children.len() as u64).contains(&reply_sequence),
+        "the reply names the fork's main head when it is read: {reply_sequence}"
+    );
     let mut copied = vec![];
     for _ in 0..500 {
         copied = history(&fork, "main").await;
@@ -163,6 +165,7 @@ async fn a_fork_copies_main_through_a_rest_point_and_starts_nothing() {
     assert_eq!(tail[0].kind.key(), "session/forked");
     assert_eq!(tail[1].kind.key(), "branch/resume");
     assert_eq!(failed_creations(tail), children, "{:?}", keys(tail));
+    assert_eq!(tail.len(), 2 + children.len(), "{:?}", keys(tail));
     assert_eq!(fork.branches().len(), 1, "only main is active in the fork");
 
     let rows = |sql: &str| count(&store, sql, [&fid, &sid]);
@@ -912,9 +915,31 @@ async fn a_fork_waits_for_background_work_and_keeps_preset_and_model() {
     assert_eq!(calls.last().map(String::as_str), Some("beta"), "{calls:?}");
 
     assert_ok(&client.rpc("session.delete", json!({"sessionId":sid})).await);
-    assert!(!store.output(&sid).exists());
+    assert!(
+        store.output(&sid).exists(),
+        "the fork's output rows keep the source directory"
+    );
     assert!(store.rows(&sid).is_empty());
     assert!(!store.rows(&fid).is_empty());
+    let forked_output: String = store
+        .connection()
+        .query_row(
+            "SELECT path FROM session_output_owners WHERE session_id=?1 ORDER BY path LIMIT 1",
+            [&fid],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        std::fs::read(&forked_output).is_ok(),
+        "the fork can read {forked_output}"
+    );
+
+    assert_ok(&client.rpc("session.delete", json!({"sessionId":fid})).await);
+    assert!(
+        !store.output(&sid).exists(),
+        "the last owner's delete removes the directory"
+    );
+    assert!(store.rows(&fid).is_empty());
     drop((client, fork, source, agent));
     let socket = server.unix_path.clone().unwrap();
     server.shutdown();

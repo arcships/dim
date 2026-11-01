@@ -45,8 +45,7 @@ async fn select_model(client: &mut Client) {
     );
 }
 async fn set_limit(client: &mut Client, limit: u32) {
-    let user = json!({"source":"goal","scope":"user"});
-    let read = client.rpc("settings.read", user).await;
+    let read = super::settings_methods::registered(client, "goal").await;
     assert_ok(&read);
     assert_ok(
         &client

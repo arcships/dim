@@ -718,6 +718,106 @@ async fn directory_preserves_scope_and_cas_through_plugin_management() {
 }
 
 #[tokio::test]
+async fn editing_reads_the_declared_entry_while_running_resolves_it() {
+    let fixture = Fixture::new().await;
+    let cancel = CancellationToken::new();
+    let user = fixture.mcp.catalog(None, &cancel).await.unwrap();
+
+    let entry = fixture
+        .mcp
+        .editable(McpSource::User, "shared".into(), &cancel)
+        .await
+        .unwrap();
+    assert_eq!(entry.revision.as_deref(), Some(user.user_revision.as_str()));
+    assert!(entry.enabled);
+    let McpServerSettings::Stdio { cwd, .. } = &entry.configuration else {
+        panic!("the user's shared entry is stdio");
+    };
+    assert!(cwd.is_none());
+
+    let project = fixture.home.join("project");
+    let revision = fixture
+        .mcp
+        .update(
+            SettingsScope::Project(1),
+            fixture
+                .mcp
+                .catalog(Some(1), &cancel)
+                .await
+                .unwrap()
+                .project_revision
+                .unwrap(),
+            "local".into(),
+            McpChange::Put(serde_json::from_value(json!({"command":"project-server"})).unwrap()),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let entry = fixture
+        .mcp
+        .editable(McpSource::Project(1), "local".into(), &cancel)
+        .await
+        .unwrap();
+    assert_eq!(entry.revision.as_deref(), Some(revision.as_str()));
+    assert!(!entry.enabled, "a project entry starts disabled");
+    let McpServerSettings::Stdio { cwd, .. } = &entry.configuration else {
+        panic!("the project entry is stdio");
+    };
+    assert!(
+        cwd.is_none(),
+        "the edit read keeps the declared working directory"
+    );
+    let running = fixture
+        .mcp
+        .entry(McpSource::Project(1), "local".into(), &cancel)
+        .await
+        .unwrap();
+    let McpServerSettings::Stdio { cwd, .. } = &running.configuration else {
+        panic!("the project entry is stdio");
+    };
+    assert_eq!(
+        cwd.as_deref(),
+        project.to_str(),
+        "the run view resolves the workspace"
+    );
+
+    fixture
+        .mcp
+        .update(
+            SettingsScope::Project(1),
+            revision.clone(),
+            "local".into(),
+            McpChange::SetEnabled(true),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let entry = fixture
+        .mcp
+        .editable(McpSource::Project(1), "local".into(), &cancel)
+        .await
+        .unwrap();
+    assert!(entry.enabled, "enablement comes from the user's record");
+    assert_eq!(entry.revision.as_deref(), Some(revision.as_str()));
+
+    assert!(matches!(
+        fixture
+            .mcp
+            .editable(McpSource::User, " ".into(), &cancel)
+            .await,
+        Err(McpError::InvalidId)
+    ));
+    assert!(matches!(
+        fixture
+            .mcp
+            .editable(McpSource::User, "absent".into(), &cancel)
+            .await,
+        Err(McpError::UnknownServer)
+    ));
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn framework_precancellation_closes_admission_before_dependent_cleanup_finishes() {
     struct SlowConsumer {
         entered: Arc<tokio::sync::Notify>,

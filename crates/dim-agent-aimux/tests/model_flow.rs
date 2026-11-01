@@ -1,5 +1,10 @@
 use axum::{
-    Json, Router, body::Body, extract::State, http::HeaderMap, response::Response, routing::post,
+    Json, Router,
+    body::{Body, Bytes},
+    extract::State,
+    http::{HeaderMap, Method, StatusCode, Uri},
+    response::Response,
+    routing::{any, post},
 };
 use dim_agent_aimux::{AimuxModels, AimuxPlugin, ConfiguredModelsPlugin, config::ModelConfigFile};
 use dim_agent_capabilities::{adapters::MockTools, defaults, history::HistoryRenderer, host::*};
@@ -769,6 +774,245 @@ async fn recorded_failures_and_cancellations_close_their_record() {
         assert!(lines[0]["exchanges"][0]["response"].is_null());
         assert!(lines[0]["complete"].as_bool().unwrap());
 
+        server.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+fn output_failure(events: &[Arc<AgentEvent>]) -> Option<String> {
+    events.iter().find_map(|event| match &event.kind {
+        EventKind::ModelOutputEnd(data) => match &data.outcome {
+            ModelOutputOutcome::Failed { error, .. } => Some(error.clone()),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+#[derive(Clone)]
+struct RedirectState {
+    hits: Arc<Mutex<Vec<RedirectHit>>>,
+    redirect: Option<(StatusCode, String)>,
+}
+#[derive(Clone, Debug)]
+struct RedirectHit {
+    method: Method,
+    path: String,
+    body: Option<Value>,
+}
+struct RedirectServer {
+    state: RedirectState,
+    origin: String,
+    url: String,
+    cancel: CancellationToken,
+    join: tokio::task::JoinHandle<()>,
+}
+impl RedirectServer {
+    async fn start(status: StatusCode, location: &str) -> Self {
+        Self::launch(Some((status, location.to_owned()))).await
+    }
+    async fn serving() -> Self {
+        Self::launch(None).await
+    }
+    async fn launch(redirect: Option<(StatusCode, String)>) -> Self {
+        let state = RedirectState {
+            hits: Arc::default(),
+            redirect,
+        };
+        let router = Router::new()
+            .route("/v1/chat/completions", any(serve_redirect))
+            .route("/v1b/chat/completions", any(serve_redirect))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let url = format!("{origin}/v1");
+        let cancel = CancellationToken::new();
+        let stop = cancel.clone();
+        let join = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(stop.cancelled_owned())
+                .await
+                .unwrap();
+        });
+        Self {
+            state,
+            origin,
+            url,
+            cancel,
+            join,
+        }
+    }
+    fn hits(&self) -> Vec<RedirectHit> {
+        self.state.hits.lock().unwrap().clone()
+    }
+    fn models(&self) -> Arc<AimuxModels> {
+        Arc::new(AimuxModels::from_config(configuration(&self.url)).unwrap())
+    }
+    async fn close(self) {
+        self.cancel.cancel();
+        self.join.await.unwrap();
+    }
+}
+async fn serve_redirect(
+    State(state): State<RedirectState>,
+    method: Method,
+    uri: Uri,
+    body: Bytes,
+) -> Response {
+    state.hits.lock().unwrap().push(RedirectHit {
+        method,
+        path: uri.path().to_owned(),
+        body: serde_json::from_slice(&body).ok(),
+    });
+    match (&state.redirect, uri.path()) {
+        (Some((status, location)), "/v1/chat/completions") => Response::builder()
+            .status(*status)
+            .header("location", location)
+            .body(Body::empty())
+            .unwrap(),
+        _ => Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::from(
+                frame(json!({"content": "hello"}), json!("stop")) + "data: [DONE]\n\n",
+            ))
+            .unwrap(),
+    }
+}
+async fn redirect_failure(base_url: &str, bearer: &str) -> HostError {
+    let root = rutis::Ctx::root().unwrap();
+    root.plugin(AimuxPlugin).await.unwrap();
+    let host = root.get::<ModelHost>().unwrap();
+    let request = Arc::new(ModelRequest::new(
+        "local",
+        "test-model",
+        vec![Message::text(Role::User, "text")],
+    ));
+    let connection = ModelConnection::Http(HttpModelConnection {
+        api_key: None,
+        network: Default::default(),
+        protocol: ModelProtocol::OpenaiCompatible,
+        base_url: base_url.to_owned(),
+        bearer: Some(bearer.to_owned()),
+        headers: Default::default(),
+        preset: None,
+    });
+    let error = match host
+        .0
+        .invoke(request, connection, CancellationToken::new())
+        .await
+    {
+        Err(error) => error,
+        Ok(mut stream) => loop {
+            match stream.next().await {
+                Some(Err(error)) => break error,
+                Some(Ok(_)) => {}
+                None => panic!("the model stream ended without the expected failure"),
+            }
+        },
+    };
+    root.shutdown().await.unwrap();
+    error
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_same_origin_307_or_308_redirect_completes_the_turn_at_its_target() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        for status in [
+            StatusCode::TEMPORARY_REDIRECT,
+            StatusCode::PERMANENT_REDIRECT,
+        ] {
+            let server = RedirectServer::start(status, "/v1b/chat/completions").await;
+            let agent = model_agent(server.models(), None).await;
+            let session = agent.create_session(session_config()).await.unwrap();
+            session
+                .submit("text".into(), InputMode::Queue, "main")
+                .await
+                .unwrap();
+            session.idle("main").await.unwrap();
+            let events = session.history("main", None).await.unwrap();
+            assert_eq!(output_failure(&events), None, "{status}: the turn failed");
+            assert!(
+                events.iter().any(
+                    |event| matches!(&event.kind, EventKind::Text(data) if data.delta == "hello")
+                ),
+                "{status}"
+            );
+            assert!(
+                matches!(
+                    events.last().unwrap().kind,
+                    EventKind::TurnEnd(TurnEndData {
+                        outcome: TurnOutcome::Completed { .. },
+                        ..
+                    })
+                ),
+                "{status}"
+            );
+            let hits = server.hits();
+            assert_eq!(hits.len(), 2, "{status}: {hits:?}");
+            assert_eq!(hits[0].path, "/v1/chat/completions");
+            assert_eq!(hits[1].path, "/v1b/chat/completions");
+            assert_eq!(hits[1].method, Method::POST);
+            assert_eq!(hits[1].body.as_ref().unwrap()["model"], "test-model");
+            agent.close().await.unwrap();
+            server.close().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_same_origin_301_redirect_is_not_followed_and_names_its_target() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let server =
+            RedirectServer::start(StatusCode::MOVED_PERMANENTLY, "/v1b/chat/completions").await;
+        let moved = format!("{}/v1b/chat/completions", server.origin);
+        let error = redirect_failure(&server.url, "301-secret").await;
+        let message = error.to_string();
+        assert!(message.contains(&moved), "{message}");
+        assert!(message.contains("HTTP 301"), "{message}");
+        assert!(message.contains("GET without its body"), "{message}");
+        assert!(!message.contains("301-secret"), "{message}");
+        let hits = server.hits();
+        assert_eq!(hits.len(), 1, "the target was contacted: {hits:?}");
+        assert_eq!(hits[0].path, "/v1/chat/completions");
+        server.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cross_origin_redirect_is_not_followed_and_names_its_target() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let other = RedirectServer::serving().await;
+        let moved = format!("{}/chat/completions", other.url);
+        let server = RedirectServer::start(StatusCode::TEMPORARY_REDIRECT, &moved).await;
+        let error = redirect_failure(&server.url, "cross-origin-secret").await;
+        let message = error.to_string();
+        assert!(message.contains(&moved), "{message}");
+        assert!(message.contains("HTTP 307"), "{message}");
+        assert!(message.contains("different origin"), "{message}");
+        assert!(!message.contains("cross-origin-secret"), "{message}");
+        assert!(other.hits().is_empty(), "the other origin was contacted");
+        server.close().await;
+        other.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_same_origin_redirect_chain_stops_at_the_limit() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let server =
+            RedirectServer::start(StatusCode::TEMPORARY_REDIRECT, "/v1/chat/completions").await;
+        let error = redirect_failure(&server.url, "chain-secret").await;
+        let message = error.to_string();
+        assert!(message.contains("redirect limit"), "{message}");
+        assert!(message.contains("HTTP 307"), "{message}");
+        assert_eq!(server.hits().len(), 11, "ten hops were followed, no more");
         server.close().await;
     })
     .await

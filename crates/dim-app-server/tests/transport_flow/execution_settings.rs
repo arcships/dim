@@ -90,6 +90,75 @@ async fn execution_settings_decide_the_next_process_boundary() {
     let session = server.agent().unwrap().get_session(&sid).unwrap();
     assert_ok(&client.rpc("session.attach", json!({"sessionId":sid})).await);
 
+    let branch = json!({"sessionId":sid,"branchId":"main"});
+    let outside = home.join("outside.txt");
+    macro_rules! run {
+        ($input:expr) => {{
+            assert_ok(
+                &client
+                    .rpc(
+                        "session.submit",
+                        json!({"sessionId":sid,"branchId":"main","text":format!("tool:exec {}", $input)}),
+                    )
+                    .await,
+            );
+            assert_ok(&client.rpc("session.idle", branch.clone()).await);
+            session
+                .history("main", None)
+                .await
+                .unwrap()
+                .iter()
+                .rev()
+                .find_map(|event| match &event.kind {
+                    EventKind::ToolResult(data) => Some(data.results[0].result.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        }};
+    }
+
+    let unreadable = home.join("execution.json");
+    std::fs::create_dir(&unreadable).unwrap();
+    let unconfigured = run!(json!({"command":"printf x"}));
+    assert_eq!(unconfigured.is_error, Some(true));
+    assert_eq!(
+        unconfigured
+            .structured_content
+            .as_ref()
+            .and_then(|content| content.get("code"))
+            .and_then(Value::as_str),
+        Some("isolation_config_invalid"),
+        "{unconfigured:?}"
+    );
+    std::fs::remove_dir(&unreadable).unwrap();
+
+    let backend = client.rpc("host.execution.backend", json!({})).await;
+    assert_ok(&backend);
+    let available = backend["result"]["available"].as_bool().unwrap();
+    #[cfg(target_os = "macos")]
+    assert!(available, "macOS has the seatbelt backend: {backend}");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let expected = std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|directory| {
+                let bwrap = directory.join("bwrap");
+                std::fs::metadata(&bwrap).is_ok_and(|metadata| {
+                    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+                })
+            })
+        });
+        assert_eq!(available, expected, "{backend}");
+    }
+    if !available {
+        assert!(
+            backend["result"]["reason"]
+                .as_str()
+                .is_some_and(|reason| !reason.is_empty()),
+            "{backend}"
+        );
+    }
+
     let initial = client
         .rpc(
             "settings.read",
@@ -124,33 +193,6 @@ async fn execution_settings_decide_the_next_process_boundary() {
         "settings_conflict"
     );
 
-    let branch = json!({"sessionId":sid,"branchId":"main"});
-    let outside = home.join("outside.txt");
-    macro_rules! run {
-        ($input:expr) => {{
-            assert_ok(
-                &client
-                    .rpc(
-                        "session.submit",
-                        json!({"sessionId":sid,"branchId":"main","text":format!("tool:exec {}", $input)}),
-                    )
-                    .await,
-            );
-            assert_ok(&client.rpc("session.idle", branch.clone()).await);
-            session
-                .history("main", None)
-                .await
-                .unwrap()
-                .iter()
-                .rev()
-                .find_map(|event| match &event.kind {
-                    EventKind::ToolResult(data) => Some(data.results[0].result.clone()),
-                    _ => None,
-                })
-                .unwrap()
-        }};
-    }
-
     let rejected = run!(json!({"command":"printf x","sandbox":"host"}));
     assert_eq!(rejected.is_error, Some(true));
     assert!(
@@ -162,25 +204,61 @@ async fn execution_settings_decide_the_next_process_boundary() {
         rejected.content
     );
 
-    let denied = run!(json!({"command": format!(
-        "printf hidden > {} && printf inside > inside.txt",
-        outside.display()
-    )}));
-    assert_eq!(denied.is_error, Some(true));
-    assert!(!outside.exists(), "the sandbox let a write out");
-    assert!(!work.join("inside.txt").exists());
+    let mut revision = sandboxed["result"]["revision"].clone();
+    if available {
+        let denied = run!(json!({"command": format!(
+            "printf hidden > {} && printf inside > inside.txt",
+            outside.display()
+        )}));
+        assert_eq!(denied.is_error, Some(true));
+        assert!(!outside.exists(), "the sandbox let a write out");
+        assert!(!work.join("inside.txt").exists());
 
-    let allowed = run!(json!({"command":"printf inside > inside.txt"}));
-    assert_eq!(allowed.is_error, None);
-    assert_eq!(
-        std::fs::read_to_string(work.join("inside.txt")).unwrap(),
-        "inside"
-    );
+        let allowed = run!(json!({"command":"printf inside > inside.txt"}));
+        assert_eq!(allowed.is_error, None);
+        assert_eq!(
+            std::fs::read_to_string(work.join("inside.txt")).unwrap(),
+            "inside"
+        );
+
+        let networked = client
+            .rpc(
+                "settings.update",
+                json!({"source":"execution","scope":"user","expectedRevision":revision,"document":{"sandbox":true,"network":true}}),
+            )
+            .await;
+        assert_ok(&networked);
+        assert_eq!(
+            networked["result"]["document"],
+            json!({"sandbox": true, "network": true})
+        );
+        revision = networked["result"]["revision"].clone();
+        let denied = run!(json!({"command": format!(
+            "printf hidden > {} && printf inside > networked.txt",
+            outside.display()
+        )}));
+        assert_eq!(denied.is_error, Some(true), "Network widened file access");
+        assert!(!outside.exists(), "the sandbox let a write out");
+        assert!(!work.join("networked.txt").exists());
+        let allowed = run!(json!({"command":"printf inside > networked.txt"}));
+        assert_eq!(allowed.is_error, None);
+    } else {
+        let unavailable = run!(json!({"command":"printf x"}));
+        assert_eq!(
+            unavailable
+                .structured_content
+                .as_ref()
+                .and_then(|content| content.get("code"))
+                .and_then(Value::as_str),
+            Some("isolation_unavailable"),
+            "{unavailable:?}"
+        );
+    }
 
     let unsandboxed = client
         .rpc(
             "settings.update",
-            json!({"source":"execution","scope":"user","expectedRevision":sandboxed["result"]["revision"],"document":{"sandbox":false,"network":false}}),
+            json!({"source":"execution","scope":"user","expectedRevision":revision,"document":{"sandbox":false,"network":false}}),
         )
         .await;
     assert_ok(&unsandboxed);

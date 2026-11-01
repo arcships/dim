@@ -82,7 +82,7 @@ load 固定 native 历史头，按 nextAfter/done 分页，按分支 sequence �
 
 取消尊重 InputQueue → Loop 的交接：held 输入走 withdrawal，随后按需 session.stop。现有原生合同不能保证 stop 精确指向预期 turn，也不能保证已 adopted、未 consumed 输入已删除。状态、顺序和竞态见[计划 §5](../../../design/acp-gateway-implementation.md#5-prompt回放和响应关联)、[§6.4](../../../design/acp-gateway-implementation.md#64-取消的交接边界)。
 
-本连接收到 cancel 后，prompt 必须返回 ACP cancelled，即使取消触发底层异常。未来原生若提供 Hooks input_blocked，则显示原消息并返回 refusal；Gateway 不实现 Hooks。
+本连接收到 cancel 后，prompt 必须返回 ACP cancelled，即使取消触发底层异常。Hooks 对 session.submit 的 input_blocked 拒绝显示原消息并返回 refusal；Gateway 不实现 Hooks。
 
 ### 4.3 审批与提问
 

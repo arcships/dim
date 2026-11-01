@@ -1,5 +1,5 @@
 //! Sign-in by browser or device code (port of `oauthView` / `oauthRows`):
-//! the `/login` panel for Dim, the OAuth step of `/connect` for Codex / Grok.
+//! the `/login` panel for Dim, and a described account's step of `/connect`.
 //!
 //! Dim's panel opens on a menu that depends on the account the host reports:
 //!
@@ -27,11 +27,14 @@
 //!
 //! Each entry goes straight into its flow; the flow shows only its own
 //! rows, and `Esc` after an error or a cancel returns to the menu. Signed
-//! in, the account's usage is asked for once and again on `Ctrl+R`. Codex
-//! signs in by browser only and Grok by device code only, so they start on
-//! open and have no menu.
+//! in, the account's usage is asked for once and again on `Ctrl+R`. A
+//! described account starts its only flow on open when it is signed out, and
+//! shows its state and a sign-out entry when it is signed in.
 
-use crate::model::session::{Account as AccountInfo, DIM_OAUTH_ID, OauthEvent, OauthStart, Usage};
+use crate::model::session::{
+    ACCOUNT_NAMESPACE, Account as AccountInfo, AccountDescriptor, AccountTarget, OauthEvent,
+    OauthStart, Usage,
+};
 use crate::ui::i18n::{t, tf};
 use crate::ui::line_input::LineInput;
 use crate::ui::prompts::Effect;
@@ -43,11 +46,9 @@ use crate::ui::text::{display_width as width_of, truncate_cells, wrap_cells};
 use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::fg;
 
-const CODEX_ID: &str = "openai-codex";
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
-    /// Nothing started: the Dim entry rows, or the mode rows of Codex/Grok.
+    /// Nothing started: the Dim entry rows, or a described account's state.
     Idle,
     /// The enterprise email prompt.
     Email,
@@ -97,7 +98,13 @@ enum Account {
 
 pub struct OauthView {
     provider_id: String,
+    /// The namespace the sign-in and sign-out methods belong to.
+    namespace: String,
+    /// The Dim account's panel: its account menu, usage and plan.
+    dim: bool,
     name: String,
+    /// The described account is signed in: it offers sign-out, not sign-in.
+    signed_in: bool,
     device: bool,
     phase: Phase,
     focus: Focus,
@@ -118,15 +125,71 @@ pub struct OauthView {
 }
 
 impl OauthView {
-    pub fn new(provider_id: &str, name: &str, attempt: u64) -> Self {
-        let dim = provider_id == DIM_OAUTH_ID;
-        let device = !matches!(provider_id, CODEX_ID | DIM_OAUTH_ID);
-        let mut view = Self {
+    /// The Dim account's panel (`/login`), for the described account whose
+    /// namespace is `account`.
+    pub fn dim(provider_id: &str, name: &str, attempt: u64) -> Self {
+        Self::new(
+            provider_id,
+            ACCOUNT_NAMESPACE,
+            name,
+            true,
+            false,
+            false,
+            attempt,
+        )
+    }
+
+    /// A provider's described account: one sign-in flow, chosen by its
+    /// methods, and sign-out when it is signed in.
+    pub fn described(
+        provider_id: &str,
+        account: &AccountDescriptor,
+        name: &str,
+        signed_in: bool,
+        attempt: u64,
+    ) -> Self {
+        let device = !account
+            .login_methods
+            .iter()
+            .any(|method| method == "browser");
+        Self::new(
+            provider_id,
+            &account.namespace,
+            name,
+            false,
+            signed_in,
+            device,
+            attempt,
+        )
+    }
+
+    fn new(
+        provider_id: &str,
+        namespace: &str,
+        name: &str,
+        dim: bool,
+        signed_in: bool,
+        device: bool,
+        attempt: u64,
+    ) -> Self {
+        let focus = if dim {
+            Focus::Submit
+        } else if signed_in {
+            Focus::Logout
+        } else if device {
+            Focus::DeviceTab
+        } else {
+            Focus::BrowserTab
+        };
+        Self {
             provider_id: provider_id.to_owned(),
+            namespace: namespace.to_owned(),
+            dim,
             name: name.to_owned(),
+            signed_in,
             device,
             phase: Phase::Idle,
-            focus: Focus::Submit,
+            focus,
             attempt,
             email: LineInput::new(""),
             account: None,
@@ -137,22 +200,13 @@ impl OauthView {
             device_text: None,
             message: None,
             error: None,
-        };
-        if dim {
-            view.focus = Focus::Submit;
-        } else {
-            view.focus = if view.device {
-                Focus::DeviceTab
-            } else {
-                Focus::BrowserTab
-            };
         }
-        view
     }
 
-    /// Codex and Grok have no entry rows: the sign-in begins on open.
+    /// A described account that is not signed in begins its sign-in on
+    /// open. The Dim panel keeps its menu.
     pub fn auto_start(&mut self) -> Effect {
-        if self.provider_id == DIM_OAUTH_ID {
+        if self.dim || self.signed_in {
             Effect::None
         } else {
             self.start(self.device, None)
@@ -195,7 +249,7 @@ impl OauthView {
         }
     }
 
-    fn signed_in(&self) -> bool {
+    fn dim_signed_in(&self) -> bool {
         matches!(self.account, Some(Account::SignedIn(_)))
     }
 
@@ -216,6 +270,7 @@ impl OauthView {
         Effect::OauthStart(OauthStart {
             attempt: self.attempt,
             provider_id: self.provider_id.clone(),
+            namespace: self.namespace.clone(),
             device,
             email,
         })
@@ -226,7 +281,7 @@ impl OauthView {
     /// does not need).
     fn rows(&self, width: usize, p: Option<&Palette>) -> Vec<(Row, String)> {
         let mut rows: Vec<(Row, String)> = Vec::new();
-        let dim = self.provider_id == DIM_OAUTH_ID;
+        let dim = self.dim;
         if dim && self.phase == Phase::Idle {
             match (&self.account, p) {
                 (_, None) => {}
@@ -243,7 +298,7 @@ impl OauthView {
                 }
             }
             rows.push((Row::Section, String::new()));
-            if self.signed_in() {
+            if self.dim_signed_in() {
                 rows.push((Row::Action(Focus::Models), t("Open models").into()));
                 rows.push((Row::Action(Focus::Plan), t("View plan").into()));
                 rows.push((Row::Action(Focus::Logout), t("Sign out").into()));
@@ -257,6 +312,12 @@ impl OauthView {
         if dim && self.phase == Phase::Email {
             rows.push((Row::Action(Focus::Email), t("Email").into()));
             rows.push((Row::Action(Focus::Submit), t("Continue").into()));
+            return rows;
+        }
+        if !dim && self.signed_in && self.phase == Phase::Idle {
+            rows.push((Row::Section, t("Signed in").to_owned()));
+            rows.push((Row::Section, String::new()));
+            rows.push((Row::Action(Focus::Logout), t("Sign out").into()));
             return rows;
         }
         if self.device {
@@ -470,6 +531,16 @@ impl OauthView {
         self.focus_order().contains(&Focus::Link)
     }
 
+    /// This is the Dim account's panel, not one described account's step.
+    pub fn dim_panel(&self) -> bool {
+        self.dim
+    }
+
+    /// The provider id this panel's account belongs to.
+    pub fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+
     fn move_focus(&mut self, delta: isize) {
         let order = self.focus_order();
         if order.is_empty() {
@@ -549,10 +620,10 @@ impl OauthView {
                         Effect::None
                     }
                     Phase::Idle => Effect::OauthBack,
-                    Phase::Error | Phase::Cancelled if self.provider_id == DIM_OAUTH_ID => {
+                    Phase::Error | Phase::Cancelled if self.dim => {
                         self.phase = Phase::Idle;
                         self.error = None;
-                        self.focus = if self.signed_in() {
+                        self.focus = if self.dim_signed_in() {
                             Focus::Models
                         } else {
                             Focus::Submit
@@ -571,7 +642,7 @@ impl OauthView {
                 self.move_focus(1);
                 return Effect::None;
             }
-            KeyCode::Char('r') if ctrl && self.phase == Phase::Idle && self.signed_in() => {
+            KeyCode::Char('r') if ctrl && self.phase == Phase::Idle && self.dim_signed_in() => {
                 self.usage_loading = true;
                 return Effect::LoginUsage(self.provider_id.clone());
             }
@@ -697,7 +768,10 @@ impl OauthView {
                 Some(url) => Effect::OpenUrl(url),
                 None => Effect::None,
             },
-            Focus::Logout => Effect::Logout(self.provider_id.clone()),
+            Focus::Logout => Effect::Logout(AccountTarget {
+                provider_id: self.provider_id.clone(),
+                namespace: self.namespace.clone(),
+            }),
             Focus::RestartDevice => self.start(true, None),
             Focus::Link => match &self.auth_url {
                 Some(url) => Effect::OpenUrl(url.clone()),
@@ -719,7 +793,7 @@ impl OauthView {
                 "type value · ↑↓/tab move · enter submit · esc cancel"
             }
             _ if self.focus == Focus::Link => "Select to copy · Enter opens link",
-            Phase::Idle if self.signed_in() => {
+            Phase::Idle if self.dim && self.dim_signed_in() => {
                 "↑↓ move · enter activate · ctrl+r refresh · esc close"
             }
             Phase::Idle => "↑↓ move · enter activate · esc close",
@@ -937,6 +1011,7 @@ fn origin_of(redirect_uri: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::session::DIM_OAUTH_ID;
     use crate::ui::terminal::KeyEvent;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -950,9 +1025,22 @@ mod tests {
         }
     }
 
+    fn described(id: &str, namespace: &str, methods: &[&str], name: &str) -> OauthView {
+        OauthView::described(
+            id,
+            &AccountDescriptor {
+                namespace: namespace.into(),
+                login_methods: methods.iter().map(|method| (*method).to_owned()).collect(),
+            },
+            name,
+            false,
+            0,
+        )
+    }
+
     #[test]
     fn dim_entry_starts_a_browser_login_and_tags_the_attempt() {
-        let mut view = OauthView::new(DIM_OAUTH_ID, "DimAgent", 0);
+        let mut view = OauthView::dim(DIM_OAUTH_ID, "DimAgent", 0);
         let start = started(&mut view);
         assert!(!start.device);
         assert_eq!(start.attempt, 1);
@@ -966,16 +1054,62 @@ mod tests {
     }
 
     #[test]
-    fn codex_starts_on_open_and_grok_by_device() {
-        let mut codex = OauthView::new("openai-codex", "OpenAI Codex", 0);
-        assert!(matches!(codex.auto_start(), Effect::OauthStart(s) if !s.device));
-        let mut grok = OauthView::new("xai-grok-build", "Grok Build", 0);
-        assert!(matches!(grok.auto_start(), Effect::OauthStart(s) if s.device));
+    fn the_described_methods_choose_the_flow() {
+        let mut codex = described(
+            "openai-codex",
+            "account.codex",
+            &["browser"],
+            "OpenAI Codex",
+        );
+        assert!(matches!(
+            codex.auto_start(),
+            Effect::OauthStart(s) if !s.device && s.namespace == "account.codex"
+        ));
+        let mut grok = described("xai-grok-build", "account.grok", &["device"], "Grok Build");
+        assert!(matches!(
+            grok.auto_start(),
+            Effect::OauthStart(s) if s.device && s.namespace == "account.grok"
+        ));
+        let mut signed_in = OauthView::described(
+            "openai-codex",
+            &AccountDescriptor {
+                namespace: "account.codex".into(),
+                login_methods: vec!["browser".into()],
+            },
+            "OpenAI Codex",
+            true,
+            0,
+        );
+        assert!(matches!(signed_in.auto_start(), Effect::None));
+        assert_eq!(labels(&signed_in), ["Signed in", "", "Sign out"]);
+        assert!(matches!(
+            signed_in.handle_key(key(KeyCode::Enter)),
+            Effect::Logout(t) if t.provider_id == "openai-codex" && t.namespace == "account.codex"
+        ));
+    }
+
+    #[test]
+    fn a_described_account_offers_no_entry_for_a_method_it_does_not_have() {
+        let device = described("grok-build", "account.grok", &["device"], "Grok Build");
+        let rows = labels(&device);
+        assert_eq!(rows, ["Device login", "Restart device login"]);
+        let browser = described(
+            "openai-codex",
+            "account.codex",
+            &["browser"],
+            "OpenAI Codex",
+        );
+        assert_eq!(labels(&browser), ["Browser login"]);
     }
 
     #[test]
     fn pasted_callback_with_the_wrong_state_is_refused() {
-        let mut view = OauthView::new("openai-codex", "OpenAI Codex", 0);
+        let mut view = described(
+            "openai-codex",
+            "account.codex",
+            &["browser"],
+            "OpenAI Codex",
+        );
         view.auto_start();
         view.event(
             1,
@@ -1002,7 +1136,7 @@ mod tests {
 
     #[test]
     fn failure_offers_a_restart_and_esc_returns_to_the_menu() {
-        let mut view = OauthView::new(DIM_OAUTH_ID, "DimAgent", 0);
+        let mut view = OauthView::dim(DIM_OAUTH_ID, "DimAgent", 0);
         started(&mut view);
         view.event(1, OauthEvent::Done(Err(Some("denied".into()))));
         assert_eq!(view.phase, Phase::Error);
@@ -1016,7 +1150,12 @@ mod tests {
             view.handle_key(key(KeyCode::Esc)),
             Effect::OauthBack
         ));
-        let mut codex = OauthView::new("openai-codex", "OpenAI Codex", 0);
+        let mut codex = described(
+            "openai-codex",
+            "account.codex",
+            &["browser"],
+            "OpenAI Codex",
+        );
         codex.auto_start();
         codex.event(1, OauthEvent::Done(Err(Some("denied".into()))));
         assert!(matches!(
@@ -1050,7 +1189,7 @@ mod tests {
     /// own flow without a mode switch inside it.
     #[test]
     fn dim_menu_entries_go_straight_into_their_flows() {
-        let mut view = OauthView::new(DIM_OAUTH_ID, "DimAgent", 0);
+        let mut view = OauthView::dim(DIM_OAUTH_ID, "DimAgent", 0);
         view.set_account(Ok(None));
         assert_eq!(
             labels(&view),
@@ -1068,7 +1207,7 @@ mod tests {
         assert!(start.device && start.email.is_none());
         assert_eq!(labels(&view)[0], "Device login");
         assert!(!labels(&view).iter().any(|l| l.contains("mode")));
-        let mut view = OauthView::new(DIM_OAUTH_ID, "DimAgent", 0);
+        let mut view = OauthView::dim(DIM_OAUTH_ID, "DimAgent", 0);
         view.set_account(Ok(None));
         view.handle_key(key(KeyCode::Down));
         assert!(matches!(view.handle_key(key(KeyCode::Enter)), Effect::None));
@@ -1088,7 +1227,7 @@ mod tests {
     /// next account report turns it back into the sign-in menu.
     #[test]
     fn signed_in_menu_offers_models_and_sign_out() {
-        let mut view = OauthView::new(DIM_OAUTH_ID, "DimAgent", 0);
+        let mut view = OauthView::dim(DIM_OAUTH_ID, "DimAgent", 0);
         assert_eq!(labels(&view)[0], "Checking account…");
         view.set_account(Ok(Some(signed_in())));
         assert_eq!(
@@ -1114,7 +1253,7 @@ mod tests {
         view.handle_key(key(KeyCode::Down));
         assert!(matches!(
             view.handle_key(key(KeyCode::Enter)),
-            Effect::Logout(id) if id == DIM_OAUTH_ID
+            Effect::Logout(t) if t.provider_id == DIM_OAUTH_ID && t.namespace == ACCOUNT_NAMESPACE
         ));
         view.set_account(Ok(None));
         assert_eq!(labels(&view)[2], "Login with DimAgent");
@@ -1130,7 +1269,7 @@ mod tests {
     #[test]
     fn usage_rows_show_plan_credits_windows_and_features() {
         use crate::model::session::{UsageCredits, UsageFeature, UsagePlan, UsageWindow};
-        let mut view = OauthView::new(DIM_OAUTH_ID, "DimAgent", 0);
+        let mut view = OauthView::dim(DIM_OAUTH_ID, "DimAgent", 0);
         view.set_account(Ok(Some(signed_in())));
         view.set_usage(Ok(Usage {
             plan: Some(UsagePlan {

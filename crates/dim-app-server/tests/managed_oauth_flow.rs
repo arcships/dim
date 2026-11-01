@@ -934,6 +934,14 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
                 .all(|m| m.unavailable_reason.is_some())
         );
     }
+    let signed_out = provider.selectable_models(&cancel).await.unwrap();
+    assert!(
+        signed_out
+            .iter()
+            .all(|model| !["openai-codex", "grok-build"]
+                .contains(&model.target.provider_id.as_str())),
+        "{signed_out:?}"
+    );
     login(&codex, "account-a").await;
     f.polls.store(2, Ordering::SeqCst);
     let begin = grok.begin_device(&cancel).await.unwrap();
@@ -1000,6 +1008,44 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
                 .filter(|m| m.id.contains("image") || m.id.contains("video"))
                 .all(|m| m.unavailable_reason.is_some())
         );
+        let selectable = provider.selectable_models(&cancel).await.unwrap();
+        let unavailable: Vec<&str> = catalog
+            .models
+            .iter()
+            .filter(|model| model.unavailable_reason.is_some())
+            .map(|model| model.id.as_str())
+            .collect();
+        assert!(
+            selectable
+                .iter()
+                .filter(|model| model.target.provider_id == id)
+                .all(|model| !unavailable.contains(&model.target.model_id.as_str())),
+            "{selectable:?}"
+        );
+        let selected = selectable
+            .iter()
+            .find(|model| model.target.provider_id == id && model.target.model_id == model_id)
+            .unwrap_or_else(|| panic!("{id}/{model_id} missing from {selectable:?}"));
+        let declared = catalog
+            .models
+            .iter()
+            .find(|model| model.id == model_id)
+            .unwrap();
+        assert_eq!(
+            selected.capabilities.modalities,
+            declared.capabilities.modalities
+        );
+        for model in &selectable {
+            provider
+                .configuration(
+                    Some(model.target.clone()),
+                    None,
+                    ModelPreferences::default(),
+                    &cancel,
+                )
+                .await
+                .unwrap();
+        }
         let edited = provider
             .update_model_config(
                 id.into(),

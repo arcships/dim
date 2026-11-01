@@ -1306,6 +1306,7 @@ impl Gateway {
                                                     | "session_build_failed"
                                                     | "service_reloading"
                                                     | "unknown_method"
+                                                    | "input_blocked"
                                             )
                                         )
                                 });
@@ -1313,6 +1314,21 @@ impl Gateway {
                                 prompt.reply.respond(json!({"stopReason":"cancelled"}))?;
                             } else if !rejected {
                                 prompt.reply.respond_with_error(Error::new(-32001,"Submission outcome is unknown; load this Session before sending again").data(json!({"code":"submission_unknown","sessionId":id,"submissionId":prompt.submission})))?;
+                            } else if error
+                                .data
+                                .as_ref()
+                                .is_some_and(|data| data["nativeAppError"] == "input_blocked")
+                            {
+                                // A submit check's block is a refusal, and its
+                                // message is the reason the user sees.
+                                self.update(
+                                    &id,
+                                    json!({
+                                        "sessionUpdate":"agent_message_chunk",
+                                        "content":{"type":"text","text":error.message},
+                                    }),
+                                )?;
+                                prompt.reply.respond(json!({"stopReason":"refusal"}))?;
                             } else {
                                 prompt.reply.respond_with_error(error)?;
                             }

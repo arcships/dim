@@ -234,7 +234,7 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
         let (mut daemon, socket) = launch_product(&directory).await;
         let mut client = connect(&socket).await;
 
-        let capabilities = dim_agent_types::CatalogCapabilities::with_limits(4_000, 200);
+        let capabilities = dim_agent_types::CatalogCapabilities::with_limits(4_400, 200);
         assert_ok(&client.rpc("provider.create", json!({"providerId":"018ec73f-0000-7000-8000-000000000004","displayName":"Window","connection":{"driverKind":"openai-compatible","baseUrl":format!("http://{endpoint}/v1"),"auth":{"type":"bearer"},"credential":{"action":"set","value":CREDENTIAL}},"models":[{"modelId":"small","displayName":"small","status":"active","capabilities":capabilities}],"enabled":true})).await);
         assert_ok(
             &client
@@ -283,7 +283,7 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
 
         assert_eq!(
             live[0],
-            json!({"kind":"header","export":1,"session_id":session,"store_format":27,"sensitive":true})
+            json!({"kind":"header","export":1,"session_id":session,"store_format":29,"sensitive":true})
         );
         let branches: Vec<_> = live.iter().filter(|line| line["kind"] == "branch").collect();
         assert_eq!(branches.len(), 2);
@@ -351,10 +351,25 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             (23, "", true),
             (24, "", true),
             (25, "", false),
+            (26, "", false),
+            (27, "", false),
+            (28, "", false),
         ] {
             let older = directory.join(format!("copies/v{version}.sqlite"));
             let catalog = if version < 23 {
                 "DROP TABLE session_catalog;"
+            } else {
+                ""
+            };
+            // Every format before v28 lacks the grants table.
+            let grants = if version < 28 {
+                "DROP TABLE session_grants;"
+            } else {
+                ""
+            };
+            // Every format before v29 lacks the output ownership table.
+            let output = if version < 29 {
+                "DROP TABLE session_output_owners;"
             } else {
                 ""
             };
@@ -364,10 +379,12 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             } else {
                 ""
             };
-            changed(&database, &older, &format!("{catalog} {dropped} {end_index} DROP TABLE agent_store_format;
+            changed(&database, &older, &format!("{catalog} {grants} {output} {dropped} {end_index} DROP TABLE agent_store_format;
                 CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = {version}));
                 INSERT INTO agent_store_format VALUES ({version});"));
-            without_v26_columns(&older);
+            if version < 27 {
+                without_v26_columns(&older);
+            }
             let bytes = std::fs::read(&older).unwrap();
             let read = exported(&older, &session).await;
             assert_eq!(read[0]["store_format"], version, "v{version}");
@@ -378,8 +395,8 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
 
         for (name, sql) in [
             ("newer.sqlite", "DROP TABLE agent_store_format;
-                CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 28));
-                INSERT INTO agent_store_format VALUES (28);"),
+                CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 30));
+                INSERT INTO agent_store_format VALUES (30);"),
             ("changed.sqlite", "CREATE TABLE extra (id TEXT)"),
         ] {
             let path = directory.join("copies").join(name);

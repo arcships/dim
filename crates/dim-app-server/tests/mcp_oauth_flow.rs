@@ -1067,6 +1067,11 @@ async fn sign_in_refuses_unverifiable_servers_and_expires_rejected_grants() {
         json!({"status":"expired"})
     );
     assert!(daemon.store()["credentials"][0].get("tokens").is_none());
+    let probe = client.ok("mcp.test", user("docs")).await;
+    assert_eq!(probe["status"], "authRequired", "{probe}");
+    assert_eq!(probe["expired"], true, "{probe}");
+    assert!(probe["tools"].is_null(), "{probe}");
+    assert!(probe.get("missingScopes").is_none(), "{probe}");
     authority.reject_refresh.store(false, Ordering::SeqCst);
     let registrations = authority.registrations.lock().unwrap().len();
     client
@@ -1154,6 +1159,14 @@ async fn step_up_project_entries_confidential_clients_and_sse() {
         client.catalog_auth(workspace.clone(), "docs").await,
         json!({"status":"authorized","missingScopes":["files:write"]})
     );
+    let probe = client.ok("mcp.test", user("docs")).await;
+    assert_eq!(probe["status"], "authRequired", "{probe}");
+    assert_eq!(probe["missingScopes"], json!(["files:write"]), "{probe}");
+    assert!(
+        probe.get("expired").is_none(),
+        "a scope refusal is not an expired credential: {probe}"
+    );
+    assert!(probe["tools"].is_null(), "{probe}");
     let started = client
         .sign_in(&authority, project.clone(), "code-write-secret")
         .await;
@@ -1172,6 +1185,11 @@ async fn step_up_project_entries_confidential_clients_and_sse() {
         .await;
     client.mcp_state(&session, "legacy", "ready").await;
     let tested = client.ok("mcp.test", user("legacy")).await;
+    assert_eq!(tested["status"], "connected", "{tested}");
+    assert!(
+        tested["latencyMs"].as_u64().is_some(),
+        "a probe reports the latency of its attempt: {tested}"
+    );
     assert_eq!(tested["tools"][0]["name"], "read");
     client.mcp_state(&session, "legacy", "ready").await;
     let refreshes = authority.refreshes.load(Ordering::SeqCst);
@@ -1238,6 +1256,22 @@ async fn settings_inspection_tests_oauth_fields_and_cancellation_keep_credential
         resource.unauthorized.load(Ordering::SeqCst),
         0,
         "inspection must not contact the MCP server"
+    );
+    let probe = client.ok("mcp.test", user("pre")).await;
+    assert_eq!(probe["status"], "authRequired", "{probe}");
+    assert_eq!(
+        probe["expired"], false,
+        "no credential is stored yet: {probe}"
+    );
+    assert!(probe["tools"].is_null(), "{probe}");
+    assert!(
+        probe.get("missingScopes").is_none(),
+        "the server named no scopes: {probe}"
+    );
+    assert_eq!(
+        resource.unauthorized.load(Ordering::SeqCst),
+        1,
+        "a probe contacts the server, unlike inspection"
     );
     assert_eq!(view["configuration"]["oauth"]["clientId"], "pre-client");
     assert_eq!(view["configuration"]["oauth"]["callbackPort"], 1457);
@@ -1319,6 +1353,7 @@ async fn settings_inspection_tests_oauth_fields_and_cancellation_keep_credential
     }
     let before = stored();
     let tested = client.ok("mcp.test", user("pre")).await;
+    assert_eq!(tested["status"], "connected", "{tested}");
     assert_eq!(tested["tools"][0]["name"], "read");
     assert_eq!(
         stored(),

@@ -10,6 +10,7 @@ mod control;
 mod exec_shell_settings;
 mod execution_settings;
 pub mod grok_oauth;
+pub mod hooks_settings;
 mod managed_oauth;
 pub mod managed_provider;
 pub mod mcp;
@@ -25,6 +26,7 @@ pub mod plugin_manager;
 pub mod protocol;
 pub mod provider;
 pub mod runtime_manager;
+pub mod session_grants;
 pub mod session_typescript;
 pub mod settings;
 pub mod settings_methods;
@@ -511,7 +513,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         let legacy = config.file_roots[index].join("host-isolation.json");
         if legacy.is_file() {
             eprintln!(
-                "Ignoring {}: command isolation is a user setting in /settings > Execution; delete the file.",
+                "Ignoring {}: command isolation is a user setting in /permissions > Process isolation; delete the file.",
                 legacy.display()
             );
         }
@@ -736,6 +738,11 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             )?))
         })?);
         rows.push(register_part(&mut builtins, builder.catalog(), |names| {
+            Ok(Box::new(execution_settings::ExecutionBackendPlugin::new(
+                names,
+            )?))
+        })?);
+        rows.push(register_part(&mut builtins, builder.catalog(), |names| {
             Ok(Box::new(skills_management::SkillsCatalogPlugin::new(
                 names,
             )?))
@@ -745,6 +752,17 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                 names,
             )?))
         })?);
+        let product_home = config.product_home.clone();
+        rows.push(register_part(
+            &mut builtins,
+            builder.catalog(),
+            move |names| {
+                Ok(Box::new(hooks_settings::HooksSettingsPlugin::new(
+                    names,
+                    product_home.clone(),
+                )?))
+            },
+        )?);
         rows.push(register_part(&mut builtins, builder.catalog(), |names| {
             Ok(Box::new(
                 collaboration_model_policy::CollaborationModelPolicyPlugin::new(names)?,
@@ -782,7 +800,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         Some(state) => {
             let build = rutis_loader::resolve::Build::default();
             let names = dim_agent_runtime::Names::copy(builder.catalog(), &build);
-            let owners = plugin_manager::Owners::new(root.clone(), &names)
+            let owners = plugin_manager::Owners::new(root.clone(), &names, state.refusals.clone())
                 .map_err(|error| ServerError::Configuration(error.to_string()))?;
             Some((state.clone(), owners))
         }
@@ -1112,7 +1130,9 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
 /// the names its process parts share across languages. Registering them again
 /// does nothing, so each installer applies them.
 pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
-    use dim_agent_capabilities::host::{AuxiliaryModelHost, ModelSelectionHost};
+    use dim_agent_capabilities::host::{
+        AuxiliaryModelHost, ModelSelectionHost, SelectableModelsHost,
+    };
     use dim_agent_runtime::{SESSION_GROUP, names::register};
     register::<ServerControl>(catalog, None);
     register::<storage::SqliteStorage>(catalog, None);
@@ -1134,9 +1154,11 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     register::<provider::ProviderService>(catalog, None);
     register::<ModelSelectionHost>(catalog, None);
     register::<AuxiliaryModelHost>(catalog, None);
+    register::<SelectableModelsHost>(catalog, None);
     register::<mcp::McpService>(catalog, None);
     register::<mcp::McpAuth>(catalog, None);
     register::<mcp::Publication>(catalog, None);
+    register::<hooks_settings::HooksService>(catalog, None);
     register::<methods::ManagementMethods>(catalog, None);
     register::<runtime_manager::RuntimeService>(catalog, None);
     register::<collaboration::CollaborationSession>(catalog, Some(SESSION_GROUP));

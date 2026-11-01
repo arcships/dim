@@ -73,14 +73,20 @@ impl Approval {
         }
     }
     /// `Ok` means the call may start. `cancel` is the caller's batch token;
-    /// the last cancellation check before the start happens here.
+    /// the last cancellation check before the start happens here. The
+    /// admission decision asks Permission's advisors with the call's source
+    /// (Hooks A.6.1); the recheck after an answer is a plain decision.
     pub async fn admit(
         &self,
         call: AdmitCall,
         risk: Option<&str>,
         cancel: CancellationToken,
     ) -> Result<(), HostError> {
-        let reason = match self.permission.decide(&call.call, risk, &cancel).await? {
+        let reason = match self
+            .permission
+            .admit_decision(&call.call, &call.source, risk, &cancel)
+            .await?
+        {
             Decision::Allow if cancel.is_cancelled() => {
                 return Err(HostError::Cancelled(CANCELLED.into()));
             }

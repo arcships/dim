@@ -39,6 +39,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permission required" => "Perlu izin",
         "Allow once" => "Izinkan sekali",
         "Allow always" => "Selalu izinkan",
+        "Allow for this session" => "Izinkan untuk sesi ini",
         "Reject" => "Tolak",
         "Approve for me" => "Setujui untuk saya",
         "Full access" => "Akses penuh",

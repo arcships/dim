@@ -264,7 +264,9 @@ impl SessionStore {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::{ServerConfig, serve, storage::SqliteStorage};
+    use crate::{
+        ServerConfig, connection::ConnectionHub, connection::Entry, serve, storage::SqliteStorage,
+    };
     use dim_agent_runtime::{AgentBuilder, AgentConfig};
     use futures_util::{SinkExt, StreamExt};
     use serde_json::{Value, json};
@@ -318,6 +320,19 @@ mod tests {
         wire
     }
 
+    /// Returns once the server has dropped every websocket connection: a
+    /// connection cancels its in-flight calls before it leaves the hub.
+    async fn wait_until_disconnected(hub: &ConnectionHub) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while hub.entry_count(Entry::Bare) > 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the disconnected client's connection is still open"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn catalog_cancellation_interrupts_running_sql_and_preserves_following_writes() {
         let directory =
@@ -350,6 +365,7 @@ mod tests {
             .to_owned();
         drop(wire);
         let database = server.root.get::<SqliteStorage>().unwrap();
+        let hub = server.root.get::<ConnectionHub>().unwrap();
         database.run(move |connection| {
             let tx = connection.transaction().map_err(error)?;
             for index in 0..2300 {
@@ -404,8 +420,10 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            if disconnect {
-                wire.close(None).await.unwrap();
+            let mut wire = if disconnect {
+                drop(wire);
+                wait_until_disconnected(&hub).await;
+                None
             } else {
                 send(
                     &mut wire,
@@ -415,7 +433,8 @@ mod tests {
                 )
                 .await;
                 assert_eq!(response(&mut wire, 3).await["result"], json!({}));
-            }
+                Some(wire)
+            };
             let writing = database.run(|connection| {
                 connection.execute("UPDATE session_catalog SET preview='write after cancellation' WHERE session_id='catalog-0000'", []).map_err(error)
             });
@@ -438,25 +457,19 @@ mod tests {
                 calls.load(Ordering::SeqCst) < 2300,
                 "cancellation interrupted the scan before it visited every Session"
             );
-            if !disconnect {
-                let reply = response(&mut wire, 2).await;
+            if let Some(wire) = &mut wire {
+                let reply = response(wire, 2).await;
                 assert_eq!(reply["error"]["data"]["appError"], "cancelled", "{reply}");
+                send(wire, 4, "session.catalog.cancel", json!({"requestId":2})).await;
+                assert_eq!(response(wire, 4).await["result"], json!({}));
                 send(
-                    &mut wire,
-                    4,
-                    "session.catalog.cancel",
-                    json!({"requestId":2}),
-                )
-                .await;
-                assert_eq!(response(&mut wire, 4).await["result"], json!({}));
-                send(
-                    &mut wire,
+                    wire,
                     5,
                     "session.catalog",
                     json!({"query":"write after cancellation"}),
                 )
                 .await;
-                let page = response(&mut wire, 5).await;
+                let page = response(wire, 5).await;
                 assert_eq!(
                     page["result"]["sessions"].as_array().unwrap().len(),
                     1,

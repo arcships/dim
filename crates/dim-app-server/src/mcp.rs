@@ -95,9 +95,107 @@ pub struct McpServerEntry {
 }
 impl McpServerEntry {
     pub fn enabled(&self) -> bool {
-        match &self.configuration {
-            McpServerSettings::Stdio { enabled, .. }
-            | McpServerSettings::Remote { enabled, .. } => enabled.unwrap_or(true),
+        self.configuration.enabled()
+    }
+}
+
+/// One source's entry as that source declares it, for editing: the declared
+/// configuration, the source revision a write takes (absent for a plugin
+/// entry) and the enablement the entry runs with.
+pub struct McpEditableEntry {
+    pub configuration: McpServerSettings,
+    pub revision: Option<String>,
+    pub enabled: bool,
+}
+
+/// The terminal outcome of one probe. `mcp.test` exercises a configuration
+/// with a disposable connection and reports what happened rather than failing
+/// the call.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpProbe {
+    pub status: ProbeStatus,
+    /// Milliseconds from opening the disposable connection to this outcome,
+    /// excluding cleanup.
+    pub latency_ms: u64,
+    /// Every discovered tool, or `null` unless the probe connected.
+    pub tools: Option<Vec<server::McpTool>>,
+    /// The refusal is a credential Dim held and the server rejected, not one
+    /// Dim lacks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expired: Option<bool>,
+    /// The scopes a `403 insufficient_scope` named while discovering.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missing_scopes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<ProbeReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProbeStatus {
+    Connected,
+    AuthRequired,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProbeReason {
+    Timeout,
+    Unavailable,
+    Response,
+    Cleanup,
+}
+
+impl McpProbe {
+    fn base(status: ProbeStatus, latency: std::time::Duration) -> Self {
+        Self {
+            status,
+            latency_ms: latency.as_millis() as u64,
+            tools: None,
+            expired: None,
+            missing_scopes: None,
+            reason: None,
+            message: None,
+        }
+    }
+    fn connected(tools: Vec<server::McpTool>, latency: std::time::Duration) -> Self {
+        Self {
+            tools: Some(tools),
+            ..Self::base(ProbeStatus::Connected, latency)
+        }
+    }
+    fn failed(
+        reason: ProbeReason,
+        error: server::McpServerError,
+        latency: std::time::Duration,
+    ) -> Self {
+        Self {
+            reason: Some(reason),
+            message: Some(McpError::Server(error).to_string()),
+            ..Self::base(ProbeStatus::Failed, latency)
+        }
+    }
+    /// The server answered, and its answer ends the probe.
+    fn ended(error: server::McpServerError, latency: std::time::Duration) -> Self {
+        match error {
+            server::McpServerError::AuthRequired { expired } => Self {
+                expired: Some(expired),
+                ..Self::base(ProbeStatus::AuthRequired, latency)
+            },
+            server::McpServerError::InsufficientScope(scopes) => Self {
+                missing_scopes: Some(scopes.split_whitespace().map(str::to_owned).collect()),
+                ..Self::base(ProbeStatus::AuthRequired, latency)
+            },
+            server::McpServerError::Timeout => Self::failed(ProbeReason::Timeout, error, latency),
+            server::McpServerError::InvalidResponse(_) => {
+                Self::failed(ProbeReason::Response, error, latency)
+            }
+            server::McpServerError::Cleanup => Self::failed(ProbeReason::Cleanup, error, latency),
+            _ => Self::failed(ProbeReason::Unavailable, error, latency),
         }
     }
 }
@@ -419,17 +517,18 @@ impl McpService {
     ) -> Result<McpServerEntry> {
         self.run(cancel, move |settings, cancel| async move {
             let Some(scope) = source.scope() else {
-                return settings
+                let configuration = settings
                     .read::<McpPluginServers>(SettingsScope::User, &cancel)
                     .await?
                     .document
                     .entries()
                     .find(|(entry, _)| *entry == id)
-                    .map(|(_, configuration)| McpServerEntry {
-                        source,
-                        configuration,
-                    })
-                    .ok_or(McpError::UnknownServer);
+                    .map(|(_, configuration)| configuration)
+                    .ok_or(McpError::UnknownServer)?;
+                return Ok(McpServerEntry {
+                    source,
+                    configuration,
+                });
             };
             let source = scope;
             let configuration = settings
@@ -439,14 +538,7 @@ impl McpService {
                 .mcp_servers
                 .remove(&id)
                 .ok_or(McpError::UnknownServer)?;
-            let enablement = match source {
-                SettingsScope::User => McpProjectEnablement::default(),
-                SettingsScope::Project(_) => settings
-                    .read::<McpProjectEnablement>(SettingsScope::User, &cancel)
-                    .await
-                    .map(|snapshot| snapshot.document)
-                    .unwrap_or_default(),
-            };
+            let enablement = enablement(&settings, source, &cancel).await;
             Ok(McpServerEntry {
                 source: source.into(),
                 configuration: config::effective(
@@ -461,17 +553,87 @@ impl McpService {
         .await
     }
 
+    /// One source's entry as that source declares it, for reading and patching.
+    pub async fn editable(
+        &self,
+        source: McpSource,
+        id: String,
+        cancel: &CancellationToken,
+    ) -> Result<McpEditableEntry> {
+        if id.trim().is_empty() {
+            return Err(McpError::InvalidId);
+        }
+        self.run(cancel, move |settings, cancel| async move {
+            let Some(scope) = source.scope() else {
+                let configuration = settings
+                    .read::<McpPluginServers>(SettingsScope::User, &cancel)
+                    .await?
+                    .document
+                    .declared(&id)
+                    .ok_or(McpError::UnknownServer)?;
+                return Ok(McpEditableEntry {
+                    enabled: configuration.enabled(),
+                    configuration,
+                    revision: None,
+                });
+            };
+            let mut snapshot = settings.read::<McpSettings>(scope, &cancel).await?;
+            let configuration = snapshot
+                .document
+                .mcp_servers
+                .remove(&id)
+                .ok_or(McpError::UnknownServer)?;
+            let enabled = match scope {
+                SettingsScope::User => configuration.enabled(),
+                SettingsScope::Project(_) => {
+                    let enablement = enablement(&settings, scope, &cancel).await;
+                    let workspace = config::workspace(&settings, scope)?;
+                    enablement.contains(&workspace, &id)
+                }
+            };
+            Ok(McpEditableEntry {
+                configuration,
+                revision: Some(snapshot.revision),
+                enabled,
+            })
+        })
+        .await
+    }
+
+    /// The configuration a Session runs, from the declared one a client reads
+    /// and patches.
+    pub async fn effective(
+        &self,
+        scope: SettingsScope,
+        id: String,
+        configuration: McpServerSettings,
+        cancel: &CancellationToken,
+    ) -> Result<McpServerSettings> {
+        self.run(cancel, move |settings, cancel| async move {
+            let enablement = enablement(&settings, scope, &cancel).await;
+            Ok(config::effective(
+                &settings,
+                scope,
+                &id,
+                configuration,
+                &enablement,
+            )?)
+        })
+        .await
+    }
+
     async fn test(
         &self,
         ctx: Ctx,
         id: String,
         configuration: McpServerSettings,
         cancel: &CancellationToken,
-    ) -> Result<Vec<server::McpTool>> {
+    ) -> Result<McpProbe> {
         self.run(cancel, move |_, cancel| async move {
             let key = Key::<McpServer>::dynamic(format!("mcp-test:{}", uuid::Uuid::new_v4()))
                 .instance(ctx.instance());
             let plugin = server::McpServerPlugin::new(&id, configuration, key.clone())?;
+            let started = std::time::Instant::now();
             let view = ctx.plugin(plugin);
             let operation = async {
                 tokio::select! {
@@ -482,13 +644,26 @@ impl McpService {
                 let service = ctx.get_at(&key).ok_or(McpError::Unavailable)?;
                 service.tools(&cancel).await.map_err(McpError::from)
             };
-            let result = tokio::time::timeout(std::time::Duration::from_secs(30), operation)
-                .await
-                .unwrap_or(Err(McpServerError::Timeout.into()));
+            let outcome = tokio::time::timeout(PROBE_DEADLINE, operation).await;
+            let latency = started.elapsed();
+            let probe = match outcome {
+                Ok(Ok(tools)) => Ok(McpProbe::connected(tools, latency)),
+                Ok(Err(McpError::Server(error))) => Ok(McpProbe::ended(error, latency)),
+                Ok(Err(error)) => Err(error),
+                Err(_deadline) => Ok(McpProbe::failed(
+                    ProbeReason::Timeout,
+                    server::McpServerError::Timeout,
+                    latency,
+                )),
+            };
             if view.shutdown().await.is_err() || view.state().error.is_some() {
-                return Err(McpServerError::Cleanup.into());
+                return Ok(McpProbe::failed(
+                    ProbeReason::Cleanup,
+                    server::McpServerError::Cleanup,
+                    latency,
+                ));
             }
-            result
+            probe
         })
         .await
     }
@@ -564,6 +739,27 @@ impl McpService {
         task.await?
     }
 }
+
+/// The user's enablement of project entries; empty for the user source, whose
+/// entries carry their own field.
+async fn enablement(
+    settings: &SettingsService,
+    scope: SettingsScope,
+    cancel: &CancellationToken,
+) -> McpProjectEnablement {
+    match scope {
+        SettingsScope::User => McpProjectEnablement::default(),
+        SettingsScope::Project(_) => settings
+            .read::<McpProjectEnablement>(SettingsScope::User, cancel)
+            .await
+            .map(|snapshot| snapshot.document)
+            .unwrap_or_default(),
+    }
+}
+
+/// A probe gives one disposable connection this long to initialize and list
+/// every tool page.
+const PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Writes one change to its source and returns the source's revision.
 async fn write(

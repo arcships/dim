@@ -5,7 +5,7 @@
   "type": "module",
   "exports": "./index.ts",
   "dependencies": {
-    "@arcships/rutis": "0.19.2",
+    "@arcships/rutis": "0.19.3",
     "yaml": "2.9.1",
     "zod": "4.4.3"
   },

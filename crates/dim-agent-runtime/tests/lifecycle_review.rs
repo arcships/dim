@@ -50,10 +50,14 @@ fn contains(error: &AgentError, message: &str) -> bool {
         _ => false,
     }
 }
+fn cancelled(error: &AgentError) -> bool {
+    match error {
+        AgentError::Cancelled(_) => true,
+        AgentError::Multiple(errors) => errors.iter().any(cancelled),
+        _ => false,
+    }
+}
 #[tokio::test]
-// rutis 0.19.2 (#969) routes the cleanup errors of a loading generation that
-// shutdown cancels to the error sink only; restore when rutis#983 is fixed.
-#[ignore = "rutis#983: a cancelled construction's rollback failure no longer reaches close"]
 async fn agent_close_joins_cancelled_construction_and_retains_async_rollback_failure() {
     let entered = Arc::new(Notify::new());
     let cleaning = Arc::new(Notify::new());
@@ -94,15 +98,16 @@ async fn agent_close_joins_cancelled_construction_and_retains_async_rollback_fai
         .unwrap()
         .unwrap_err();
     assert!(contains(&error, "rollback resource failure"), "{error:?}");
+    assert!(
+        !cancelled(&error),
+        "the close reports no cancellation: {error:?}"
+    );
     assert!(agent.sessions().is_empty());
     let repeated = agent.close().await.unwrap_err();
     assert!(contains(&repeated, "rollback resource failure"));
 }
 
 #[test]
-// rutis 0.19.2 (#969) routes the cleanup errors of a loading generation that
-// shutdown cancels to the error sink only; restore when rutis#983 is fixed.
-#[ignore = "rutis#983: a cancelled construction's rollback failure no longer reaches close"]
 fn agent_close_freezes_build_ownership_before_the_close_task_can_be_polled() {
     let owner_runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

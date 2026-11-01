@@ -2,7 +2,7 @@
 
 Status: tool/method and leaf broadcast bindings implemented for [C4 #63](https://github.com/arcships/dim/issues/63)
 and [#168](https://github.com/arcships/dim/issues/168), following the approved [#174 contract](https://github.com/arcships/dim/pull/174).
-The runtime uses rutis 0.19.2.
+The runtime uses rutis 0.19.3.
 The verification section distinguishes executable acceptance from platform limits.
 The [spike](session-typescript-spike.md) establishes transport feasibility;
 its private service names and combined fixture are not this API.

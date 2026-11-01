@@ -515,6 +515,9 @@ async fn web_entry_admits_token_holders_to_sessions_and_safe_management() {
     assert_ok(&execution);
     assert_eq!(execution["result"]["document"]["sandbox"], false);
     assert_eq!(execution["result"]["document"]["network"], false);
+    let backend = web.rpc("host.execution.backend", json!({})).await;
+    assert_ok(&backend);
+    assert!(backend["result"]["available"].is_boolean(), "{backend}");
     let updated = web
         .rpc(
             "settings.update",

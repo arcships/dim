@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useSettingsText } from "../../i18n/settings-general"
-import { readMcp, readMcpAuthStart, readMcpConfiguration, readMcpInspection, readMcpTest, type McpConfigurationPatch, type McpEntry, type McpInspection, type McpOAuthInput, type McpServerInput, type McpTool, type McpView } from "../../rpc/general-settings"
+import { readMcp, readMcpAuthStart, readMcpEditableEntry, readMcpInspection, readMcpTest, type McpConfigurationPatch, type McpEntry, type McpInspection, type McpOAuthInput, type McpProbe, type McpServerInput, type McpView } from "../../rpc/general-settings"
 import { readAck } from "../../rpc/read"
 import { useConnectionStore } from "../../stores/connection"
 import GeneralSettingsStatus from "./GeneralSettingsStatus.vue"
-import { bindSettingsDirty, messageFrom } from "./context"
+import { bindSettingsDirty, messageFrom, reloadSettingsOnReconnect } from "./context"
 
 type SecretField = { name: string; action: "keep" | "set" | "remove"; value: string; stored?: boolean }
 type Draft = {
@@ -33,7 +33,7 @@ const authorizingId = ref("")
 const callback = ref("")
 const clientSecret = ref("")
 const detail = ref<{ server: McpEntry; inspection: McpInspection }>()
-const testResult = ref<{ id: string; tools: McpTool[] }>()
+const testResult = ref<{ id: string; probe: McpProbe }>()
 const editorForm = ref<HTMLFormElement>()
 const search = ref("")
 let mounted = true
@@ -43,6 +43,14 @@ const entries = computed(() => catalog.value?.servers.filter((server) => server.
 bindSettingsDirty(computed(() => dirty.value || !!clientSecret.value || !!callback.value))
 watch(draft, () => { testResult.value = undefined }, { deep: true })
 
+function reasonText(reason: string | undefined): string {
+  switch (reason) {
+    case "timeout": return s('The server did not answer before the deadline.', '服务器在时限内未响应。')
+    case "response": return s('The server answered something Dim cannot use.', '服务器的返回无法被 Dim 使用。')
+    case "cleanup": return s('The temporary connection did not close cleanly.', '临时连接未能正常关闭。')
+    default: return s('The connection or a request failed.', '连接或请求失败。')
+  }
+}
 function scope(): Record<string, unknown> { return loadedCwd.value ? { cwd: loadedCwd.value } : {} }
 function target(server: McpEntry): Record<string, unknown> { return { ...scope(), id: server.id, source: server.source } }
 function revision(source: "user" | "project"): string {
@@ -99,14 +107,15 @@ async function edit(server: McpEntry): Promise<void> {
   busy.value = true
   error.value = ""
   try {
-    const expected = revision(server.source)
-    const config = await connection.client.call("mcp.configuration", target(server), readMcpConfiguration)
+    const entry = await connection.client.call("mcp.configuration", target(server), readMcpEditableEntry)
+    if (entry.revision === undefined) throw new Error(s('This entry has no source revision and cannot be edited.', '此条目没有源修订号，无法编辑。'))
+    const config = entry.configuration
     draft.value = {
       id: server.id, source: server.source, type: config.type,
       command: config.type === "stdio" ? config.command : "", args: [], argsAction: "keep", storedArgsCount: config.type === "stdio" ? config.argsCount : 0, cwd: config.type === "stdio" ? config.cwd ?? "" : "",
       url: "", ...(config.type !== "stdio" ? { endpoint: config.endpoint } : {}),
       secrets: (config.type === "stdio" ? config.envNames : config.headerNames).map((name) => ({ name, action: "keep", value: "", stored: true })),
-      enabled: server.enabled, oauth: config.type !== "stdio" && config.oauthConfigured,
+      enabled: entry.enabled, oauth: config.type !== "stdio" && config.oauthConfigured,
       authConfigured: config.type !== "stdio" && config.authConfigured,
       clientId: config.type !== "stdio" ? config.oauth?.clientId ?? "" : "",
       callbackPort: config.type !== "stdio" ? String(config.oauth?.callbackPort ?? "") : "",
@@ -115,7 +124,7 @@ async function edit(server: McpEntry): Promise<void> {
       metadataUrl: "", metadataAction: "keep", token: "", bearerAction: "keep", oauthAction: "keep",
     }
     editing.value = true
-    editorRevision.value = expected
+    editorRevision.value = entry.revision
     baseline.value = JSON.stringify(draft.value)
   } catch (cause) { error.value = messageFrom(cause) }
   finally { busy.value = false }
@@ -194,8 +203,8 @@ async function testServer(server?: McpEntry): Promise<void> {
   busy.value = true
   testResult.value = undefined
   try {
-    const result = await connection.client.call("mcp.test", params, readMcpTest)
-    testResult.value = { id, tools: result.tools }
+    const probe = await connection.client.call("mcp.test", params, readMcpTest)
+    testResult.value = { id, probe }
     await read()
     await refreshDetail()
   } catch (cause) { error.value = messageFrom(cause) }
@@ -243,6 +252,7 @@ async function finishAuth(cancel = false): Promise<void> {
   } catch (cause) { error.value = messageFrom(cause) }
   finally { busy.value = false }
 }
+reloadSettingsOnReconnect(connection, load, computed(() => draft.value !== undefined || !!clientSecret.value || !!callback.value || !!authorization.value))
 onMounted(load)
 onBeforeUnmount(() => {
   mounted = false
@@ -294,7 +304,19 @@ onBeforeUnmount(() => {
       <section v-if="editing && draft.type !== 'stdio'"><h4>{{ s('Bearer token (write-only)', 'Bearer 令牌（只写）') }}</h4><p>{{ draft.authConfigured ? s('A token is configured.', '已配置令牌。') : s('No token is configured.', '未配置令牌。') }}</p><label><span>{{ s('Token action', '令牌操作') }}</span><select v-model="draft.bearerAction" class="ui-field" data-size="md"><option value="keep">{{ s('Keep stored token', '保留已存储的令牌') }}</option><option value="set" :disabled="oauthEnabled">{{ s('Replace token', '替换令牌') }}</option><option value="remove">{{ s('Remove token', '移除令牌') }}</option></select></label><label v-if="draft.bearerAction === 'set'"><span>{{ s('New bearer token', '新 Bearer 令牌') }}</span><input v-model="draft.token" class="ui-field" data-size="md" type="password" autocomplete="new-password" required /></label></section>
       <section><h4>{{ draft.type === 'stdio' ? s('Environment variables', '环境变量') : s('HTTP headers', 'HTTP 请求头') }}</h4><p>{{ s('Stored values are never returned. Keep preserves a value; Set replaces it; Remove deletes it. Values are not stored in this browser.', '已存储的值不会返回。“保留”维持原值，“设置”替换原值，“删除”移除字段。值不会保存在此浏览器中。') }}</p><div v-for="(secret, index) in draft.secrets" :key="index" class="secret-row"><input v-model="secret.name" class="ui-field" data-size="md" :aria-label="s('Field name', '字段名称')" :readonly="secret.stored" required /><select v-model="secret.action" class="ui-field" data-size="md" :aria-label="s('Secret action', '机密操作')"><option v-if="secret.stored" value="keep">{{ s('Keep', '保留') }}</option><option value="set">{{ s('Set', '设置') }}</option><option v-if="secret.stored" value="remove">{{ s('Remove', '删除') }}</option></select><input v-if="secret.action === 'set'" v-model="secret.value" class="ui-field" data-size="md" type="password" autocomplete="new-password" :aria-label="s('New value', '新值')" /><button class="ui-button" data-size="sm" data-variant="secondary" type="button" @click="draft.secrets.splice(index, 1)">{{ s('Cancel field change', '取消字段更改') }}</button></div><button class="ui-button" data-size="sm" data-variant="secondary" type="button" @click="draft.secrets.push({ name: '', action: 'set', value: '' })">{{ s('Add field', '添加字段') }}</button></section>
       <label v-if="!editing && draft.source === 'user'" class="checkbox-label"><input v-model="draft.enabled" type="checkbox" />{{ s('Enable after saving', '保存后启用') }}</label><p v-if="draft.source === 'project'">{{ s('Project tests require a saved entry that you explicitly enabled locally. Unsaved project definitions cannot execute.', '项目测试要求条目已保存且由您在本地明确启用。未保存的项目定义不能执行。') }}</p><p v-if="editing">{{ s('Enablement and unedited fields are preserved. Use the server actions to enable, disable or sign in.', '启用状态及未编辑字段会被保留。请通过服务器操作启用、禁用或登录。') }}</p><div class="settings-actions"><button class="ui-button" data-size="md" data-variant="secondary" type="button" :disabled="!connection.supports('mcp.test') || (draft.source === 'project' && (!editing || !draft.enabled))" @click="testServer()">{{ s('Test draft connection', '测试草稿连接') }}</button><button class="ui-button" data-size="md" data-variant="primary" :disabled="!dirty || (editing && !connection.supports('mcp.update'))">{{ s('Save server', '保存服务器') }}</button><button class="ui-button" data-size="md" data-variant="secondary" type="button" @click="closeEditor">{{ s('Cancel', '取消') }}</button></div></fieldset></form>
-    <section v-if="testResult" class="settings-card" role="status"><h3>{{ s('Connection test passed', '连接测试通过') }}: {{ testResult.id }}</h3><p>{{ s('The temporary connection has been closed. Configuration and session connections were not changed.', '临时连接已关闭。配置及会话连接未被更改。') }}</p><ul><li v-for="tool in testResult.tools" :key="tool.name"><strong>{{ tool.name }}</strong><p v-if="tool.description">{{ tool.description }}</p></li></ul><p v-if="!testResult.tools.length">{{ s('The server exposes no tools.', '服务器没有提供工具。') }}</p></section>
+    <section v-if="testResult" class="settings-card" role="status">
+      <h3 v-if="testResult.probe.status === 'connected'">{{ s('Connection test passed', '连接测试通过') }}: {{ testResult.id }} · {{ testResult.probe.latencyMs }} ms</h3>
+      <h3 v-else-if="testResult.probe.status === 'authRequired'">{{ s('Sign-in required', '需要登录') }}: {{ testResult.id }} · {{ testResult.probe.latencyMs }} ms</h3>
+      <h3 v-else>{{ s('Connection test failed', '连接测试失败') }}: {{ testResult.id }} · {{ testResult.probe.latencyMs }} ms</h3>
+      <p v-if="testResult.probe.status === 'connected'">{{ s('The temporary connection has been closed. Configuration and session connections were not changed.', '临时连接已关闭。配置及会话连接未被更改。') }}</p>
+      <template v-else-if="testResult.probe.status === 'authRequired'">
+        <p>{{ testResult.probe.expired ? s('The stored credential was rejected. Sign in again.', '已存储的凭据被拒绝，请重新登录。') : s('This server requires sign-in.', '此服务器需要登录。') }}</p>
+        <p v-if="testResult.probe.missingScopes?.length">{{ s('Additional scopes', '额外权限范围') }}: {{ testResult.probe.missingScopes.join(', ') }}</p>
+      </template>
+      <p v-else>{{ reasonText(testResult.probe.reason) }}<template v-if="testResult.probe.message"> · {{ testResult.probe.message }}</template></p>
+      <ul v-if="testResult.probe.tools"><li v-for="tool in testResult.probe.tools" :key="tool.name"><strong>{{ tool.name }}</strong><p v-if="tool.description">{{ tool.description }}</p></li></ul>
+      <p v-if="testResult.probe.status === 'connected' && !testResult.probe.tools?.length">{{ s('The server exposes no tools.', '服务器没有提供工具。') }}</p>
+    </section>
     <section v-if="authorization" class="settings-card"><h3>{{ s('Authorize MCP', '授权 MCP') }}: {{ authorizingId }}</h3><p>{{ s('Callback', '回调') }}: <code>{{ authorization.redirectUri }}</code> · {{ s('Expires', '过期时间') }}: {{ new Date(authorization.expiresAt).toLocaleString() }}</p><a class="ui-button" data-size="md" data-variant="primary" :href="authorization.authorizationUrl" target="_blank" rel="noopener noreferrer">{{ s('Open authorization page', '打开授权页面') }}</a><form class="settings-form" autocomplete="off" @submit.prevent="finishAuth()"><label><span>{{ s('Paste the full callback URL after authorization', '授权后粘贴完整回调 URL') }}</span><input v-model="callback" class="ui-field" data-size="md" type="password" autocomplete="new-password" :disabled="busy" required /></label><div class="settings-actions"><button class="ui-button" data-size="md" data-variant="primary" :disabled="busy || !connection.supports('mcp.auth.complete')">{{ s('Complete sign-in', '完成登录') }}</button><button class="ui-button" data-size="md" data-variant="secondary" type="button" :disabled="busy || !connection.supports('mcp.auth.cancel')" @click="finishAuth(true)">{{ s('Cancel sign-in', '取消登录') }}</button></div></form></section>
     <label class="search-label"><span>{{ s('Search servers', '搜索服务器') }}</span><input v-model="search" class="ui-field" data-size="md" type="search" /></label>
     <section v-for="server in entries" :key="`${server.source}:${server.id}`" class="settings-card"><h3>{{ server.id }}</h3><p>{{ server.source }} · {{ server.transport }} · {{ server.enabled ? s('Enabled', '已启用') : s('Disabled', '已禁用') }}<template v-if="server.auth"> · OAuth: {{ server.auth }}</template></p><div class="settings-actions"><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !connection.supports('mcp.inspect')" @click="inspect(server)">{{ s('Details / tools', '详情 / 工具') }}</button><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !!draft || !connection.supports('mcp.test') || (server.source !== 'user' && !server.enabled)" @click="testServer(server)">{{ s('Test connection', '测试连接') }}</button><template v-if="server.source !== 'plugin'"><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !!draft || !connection.supports('mcp.configuration') || !connection.supports('mcp.update')" @click="edit(server)">{{ s('Edit', '编辑') }}</button><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !!draft || !connection.supports('mcp.set_enabled')" @click="action('mcp.set_enabled', server)">{{ server.enabled ? s('Disable', '禁用') : s('Enable', '启用') }}</button><button class="ui-button" data-size="md" data-variant="danger-ghost" :disabled="busy || !!draft || !connection.supports('mcp.remove')" @click="action('mcp.remove', server)">{{ s('Remove', '移除') }}</button></template><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !server.enabled || !connection.supports('mcp.disconnect')" @click="action('mcp.disconnect', server)">{{ s('Disconnect', '断开连接') }}</button><template v-if="server.transport !== 'stdio'"><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !!authorization || !server.enabled || !connection.supports('mcp.auth.start')" @click="action('mcp.auth.start', server)">{{ s('Sign in', '登录') }}</button><button v-if="server.auth" class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !connection.supports('mcp.auth.logout')" @click="action('mcp.auth.logout', server)">{{ s('Sign out', '退出登录') }}</button></template></div><p v-if="server.source === 'plugin'">{{ s('This entry is owned by its plugin. Change it through Plugins.', '此条目归其插件所有。请通过插件页面更改。') }}</p></section>

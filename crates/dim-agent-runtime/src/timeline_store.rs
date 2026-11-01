@@ -257,6 +257,23 @@ pub trait TimelineStore: Send + Sync + 'static {
             Ok(records)
         })
     }
+    /// Reads complete batches after a batch-boundary cursor at a fixed head
+    /// for a caller that does not use stored requests: a `context/prepare`
+    /// or `model/call` record holds its request without its messages,
+    /// `tools` and `system`, and the content rows behind them are neither
+    /// loaded nor checked. Paging and projection reads discard these
+    /// records or use only their other fields
+    /// ([request delta storage §7.5](../../../docs/design/appserver/request-delta-storage.md#75-reads-that-do-not-use-request-bodies)).
+    /// The default rebuilds them, exactly as [`Self::read_page`] does.
+    fn read_page_without_request_bodies<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        after: u64,
+        limit: usize,
+        through: u64,
+    ) -> BoxFuture<'a, Result<Vec<StoredEvent>>> {
+        self.read_page(key, after, limit, through)
+    }
     /// Decodes all segments in one read scope, sharing content across branches.
     fn read_segments<'a>(
         &'a self,

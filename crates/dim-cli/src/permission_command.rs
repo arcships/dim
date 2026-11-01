@@ -1,14 +1,12 @@
-//! `/approvals` (alias `/permissions`) at the line-mode prompt: shows and
-//! switches the `main` preset, and lists, adds and removes command rules,
+//! `/permissions` at the line-mode prompt: independent file and tool controls,
+//! legacy preset compatibility, and command rules,
 //! through the operations in [`crate::permission`].
 use crate::{
     Result,
     client::Client,
     display::Display,
     input::Input,
-    permission::{
-        self, Added, PRESET_METHODS, PRESETS, RULE_METHODS, Removed, Rules, State, Switch,
-    },
+    permission::{self, Added, PRESET_METHODS, RULE_METHODS, Removed, Rules, State, Switch},
 };
 use dim_agent_types::{CommandMatch, CommandRuleDecision, PermissionPreset};
 use std::future::Future;
@@ -18,7 +16,7 @@ pub type Interrupts = tokio::signal::unix::Signal;
 #[cfg(windows)]
 pub type Interrupts = tokio::signal::windows::CtrlC;
 
-const USAGE: &str = "Usage: /approvals [PRESET | allow|deny exact|prefix COMMAND | remove N]";
+const USAGE: &str = "Usage: /permissions [file-access read-only|workspace-read-write|unrestricted | tool-approval ask|bypass | PRESET | allow|deny exact|prefix COMMAND | remove N]";
 
 /// Waits for an operation; interrupts are reported and consumed until it
 /// settles.
@@ -36,19 +34,23 @@ async fn settle<T>(interrupts: &mut Interrupts, operation: impl Future<Output = 
 }
 
 fn print_state(display: &mut Display, state: &State) -> Result<()> {
-    let current = state.policy.preset;
     display.record(&format!(
-        "Preset (main branch): {}",
-        permission::name(current)
+        "File access: {}",
+        permission::file_label(state.policy.file_access())
     ))?;
-    for preset in PRESETS {
-        display.record(&format!(
-            "{} {:<16} {}",
-            if preset == current { "*" } else { " " },
-            permission::name(preset),
-            permission::summary(preset)
-        ))?;
+    display.record(&format!(
+        "Tool approval: {}",
+        permission::tool_policy_label(&state.policy)
+    ))?;
+    if state.policy.tool_approval.is_none() {
+        display.record(
+            "Legacy policy: risk-based behavior remains until you explicitly choose Ask or Bypass.",
+        )?;
     }
+    display.record(&format!(
+        "Legacy preset seed (main branch): {}",
+        permission::name(state.policy.preset)
+    ))?;
     for (label, tools) in [
         ("allowed", &state.policy.allowed_tools),
         ("disallowed", &state.policy.disallowed_tools),
@@ -106,6 +108,24 @@ pub async fn command(
     let words: Vec<_> = text.split_whitespace().collect();
     match words[1..] {
         [] => show(client, interrupts, session_id, display, listing).await,
+        [control @ ("file-access" | "tool-approval"), value] => {
+            let value = serde_json::Value::String(value.into());
+            let change = if control == "file-access" {
+                permission::Change::FileAccess(serde_json::from_value(value)?)
+            } else {
+                permission::Change::ToolApproval(serde_json::from_value(value)?)
+            };
+            let policy = settle(
+                interrupts,
+                permission::select_control(client, session_id, change),
+            )
+            .await?;
+            display.record(&format!(
+                "File access: {}; Tool approval: {}",
+                permission::file_label(policy.file_access()),
+                permission::tool_policy_label(&policy)
+            ))
+        }
         ["remove", number] => {
             require_rules(client)?;
             let Some(seen) = listing.as_ref() else {
@@ -184,9 +204,7 @@ async fn show(
     } else {
         display.record("Command rules: this daemon does not provide them")?;
     }
-    display.record(
-        "Permission controls admission; the user turns the sandbox on in /settings > Execution.",
-    )?;
+    display.record("Process isolation is configured in /settings > Process isolation.")?;
     display.record(USAGE)
 }
 
@@ -203,13 +221,14 @@ async fn switch(
     if !client.supports(&PRESET_METHODS) {
         return Err("This daemon cannot change the permission preset".into());
     }
-    let seen = settle(interrupts, permission::read(client, session_id)).await?;
+    let mut seen = settle(interrupts, permission::read(client, session_id)).await?;
     let name = permission::name(preset);
     if seen.policy.preset == preset {
-        return display.record(&format!("Preset (main branch) is already {name}"));
+        display.record(&format!("Preset (main branch) is already {name}"))?;
+        return print_state(display, &seen);
     }
     if preset == PermissionPreset::FullAccess {
-        display.record("Full access runs every tool call, including commands, without asking.")?;
+        display.record("The legacy full-access seed allows files and bypasses tool questions only where independent settings are omitted.")?;
         input.prompt("Switch the main branch to full-access? [y/N] ")?;
         let line = tokio::select! {
             biased;
@@ -228,17 +247,27 @@ async fn switch(
             ));
         }
     }
-    match settle(interrupts, permission::switch(client, session_id, &seen, preset)).await? {
-        Switch::Unchanged => display.record(&format!("Preset (main branch) is already {name}")),
+    match settle(
+        interrupts,
+        permission::switch(client, session_id, &seen, preset),
+    )
+    .await?
+    {
+        Switch::Unchanged => display.record(&format!("Preset (main branch) is already {name}"))?,
         Switch::Switched(version) => {
             display.permission_seen = display.permission_seen.max(version);
             display.record(&format!(
                 "Preset (main branch): {name}. Child branches and members created later from main inherit it; existing branches and members keep their policies."
-            ))
+            ))?;
+            seen.policy.preset = preset;
         }
-        Switch::Conflict(current) => display.record(&format!(
-            "The preset changed elsewhere and is now {}; nothing was changed. Run the command again to switch.",
-            permission::name(current.policy.preset)
-        )),
+        Switch::Conflict(current) => {
+            display.record(&format!(
+                "The preset changed elsewhere and is now {}; nothing was changed. Run the command again to switch.",
+                permission::name(current.policy.preset)
+            ))?;
+            seen = current;
+        }
     }
+    print_state(display, &seen)
 }

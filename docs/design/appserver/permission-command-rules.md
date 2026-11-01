@@ -2,7 +2,7 @@
 
 Status: Implemented (corrections found during implementation are listed in
 [§12](#12-implementation-notes)). Roadmap item F2 ([#73](https://github.com/arcships/dim/issues/73)).
-Overview: [§3 `/approvals`, command rules row](../overview.md#3-integration-by-existing-mechanisms) and
+Overview: [§3 command rules row](../overview.md#3-integration-by-existing-mechanisms) and
 [Appendix B.1 Permission row](../overview.md#b1-session-and-branch-capabilities). Scope:
 [ADR 002](../../adr/002-plugin-scope.md) (a supplement to the existing branch Permission, with its
 storage owned in App Server) and [ADR 003](../../adr/003-approval-scope.md) (agent decisions only).
@@ -15,9 +15,9 @@ or `deny`). Permission reads the list each time it decides a call of a tool that
 (`risk: "execute_process"`) with a string `command` input. Nothing is cached, nothing reloads and
 nothing subscribes.
 
-- A matching `deny` rule denies the call, under every preset.
+- A matching `deny` rule denies the call, under every preset and explicit tool-approval choice.
 - A matching `allow` rule only answers the question Approval would otherwise ask: it turns `Ask`
-  into `Allow`. It never turns a preset `Deny` into `Allow`.
+  into `Allow`. It never turns a policy `Deny` into `Allow` or bypasses file checks.
 - `allow` matches only a simple command (no shell separators, redirection or substitution).
   `deny` is checked against every separated segment of the command.
 
@@ -26,8 +26,10 @@ Rules are written in two ways, both through the same owner: the client managemen
 "always allow" answer, which the client turns into a `set_rules` write followed by the ordinary
 `approval.respond allow`. Approval's events and methods are unchanged.
 
-No new Timeline event, no change to `PermissionPolicy` or `permission/changed`, no change to
-Timeline, Dispatcher, rutis, Settings or assembly.
+Command rules add no Timeline event or policy field and change no Timeline, Dispatcher, rutis,
+Settings or assembly mechanism. The independent policy fields are owned by the
+[Permission contract](../../architecture/rust-agent/plugins/Permission.md#policy-contract)
+([ADR 017](../../adr/017-independent-permission-controls.md)), not this rules source.
 
 ### 1.1 What this does not do
 
@@ -203,20 +205,26 @@ paths or scripts; those are denied only by presets or OS isolation.
   2. command call? read rules (each time)
        read failed                                 -> Deny "Command rules could not be read: <error>"
        a deny rule matches a segment               -> Deny "Command denied by command rule `<command>` (<match>)"
-  3. call.name in allowedTools                     -> Allow  (existing)
-  4. preset by risk                                -> Allow | Ask | Deny (existing)
-  5. result is Ask and an allow rule matches the
+  3. file-scope gate, for file calls               -> Deny | Ask, or continue
+  4. call.name in allowedTools                     -> Allow
+  5. explicit toolApproval, otherwise legacy risk  -> Allow | Ask | Deny
+  6. tool result is Ask and an allow rule matches the
      simple command                                -> Allow
 ```
 
-| Preset | `execute_process` today | With a matching allow rule | With a matching deny rule |
+File-scope and tool questions are combined into one call-specific approval. A command allow
+answers only the tool question; the file gate and isolation are not command-rule policy.
+
+| Legacy preset (no explicit tool override) | `execute_process` | With a matching allow rule | With a matching deny rule |
 | --- | --- | --- | --- |
 | read-only | Deny | Deny | Deny |
 | workspace-write | Ask | Allow | Deny |
 | full-access | Allow | Allow | Deny |
 
-Allow rules therefore never raise a Session above its preset: an automation Session capped at
-read-only stays read-only. A read failure fails closed because a deny rule may exist.
+An allow rule cannot lift a legacy risk denial. With explicit `toolApproval: "ask"`, commands
+ask regardless of the seed preset and a matching allow answers that question. With explicit
+`"bypass"`, commands need no tool question but deny rules still win. Neither changes file access
+or process isolation. A read failure fails closed because a deny rule may exist.
 
 ### 5.3 Admission
 
@@ -279,7 +287,7 @@ denials do today, for example
   deferred (§10).
 - Rules are host security settings: never in the Timeline, never restored or widened by replay or
   fork, and not writable from a paired device (management methods are local only).
-- Allow rules cannot exceed the preset; deny rules apply under every preset; read failures deny.
+- Allow rules cannot lift a policy denial or file check; deny rules apply under every tool-approval choice; read failures deny.
 - Matching is deliberately conservative for `allow` and over-inclusive for `deny`; §5.1 states its
   limits. It is not isolation.
 
@@ -287,12 +295,12 @@ denials do today, for example
 
 | Part | Relationship |
 | --- | --- |
-| Permission | Supplement: `decide` takes the call and reads rules for command calls; new Session dependency `CommandRulesHost`. `PermissionPolicy`, `permission/changed`, versions and `session.permission.*` are unchanged |
+| Permission | Supplement: `decide` takes the call and reads rules for command calls; Session dependency `CommandRulesHost`. Rules add no policy fields and change no policy versions or methods; independent controls follow Permission's own contract |
 | Approval | Passes the call to `decide` at both existing sites and propagates a cancelled read. Events, `approval.respond`, replay and recovery unchanged |
 | ToolExecutor, WorkspaceTools, ShellTools | Unchanged; `exec` and `execute` already declare `execute_process` and take `command` |
 | Settings | Unchanged; one new source `permission` (user file, native row). Its `settings.changed` event is emitted as for any source; F2 does not listen |
 | Timeline, Dispatcher, rutis, assembly | Unchanged |
-| CLI `/approvals` | Not part of F2. The requirement the CLI consumes: a `/approvals` panel that lists, adds and removes rules through `permission.rules`/`permission.set_rules`, and an "always" choice on the approval prompt for simple `exec`/`execute` commands (§5.4). Delivered by the CLI permission controls ([#257](https://github.com/arcships/dim/issues/257), [CLI design](../cli-commands.md#permission-controls)) |
+| CLI `/permissions` | The CLI owns the panel that lists, adds and removes rules through `permission.rules`/`permission.set_rules`, and an "always" choice on the approval prompt for simple `exec`/`execute` commands (§5.4). `/approvals` and `/approval` are compatibility aliases ([CLI design](../cli-commands.md#permission-controls)) |
 | HostPlatform | The execution shell stays its own business configuration; not F2 |
 | RemoteGateway | Paired devices answer approvals but cannot read or write rules |
 | Collaboration, Scheduler, Workflow | Rules are host-wide and apply in every Session; since allow only answers `Ask`, an automation Session capped at read-only is not widened |
@@ -340,7 +348,7 @@ Decided by the maintainer:
 6. **Binding:** the Session port `Keyed<CommandRulesHost>` per profile (§4.2), not a process
    service dependency; existing tests are unchanged.
 7. **Scope:** F2 is server side only: rules source, Permission check, management methods and flow
-   tests. The CLI `/approvals` panel and the "always" option belong to F6 (CLI) as a requirement it
+   tests. The CLI `/permissions` panel and the "always" option belong to F6 (CLI) as a requirement it
    consumes (§5.4, §8); the CLI delivered them in [#257](https://github.com/arcships/dim/issues/257).
 
 ## 11. Acceptance (flow tests)

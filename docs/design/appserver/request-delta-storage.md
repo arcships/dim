@@ -503,9 +503,29 @@ pointers, as the event type requires (`messages: Vec<Arc<Message>>`). A full-his
 2,000,000 pointers, about 7.7 ms of the prototype's 48.0 ms (§12). v16 builds the same vectors; v17 removes the
 lookups and parsing behind them. Phase 3 (§15) removes the repetition of whole reads during a restore.
 
+### 7.5 Reads that do not use request bodies
+
+A paging or projection read returns what an event says without rebuilding the requests stored with `context/prepare`
+and `model/call`: the request in such a record keeps the empty message list and the absent `tools` and `system` that
+its row holds, and no content row it references is loaded, hashed or checked. These readers never look at those requests:
+history paging discards both kinds, `session.summaries` reads only input text and the last event's time, the context
+projection projects input and output facts, and collaboration reads tool calls, results and turn outcomes. They page
+through `TimelineStore::read_page_without_request_bodies`, whose default is `read_page`; a store may implement it
+with no request walk at all. Every read that uses a request (`local`, `history`, `context`, `trace`,
+`validate_session`, export) still rebuilds and checks each one as §7.1–§8 state.
+
+- The read still checks that each record and each draft of its trace has the references its kind requires, and no
+  other record has any; it never follows them.
+- A damaged node therefore does not fail a paging read, because that read would not have loaded it. Restore and every
+  read that uses requests still fail on it, and a Session with a damaged list is still refused at restore (§8).
+- The streamed projection (§10) reads its history through paging, so the events it projects carry no stored request.
+  The one request an estimate compares against comes from `policy_facts`, whose rows include the `model/call` of the
+  last `model/usage`, not from the projected events.
+
 ## 8. Validation and damaged rows
 
-For each request record a read checks, failing with a storage error otherwise:
+For each request record a read that uses requests checks, failing with a storage error otherwise (a read that does
+not use them checks only the first item, the reference shape, §7.5):
 
 - a `context/prepare` or `model/call` record, and each of its request drafts, has `References` (v16) or
   `ListReferences` (v17); any other record has `refs: null`;

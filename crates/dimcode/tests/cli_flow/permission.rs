@@ -28,6 +28,122 @@ fn quiet_turn(wire: &mut Wire) {
 }
 
 #[test]
+fn line_permission_controls_preserve_other_fields_retry_conflicts_and_surface_old_daemon_errors() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&PRESET_METHODS);
+        wire.created();
+        let mut current = policy("read-only", &["read"], &["blocked"]);
+        current["fileAccess"] = json!("workspace-read-write");
+        let read = wire.read("session.permission.get");
+        wire.reply(&read, json!({"version":1,"policy":current}));
+        wire.attached();
+        for (version, fail_conflict) in [(1, true), (2, false)] {
+            let read = wire.read("session.permission.get");
+            wire.reply(&read, json!({"version":version,"policy":current}));
+            let write = wire.read("session.permission.update");
+            let mut expected = current.clone();
+            expected["toolApproval"] = json!("ask");
+            assert_eq!(write["params"]["policy"], expected);
+            assert_eq!(write["params"]["expectedVersion"], version);
+            if fail_conflict {
+                fail(wire, &write, "permission_conflict");
+                current["disallowedTools"] = json!(["blocked", "new-deny"]);
+            } else {
+                wire.reply(&write, json!({"version":3}));
+                current = expected;
+            }
+        }
+        let read = wire.read("session.permission.get");
+        wire.reply(&read, json!({"version":3,"policy":current}));
+        let read = wire.read("session.permission.get");
+        wire.reply(&read, json!({"version":3,"policy":current}));
+        let write = wire.read("session.permission.update");
+        let mut expected = current.clone();
+        expected["fileAccess"] = json!("unrestricted");
+        assert_eq!(write["params"]["policy"], expected);
+        fail(wire, &write, "invalid_params");
+        wire.detach();
+    });
+    let mut terminal = Terminal::launch(home.command());
+    terminal.until("\n> ");
+    terminal.write(b"/permissions tool-approval ask\n");
+    terminal.until("File access: Workspace read/write; Tool approval: Ask");
+    terminal.until("\n> ");
+    terminal.write(b"/permissions tool-approval ask\n");
+    terminal.until("File access: Workspace read/write; Tool approval: Ask");
+    terminal.until("\n> ");
+    terminal.write(b"/approval file-access unrestricted\n");
+    terminal.until("fixture invalid_params");
+    terminal.until("\n> ");
+    terminal.write(b"/exit\n");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+#[test]
+fn tui_permission_flag_overrides_saved_controls_and_invalid_defaults_are_ignored() {
+    for fullscreen in [false, true] {
+        for explicit in [false, true] {
+            let home = Home::new();
+            fs::write(
+                home.0.join("config.json"),
+                if explicit {
+                    r#"{"locale":"en","permissionPreset":"full-access","fileAccess":"unrestricted","toolApproval":"bypass"}"#
+                } else {
+                    r#"{"locale":"en","permissionPreset":"workspace-write","fileAccess":false,"toolApproval":"unknown"}"#
+                },
+            )
+            .unwrap();
+            let daemon = home.daemon(move |wire| {
+                wire.hello(&PRESET_METHODS);
+                let create = wire.created();
+                let preset = if explicit {
+                    "read-only"
+                } else {
+                    "workspace-write"
+                };
+                assert_eq!(
+                    create["params"]["permissionPolicy"],
+                    json!({"preset":preset})
+                );
+                let attach = wire.read("session.attach");
+                wire.reply(&attach, attach_record(&attach));
+                let history = wire.read("session.history");
+                wire.reply(
+                    &history,
+                    json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+                );
+                let read = wire.read("session.permission.get");
+                wire.reply(
+                    &read,
+                    json!({"version":1,"policy":policy(preset, &[], &[])}),
+                );
+                wire.no_context();
+                let providers = wire.read("account.providers");
+                wire.reply(&providers, json!([]));
+                let mut line = String::new();
+                while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
+                    line.clear();
+                }
+            });
+            let mut command = home.command();
+            if fullscreen {
+                command.arg("--fullscreen");
+            }
+            if explicit {
+                command.args(["--permission", "read-only"]);
+            }
+            let mut terminal = Terminal::launch_tui(command);
+            terminal.until("test / model");
+            terminal.signal(libc::SIGKILL);
+            terminal.wait();
+            daemon.join().unwrap();
+        }
+    }
+}
+
+#[test]
 fn tui_home_remembers_permissions_without_login_and_applies_them_to_the_first_message() {
     for initial_setup in [false, true] {
         for fullscreen in [false, true] {
@@ -58,7 +174,7 @@ fn tui_home_remembers_permissions_without_login_and_applies_them_to_the_first_me
                 let create = wire.read("session.create");
                 assert_eq!(
                     create["params"]["permissionPolicy"],
-                    json!({"preset":"read-only"})
+                    json!({"preset":"workspace-write","fileAccess":"read-only","toolApproval":"bypass"})
                 );
                 wire.reply(
                     &create,
@@ -75,7 +191,7 @@ fn tui_home_remembers_permissions_without_login_and_applies_them_to_the_first_me
                     let read = wire.read("session.permission.get");
                     wire.reply(
                         &read,
-                        json!({"version":1,"policy":policy("read-only", &[], &[])}),
+                        json!({"version":1,"policy":{"preset":"workspace-write","fileAccess":"read-only","toolApproval":"bypass","allowedTools":[],"disallowedTools":[]}}),
                     );
                 }
                 let submit = wire.read("session.submit");
@@ -111,23 +227,23 @@ fn tui_home_remembers_permissions_without_login_and_applies_them_to_the_first_me
             }
             let mark = terminal.transcript.len();
             terminal.write(b"/approvals\r");
-            terminal.until("Workspace write");
-            terminal.write(b"\x1b[A\r");
-            terminal.until("Confirm Full Access");
-            terminal.write(b"y");
-            terminal.until("Tool approvals: Full access");
-            terminal.write(b"/approvals\r");
-            terminal.until("Workspace write");
-            terminal.write(b"\x1b[B\r");
-            terminal.until("Tool approvals: Ask");
-            terminal.write(b"/approvals\r");
+            terminal.until("File access");
+            terminal.write(b"\r");
             terminal.until("Read only");
+            terminal.write(b"\x1b[A\r");
+            terminal.until("File access: Read only (also for new sessions)");
+            terminal.write(b"/permissions\r");
+            terminal.until("Process isolation");
             terminal.write(b"\x1b[B\r");
-            terminal.until("Tool approvals: Read only");
+            terminal.until("Bypass");
+            terminal.write(b"\x1b[B\r");
+            terminal.until("Tool approval: Bypass (also for new sessions)");
             let config: Value =
                 serde_json::from_str(&fs::read_to_string(home.0.join("config.json")).unwrap())
                     .unwrap();
-            assert_eq!(config["permissionPreset"], "read-only");
+            assert_eq!(config["fileAccess"], "read-only");
+            assert_eq!(config["toolApproval"], "bypass");
+            assert!(config.get("permissionPreset").is_none());
             if !initial_setup {
                 assert!(!terminal.transcript[mark..].contains("Sign in with /login"));
             }
@@ -184,16 +300,20 @@ fn permission_flag_selects_the_new_and_resumed_preset_with_version_checks() {
         );
         fail(wire, &update, "permission_conflict");
         let get = wire.read("session.permission.get");
+        let mut current = policy("read-only", &[], &[]);
+        current["fileAccess"] = json!("read-only");
+        current["toolApproval"] = json!("ask");
         wire.reply(
             &get,
-            json!({"version":6,"policy":policy("read-only", &[], &[])}),
+            json!({"version":6,"policy":current}),
         );
         let update = wire.read("session.permission.update");
         assert_eq!(update["params"]["expectedVersion"], 6);
-        assert_eq!(update["params"]["policy"], policy("full-access", &[], &[]));
+        current["preset"] = json!("full-access");
+        assert_eq!(update["params"]["policy"], current);
         wire.reply(
             &update,
-            json!({"version":9,"policy":policy("full-access", &[], &[])}),
+            json!({"version":9,"policy":current}),
         );
         wire.attached();
         quiet_turn(wire);
@@ -218,6 +338,10 @@ fn permission_flag_selects_the_new_and_resumed_preset_with_version_checks() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stderr).contains("permission: full-access"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("File access: Read only; Tool approval: Ask")
+    );
 
     let home = Home::new();
     let daemon = home.daemon(|wire| {
@@ -509,15 +633,14 @@ fn interactive_approvals_list_switch_and_edit_rules_with_version_checks() {
     terminal.until("permission: workspace-write");
     terminal.until("\n> ");
     terminal.write(b"/approvals\n");
-    terminal.until("Preset (main branch): workspace-write");
-    terminal.until("  read-only        reads run;");
-    terminal.until("* workspace-write  reads and workspace file writes run;");
-    terminal.until("  full-access      every tool call runs without asking");
+    terminal.until("File access: Workspace read/write");
+    terminal.until("Tool approval: Ask");
+    terminal.until("Legacy preset seed (main branch): workspace-write");
     terminal.until("  disallowed tools: blocked-tool");
     terminal.until("Command rules (user scope, every Session):");
     terminal.until("  1  allow  exact   cargo test");
     terminal.until("  2  deny   prefix  git push");
-    terminal.until("Usage: /approvals");
+    terminal.until("Usage: /permissions");
     terminal.until("\n> ");
     terminal.write(b"/approvals full-access\n");
     terminal.until("Switch the main branch to full-access? [y/N] ");
@@ -577,13 +700,13 @@ fn interactive_approvals_list_switch_and_edit_rules_with_version_checks() {
     terminal.until("Error: Unknown permission preset");
     terminal.until("\n> ");
     terminal.write(b"/approvals remove\n");
-    terminal.until("Error: Usage: /approvals");
+    terminal.until("Error: Usage: /permissions");
     terminal.until("\n> ");
     terminal.write(b"/approvals remove 9\n");
     terminal.until("Error: No such rule in the last /approvals listing");
     terminal.until("\n> ");
-    terminal.write(b"/approval\n");
-    terminal.until("/approval chooses ask or full access in the terminal UI");
+    terminal.write(b"/approval remove\n");
+    terminal.until("Error: Usage: /permissions");
     terminal.until("\n> ");
     terminal.write(b"after\n");
     terminal.until("[permission] main branch preset: full-access");
@@ -796,8 +919,15 @@ fn real_daemon_exec_presets_decide_process_tools_without_automatic_approval() {
         "{stdout}"
     );
     assert!(stderr.contains("permission: full-access"), "{stderr}");
+    assert!(
+        stderr.contains("File access: Unrestricted; Tool approval: Bypass"),
+        "{stderr}"
+    );
     assert!(stderr.contains("[done] exec"), "{stderr}");
-    assert!(!stderr.contains("approval"), "{stderr}");
+    assert!(
+        !stderr.contains("Interactive approval required"),
+        "{stderr}"
+    );
     for (args, marker) in [
         (vec!["--permission", "full-access"], "resumed-ran"),
         (vec![], "kept-ran"),
@@ -809,7 +939,10 @@ fn real_daemon_exec_presets_decide_process_tools_without_automatic_approval() {
         let (code, stdout, stderr) = daemon.run(&command);
         assert_eq!(code, Some(0), "{stderr}");
         assert!(stdout.contains(marker), "{stdout}");
-        assert!(!stderr.contains("approval"), "{stderr}");
+        assert!(
+            !stderr.contains("Interactive approval required"),
+            "{stderr}"
+        );
     }
     let (code, stdout, stderr) = daemon.run(&[
         "exec",
@@ -826,7 +959,10 @@ fn real_daemon_exec_presets_decide_process_tools_without_automatic_approval() {
         "{stdout}"
     );
     assert!(!stdout.contains("denied-ran"), "{stdout}");
-    assert!(!stderr.contains("approval"), "{stderr}");
+    assert!(
+        !stderr.contains("Interactive approval required"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -855,7 +991,8 @@ fn real_daemon_always_allow_saves_an_exact_rule_until_approvals_removes_it() {
         terminal.transcript
     );
     terminal.write(b"/approvals\n");
-    terminal.until("* workspace-write");
+    terminal.until("File access: Workspace read/write");
+    terminal.until("Tool approval: Ask");
     terminal.until("  1  allow  exact   printf always-ran");
     terminal.editor();
     terminal.write(b"/approvals remove 1\n");
@@ -870,6 +1007,35 @@ fn real_daemon_always_allow_saves_an_exact_rule_until_approvals_removes_it() {
     terminal.editor();
     assert!(
         !terminal.transcript[mark..].contains("[approval]"),
+        "{}",
+        terminal.transcript
+    );
+    terminal.write(b"/permissions file-access read-only\n");
+    terminal.until("File access: Read only; Tool approval: Ask");
+    terminal.editor();
+    terminal.write(b"/permissions tool-approval bypass\n");
+    terminal.until("File access: Read only; Tool approval: Bypass");
+    terminal.editor();
+    let mark = terminal.transcript.len();
+    terminal.write(b"exec: printf bypass-ran\n");
+    terminal.until("tool said: bypass-ran");
+    terminal.editor();
+    assert!(
+        !terminal.transcript[mark..].contains("[approval]"),
+        "{}",
+        terminal.transcript
+    );
+    terminal.write(b"/permissions tool-approval ask\n");
+    terminal.until("File access: Read only; Tool approval: Ask");
+    terminal.editor();
+    let mark = terminal.transcript.len();
+    terminal.write(b"exec: printf ask-ran\n");
+    terminal.until("requires approval under Ask tool approval");
+    terminal.until("Allow once, always, or deny? [y/a/N] ");
+    terminal.write(b"n\n");
+    terminal.editor();
+    assert!(
+        !terminal.transcript[mark..].contains("tool said: ask-ran"),
         "{}",
         terminal.transcript
     );

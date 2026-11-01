@@ -4,11 +4,11 @@
   "version": "0.1.0-alpha.8",
   "type": "module",
   "dependencies": {
-    "@arcships/rutis-runtime": "0.19.2"
+    "@arcships/rutis-runtime": "0.19.3"
   },
   "devDependencies": {
-    "@arcships/rutis": "0.19.2",
-    "@arcships/rutis-host": "0.19.2",
+    "@arcships/rutis": "0.19.3",
+    "@arcships/rutis-host": "0.19.3",
     "@modelcontextprotocol/sdk": "1.31.0",
     "zod": "4.4.3"
   }

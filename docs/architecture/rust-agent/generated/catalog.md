@@ -20,6 +20,7 @@ Each catalog name a part of the assembly provides or injects. A name that crosse
 | `executionSettingsHost` | process | ExecutionSettings | Rust-only | — |
 | `fileStorage` | process | FileStorage | Rust-only | — |
 | `grokOAuthService` | process | GrokOAuth | Rust-only | — |
+| `hooksService` | process | HooksSettings | Rust-only | — |
 | `hostPlatform` | process | HostPlatform | Rust-only | — |
 | `listenAddresses` | process | Transport | Rust-only | — |
 | `loader` | process | rutis-loader | Rust-only | — |
@@ -39,6 +40,8 @@ Each catalog name a part of the assembly provides or injects. A name that crosse
 | `providerService` | process | Provider | Rust-only | — |
 | `publication` | process | McpPublication | Rust-only | — |
 | `reservedMethods` | process | — | Rust-only | — |
+| `rutis/loader` | process | rutis-loader | yes | `create` async, `reload` async, `remove` async, `status` async |
+| `selectableModelsHost` | process | Provider | Rust-only | — |
 | `serverControl` | process | ServerControl | Rust-only | — |
 | `sessionFilesHost` | process | SessionStore | Rust-only | — |
 | `sessionMetadata` | process | SessionStore | yes | `read` async, `setTitle` async |
@@ -73,6 +76,7 @@ Each catalog name a part of the assembly provides or injects. A name that crosse
 | `sessionMethods` | session | SessionMethods | yes | `register` async |
 | `sessionSkills` | session | Skills | Rust-only | — |
 | `skillsConfig` | session | SessionScope | Rust-only | — |
+| `submitChecks` | session | InputMethods | Rust-only | — |
 | `timelineFactory` | session | SessionScope | Rust-only | — |
 | `timelineStore` | session | SessionScope | Rust-only | — |
 | `timelineTree` | session | TimelineTree | Rust-only | — |

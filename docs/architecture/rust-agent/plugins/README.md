@@ -45,6 +45,7 @@ dependency is not necessarily a plugin with the same name.
 | [ModelProvider](ModelProvider.md) | — | — | ModelProvider |
 | [HostPlatform](HostPlatform.md) | HostPlatform | — | — |
 | [FileStorage](FileStorage.md) | FileStorage | — | — |
+| [Hooks](Hooks.md) | — | HooksSession, HookSources (App Server) | HooksBranch |
 
 App Server optional plugins are outside this local-execution profile. [Web](../../../design/plugins/Web.md) provides `web_search` and `web_fetch` through a Session part its `web` process row registers; it adds no service to the assembly recorded here.
 

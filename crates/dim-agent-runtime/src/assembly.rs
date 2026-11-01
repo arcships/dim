@@ -2111,19 +2111,20 @@ pub(crate) fn retain_scope(
     snapshot.bindings.retain(|b| members.contains(&b.provider));
 }
 
-/// Permanently closes a scope and returns only cleanup failures.
-///
-/// rutis reports a plugin's load result again from shutdown under the same
-/// identity, with the apply error first and its rollback errors after it. A
-/// plugin that had Failed already surfaced that whole error as the build cause.
-/// A plugin still loading had its apply rejected by the cancellation itself;
-/// that rejection is dropped while its rollback errors remain cleanup failures.
 /// A scope's rows and the copies its mounters mounted, as one close sees them.
 pub(crate) fn with_copies(children: &[FiberView], copies: &crate::parts::Copies) -> Vec<FiberView> {
     let mut members = children.to_vec();
     members.extend(copies.lock().unwrap().iter().cloned());
     members
 }
+/// Permanently closes a scope and returns only cleanup failures.
+///
+/// rutis reports a plugin's load result again from shutdown under the same
+/// identity, with the apply error first and its rollback errors after it. A
+/// plugin that had Failed already surfaced that whole error as the build cause,
+/// so the copy shutdown reports is dropped here. A plugin still loading when
+/// the scope closes is cancelled before it settles: that is not a build cause
+/// anyone received, and its cleanup failures are kept.
 pub(crate) async fn shutdown_scope(view: &FiberView, children: &[FiberView]) -> Result<()> {
     let members: Vec<_> = children.iter().chain([view]).collect();
     let before: Vec<_> = members.iter().map(|view| view.state().state).collect();
@@ -2135,11 +2136,8 @@ pub(crate) async fn shutdown_scope(view: &FiberView, children: &[FiberView]) -> 
         let Some(error) = view.state().error else {
             continue;
         };
-        match (state, &*error) {
-            (FiberState::Active, _) => {}
-            (FiberState::Failed, _) => known.push(error.clone()),
-            (_, ErrorKind::Aggregate { errors }) => known.extend(errors.first().cloned()),
-            _ => known.push(error.clone()),
+        if state == FiberState::Failed {
+            known.push(error.clone());
         }
     }
     match without(error, &known) {

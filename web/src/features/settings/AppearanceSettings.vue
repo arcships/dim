@@ -24,7 +24,8 @@ function selectLanguage(event: Event): void {
 
 <style scoped>
 .theme-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-3); }
-.theme-option { display: flex; flex-direction: column; align-items: center; gap: var(--space-3); padding: var(--space-5); border: 1px solid var(--border); border-radius: var(--radius-lg); background: transparent; color: var(--foreground); cursor: pointer; }
+.theme-option { display: flex; min-width: 0; flex-direction: column; align-items: center; gap: var(--space-3); padding: var(--space-5) var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-lg); background: transparent; color: var(--foreground); font-size: var(--text-md); cursor: pointer; }
+.theme-option:hover { background: var(--hover); }
 .theme-option.is-selected { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); }
 .theme-option:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
 label { display: grid; gap: var(--space-2); }

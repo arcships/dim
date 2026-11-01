@@ -36,6 +36,10 @@ waits for tracked calls, including handoff. File mutations stage complete bytes
 and retain coordinator admission through I/O/publication. Foreground commands
 release their process trees before returning; collaboration members do not
 background commands. Output files are not deleted simply by plugin unload.
+A result that carries `outputPath` registers that path with `sessionFiles` before
+it leaves the part; a registration failure fails the call (ADR 013 D2). A
+`SessionFilesHost` in the process is read without injection, so a host without
+native storage keeps working and its output stays unowned.
 Before admission, `ToolHost.resolve_write` resolves a native `write` or `edit`
 target and returns that same call with an absolute canonical `path`. ToolExecutor
 uses it for approval and execution; the original model call remains in history.
@@ -77,8 +81,10 @@ Exec retains its `cwd` argument resolution, POSIX `&` refusal, heavy-search
 refusal, timeouts and background ownership. Its existing `exec_shell_unavailable`
 tool-result code is preserved, with instructions to fix the file and retry.
 
-Exec takes no input that selects a boundary. The user's `Sandbox` and `Network`
-switches in `/settings > Execution` decide it; `exec` passes nothing and cannot widen it. A call
+Exec takes no input that selects a boundary. The user's `Process isolation` control in
+`/permissions` or `/settings` selects the existing `sandbox` and `network` settings
+([process isolation](../../../design/host-platform-isolation.md#process-isolation));
+File access and Tool approval do not change them. `exec` passes nothing and cannot widen the boundary. A call
 that still sends `sandbox` is rejected as `exec_invalid_request`, and the background handoff
 keeps the boundary the process started with
 ([HostPlatform](HostPlatform.md#events-and-lifetime)).

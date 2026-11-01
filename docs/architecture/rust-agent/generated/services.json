@@ -574,6 +574,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_agent_runtime::config::SessionIdentity@session",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "scope": null,
             "status": "Ready"
@@ -593,6 +598,12 @@
           },
           {
             "service": "dim_agent_runtime::config::SessionConfig@session",
+            "scope": null,
+            "provider": 21,
+            "generation": 1
+          },
+          {
+            "service": "dim_agent_runtime::config::SessionIdentity@session",
             "scope": null,
             "provider": 21,
             "generation": 1
@@ -619,6 +630,12 @@
           },
           {
             "service": "dim_agent_runtime::config::SessionConfig@session",
+            "provider": 21,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_agent_runtime::config::SessionIdentity@session",
             "provider": 21,
             "declared": true,
             "external": true
@@ -1872,6 +1889,12 @@
       {
         "service": "dim_agent_capabilities::host::ToolHost@session",
         "provider": 21,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dim_agent_capabilities::input_queue::SubmitChecks@session",
+        "provider": 25,
         "generation": 1,
         "removing": false
       },

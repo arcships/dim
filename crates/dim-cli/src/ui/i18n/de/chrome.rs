@@ -253,7 +253,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Nothing is running" => "Nichts läuft",
         "No queued message" => "Keine Nachricht eingereiht",
         "Only in fullscreen (/tui)" => "Nur im Vollbild (/tui)",
-        "/{name} is not yet available" => "/{name} noch nicht verfügbar",
         "new session" => "neue Session",
         "resumed {id} · {count} messages" => "{id} fortgesetzt · {count} Nachrichten",
         " · earlier history: /timeline" => " · früherer Verlauf: /timeline",
@@ -268,9 +267,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "answer required" => "Antwort nötig",
         "permission required" => "Freigabe nötig",
         "esc interrupt" => "esc unterbrechen",
-        "↑ edit · ctrl+s steer now · /queue" => "↑ bearbeiten · ctrl+s jetzt steuern · /queue",
-        "+{count} more · ↑ edit · ctrl+s steer now · /queue" => {
-            "+{count} weitere · ↑ bearbeiten · ctrl+s jetzt steuern · /queue"
+        "↑ edit · ctrl+s steer now" => "↑ bearbeiten · ctrl+s jetzt steuern",
+        "+{count} more · ↑ edit · ctrl+s steer now" => {
+            "+{count} weitere · ↑ bearbeiten · ctrl+s jetzt steuern"
         }
         "Queue ({count})" => "Warteschlange ({count})",
         "Thinking…" => "Denkt…",
@@ -370,8 +369,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Tool approvals" => "Tool-Freigaben",
         "Execution" => "Ausführung",
         "Models" => "Modelle",
-        "Model" => "Modell",
-        "not set" => "nicht gesetzt",
         "Settings" => "Einstellungen",
         "↑↓ move · Enter select · ←→/Space change · Esc close" => {
             "↑↓ bewegen · Enter wählen · ←→/Space ändern · Esc schließen"

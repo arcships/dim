@@ -30,7 +30,7 @@ loader's own instance table. Being a loader instance costs the rest of the assem
   loader creates an instance only from a row's context, so the parts create it through
   `SessionLoader`, from the Session scope row.
 
-rutis 0.19.2, which the 0.19 upgrade pins, resolves a foreign copy's instances from its position in
+rutis 0.19.3, which the 0.19 upgrade pins, resolves a foreign copy's instances from its position in
 the plugin tree, and lets a host mark a plain plugin as the scope of a group (`mark_scope`,
 [rutis#948](https://github.com/arcships/rutis/issues/948)).
 
@@ -56,8 +56,8 @@ The Agent group stays an instanced loader group: its row isolates the Agent's pr
 
 - Creation reads no loader entries, and `Loader::entries()` lists process rows and the Agent group's
   rows only.
-- Dim builds on rutis 0.19.2, as the 0.19 upgrade pins it; nothing is asked of rutis. Foreign copies
-  resolve through 0.19.2's mounter. Rust copies qualify their keys with their scopes' instance ids,
+- Dim builds on rutis 0.19.3, as the 0.19 upgrade pins it; nothing is asked of rutis. Foreign copies
+  resolve through 0.19.3's mounter. Rust copies qualify their keys with their scopes' instance ids,
   as they can today.
 - A part's nearest row is its Agent's anchor row.
 - A Session is a child of its Agent's anchor, so the anchor must not reload: a reload would dispose

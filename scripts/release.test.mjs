@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
-import {existsSync,mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {test} from 'node:test';
@@ -31,6 +31,17 @@ function entries(archive) {
   }
   return names;
 }
+
+test('workflow actions use immutable commits, including disabled publication',()=>{
+  const workflows=path.join(root,'.github/workflows');
+  for (const file of readdirSync(workflows).filter(file=>/\.ya?ml(?:\.disabled)?$/.test(file))) {
+    const source=readFileSync(path.join(workflows,file),'utf8');
+    for (const [,action] of source.matchAll(/^\s*(?:-\s*)?uses:\s*(\S+)/gm)) {
+      if (action.startsWith('./')) continue;
+      assert.match(action,/^[\w.-]+\/[\w./-]+@[a-f0-9]{40}$/,`${file}: ${action} must use a full commit SHA`);
+    }
+  }
+});
 
 test('stages public native payload, packs it and rejects modified content', {skip:process.platform==='win32'}, (t)=>{
   const temporary=fixture(t);

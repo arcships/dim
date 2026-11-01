@@ -4,6 +4,7 @@ use rutis::host::ErrorKind;
 use rutis::{Ctx, Plugin};
 use std::{
     fs::File,
+    io::Write,
     panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -11,7 +12,10 @@ use std::{
 };
 
 /// The native store format this daemon creates and opens.
-pub const FORMAT: u32 = 28;
+pub const FORMAT: u32 = 30;
+/// The oldest schema the startup transaction upgrades: the first step of
+/// `UPGRADES`, which is ordered oldest first.
+const MIN_FORMAT: u32 = UPGRADES[0].0;
 const LEGACY_BY_END: (&str, &str) = (
     "timeline_events_by_end",
     "CREATE INDEX timeline_events_by_end ON timeline_events(session_id, branch_id, last_sequence, sequence)",
@@ -19,7 +23,7 @@ const LEGACY_BY_END: (&str, &str) = (
 pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "agent_store_format",
-        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 28))",
+        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 30))",
     ),
     (
         "settings_documents",
@@ -114,6 +118,18 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
         "CREATE INDEX session_file_owners_by_file ON session_file_owners(file_id)",
     ),
     (
+        "session_grants",
+        "CREATE TABLE session_grants (session_id TEXT NOT NULL REFERENCES agent_sessions(session_id), path TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('file', 'dir')), mode TEXT NOT NULL CHECK (mode IN ('read', 'write')), PRIMARY KEY (session_id, path))",
+    ),
+    (
+        "session_output_owners",
+        "CREATE TABLE session_output_owners (session_id TEXT NOT NULL REFERENCES agent_sessions(session_id), path TEXT NOT NULL, PRIMARY KEY (session_id, path))",
+    ),
+    (
+        "session_output_owners_by_path",
+        "CREATE INDEX session_output_owners_by_path ON session_output_owners(path)",
+    ),
+    (
         "session_metadata",
         "CREATE TABLE session_metadata (session_id TEXT NOT NULL PRIMARY KEY REFERENCES agent_sessions(session_id), revision INTEGER NOT NULL CHECK (revision > 0), title TEXT, title_source TEXT CHECK (title_source IN ('auto', 'manual')), CHECK ((title IS NULL) = (title_source IS NULL)))",
     ),
@@ -135,20 +151,20 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
 const AGENT_SESSIONS_BEFORE_V27: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0))";
 const AGENTS_BEFORE_V27: &str = "CREATE TABLE agents(agent_id TEXT PRIMARY KEY, profile TEXT NOT NULL, is_default INTEGER NOT NULL CHECK(is_default IN (0, 1)))";
 /// The text of `timeline_events` before v28 adds the two reading switches.
-const TIMELINE_EVENTS_BEFORE_V28: &str = "CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id))";
+const TIMELINE_EVENTS_BEFORE_V30: &str = "CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id))";
 /// v27 adds a column to two tables, which `SCHEMA` cannot express as a new
 /// entry: the upgrade alters them before it creates the indexes on them.
 const V27_COLUMNS: &str = "ALTER TABLE agent_sessions ADD COLUMN leader_session_id TEXT REFERENCES agent_sessions(session_id);
 ALTER TABLE agents ADD COLUMN owner_session_id TEXT REFERENCES agent_sessions(session_id);";
 /// v28 adds the two reading switches; the upgrade alters the table before it
 /// creates the partial indexes on them.
-const V28_COLUMNS: &str =
+const V30_COLUMNS: &str =
     "ALTER TABLE timeline_events ADD COLUMN context_render INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE timeline_events ADD COLUMN context_state INTEGER NOT NULL DEFAULT 0;";
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
-const UPGRADES: [(u32, &[&str]); 14] = [
+const UPGRADES: [(u32, &[&str]); 16] = [
     (
         13,
         &[
@@ -191,9 +207,16 @@ const UPGRADES: [(u32, &[&str]); 14] = [
     (25, &[]),
     // #593: a delegation's owner and a member Session's leader.
     (26, &["agents_by_owner", "agent_sessions_by_leader"]),
+    (27, &["session_grants"]),
+    // ADR 013: output ownership, copied by a fork and read by the
+    // `session-owned` fact.
+    (
+        28,
+        &["session_output_owners", "session_output_owners_by_path"],
+    ),
     // #708: the two reading switches on timeline events.
     (
-        27,
+        29,
         &[
             "timeline_events_render",
             "timeline_events_state",
@@ -223,7 +246,7 @@ fn schema_of(version: u32) -> Vec<(&'static str, String)> {
                 "agent_store_format" => format_table(version),
                 "agent_sessions" if version < 27 => AGENT_SESSIONS_BEFORE_V27.to_owned(),
                 "agents" if version < 27 => AGENTS_BEFORE_V27.to_owned(),
-                "timeline_events" if version < 28 => TIMELINE_EVENTS_BEFORE_V28.to_owned(),
+                "timeline_events" if version < 30 => TIMELINE_EVENTS_BEFORE_V30.to_owned(),
                 _ => sql.to_owned(),
             };
             (name, sql)
@@ -242,13 +265,26 @@ fn same_schema(actual: &[(String, String)], mut expected: Vec<(&str, String)>) -
                 name == expected_name && *sql == expected_sql
             })
 }
-/// The schema objects of `connection`'s database, sorted by name.
+/// The read index the daemon creates at open (session-history-window §5.1).
+/// It carries no data and no decode rule, so it is not part of the format:
+/// `schema` and the format gate ignore it, and every open recreates it.
+const DERIVED_INDEX: (&str, &str) = (
+    "timeline_history_anchors",
+    "CREATE INDEX IF NOT EXISTS timeline_history_anchors ON timeline_events(session_id, branch_id, kind, sequence) WHERE kind IN ('turn/start', 'input/message')",
+);
+/// The schema objects of `connection`'s database that belong to the format,
+/// sorted by name.
 fn schema(connection: &Connection) -> Result<Vec<(String, String)>> {
     let mut query = connection
-        .prepare("SELECT name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name")
+        .prepare(
+            "SELECT name, sql FROM sqlite_master \
+             WHERE name NOT LIKE 'sqlite_%' AND name != ?1 ORDER BY name",
+        )
         .map_err(storage)?;
     query
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map(rusqlite::params![DERIVED_INDEX.0], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
         .map_err(storage)?
         .collect::<rusqlite::Result<_>>()
         .map_err(storage)
@@ -273,6 +309,90 @@ fn markers(connection: &Connection) -> Result<Vec<i64>> {
 
 fn storage(error: impl std::fmt::Display) -> AgentError {
     AgentError::Storage(error.to_string())
+}
+
+enum StartupFailure {
+    Newer { marker: i64 },
+    Mismatched { schema: u32, marker: Option<i64> },
+    Unrecognized { marker: Option<i64> },
+    TooOld { marker: i64 },
+}
+impl StartupFailure {
+    /// The note a CLI-started daemon leaves for its client; the first line
+    /// binds it to the process that wrote it.
+    fn note(&self, path: &std::path::Path) -> String {
+        let path = path.display();
+        let body = match self {
+            Self::Newer { marker } => format!(
+                "Cannot open native store {path}.\n  Store format: v{marker}\n  Daemon format: v{FORMAT}\n  This daemon cannot read the store. Existing data was preserved.\n  Run a build supporting v{marker}, or use --home PATH for a separate environment."
+            ),
+            Self::Mismatched { schema, marker } => {
+                let store = match marker {
+                    Some(marker) => format!("v{marker} (schema is v{schema})"),
+                    None => format!("v{schema} (format marker is missing or ambiguous)"),
+                };
+                format!(
+                    "Cannot open native store {path}.\n  Store format: {store}\n  Daemon format: v{FORMAT}\n  The store's format marker and schema disagree. Existing data was preserved.\n  Use the build that wrote this store, or use --home PATH for a separate environment."
+                )
+            }
+            Self::Unrecognized { marker } => {
+                let store = match marker {
+                    Some(marker) => format!("v{marker} (unrecognized schema)"),
+                    None => "unrecognized".to_owned(),
+                };
+                format!(
+                    "Cannot open native store {path}.\n  Store format: {store}\n  Daemon format: v{FORMAT}\n  The store is not a format this daemon recognizes. Existing data was preserved.\n  Use the build that wrote this store, or use --home PATH for a separate environment."
+                )
+            }
+            Self::TooOld { marker } => format!(
+                "Cannot open native store {path}.\n  Store format: v{marker} (no longer read by this daemon)\n  Daemon format: v{FORMAT}\n  This daemon cannot read the store. Existing data was preserved.\n  Use a build that reads v{marker}, or use --home PATH for a separate environment."
+            ),
+        };
+        format!(
+            "dimcode-startup-failure v1 pid={}\n{body}",
+            std::process::id()
+        )
+    }
+}
+
+fn startup_note_path(path: &std::path::Path) -> PathBuf {
+    let mut note = path.as_os_str().to_os_string();
+    note.push(".startup");
+    PathBuf::from(note)
+}
+
+fn single_marker(markers: &[i64]) -> Option<i64> {
+    (markers.len() == 1).then(|| markers[0])
+}
+
+/// Best effort: the rejection and its error text do not depend on the note.
+fn write_startup_failure(path: &std::path::Path, failure: StartupFailure) {
+    let note = failure.note(path);
+    let target = startup_note_path(path);
+    let temp = target.with_file_name(format!(
+        "{}.{}.tmp",
+        target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("dimcode.sqlite.startup"),
+        uuid::Uuid::new_v4()
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let written = options.open(&temp).and_then(|mut file| {
+        file.write_all(note.as_bytes())?;
+        drop(file);
+        let _ = std::fs::remove_file(&target);
+        std::fs::rename(&temp, &target)
+    });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
 }
 
 /// The process connection and maintenance admission. Business modules never
@@ -372,7 +492,15 @@ impl SqliteStorage {
             tx.execute("INSERT INTO agent_store_format VALUES (?1)", [FORMAT])
                 .map_err(storage)?;
         } else if let Some(version) = known_format(&actual) {
-            if markers(&tx)? != [i64::from(version)] {
+            let markers = markers(&tx)?;
+            if markers != [i64::from(version)] {
+                write_startup_failure(
+                    &path,
+                    StartupFailure::Mismatched {
+                        schema: version,
+                        marker: single_marker(&markers),
+                    },
+                );
                 return Err(unsupported_version());
             }
             if version != FORMAT {
@@ -383,8 +511,8 @@ impl SqliteStorage {
                     if *from == 26 {
                         tx.execute_batch(V27_COLUMNS).map_err(storage)?;
                     }
-                    if *from == 27 {
-                        tx.execute_batch(V28_COLUMNS).map_err(storage)?;
+                    if *from == 29 {
+                        tx.execute_batch(V30_COLUMNS).map_err(storage)?;
                         let keys = |list: &[&str]| {
                             list.iter()
                                 .map(|key| format!("'{key}'"))
@@ -421,11 +549,26 @@ impl SqliteStorage {
                 upgraded_from = Some(version);
             }
         } else {
+            let marker = markers(&tx)
+                .ok()
+                .and_then(|markers| single_marker(&markers));
+            let failure = match marker {
+                Some(marker) if marker > i64::from(FORMAT) => StartupFailure::Newer { marker },
+                Some(marker) if marker == 14 || marker < i64::from(MIN_FORMAT) => {
+                    StartupFailure::TooOld { marker }
+                }
+                Some(marker) => StartupFailure::Unrecognized {
+                    marker: Some(marker),
+                },
+                None => StartupFailure::Unrecognized { marker: None },
+            };
+            write_startup_failure(&path, failure);
             return Err(storage(format!(
                 "unsupported SQLite schema at {}; the database was preserved. Use a compatible daemon to access it, or choose a new database path for a fresh start.",
                 path.display()
             )));
         }
+        tx.execute_batch(DERIVED_INDEX.1).map_err(storage)?;
         tx.commit().map_err(storage)?;
         connection
             .pragma_update(None, "journal_mode", "WAL")
@@ -440,6 +583,7 @@ impl SqliteStorage {
         connection
             .pragma_update(None, "fullfsync", true)
             .map_err(storage)?;
+        let _ = std::fs::remove_file(startup_note_path(&path));
         Ok(Arc::new(Self {
             connection: Mutex::new(Some(connection)),
             admission: Mutex::new(Admission {

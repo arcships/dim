@@ -5,7 +5,7 @@ import { readPlugins, readSkills, type PluginEntry, type SkillEntry, type Skills
 import { readAck } from "../../rpc/read"
 import { useConnectionStore } from "../../stores/connection"
 import GeneralSettingsStatus from "./GeneralSettingsStatus.vue"
-import { bindSettingsDirty, messageFrom } from "./context"
+import { bindSettingsDirty, messageFrom, reloadSettingsOnReconnect } from "./context"
 
 const s = useSettingsText()
 const connection = useConnectionStore()
@@ -72,6 +72,7 @@ function install(): void {
   if (!source.value.trim()) return
   void packageAction("plugin.install", { source: sourceType.value === "path" ? { path: source.value.trim() } : { git: source.value.trim(), ...(gitRef.value.trim() ? { ref: gitRef.value.trim() } : {}) }, ...(installId.value.trim() ? { id: installId.value.trim() } : {}), enable: false })
 }
+reloadSettingsOnReconnect(connection, () => load(), dirty)
 onMounted(() => load())
 </script>
 

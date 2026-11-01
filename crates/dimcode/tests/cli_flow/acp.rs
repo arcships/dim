@@ -474,6 +474,11 @@ fn acp_stdio_temporary_mcp_rebinds_expired_resources_before_submission() {
     daemon.join().unwrap();
 }
 
+/// The prompt reply only arrives once the shared recovery deadline expires.
+/// Waiting up to this long only bounds a settlement that never happens; it is
+/// not the test's budget, so a loaded machine does not shorten it.
+const RECOVERY_SETTLEMENT: Duration = Duration::from_secs(300);
+
 #[test]
 fn acp_stdio_recovery_deadline_settles_cancel_without_claiming_native_stop() {
     let home = Home::new();
@@ -495,10 +500,7 @@ fn acp_stdio_recovery_deadline_settles_cancel_without_claiming_native_stop() {
         wire.read("session.submit");
         drop(wire);
         let mut wire = accept_native(&listener);
-        wire.0
-            .get_ref()
-            .set_read_timeout(Some(Duration::from_secs(40)))
-            .unwrap();
+        wire.0.get_ref().set_read_timeout(None).unwrap();
         recovery_hello(&mut wire, "first");
         wire.read("session.input_lookup");
         waiting.send(()).unwrap();
@@ -522,16 +524,7 @@ fn acp_stdio_recovery_deadline_settles_cancel_without_claiming_native_stop() {
     )
     .unwrap();
     peer.input.flush().unwrap();
-    let mut fd = libc::pollfd {
-        fd: peer.output.get_ref().as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    assert!(
-        unsafe { libc::poll(&mut fd, 1, 40_000) } > 0,
-        "The shared recovery deadline did not settle"
-    );
-    let result = peer.response(3);
+    let result = peer.response_within(3, RECOVERY_SETTLEMENT);
     assert_eq!(result["result"]["stopReason"], "cancelled");
     assert_eq!(
         result["result"]["_meta"]["dim"]["nativeCancellation"],
@@ -777,8 +770,14 @@ impl Peer {
     }
 
     fn response(&mut self, id: i64) -> Value {
+        self.response_within(id, PATIENCE)
+    }
+
+    /// Waits up to `patience` for the reply, for flows whose timing the CLI's
+    /// own recovery deadline sets.
+    fn response_within(&mut self, id: i64, patience: Duration) -> Value {
         loop {
-            let frame = self.frame();
+            let frame = self.frame_within(patience);
             if frame.get("id") == Some(&json!(id)) {
                 return frame;
             }
@@ -797,6 +796,10 @@ impl Peer {
     }
 
     fn frame(&mut self) -> Value {
+        self.frame_within(PATIENCE)
+    }
+
+    fn frame_within(&mut self, patience: Duration) -> Value {
         if self.output.buffer().is_empty() {
             let mut fd = libc::pollfd {
                 fd: self.output.get_ref().as_raw_fd(),
@@ -804,7 +807,7 @@ impl Peer {
                 revents: 0,
             };
             assert!(
-                unsafe { libc::poll(&mut fd, 1, PATIENCE.as_millis() as i32) } > 0,
+                unsafe { libc::poll(&mut fd, 1, patience.as_millis() as i32) } > 0,
                 "ACP frame timed out"
             );
         }
@@ -1170,6 +1173,8 @@ fn acp_terminal_auth_helper_rediscovers_the_method_and_uses_the_same_home() {
     for directory in [Some("https://fixture.invalid/directory"), None] {
         let expected_directory = directory.unwrap_or("https://dimagent.com");
         let home = Home::new();
+        let app_server = home.0.join("dim-app-server");
+        fs::write(&app_server, "").unwrap();
         let endpoint = home.0.join("rust/daemon.sock");
         let listener = UnixListener::bind(&endpoint).unwrap();
         fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o600)).unwrap();
@@ -1183,7 +1188,11 @@ fn acp_terminal_auth_helper_rediscovers_the_method_and_uses_the_same_home() {
             };
             let mut wire = accept_native(&listener);
             let mut methods = METHODS.to_vec();
-            methods.push("account.providers");
+            methods.extend([
+                "account.providers",
+                "provider.management",
+                "account.login.begin",
+            ]);
             wire.hello(&methods);
             providers(&mut wire);
             let status = wire.read("account.status");
@@ -1193,7 +1202,11 @@ fn acp_terminal_auth_helper_rediscovers_the_method_and_uses_the_same_home() {
             let mut wire = accept_native(&listener);
             wire.hello(&methods);
             providers(&mut wire);
-            providers(&mut wire);
+            let listed = wire.read("provider.management");
+            wire.reply(
+                &listed,
+                json!({"providers":[{"providerId":"fixture","displayName":"Fixture","account":{"namespace":"account","loginMethods":["device"]}}]}),
+            );
             let begin = wire.read("account.login.begin");
             assert_eq!(begin["params"]["providerId"], "fixture");
             assert_eq!(begin["params"]["directory"], expected_directory);
@@ -1209,7 +1222,7 @@ fn acp_terminal_auth_helper_rediscovers_the_method_and_uses_the_same_home() {
             "--redirect-uri",
             "http://localhost:54322/auth/callback",
             "--server",
-            env!("CARGO_BIN_EXE_dimcode"),
+            app_server.to_str().unwrap(),
         ]);
         if let Some(directory) = directory {
             command.args(["--directory", directory]);
@@ -1237,7 +1250,7 @@ fn acp_terminal_auth_helper_rediscovers_the_method_and_uses_the_same_home() {
             args.windows(2)
                 .any(|pair| pair == ["--redirect-uri", "http://localhost:54322/auth/callback"])
         );
-        let server = fs::canonicalize(env!("CARGO_BIN_EXE_dimcode")).unwrap();
+        let server = fs::canonicalize(&app_server).unwrap();
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["--server", server.to_str().unwrap()])
@@ -2268,4 +2281,56 @@ fn acp_stdio_member_approval_shows_the_original_action_and_rechecks_before_allow
         peer.close();
         daemon.join().unwrap();
     }
+}
+
+/// Appendix D 7: a blocked prompt ends the ACP turn with `refusal`, and the check's
+/// message is the text the user sees.
+#[test]
+fn acp_stdio_reports_a_blocked_prompt_as_refusal_with_the_reason() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(METHODS);
+        wire.created();
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, json!({}));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        let submit = wire.read("session.submit");
+        wire.send(
+            json!({"jsonrpc":"2.0","id":submit["id"],"error":{"code":-32000,
+            "message":"Hook user: no prompts today","data":{"appError":"input_blocked"}}}),
+        );
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    assert!(peer.response(2).get("error").is_none());
+    peer.send(
+        3,
+        "session/prompt",
+        json!({"sessionId":"session","prompt":[{"type":"text","text":"Prompt"}]}),
+    );
+    let response = peer.response(3);
+    assert_eq!(
+        response["result"]["stopReason"],
+        "refusal",
+        "{response}: {updates:?}",
+        updates = peer.updates
+    );
+    assert!(
+        peer.updates.iter().any(|frame| {
+            frame["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+                && frame["params"]["update"]["content"]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("Hook user: no prompts today"))
+        }),
+        "the block's message is text: {:?}",
+        peer.updates
+    );
+    peer.close();
+    daemon.join().unwrap();
 }

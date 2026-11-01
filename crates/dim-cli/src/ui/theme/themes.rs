@@ -1,4 +1,4 @@
-//! The named themes. `system` is not listed: it is the default, the
+//! The named themes. `system` is not listed: it uses the
 //! terminal's own colours. Dim Dark and Dim Light take the same structure
 //! with Dim's green as the accent; the rest come from the theme
 //! registry (`scrollbackPaletteForTheme`; edit deliberately).

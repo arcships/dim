@@ -286,10 +286,12 @@ impl SettingsService {
   `read::<D>`/`update::<D>` 得到 `UnknownSource`。`settings` 服务的 `register` 以调用行的上下文调用
   `register_declared`。
 - `execution` 只有用户作用域：它不声明项目文件，因此项目作用域的读或写会被拒绝。它持有两个布尔值
-  `sandbox` 和 `network`，默认都是 `false`，revision 就是普通的 CAS revision。`/settings > Execution`
+  `sandbox` 和 `network`，默认都是 `false`，revision 就是普通的 CAS revision。TUI 的 `Process isolation` 控件
   和任何本地管理客户端使用 `settings.read`/`settings.update`；所有者的读取方通过
   `ExecutionSettingsHost` 端口取得文档，那是进程内读取契约，不是管理方法
-  （[ADR 011](../../../adr/011-execution-settings.md) D1）。
+  （[ADR 011](../../../adr/011-execution-settings.md) D1）。可见选项到现有布尔值的映射由
+  [进程隔离](../../../design/host-platform-isolation.md#process-isolation)定义；File access 和 Tool approval
+  不写入此来源。
 - 文件和原生路径与 `BusinessDocument` 共用，按来源名而不是 `D::NAMESPACE` 取键。CAS、gate、
   lease、unsynced 情形和 `publish` 保持不变。
 - `SettingsError` 新增 `UnknownSource`、`UserOnlyField(pointer)`、`InvalidScope` 和
