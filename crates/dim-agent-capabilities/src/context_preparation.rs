@@ -8,7 +8,7 @@ use crate::{
 };
 use dim_agent_runtime::{
     AgentError, BranchLifecycle, BranchPhase, CAPABILITY_RELOADING, Delivery, Dispatcher, Names,
-    PolicyFacts, Timeline, TimelineIdentity,
+    Timeline, TimelineIdentity,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
@@ -544,30 +544,20 @@ impl ContextPreparation {
             ContextOpError::Model(HostError::failed("Context compaction is not available"))
         })?;
         let through = self.timeline.committed();
-        let (context, history) = self
+        let streamed = self
             .history
-            .rendered_context(&self.timeline, through)
+            .rendered_stream(&self.timeline, through, 256)
             .await
             .map_err(ContextOpError::Read)?;
-        let request = configured_request(&PolicyContext::from_context(context.clone()), &history)
+        let request = configured_request(&PolicyContext::from_stream(&streamed), &streamed.history)
             .ok_or(ContextOpError::NotConfigured)?;
-        let facts = PolicyFacts::from_context(&context, through);
-        let view = policy
-            .view(
-                request,
-                PolicyContext::from_context(context),
-                history,
-                facts,
-                Vec::new(),
-            )
-            .map_err(ContextOpError::Model)?;
         let model = policy
             .resolver
-            .resolve(view.prepared.clone(), cancel)
+            .resolve(request.clone(), cancel)
             .await
             .map_err(ContextOpError::Model)?;
         let estimate = policy
-            .estimate(&view.prepared, model.as_ref(), view.events())
+            .estimate(&request, model.as_ref(), &[])
             .map_err(ContextOpError::Model)?;
         Ok(ContextUsage {
             through,
