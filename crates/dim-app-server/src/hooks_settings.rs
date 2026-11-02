@@ -336,6 +336,9 @@ struct Revision {
 #[serde(rename_all = "camelCase")]
 struct Catalog {
     user_revision: String,
+    /// The user's document as stored, so a client can edit and replace it
+    /// with the revision it read.
+    user_document: HooksDocument,
     projects_revision: String,
     disable_all_hooks: bool,
     sources: Vec<SourceView>,
@@ -639,6 +642,7 @@ impl DynPlugin for HooksSettingsPlugin {
                                     .is_some_and(|document| document.disable_all_hooks);
                                 reply(Catalog {
                                     user_revision: user.revision,
+                                    user_document: user.document,
                                     projects_revision: projects.revision,
                                     disable_all_hooks,
                                     sources: snapshot.sources.iter().map(SourceView::of).collect(),

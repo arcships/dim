@@ -293,6 +293,27 @@ pub const COMMANDS: &[Command] = &[
         Needs::Nothing,
     ),
     slash(
+        "skills",
+        "model",
+        "list Skills, enable or disable one",
+        &[],
+        Needs::Nothing,
+    ),
+    slash(
+        "hooks",
+        "model",
+        "list hooks, turn a source on or off, edit the user document",
+        &[],
+        Needs::Nothing,
+    ),
+    slash(
+        "reload-skills",
+        "model",
+        "rescan the Skills of this workspace",
+        &[],
+        Needs::Nothing,
+    ),
+    slash(
         "permissions",
         "model",
         "configure file access, tool approval and process isolation",

@@ -103,6 +103,18 @@ additive and protocol v3 is unchanged.
 The [Provider contract](../../docs/design/appserver/provider-management.md) defines
 the methods, typed errors, account ownership and accepted old-v19 rewrite loss. v18 binaries reject the v19 database.
 
+### Skills catalog
+
+On protected local protocol-v3 connections, `skills.catalog({cwd?})` returns the catalog's
+`version`, its `entries` and its `issues`. An entry is `{id, source, name, description,
+filePath, allowedTools, enabled, shadowedBy}`: `source` is `user`, `project` or
+`plugin:<plugin id>`, the root the Skill was found in; `shadowedBy` names the Skill whose
+same name takes precedence. Clients group entries by `source` and never parse `id`.
+`skills.set_enabled({cwd?, id, enabled})` writes the user's disabled set and returns the new
+`version`; `skills.refresh({cwd?})` rescans the user and project roots and returns the
+`version` and the `issues` of the rescan. The three persist in SQLite under native storage;
+legacy `skills.json` is only an import source.
+
 ### MCP configuration management
 
 On protected local protocol-v3 connections, `mcp.catalog({cwd?})` returns the merged catalog,

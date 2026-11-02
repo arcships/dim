@@ -717,12 +717,8 @@ pub fn convert_legacy_selection(
     let record = imported
         .get(&provider)
         .ok_or_else(|| "Selection requires its provider to be imported in this batch".to_owned())?;
-    if static_catalog(bundled, &provider, record, true)
-        .selectable(&model)
-        .is_none()
-    {
-        return Err("Selected model is unavailable".into());
-    }
+    stored_selection(bundled, &provider, record, &model)
+        .map_err(|_| "Selected model is unavailable".to_owned())?;
     Ok(LegacySelection {
         scope,
         provider_id: provider,

@@ -197,6 +197,27 @@ fn capability_snapshot(
     })
 }
 
+/// The effective route and adopted descriptor of an admitted static selection.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredSelection {
+    pub protocol: ModelProtocol,
+    pub snapshot: ModelCapabilitySnapshot,
+}
+
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum StoredSelectionError {
+    #[error("Managed provider selection belongs to its account owner")]
+    AccountOwned,
+    #[error("Model was not found")]
+    NotFound,
+    #[error("Model is unavailable")]
+    Unavailable {
+        reason: Option<String>,
+        disabled: bool,
+        missing_limits: Vec<String>,
+    },
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProviderRecord {
@@ -919,6 +940,48 @@ fn static_catalog(
         disabled_model_ids: record.disabled_model_ids.clone(),
         version: record.version,
     }
+}
+
+/// The selection an admitted static record would execute, or why it cannot.
+/// The caller supplies the record and bundled catalog; this reads no store,
+/// account state or network and adds no second route or selectability rule.
+pub fn stored_selection(
+    bundled: &BundledCatalog,
+    provider_id: &str,
+    record: &StaticProviderRecord,
+    model_id: &str,
+) -> Result<StoredSelection, StoredSelectionError> {
+    if record.credential_authority != CredentialAuthority::Static {
+        return Err(StoredSelectionError::AccountOwned);
+    }
+    let catalog = static_catalog(bundled, provider_id, record, true);
+    let model = catalog
+        .models
+        .iter()
+        .find(|model| model.id == model_id)
+        .ok_or(StoredSelectionError::NotFound)?;
+    let Some(selectable) = catalog.selectable(model_id) else {
+        return Err(StoredSelectionError::Unavailable {
+            reason: model.unavailable_reason.clone(),
+            disabled: catalog.disabled_model_ids.iter().any(|id| id == model_id),
+            missing_limits: model.missing_limits.clone(),
+        });
+    };
+    let unavailable = StoredSelectionError::Unavailable {
+        reason: Some("provider_unavailable".into()),
+        disabled: false,
+        missing_limits: selectable.missing_limits.clone(),
+    };
+    let protocol = selectable.endpoint.ok_or_else(|| unavailable.clone())?;
+    let snapshot = capability_snapshot(
+        selectable,
+        ModelId {
+            provider_id: provider_id.into(),
+            model_id: model_id.into(),
+        },
+    )
+    .map_err(|_| unavailable)?;
+    Ok(StoredSelection { protocol, snapshot })
 }
 
 fn seeded(provider: &CatalogProvider) -> bool {

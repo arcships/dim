@@ -22,10 +22,10 @@ use crate::args::Options;
 use crate::client::{self, Client, Message};
 use crate::model::session::{
     ACCOUNT_NAMESPACE, Account, AccountDescriptor, Command, CompactReply, ContextReading,
-    DIM_OAUTH_ID, DraftPart, EmptyProvider, EmptyReason, ExecutionSnapshot, ModelItem, ModelList,
-    ModelPolicyUpdate, NeedsLimitsProvider, OauthEvent, OauthStart, PluginItem, PluginReply,
-    ProviderAction, ProviderEntry, SandboxBackend, SessionItem, SessionPort, SubagentModelPolicy,
-    SwitchKind, Update, Usage,
+    DIM_OAUTH_ID, DraftPart, EmptyProvider, EmptyReason, ExecutionSnapshot, ManagementReply,
+    ModelItem, ModelList, ModelPolicyUpdate, NeedsLimitsProvider, OauthEvent, OauthStart,
+    PluginItem, PluginReply, ProviderAction, ProviderEntry, SandboxBackend, SessionItem,
+    SessionPort, SubagentModelPolicy, SwitchKind, Update, Usage,
 };
 use crate::model::view::{
     LineState, LineView, SideLine, TaskOutputState, TaskTarget, WorkflowInventory,
@@ -221,6 +221,10 @@ struct Worker {
     client: Client,
     updates: mpsc::Sender<Update>,
     session_id: String,
+    /// The attached Session's workspace, which the management panels work on.
+    /// A server older than the record leaves it unset, and the directory the
+    /// client started in stands.
+    session_cwd: Option<String>,
     /// The Session `/new` left: still attached until the next one is entered.
     parked: String,
     projection: Projection,
@@ -352,6 +356,7 @@ async fn run(
         client,
         updates: updates.clone(),
         session_id: String::new(),
+        session_cwd: None,
         parked: String::new(),
         projection: Projection::default(),
         question_responses: Vec::new(),
@@ -481,6 +486,9 @@ struct Attached {
     /// The adopted configuration's preferences; absent when it carries none.
     #[serde(default)]
     model_preferences: Option<dim_agent_types::ModelPreferences>,
+    /// The Session's workspace; absent from servers older than the record.
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -800,6 +808,7 @@ impl Worker {
             model_preferences,
         };
         self.session_id = session_id.clone();
+        self.session_cwd = attached.cwd;
         self.register_ui().await;
         self.mcp_required.clear();
         self.model = Some(configuration.clone());
@@ -1553,6 +1562,17 @@ impl Worker {
                     result,
                     plugins,
                 });
+            }
+            Command::Management(request) => {
+                // The Session's workspace, not the directory the client
+                // started in: a resumed Session may live elsewhere.
+                let cwd = self
+                    .session_cwd
+                    .as_deref()
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| self.options.cwd.clone());
+                let result = crate::management::apply(&mut self.client, &request, &cwd).await;
+                self.send(Update::Management(ManagementReply { request, result }));
             }
             Command::Configure(text) => {
                 if self.session_id.is_empty() && configure::needs_session(&text) {

@@ -161,13 +161,14 @@ clear them to zero. Stop the affected automatic reads after failure. Reopening
 `/tasks` retries explicit discovery once and successful known unfinished reads
 can resume. If no snapshot ever
 succeeded, show unavailable rather than an empty Workflow inventory. Existing
-transport response limits still apply. Both an explicit array and one large run
-can exceed the CLI's 16 MiB frame limit; per-ID status does not guarantee a
-bounded frame. That is a connection failure under the existing client path,
-which disables submission and preserves the current UI draft, not a
-Workflow-local read error. Do not claim recovery by silently increasing the
-limit, truncating stored records, reading daemon files or inventing a summary
-endpoint. This API/transport limit is explicit for architecture review.
+transport response limits still apply. Workflow bounds the records it admits and
+the store it reads ([Workflow A.18](plugins/Workflow.md)), so an explicit array
+and a per-ID record stay within one client frame for runs admitted under those
+bounds; a record committed before them keeps the transport limit stated here. A
+frame-limit failure follows the existing client path: it disables submission and
+preserves the current UI draft, not a Workflow-local read error. Do not claim
+recovery by silently increasing the limit, truncating records in the client,
+reading daemon files or inventing a summary endpoint.
 
 Session replacement, disconnect or worker shutdown invalidates this reader with
 the existing attachment identity and cancels its next scheduled read. An admitted
@@ -296,9 +297,10 @@ no new test harness, backend hook or mock call-order suite is needed.
   `stopping` row or pending stop cannot issue a second `x` request. Loading/error
   blocks all-task capture without disabling known single targets.
 - Include `launching`, `skipped` and `lost` stages, a provider unavailable during
-  hello, per-ID not-found/pruning and an oversized full-array or single-run
-  reply. A frame-limit failure follows the existing disconnected-UI/draft
-  behavior; no count is replaced by zero and no local-read recovery is claimed.
+  hello and per-ID not-found/pruning. A reply from a record committed before
+  Workflow's bounds can still be oversized; that frame-limit failure follows the
+  existing disconnected-UI/draft behavior, no count is replaced by zero and no
+  local-read recovery is claimed.
 - Preserve the leader draft/model/permission and approval priority. Exit/reload
   releases only owned client resources; it neither cancels unrelated runs nor
   changes optional package installation, persisted format or native ownership.
@@ -323,9 +325,10 @@ The CLI implements this contract in its existing Session worker
   answered after the stop, cannot replace the stop's stored result.
 
 Not covered by these flows: the real optional-package App Server flow, the
-48-column layout, `launching`/`lost` stages, per-ID not-found/pruning and an
-oversized reply. Opening terminal detail does not request an extra read; detail
-shows the last stored record. These remain open #264 verification items.
+48-column layout, `launching`/`lost` stages, per-ID not-found/pruning and a
+record committed before Workflow's frame bounds. Opening terminal detail does
+not request an extra read; detail shows the last stored record. These remain
+open #264 verification items.
 
 ## 7. Impact, rule check and ablation
 
@@ -337,10 +340,11 @@ no interface or behavior. No new Capability or wiring plugin is needed.
 ### Requirements raised to mechanism owners
 
 None proposed. Existing process management reads and the run owner's stop
-operation supply this flow, with their whole-store parse cost, unbounded stop
-join and transport-size limit stated above for architecture approval. This does
-not claim every valid persisted Workflow record fits one client frame. Session
-facts supply discovery; conditional per-ID reads supply current stored detail.
+operation supply this flow, with their whole-store parse cost and unbounded stop
+join. Workflow's own payload bounds ([A.18](plugins/Workflow.md)) keep the
+records it admits within one client frame; a record committed before them keeps
+the stated transport limit. Session facts supply discovery; conditional per-ID
+reads supply current stored detail.
 
 | Rule | Application |
 | --- | --- |

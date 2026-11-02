@@ -7,6 +7,8 @@ const { McpServer } = sdk('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = sdk('@modelcontextprotocol/sdk/server/stdio.js');
 const { z } = sdk('zod');
 
+const WIDGET_URI = 'ui://widget/counter.html';
+
 async function main() {
   const mode = process.argv[2];
   writeFileSync(process.env.MCP_PID_FILE, String(process.pid));
@@ -33,6 +35,41 @@ async function main() {
     writeFileSync(process.env.MCP_PID_FILE + '.cancelled', '1');
     return { content: [{ type: 'text', text: 'cancelled' }] };
   });
+  // MCP Apps: a widget tool, an app-only tool and a model-only tool, declared
+  // with the specification's `_meta.ui`, and the `ui://` document it mounts.
+  if (process.env.MCP_WIDGETS === '1') {
+    const ui = { csp: { connectDomains: ['https://api.example'] }, prefersBorder: true };
+    server.registerTool('chart', {
+      description: 'Render a counter',
+      inputSchema: { step: z.number() },
+      _meta: { ui: { resourceUri: WIDGET_URI } },
+    }, async ({ step }) => ({
+      content: [{ type: 'text', text: `chart ${step}` }],
+      structuredContent: { step },
+      _meta: { widget: 'chart' },
+    }));
+    server.registerTool('refresh', {
+      description: 'Refresh the view',
+      inputSchema: {},
+      _meta: { ui: { visibility: ['app'] } },
+    }, async () => ({ content: [{ type: 'text', text: 'refreshed' }] }));
+    server.registerTool('summary', {
+      description: 'Summarize',
+      inputSchema: {},
+      _meta: { ui: { visibility: ['model'] } },
+    }, async () => ({ content: [{ type: 'text', text: 'summary' }] }));
+    server.registerResource('widget', WIDGET_URI, {
+      mimeType: 'text/html;profile=mcp-app',
+      _meta: { ui },
+    }, async uri => ({
+      contents: [{
+        uri: uri.href,
+        mimeType: 'text/html;profile=mcp-app',
+        text: '<p>counter</p>',
+        _meta: { ui },
+      }],
+    }));
+  }
   await server.connect(new StdioServerTransport());
 }
 main().catch(() => process.exit(1));

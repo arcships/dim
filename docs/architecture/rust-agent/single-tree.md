@@ -36,7 +36,7 @@ See [ADR 004](../../adr/004-loader-plugin-management.md).
 
 `SettingsPlugin` 不作为 `SessionScopePlugin` 的 `Deps` 依赖：Session 创建入口传入已校验的配置快照，既有 Session 的设置变更由受影响能力按业务合同更新（如 McpSession 观察目录修订）。普通配置写入不通过 rutis 重载重建 Session。
 
-Session 与分支装配通过 loader 的 `instance_rows` 查询本实例当前的行句柄，不构造全进程的行配置、Schema 与元数据副本。初次读取、必需部件就绪后的读取与最终清理成员读取均使用当前结果，包含加载过程中创建的嵌套实例；每次装配完成后持有自己的行句柄，关闭错误的归属与 mounter 部件清理沿用这些句柄。该查询不改变 loader 的就绪与生命周期规则。
+Session 与分支装配通过 loader 的 `instance_rows` 查询本实例当前的行句柄，不构造全进程的行配置、Schema 与元数据副本；作用域交出的挂载器视图与挂载器挂上的部件另行交给创建。初次读取、必需部件就绪后的读取与最终清理成员读取均使用当前结果，包含加载过程中创建的嵌套实例；每次装配完成后持有自己的行句柄，关闭错误的归属与 mounter 部件清理沿用这些句柄。该查询不改变 loader 的就绪与生命周期规则。
 
 当前 `--database PATH` 装载 `SqliteStoragePlugin` 与 `SessionStorePlugin`，共用一个原生数据库，保存 Agent profile、Session 身份与 Timeline；启动只读目录，Session 按使用装载，未指定数据库时使用内存存储。`--home PATH` 使用 `<home>/dimcode.sqlite` 并授权该文件根；FileStorage 默认授权 `session_defaults.cwd`。SQL/JSON 格式见[原生存储格式](../../design/appserver/native-storage-format.md)。
 
@@ -68,20 +68,20 @@ rutis root
         ├─ AgentScope（Agent 门面；子插件 Sessions 承载监听）
         └─ session ⟨instanced⟩                    实例 Session#1
             ├─ SessionScope
-            ├─ SessionParts ⟹ TimelineTree、ToolRegistry、McpSession …（profile 要求的部件）
-            ├─ SessionOptionalParts ⟹ 其余已登记的部件
+            │   ├─ SessionParts ⟹ TimelineTree、ToolRegistry、McpSession …（profile 要求的部件）
+            │   └─ SessionOptionalParts ⟹ 其余已登记的部件
             ├─ McpConnections ⟨instanced⟩         Session-local generations
             │   └─ McpServer
             └─ branch ⟨instanced⟩                 实例 Branch（main 等）
-                ├─ BranchScope（Timeline / Dispatcher）
-                ├─ BranchParts ⟹ InputQueue、Loop、ContextPreparation、ModelProvider、
-                │                 Permission、Approval、ToolExecutor、TreeTimeline …
-                └─ BranchOptionalParts
+                └─ BranchScope（Timeline / Dispatcher）
+                    ├─ BranchParts ⟹ InputQueue、Loop、ContextPreparation、ModelProvider、
+                    │                 Permission、Approval、ToolExecutor、TreeTimeline …
+                    └─ BranchOptionalParts
 ```
 
 每个功能是一个进程行：它在 `apply` 中向部件登记处登记自己的 Session 与分支部件（`Feature` 或自己的插件），
-自己持有的进程状态也在这一行里，例如 Mcp 的目录与 McpSession、SkillsCatalog 与 Skills 的部件。每个 Session
-与分支的挂载器（⟹）挂载为它登记的部件，作为自己的子节点；插件卸载时这些副本随之卸下（[ADR 006 D3](../../adr/006-plugin-contract.md#d3-a-plugin-is-one-row-each-instance-mounts-the-parts-registered-for-it)）。
+自己持有的进程状态也在这一行里，例如 Mcp 的目录与 McpSession、SkillsCatalog 与 Skills 的部件。Session 与分支的作用域
+挂载本实例的挂载器，挂载器（⟹）挂载为它登记的部件，都作为自己的子节点；插件卸载时这些副本随之卸下（[ADR 006 D3](../../adr/006-plugin-contract.md#d3-a-plugin-is-one-row-each-instance-mounts-the-parts-registered-for-it)）。
 
 Groups annotate loader configuration rows; dependency order comes from `Deps`.
 `serve` registers process plugins with `register_part` and owns the static
@@ -90,27 +90,27 @@ readiness. Native business documents import lazily per source; subsequent edits
 use Settings source-local CAS, not loader reconciliation. `RunningServer::restart`
 uses `Loader::restart(row_id)`.
 
-`AgentBuilder::install` registers the scope plugins, the Session and branch mounters and
-Session extension templates and returns the `session` row, nested under `agent` by App Server.
+`AgentBuilder::install` registers the scope plugins and the Session extension templates and returns the
+`session` row, nested under `agent` by App Server; each scope mounts its instance's mounters in `apply`.
 `AgentBuilder::plugin_rows` registers the builder's plugins and the row providing
 `partRegistry` as process rows.
 一个宿主只有一个 loader，Agent 建在其中：`AgentBuilder::build(loader, anchor)` 使用宿主已有的 loader，Agent
 既不创建根也不创建 loader，关闭 Agent 只关闭它的 Session。测试、示例和 `xtask` 用 `testing` feature 下的最小宿主
 （`testing::MinimalHost`），它像 App Server 一样装配一个根和它的 loader、创建 `AgentAnchor` 实例，并拥有根的生命周期。
 
-登记返回 `Result`，工厂构造和元数据读取的 panic 均返回构建错误。插件名称冲突时分配未占用的 `#n` 后缀，同时避让内置 Agent 行及所有分组 ID；扩展分组不得占用内置名称。实例创建检查 loader 的逐行失败报告，按登记生成的真实 row ID 等待必需行：作用域根、必需挂载器和显式请求的扩展；这些必需行即使没有 fiber，失败也不能忽略。必需挂载器把 profile 要求的部件（`require_feature`、`require_part`）交给实例创建，创建等它们 Active；尚无插件登记的必需部件同样让创建等待。失败则回滚整个候选实例。
+登记返回 `Result`，工厂构造和元数据读取的 panic 均返回构建错误。插件名称冲突时分配未占用的 `#n` 后缀，同时避让内置 Agent 行及所有分组 ID；扩展分组不得占用内置名称。实例创建检查 loader 的逐行失败报告，按登记生成的真实 row ID 等待必需行，也就是作用域根；这些必需行即使没有 fiber，失败也不能忽略。作用域把挂载器和显式请求的扩展的插件交给实例创建：创建先等必需挂载器 Active，再等必需挂载器挂上的 profile 要求部件（`require_feature`、`require_part`）Active；尚无插件登记的必需部件同样让创建等待。失败则回滚整个候选实例。
 
 profile 未要求的已登记部件由可选挂载器挂载，宿主通过现有 loader 行配置直接追加的行（其他语言的部件）也是可选的：其 Pending、Failed 或运行时缺失保留在 loader 状态中，不阻塞必需部件和首条输入。profile 决定等待范围，不按语言、展示名或当前状态推断。所有行仍由同一个作用域分组持有并一起清理；服务的 `Deps`、Pending、audit 和失效传播不变。必需部件仍会等待自己声明的全部依赖，不能通过可选行绕过。
 
 因此，ShellInput、Attachments 等由安装函数要求的第一方 Rust 部件属于必需成员：它们不能 Active，Session 就不能发布。当前接受这一后果，因为这些部件的启动失败主要属于实现错误，其依赖是核心服务。依赖可能长期不可用的服务的 Rust 功能，以 `AgentBuilder::feature` 加入而不要求其部件，由可选挂载器挂载。
 
-必需部件在 `apply` 中登记的子插件仍由该部件等待，等待指子插件 `Active` 而不是 settle：`(&view).await` 在子插件的依赖尚未就绪时也会返回，此时子插件仍是 `Pending`。部件用 `mount_active` 挂载子插件，等待本身没有期限：创建期间整次打开的无进展期限覆盖它，到期时报告子插件的名字和它缺的依赖，创建随之失败；创建之后，该部件与任何缺依赖的行一样保持 `Loading` 直到子插件 `Active`（rutis D22），其代被取消时结束等待；返回因此意味着其服务和订阅已就绪。创建只等待自己的必需行和已挂载的必需部件，不再做全进程检查；`Agent::check_assembly()` 在测试创建 Session 与分支之后跑一次，检查必需行及其子树的 Active 状态，发现未等待的子插件就报告；仅可选行及其子树不参加此 Active 校验。两者仍参加依赖读取和实例键审计。release 与 debug 创建因此相同，每次创建都不做全进程诊断扫描。
+必需部件在 `apply` 中登记的子插件仍由该部件等待，等待指子插件 `Active` 而不是 settle：`(&view).await` 在子插件的依赖尚未就绪时也会返回，此时子插件仍是 `Pending`。部件用 `mount_active` 挂载子插件，等待本身没有期限：创建期间整次打开的无进展期限覆盖它，到期时报告子插件的名字和它缺的依赖，创建随之失败；创建之后，该部件与任何缺依赖的行一样保持 `Loading` 直到子插件 `Active`（rutis D22），其代被取消时结束等待；返回因此意味着其服务和订阅已就绪。创建只等待自己的必需行和已挂载的必需部件，不再做全进程检查；`Agent::check_assembly()` 在测试创建 Session 与分支之后跑一次，检查必需行和作用域交出的必需视图及其子树的 Active 状态，发现未等待的子插件就报告；仅可选行及其子树不参加此 Active 校验。两者仍参加依赖读取和实例键审计。release 与 debug 创建因此相同，每次创建都不做全进程诊断扫描。
 
 这修正装配自身的等待范围（[#132](https://github.com/arcships/dim/issues/132)，[ADR 002 D3](../../adr/002-plugin-scope.md#d3-dependencies-follow-scope-and-point-from-extensions-to-the-core)、[Session access §9.4](../../design/contracts/session-access.md#94-optional-parts-per-enabled-plugin)、[规则 §4.8](principles.md#4-通过时间线扩展行为)）。输入仍经原有分支初始化、ToolBinding 取样和 BranchOpening；不增加发布阶段或工具专用接线。顺序、批次、Timeline 及重载语义均不变。
 
 loader 的 `create_instance` 仍先等待行 settled；异步 apply 一直不返回的行可能占用该等待。此限制保留在 #132 中，不因此增加后台创建管理器；部件仍应遵守 apply 只登记服务/订阅、发布后再开始业务工作的规则。
 
-首次 loader 装配也属于 Agent 已登记的创建操作；调用方取消等待不取消装配拥有权，`Agent::close()` 等待在途创建及其回滚后才释放 loader。请求的 Session 扩展由 `SessionExtension` 行装载，该行显式注入 `SessionIdentity`，不等待普通 Session 能力全部就绪。扩展与普通能力一起受候选 Session 的启动期限、Active 检查和分组回滚约束；作用域及扩展装配入口只初始化一次，不作为可独立重启的业务能力。嵌套实例归 Session 分组所有，不归创建它的行所有。
+首次 loader 装配也属于 Agent 已登记的创建操作；调用方取消等待不取消装配拥有权，`Agent::close()` 等待在途创建及其回滚后才释放 loader。请求的 Session 扩展由 Session 作用域在自己的 `apply` 里创建为嵌套实例，并把这些行作为必需视图交给创建；扩展与普通能力一起受候选 Session 的启动期限、Active 检查和分组回滚约束；作用域及扩展装配入口只初始化一次，不作为可独立重启的业务能力。嵌套实例归 Session 分组所有，不归创建它的行所有。
 
 ### 产品装配约束（目标）
 
@@ -190,8 +190,8 @@ Session 与分支能力不向进程服务登记自己：RPC 经 `Session::servic
 
 | 对象 | 建立与释放 |
 | --- | --- |
-| `SessionScopePlugin` | `Agent` 创建 Session 时载入；`apply` 以本实例键提供身份、配置、故障报告、`TimelineFactory`、Session 生命周期 `SessionLifecycle`（Loading → Active → Closing → Closed：`Agent` 在 entries 锁内发布时 Active；关闭 token 取消即 Closing；关闭完成或装配失败时由运行时记录 Closed）与宿主值；Session 部件由同一实例的挂载器挂载，经名字依赖这些服务；关闭 Session 即永久卸载该子树 |
-| `BranchScopePlugin` | `TimelineTree` 创建分支时在 SessionScope 下载入；`apply` 提供 Timeline、Dispatcher、分支身份与分支生命周期 `BranchLifecycle`（Loading → Active → Closing → Closed，只由 TimelineContext 推进）；分支部件由分支的挂载器挂载；分支结束即永久卸载该子树 |
+| `SessionScopePlugin` | `Agent` 创建 Session 时载入；`apply` 以本实例键提供身份、配置、故障报告、`TimelineFactory`、Session 生命周期 `SessionLifecycle`（Loading → Active → Closing → Closed：`Agent` 在 entries 锁内发布时 Active；关闭 token 取消即 Closing；关闭完成或装配失败时由运行时记录 Closed）与宿主值，挂载本实例的两个挂载器并把它们的视图交给创建，被请求的扩展也在这里创建；Session 部件由挂载器挂载，经名字依赖这些服务；关闭 Session 即永久卸载该子树 |
+| `BranchScopePlugin` | `TimelineTree` 创建分支时在 SessionScope 下载入；`apply` 提供 Timeline、Dispatcher、分支身份与分支生命周期 `BranchLifecycle`（Loading → Active → Closing → Closed，只由 TimelineContext 推进），挂载分支的两个挂载器并把它们的视图交给创建；分支部件由挂载器挂载；分支结束即永久卸载该子树 |
 | `TimelineContext` | 分支能力全部 Active 后由 `TimelineFactory::build` 建立并启动分发，`TimelineTree` 持有；关闭时先结算、再卸载 BranchScope 子树、最后关闭 Timeline。不作为分支服务提供，能力不经它取依赖 |
 | 部件 | 挂载器为每个实例挂载一份已登记的部件，作为自己的子节点；随实例卸载，登记它的插件卸载时撤下 |
 | 宿主值 | `AgentBuilder::session_value(Arc<T>)` 由每个 SessionScope 在 `apply` 中以 Session 名字的键提供；`AgentBuilder::process_value(Arc<T>)` 由 Agent 分组行以进程名字提供，每个 Agent 实例一份 |
@@ -236,7 +236,7 @@ PartRegistry::register(ctx, scope, name, generator) 插件登记 Session 或分�
 Feature::new(name).session(..).branch(..)          不持有进程状态的插件，只登记部件
 ```
 
-部件的每个副本在构建时按名字生成 `Deps` 的键，每个实例只挂载一份。启动屏障覆盖作用域根、必需挂载器挂载的部件与请求的扩展；部件在 `apply` 中登记的子插件由该部件负责等待，用 `mount_active` 等到 `Active`，settle 不算等待；创建期间这次打开的无进展期限覆盖该等待，到期时报告子插件及其缺的依赖，创建之后该部件保持 `Loading` 直到子插件 `Active` 或本代被取消。带实例的键只对该实例作用域子树内的节点可见；严格读取分别报告越界与服务不可用。祖先节点提供的服务对子树直接可见。
+部件的每个副本在构建时按名字生成 `Deps` 的键，每个实例只挂载一份。启动屏障覆盖作用域根、作用域交出的必需视图（必需挂载器与请求的扩展的插件）以及必需挂载器挂载的部件；部件在 `apply` 中登记的子插件由该部件负责等待，用 `mount_active` 等到 `Active`，settle 不算等待；创建期间这次打开的无进展期限覆盖该等待，到期时报告子插件及其缺的依赖，创建之后该部件保持 `Loading` 直到子插件 `Active` 或本代被取消。带实例的键只对该实例作用域子树内的节点可见；严格读取分别报告越界与服务不可用。祖先节点提供的服务对子树直接可见。
 
 | 方向 | 方式 |
 | --- | --- |

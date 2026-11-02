@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto'
 import { setImmediate as immediate, setTimeout as delay } from 'node:timers/promises'
 import type { InputWrite, PermissionPolicy, SessionRef, Sessions } from '../../../npm/plugin.js'
 import { Catalog, select } from './catalog.ts'
-import { parameters, policy, render, stages, WorkflowError, type Source, type StageDefinition } from './definition.ts'
+import { parameters, payloadBytes, policy, render, stages, WorkflowError, type Source, type StageDefinition } from './definition.ts'
 import { StageHistory } from './history.ts'
-import { bounded, log, RunStore, stageTerminal, terminal, type Run, type Stage } from './store.ts'
+import { bounded, log, projectedBytes, RunStore, stageTerminal, storedReason, storedResultText, terminal, type Run, type Stage } from './store.ts'
 
 export interface Caller { sessionId: string; branchId: string; callId: string; cwd: string }
 export interface StartRequest {
@@ -111,6 +111,13 @@ export class Workflow {
       created_at: new Date().toISOString(), state: 'running', report: { state: 'none' }, log: [],
       stages: definition.steps.flatMap((step, index) => stages(step).map(stage => ({ id: stage.id, step: index, state: 'waiting' as const }))),
     }
+    const known = await this.store.read()
+    this.available()
+    if (cancelled()) throw new WorkflowError('cancelled')
+    if (known.filter(run => !terminal(run)).length >= configured.document.max_concurrent_runs) {
+      throw new WorkflowError('limit_exceeded')
+    }
+    await this.retain(projectedBytes([run]))
     await this.store.update(runs => {
       this.available()
       if (cancelled()) throw new WorkflowError('cancelled')
@@ -119,6 +126,7 @@ export class Workflow {
       }
       log(run, 'Run accepted')
       runs.push(run)
+      if (projectedBytes(runs) > payloadBytes) throw new WorkflowError('limit_exceeded')
     })
     this.own(run.run_id, () => this.drive(run.run_id, configured.document.max_concurrent_stages))
     return run
@@ -317,7 +325,13 @@ export class Workflow {
       const complete = await history.read()
       if (complete && history.outcome) {
         await this.store.update(runs => {
-          Object.assign(need(runs, id).stages.find(stage => stage.id === stageId)!, history.outcome)
+          const run = need(runs, id)
+          const stage = run.stages.find(stage => stage.id === stageId)!
+          Object.assign(stage, history.outcome)
+          if (stage.result_text !== undefined) {
+            stage.result_text = storedResultText(run, stage, stage.result_text)
+          }
+          if (stage.reason !== undefined) stage.reason = storedReason(stage.reason)
         })
         return
       }
@@ -410,20 +424,30 @@ export class Workflow {
     }
   }
 
-  private retain(): Promise<void> {
-    if (this.pruning) return this.pruning
-    const task = this.prune().finally(() => { this.pruning = undefined })
+  private retain(reserve = 0): Promise<void> {
+    if (this.pruning) {
+      return reserve ? this.pruning.then(() => this.retain(reserve)) : this.pruning
+    }
+    const task = this.prune(reserve).finally(() => {
+      if (this.pruning === task) this.pruning = undefined
+    })
     this.pruning = task
     return task
   }
 
-  private async prune() {
+  private async prune(reserve = 0) {
     if (this.closing) return
     const runs = await this.store.read()
     const terminalRuns = runs.filter(run => terminal(run) && run.report.state !== 'pending')
       .sort((a, b) => b.ended_at!.localeCompare(a.ended_at!) || b.run_id.localeCompare(a.run_id))
     const expired = terminalRuns.slice(100).filter(run => !this.jobs.has(run.run_id))
     const expiring = new Set(expired.map(run => run.run_id))
+    for (const run of [...terminalRuns].reverse()) {
+      if (!reserve || projectedBytes(runs.filter(candidate => !expiring.has(candidate.run_id))) + reserve <= payloadBytes) break
+      if (expiring.has(run.run_id) || this.jobs.has(run.run_id)) continue
+      expiring.add(run.run_id)
+      expired.push(run)
+    }
     const references = new Set(runs.filter(run => !expiring.has(run.run_id))
       .flatMap(run => run.stages.flatMap(stage => stage.session_id ? [stage.session_id] : [])))
     for (const run of expired) {

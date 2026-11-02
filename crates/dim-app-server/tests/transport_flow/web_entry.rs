@@ -439,6 +439,21 @@ async fn web_entry_admits_token_holders_to_sessions_and_safe_management() {
         )
         .await,
     );
+    for method in ["session.mcp.app.widget", "session.mcp.app.call"] {
+        assert!(
+            web.features.as_array().unwrap().contains(&json!(method)),
+            "{method} reaches the web entry"
+        );
+    }
+    assert_eq!(
+        web.rpc(
+            "session.mcp.app.call",
+            json!({"sessionId":session_id,"server":"other","tool":"chart","arguments":{}}),
+        )
+        .await["error"]["data"]["appError"],
+        "mcp_unknown_server",
+        "the web entry is served a view's request"
+    );
     for (method, params) in [
         ("provider.list", json!({})),
         ("provider.management", json!({})),

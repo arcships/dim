@@ -13,8 +13,18 @@
         "reads": []
       },
       {
-        "id": 35,
+        "id": 33,
         "parent": 32,
+        "name": "BranchScope",
+        "state": "Active",
+        "generation": 1,
+        "injects": [],
+        "resolved": [],
+        "reads": []
+      },
+      {
+        "id": 35,
+        "parent": 33,
         "name": "BranchOptionalParts",
         "state": "Active",
         "generation": 1,
@@ -24,7 +34,7 @@
       },
       {
         "id": 34,
-        "parent": 32,
+        "parent": 33,
         "name": "BranchParts",
         "state": "Active",
         "generation": 1,
@@ -97,19 +107,19 @@
             "service": "dim_agent_runtime::config::TimelineIdentity@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::timeline::Timeline@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
       },
@@ -195,19 +205,19 @@
             "service": "dim_agent_runtime::config::TimelineIdentity@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::timeline::Timeline@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
       },
@@ -304,25 +314,25 @@
             "service": "dim_agent_runtime::config::BranchLifecycle@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::timeline::Timeline@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::timeline_context::BranchOpening@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
       },
@@ -363,13 +373,13 @@
             "service": "dim_agent_runtime::config::TimelineIdentity@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
       },
@@ -522,25 +532,25 @@
             "service": "dim_agent_runtime::config::BranchLifecycle@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::config::TimelineIdentity@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::timeline::Timeline@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::lifecycle::FaultReporter@session",
@@ -552,7 +562,7 @@
             "service": "dim_agent_runtime::timeline_context::BranchOpening@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
       },
@@ -644,13 +654,13 @@
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::timeline::Timeline@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
       },
@@ -736,19 +746,19 @@
             "service": "dim_agent_runtime::config::TimelineIdentity@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::timeline::Timeline@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
       },
@@ -902,19 +912,19 @@
             "service": "dim_agent_runtime::config::TimelineIdentity@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::timeline::Timeline@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
       },
@@ -955,13 +965,13 @@
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::timeline::Timeline@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
       },
@@ -1109,25 +1119,25 @@
             "service": "dim_agent_runtime::config::BranchLifecycle@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::config::TimelineIdentity@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::timeline::Timeline@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
       },
@@ -1213,19 +1223,19 @@
             "service": "dim_agent_runtime::config::BranchLifecycle@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::config::TimelineIdentity@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
       },
@@ -1283,25 +1293,15 @@
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::core::timeline::Timeline@main",
             "provider": 33,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
-      },
-      {
-        "id": 33,
-        "parent": 32,
-        "name": "BranchScope",
-        "state": "Active",
-        "generation": 1,
-        "injects": [],
-        "resolved": [],
-        "reads": []
       }
     ],
     "bindings": [
@@ -1483,8 +1483,18 @@
         "reads": []
       },
       {
-        "id": 23,
+        "id": 21,
         "parent": 20,
+        "name": "SessionScope",
+        "state": "Active",
+        "generation": 1,
+        "injects": [],
+        "resolved": [],
+        "reads": []
+      },
+      {
+        "id": 23,
+        "parent": 21,
         "name": "SessionOptionalParts",
         "state": "Active",
         "generation": 1,
@@ -1494,7 +1504,7 @@
       },
       {
         "id": 22,
-        "parent": 20,
+        "parent": 21,
         "name": "SessionParts",
         "state": "Active",
         "generation": 1,
@@ -1561,25 +1571,25 @@
             "service": "dim_agent_capabilities::host::ToolHost@session",
             "provider": 21,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::config::SessionConfig@session",
             "provider": 21,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::config::SessionIdentity@session",
             "provider": 21,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::config::SessionLifecycle@session",
             "provider": 21,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
       },
@@ -1648,19 +1658,19 @@
             "service": "dim_agent_runtime::assembly::TimelineFactory@session",
             "provider": 21,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dim_agent_runtime::config::SessionIdentity@session",
             "provider": 21,
             "declared": true,
-            "external": true
+            "external": false
           },
           {
             "service": "dyn dim_agent_runtime::timeline_store::TimelineStore@session",
             "provider": 21,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
       },
@@ -1700,7 +1710,7 @@
             "service": "dim_agent_runtime::config::SessionIdentity@session",
             "provider": 21,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
       },
@@ -1740,7 +1750,7 @@
             "service": "dim_agent_runtime::config::SessionConfig@session",
             "provider": 21,
             "declared": true,
-            "external": true
+            "external": false
           }
         ]
       },
@@ -1837,16 +1847,6 @@
             "external": true
           }
         ]
-      },
-      {
-        "id": 21,
-        "parent": 20,
-        "name": "SessionScope",
-        "state": "Active",
-        "generation": 1,
-        "injects": [],
-        "resolved": [],
-        "reads": []
       }
     ],
     "bindings": [

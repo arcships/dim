@@ -577,7 +577,7 @@ async fn node_workflow_sources_stages_policy_and_report_use_the_real_package() {
         );
         let listed = client.rpc("workflow.list", json!({"cwd":home})).await;
         assert_ok(&listed);
-        assert_eq!(listed["result"][0]["valid"], true);
+        assert_eq!(listed["result"]["definitions"][0]["valid"], true);
         let started = client
             .rpc(
                 "workflow.start",
@@ -803,7 +803,7 @@ async fn node_workflow_project_enablement_invalid_sources_and_tool_policy() {
     }
     let listed = client.rpc("workflow.list", json!({"cwd":home})).await;
     assert_ok(&listed);
-    let entries = listed["result"].as_array().unwrap();
+    let entries = listed["result"]["definitions"].as_array().unwrap();
     assert_eq!(
         entries
             .iter()
@@ -885,7 +885,7 @@ async fn node_workflow_project_enablement_invalid_sources_and_tool_policy() {
         "oversized",
         "packaged-large",
     ] {
-        let entry = listed["result"]
+        let entry = listed["result"]["definitions"]
             .as_array()
             .unwrap()
             .iter()
@@ -908,15 +908,17 @@ async fn node_workflow_project_enablement_invalid_sources_and_tool_policy() {
     };
     assert!(content.contains("invalid reference"));
     assert!(content.contains("Document name must match mismatch"));
-    let visible: Vec<Value> = serde_json::from_str(content).unwrap();
-    let many = visible
+    let visible: Value = serde_json::from_str(content).unwrap();
+    let definitions = visible["definitions"].as_array().unwrap();
+    assert_eq!(visible["truncated"], false);
+    let many = definitions
         .iter()
         .find(|entry| entry["name"] == "many")
         .unwrap();
     assert_eq!(many["issue_count"], 20);
     assert_eq!(many["issues"].as_array().unwrap().len(), 10);
     assert_eq!(
-        visible
+        definitions
             .iter()
             .filter(|entry| entry["name"] == "shared")
             .map(|entry| entry["package_id"].clone())

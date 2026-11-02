@@ -46,6 +46,10 @@ after its reload; registering scans the root at once and returns its issues, and
 `plugin_issues(plugin)` reads them later. Its Skills have ids
 `plugin:<plugin id>:<path>`.
 
+A queried entry reports the root it was found in as its source: `user`,
+`project` or `plugin:<plugin id>`. A client groups entries by that field and
+never reads the id's spelling, which names an absolute path for a project.
+
 First use scans roots via blocking work; explicit refresh updates cached
 discovery. Cancellation closes the catalog; cleanup joins its reader. Reload
 creates fresh discovery caches. Read failures remain explicit and queries can
