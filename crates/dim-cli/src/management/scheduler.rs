@@ -248,7 +248,13 @@ pub async fn apply(client: &mut Client, action: &ManagementAction) -> Result<Ans
             }
             Answered::Nothing
         }
-        ManagementAction::Run { id } => {
+        ManagementAction::Run { id, document, .. } => {
+            // No job carries a run document and neither client sends one.
+            if document.is_some() {
+                return Err(Failure::Refused(
+                    t("A scheduled job's run takes no input document.").to_owned(),
+                ));
+            }
             let run = client
                 .rpc("schedule.run_now", json!({"job_id": id}))
                 .await
@@ -459,6 +465,7 @@ pub(super) fn view(catalog: &Catalog, available: &[ActionKind], cwd: &Path) -> M
                     revision: job.revision.to_string(),
                     document: job.document(),
                 }),
+                run: None,
             },
         );
     }

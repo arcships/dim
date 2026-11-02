@@ -699,7 +699,15 @@ pub async fn apply(
         }
         // A test executes the stored entry and writes nothing the area
         // lists, so it answers with its tools and the area is not re-read.
-        ManagementAction::Run { id } => return test(client, &cwd, id).await,
+        ManagementAction::Run { id, document, .. } => {
+            // No entry carries a test document and neither client sends one.
+            if document.is_some() {
+                return Err(Failure::Refused(
+                    t("An MCP server's test takes no input document.").to_owned(),
+                ));
+            }
+            return test(client, &cwd, id).await;
+        }
         ManagementAction::Inspect { id } => return inspect(client, &cwd, id).await,
     }
     match catalog(client, &cwd).await {
@@ -989,6 +997,7 @@ pub(super) async fn view(
                     states,
                     actions: offers(server, document.is_some(), available),
                     document,
+                    run: None,
                 },
             );
         }

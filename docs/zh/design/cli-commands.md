@@ -436,7 +436,7 @@ Reset 要求确认后把两个布尔值都写为 false。Off 可保留无效的�
 
 ### 视图
 
-条目按所有者报告的分组归类——user、project、`plugin:<id>`、内置——顺序与所有者的报告顺序一致；一个 Hook 来源本身就是一个条目，归在 `sources` 分组下。每个条目有标签、详情、它的状态（已启用、已禁用、无效、被覆盖、只读）以及它提供的动作。所有者不允许客户端写入的条目（插件所有、已锁定）不提供写入动作，详情说明原因。所有者无法使用的东西作为 issue 列在条目之后。
+条目按所有者报告的分组归类——user、project、`plugin:<id>`、内置——顺序与所有者的报告顺序一致；一个 Hook 来源本身就是一个条目，归在 `sources` 分组下。每个条目有标签、详情、它的状态（已启用、已禁用、无效、被覆盖、只读）以及它提供的动作。所有者不允许客户端写入的条目（插件所有、已锁定）不提供写入动作，详情说明原因。所有者无法使用的东西作为 issue 列在条目之后。当 run 种类接受输入文档时，条目可以携带该操作的输入文档：Ctrl+T 先用外部编辑器打开它，run 随编辑器留下的文本发出。
 
 ```text
 ╭─ Skills ──────────────────────────────────────╮
@@ -474,8 +474,10 @@ Esc 关闭面板。动作键要么是 Ctrl 组合键，要么是筛选从不接�
 
 - add 用外部编辑器打开适配器给出的新建条目文档——所有者的创建形态，填入示例值——并以领域的创建方法写入。文档没有改动时不写入；被拒绝时保留草稿，下次 Ctrl+N 重新打开用户的文本，与 Ctrl+E 对编辑的处理一致。冲突时也同样保留：新建没有 revision，丢弃草稿与过期 revision 的关联只是编辑的规则，不适用于新建。把条目追加到已读到列表的 add（如命令规则领域）改为重试冲突，因为追加不覆盖任何内容。`dimcode <area> add PATH`（`-` 表示 stdin）是不经编辑器的同一次写入。
 - remove 先在键提示里询问：键提示变为 `Remove <label>? Enter confirm · Esc cancel`，除 Enter 外的任何键都取消且什么都不改。Enter 调用领域的删除方法，然后重新读取该领域。`dimcode <area> remove ID` 不提问直接删除，因为命令行上输入的 id 就是意图，与 `dimcode logout PROVIDER` 不提问直接退出一致。
-- run 对所选条目调用领域的具名操作。答复会改变领域所列内容的运行——Scheduler 的立即运行会加入任务的历史和上次结果——重新读取该领域，并把答复作为消息报告；所有者跳过的一次运行会说明原因。答复不改变领域所列内容的运行，像 inspect 一样把答复作为详情显示，且不重新读取该领域：MCP 的 test 是临时连接发现的工具列表。所有者是否把该方法声明为 mutating 并不决定这一点，因为 `mcp.test` 会运行该条目，却仍然不写入领域所列的任何内容。需要参数的操作是该领域自己的步骤，不属于这个种类。
+- run 对所选条目调用领域的具名操作。答复会改变领域所列内容的运行——Scheduler 的立即运行会加入任务的历史和上次结果——重新读取该领域，并把答复作为消息报告；所有者跳过的一次运行会说明原因。答复不改变领域所列内容的运行，像 inspect 一样把答复作为详情显示，且不重新读取该领域：MCP 的 test 是临时连接发现的工具列表。所有者是否把该方法声明为 mutating 并不决定这一点，因为 `mcp.test` 会运行该条目，却仍然不写入领域所列的任何内容。需要参数的操作是该领域自己的步骤，不属于这个种类：条目携带输入文档，run 种类在调用前用外部编辑器打开它。
 - inspect 向适配器索取条目的详情：一个标题和若干行，而不是一个视图。面板用它替代列表显示，方向键与 PageUp/PageDown 滚动，Esc 带着保留的选中项回到列表，再按一次 Esc 关闭面板。`dimcode <area> inspect ID` 打印同样的行，或该领域自己的动词，如果它的设计另有规定。
+
+`/workflow:save` 让领域在面板的新建编辑器中打开：第一个视图到达时，面板像 Ctrl+N 那样在新建文档上打开编辑器；领域不提供 add 时，面板停留在列表，并显示支持检查给出的那句话。
 
 文档按条目分存的领域，其条目为它自己的文档提供 edit：此时 Save 动作携带该条目的 id，适配器保留它与草稿一起读到的 revision。
 
@@ -566,6 +568,34 @@ Ctrl+T 立即运行所选任务，并报告所有者的答复——`launching`�
 
 `dimcode scheduled add PATH`（`-` 表示 stdin）是不经编辑器的创建；`dimcode scheduled history ID` 打印详情显示的那些行；`dimcode scheduled remove ID` 不经面板的确认直接删除。
 
+### Workflow 领域
+
+Workflow（#816）：`/workflow` 面板，`/workflow:save` 在两种模式下打开它的新建编辑器，以及 `dimcode workflow list|enable NAME|disable NAME|edit NAME|set NAME PATH|add PATH|start NAME [PATH]|history NAME`，经 `workflow.list`、`workflow.save`、`workflow.start` 与 `workflow.status`（[Workflow](plugins/Workflow.md#a3-管理方法)），再加上启用所需的 Settings 客户端方法。每个定义都是一个条目，按所有者报告的分组归类：`user`、`project` 与 `plugin:<包 id>`。用户定义始终启用，其文档就是条目的文档；项目定义默认停用，是仓库中的文件；包定义由安装提供，不提供写入。所有者无法使用的条目标记为无效，详情带上所有者的问题。
+
+项目定义的启用状态是用户 Settings 文档中的 `projectEnabled[cwd][name]` 成员。所有者自己的服务拒绝修改它（`userOnly`），所以 toggle 是一次客户端写入：`settings.read`，在按读取原样复制的文档上设置该成员，再以读取报告的 revision 调 `settings.update`。文档按读取原样复制，因此定义、限额或另一个工作区的映射都不会丢失。`settings_conflict` 走冲突路径：什么都没有写入，重新读取定义，消息说明这一点。
+
+add 用一个文档 `{source, document}` 写入任一来源，`source` 默认 `user`；项目保存创建或替换 `.dimcode/workflows/<name>.yaml`，并且保持停用，消息会说明。edit 只为用户定义提供：列表的 Settings 读取带上文档，保存带上面板读到的 revision，`conflict` 答复意味着编辑期间定义已变：什么都不写，重新读取领域，草稿保留用户的文本。CAS 单位是整个用户文档，所以编辑期间另一个定义或某个启用状态变了，保存同样返回 `conflict`。保存不得重命名定义：所有者以文档的 name 为键，重命名的编辑会保存第二个定义并留下旧的，而本领域没有 remove；写入在调用前被拒绝，草稿保留。项目定义在它所在的地方编辑，与项目 Hook 文档一样，条目的详情给出其路径。
+
+run 为任何来源中已启用且有效的定义提供。声明了参数的定义会用编辑器打开一个 JSON 对象，每个参数一个键：定义给出 `default` 时用默认值，否则用空字符串。读回的文档必须是键都在定义声明之内的字符串对象；其他情况以 `Parameters are a JSON object of strings.` 拒绝，什么都不启动。空字符串是一个给定值，不是省略。没有参数的定义立即启动。启动带上条目的名称、来源与工作区；从面板发起时还带上 `report_to {session_id, branch_id}`，指向会话与转录所显示的那一条线，也就是提交消息所去的那条线，`/tasks` 下次打开时据此找到管理启动的运行。尚无会话的面板（例如 `/new` 之后、第一条消息之前）所启动的运行不向任何地方报告。命令行没有会话，所以 `dimcode workflow start` 不发送 `report_to`，其运行不在 `/tasks` 中。消息是 `Started <name>: <run_id>.`。在面板打开的 run 文档里，保持在打开时取值上的参数不会发送，由所有者应用定义自身的完整默认值；来自文件或 stdin 的文档则原样发送。
+
+inspect 读取 `workflow.status {}`，把保留的运行过滤到该条目的名称与来源。项目定义属于一个工作区，所以它的运行还按本工作区的 `cwd` 过滤：另一个工作区的同名定义是另一个定义。用户或包定义在任何地方都是同一个，所以它的运行来自所有工作区，每行给出该运行的 `cwd`。详情是定义的行、一行 `Recent runs`，以及最多十条运行，最新的在前。本领域没有 remove：所有者没有删除方法，用户定义只能通过编辑 Settings 文档移除，项目定义通过删除其文件移除。
+
+```text
+╭─ Workflow ────────────────────────────────────────────────────────────────────────────────────╮
+│ >                                                                                             │
+│   user                                                                                        │
+│ › review-and-fix   enabled                                                                    │
+│   project                                                                                     │
+│   nightly-check    disabled  invalid                                                          │
+│   plugin:kit                                                                                  │
+│   release-notes    enabled  read-only                                                         │
+│                                                                                               │
+│   Analyze, fix in parallel, summarize                                                         │
+│   Saved in the user workflow source; always enabled.                                          │
+╰─ Ctrl+E edit · Ctrl+R reload · Ctrl+N add · Ctrl+T run · Tab inspect · Esc close ─────────────╯
+```
+
+`dimcode workflow list` 每个定义打印一行（名称、来源、状态、描述）以及无效定义的问题；`enable` 与 `disable` 作用于该名称的项目定义；`edit` 与 `set` 作用于用户定义，遇到项目名称时给出要编辑的文件并拒绝；`add` 是不经编辑器的新建；`start NAME [PATH]` 从 PATH（`-` 表示 stdin）读取参数，没有 PATH 时不带参数启动；`history NAME` 打印详情的行。裸名称按 `workflow.start` 的规则解析：先找启用的定义，再找任何定义，每一轮都按 project、然后 user、然后 package 的顺序。项目定义默认停用，因此裸名称仍能指向它。在 Settings 不认识的工作区运行命令时，打印所有者的 `definition_source_failed` 消息并以 1 退出。所有者在一个载荷处截断的列表仍打印已有的定义，并说明后续定义被省略。
 ### MCP 领域
 
 MCP 不新增种类。它的条目就是生效目录——各服务器按 id 合并，project 最后——按 `user`、`project`、`plugin` 的顺序分组，组内按 id 排列；条目的标签和 id 都是服务器的 id。面板与 `dimcode mcp` 用 toggle、edit、reload、add、remove、run 与 inspect，经 `mcp.catalog`、`mcp.configuration`、`mcp.update`、`mcp.save`、`mcp.remove`、`mcp.set_enabled`、`mcp.test` 与 `mcp.inspect`（[MCP 管理](appserver/mcp-management.md)）。
@@ -698,6 +728,15 @@ Remove 先在提示栏询问，`Remove deny prefix git push? Enter confirm · Es
 | `dimcode scheduled run ID` | 经 `schedule.run_now` 立即运行单个任务，并报告 owner 返回的内容，或它跳过这次运行的原因。 |
 | `dimcode scheduled history ID` | 经 `schedule.history` 打印单个任务最近的运行，最新的在前，并带上每次运行的状态与时间。 |
 | `/scheduled`、`/schedule` | 打开 Scheduler 面板（[管理界面](#管理界面)）：每个任务一个条目，带计划、下一次窗口与上次结果，以及 toggle、edit、add、remove、run 与 inspect 种类；Scheduler 中 inspect 的动词是 history。任务属于主机，不属于会话或工作区；只有新建任务的默认 `cwd` 来自会话。 |
+| `dimcode workflow list` | 经 `workflow.list` 列出定义（[Workflow](plugins/Workflow.md#a3-管理方法)）：每个定义的名称、来源、状态与描述，然后是无效定义的问题。 |
+| `dimcode workflow enable\|disable NAME` | 经 `settings.read` 与 `settings.update` 启用或停用该名称的项目定义，然后再次报告定义。 |
+| `dimcode workflow edit NAME` | 用 `$VISUAL`、`$EDITOR` 或平台默认编辑器打开用户定义的文档，并以用户文档读取时的 revision 经 `workflow.save` 写回；给出项目名称时改为给出要编辑的文件。 |
+| `dimcode workflow set NAME PATH` | 从 `PATH`（`-` 表示 stdin）读取用户定义并写入，用写入前紧邻读到的 revision；内容没有变化时不写入。 |
+| `dimcode workflow add PATH` | 从 `PATH`（`-` 表示 stdin）读取定义，经 `workflow.save` 创建或替换：文档给出 `source`（默认 `user`）与 `document`。 |
+| `dimcode workflow start NAME [PATH]` | 经 `workflow.start` 启动定义，参数取自 `PATH`（`-` 表示 stdin），没有 PATH 时不带参数；报告 `Started NAME: RUN_ID`，不带 `report_to`。 |
+| `dimcode workflow history NAME` | 经 `workflow.status` 打印定义的行与最近的运行，并按 `workflow.start` 的规则解析名称。 |
+| `/workflow` | 打开会话所在工作区的 Workflow 面板（[管理界面](#管理界面)）：每个定义一个条目，带来源、状态、参数与问题，以及 toggle、edit、add、run 与 inspect 种类。 |
+| `/workflow:save` | 在新建编辑器中打开 Workflow 面板。 |
 | `dimcode mcp list` | 经 `mcp.catalog` 列出生效目录（[MCP 领域](#mcp-领域)）：每个条目的 id、来源、transport、启用状态与授权，然后是各来源 application 的错误。 |
 | `dimcode mcp add PATH` | 以面板的新建文档（`-` 表示 stdin）经 `mcp.save` 创建条目，带 `mcp.catalog` 报告的来源 revision；目录已列出的 id 会被拒绝。 |
 | `dimcode mcp edit ID` | 用 `$VISUAL`、`$EDITOR` 或平台默认编辑器打开条目的 `mcp.update` patch，并以 `mcp.configuration` 报告的 revision 写回；内容没有变化时不写入。 |

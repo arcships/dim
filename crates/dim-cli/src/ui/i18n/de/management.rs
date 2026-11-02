@@ -8,6 +8,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "skills" => "Skills",
         "hooks" => "Hooks",
         "scheduled jobs" => "geplante Jobs",
+        "workflow definitions" => "Workflow-Definitionen",
         "command rules" => "Befehlsregeln",
         "enabled" => "aktiviert",
         "shadowed by {name}" => "von {name} verdeckt",
@@ -77,6 +78,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The Scheduler has no area document." => "Der Scheduler hat kein Bereichsdokument.",
         "No scheduled job has that id." => "Kein geplanter Job hat diese ID.",
+        "A scheduled job's run takes no input document." => {
+            "Der Lauf eines geplanten Jobs nimmt kein Eingabedokument an."
+        }
+        "An MCP server's test takes no input document." => {
+            "Der Test eines MCP-Servers nimmt kein Eingabedokument an."
+        }
         "This daemon cannot manage {area}." => "Kann {area} nicht verwalten.",
         "This daemon lists {area} but cannot toggle them." => {
             "Der Daemon listet {area}, kann sie aber nicht umschalten."
@@ -107,6 +114,45 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "This workspace's hook settings changed since they were read; nothing was written." => {
             "Die Hook-Einstellungen dieses Arbeitsbereichs wurden seit dem Lesen geändert; es wurde nichts geschrieben."
+        }
+        "Workflow" => "Workflow",
+        "Saved {name}. It stays disabled until you enable it." => {
+            "{name} gespeichert. Es bleibt deaktiviert, bis du es aktivierst."
+        }
+        "The definitions changed since they were read; nothing was written." => {
+            "Die Definitionen wurden seit dem Lesen geändert; es wurde nichts geschrieben."
+        }
+        "A definition's name is its key; add it to save it under another name." => {
+            "Der Name einer Definition ist ihr Schlüssel; füge sie hinzu, um sie unter einem anderen Namen zu speichern."
+        }
+        "No project definition is named {name}." => "Keine Projektdefinition heißt {name}.",
+        "No workflow definition is named {name}." => "Keine Workflow-Definition heißt {name}.",
+        "Saved in the user workflow source; always enabled." => {
+            "In der Workflow-Quelle des Benutzers gespeichert; immer aktiviert."
+        }
+        "Starts only after you enable it." => "Startet erst, nachdem du es aktivierst.",
+        "Defined by package {package}." => "Definiert durch Paket {package}.",
+        "{name} — {description} (required)" => "{name} — {description} (erforderlich)",
+        "{name} — {description}" => "{name} — {description}",
+        "{name} — required" => "{name} — erforderlich",
+        "{name} — default: {default}" => "{name} — Standard: {default}",
+        "and {count} more" => "und {count} weitere",
+        "Recent runs" => "Letzte Läufe",
+        "A workflow definition is saved as an object with a source and a document." => {
+            "Eine Workflow-Definition wird als Objekt mit einer Quelle und einem Dokument gespeichert."
+        }
+        "A definition is saved to the user source or the project source." => {
+            "Eine Definition wird in der Benutzerquelle oder der Projektquelle gespeichert."
+        }
+        "Started {name}: {run_id}." => "{name} gestartet: {run_id}.",
+        "Parameters are a JSON object of strings." => {
+            "Parameter sind ein JSON-Objekt aus Zeichenketten."
+        }
+        "The list reached its size limit; later definitions are not shown." => {
+            "Die Liste hat ihr Größenlimit erreicht; spätere Definitionen werden nicht angezeigt."
+        }
+        "No workflow definition named {name} is in the list, which reached its size limit." => {
+            "Keine Workflow-Definition namens {name} ist in der Liste, die ihr Größenlimit erreicht hat."
         }
         "MCP" => "MCP",
         "MCP servers" => "MCP-Server",

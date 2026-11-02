@@ -8,6 +8,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "skills" => "技能",
         "hooks" => "鉤子",
         "scheduled jobs" => "排程工作",
+        "workflow definitions" => "工作流程定義",
         "command rules" => "命令規則",
         "enabled" => "已啟用",
         "shadowed by {name}" => "被 {name} 覆蓋",
@@ -71,6 +72,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The Scheduler has no area document." => "排程器沒有領域文件。",
         "No scheduled job has that id." => "沒有該 id 的排程工作。",
+        "A scheduled job's run takes no input document." => "定時任務的執行不接受輸入文件。",
+        "An MCP server's test takes no input document." => "MCP 伺服器的測試不接受輸入文件。",
         "This daemon cannot manage {area}." => "無法管理{area}。",
         "This daemon lists {area} but cannot toggle them." => "可以列出{area}，但無法切換它們。",
         "This daemon lists {area} but cannot edit them." => "可以列出{area}，但無法編輯它們。",
@@ -91,6 +94,43 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "This workspace's hook settings changed since they were read; nothing was written." => {
             "此工作區的鉤子設定已在讀取後變更；這次沒有寫入。"
+        }
+        "Workflow" => "工作流程",
+        "Saved {name}. It stays disabled until you enable it." => {
+            "已儲存 {name}。在你啟用它之前，它保持停用。"
+        }
+        "The definitions changed since they were read; nothing was written." => {
+            "定義在讀取後已被修改；本次沒有寫入。"
+        }
+        "A definition's name is its key; add it to save it under another name." => {
+            "定義的名稱就是它的鍵；要用另一個名稱儲存，請新增它。"
+        }
+        "No project definition is named {name}." => "沒有名為 {name} 的專案定義。",
+        "No workflow definition is named {name}." => "沒有名為 {name} 的工作流程定義。",
+        "Saved in the user workflow source; always enabled." => {
+            "儲存在使用者工作流程來源中；始終啟用。"
+        }
+        "Starts only after you enable it." => "只有在你啟用它之後才會啟動。",
+        "Defined by package {package}." => "由套件 {package} 定義。",
+        "{name} — {description} (required)" => "{name} — {description}（必填）",
+        "{name} — {description}" => "{name} — {description}",
+        "{name} — required" => "{name} — 必填",
+        "{name} — default: {default}" => "{name} — 預設：{default}",
+        "and {count} more" => "另有 {count} 項",
+        "Recent runs" => "最近的執行",
+        "A workflow definition is saved as an object with a source and a document." => {
+            "工作流程定義以包含來源和文件的物件儲存。"
+        }
+        "A definition is saved to the user source or the project source." => {
+            "定義儲存到使用者來源或專案來源。"
+        }
+        "Started {name}: {run_id}." => "已啟動 {name}：{run_id}。",
+        "Parameters are a JSON object of strings." => "參數是由字串組成的 JSON 物件。",
+        "The list reached its size limit; later definitions are not shown." => {
+            "列表已達到大小上限，之後的定義不會顯示。"
+        }
+        "No workflow definition named {name} is in the list, which reached its size limit." => {
+            "達到大小上限的列表中沒有名為 {name} 的工作流定義。"
         }
         "MCP" => "MCP",
         "MCP servers" => "MCP 伺服器",

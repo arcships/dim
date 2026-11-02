@@ -75,6 +75,8 @@ sequenceDiagram
 
 被 Steer 取代的请求与 `stop/interrupt` 无关：Steer 被消费时持有请求的状态机（Loop 读上下文时、ContextPreparation、尚未收到任何模型输出的 ModelProvider）取消它并写 `Cancelled`（`replaced by steer`），turn 不标记为中断；已收到输出的请求不被取代，Steer 等该输出结束。Loop 消费到这个终态、turn 未被中断时，在同一 turn 消费 Steer 发新请求；同一 turn 的新 `step/model-start` 总在上一个请求的终态之后（Loop 的事件与生命周期见 [Loop](plugins/Loop.md#events-and-lifetime)）。
 
+压缩期间的 Steer 等待压缩结果后再替换请求，不取消正在运行的压缩，具体契约见 [ContextCompaction §5.3](../../design/plugins/ContextCompaction.md#53-one-compaction-path-contextpolicy)。
+
 被打断的输出保留已写出的事实：stop、失败或重载结算时，已攒的文字先写出，进行中的思考块与未完整的参数丢弃。每个已开始的工具调用恰有一个闭合事实：
 
 | 中断位置 | 闭合 |

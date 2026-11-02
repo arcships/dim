@@ -8,6 +8,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "skills" => "Skill",
         "hooks" => "hook",
         "scheduled jobs" => "tugas terjadwal",
+        "workflow definitions" => "definisi alur kerja",
         "command rules" => "Aturan perintah",
         "enabled" => "aktif",
         "shadowed by {name}" => "tertutup oleh {name}",
@@ -73,6 +74,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The Scheduler has no area document." => "Penjadwal tidak memiliki dokumen area.",
         "No scheduled job has that id." => "Tidak ada tugas terjadwal dengan id itu.",
+        "A scheduled job's run takes no input document." => {
+            "Eksekusi job terjadwal tidak menerima dokumen masukan."
+        }
+        "An MCP server's test takes no input document." => {
+            "Uji server MCP tidak menerima dokumen masukan."
+        }
         "This daemon cannot manage {area}." => "Tidak dapat mengelola {area}.",
         "This daemon lists {area} but cannot toggle them." => {
             "Daemon ini menampilkan {area}, tetapi tidak dapat mengalihkannya."
@@ -103,6 +110,45 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "This workspace's hook settings changed since they were read; nothing was written." => {
             "Pengaturan hook ruang kerja ini berubah sejak dibaca; tidak ada yang ditulis."
+        }
+        "Workflow" => "Alur kerja",
+        "Saved {name}. It stays disabled until you enable it." => {
+            "{name} disimpan. Tetap nonaktif sampai Anda mengaktifkannya."
+        }
+        "The definitions changed since they were read; nothing was written." => {
+            "Definisi berubah sejak dibaca; tidak ada yang ditulis."
+        }
+        "A definition's name is its key; add it to save it under another name." => {
+            "Nama definisi adalah kuncinya; tambahkan untuk menyimpannya dengan nama lain."
+        }
+        "No project definition is named {name}." => "Tidak ada definisi proyek bernama {name}.",
+        "No workflow definition is named {name}." => {
+            "Tidak ada definisi alur kerja bernama {name}."
+        }
+        "Saved in the user workflow source; always enabled." => {
+            "Disimpan di sumber alur kerja pengguna; selalu aktif."
+        }
+        "Starts only after you enable it." => "Hanya berjalan setelah Anda mengaktifkannya.",
+        "Defined by package {package}." => "Didefinisikan oleh paket {package}.",
+        "{name} — {description} (required)" => "{name} — {description} (wajib)",
+        "{name} — {description}" => "{name} — {description}",
+        "{name} — required" => "{name} — wajib",
+        "{name} — default: {default}" => "{name} — default: {default}",
+        "and {count} more" => "dan {count} lainnya",
+        "Recent runs" => "Jalan terbaru",
+        "A workflow definition is saved as an object with a source and a document." => {
+            "Definisi alur kerja disimpan sebagai objek dengan sumber dan dokumen."
+        }
+        "A definition is saved to the user source or the project source." => {
+            "Definisi disimpan ke sumber pengguna atau sumber proyek."
+        }
+        "Started {name}: {run_id}." => "{name} dimulai: {run_id}.",
+        "Parameters are a JSON object of strings." => "Parameter adalah objek JSON berisi string.",
+        "The list reached its size limit; later definitions are not shown." => {
+            "Daftar mencapai batas ukurannya; definisi berikutnya tidak ditampilkan."
+        }
+        "No workflow definition named {name} is in the list, which reached its size limit." => {
+            "Tidak ada definisi workflow bernama {name} dalam daftar, yang mencapai batas ukurannya."
         }
         "MCP" => "MCP",
         "MCP servers" => "server MCP",

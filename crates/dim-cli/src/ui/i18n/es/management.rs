@@ -8,6 +8,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "skills" => "Skills",
         "hooks" => "hooks",
         "scheduled jobs" => "tareas programadas",
+        "workflow definitions" => "definiciones de flujo de trabajo",
         "command rules" => "Reglas de comandos",
         "enabled" => "activado",
         "shadowed by {name}" => "ocultado por {name}",
@@ -79,6 +80,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The Scheduler has no area document." => "El Programador no tiene documento de área.",
         "No scheduled job has that id." => "Ninguna tarea programada tiene ese id.",
+        "A scheduled job's run takes no input document." => {
+            "La ejecución de una tarea programada no toma ningún documento de entrada."
+        }
+        "An MCP server's test takes no input document." => {
+            "La prueba de un servidor MCP no toma un documento de entrada."
+        }
         "This daemon cannot manage {area}." => "No se puede gestionar {area}.",
         "This daemon lists {area} but cannot toggle them." => {
             "El daemon lista {area}, pero no permite alternar."
@@ -109,6 +116,49 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "This workspace's hook settings changed since they were read; nothing was written." => {
             "La configuración de hooks de este espacio de trabajo cambió desde que se leyó; no se escribió nada."
+        }
+        "Workflow" => "Flujo de trabajo",
+        "Saved {name}. It stays disabled until you enable it." => {
+            "{name} guardado. Permanece desactivado hasta que lo actives."
+        }
+        "The definitions changed since they were read; nothing was written." => {
+            "Las definiciones cambiaron desde que se leyeron; no se escribió nada."
+        }
+        "A definition's name is its key; add it to save it under another name." => {
+            "El nombre de una definición es su clave; añádela para guardarla con otro nombre."
+        }
+        "No project definition is named {name}." => {
+            "Ninguna definición de proyecto se llama {name}."
+        }
+        "No workflow definition is named {name}." => {
+            "Ninguna definición de flujo de trabajo se llama {name}."
+        }
+        "Saved in the user workflow source; always enabled." => {
+            "Guardado en la fuente de flujos de trabajo del usuario; siempre activado."
+        }
+        "Starts only after you enable it." => "Solo se inicia después de que lo actives.",
+        "Defined by package {package}." => "Definido por el paquete {package}.",
+        "{name} — {description} (required)" => "{name} — {description} (obligatorio)",
+        "{name} — {description}" => "{name} — {description}",
+        "{name} — required" => "{name} — obligatorio",
+        "{name} — default: {default}" => "{name} — predeterminado: {default}",
+        "and {count} more" => "y {count} más",
+        "Recent runs" => "Ejecuciones recientes",
+        "A workflow definition is saved as an object with a source and a document." => {
+            "Una definición de flujo de trabajo se guarda como un objeto con una fuente y un documento."
+        }
+        "A definition is saved to the user source or the project source." => {
+            "Una definición se guarda en la fuente del usuario o en la del proyecto."
+        }
+        "Started {name}: {run_id}." => "{name} iniciado: {run_id}.",
+        "Parameters are a JSON object of strings." => {
+            "Los parámetros son un objeto JSON de cadenas."
+        }
+        "The list reached its size limit; later definitions are not shown." => {
+            "La lista alcanzó su límite de tamaño; las definiciones posteriores no se muestran."
+        }
+        "No workflow definition named {name} is in the list, which reached its size limit." => {
+            "Ninguna definición de workflow llamada {name} está en la lista, que alcanzó su límite de tamaño."
         }
         "MCP" => "MCP",
         "MCP servers" => "servidores MCP",

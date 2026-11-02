@@ -8,6 +8,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "skills" => "スキル",
         "hooks" => "フック",
         "scheduled jobs" => "スケジュール済みジョブ",
+        "workflow definitions" => "ワークフロー定義",
         "command rules" => "コマンドルール",
         "enabled" => "有効",
         "shadowed by {name}" => "{name} が優先",
@@ -77,6 +78,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The Scheduler has no area document." => "スケジューラーには領域ドキュメントがありません。",
         "No scheduled job has that id." => "その id のスケジュールジョブはありません。",
+        "A scheduled job's run takes no input document." => {
+            "スケジュールされたジョブの実行は入力ドキュメントを取りません。"
+        }
+        "An MCP server's test takes no input document." => {
+            "MCP サーバーのテストは入力ドキュメントを受け取りません。"
+        }
         "This daemon cannot manage {area}." => "{area} を管理できません。",
         "This daemon lists {area} but cannot toggle them." => {
             "{area} の一覧は表示できますが、切り替えはできません。"
@@ -107,6 +114,45 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "This workspace's hook settings changed since they were read; nothing was written." => {
             "このワークスペースのフック設定は読み取り後に変更されています。今回は何も書き込んでいません。"
+        }
+        "Workflow" => "ワークフロー",
+        "Saved {name}. It stays disabled until you enable it." => {
+            "{name} を保存しました。有効にするまで無効のままです。"
+        }
+        "The definitions changed since they were read; nothing was written." => {
+            "定義は読み取り後に変更されました。何も書き込まれていません。"
+        }
+        "A definition's name is its key; add it to save it under another name." => {
+            "定義の名前はそのキーです。別の名前で保存するには追加してください。"
+        }
+        "No project definition is named {name}." => "{name} というプロジェクト定義はありません。",
+        "No workflow definition is named {name}." => "{name} というワークフロー定義はありません。",
+        "Saved in the user workflow source; always enabled." => {
+            "ユーザーのワークフローソースに保存されています。常に有効です。"
+        }
+        "Starts only after you enable it." => "有効にした後にのみ開始します。",
+        "Defined by package {package}." => "パッケージ {package} によって定義されています。",
+        "{name} — {description} (required)" => "{name} — {description}（必須）",
+        "{name} — {description}" => "{name} — {description}",
+        "{name} — required" => "{name} — 必須",
+        "{name} — default: {default}" => "{name} — 既定: {default}",
+        "and {count} more" => "ほか {count} 件",
+        "Recent runs" => "最近の実行",
+        "A workflow definition is saved as an object with a source and a document." => {
+            "ワークフロー定義は、ソースとドキュメントを持つオブジェクトとして保存します。"
+        }
+        "A definition is saved to the user source or the project source." => {
+            "定義はユーザーソースまたはプロジェクトソースに保存します。"
+        }
+        "Started {name}: {run_id}." => "{name} を開始しました: {run_id}。",
+        "Parameters are a JSON object of strings." => {
+            "パラメータは文字列の JSON オブジェクトです。"
+        }
+        "The list reached its size limit; later definitions are not shown." => {
+            "一覧はサイズ上限に達したため、以降の定義は表示されません。"
+        }
+        "No workflow definition named {name} is in the list, which reached its size limit." => {
+            "サイズ上限に達した一覧に、{name} という名前のワークフロー定義はありません。"
         }
         "MCP" => "MCP",
         "MCP servers" => "MCP サーバー",

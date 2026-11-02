@@ -8,6 +8,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "skills" => "스킬",
         "hooks" => "훅",
         "scheduled jobs" => "예약된 작업",
+        "workflow definitions" => "워크플로 정의",
         "command rules" => "명령 규칙",
         "enabled" => "활성",
         "shadowed by {name}" => "{name}에 의해 가려짐",
@@ -73,6 +74,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The Scheduler has no area document." => "스케줄러에는 영역 문서가 없습니다.",
         "No scheduled job has that id." => "해당 id의 예약 작업이 없습니다.",
+        "A scheduled job's run takes no input document." => {
+            "예약된 작업의 실행은 입력 문서를 받지 않습니다."
+        }
+        "An MCP server's test takes no input document." => {
+            "MCP 서버 테스트는 입력 문서를 받지 않습니다."
+        }
         "This daemon cannot manage {area}." => "{area}을(를) 관리할 수 없습니다.",
         "This daemon lists {area} but cannot toggle them." => {
             "{area} 목록은 표시할 수 있지만 전환할 수 없습니다."
@@ -103,6 +110,45 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "This workspace's hook settings changed since they were read; nothing was written." => {
             "이 작업 공간의 훅 설정이 읽은 뒤에 변경되었습니다. 아무것도 쓰지 않았습니다."
+        }
+        "Workflow" => "워크플로",
+        "Saved {name}. It stays disabled until you enable it." => {
+            "{name}을(를) 저장했습니다. 활성화할 때까지 비활성 상태로 유지됩니다."
+        }
+        "The definitions changed since they were read; nothing was written." => {
+            "정의가 읽은 후 변경되었습니다. 아무것도 쓰지 않았습니다."
+        }
+        "A definition's name is its key; add it to save it under another name." => {
+            "정의의 이름은 그 키입니다. 다른 이름으로 저장하려면 추가하세요."
+        }
+        "No project definition is named {name}." => "{name}이라는 프로젝트 정의가 없습니다.",
+        "No workflow definition is named {name}." => "{name}이라는 워크플로 정의가 없습니다.",
+        "Saved in the user workflow source; always enabled." => {
+            "사용자 워크플로 소스에 저장됩니다. 항상 활성화됩니다."
+        }
+        "Starts only after you enable it." => "활성화한 후에만 시작됩니다.",
+        "Defined by package {package}." => "패키지 {package}에서 정의합니다.",
+        "{name} — {description} (required)" => "{name} — {description} (필수)",
+        "{name} — {description}" => "{name} — {description}",
+        "{name} — required" => "{name} — 필수",
+        "{name} — default: {default}" => "{name} — 기본값: {default}",
+        "and {count} more" => "외 {count}개",
+        "Recent runs" => "최근 실행",
+        "A workflow definition is saved as an object with a source and a document." => {
+            "워크플로 정의는 소스와 문서를 가진 객체로 저장합니다."
+        }
+        "A definition is saved to the user source or the project source." => {
+            "정의는 사용자 소스 또는 프로젝트 소스에 저장합니다."
+        }
+        "Started {name}: {run_id}." => "{name} 시작됨: {run_id}.",
+        "Parameters are a JSON object of strings." => {
+            "매개변수는 문자열로 이루어진 JSON 객체입니다."
+        }
+        "The list reached its size limit; later definitions are not shown." => {
+            "목록이 크기 제한에 도달하여 이후 정의는 표시되지 않습니다."
+        }
+        "No workflow definition named {name} is in the list, which reached its size limit." => {
+            "크기 제한에 도달한 목록에 {name} 이름의 워크플로 정의가 없습니다."
         }
         "MCP" => "MCP",
         "MCP servers" => "MCP 서버",

@@ -322,6 +322,7 @@ impl ConfigurationPublisher {
 struct PreparationState {
     /// The running request and its cancellation.
     current: Option<(String, CancellationToken)>,
+    compaction: Option<u64>,
     /// A preparation handed over after a steer of its request was applied is
     /// cancelled without running (ADR agent-029 decision 5).
     steer: SteerMark,
@@ -916,6 +917,8 @@ impl DynPlugin for ContextPreparationPlugin {
                     "ContextPreparation",
                     &[
                         "context/prepare",
+                        "context/compaction-start",
+                        "context/compaction",
                         "stop/interrupt",
                         "step/model-start",
                         "input/applied",
@@ -934,6 +937,17 @@ impl DynPlugin for ContextPreparationPlugin {
                                 }
                                 Delivery::Live(event) => event,
                             };
+                            if matches!(event.kind, EventKind::ContextCompactionStart(_)) {
+                                owner.state.lock().unwrap().compaction = Some(event.sequence);
+                                return Ok(());
+                            }
+                            if let EventKind::ContextCompaction(data) = &event.kind {
+                                let mut state = owner.state.lock().unwrap();
+                                if state.compaction == data.start {
+                                    state.compaction = None;
+                                }
+                                return Ok(());
+                            }
                             if let EventKind::StopInterrupt(data) = &event.kind {
                                 let mut state = owner.state.lock().unwrap();
                                 state.interrupted = Some(data.reason.clone());
@@ -951,6 +965,7 @@ impl DynPlugin for ContextPreparationPlugin {
                                 state.steer.apply(&event);
                                 if let Some((request, cancel)) = &state.current
                                     && state.interrupted.is_none()
+                                    && state.compaction.is_none()
                                     && state.steer.steered(request)
                                 {
                                     cancel.cancel();

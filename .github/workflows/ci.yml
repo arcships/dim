@@ -125,6 +125,14 @@ jobs:
         run: |
           set -euo pipefail
           npm ci --prefix runtime --ignore-scripts --registry=https://registry.npmjs.org
+          # The ignored CLI flows below start the real plugins, so their
+          # packages are installed here, before the flows; the job's checkout
+          # carries them into the Node binding checks as well.
+          npm ci --prefix runtime/plugins/goal --ignore-scripts --registry=https://registry.npmjs.org
+          npm ci --prefix runtime/plugins/session-title --ignore-scripts --registry=https://registry.npmjs.org
+          npm ci --prefix runtime/plugins/scheduler --ignore-scripts --registry=https://registry.npmjs.org
+          npm ci --prefix runtime/plugins/workflow --ignore-scripts --registry=https://registry.npmjs.org
+          (cd runtime && npm install --no-save --ignore-scripts --install-links ./plugins/goal ./plugins/session-title ./plugins/scheduler ./plugins/workflow)
           export DIM_TEST_APP_SERVER="$PWD/target/debug/dim-app-server"
           export DIM_TEST_NPM_WRAPPER="$PWD/npm/bin/dimcode.mjs"
           cargo test --locked -p dimcode --test cli_flow -- --ignored
@@ -136,11 +144,6 @@ jobs:
           # 0.19's TypeScript test tool runs plugins on a real rutis-host; the
           # tests run from the repository root, so name it explicitly.
           export RUTIS_HOST="$PWD/runtime/node_modules/.bin/rutis-host"
-          npm ci --prefix runtime/plugins/goal --ignore-scripts --registry=https://registry.npmjs.org
-          npm ci --prefix runtime/plugins/session-title --ignore-scripts --registry=https://registry.npmjs.org
-          npm ci --prefix runtime/plugins/scheduler --ignore-scripts --registry=https://registry.npmjs.org
-          npm ci --prefix runtime/plugins/workflow --ignore-scripts --registry=https://registry.npmjs.org
-          (cd runtime && npm install --no-save --ignore-scripts --install-links ./plugins/goal ./plugins/session-title ./plugins/scheduler ./plugins/workflow)
           node --test runtime/plugin-sdk.test.mjs
           node --test runtime/plugins/goal/goal.test.mjs
           node --test runtime/plugins/session-title/session-title.test.mjs
@@ -169,8 +172,8 @@ jobs:
           export DIM_TEST_PYTHON="$PWD/runtime/.venv/bin/python"
           cargo test --locked -p dim-app-server --test transport_flow --test mcp_http_flow node_ -- --ignored
           cargo test --locked -p dim-migration --test migration_flow node_ -- --ignored
-          # The scenario runner serves the default plugins, so its own flows
-          # run where those plugins' packages are installed.
+          # The scenario runner serves the default plugins, whose packages the
+          # CLI profile step above installed.
           cargo test --locked -p xtask node_ -- --ignored
   acp-registry:
     needs: changes

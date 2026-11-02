@@ -534,7 +534,8 @@ owner reports them; a hook source is itself an entry, under the heading `sources
 label, a detail, its states (enabled, disabled, invalid, shadowed, read-only) and the actions it
 offers. An entry its owner does not let the client write (plugin-owned, locked) offers no write
 action, and its detail says why. What the owner could not use is listed after the entries as its
-issues.
+issues. An entry may carry the operation's input document when the run kind takes one: Ctrl+T
+opens the external editor on it first, and sends what it leaves with the run.
 
 ```text
 ╭─ Skills ──────────────────────────────────────╮
@@ -600,11 +601,16 @@ stays visible at any width, the remove confirmation included.
   not read the area again: MCP's test is the tools a temporary connection found. Whether the owner
   declares the method mutating does not decide this, since `mcp.test` runs the entry and still
   writes nothing the area lists. An operation that takes parameters is the area's own step, not
-  this kind's.
+  this kind's: the entry carries the input document, and the run kind opens the external editor
+  on it before the call.
 - inspect asks the adapter for the entry's detail: a title and lines, not a view. The panel
   shows it in place of the list, the arrows and PageUp/PageDown scroll it, Esc returns to the
   list with the selection kept, and a second Esc closes the panel. `dimcode <area> inspect ID`
   prints the same lines, or the area's own verb where its design names one.
+
+`/workflow:save` opens its area in the panel's create editor: the first view opens the editor on
+the area's create document, as Ctrl+N would, and an area that does not offer add stays on its list
+with the sentence the support check gives.
 
 An entry of an area whose documents are per entry offers edit for its own document: the Save
 action then carries the entry's id, and the adapter keeps the revision it read with the draft.
@@ -774,6 +780,85 @@ the run was skipped — and Tab shows the job's history in place of the list:
 history ID` prints the lines the detail shows, and `dimcode scheduled remove ID` deletes without
 the panel's confirmation.
 
+### The Workflow area
+
+Workflow (#816): the `/workflow` panel, `/workflow:save` its create editor in both modes, and `dimcode
+workflow list|enable NAME|disable NAME|edit NAME|set NAME PATH|add PATH|start NAME [PATH]|history
+NAME` over `workflow.list`, `workflow.save`, `workflow.start` and `workflow.status`
+([Workflow](plugins/Workflow.md#a3-management-methods)), plus the Settings client methods the
+enablement needs. Every definition is an entry, grouped under the source the owner reports:
+`user`, `project` and `plugin:<package id>`. A user definition is always enabled and its document
+is the entry's document; a project definition starts disabled and is a file in the repository; a
+package definition is installed and offers no write. An entry the owner cannot use is marked
+invalid and its detail carries the owner's issues.
+
+A project definition's enabled state is the `projectEnabled[cwd][name]` member of the user
+Settings document. The owner's own service refuses to change it (`userOnly`), so the toggle is a
+client write: `settings.read`, the member set on the document as read, then `settings.update` at
+the revision the read reported. The document is copied as read, so a definition, a limit or
+another workspace's map is never lost. `settings_conflict` is the conflict path: nothing was
+written, the definitions are read again, and the message says so.
+
+Add writes either source from one document, `{source, document}`, with `source` `user` by
+default; a project save creates or replaces `.dimcode/workflows/<name>.yaml` and stays disabled,
+and the note says so. Edit is offered for user definitions only: the list's Settings read carries
+the document, the save carries the revision the panel read, and a `conflict` answer means the
+definition changed while the editor was open: nothing is written, the area is read again, and the
+draft keeps the user's text. The CAS unit is the whole user document, so a save also answers
+`conflict` when another definition or an enablement changed while the editor was open. A save may
+not rename the definition: the owner keys by the document's name, so a renamed edit would save a
+second definition and leave the old one, and the area has no remove; the write is refused before
+the call and the draft is kept. A project definition is edited wherever it lives, like a project
+hook document, and the entry's detail names its path.
+
+Run is offered for enabled, valid definitions of any source. A definition that declares parameters
+opens the editor on one JSON object, one key per parameter: its `default` where the definition
+gives one and an empty string where it does not. The document is read back as an object of strings
+whose keys the definition declares; anything else is refused with `Parameters are a JSON object of
+strings.` and nothing starts. An empty string is a supplied value, not an omission. A definition
+with no parameters starts at once. The start carries the entry's name and source and the
+workspace; from the panel it also carries `report_to {session_id, branch_id}` for the Session and
+the line the transcript shows, the line a submitted message goes to, which is how `/tasks` finds a
+management-started run when it is next opened. A panel with no Session yet, as after `/new`
+before the first message, starts a run that reports nowhere. The command line has no Session, so
+`dimcode workflow start` sends no `report_to` and its runs are outside `/tasks`. The note is
+`Started <name>: <run_id>.`. In the run document the panel opens, a parameter left at the value
+it was opened with is not sent, so the owner applies the definition's full default, while a
+document from a file or stdin is sent as given.
+
+Inspect reads `workflow.status {}` and filters the retained runs to the entry's name and source.
+A project definition belongs to one workspace, so its runs are filtered to this workspace's `cwd`
+as well: another workspace's definition of the same name is a different definition. A user or
+package definition is the same everywhere, so its runs come from every workspace and each line
+names the run's `cwd`. The detail is the definition's lines, a `Recent runs` line and up to ten
+runs, newest first. The area has no remove: the owner has no delete method, so a user definition
+leaves only by editing the Settings document, and a project definition by deleting its file.
+
+```text
+╭─ Workflow ────────────────────────────────────────────────────────────────────────────────────╮
+│ >                                                                                             │
+│   user                                                                                        │
+│ › review-and-fix   enabled                                                                    │
+│   project                                                                                     │
+│   nightly-check    disabled  invalid                                                          │
+│   plugin:kit                                                                                  │
+│   release-notes    enabled  read-only                                                         │
+│                                                                                               │
+│   Analyze, fix in parallel, summarize                                                         │
+│   Saved in the user workflow source; always enabled.                                          │
+╰─ Ctrl+E edit · Ctrl+R reload · Ctrl+N add · Ctrl+T run · Tab inspect · Esc close ─────────────╯
+```
+
+`dimcode workflow list` prints one row per definition (name, source, state, description) and the
+issues of the invalid ones; `enable` and `disable` address the project definition of that name;
+`edit` and `set` address the user definition and refuse a project name with the file to edit;
+`add` is the create without an editor; `start NAME [PATH]` takes the parameters from PATH, or from
+stdin for `-`, or starts with none; `history NAME` prints the detail's lines. A bare name resolves
+the way `workflow.start` resolves it: an enabled definition first, then any definition, and within
+each pass project, then user, then package. Project definitions start disabled, so a bare name still
+names one. A command run in a workspace that Settings does not know prints the owner's
+`definition_source_failed` message and exits 1. A listing the owner cut at one payload prints the
+definitions it holds and says the later ones are omitted.
 ### The MCP area
 
 MCP adds no kind. Its entries are the effective catalog — the servers merged by id with project
@@ -980,6 +1065,15 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode scheduled run ID` | Run one job now over `schedule.run_now` and report what the owner returned, or why it skipped the run. |
 | `dimcode scheduled history ID` | Print one job's recent runs over `schedule.history`, newest first, with each run's state and time. |
 | `/scheduled`, `/schedule` | Open the Scheduler panel ([management surfaces](#management-surfaces)): a job per entry with its schedule, next window and last outcome, and the toggle, edit, add, remove, run and inspect kinds; the Scheduler's verb for inspect is history. Jobs are the host's, not the Session's or workspace's; only a new job's default `cwd` comes from the Session. |
+| `dimcode workflow list` | List the definitions over `workflow.list` ([Workflow](plugins/Workflow.md#a3-management-methods)): each definition's name, source, state and description, then the issues of the invalid ones. |
+| `dimcode workflow enable\|disable NAME` | Enable or disable the project definition of that name over `settings.read` and `settings.update`, then report the definitions again. |
+| `dimcode workflow edit NAME` | Open the user definition's document in `$VISUAL`, `$EDITOR` or the platform default, and save it over `workflow.save` with the revision the user document was read at; a project name names the file to edit instead. |
+| `dimcode workflow set NAME PATH` | Write the user definition from `PATH`, or from stdin for `-`, with the revision read immediately before the write; unchanged text writes nothing. |
+| `dimcode workflow add PATH` | Create or replace a definition from `PATH`, or from stdin for `-`, over `workflow.save`: the document names `source` (`user` by default) and `document`. |
+| `dimcode workflow start NAME [PATH]` | Start the definition over `workflow.start` with the parameters from `PATH`, or from stdin for `-`, or with none; report `Started NAME: RUN_ID`, without a `report_to`. |
+| `dimcode workflow history NAME` | Print the definition's lines and its recent runs over `workflow.status`, resolving the name as `workflow.start` does. |
+| `/workflow` | Open the Workflow panel of the Session's workspace ([management surfaces](#management-surfaces)): a definition per entry with its source, state, parameters and issues, and the toggle, edit, add, run and inspect kinds. |
+| `/workflow:save` | Open the Workflow panel in its create editor. |
 | `dimcode mcp list` | List the effective catalog over `mcp.catalog` ([The MCP area](#the-mcp-area)): each entry's id, source, transport, enablement and authorization, then each source application's errors. |
 | `dimcode mcp add PATH` | Create an entry from the panel's create document, `-` for stdin, over `mcp.save` with the source revision `mcp.catalog` reported; an id the catalog already lists is refused. |
 | `dimcode mcp edit ID` | Open the entry's `mcp.update` patch in `$VISUAL`, `$EDITOR` or the platform default, and write it at the revision `mcp.configuration` reported; unchanged text writes nothing. |

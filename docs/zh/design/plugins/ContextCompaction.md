@@ -155,8 +155,8 @@ Session 值不持有状态。解析出的连接只存在于一次策略调用内
 | 事件 | 写入方 | 消费方 | 数据 |
 | --- | --- | --- | --- |
 | `context/compact`（新） | Loop，经其公开写操作 `AgentLoop::compact` | Loop，按序号 | `{}` |
-| `context/compaction-start`（新） | ContextPolicy 在 `compact_step` 中代其调用方（Loop 的步骤或 ContextPreparation）写入 | Loop 与 ContextPreparation（重建）、客户端 | `{turn_id?, request_id?, command?, through, trigger: "manual" \| "threshold" \| "provider_output_budget_exhausted", strategy}` |
-| `context/compaction`（有改动） | ContextPolicy，代其调用方；重载时由负责结算的所有者写入 | Loop（手动步骤的终态）、ContextPolicy（重试复用）、投影、ContextMethods、客户端 | `{turn_id?, request_id?, command?, start?, through, outcome}` |
+| `context/compaction-start`（新） | ContextPolicy 在 `compact_step` 中代其调用方（Loop 的步骤或 ContextPreparation）写入 | Loop（重建）、ContextPreparation（延后 steer 与重建）、客户端 | `{turn_id?, request_id?, command?, through, trigger: "manual" \| "threshold" \| "provider_output_budget_exhausted", strategy}` |
+| `context/compaction`（有改动） | ContextPolicy，代其调用方；重载时由负责结算的所有者写入 | Loop（手动步骤的终态）、ContextPreparation（延后 steer）、ContextPolicy（重试复用）、投影、ContextMethods、客户端 | `{turn_id?, request_id?, command?, start?, through, outcome}` |
 
 `outcome` 为以下之一：
 
@@ -180,7 +180,7 @@ Session 值不持有状态。解析出的连接只存在于一次策略调用内
   - 待处理的指令被中断丢弃或在重载时结算时为 `cancelled`。
 - 没有走到策略调用的自动压缩两条事实都不写，与现在一样。
 - 每个分支任何时候最多只有一条开始没有结果：Loop 不在有在途请求时运行手动步骤，ContextPreparation 一次只运行一个准备。
-- 重载时，没有结果的开始意味着当时有压缩在途，由它的所有者写 `cancelled` 结果（§5.8）。自动压缩在开始之后被取消（中断或 steer）时，现在也写 `cancelled` 结果，而不再不写事实。
+- 重载时，没有结果的开始意味着当时有压缩在途，由它的所有者写 `cancelled` 结果（§5.8）。自动压缩在开始之后被中断取消时，也写 `cancelled` 结果。steer 等待压缩结果（§5.3）。
 
 **切点：`retain_from`。** 已完成的结果指明第一条原样保留的 Timeline 事件。切点只落在事件边界上。
 
@@ -416,6 +416,16 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
 - **ContextPreparation，在 `prepare` 内。** 达到阈值时（§5.6），或在 `recovery` 下。`prepare` 的其余部分不变。
 - **Loop 的手动步骤。** 触发原因为 `Manual`。请求按 `start_preparation` 的方式构造：最新 `context/configured` 的设置和 system 加上投影后的消息，不绑定工具。
 
+**压缩期间的 steer。** 从 `context/compaction-start` 到对应的终态 `context/compaction`，任何来源的 steer 都不取消或重启压缩。输入照常接收、按序采用，但 Loop 在压缩结果提交之后才消费它们。压缩的源边界 `through` 保持不变。自动准备中的请求被替换时，先完成压缩，再以 `Cancelled`（`replaced by steer`）结束该请求；Loop 随后消费待处理输入，从压缩后的上下文准备新请求。手动步骤遵循 §5.4。显式中断、关闭和重载保留各自的取消行为（§5.8）。
+
+```text
+compaction running -- steer arrives --> input pending
+        |
+compaction terminal committed
+        |
+consume pending inputs --> prepare next request
+```
+
 **预算恢复。** ModelProvider 在每次模型调用前调用 `validate`。它使用与触发点相同的请求估算（有提供方基线时为基线加增量，否则为完整的本地计数），超过 `B` 时带预算事实失败；随后 Loop 带 `recovery` 重试该请求一次。因此恢复的含义是“请求放不进声明的预算”，与触发点一致。恢复不受再增长规则约束，每个请求至多压缩一次（§5.6）。恢复压缩之后，准备过程自己检查投影后的请求：有界限时它至多 `0.5 × B`；没有界限时，只要那个切点存在，恢复就取了替换全部的切点。若它的计数仍超过 `B`，准备过程带预算事实失败，错误指出让它超出的东西：过大的不可压缩部分（与标记相同的部分和命名规则），或者它们都放得下时、最后的事件放置的、任何切点都切不掉的条目。其后不再有 `model/call`。Loop 不再压缩，turn 带着这个错误失败。没有提供方基线时，完整本地估算及其误差依旧存在（#128）。
 
 ### 5.4 手动压缩
@@ -473,7 +483,7 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
   - **防御规则。** Loop 在另一条指令未完成时消费到的 `context/compact`（不是经 `AgentLoop::compact` 写入的，或旧数据），立即以引用它的 `context/compaction {command: <其序号>, outcome: skipped {reason: "a compaction is already in progress"}}` 结算，不带开始，不排队。
 - **不推进。** 步骤运行期间，`next_model` 和 `try_start` 等待它的事实。输入照常排队，不被步骤消费。
 
-**steer。** 步骤期间应用的驱动输入不取消步骤。它加入下一个请求，或在步骤结束后启动一个 turn。中断、失败、重载与重启见 §5.8。
+**steer。** 输入按 §5.3 等待，加入下一个请求，或在步骤结束后启动一个 turn。中断、失败、重载与重启见 §5.8。
 
 ### 5.5 Loop 新增的内容
 
@@ -716,6 +726,7 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
    - 用默认 `HistoryRenderer` 压缩的 Session，换一个渲染器（另一种条目 id 方案）重放时，仍能凭 `retain_from` 找到切点，投影出相同的保留事件。
    - 快照锚定（#130）：两个存储对锚定在任何现有事件上、id 与序号匹配的快照都照常保存和返回。所有者的解码回调会忽略锚点不是已完成压缩、或 `retain_from` 与其状态不一致的快照，上下文随之退回事实重放，结果相同。
 6. **中断、重载与重启。**
+   - 阈值、恢复或手动压缩期间，用户 steer 与子分支最终汇报不影响正在运行的同一次策略调用。结果先于这些输入的消费与替换请求；下一个请求按序携带压缩后的历史与每条待处理输入一次，多条 steer 连续到达也如此。
    - 步骤期间 `session.stop` 写 `cancelled`（策略已经返回时为 `completed`）。
    - 步骤期间插件重载写 `cancelled: capability reloading`，不发第二次策略调用。
    - 在摘要请求被挂住时杀掉 App Server 进程，再在同一个 home 上启动：留下一条没有结果的开始，没有半截结果；下次装载写带该 `start` 的 `cancelled: capability reloading`，自动压缩同理；Session 投影出的历史与压缩前相同；新的 `/compact` 正常压缩。
