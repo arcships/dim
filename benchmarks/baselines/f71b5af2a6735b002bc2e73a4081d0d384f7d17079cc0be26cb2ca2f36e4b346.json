@@ -29,8 +29,13 @@
   "params": {
     "agent_timeout_multiplier": 1.0,
     "harbor_version": "0.18.0",
+    "k": 3,
+    "model_config_sha256": "1a75d625f5e0525fb85ba110ed0e8dfd468afa22cedacfe6e8bf2991a882e3b5",
+    "model_name": "deepseek/deepseek-flash",
     "n_concurrent_trials": 5,
-    "timeout_multiplier": 1.0
+    "timeout_multiplier": 1.0,
+    "verifier_no_proxy": "localhost,127.0.0.1,::1",
+    "verifier_proxy": true
   },
   "run_id": "2026-11-02T0243__baseline__fa7f273b0__bc84",
   "schema_version": 1,
