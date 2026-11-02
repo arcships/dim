@@ -489,10 +489,14 @@ impl RuntimeService {
     pub fn install(self: &Arc<Self>, kind: Kind) -> Result<(), String> {
         let fresh = self.runtimes.lock().unwrap().reload()?.plan(kind).clone();
         let index = Self::index(kind);
+        // The decision, the plan it decides on and the command that plan starts
+        // are one critical section: releasing the state lock in between would
+        // let a second call commit its own plan and command after this one
+        // reserved the transition, and the transition would be lost.
         let step = {
             let mut states = self.states.lock().unwrap();
             let changed = self.plans.lock().unwrap()[index].source != fresh.source;
-            match &mut states[index] {
+            let step = match &mut states[index] {
                 State::Acquiring | State::Provided(None) => Step::Busy,
                 State::Provided(provided) => {
                     let down = matches!(self.status(kind), RuntimeState::Down(_));
@@ -508,16 +512,17 @@ impl RuntimeService {
                     states[index] = State::Acquiring;
                     Step::Acquire
                 }
+            };
+            if !matches!(step, Step::Busy) {
+                let mut plans = self.plans.lock().unwrap();
+                plans[index] = fresh;
+                let runtimes = self.runtimes.lock().unwrap().clone();
+                self.local.lock().unwrap()[index] = launch(kind, &plans[index], &runtimes);
             }
+            step
         };
         if matches!(step, Step::Busy) {
             return Ok(());
-        }
-        {
-            let mut plans = self.plans.lock().unwrap();
-            plans[index] = fresh;
-            let runtimes = self.runtimes.lock().unwrap().clone();
-            self.local.lock().unwrap()[index] = launch(kind, &plans[index], &runtimes);
         }
         let service = self.clone();
         match step {
