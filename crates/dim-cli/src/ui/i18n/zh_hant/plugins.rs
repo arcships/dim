@@ -32,6 +32,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "list plugins, turn them on or off, reload (install PATH)" => {
             "列出外掛、開啟或關閉、重新載入（install 路徑）"
         }
+        "Enter open /runtime · o on/off · r reload · Esc close" => {
+            "Enter 開啟 /runtime · o 開/關 · r 重新載入 · Esc 關閉"
+        }
+        "waits for the {runtime} runtime" => "等待 {runtime} 執行階段",
         _ => return None,
     })
 }

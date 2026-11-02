@@ -24,8 +24,8 @@ use crate::model::session::{
     ACCOUNT_NAMESPACE, Account, AccountDescriptor, Command, CompactReply, ContextReading,
     DIM_OAUTH_ID, DraftPart, EmptyProvider, EmptyReason, ExecutionSnapshot, ModelItem, ModelList,
     ModelPolicyUpdate, NeedsLimitsProvider, OauthEvent, OauthStart, PluginItem, PluginReply,
-    ProviderAction, ProviderEntry, SandboxBackend, SessionItem, SessionPort, SubagentModelPolicy,
-    SwitchKind, Update, Usage,
+    ProviderAction, ProviderEntry, RuntimeAction, RuntimeItem, SandboxBackend, SessionItem,
+    SessionPort, SubagentModelPolicy, SwitchKind, Update, Usage,
 };
 use crate::model::view::{
     LineState, LineView, SideLine, TaskOutputState, TaskTarget, WorkflowInventory,
@@ -1545,6 +1545,25 @@ impl Worker {
                     plugins,
                 });
             }
+            Command::ListRuntimes => {
+                let runtimes = self.runtimes().await;
+                let plugins = self.plugins().await;
+                self.send(Update::Runtimes {
+                    result: None,
+                    runtimes,
+                    plugins,
+                });
+            }
+            Command::Runtime(action) => {
+                let result = self.runtime_change(&action).await;
+                let runtimes = self.runtimes().await;
+                let plugins = self.plugins().await;
+                self.send(Update::Runtimes {
+                    result: Some(result),
+                    runtimes,
+                    plugins,
+                });
+            }
             Command::Configure(text) => {
                 if self.session_id.is_empty() && configure::needs_session(&text) {
                     self.report(NO_SESSION.to_owned(), true);
@@ -2356,6 +2375,31 @@ impl Worker {
             .typed("plugin.list", json!({}))
             .await
             .map_err(|error| error.to_string())
+    }
+
+    /// The `/runtime` rows: what `runtime.list` reports.
+    async fn runtimes(&mut self) -> Result<Vec<RuntimeItem>, String> {
+        if !self.client.supports(&["runtime.list"]) {
+            return Err(format!(
+                "This daemon does not serve plugin runtimes ({})",
+                self.client.server_version()
+            ));
+        }
+        self.client
+            .typed("runtime.list", json!({}))
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// A `/runtime` change: the calls it makes, in order, are the change.
+    async fn runtime_change(&mut self, action: &RuntimeAction) -> Result<(), String> {
+        for (method, params) in runtime_calls(action) {
+            self.client
+                .rpc(method, params)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     /// The `/connect` list: every static provider the App Server knows (the
@@ -3969,6 +4013,27 @@ fn execution_snapshot(value: serde_json::Value) -> Result<ExecutionSnapshot, Str
     })
 }
 
+/// The `runtime.*` calls a change makes, in order: the configuration write
+/// first when it has one, then the apply (RuntimeManager §5).
+fn runtime_calls(action: &RuntimeAction) -> Vec<(&'static str, serde_json::Value)> {
+    match action {
+        RuntimeAction::Install(name) => vec![("runtime.install", json!({"name": name}))],
+        RuntimeAction::Configure { name, source, auto } => {
+            let mut configure = json!({"name": name});
+            if let Some(source) = source {
+                configure["source"] = json!(source.as_str());
+            }
+            if let Some(auto) = auto {
+                configure["auto"] = json!(auto);
+            }
+            vec![
+                ("runtime.configure", configure),
+                ("runtime.install", json!({"name": name})),
+            ]
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3991,5 +4056,49 @@ mod tests {
             transcript_mut(&mut main, &mut lines, "unknown").is_none(),
             "an unknown branch has no transcript"
         );
+    }
+
+    /// A `/runtime` change writes the configuration it carries and then
+    /// applies it; an apply alone calls only `runtime.install`.
+    #[test]
+    fn runtime_changes_call_configure_then_install() {
+        use crate::model::session::RuntimeSource;
+        let cases = [
+            (
+                RuntimeAction::Install("node".into()),
+                vec![("runtime.install", json!({"name": "node"}))],
+            ),
+            (
+                RuntimeAction::Configure {
+                    name: "node".into(),
+                    source: Some(RuntimeSource::System),
+                    auto: None,
+                },
+                vec![
+                    (
+                        "runtime.configure",
+                        json!({"name": "node", "source": "system"}),
+                    ),
+                    ("runtime.install", json!({"name": "node"})),
+                ],
+            ),
+            (
+                RuntimeAction::Configure {
+                    name: "python".into(),
+                    source: None,
+                    auto: Some(false),
+                },
+                vec![
+                    (
+                        "runtime.configure",
+                        json!({"name": "python", "auto": false}),
+                    ),
+                    ("runtime.install", json!({"name": "python"})),
+                ],
+            ),
+        ];
+        for (action, calls) in cases {
+            assert_eq!(runtime_calls(&action), calls, "{action:?}");
+        }
     }
 }

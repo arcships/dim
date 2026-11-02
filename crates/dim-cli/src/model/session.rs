@@ -240,6 +240,12 @@ pub enum Command {
     ListPlugins,
     /// Change one plugin; the worker lists the plugins again after it.
     Plugin(PluginAction),
+    /// List the runtimes of the `/runtime` panel (`runtime.list`) and the
+    /// plugins that wait on them (`plugin.list`).
+    ListRuntimes,
+    /// Change one runtime; the worker lists the runtimes and the plugins
+    /// again after it.
+    Runtime(RuntimeAction),
     /// A configuration command line (`/effort high`, `/agent`, ...).
     Configure(String),
     /// Make `(provider, model)` the default and the active session's model.
@@ -315,6 +321,70 @@ pub struct PluginReply {
     pub skipped: Vec<String>,
     #[serde(default)]
     pub restart_required: bool,
+}
+
+/// Where a runtime's interpreter comes from (RuntimeManager §2.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuntimeSource {
+    Download,
+    System,
+}
+
+impl RuntimeSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Download => "download",
+            Self::System => "system",
+        }
+    }
+
+    /// The other source: what `s` switches to.
+    pub fn flipped(self) -> Self {
+        match self {
+            Self::Download => Self::System,
+            Self::System => Self::Download,
+        }
+    }
+
+    /// A typed `download` or `system`.
+    pub fn parse(word: &str) -> Option<Self> {
+        [Self::Download, Self::System]
+            .into_iter()
+            .find(|source| source.as_str() == word)
+    }
+}
+
+/// One change the `/runtime` panel or a typed `/runtime` form asks for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuntimeAction {
+    /// Apply the configuration as it stands: acquire, provide again or
+    /// re-acquire under a changed source (RuntimeManager §5).
+    Install(String),
+    /// Write one runtime's configuration, then apply it.
+    Configure {
+        name: String,
+        source: Option<RuntimeSource>,
+        auto: Option<bool>,
+    },
+}
+
+/// One runtime of `runtime.list` (RuntimeManager §5).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct RuntimeItem {
+    pub name: String,
+    pub source: RuntimeSource,
+    /// The configuration in effect: whether it is turned on at startup.
+    /// Absent from a daemon that does not report it.
+    #[serde(default)]
+    pub auto: Option<bool>,
+    /// The fixed version for `download`; for `system`, the version of the
+    /// checked interpreter, absent until it is checked.
+    pub version: Option<String>,
+    /// `off`, `acquiring`, `failed`, `starting`, `ready` or `down`.
+    pub status: String,
+    /// Why it is `failed` or `down`.
+    pub reason: Option<String>,
 }
 
 /// What a sign-in needs to begin.
@@ -679,6 +749,13 @@ pub enum Update {
     PluginResult {
         action: PluginAction,
         result: Result<PluginReply, String>,
+        plugins: Result<Vec<PluginItem>, String>,
+    },
+    /// The runtimes of `/runtime` and the plugins that wait on them; `result`
+    /// is present when this answers a change.
+    Runtimes {
+        result: Option<Result<(), String>>,
+        runtimes: Result<Vec<RuntimeItem>, String>,
         plugins: Result<Vec<PluginItem>, String>,
     },
     /// The account of the `/login` panel, or none when signed out.

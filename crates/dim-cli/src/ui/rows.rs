@@ -101,6 +101,11 @@ impl Columns {
             label: (label + DETAIL_GAP).min((room / 2).max(1)),
         }
     }
+
+    /// Where a row's detail starts, counted from the panel's first column.
+    pub fn detail(&self) -> usize {
+        ROW_INDENT + self.label
+    }
 }
 
 const UNAVAILABLE: &str = " (unavailable)";

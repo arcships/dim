@@ -114,6 +114,10 @@ pub enum Effect {
     Setting(crate::ui::settings_panel::Setting),
     /// Change a plugin (`/plugins`).
     Plugin(crate::model::session::PluginAction),
+    /// Change a plugin runtime (`/runtime`).
+    Runtime(crate::model::session::RuntimeAction),
+    /// Open `/runtime` on the runtime the plugin row waits for.
+    OpenRuntime(String),
     /// Change a provider (`/connect`).
     Provider(crate::model::session::ProviderAction),
     /// Begin a sign-in on the worker.

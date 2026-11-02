@@ -109,6 +109,7 @@ pub struct Client {
     #[cfg(windows)]
     _bridge: tokio::process::Child,
     instance_id: String,
+    server_version: String,
 }
 impl Client {
     /// Opens the protected transport. Only a host that just started its daemon
@@ -199,6 +200,7 @@ impl Client {
             notices: VecDeque::new(),
             features: Vec::new(),
             instance_id: String::new(),
+            server_version: String::new(),
             #[cfg(windows)]
             _bridge: bridge,
         })
@@ -350,7 +352,8 @@ impl Client {
         }
         self.features = hello.features;
         self.instance_id = hello.instance_id;
-        Ok(hello.server_version)
+        self.server_version = hello.server_version;
+        Ok(self.server_version.clone())
     }
 
     /// Whether the server's hello offered `feature` (a method name, or a
@@ -364,6 +367,10 @@ impl Client {
     }
     pub fn instance_id(&self) -> &str {
         &self.instance_id
+    }
+    /// The version the daemon's hello reported, empty before the hello.
+    pub fn server_version(&self) -> &str {
+        &self.server_version
     }
     /// Reconnects without starting or replacing a daemon.
     pub async fn connect(config: &ConnectionConfig) -> Result<Self> {
