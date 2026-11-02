@@ -142,9 +142,10 @@ compaction（[agent_loop.rs:359](../../crates/dim-agent-capabilities/src/agent_l
 不保留投影 cache，也不把整段历史装进 `ContextHistory.events`。每次 prepare 按批读取事件，
 边读边投影，投影之外的批立即释放。没有跨 prepare 的派生状态，也没有缓存失效规则。
 
-- **读取**：`Timeline::stored_page` 在固定 head 上读取某个位置之后的完整原子批次，
+- **读取**：`Timeline::stored_context_page_in` 读取某个位置之后、带上下文开关的完整原子批次，
   目标是一批的事件数、永不在原子批次中间结束；`HistoryRenderer::rendered_stream`
-  以 256 条为默认批大小顺序读取；不经过 hot cache，不保留事件体。
+  以 256 条为默认批大小，从快照的恢复位置或第一个有效段的段首顺序读取；不经过 hot cache，
+  不保留事件体。
 - **投影**：`project_batch` 接受上一批的 `ProjectionCheckpointState`，返回新的 entries/state；
   `rendered_stream` 合并 entries，事件只活到当前批。
 - **压缩**：批次内遇到 completed compaction 时按 `retain_from` 裁剪已累计的 history；
@@ -211,7 +212,7 @@ P3 已经覆盖冷重建：读取按批进行，不再一次物化整段历史�
 | 项 | 说明 |
 | --- | --- |
 | P3 的一致性 | 流式投影必须与全量 `rendered_context` 在固定前缀上一致；读取/解码/校验失败报错，不回退；没有跨 prepare 的缓存状态 |
-| P3 的内存 | 峰值 = 一批事件 + 投影；不保留历史；每次 prepare 仍读全量，CPU/IO 不降 |
+| P3 的内存 | 峰值 = 一批事件 + 投影；不保留历史；读取从快照的恢复位置或段首开始，只取参与投影的行，压缩之后的读取量随裁剪点而不是历史长度增长 |
 | policy facts | SQL 选择必须与默认 store 相同；按 ancestry 合并；`input/consumed` 引用的输入即使写在 turn 之前也要选中 |
 | policy 窗口 | cut 必须落在窗口内；跨 batch cut 在累计 history 上裁剪；找不到或损坏时报错 |
 | restore | `Dispatcher::follow` 仍为每个 consumer 读完整本地历史，restore peak 约 19.9MB；这是后续分页 replay 的工作，不影响 prepare |
