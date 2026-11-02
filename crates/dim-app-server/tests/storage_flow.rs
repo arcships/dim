@@ -1098,6 +1098,103 @@ async fn stored_trace_drafts_do_not_persist_producer_ids() {
 /// A compaction cut may name any event, including one the stream never reads:
 /// the stream and the snapshot resolve it by position, not by looking for its
 /// row among the flagged ones.
+/// A cut on a stored event after the read window is outside the stream.
+#[tokio::test]
+async fn a_cut_after_the_read_window_fails_the_stream() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("session", &SessionConfig::default())
+        .await
+        .unwrap();
+    for entry in [
+        record(1, EventKind::ContextCompact(ContextCompactData {})),
+        record(
+            2,
+            EventKind::ContextCompaction(completed("event-3", "short", 3)),
+        ),
+        record(3, EventKind::ContextCompact(ContextCompactData {})),
+    ] {
+        append(&store, key("session", "main"), vec![entry])
+            .await
+            .unwrap();
+    }
+    let timeline = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("session", "main"),
+        vec![],
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    let error = HistoryRenderer::default()
+        .rendered_stream(&timeline, 2, 256)
+        .await
+        .expect_err("the cut is after the window");
+    assert!(
+        error
+            .to_string()
+            .contains("Compaction cut is outside the stream"),
+        "{error}"
+    );
+    db.close().await.unwrap();
+}
+
+/// A cut on an ancestor event after that ancestor's fork cut is outside the
+/// stream too.
+#[tokio::test]
+async fn a_cut_beyond_the_ancestor_cut_fails_the_stream() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("session", &SessionConfig::default())
+        .await
+        .unwrap();
+    for entry in
+        (1..=5).map(|sequence| record(sequence, EventKind::ContextCompact(ContextCompactData {})))
+    {
+        append(&store, key("session", "main"), vec![entry])
+            .await
+            .unwrap();
+    }
+    let connection = Connection::open(&database.0).unwrap();
+    connection
+        .execute_batch("INSERT INTO timeline_branches VALUES ('session', 'child', '{}', 0);")
+        .unwrap();
+    drop(connection);
+    append(
+        &store,
+        key("session", "child"),
+        vec![record(
+            1,
+            EventKind::ContextCompaction(completed("event-5", "short", 1)),
+        )],
+    )
+    .await
+    .unwrap();
+    let timeline = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("session", "child"),
+        vec![("main".into(), 2)],
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    let error = HistoryRenderer::default()
+        .rendered_stream(&timeline, 1, 256)
+        .await
+        .expect_err("the cut is beyond the ancestor's cut");
+    assert!(
+        error
+            .to_string()
+            .contains("Compaction cut is outside the stream"),
+        "{error}"
+    );
+    db.close().await.unwrap();
+}
+
 /// A later compaction whose cut precedes the one in effect is damaged data:
 /// the stream reports it instead of draining nothing.
 #[tokio::test]

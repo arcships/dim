@@ -337,6 +337,22 @@ impl HistoryRenderer {
                             "Compaction cut is outside the stream".to_owned(),
                         )
                     })?;
+                    let Some(end) = segments
+                        .iter()
+                        .find(|(name, _)| name == &cut.branch_id)
+                        .map(|(_, end)| *end)
+                    else {
+                        return Err(AgentError::fault(
+                            "History",
+                            "Compaction cut is outside the stream".to_owned(),
+                        ));
+                    };
+                    if cut.sequence > end {
+                        return Err(AgentError::fault(
+                            "History",
+                            "Compaction cut is outside the stream".to_owned(),
+                        ));
+                    }
                     let at = (rank(&cut.branch_id), cut.sequence);
                     if cut_in_effect.is_some_and(|previous| at < previous) {
                         return Err(AgentError::fault(
