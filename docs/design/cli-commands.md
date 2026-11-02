@@ -161,8 +161,8 @@ restarting anything. `/runtime` opens one panel in both terminal modes and the s
 
 Rows are the two runtimes, always node then python. A row shows its name, the configured source
 (`download` or `system`), the version in effect (the fixed version for `download`, the checked
-interpreter's version for `system`, empty while it is `off` and nothing has been checked), and the
-status `runtime.list` gives: `off`, `acquiring`, `starting`, `ready`, `down` with its reason, or
+interpreter's version for `system`, empty while it is `off` and nothing has been checked), `auto`
+when it is on, and the status `runtime.list` gives: `off`, `acquiring`, `starting`, `ready`, `down` with its reason, or
 `failed` with the reason that lists every source and its error.
 
 Below the rows the panel names what waits on the runtime — the plugin rows that are Pending because

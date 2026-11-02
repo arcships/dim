@@ -23834,6 +23834,7 @@
         "path Action::Models",
         "path Action::Plugin",
         "path Action::Recording",
+        "path Action::RuntimeConfig",
         "path Action::RuntimeInstall",
         "path Action::RuntimeList",
         "path Action::Timeline",

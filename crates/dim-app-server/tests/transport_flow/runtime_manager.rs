@@ -262,6 +262,25 @@ async fn node_runtime_manager_reads_the_configuration_when_it_applies_it() {
         "the same process keeps running"
     );
 
+    let configured = client
+        .rpc(
+            "runtime.configure",
+            json!({"name": "node", "source": "system", "auto": true}),
+        )
+        .await;
+    assert_ok(&configured);
+    assert_eq!(configured["result"]["name"], "node", "{configured}");
+    assert_eq!(configured["result"]["auto"], true, "{configured}");
+    let file: Value =
+        serde_json::from_slice(&std::fs::read(home.join("runtimes/config.json")).unwrap()).unwrap();
+    assert_eq!(file["node"]["source"], "system", "{file}");
+    assert_eq!(file["node"]["auto"], true, "{file}");
+    assert_eq!(
+        status(&mut client, 0, "ready").await,
+        ready,
+        "configuring what is already in effect changes nothing"
+    );
+
     drop(client);
     server.shutdown();
     server.join().await.unwrap();

@@ -135,8 +135,8 @@ RuntimeManager 提供插件代码运行的 Node 与 Python 运行时（[RuntimeM
 ### 面板
 
 行是两个运行时，固定 node 在前、python 在后。每行显示名字、配置的来源（`download` 或 `system`）、
-正在生效的版本（`download` 是固定版本，`system` 是检查过的解释器版本，`off` 且从未检查时为空），
-以及 `runtime.list` 给出的状态：`off`、`acquiring`、`starting`、`ready`、带原因的 `down`，或带
+正在生效的版本（`download` 是固定版本，`system` 是检查过的解释器版本，`off` 且从未检查时为空）、
+打开时的 `auto`，以及 `runtime.list` 给出的状态：`off`、`acquiring`、`starting`、`ready`、带原因的 `down`，或带
 原因（列出每个来源和它的错误）的 `failed`。
 
 行下方列出在等这个运行时的插件行——因为它是 `off` 或 `down` 而处于 Pending 的那些

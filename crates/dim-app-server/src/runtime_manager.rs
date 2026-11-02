@@ -104,7 +104,7 @@ pub struct Runtimes {
 }
 
 /// One runtime's entry in the `runtimes` section (RuntimeManager §2.2).
-#[derive(Deserialize, Default, Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Choice {
     pub source: Option<Source>,
@@ -295,6 +295,11 @@ impl Runtimes {
     fn record_file(&self) -> PathBuf {
         self.root.join("runtimes.json")
     }
+    /// The user's override (§2.2): the file `runtime.configure` writes and
+    /// every action that applies a configuration reads.
+    fn config_file(&self) -> PathBuf {
+        self.root.join("config.json")
+    }
 }
 
 fn platform() -> String {
@@ -361,6 +366,8 @@ fn read_records(path: &Path) -> BTreeMap<String, Record> {
 pub struct RuntimeEntry {
     pub name: &'static str,
     pub source: Source,
+    /// The configuration's `auto` (§2.2): whether every start acquires it.
+    pub auto: bool,
     /// The fixed version for `download`; for `system`, the version of the
     /// checked interpreter, absent until it is checked.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -420,6 +427,7 @@ impl RuntimeService {
                 RuntimeEntry {
                     name: kind.name(),
                     source: plan.source,
+                    auto: plan.auto,
                     version: match plan.source {
                         Source::Download => Some(plan.version.clone()),
                         Source::System => versions[Self::index(kind)].clone(),
@@ -518,6 +526,45 @@ impl RuntimeService {
             None => {}
         }
         Ok(())
+    }
+
+    /// Writes `kind`'s `source` and `auto` into the user's configuration
+    /// (§2.2) and applies it, as `runtime.install` does. The file keeps the
+    /// merge over the preset: only the fields given change. A file it cannot
+    /// read or write is the caller's error.
+    pub fn configure(
+        self: &Arc<Self>,
+        kind: Kind,
+        source: Option<Source>,
+        auto: Option<bool>,
+    ) -> Result<(), String> {
+        if source.is_none() && auto.is_none() {
+            return Ok(());
+        }
+        let path = self.runtimes.lock().unwrap().config_file();
+        if let Some(directory) = path.parent() {
+            std::fs::create_dir_all(directory)
+                .map_err(|e| format!("{}: {e}", directory.display()))?;
+        }
+        let mut user: Choices = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| format!("{}: {error}", path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Choices::new(),
+            Err(error) => return Err(format!("{}: {error}", path.display())),
+        };
+        let choice = user.entry(kind.name().to_owned()).or_default();
+        if source.is_some() {
+            choice.source = source;
+        }
+        if auto.is_some() {
+            choice.auto = auto;
+        }
+        let bytes = serde_json::to_vec_pretty(&user).map_err(|e| e.to_string())?;
+        let partial = sibling(&path, ".partial");
+        std::fs::write(&partial, bytes)
+            .and_then(|()| std::fs::rename(&partial, &path))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        self.install(kind)
     }
 
     /// Acquires `kind` and provides its launch command; `None` when the
@@ -1073,6 +1120,7 @@ impl DynPlugin for RuntimeManagerPlugin {
                 vec![
                     MethodDecl::new("runtime.list", false, Interruption::Report),
                     MethodDecl::new("runtime.install", true, Interruption::Report),
+                    MethodDecl::new("runtime.configure", true, Interruption::Report),
                 ],
                 Arc::new(move |method, value, _stopping, _| {
                     let service = handler.clone();
@@ -1089,6 +1137,24 @@ impl DynPlugin for RuntimeManagerPlugin {
                                     RpcError::invalid(format!("unknown runtime {name}"))
                                 })?;
                                 service.install(kind).map_err(|error| {
+                                    RpcError::app(-32000, "runtime_configuration", error)
+                                })?;
+                                reply(service.list().into_iter().find(|s| s.name == kind.name()))
+                            }
+                            "runtime.configure" => {
+                                #[derive(Deserialize)]
+                                struct Configure {
+                                    name: String,
+                                    #[serde(default)]
+                                    source: Option<Source>,
+                                    #[serde(default)]
+                                    auto: Option<bool>,
+                                }
+                                let Configure { name, source, auto } = params(value)?;
+                                let kind = Kind::parse(&name).ok_or_else(|| {
+                                    RpcError::invalid(format!("unknown runtime {name}"))
+                                })?;
+                                service.configure(kind, source, auto).map_err(|error| {
                                     RpcError::app(-32000, "runtime_configuration", error)
                                 })?;
                                 reply(service.list().into_iter().find(|s| s.name == kind.name()))

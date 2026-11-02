@@ -792,6 +792,18 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
             println!("{}", runtime_line(&status));
             Ok(0)
         }
+        Action::RuntimeConfig { name, source, auto } => {
+            let mut params = serde_json::json!({ "name": name });
+            if let Some(source) = source {
+                params["source"] = serde_json::json!(source);
+            }
+            if let Some(auto) = auto {
+                params["auto"] = serde_json::json!(auto);
+            }
+            let status: serde_json::Value = client.typed("runtime.configure", params).await?;
+            println!("{}", runtime_line(&status));
+            Ok(0)
+        }
         Action::McpList => {
             mcp_command::list(&mut client, &options).await?;
             Ok(0)
