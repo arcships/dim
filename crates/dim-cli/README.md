@@ -422,6 +422,53 @@ conflict, and then answers allow. If the write fails it prints `[rule not saved]
 `Allow once? [y/N]` for the same request. See
 [permission controls](../../docs/design/cli-commands.md#permission-controls).
 
+## Goal
+
+`/goal` reads and writes the goal of the line the client shows. The methods, the blocks and the
+rule that reads them are [Goal §A.2–A.3](../../docs/design/plugins/Goal.md#a2-session-methods) and
+[Pursuit](../../docs/design/plugins/Pursuit.md)'s; the client forms are
+[CLI commands § Goal](../../docs/design/cli-commands.md#goal)'s.
+
+| Form | Call |
+| --- | --- |
+| `/goal` | none; the goal in force on the shown line, or that it has none |
+| `/goal OBJECTIVE` | `session.goal.edit` while the goal is active or paused, `session.goal.set` otherwise |
+| `/goal set OBJECTIVE`, `/goal edit OBJECTIVE` | the named method |
+| `/goal pause`, `/goal resume`, `/goal clear` | the method of the same name |
+
+Every call sends the shown line's id as `branchId`: the line client always shows `main`, and the
+terminal UI sends the line whose transcript it displays. An objective that is one of the form words
+is written after `set` or `edit`, so `/goal set pause` sets the objective "pause". A typed objective
+edits a goal that is still being worked toward and starts a new one when there is none, when it has
+no status, or when it completed or blocked: a finished goal is never edited back into work.
+
+The goal shown is the client's fold of that line's own events: the latest live `goal:objective` and
+`goal:status` blocks, with `clear` retiring both, `edit` keeping the judge, a worker's `completed`
+waiting for an evaluator judge, and a deleted input folded out. After a write the client reads the
+line's events through the write before it prints, so the report shows the state that write produced.
+The fold starts over at the line's own opening — its `branch/start`, or the `session/forked` a fork
+writes after the copied facts — so a line opened from another has no goal, and a fork's `main` never
+shows the copied one.
+
+```text
+> /goal Keep the CLI tests green
+Goal set on main · active
+  Keep the CLI tests green
+> /goal pause
+Goal paused on main · paused (user)
+  Keep the CLI tests green
+> /goal
+Goal on main · paused (user)
+  Keep the CLI tests green
+> /goal clear
+Goal cleared on main.
+```
+
+In both terminal UI modes the status area carries `◎ goal active` or `◎ goal paused` while the
+shown line follows a goal, and nothing for a completed, blocked or cleared one. When the daemon
+installs no Goal — its `session.methods` lists no `session.goal.set` — `/goal` prints
+`Goal is not available on this daemon.` and calls nothing.
+
 ## Execution boundary
 
 The sandbox is a setting, and it is off by default. `/permissions > Process isolation` and
@@ -997,6 +1044,7 @@ The terminal UI reaches the same Session methods as the line client:
 | `/branch [TEXT]`, `/fork [TEXT]` | As `b` and `f` on a picked message, at the shown line's newest turn end: `/branch` puts `TEXT` in the composer as the new line's opening input; `/fork` asks, then forks `main` there with `TEXT` in the fork's composer |
 | `/usage` | Reports main's context window from `session.context.usage`: estimated input tokens against the window, the output allowance and the compaction threshold; before a model has answered it says so, and a failed call is reported alone. With the reading it appends the cache read share of the last `model/usage` request on `main` (` · last request cached {percent}`), rounded down: `100%` only when every prompt token was a cache read, one decimal between `99%` and `100%`, an integer between `1%` and `99%`, `<1%` for a positive share below one percent, and `0%` for a request that reported no cache reads; the prompt token count includes cache writes, so a request that only writes the cache reads `0%`. The segment appears only once `main`'s history has finished loading, so a page that is not the last never reports its older request; after that it shows the newest request, whether it came from the history or a live event. It is absent when that request reported no cache read count or its counters cannot produce a share (cache reads above prompt tokens, or a zero prompt) |
 | `/compact` | Asks the shown line to compact its context with `session.context.compact`, during a run too. The transcript row shows the work and its outcome; the reply is reported when the method answers — `completed`, `skipped` with its reason, or the method's failure (`compaction_failed`, `compaction_cancelled`). A daemon without the method says it does not support context compaction |
+| `/goal [OBJECTIVE \| set OBJECTIVE \| edit OBJECTIVE \| pause \| resume \| clear]` | Reads and writes the goal of the shown line through `session.goal.*`. The command's first line names the call, the line and the status in force, the objective follows it, and `/goal` alone prints the goal the line's events give; `edited` is the form that found a live goal and changed only its objective, and a typed objective after a finished goal starts a new one. While the shown line follows a goal the status area carries `◎ goal active` or `◎ goal paused`. A daemon whose Session lists no `session.goal.set` says Goal is not available and calls nothing ([Goal](#goal)) |
 | `/effort VALUE` (`/reasoning`), `/fast on\|off`, `/agent ID` | Change the Session's reasoning effort, service tier or agent; without a value they list the choices for the adopted model. `/fast` is listed in the palette only while the adopted model's catalog entry advertises priority/default service tiers |
 | Paste of local file paths | An image the model takes becomes an `[Image #N]` token sent as an image block; another file is inserted as its path, and so is an image the model does not take. At most 20 images, a group all or nothing |
 | `Ctrl+V` | Reads the native clipboard off the interface thread: files, then an image, then text. `Enter` waits until the read is in |

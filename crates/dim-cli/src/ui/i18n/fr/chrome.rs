@@ -520,6 +520,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Ce démon ne prend pas en charge la compression du contexte"
         }
         "compact the context of the shown line" => "compresser le contexte de la ligne affichée",
+        "follow or change the shown line's goal" => {
+            "suivre ou modifier l'objectif de la ligne affichée"
+        }
+        "◎ goal active" => "◎ objectif actif",
+        "◎ goal paused" => "◎ objectif en pause",
         "Kept verbatim" => "Conservé tel quel",
         "Tool effects" => "Actions des outils",
         "insufficient space: {parts}" => "espace insuffisant: {parts}",

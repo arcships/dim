@@ -524,6 +524,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Dieser Daemon unterstützt keine Kontextkomprimierung"
         }
         "compact the context of the shown line" => "den Kontext der angezeigten Linie komprimieren",
+        "follow or change the shown line's goal" => {
+            "das Ziel der angezeigten Linie verfolgen oder ändern"
+        }
+        "◎ goal active" => "◎ Ziel aktiv",
+        "◎ goal paused" => "◎ Ziel pausiert",
         "Kept verbatim" => "Wörtlich behalten",
         "Tool effects" => "Aktionen der Werkzeuge",
         "insufficient space: {parts}" => "zu wenig Platz: {parts}",

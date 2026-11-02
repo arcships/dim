@@ -514,6 +514,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Daemon ini tidak mendukung kompresi konteks"
         }
         "compact the context of the shown line" => "kompresi konteks baris yang ditampilkan",
+        "follow or change the shown line's goal" => "ikuti atau ubah goal baris yang ditampilkan",
+        "◎ goal active" => "◎ goal aktif",
+        "◎ goal paused" => "◎ goal dijeda",
         "Kept verbatim" => "Dipertahankan apa adanya",
         "Tool effects" => "Catatan operasi alat",
         "insufficient space: {parts}" => "ruang tidak cukup: {parts}",

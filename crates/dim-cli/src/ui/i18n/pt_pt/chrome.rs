@@ -530,6 +530,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Este daemon não suporta a compactação do contexto"
         }
         "compact the context of the shown line" => "compactar o contexto da linha apresentada",
+        "follow or change the shown line's goal" => {
+            "seguir ou alterar o objetivo da linha apresentada"
+        }
+        "◎ goal active" => "◎ objetivo ativo",
+        "◎ goal paused" => "◎ objetivo em pausa",
         "Kept verbatim" => "Mantido literalmente",
         "Tool effects" => "Ações das ferramentas",
         "insufficient space: {parts}" => "espaço insuficiente: {parts}",

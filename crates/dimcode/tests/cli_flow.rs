@@ -15,6 +15,9 @@ mod context;
 #[path = "cli_flow/exit.rs"]
 mod exit;
 
+#[path = "cli_flow/goal.rs"]
+mod goal;
+
 #[path = "cli_flow/hooks.rs"]
 mod hooks;
 

@@ -190,6 +190,13 @@ pub const COMMANDS: &[Command] = &[
         &[],
         Needs::Session,
     ),
+    slash(
+        "goal",
+        "session",
+        "follow or change the shown line's goal",
+        &[],
+        Needs::Session,
+    ),
     action("interrupt", "run", "interrupt the run", "Esc", Needs::Run),
     action(
         "steer",

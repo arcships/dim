@@ -7,31 +7,14 @@ use crate::{
     display::Display,
     input::Input,
     permission::{self, Added, PRESET_METHODS, RULE_METHODS, Removed, Rules, State, Switch},
+    session::{Interrupts, settle},
 };
 use dim_agent_types::{CommandMatch, CommandRuleDecision, PermissionPreset};
-use std::future::Future;
-
-#[cfg(unix)]
-pub type Interrupts = tokio::signal::unix::Signal;
-#[cfg(windows)]
-pub type Interrupts = tokio::signal::windows::CtrlC;
 
 const USAGE: &str = "Usage: /permissions [file-access read-only|workspace-read-write|unrestricted | tool-approval ask|bypass | PRESET | allow|deny exact|prefix COMMAND | remove N]";
 
-/// Waits for an operation; interrupts are reported and consumed until it
-/// settles.
-async fn settle<T>(interrupts: &mut Interrupts, operation: impl Future<Output = T>) -> T {
-    tokio::pin!(operation);
-    loop {
-        tokio::select! {
-            biased;
-            _ = interrupts.recv() => {
-                println!("\nWaiting for the permission result before accepting more input.");
-            }
-            result = &mut operation => break result,
-        }
-    }
-}
+/// What the prompt says when Ctrl+C arrives while a form is in flight.
+const NOTICE: &str = "Waiting for the permission result before accepting more input.";
 
 fn print_state(display: &mut Display, state: &State) -> Result<()> {
     display.record(&format!(
@@ -117,6 +100,7 @@ pub async fn command(
             };
             let policy = settle(
                 interrupts,
+                NOTICE,
                 permission::select_control(client, session_id, change),
             )
             .await?;
@@ -136,7 +120,13 @@ pub async fn command(
                 .ok()
                 .filter(|index| (1..=seen.command_rules.len()).contains(index))
                 .ok_or("No such rule in the last /approvals listing")?;
-            match settle(interrupts, permission::remove_rule(client, seen, index - 1)).await? {
+            match settle(
+                interrupts,
+                NOTICE,
+                permission::remove_rule(client, seen, index - 1),
+            )
+            .await?
+            {
                 Removed::Removed { rule, rules } => {
                     display.record(&format!("Rule removed: {}", permission::describe(&rule)))?;
                     retain(display, listing, rules)
@@ -169,7 +159,7 @@ pub async fn command(
                 },
             )?;
             let described = permission::describe(&rule);
-            match settle(interrupts, permission::add_rule(client, rule)).await? {
+            match settle(interrupts, NOTICE, permission::add_rule(client, rule)).await? {
                 Added::Added(rules) => {
                     display.record(&format!("Rule added: {described}"))?;
                     retain(display, listing, rules)
@@ -193,13 +183,13 @@ async fn show(
     listing: &mut Option<Rules>,
 ) -> Result<()> {
     if client.supports(&PRESET_METHODS) {
-        let state = settle(interrupts, permission::read(client, session_id)).await?;
+        let state = settle(interrupts, NOTICE, permission::read(client, session_id)).await?;
         print_state(display, &state)?;
     } else {
         display.record("Permission presets: this daemon does not provide them")?;
     }
     if client.supports(&RULE_METHODS) {
-        let current = settle(interrupts, permission::rules(client)).await?;
+        let current = settle(interrupts, NOTICE, permission::rules(client)).await?;
         retain(display, listing, current)?;
     } else {
         display.record("Command rules: this daemon does not provide them")?;
@@ -221,7 +211,7 @@ async fn switch(
     if !client.supports(&PRESET_METHODS) {
         return Err("This daemon cannot change the permission preset".into());
     }
-    let mut seen = settle(interrupts, permission::read(client, session_id)).await?;
+    let mut seen = settle(interrupts, NOTICE, permission::read(client, session_id)).await?;
     let name = permission::name(preset);
     if seen.policy.preset == preset {
         display.record(&format!("Preset (main branch) is already {name}"))?;
@@ -249,6 +239,7 @@ async fn switch(
     }
     match settle(
         interrupts,
+        NOTICE,
         permission::switch(client, session_id, &seen, preset),
     )
     .await?

@@ -221,6 +221,8 @@ pub enum Command {
     Usage,
     /// `/compact`: ask the shown line to compact its context.
     Compact,
+    /// `/goal`: show, set, edit, pause, resume or clear the shown line's goal.
+    Goal(crate::goal::Request),
     SetPermission(crate::permission::Change),
     /// List the providers of the `/connect` panel.
     ListProviders,

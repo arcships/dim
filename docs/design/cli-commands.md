@@ -114,6 +114,114 @@ below uses synthetic data; an account need not have a 5h window.
   [######----------------------------------]
 ```
 
+## Goal
+
+`/goal` reads the goal of the line the client shows and writes it through the methods Goal
+registers. The methods, the marker blocks and the rule that reads the goal belong to
+[Goal](plugins/Goal.md#a2-session-methods) (A.2, A.3) and [Pursuit](plugins/Pursuit.md#3-changes-to-goal);
+this section owns what the native clients do with them. The command is listed in the palette as a
+`session` command, like `/compact`.
+
+| Form | Call |
+| --- | --- |
+| `/goal` | none: the goal in force on the shown line, or that it has none |
+| `/goal OBJECTIVE` | `session.goal.edit` while the goal is active or paused, `session.goal.set` otherwise |
+| `/goal set OBJECTIVE` | `session.goal.set` |
+| `/goal edit OBJECTIVE` | `session.goal.edit` |
+| `/goal pause` | `session.goal.pause` |
+| `/goal resume` | `session.goal.resume` |
+| `/goal clear` | `session.goal.clear` |
+
+Every call names the shown line in `branchId` and replies with its input's `sequence`. A form that
+writes nothing else (`/goal`, `pause`, `resume`, `clear`) takes no further word; otherwise the rest
+of the line is the objective, spaces included. `set` and `edit` also name the objective, so an
+objective that is one of the form words is written after one of them: `/goal set pause` sets the
+objective "pause", and `/goal set set` sets the objective "set".
+
+`/goal OBJECTIVE` writes `edit` only while the goal in force is active or paused: the status, the
+judge and the continuation count stay, and a paused goal stays paused. With no goal, with an
+objective that has no status, or with a goal that completed or blocked, it writes `set`: a finished
+goal is never edited back into work, and a new objective after one starts the next goal — status
+active, the count from the first continuation, and the line works toward it.
+
+`judge` is Pursuit's and no form sends it: a goal set from the terminal is judged by the model, and
+a goal an evaluator judges keeps its judge through `/goal edit`, which writes only the objective.
+A `/pursue` form is Pursuit's later option (§10) and is not part of this contract.
+
+**Reading the goal.** The client folds the goal from the branch events it already reads, by Goal
+A.3's rule: the latest live `goal:objective` block is the objective, the latest live `goal:status`
+block is the status, `clear` retires both, `edit` keeps the judge, and an input the InputQueue
+deleted leaves the fold. It adds no query method and asks Goal no question. `/goal` with no
+arguments prints that fold. Before it picks between `set` and `edit` the client reads the line up
+to its published head, and after a write it reads again before printing: the state shown and the
+method chosen come from the events, never from a guess taken from the reply. The fold starts over
+at the line's own opening — its
+`branch/start`, or the `session/forked` a fork writes after the facts it copied — so a new line has
+no goal and a forked Session's `main` never shows the copied one (Goal §2, A11). A v3 client
+receives that opening, so a fork reads the same here as it does in Goal.
+
+**When Goal is not loaded.** The Session lists the methods it serves (`session.methods`). When
+`session.goal.set` is not among them, `/goal` prints `Goal is not available on this daemon.` and makes
+no call. A daemon that does not advertise `session.methods` is taken at its word until a call
+answers `unknown_method`, which prints the same line. No form submits the typed line as a message:
+a `/goal` that writes sends Goal's own change input, and Goal decides what follows.
+
+**What the clients show.**
+
+```text
+> /goal
+No goal on main.
+
+> /goal Make the CLI tests pass
+Goal set on main · active
+  Make the CLI tests pass
+
+> /goal Keep the CLI tests green
+Goal edited on main · active
+  Keep the CLI tests green
+
+> /goal pause
+Goal paused on main · paused (user)
+  Keep the CLI tests green
+
+> /goal
+Goal on main · paused (user)
+  Keep the CLI tests green
+
+> /goal resume
+Goal resumed on main · active
+  Keep the CLI tests green
+
+> /goal clear
+Goal cleared on main.
+```
+
+The first line names the call that ran, the line the goal belongs to and the status in force;
+`edited` is the form that found a goal and changed only its objective. `evaluator judge` follows
+the status when Pursuit's judge is on the goal. A paused status names its reason: `user`,
+`interrupted`, `limit`, `turn failed` or `evaluation failed`. The objective follows, one line per
+line of it. A cleared goal and a line without one print one line.
+
+The line client and both terminal UI modes print these lines; in the terminal UI they are one
+report in the transcript, so earlier reports stay readable above later ones. The status area
+carries one short element while the shown line follows a goal, and nothing for a completed,
+blocked or cleared one:
+
+```text
+ ╭──────────────────────────────────────────────────────────────────────────────╮
+ │ › _                                                                          │
+ ╰────────────────────────────── ⑂ main ▸ child work · after message 0 ─────────╯
+  AGENT  ⏵⏵ Ask (legacy)  ◎ goal active  1.8K / 256K              provider/model
+```
+
+Fullscreen draws the same element in the composer's bottom border, beside the run status:
+
+```text
+ ╭──────────────────────────────────────────────────────────────────────────────╮
+ │ › _                                                                          │
+ ╰──── ◎ goal paused   ⏵⏵ Bypass   1.8K / 256K ───── ● main · after message 4 ─╯
+```
+
 ## Provider accounts
 
 The native client signs in to every Provider whose `provider.management` entry
@@ -234,6 +342,7 @@ a user can through this control; that write creates no grant and changes no runn
 | `/exit` | Detach and exit from the idle interactive prompt. |
 | `!command` / `!!command` | Call the Session's existing `shell.run` in record/private mode, including during a model turn. |
 | `--permission read-only\|workspace-write\|full-access` | Select the preset of a new or resumed Session for `dimcode`, `tui`, `exec` and `exec resume` ([permission controls](#permission-controls)). |
+| `/goal [OBJECTIVE \| set OBJECTIVE \| edit OBJECTIVE \| pause \| resume \| clear]` | Read and write the goal of the shown line, in the line client and both terminal UI modes ([goal](#goal)). |
 | `/permissions` | Open independent File access, Tool approval and Process isolation controls; manage command rules while idle ([permission controls](#permission-controls)). |
 | `/approvals`, `/approval` | Compatibility aliases for `/permissions`; legacy preset arguments remain supported. |
 
@@ -677,8 +786,11 @@ Assistant: ...
 [permission] main: File access = Workspace read/write  <- changed by another client
 ```
 
-There is no status line: the scrollback client has no persistent area, and the editor's hint
-line is fixed help text truncated to the terminal width.
+The scrollback client draws a status line under the composer: the agent marker and the
+tool-approval mode (`Ask (legacy)` for the legacy policy), the goal marker, the context use against
+its window, and one slot for the state in force — a notice, a required answer or permission,
+`esc interrupt`, or the background task count. The model, with its effort when both fit, is
+right-aligned on the same line; the line is clipped to the terminal width.
 
 ### Headless execution
 

@@ -198,6 +198,21 @@ mod tests {
         }
     }
 
+    /// `/goal`'s palette row and the goal element of the status area exist in
+    /// every locale.
+    #[test]
+    fn every_locale_translates_the_goal_strings() {
+        for (code, lookup) in tables() {
+            for key in [
+                "follow or change the shown line's goal",
+                "◎ goal active",
+                "◎ goal paused",
+            ] {
+                assert!(lookup(key).is_some(), "{code} lacks {key:?}");
+            }
+        }
+    }
+
     /// What an image's marker says after its index is translated; the marker
     /// itself is fixed text and has no entry.
     #[test]

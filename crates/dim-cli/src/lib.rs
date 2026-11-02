@@ -7,6 +7,8 @@ mod composer;
 mod configure;
 mod display;
 mod export;
+mod goal;
+mod goal_command;
 mod hooks_command;
 mod images;
 mod input;

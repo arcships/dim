@@ -946,3 +946,59 @@ async fn a_fork_waits_for_background_work_and_keeps_preset_and_model() {
     server.join().await.unwrap();
     let _ = std::fs::remove_dir_all(socket.parent().unwrap());
 }
+
+/// A v3 connection reads the fork's own opening after the copied facts
+/// (fork §6.5, Goal A11). v2 has no history method to read it with; the
+/// boundary test in `tree_protocol.rs` pins that v2 does not deliver it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_opening_reaches_v3_clients_after_the_copied_facts() {
+    let store = Store::new();
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let sid = forked(&client.rpc("session.create", create(json!(["wait"]))).await);
+    turn(&mut client, &sid, "first").await;
+    let source = agent.get_session(&sid).unwrap();
+    let at = source.sequence("main").unwrap();
+    assert!(at > 0, "the cut is past the opening");
+    let fid = forked(&fork(&mut client, &sid, at).await);
+
+    async fn read(client: &mut Client, session: &str) -> Value {
+        let reply = client
+            .rpc(
+                "session.history",
+                json!({"sessionId":session,"branchId":"main","after":0,"limit":256}),
+            )
+            .await;
+        assert_ok(&reply);
+        reply
+    }
+    fn opening(reply: &Value) -> Option<usize> {
+        reply["result"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|event| event["type"] == "session" && event["name"] == "forked")
+    }
+
+    let mut v3 = read(&mut client, &fid).await;
+    for _ in 0..500 {
+        if opening(&v3).is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        v3 = read(&mut client, &fid).await;
+    }
+    let events = v3["result"]["events"].as_array().unwrap();
+    let index = opening(&v3).unwrap_or_else(|| panic!("v3 reads the fork's opening: {v3}"));
+    assert_eq!(events[index]["sequence"], json!(at + 1), "{v3}");
+    assert!(
+        events[..index]
+            .iter()
+            .all(|event| event["sequence"].as_u64().unwrap() <= at),
+        "every copied fact precedes the opening: {v3}"
+    );
+
+    drop((client, source, agent));
+    server.shutdown();
+    server.join().await.unwrap();
+}
