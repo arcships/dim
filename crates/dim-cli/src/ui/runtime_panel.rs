@@ -14,7 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::model::session::{PluginItem, RuntimeAction, RuntimeItem};
+use crate::model::session::{PluginItem, RuntimeAction, RuntimeItem, RuntimesError};
 use crate::ui::i18n::{t, tf};
 use crate::ui::prompts::Effect;
 use crate::ui::render::panel::{bordered, key_hints, wrap_words};
@@ -125,7 +125,7 @@ impl RuntimePanel {
     pub fn set(
         &mut self,
         result: Option<Result<(), String>>,
-        runtimes: Result<Vec<RuntimeItem>, String>,
+        runtimes: Result<Vec<RuntimeItem>, RuntimesError>,
         plugins: Result<Vec<PluginItem>, String>,
     ) {
         self.loading = false;
@@ -142,7 +142,13 @@ impl RuntimePanel {
                 self.items = items;
                 self.error = None;
             }
-            Err(error) => self.error = Some(error),
+            Err(RuntimesError::Unsupported { version }) => {
+                self.error = Some(tf(
+                    "This daemon does not serve plugin runtimes ({version})",
+                    &[("version", &version)],
+                ));
+            }
+            Err(RuntimesError::Failed(error)) => self.error = Some(error),
         }
         if let Some(name) = self.choosing.take()
             && let Some(at) = self.items.iter().position(|item| item.name == name)
@@ -676,7 +682,9 @@ mod tests {
         let mut panel = RuntimePanel::new();
         panel.set(
             None,
-            Err("This daemon does not serve plugin runtimes (0.42.0)".into()),
+            Err(RuntimesError::Unsupported {
+                version: "0.42.0".into(),
+            }),
             Ok(Vec::new()),
         );
         let text = shown(&panel, 80, 10).join(" ");

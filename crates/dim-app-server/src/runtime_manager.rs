@@ -379,20 +379,15 @@ pub struct RuntimeEntry {
     pub reason: Option<String>,
 }
 
-impl State {
-    fn take(&mut self) -> Option<Disposer> {
-        match self {
-            State::Provided(provided) => provided.take(),
-            _ => None,
-        }
-    }
-}
-
 enum Step {
-    Nothing,
+    /// An acquisition is in flight; it owns its plan, so nothing changes.
+    Busy,
+    /// The runtime keeps running; its plan is the fresh one.
+    Keep,
     Acquire,
-    /// Withdraw the launch command, then acquire (`true`) or provide again.
-    Restart(bool),
+    /// Dispose the launch command it was given, then acquire (`true`) or
+    /// provide again.
+    Restart(Option<Disposer>, bool),
 }
 
 enum State {
@@ -428,7 +423,7 @@ impl RuntimeService {
     }
     /// Every runtime's status.
     pub fn list(&self) -> Vec<RuntimeEntry> {
-        let plans = self.plans.lock().unwrap();
+        let plans = self.plans.lock().unwrap().clone();
         let states = self.states.lock().unwrap();
         let versions = self.versions.lock().unwrap();
         Kind::ALL
@@ -484,12 +479,13 @@ impl RuntimeService {
     /// Turns `kind` on and applies the configuration in effect. It reads
     /// `<home>/runtimes/config.json` again (§2.2) and makes what it gives that
     /// runtime's plan: when the `source` differs from the one it is on, it
-    /// withdraws the launch command, disposes the running connection and
-    /// acquires under the new source. Only that runtime's plan changes; the
-    /// other keeps reporting what it is running. While an acquisition is in
-    /// flight the call does nothing, so one acquisition never sees two plans: a
-    /// change made meanwhile applies on the next call. A configuration that does
-    /// not read fails here and leaves the runtime as it was.
+    /// withdraws the launch command by disposing it, then disposes the running
+    /// connection and acquires under the new source. Only that runtime's plan
+    /// changes; the other keeps reporting what it is running. While an
+    /// acquisition is in flight the call changes nothing, so one acquisition
+    /// never sees two plans: a change made meanwhile applies on the next call. A
+    /// configuration that does not read fails here and leaves the runtime as it
+    /// was.
     pub fn install(self: &Arc<Self>, kind: Kind) -> Result<(), String> {
         let fresh = self.runtimes.lock().unwrap().reload()?.plan(kind).clone();
         let index = Self::index(kind);
@@ -497,17 +493,15 @@ impl RuntimeService {
             let mut states = self.states.lock().unwrap();
             let changed = self.plans.lock().unwrap()[index].source != fresh.source;
             match &mut states[index] {
-                State::Acquiring | State::Provided(None) => Step::Nothing,
+                State::Acquiring | State::Provided(None) => Step::Busy,
                 State::Provided(provided) => {
                     let down = matches!(self.status(kind), RuntimeState::Down(_));
                     if changed {
-                        *provided = None;
-                        Step::Restart(true)
+                        Step::Restart(provided.take(), true)
                     } else if down {
-                        *provided = None;
-                        Step::Restart(false)
+                        Step::Restart(provided.take(), false)
                     } else {
-                        Step::Nothing
+                        Step::Keep
                     }
                 }
                 State::Off | State::Failed(_) => {
@@ -516,51 +510,50 @@ impl RuntimeService {
                 }
             }
         };
-        if matches!(step, Step::Nothing) {
-            self.plans.lock().unwrap()[index] = fresh;
+        if matches!(step, Step::Busy) {
             return Ok(());
         }
-        self.plans.lock().unwrap()[index] = fresh;
         {
-            let plans = self.plans.lock().unwrap();
+            let mut plans = self.plans.lock().unwrap();
+            plans[index] = fresh;
             let runtimes = self.runtimes.lock().unwrap().clone();
             self.local.lock().unwrap()[index] = launch(kind, &plans[index], &runtimes);
         }
         let service = self.clone();
-        if matches!(step, Step::Acquire) {
-            let task = tokio::spawn(async move {
-                let state = service
-                    .acquired(kind)
-                    .await
-                    .unwrap_or_else(|| State::Acquiring);
-                service.states.lock().unwrap()[index] = state;
-            });
-            self.tasks.lock().unwrap().push(task);
-            return Ok(());
-        }
-        let Step::Restart(acquire) = step else {
-            return Ok(());
-        };
-        let disposed = self.states.lock().unwrap()[index].take();
-        let service = self.clone();
-        let task = tokio::spawn(async move {
-            if let Some(disposed) = disposed
-                && let Err(error) = disposed.dispose().await
-            {
-                tracing::warn!(runtime = kind.name(), %error, "runtime command withdrawal failed");
+        match step {
+            Step::Busy | Step::Keep => Ok(()),
+            Step::Acquire => {
+                let task = tokio::spawn(async move {
+                    let state = service
+                        .acquired(kind)
+                        .await
+                        .unwrap_or_else(|| State::Acquiring);
+                    service.states.lock().unwrap()[index] = state;
+                });
+                self.tasks.lock().unwrap().push(task);
+                Ok(())
             }
-            let state = if acquire {
-                service
-                    .acquired(kind)
-                    .await
-                    .unwrap_or_else(|| State::Acquiring)
-            } else {
-                service.provide(kind)
-            };
-            service.states.lock().unwrap()[index] = state;
-        });
-        self.tasks.lock().unwrap().push(task);
-        Ok(())
+            Step::Restart(disposed, acquire) => {
+                let task = tokio::spawn(async move {
+                    if let Some(disposed) = disposed
+                        && let Err(error) = disposed.dispose().await
+                    {
+                        tracing::warn!(runtime = kind.name(), %error, "runtime command withdrawal failed");
+                    }
+                    let state = if acquire {
+                        service
+                            .acquired(kind)
+                            .await
+                            .unwrap_or_else(|| State::Acquiring)
+                    } else {
+                        service.provide(kind)
+                    };
+                    service.states.lock().unwrap()[index] = state;
+                });
+                self.tasks.lock().unwrap().push(task);
+                Ok(())
+            }
+        }
     }
 
     /// Writes `kind`'s `source` and `auto` into the user's configuration

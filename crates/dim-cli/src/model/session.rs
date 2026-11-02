@@ -369,6 +369,14 @@ pub enum RuntimeAction {
     },
 }
 
+/// Why `/runtime` could not read the daemon's runtimes: a daemon that does not
+/// serve them, which the panel names with its version, or what the call said.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuntimesError {
+    Unsupported { version: String },
+    Failed(String),
+}
+
 /// One runtime of `runtime.list` (RuntimeManager §5).
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct RuntimeItem {
@@ -755,7 +763,7 @@ pub enum Update {
     /// is present when this answers a change.
     Runtimes {
         result: Option<Result<(), String>>,
-        runtimes: Result<Vec<RuntimeItem>, String>,
+        runtimes: Result<Vec<RuntimeItem>, RuntimesError>,
         plugins: Result<Vec<PluginItem>, String>,
     },
     /// The account of the `/login` panel, or none when signed out.

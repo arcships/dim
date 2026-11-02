@@ -24,8 +24,8 @@ use crate::model::session::{
     ACCOUNT_NAMESPACE, Account, AccountDescriptor, Command, CompactReply, ContextReading,
     DIM_OAUTH_ID, DraftPart, EmptyProvider, EmptyReason, ExecutionSnapshot, ModelItem, ModelList,
     ModelPolicyUpdate, NeedsLimitsProvider, OauthEvent, OauthStart, PluginItem, PluginReply,
-    ProviderAction, ProviderEntry, RuntimeAction, RuntimeItem, SandboxBackend, SessionItem,
-    SessionPort, SubagentModelPolicy, SwitchKind, Update, Usage,
+    ProviderAction, ProviderEntry, RuntimeAction, RuntimeItem, RuntimesError, SandboxBackend,
+    SessionItem, SessionPort, SubagentModelPolicy, SwitchKind, Update, Usage,
 };
 use crate::model::view::{
     LineState, LineView, SideLine, TaskOutputState, TaskTarget, WorkflowInventory,
@@ -2378,18 +2378,16 @@ impl Worker {
     }
 
     /// The `/runtime` rows: what `runtime.list` reports.
-    async fn runtimes(&mut self) -> Result<Vec<RuntimeItem>, String> {
+    async fn runtimes(&mut self) -> Result<Vec<RuntimeItem>, RuntimesError> {
         if !self.client.supports(&["runtime.list"]) {
-            let version = self.client.server_version();
-            return Err(crate::ui::i18n::tf(
-                "This daemon does not serve plugin runtimes ({version})",
-                &[("version", version)],
-            ));
+            return Err(RuntimesError::Unsupported {
+                version: self.client.server_version().to_owned(),
+            });
         }
         self.client
             .typed("runtime.list", json!({}))
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| RuntimesError::Failed(error.to_string()))
     }
 
     /// A `/runtime` change: the calls it makes, in order, are the change.
