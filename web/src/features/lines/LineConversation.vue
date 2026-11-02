@@ -2,12 +2,13 @@
 import { computed, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
 import { GitBranch, LoaderCircle, RotateCcw } from "lucide-vue-next"
-import { MAIN_BRANCH } from "../../rpc/protocol"
+import { MAIN_BRANCH, type DraftAttachments } from "../../rpc/protocol"
 import { useChatStore } from "../../stores/chat"
 import { useConnectionStore } from "../../stores/connection"
 import { useUiStore } from "../../stores/ui"
 import ApprovalPrompt from "../chat/ApprovalPrompt.vue"
 import ComposerPanel from "../chat/ComposerPanel.vue"
+import QuestionPrompt from "../chat/QuestionPrompt.vue"
 import TimelineView from "../chat/TimelineView.vue"
 import { lineName, lineStateLabel, lineStateTone, shortId } from "./line-state"
 
@@ -23,6 +24,9 @@ const branch = computed(() => view.value?.branches[props.branchId])
 const line = computed(() => view.value?.lines.find((candidate) => candidate.id === props.branchId))
 const approval = computed(() => view.value?.approvals.find((request) => request.branchId === props.branchId))
 const approvalKeyboard = computed(() => ui.approvalKeyboard(props.sessionId, props.branchId, view.value?.approvals ?? []))
+const questions = computed(() => view.value?.questions.filter((ask) => ask.branchId === props.branchId) ?? [])
+const rulesAvailable = computed(() => connection.supports("permission.rules") && connection.supports("permission.set_rules"))
+const searchFiles = computed(() => view.value?.methods.includes("session.files.search") ? (query: string) => chat.searchFiles(props.sessionId, query) : undefined)
 const open = computed(() => line.value === undefined
   ? branch.value?.status !== "failed"
   : line.value.state.kind === "working" || line.value.state.kind === "waiting")
@@ -44,8 +48,8 @@ const stopping = computed(() => branch.value?.stopping ?? false)
 
 watch(() => [props.sessionId, props.branchId], () => chat.ensureLine(props.sessionId, props.branchId), { immediate: true })
 
-function send(text: string): Promise<void> {
-  return chat.submit(props.sessionId, props.branchId, text)
+function send(text: string, attachments: DraftAttachments): Promise<void> {
+  return chat.submit(props.sessionId, props.branchId, text, attachments)
 }
 
 function quote(text: string): void {
@@ -121,8 +125,8 @@ function noModel(): void {
       <TimelineView
         :rows="rows"
         :running="running"
-        :quotable="open && !approval"
-        :branchable="open && !approval"
+        :quotable="open && !approval && questions.length === 0"
+        :branchable="open && !approval && questions.length === 0"
         :empty="t('lines.empty')"
         variant="panel"
         @branch="branchHere"
@@ -130,7 +134,10 @@ function noModel(): void {
         @quote="quote"
       />
       <div v-if="approval" class="line-approval">
-        <ApprovalPrompt :key="JSON.stringify([approval.branchId, approval.requestId])" :session-id="sessionId" :request="approval" :keyboard="approvalKeyboard" />
+        <ApprovalPrompt :key="JSON.stringify([approval.branchId, approval.requestId])" :session-id="sessionId" :request="approval" :keyboard="approvalKeyboard" :rules-available="rulesAvailable" />
+      </div>
+      <div v-else-if="questions.length" class="line-approval question-prompts">
+        <QuestionPrompt v-for="question in questions" :key="JSON.stringify([question.branchId, question.requestId, question.callId])" :session-id="sessionId" :question="question" />
       </div>
       <ComposerPanel
         v-else-if="open"
@@ -139,6 +146,8 @@ function noModel(): void {
         :stopping="stopping"
         :model="view.model"
         :send="send"
+        :stores-pastes="view?.methods.includes('attachment.put') === true"
+        :search-files="searchFiles"
         :stop="stop"
         :model-selectable="false"
         :select-model="noModel"

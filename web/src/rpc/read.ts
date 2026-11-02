@@ -5,6 +5,14 @@
  */
 import type {
   ApprovalRequest,
+  AskCall,
+  AskQuestion,
+  CompactResult,
+  ContextUsage,
+  FileCandidate,
+  PermissionPolicy,
+  PermissionPreset,
+  PermissionState,
   MemberApprovalDetail,
   BranchCreateResult,
   BranchSource,
@@ -17,9 +25,12 @@ import type {
   Notification,
   ProviderCatalog,
   ProviderSummary,
+  RawBlock,
   SessionEvent,
   SessionSummary,
   ToolResult,
+  UserInput,
+  WithdrawResult,
 } from "./protocol"
 
 export class ProtocolError extends Error {
@@ -58,6 +69,13 @@ function num(source: Json, key: string, at: string): number {
   return value
 }
 
+/** A nonnegative finite number; token counts are floats on the wire. */
+function finite(source: Json, key: string, at: string): number {
+  const value = source[key]
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) fail(`${at}.${key}`, "a nonnegative number")
+  return value
+}
+
 function bool(source: Json, key: string, at: string): boolean {
   const value = source[key]
   if (typeof value !== "boolean") fail(`${at}.${key}`, "a boolean")
@@ -86,6 +104,38 @@ export function readHello(value: unknown): HelloResult {
 /** A reply whose content the caller does not use (`{}`, a barrier, the submitted event). */
 export function readAck(value: unknown): void {
   obj(value, "reply")
+}
+
+/** `session.methods` of one Session: the method names it serves. */
+export function readSessionMethods(value: unknown): string[] {
+  const at = "session.methods"
+  return arr(obj(value, at).methods, `${at}.methods`).map((item, index) => str(obj(item, `${at}.methods[${index}]`), "name", `${at}.methods[${index}]`))
+}
+
+export function readCompactResult(value: unknown): CompactResult {
+  const at = "session.context.compact"
+  const source = obj(value, at)
+  const status = str(source, "status", at)
+  if (status === "completed") return { status }
+  if (status === "skipped") return { status, reason: str(source, "reason", at) }
+  fail(`${at}.status`, "completed or skipped")
+}
+
+export function readContextUsage(value: unknown): ContextUsage {
+  const at = "session.context.usage"
+  const source = obj(value, at)
+  return {
+    contextWindow: finite(source, "contextWindow", at),
+    outputTokens: finite(source, "outputTokens", at),
+    thresholdTokens: finite(source, "thresholdTokens", at),
+    estimatedInputTokens: finite(source, "estimatedInputTokens", at),
+    baselineSource: str(source, "baselineSource", at),
+  }
+}
+
+/** `session.fork`: the new Session's id. */
+export function readForkedSessionId(value: unknown): string {
+  return str(obj(value, "session.fork"), "sessionId", "session.fork")
 }
 
 export function readSummaries(value: unknown): SessionSummary[] {
@@ -142,6 +192,63 @@ export function readModelUpdate(value: unknown): ModelUpdateResult {
   return { model: modelId(source.model, "session.model.update.model"), outcome: str(source, "outcome", "session.model.update") }
 }
 
+/** A permission preset as the server names it; anything else is a protocol error. */
+function readPreset(value: unknown, at: string): PermissionPreset {
+  if (value === "read-only" || value === "workspace-write" || value === "full-access") return value
+  return fail(at, "a permission preset")
+}
+
+function readPermissionPolicy(value: unknown, at: string): PermissionPolicy {
+  const policy = obj(value, at)
+  const fileAccess = optStr(policy, "fileAccess", at)
+  const toolApproval = optStr(policy, "toolApproval", at)
+  if (fileAccess !== undefined && fileAccess !== "read-only" && fileAccess !== "workspace-read-write" && fileAccess !== "unrestricted") fail(`${at}.fileAccess`, "a file access policy")
+  if (toolApproval !== undefined && toolApproval !== "ask" && toolApproval !== "bypass") fail(`${at}.toolApproval`, "a tool approval policy")
+  const list = (key: string) => arr(policy[key], `${at}.${key}`).map((item, index) => {
+    if (typeof item !== "string") fail(`${at}.${key}[${index}]`, "a string")
+    return item
+  })
+  return {
+    preset: readPreset(policy.preset, `${at}.preset`),
+    ...(fileAccess === undefined ? {} : { fileAccess }),
+    ...(toolApproval === undefined ? {} : { toolApproval }),
+    allowedTools: list("allowedTools"),
+    disallowedTools: list("disallowedTools"),
+  }
+}
+
+/** `session.permission.get`: the policy of `main` and the version a change must expect. */
+export function readPermissionState(value: unknown): PermissionState {
+  const at = "session.permission.get"
+  const source = obj(value, at)
+  return { version: num(source, "version", at), policy: readPermissionPolicy(source.policy, `${at}.policy`) }
+}
+
+/** `session.permission.update`: the version the new policy is stored under. */
+export function readPermissionVersion(value: unknown): number {
+  return num(obj(value, "session.permission.update"), "version", "session.permission.update")
+}
+
+/** `session.files.search`: the files an `@` mention offers, best first. */
+export function readFileCandidates(value: unknown): FileCandidate[] {
+  const at = "session.files.search"
+  return arr(obj(value, at).candidates, `${at}.candidates`).map((item, index) => {
+    const entry = `${at}.candidates[${index}]`
+    const source = obj(item, entry)
+    return { relativePath: str(source, "relativePath", entry), absolutePath: str(source, "absolutePath", entry), dir: bool(source, "dir", entry) }
+  })
+}
+
+/** `attachment.put`: the stored text's path, which the message names. */
+export function readAttachmentPath(value: unknown): string {
+  return str(obj(value, "attachment.put"), "path", "attachment.put")
+}
+
+/** The `outcome` of a `session.model.update` that only changes preferences. */
+export function readConfigurationOutcome(value: unknown): string {
+  return str(obj(value, "session.model.update"), "outcome", "session.model.update")
+}
+
 export function readProviderList(value: unknown): ProviderSummary[] {
   const source = obj(value, "provider.list")
   return arr(source.providers, "provider.list.providers").map((item, index) => {
@@ -165,6 +272,26 @@ export function readAccountProviders(value: unknown): Pick<ProviderSummary, "pro
 }
 
 /** `provider.catalog`: `{catalog: null}` when the provider has no catalog. */
+/**
+ * The reasoning effort values a catalog model accepts. Undefined unless the
+ * model advertises reasoning preferences, as `/effort` requires (`configure.rs`).
+ */
+function readReasoningEfforts(model: Json, at: string): string[] | undefined {
+  const metadata = model.metadata === undefined || model.metadata === null ? undefined : obj(model.metadata, `${at}.metadata`)
+  const reasoning = metadata?.reasoning === undefined || metadata.reasoning === null ? undefined : obj(metadata.reasoning, `${at}.metadata.reasoning`)
+  if (reasoning === undefined || reasoning.supported !== true) return undefined
+  const capabilities = obj(model.capabilities, `${at}.capabilities`)
+  if (capabilities.reasoning !== true) return undefined
+  const efforts = reasoning.effortOptions === undefined || reasoning.effortOptions === null
+    ? []
+    : arr(reasoning.effortOptions, `${at}.metadata.reasoning.effortOptions`).map((effort, index) => {
+      if (typeof effort !== "string") fail(`${at}.metadata.reasoning.effortOptions[${index}]`, "a string")
+      return effort
+    })
+  if (reasoning.off !== undefined && reasoning.off !== null && !efforts.includes("none")) efforts.push("none")
+  return efforts
+}
+
 export function readProviderCatalog(value: unknown): ProviderCatalog | undefined {
   const source = obj(value, "provider.catalog")
   if (source.catalog === null) return undefined
@@ -174,7 +301,13 @@ export function readProviderCatalog(value: unknown): ProviderCatalog | undefined
       const at = `provider.catalog.models[${index}]`
       const model = obj(item, at)
       const unavailableReason = optStr(model, "unavailableReason", at)
-      return { id: str(model, "id", at), name: str(model, "name", at), ...(unavailableReason === undefined ? {} : { unavailableReason }) }
+      const reasoningEfforts = readReasoningEfforts(model, at)
+      return {
+        id: str(model, "id", at),
+        name: str(model, "name", at),
+        ...(unavailableReason === undefined ? {} : { unavailableReason }),
+        ...(reasoningEfforts === undefined ? {} : { reasoningEfforts }),
+      }
     }),
     disabledModelIds: arr(catalog.disabledModelIds, "provider.catalog.disabledModelIds").map((id, index) => {
       if (typeof id !== "string") fail(`provider.catalog.disabledModelIds[${index}]`, "a string")
@@ -195,6 +328,19 @@ export function readProviderSelection(value: unknown): ModelId | undefined {
 }
 
 
+/** A user message's content blocks, kept as the server wrote them so a steer can resend them unchanged. */
+function readUserInput(user: Json, at: string): UserInput {
+  return { content: arr(user.content, `${at}.content`).map((item, index) => obj(item, `${at}.content[${index}]`)) }
+}
+
+/** `session.input.withdraw`'s status; a steer adds a replacement input that arrives as its own event. */
+export function readWithdrawResult(value: unknown): WithdrawResult {
+  const at = "session.input.withdraw"
+  const status = str(obj(value, at), "status", at)
+  if (status === "deleted" || status === "notHeld") return { status }
+  fail(`${at}.status`, "deleted or notHeld")
+}
+
 function textOf(blocks: unknown, at: string): string {
   return arr(blocks, at).flatMap((item, index) => {
     const block = obj(item, `${at}[${index}]`)
@@ -210,11 +356,13 @@ function toolResult(value: unknown, at: string): ToolResult {
   return { text, isError: source.isError === true, ...(diff === undefined ? {} : { diff }) }
 }
 
-function rawText(blocks: unknown, at: string): string[] {
+function rawBlocks(blocks: unknown, at: string): RawBlock[] {
   if (blocks === undefined || blocks === null) return []
   return arr(blocks, at).flatMap((item, index) => {
     const block = obj(item, `${at}[${index}]`)
-    return block.type === "raw" ? [str(block, "text", `${at}[${index}]`)] : []
+    if (block.type !== "raw") return []
+    const key = optStr(block, "key", `${at}[${index}]`)
+    return [{ text: str(block, "text", `${at}[${index}]`), ...(key === undefined ? {} : { key }), retire: block.retire === true }]
   })
 }
 
@@ -245,17 +393,26 @@ function branchCut(value: unknown, at: string): number | undefined {
 function content(type: string, name: string, data: Json, at: string): EventContent {
   switch (`${type}/${name}`) {
     case "input/message": {
+      const blocks = rawBlocks(data.blocks, `${at}.blocks`)
       if (data.user === undefined || data.user === null) {
-        const raw = rawText(data.blocks, `${at}.blocks`)
-        if (raw.length === 0) return { kind: "input" }
+        if (blocks.length === 0) return { kind: "input", blocks }
         const mode = optStr(data, "mode", at)
-        const text = raw.find((value) => value.startsWith("<dim-branch-")) ?? raw[0]!
-        return { kind: "source-input", text, ...(mode === undefined ? {} : { mode }) }
+        const text = blocks.map((block) => block.text).find((value) => value.startsWith("<dim-branch-")) ?? blocks[0]!.text
+        return { kind: "source-input", text, blocks, ...(mode === undefined ? {} : { mode }) }
       }
-      return { kind: "input", text: textOf(obj(data.user, `${at}.user`).content, `${at}.user.content`) }
+      const user = obj(data.user, `${at}.user`)
+      return { kind: "input", text: textOf(user.content, `${at}.user.content`), user: readUserInput(user, `${at}.user`), blocks }
     }
+    case "input/applied":
+      return { kind: "input-applied", inputId: str(data, "input_id", at) }
+    case "permission/changed":
+      return { kind: "permission-changed", policy: readPermissionPolicy(data.policy, `${at}.policy`) }
     case "input/deleted":
       return { kind: "input-deleted", inputId: str(data, "input_id", at) }
+    case "branch/start":
+      return { kind: "branch-start" }
+    case "session/forked":
+      return { kind: "session-forked" }
     case "branch/create":
       return {
         kind: "branch-create",
@@ -299,6 +456,8 @@ function content(type: string, name: string, data: Json, at: string): EventConte
       return { kind: "thinking", requestId: str(data, "request_id", at), delta: str(data, "delta", at) }
     case "step/text":
       return { kind: "text", requestId: str(data, "request_id", at), delta: str(data, "delta", at) }
+    case "step/tool-call":
+      return { kind: "tool-call", requestId: str(data, "request_id", at), asks: readAsks(arr(data.calls, `${at}.calls`), `${at}.calls`) }
     case "step/tool-use": {
       const call = obj(data.call, `${at}.call`)
       return {
@@ -314,6 +473,7 @@ function content(type: string, name: string, data: Json, at: string): EventConte
     case "step/tool-result":
       return {
         kind: "tool-result",
+        requestId: str(data, "request_id", at),
         results: arr(data.results, `${at}.results`).map((item, index) => {
           const result = obj(item, `${at}.results[${index}]`)
           return { callId: str(result, "call_id", `${at}.results[${index}]`), result: toolResult(result.result, `${at}.results[${index}].result`) }
@@ -328,6 +488,64 @@ function content(type: string, name: string, data: Json, at: string): EventConte
     default:
       return { kind: "other" }
   }
+}
+
+/**
+ * The `ask_user` input as Questions A.1 checks it. `undefined` when the input
+ * breaks a rule: the server rejects such a call at once, so it gets no prompt.
+ */
+function readAskQuestions(input: Json): AskQuestion[] | undefined {
+  if (!Array.isArray(input.questions) || input.questions.length < 1 || input.questions.length > 4) return undefined
+  const ids = new Set<string>()
+  const questions: AskQuestion[] = []
+  for (const [index, item] of input.questions.entries()) {
+    const question = askQuestion(item, String(index + 1))
+    if (question === undefined || ids.has(question.id)) return undefined
+    ids.add(question.id)
+    questions.push(question)
+  }
+  return questions
+}
+
+function askQuestion(value: unknown, defaultId: string): AskQuestion | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined
+  const source = value as Json
+  const id = source.id ?? defaultId
+  if (typeof id !== "string" || id === "") return undefined
+  if (source.header !== undefined && typeof source.header !== "string") return undefined
+  if (typeof source.header === "string" && [...source.header].length > 40) return undefined
+  if (typeof source.question !== "string" || source.question.trim() === "") return undefined
+  if (!Array.isArray(source.options) || source.options.length < 2 || source.options.length > 6) return undefined
+  const labels = new Set<string>()
+  const options: AskQuestion["options"] = []
+  for (const item of source.options) {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) return undefined
+    const option = item as Json
+    if (typeof option.label !== "string" || option.label.trim() === "" || labels.has(option.label)) return undefined
+    if (option.description !== undefined && typeof option.description !== "string") return undefined
+    labels.add(option.label)
+    options.push({ label: option.label, ...(typeof option.description === "string" ? { description: option.description } : {}) })
+  }
+  if ((source.multiSelect !== undefined && typeof source.multiSelect !== "boolean") || (source.allowCustom !== undefined && typeof source.allowCustom !== "boolean")) return undefined
+  return {
+    id,
+    ...(typeof source.header === "string" ? { header: source.header } : {}),
+    question: source.question,
+    options,
+    multiSelect: source.multiSelect === true,
+    allowCustom: source.allowCustom !== false,
+  }
+}
+
+function readAsks(calls: unknown[], at: string): AskCall[] {
+  const asks: AskCall[] = []
+  for (const [index, item] of calls.entries()) {
+    const call = obj(item, `${at}[${index}]`)
+    if (str(call, "name", `${at}[${index}]`) !== "ask_user") continue
+    const questions = readAskQuestions(obj(call.input, `${at}[${index}].input`))
+    if (questions !== undefined) asks.push({ callId: str(call, "id", `${at}[${index}]`), questions })
+  }
+  return asks
 }
 
 function readEvent(value: unknown, at: string): SessionEvent {

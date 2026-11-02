@@ -8,6 +8,7 @@ import ChatMarkdown from "./ChatMarkdown.vue"
 import TimelineUserMessage from "./TimelineUserMessage.vue"
 import TimelineWorkRow from "./TimelineWorkRow.vue"
 import { groupRows } from "./work"
+import { RAIL_MIN_MARKERS, timelineMarkers } from "../../timeline-markers"
 
 /**
  * `quotable`: the composer is shown, so a message can be quoted into it.
@@ -67,6 +68,24 @@ virtualizer.value.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, in
 const virtualRows = computed(() => virtualizer.value.getVirtualItems())
 const totalSize = computed(() => virtualizer.value.getTotalSize())
 
+/** The rail's markers, one per user message; the rail lists them top to bottom. */
+const markers = computed(() => timelineMarkers(display.value))
+const showRail = computed(() => props.variant !== "panel" && markers.value.length >= RAIL_MIN_MARKERS)
+const RAIL_HEIGHT_PX = 420
+/** Markers stay within the rail height; a long history packs them closer. */
+const railPitch = computed(() => Math.min(12, (RAIL_HEIGHT_PX - 12) / Math.max(1, markers.value.length - 1)))
+const jumpTarget = ref<number>()
+let jumpTimer: ReturnType<typeof setTimeout> | undefined
+
+/** Scrolls the message at `index` into the middle of the view and marks it for a moment. */
+function jumpTo(index: number): void {
+  following.value = false
+  virtualizer.value.scrollToIndex(index, { align: "center", behavior: "smooth" })
+  jumpTarget.value = index
+  clearTimeout(jumpTimer)
+  jumpTimer = setTimeout(() => { jumpTarget.value = undefined }, 1600)
+}
+
 function measure(element: Element | ComponentPublicInstance | null): void {
   if (element instanceof Element) virtualizer.value.measureElement(element)
 }
@@ -105,6 +124,7 @@ onMounted(() => void toEnd())
           :key="String(item.key)"
           :ref="measure"
           class="virtual-timeline-row"
+          :class="{ 'is-jump-target': item.index === jumpTarget }"
           :data-index="item.index"
           :style="{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${item.start}px)` }"
         >
@@ -152,6 +172,22 @@ onMounted(() => void toEnd())
       </div>
       <div v-if="running" class="processing-row" role="status"><LoaderCircle :size="14" class="is-spinning" aria-hidden="true" /><span>{{ t("work.processing") }}</span></div>
     </div>
+    <nav v-if="showRail" class="timeline-rail" :aria-label="t('timeline.rail')">
+      <button
+        v-for="(marker, position) in markers"
+        :key="marker.key"
+        type="button"
+        class="timeline-marker"
+        :style="{ top: `${position * railPitch}px` }"
+        :aria-label="marker.prompt"
+        @click="jumpTo(marker.index)"
+      >
+        <span class="timeline-marker-card">
+          <span class="timeline-marker-prompt">{{ marker.prompt }}</span>
+          <span v-if="marker.reply" class="timeline-marker-reply">{{ marker.reply }}</span>
+        </span>
+      </button>
+    </nav>
     <Transition name="jump-latest">
       <button v-if="!following" class="ui-icon-button jump-latest" data-variant="secondary" data-size="md" type="button" :aria-label="t('timeline.scrollToBottom')" v-tooltip="t('timeline.scrollToBottom')" @click="jumpToLatest">
         <ChevronDown aria-hidden="true" />
@@ -161,7 +197,15 @@ onMounted(() => void toEnd())
 </template>
 
 <style scoped>
-.jump-latest-enter-active { transition: opacity var(--duration-popover) var(--ease-out), transform var(--duration-popover) var(--ease-out); }
+.timeline-rail { position: absolute; top: var(--space-4); right: var(--space-2); z-index: 2; width: 26px; height: 420px; }
+.timeline-marker { position: absolute; right: 0; width: 14px; height: 2px; padding: 0; border: 0; border-radius: 1px; background: var(--muted-foreground); opacity: 0.45; cursor: pointer; }
+.timeline-marker:hover, .timeline-marker:focus-visible { width: 22px; background: var(--foreground); opacity: 1; }
+.timeline-marker-card { position: absolute; top: -10px; right: 30px; display: none; width: 280px; max-height: 160px; overflow: hidden; padding: var(--space-2) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); box-shadow: var(--shadow-sm); font-size: var(--text-xs); text-align: left; }
+.timeline-marker:hover .timeline-marker-card, .timeline-marker:focus-visible .timeline-marker-card { display: grid; gap: var(--space-1); }
+.timeline-marker-prompt { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 3; -webkit-box-orient: vertical; color: var(--foreground); }
+.timeline-marker-reply { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; color: var(--muted-foreground); }
+.virtual-timeline-row.is-jump-target :deep(.user-bubble) { box-shadow: var(--focus-ring); transition: box-shadow var(--duration-popover) var(--ease-out); }
+
 .jump-latest-enter-from { opacity: 0; transform: translateY(4px); }
 @media (prefers-reduced-motion: reduce) {
   .jump-latest-enter-active { transition: none; }

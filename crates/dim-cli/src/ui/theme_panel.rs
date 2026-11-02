@@ -108,6 +108,13 @@ mod tests {
         assert_eq!(dark.len(), 11);
         assert!(dark.iter().any(|(id, _)| *id == "dim-dark"));
         assert!(!dark.iter().any(|(id, _)| *id == "dim-light"));
+        assert!(dark.contains(&("xiguasay", "Watermelon Sugar")));
+        assert_eq!(label_of("xiguasay"), "Watermelon Sugar");
+        let panel = ThemePanel::new(ColorMode::TrueColor, Appearance::Dark, "xiguasay");
+        let theme = Theme::named("xiguasay", ColorMode::TrueColor, Appearance::Dark, None);
+        let rendered = panel.render(80, 20, &theme.palette).join("\n");
+        assert!(rendered.contains("Watermelon Sugar"));
+        assert!(!rendered.contains("XiguaSay"));
         let light = entries(ColorMode::Ansi256, Appearance::Light);
         assert!(light.iter().any(|(id, _)| *id == "dim-light"));
         assert_eq!(entries(ColorMode::Ansi16, Appearance::Dark).len(), 1);

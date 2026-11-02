@@ -59,6 +59,8 @@ export type ProviderModel = {
   name: string
   /** Set when the model cannot be selected right now. */
   unavailableReason?: string
+  /** The reasoning effort values the model accepts, when it advertises reasoning preferences. */
+  reasoningEfforts?: string[]
 }
 
 export type ProviderCatalog = {
@@ -81,10 +83,54 @@ export type ToolResult = {
 }
 
 /** The Timeline facts the projection folds; every other kind is `other`. */
+export type RawBlock = { text: string; key?: string; retire: boolean }
+
+/** A user message as the server holds it: content blocks forwarded unchanged to `session.input.withdraw`. */
+export type UserInput = { content: Array<Record<string, unknown>> }
+
+/** A base64 image content block, as the server's `ContentBlock::Image` reads it. */
+export type ImageBlock = { type: "image"; source: { type: "base64"; mediaType: string; data: string } }
+
+/** What a composer draft adds to its text: images as content blocks, and pasted texts stored as Session attachments. */
+export type DraftAttachments = { images: ImageBlock[]; pastes: string[] }
+
+/** A file or directory the `@` mention picker offers: its path under the workspace and its absolute path. */
+export type FileCandidate = { relativePath: string; absolutePath: string; dir: boolean }
+
+/** The session permission presets, named as the server's `PermissionPreset` serializes them. */
+export type PermissionPreset = "read-only" | "workspace-write" | "full-access"
+
+export type FileAccess = "read-only" | "workspace-read-write" | "unrestricted"
+export type ToolApproval = "ask" | "bypass"
+export type PermissionChange = { field: "fileAccess"; value: FileAccess } | { field: "toolApproval"; value: ToolApproval }
+
+/** The policy of `main`, including independent overrides and explicit tool exceptions. */
+export type PermissionPolicy = {
+  preset: PermissionPreset
+  fileAccess?: FileAccess
+  toolApproval?: ToolApproval
+  allowedTools: string[]
+  disallowedTools: string[]
+}
+
+/** `session.permission.get`: the policy of `main` and the version a change must expect. */
+export type PermissionState = { version: number; policy: PermissionPolicy }
+
+/** A message the server holds in the queue of a running branch. */
+export type QueuedInput = { id: string; text: string; user: UserInput }
+
+/** `session.input.withdraw`: the queued input was removed, or the server had already adopted it. */
+export type WithdrawResult = { status: "deleted" } | { status: "notHeld" }
+
+/** The Timeline facts the projection folds; every other kind is `other`. */
 export type EventContent =
-  | { kind: "input"; text?: string }
-  | { kind: "source-input"; text: string; mode?: string }
+  | { kind: "input"; text?: string; user?: UserInput; blocks: RawBlock[] }
+  | { kind: "source-input"; text: string; mode?: string; blocks: RawBlock[] }
+  | { kind: "input-applied"; inputId: string }
   | { kind: "input-deleted"; inputId: string }
+  | { kind: "permission-changed"; policy: PermissionPolicy }
+  | { kind: "branch-start" }
+  | { kind: "session-forked" }
   | { kind: "branch-create"; branchId: string; at: number | undefined; prompt: string; source: BranchSource }
   | { kind: "branch-create-failed"; branchId: string; status: "failed" | "cancelled"; error: string }
   | { kind: "branch-end"; source: BranchSource; ancestor?: string }
@@ -94,8 +140,9 @@ export type EventContent =
   | { kind: "thinking"; requestId: string; delta: string }
   | { kind: "text"; requestId: string; delta: string }
   | { kind: "tool-use"; requestId: string; callId: string; name: string; input: Record<string, unknown> }
+  | { kind: "tool-call"; requestId: string; asks: AskCall[] }
   | { kind: "tool-completed"; callId: string; result: ToolResult }
-  | { kind: "tool-result"; results: Array<{ callId: string; result: ToolResult }> }
+  | { kind: "tool-result"; requestId: string; results: Array<{ callId: string; result: ToolResult }> }
   | { kind: "model-end"; requestId: string; error?: string }
   | { kind: "context-configured"; model: ModelId }
   | { kind: "other" }
@@ -138,6 +185,37 @@ export type ApprovalRequest = {
   callId?: string
   call: { name: string; input: Record<string, unknown> }
   reason: string
+}
+
+/** One question of an `ask_user` call, as the model wrote it and the boundary checked it. */
+export type AskQuestion = {
+  id: string
+  header?: string
+  question: string
+  options: Array<{ label: string; description?: string }>
+  multiSelect: boolean
+  allowCustom: boolean
+}
+
+/** An `ask_user` call of a `step/tool-call` that waits for the user's answer. */
+export type AskCall = { callId: string; questions: AskQuestion[] }
+
+/** A waiting question, named by the branch, the batch's `requestId` and its call. */
+export type PendingQuestion = { branchId: string; requestId: string; callId: string; questions: AskQuestion[] }
+
+/** One answer per question; `custom` is the typed text. */
+export type QuestionAnswer = { questionId: string; selected: string[]; custom?: string }
+
+/** `session.context.compact`: the run finished, or the Session skipped it with a reason. */
+export type CompactResult = { status: "completed" } | { status: "skipped"; reason: string }
+
+/** `session.context.usage` of the main line; `baselineSource` says how the input count was made. */
+export type ContextUsage = {
+  contextWindow: number
+  outputTokens: number
+  thresholdTokens: number
+  estimatedInputTokens: number
+  baselineSource: string
 }
 
 export type MemberApprovalDescriptor = {

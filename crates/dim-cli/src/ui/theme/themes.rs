@@ -324,7 +324,7 @@ pub const THEMES: &[NamedTheme] = &[
     },
     NamedTheme {
         id: "xiguasay",
-        label: "XiguaSay",
+        label: "Watermelon Sugar",
         dark: true,
         background: "#0d150e",
         accent: "#ff5c7a",

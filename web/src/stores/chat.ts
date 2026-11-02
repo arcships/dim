@@ -1,13 +1,19 @@
 import { shallowReactive } from "vue"
 import { defineStore } from "pinia"
+import { alwaysCommand, alwaysRule, fileGrant, sameRule } from "../approvals"
 import { Projection, type TimelineRow } from "../projection"
 import { Lines, type LineView } from "../lines"
 import { ConnectionLost, RpcError } from "../rpc/client"
-import { MAIN_BRANCH, type ApprovalDecision, type ApprovalRequest, type ModelId, type Notification, type SessionEvent } from "../rpc/protocol"
-import { ProtocolError, readAck, readBranchCreate, readHistory, readModelUpdate, readMemberApproval } from "../rpc/read"
+import type { Goal, GoalCall } from "../goal"
+import { MAIN_BRANCH, type ApprovalDecision, type ApprovalRequest, type DraftAttachments, type FileCandidate, type ModelId, type Notification, type PendingQuestion, type PermissionChange, type PermissionPolicy, type QueuedInput, type QuestionAnswer, type SessionEvent, type UserInput, type WithdrawResult } from "../rpc/protocol"
+import { readRevision, readRules } from "../rpc/general-settings"
+import { ProtocolError, readAck, readAttachmentPath, readBranchCreate, readCompactResult, readConfigurationOutcome, readContextUsage, readFileCandidates, readForkedSessionId, readHistory, readModelUpdate, readMemberApproval, readPermissionState, readPermissionVersion, readSessionMethods, readWithdrawResult } from "../rpc/read"
 import { useConnectionStore } from "./connection"
 import { useSessionsStore } from "./sessions"
 import { useUiStore } from "./ui"
+
+/** What a permission change did: written, already in place, or refused because `main` changed first. */
+export type PermissionOutcome = "updated" | "unchanged" | "conflict"
 
 /** One line's transcript and history state. */
 export type BranchView = {
@@ -34,6 +40,16 @@ export type SessionView = {
   sessionRunning: boolean
   /** Pending approvals of every branch, oldest first. */
   approvals: ApprovalRequest[]
+  /** Waiting `ask_user` questions of every branch, oldest first. */
+  questions: PendingQuestion[]
+  /** The method names this Session serves (`session.methods`); empty when the daemon offers no table. */
+  methods: readonly string[]
+  /** The policy of `main`: read after history loads, then kept current by `permission/changed`. */
+  permission: PermissionPolicy | undefined
+  /** The main line's goal, folded from its events. */
+  goal: Goal | undefined
+  /** Messages queued on the main line while it runs, oldest first. */
+  queued: readonly QueuedInput[]
   model: ModelId | undefined
   /** Every line of the session, main first, in tree order. */
   lines: LineView[]
@@ -105,6 +121,11 @@ export const useChatStore = defineStore("chat", () => {
       stopping: false,
       sessionRunning: stored?.running ?? false,
       approvals: [],
+      questions: [],
+      methods: [],
+      permission: undefined,
+      goal: undefined,
+      queued: [],
       model: stored?.model,
       lines: [],
       branches: {},
@@ -153,6 +174,7 @@ export const useChatStore = defineStore("chat", () => {
     }
     try {
       await client().call("session.attach", { sessionId: view.sessionId }, readAck)
+      view.methods = await sessionMethods(view.sessionId)
       const main = await loadHistory(channel, MAIN_BRANCH)
       if (main !== "ok") {
         if (main === "failed" && view.status !== "closed") {
@@ -165,6 +187,7 @@ export const useChatStore = defineStore("chat", () => {
       channel.queued = []
       channel.syncing = false
       for (const notification of queued) receive(notification)
+      if (view.status !== "closed") view.permission = await sessionPermission(view.sessionId)
       if (view.status !== "closed") {
         view.status = "ready"
         view.error = ""
@@ -258,6 +281,7 @@ export const useChatStore = defineStore("chat", () => {
         view.stopping = false
         view.sessionRunning = false
         view.approvals = []
+        view.questions = []
         useSessionsStore().forget(view.sessionId)
         useUiStore().resetSessionTabs(view.sessionId)
         break
@@ -269,6 +293,7 @@ export const useChatStore = defineStore("chat", () => {
     const stream = ensureBranch(channel, branchId)
     if (!stream.projection.apply(event)) return
     if (event.content.kind === "branch-create") ensureBranch(channel, event.content.branchId)
+    if (branchId === MAIN_BRANCH && event.content.kind === "permission-changed") channel.view.permission = event.content.policy
     changed(channel)
   }
 
@@ -407,6 +432,12 @@ export const useChatStore = defineStore("chat", () => {
     view.sessionRunning = anyRunning(channel)
     view.model = channel.main.projection.model ?? useSessionsStore().byId.get(view.sessionId)?.model
     view.lines = channel.lines.views()
+    view.goal = channel.main.projection.goal
+    view.queued = channel.main.projection.queued()
+    view.questions = [
+      ...channel.main.projection.waiting().map((ask) => ({ branchId: MAIN_BRANCH, ...ask })),
+      ...[...channel.branches].flatMap(([id, branch]) => branch.projection.waiting().map((ask) => ({ branchId: id, ...ask }))),
+    ]
     const branches: Record<string, BranchView> = {}
     for (const [id, branch] of channel.branches) {
       const state = stateOf(channel, id)
@@ -440,14 +471,16 @@ export const useChatStore = defineStore("chat", () => {
     publish(channel)
   }
 
-  async function submit(sessionId: string, branchId: string, text: string): Promise<void> {
-    await client().call("session.submit", {
-      sessionId,
-      branchId,
-      submissionId: crypto.randomUUID(),
-      text,
-      mode: "queue",
-    }, readAck)
+  async function submit(sessionId: string, branchId: string, text: string, attachments: DraftAttachments = { images: [], pastes: [] }): Promise<void> {
+    let body = text
+    for (const paste of attachments.pastes) {
+      const path = await client().call("attachment.put", { sessionId, text: paste }, readAttachmentPath)
+      body = `${body}${body === "" ? "" : "\n"}[Pasted text: ${path} (${paste.split("\n").length} lines)]`
+    }
+    const params: Record<string, unknown> = { sessionId, branchId, submissionId: crypto.randomUUID(), mode: "queue" }
+    if (attachments.images.length === 0) params.text = body
+    else params.user = { content: [...(body === "" ? [] : [{ type: "text", text: body }]), ...attachments.images] }
+    await client().call("session.submit", params, readAck)
   }
 
   async function stop(sessionId: string, branchId: string): Promise<void> {
@@ -483,6 +516,110 @@ export const useChatStore = defineStore("chat", () => {
     if (view !== undefined) removeApproval(view, approval.branchId, approval.requestId)
   }
 
+  /** Allows the approval and, for a simple command, saves an exact allow rule first. */
+  async function allowAlways(sessionId: string, approval: ApprovalRequest): Promise<void> {
+    const command = alwaysCommand(approval)
+    if (command === undefined) throw new Error("This approval has no simple command to allow")
+    const rule = alwaysRule(command)
+    const rules = await client().call("permission.rules", {}, readRules)
+    if (!rules.commandRules.some((existing) => sameRule(existing, rule))) {
+      await client().call("permission.set_rules", { expectedRevision: rules.revision, commandRules: [...rules.commandRules, rule] }, readRevision)
+    }
+    await respond(sessionId, approval, "allow")
+  }
+
+  /** Saves a session grant for the approval's file, then allows it. */
+  async function allowForSession(sessionId: string, approval: ApprovalRequest): Promise<void> {
+    const grant = fileGrant(approval)
+    if (grant === undefined) throw new Error("This approval names no file to allow")
+    await client().call("session.grants.add", { sessionId, ...grant }, readAck)
+    await respond(sessionId, approval, "allow")
+  }
+
+  /** Answers a waiting question; `undefined` declines it. The prompt closes when the batch's result arrives. */
+  async function answerQuestion(sessionId: string, question: PendingQuestion, answers: QuestionAnswer[] | undefined): Promise<void> {
+    await client().call("session.question.respond", {
+      sessionId,
+      branchId: question.branchId,
+      requestId: question.requestId,
+      callId: question.callId,
+      ...(answers === undefined ? { declined: true } : { answers }),
+    }, readAck)
+  }
+
+  /** The Session's method table; a daemon without it offers no session commands, and an unreadable table offers none either. */
+  async function sessionMethods(sessionId: string): Promise<string[]> {
+    if (!useConnectionStore().supports("session.methods")) return []
+    return client().call("session.methods", { sessionId }, readSessionMethods).catch(() => [])
+  }
+
+  /** Compacts the main line's context. */
+  async function compact(sessionId: string) {
+    return client().call("session.context.compact", { sessionId, branchId: MAIN_BRANCH }, readCompactResult)
+  }
+
+  /** Writes the main line's goal through `session.goal.<call>`; the goal changes when its events arrive. */
+  async function writeGoal(sessionId: string, call: GoalCall, objective: string | undefined): Promise<void> {
+    await client().call(`session.goal.${call}`, { sessionId, branchId: MAIN_BRANCH, ...(objective === undefined ? {} : { objective }) }, readAck)
+  }
+
+  /** Reads the main line's context window usage. */
+  async function usage(sessionId: string) {
+    return client().call("session.context.usage", { sessionId, branchId: MAIN_BRANCH }, readContextUsage)
+  }
+
+  /** Forks the Session at `at` (a main-line cut) and returns the new Session's id. */
+  async function fork(sessionId: string, at: number): Promise<string> {
+    return client().call("session.fork", { sessionId, at }, readForkedSessionId)
+  }
+
+  /** The files an `@` mention offers under the Session's workspace. */
+  async function searchFiles(sessionId: string, query: string): Promise<FileCandidate[]> {
+    return client().call("session.files.search", { sessionId, query, limit: 20 }, readFileCandidates)
+  }
+
+  /** Writes the main line's reasoning effort through `session.model.update`'s preferences; returns the server's outcome. */
+  /** Withdraws a queued message; with `steer`, the same content joins the running turn at its next boundary. */
+  async function withdrawInput(sessionId: string, inputId: string, steer: UserInput | undefined): Promise<WithdrawResult> {
+    return client().call("session.input.withdraw", { sessionId, branchId: MAIN_BRANCH, inputId, ...(steer === undefined ? {} : { steer }) }, readWithdrawResult)
+  }
+
+  /** The policy of `main`, or undefined when the Session serves no permission method or the read fails. */
+  async function sessionPermission(sessionId: string): Promise<PermissionPolicy | undefined> {
+    if (!useConnectionStore().supports("session.permission.get")) return undefined
+    return client().call("session.permission.get", { sessionId, branchId: MAIN_BRANCH }, readPermissionState)
+      .then((state) => state.policy, () => undefined)
+  }
+
+  /** Changes one explicit permission dimension, preserving all other fields; a conflict refreshes the policy without retrying. */
+  async function setPermission(sessionId: string, change: PermissionChange): Promise<PermissionOutcome> {
+    const state = await client().call("session.permission.get", { sessionId, branchId: MAIN_BRANCH }, readPermissionState)
+    const view = views[sessionId]
+    if (view !== undefined) view.permission = state.policy
+    if (state.policy[change.field] === change.value) return "unchanged"
+    const policy = { ...state.policy, [change.field]: change.value }
+    try {
+      await client().call("session.permission.update", {
+        sessionId,
+        branchId: MAIN_BRANCH,
+        expectedVersion: state.version,
+        policy,
+      }, readPermissionVersion)
+    } catch (cause) {
+      if (cause instanceof RpcError && cause.appError === "permission_conflict") {
+        if (view !== undefined) view.permission = await sessionPermission(sessionId)
+        return "conflict"
+      }
+      throw cause
+    }
+    if (view !== undefined) view.permission = policy
+    return "updated"
+  }
+
+  async function setEffort(sessionId: string, effort: string): Promise<string> {
+    return client().call("session.model.update", { sessionId, branchId: MAIN_BRANCH, modelPreferences: { reasoningEffort: effort } }, readConfigurationOutcome)
+  }
+
   async function setModel(sessionId: string, model: ModelId): Promise<void> {
     const result = await client().call("session.model.update", {
       sessionId,
@@ -496,5 +633,5 @@ export const useChatStore = defineStore("chat", () => {
     publish(channel)
   }
 
-  return { views, open, resync, receive, ensureLine, retryLine, submit, stop, createLine, endLine, respond, memberApproval, setModel }
+  return { views, open, resync, receive, ensureLine, retryLine, submit, stop, createLine, endLine, respond, allowAlways, allowForSession, answerQuestion, compact, usage, fork, writeGoal, setEffort, setPermission, withdrawInput, searchFiles, memberApproval, setModel }
 })

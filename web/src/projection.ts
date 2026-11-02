@@ -11,7 +11,8 @@
  * Rows are immutable values: a change replaces the row, so a published copy of
  * `rows` re-renders only the rows that changed.
  */
-import type { ModelId, ModelProgress, SessionEvent, ToolResult } from "./rpc/protocol"
+import { GoalFold, type Goal } from "./goal"
+import type { AskQuestion, ModelId, ModelProgress, QueuedInput, SessionEvent, ToolResult } from "./rpc/protocol"
 
 export type TimelineRow =
   | { kind: "user"; key: string; text: string; at: number; sequence: number; cut: number }
@@ -50,14 +51,37 @@ export class Projection {
   private requestStarts = new Map<string, number>()
   private tools = new Map<string, number>()
   private lines = new Map<string, number>()
+  /** `ask_user` calls whose batch has no `step/tool-result` yet, oldest first. */
+  private asks: Array<{ requestId: string; callId: string; questions: AskQuestion[] }> = []
+  /** Messages the server holds in the queue: written, not yet adopted, not withdrawn. */
+  private held = new Map<string, QueuedInput>()
+  /** The branch's goal, folded from its events (goal.ts). */
+  readonly goalFold = new GoalFold()
+
+  /** The goal in force on this branch. */
+  get goal(): Goal | undefined {
+    return this.goalFold.goal()
+  }
+
+  /** The messages still queued on this branch, oldest first. */
+  queued(): readonly QueuedInput[] {
+    return [...this.held.values()]
+  }
+
+  /** The waiting `ask_user` calls of this branch: named by batch `requestId` and call id. */
+  waiting(): readonly { requestId: string; callId: string; questions: AskQuestion[] }[] {
+    return this.asks
+  }
 
   /** Applies one event; false when it was already applied. */
   apply(event: SessionEvent): boolean {
     if (event.sequence <= this.cursor) return false
     this.cursor = event.sequence
+    this.goalFold.apply(event)
     const content = event.content
     switch (content.kind) {
       case "input":
+        if (content.user !== undefined) this.held.set(event.id, { id: event.id, text: content.text ?? "", user: content.user })
         if (content.text !== undefined) {
           this.push({
             kind: "user",
@@ -68,6 +92,10 @@ export class Projection {
             cut: Math.max(0, event.sequence - 1),
           })
         }
+        break
+      case "input-applied":
+      case "input-deleted":
+        this.held.delete(content.inputId)
         break
       case "source-input": {
         const notice = branchNotice(content.text, content.mode)
@@ -125,11 +153,15 @@ export class Projection {
         this.requestStarts.delete(content.requestId)
         this.tools.set(content.callId, this.push({ kind: "tool", key: `tool-${content.callId}`, callId: content.callId, name: content.name, input: content.input, pending: true }))
         break
+      case "tool-call":
+        for (const ask of content.asks) this.asks.push({ requestId: content.requestId, callId: ask.callId, questions: ask.questions })
+        break
       case "tool-completed":
         this.completeTool(content.callId, content.result)
         break
       case "tool-result":
         for (const result of content.results) this.completeTool(result.callId, result.result)
+        this.asks = this.asks.filter((ask) => ask.requestId !== content.requestId || !content.results.some((result) => result.callId === ask.callId))
         break
       case "model-end":
         this.closeThinking(content.requestId)

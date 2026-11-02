@@ -650,6 +650,7 @@ button.event-row { width: 100%; border: 0; background: transparent; font: inheri
 }
 
 .inline-prompt { padding-bottom: var(--space-2); }
+.question-prompts { display: grid; gap: var(--space-3); max-height: 60dvh; overflow-y: auto; }
 /* Permission card (spec v1): r12, p14, shadow-xs; a 20px warning icon square, 13/500 title and an Awaiting badge head it. */
 .prompt-card { padding: 14px; /* spec v1, off-grid by design */ border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); box-shadow: var(--shadow-xs); }
 .prompt-header { display: flex; min-width: 0; align-items: center; gap: var(--space-2); }

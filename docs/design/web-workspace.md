@@ -150,9 +150,10 @@ The frontend directory is fixed when the daemon starts (§2.4); a daemon started
 | --- | --- |
 | `rpc/client.ts` | JSON-RPC over `/ws`: `hello` v3 (`clientKind: "web"`), request timeout, heartbeat with `daemon.ping`, reconnect with backoff and re-attach. Strict readers at this boundary; the rest of the app uses typed data |
 | `rpc/protocol.ts` | Hand-written types for the v3 methods and notifications the UI uses (`session.*`, `approval.*`, `session.event`, `session.state`, `session.model.progress`) |
-| `projection.ts` | Folds `session.history` pages, `session.event` and `session.model.progress` into timeline rows (user, assistant text, thinking, tool call and result, approval), following `crates/dim-cli/src/projection.rs` |
+| `projection.ts` | Folds `session.history` pages, `session.event` and `session.model.progress` into timeline rows (user, assistant text, thinking, tool call and result, approval), following `crates/dim-cli/src/projection.rs`; also tracks the waiting `ask_user` calls of each branch (`step/tool-call` until its batch's `step/tool-result`) and folds each branch's goal (`goal.ts`, a port of `crates/dim-cli/src/goal.rs`) |
 | Sidebar | Workspaces are Session summaries grouped by `cwd`; new Session by `session.create {cwd}` with a typed path or a known workspace |
-| Chat | Timeline (markdown, Shiki), composer (submit, stop, model menu), approval prompt (`approval.request` → `approval.respond`) |
+| Chat | Timeline (markdown, Shiki) with a message rail (one marker per user message from three messages on, as dim-agent's rail: hover shows the message and its first reply, a click scrolls it into view and marks it for a moment; `/timeline` is not offered, dim-agent has none), composer (submit, stop, model menu and independent permission controls, below), approval prompt (`approval.request` → `approval.respond`; "Allow for this session" → `session.grants.add` and "Always allow" for a simple `exec` command → `permission.set_rules`, both before the allow), question prompt for `ask_user` (`step/tool-call` → `session.question.respond`, closed by `step/tool-result`); the approval and question prompts take the composer's place; queued messages of the main line above the composer (`input/message` until `input/applied` or `input/deleted`; Steer and Remove → `session.input.withdraw`, Steer resends the message's content with the withdrawal); composer attachments: pasted or dropped images are sent as image content blocks (`session.submit` with `user.content`), a paste longer than 16 KiB is stored with `attachment.put` when the Session serves it and its path is named in the message, as the TUI does (`crates/dim-cli/src/attachments.rs`); `@` file mentions: the composer offers the files of the Session's workspace from `session.files.search` (WorkspaceTools; the TUI picker's index and ranking), inserts a file as `@path` and sends it as a Markdown link to its absolute path (`[@path](/abs)`, as the TUI sends it); a directory steps into `@dir/` |
+| Session permissions | The composer and `/permissions` expose independent File access and Tool approval controls for `main`, following [ADR 017](../adr/017-independent-permission-controls.md) and the [Permission policy contract](../architecture/rust-agent/plugins/Permission.md#policy-contract). The client keeps the complete policy from `session.permission.get` and `permission/changed`, shows effective file access, explicit tool choices or legacy risk behavior, and the tool allow/deny lists. Each versioned `session.permission.update` changes only the selected explicit dimension, preserving every other field including the legacy preset; conflicts refresh the policy without retry, and unsupported overrides never fall back to a preset. Unrestricted paths and Bypass ask for confirmation before widening. Process isolation links to its existing settings and is not changed by either control. |
 | Lines | Right detail panel with a Lines tree and one tab per opened line; each tab folds that line's own history and sends, stops, approves and ends on its `branchId` (§4.1) |
 | i18n | `en` and `zh-CN` |
 
@@ -212,8 +213,16 @@ commands are handled locally rather than submitted as model input.
 | --- | --- | --- |
 | `model` | `/models` | Open the existing model picker when model selection is available |
 | `session` | `/branch <prompt>` | Create a line from the shown line's newest finished turn and use the inline prompt as its opening input |
+| `session` | `/compact` | Compact the main line's context (`session.context.compact`); listed when the Session's method table (`session.methods`) lists it. Reports the result as a notice |
+| `session` | `/usage` | Show the main line's context window usage (`session.context.usage`); listed under the same condition as `/compact` |
+| `session` | `/fork` | Fork the Session at its last finished turn (`session.fork {at}`) after a confirmation, then open the new Session; listed when the connection serves `session.fork` and main has a finished turn |
+| `session` | `/goal [words]` | Show the main line's goal, folded from its own events (as the TUI folds it), or write it: `/goal OBJECTIVE`, `set`, `edit`, `pause`, `resume` and `clear` call `session.goal.<call>` with `branchId: main`; listed when the Session's method table lists `session.goal.set`. The menu fills `/goal ` for its words |
+| `model` | `/effort [value]` | List the main line model's reasoning effort choices (from `provider.catalog`, when the model advertises reasoning preferences), or set one with `session.model.update {modelPreferences: {reasoningEffort}}`, as `/effort` does in the TUI (`configure.rs`). Listed only when the model has choices. `/fast` is not offered: no model advertises service tiers yet |
+| `model` | `/permissions` | Open the composer's permission selector (below). Listed where the Session serves `session.permission.get` and `session.permission.update` |
 | `session` | `/lines` | Open the existing Session lines panel |
 | `session` | `/new` | Navigate to the existing new-Session page, seeded with the current Session's working directory |
+
+`/compact`, `/usage`, `/fork`, `/goal` and `/effort` belong to the main Session composer; a line composer does not list them, because the Session-wide cut and compaction are decided on main. `/rename` is not listed: the App Server does not serve `session.rename` yet (the SessionTitle design).
 
 Commands whose action is unavailable are omitted. Native-only commands are not
 advertised. Shared actions follow the TUI's canonical names and argument flow,
@@ -245,8 +254,7 @@ menu closes while typing `/branch <prompt>`; Enter then sends it as a message.
 └──────────────────────────────────────────────────┘
 ```
 
-This reuses existing catalog reads, the model picker, routing and branch methods;
-it introduces no command RPC, catalog cache or general management access.
+This reuses existing catalog reads, the model picker, routing, branch and fork methods and the Session context methods (`session.context.compact`, `session.context.usage`); it adds no new RPC, catalog cache or general management access.
 
 ### 4.3 Settings and account management on the local Web entry
 

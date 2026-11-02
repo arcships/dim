@@ -10,11 +10,12 @@ pub mod background;
 pub mod exec;
 pub mod file_reads;
 pub mod files;
+pub mod mentions;
 
 use crate::{
     host::{HostError, HostFuture, SessionFilesHost, ToolDriver, ToolExecutionContext, ToolHost},
     host_platform::HostPlatform,
-    methods::{Interruption, MethodDecl, RpcError, SessionMethods, params},
+    methods::{Interruption, MethodDecl, RpcError, SessionMethods, params, reply},
     timeline_tree::TreeCommands,
 };
 use background::BackgroundExecPlugin;
@@ -33,6 +34,9 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 /// Host tools this capability provides.
 pub const TOOL_NAMES: [&str; 7] = ["read", "write", "edit", "glob", "grep", "exec", "exec_stop"];
 const OUTPUT_METHOD: &str = "session.exec.output";
+/// The `session.files` namespace: the files an `@` mention offers.
+const FILES_NAMESPACE: &str = "session.files";
+const SEARCH_METHOD: &str = "session.files.search";
 
 #[derive(Debug, Clone)]
 pub struct WorkspaceToolsConfig {
@@ -290,6 +294,48 @@ impl DynPlugin for WorkspaceToolsPlugin {
                 owner.calls.wait().await;
                 Ok(())
             })?;
+            let mentions = Arc::new(mentions::MentionIndex::default());
+            let search_root = tools.cwd.clone();
+            methods.register(
+                ctx,
+                FILES_NAMESPACE,
+                vec![MethodDecl::new(SEARCH_METHOD, false, Interruption::Report)],
+                Arc::new(move |_, value, _, _| {
+                    let (mentions, root) = (mentions.clone(), search_root.clone());
+                    Box::pin(async move {
+                        #[derive(serde::Deserialize)]
+                        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                        struct Params {
+                            session_id: String,
+                            query: String,
+                            limit: Option<usize>,
+                        }
+                        let Params {
+                            session_id,
+                            query,
+                            limit,
+                        } = params(value)?;
+                        if session_id.is_empty() {
+                            return Err(RpcError::invalid("sessionId must not be empty"));
+                        }
+                        let limit = limit
+                            .unwrap_or(mentions::DEFAULT_LIMIT)
+                            .clamp(1, mentions::MAX_LIMIT);
+                        let found = tokio::task::spawn_blocking(move || {
+                            mentions.search(&root, &query, limit)
+                        })
+                        .await
+                        .map_err(|error| {
+                            RpcError::app(-32000, "session_files_failed", error.to_string())
+                        })?;
+                        reply(serde_json::json!({"candidates": found.iter().map(|candidate| serde_json::json!({
+                            "relativePath": candidate.relative_path,
+                            "absolutePath": candidate.absolute_path,
+                            "dir": candidate.dir,
+                        })).collect::<Vec<_>>()}))
+                    })
+                }),
+            )?;
             let tree = tools.tree.clone();
             methods.register(
                 ctx,

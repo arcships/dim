@@ -9,7 +9,11 @@ Owner: [workspace_tools/mod.rs](../../../../crates/dim-agent-capabilities/src/wo
 [exec.rs](../../../../crates/dim-agent-capabilities/src/workspace_tools/exec.rs).
 Provides ToolHost for read, write, edit, glob, grep, exec and exec_stop, and registers the
 leaf namespace `session.exec.output` with `sessionMethods` for the active
-command's bounded tail preview. The WorkspaceTools plugin registers this part
+command's bounded tail preview. It also registers the namespace `session.files`
+with `sessionMethods`: `session.files.search` returns the files of the Session's
+workspace an `@` mention offers, ranked as the TUI picker ranks them
+(`workspace_tools/mentions.rs`); a query that names a path outside the workspace
+finds nothing. The WorkspaceTools plugin registers this part
 and the branch parts FileReads and BackgroundExec, and holds the file-write
 coordinator: one per-path FIFO admission domain shared by write and edit across
 every Session it serves, which it hands to each Session's part. The plugin keeps

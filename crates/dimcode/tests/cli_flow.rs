@@ -9608,7 +9608,8 @@ fn daemon_vacuum_reclaims_an_offline_store() {
     for sequence in 1..=2000 {
         connection
             .execute(
-                "INSERT INTO timeline_events VALUES ('s', 'main', ?1, ?1, 'turn/start', ?2, NULL)",
+                "INSERT INTO timeline_events (session_id, branch_id, sequence, last_sequence, kind, body) \
+                 VALUES ('s', 'main', ?1, ?1, 'turn/start', ?2)",
                 rusqlite::params![sequence, "x".repeat(4000)],
             )
             .unwrap();

@@ -20,6 +20,43 @@ const SHELL_INPUT_ENTRY: &str = r#"<dim-shell-input kind="command" status="compl
 /// (WorkspaceTools §8.2), byte for byte.
 const EXEC_ENTRY: &str = r#"<dim-notification source="exec" task="exec-7f2">: something you started has finished, failed or been cancelled, such as a background command. It is information, not a new request. The output preview belongs to that command. Use the read tool with its output path to read the full result. If the work it belongs to is no longer wanted, note the result and do not restart that work."#;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_files_search_preserves_workspace_paths_with_literal_backslashes() {
+    let mut shell = Shell::launch().await;
+    std::fs::create_dir(shell.work.join("nested")).unwrap();
+    let files = [
+        (r"\tmp\secret.txt", "literal backslashes"),
+        ("nested/secret.txt", "nested file"),
+    ];
+    for (relative, content) in files {
+        std::fs::write(shell.work.join(relative), content).unwrap();
+    }
+    let found = shell
+        .client
+        .rpc(
+            "session.files.search",
+            json!({"sessionId": shell.sid, "query": "secret.txt"}),
+        )
+        .await;
+    assert_ok(&found);
+    let candidates = found["result"]["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 2, "{found}");
+    for (relative, content) in files {
+        let expected = shell.work.canonicalize().unwrap().join(relative);
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate["absolutePath"] == json!(expected))
+            .unwrap_or_else(|| panic!("missing workspace path {expected:?}: {found}"));
+        assert_eq!(candidate["relativePath"], relative);
+        assert_eq!(candidate["dir"], false);
+        assert_eq!(
+            std::fs::read_to_string(candidate["absolutePath"].as_str().unwrap()).unwrap(),
+            content
+        );
+    }
+    shell.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn background_exec_output_is_live_bounded_and_scoped() {
     let mut shell = Shell::launch_with(json!({

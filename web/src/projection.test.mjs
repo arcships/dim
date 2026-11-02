@@ -23,7 +23,7 @@ function event(sequence, content) {
 
 test("a user message carries the cut a child line opens at", () => {
   const projection = new Projection()
-  projection.apply(event(5, { kind: "input", text: "try RwLock\nfor the cache lock" }))
+  projection.apply(event(5, { kind: "input", text: "try RwLock\nfor the cache lock", blocks: [] }))
   projection.apply(event(6, {
     kind: "branch-create",
     branchId: "b-7c",
@@ -56,6 +56,7 @@ test("branch messages, ends and the last turn end become rows", () => {
   projection.apply(event(1, {
     kind: "source-input",
     text: "<dim-branch-message from=\"b-7c\" to=\"main\">\nStop &amp;&amp; look at parser.rs.\n</dim-branch-message>",
+    blocks: [],
     mode: "steer",
   }))
   projection.apply(event(2, {
@@ -80,7 +81,7 @@ test("branch messages, ends and the last turn end become rows", () => {
 
 test("replayed events do not duplicate rows", () => {
   const projection = new Projection()
-  const input = event(1, { kind: "input", text: "hello" })
+  const input = event(1, { kind: "input", text: "hello", blocks: [] })
   assert.equal(projection.apply(input), true)
   assert.equal(projection.apply(input), false)
   assert.equal(projection.rows.length, 1)

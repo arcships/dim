@@ -1216,6 +1216,13 @@
       ]
     },
     {
+      "id": "dim_agent_capabilities::workspace_tools::mentions",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::workspace_tools",
+      "file": "crates/dim-agent-capabilities/src/workspace_tools/mentions.rs",
+      "unexpandedMacros": []
+    },
+    {
       "id": "dim_agent_questions",
       "crate": "dim_agent_questions",
       "parent": null,
@@ -12730,11 +12737,13 @@
         "path RpcError::reloading",
         "path SessionMethods",
         "path params",
+        "path reply",
         "use crate::methods::Interruption",
         "use crate::methods::MethodDecl",
         "use crate::methods::RpcError",
         "use crate::methods::SessionMethods",
-        "use crate::methods::params"
+        "use crate::methods::params",
+        "use crate::methods::reply"
       ]
     },
     {
@@ -12792,6 +12801,17 @@
         "path files::resolve_path",
         "use files::FileTools",
         "use files::FileWriteCoordinator"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::workspace_tools",
+      "to": "dim_agent_capabilities::workspace_tools::mentions",
+      "references": [
+        "mod mentions",
+        "path mentions",
+        "path mentions::DEFAULT_LIMIT",
+        "path mentions::MAX_LIMIT",
+        "path mentions::MentionIndex::default"
       ]
     },
     {
@@ -33945,6 +33965,7 @@
       "from": "dim_cli::ui::theme_panel::tests",
       "to": "dim_cli::ui::theme_panel",
       "references": [
+        "path ThemePanel::new",
         "path entries"
       ]
     },

@@ -89,6 +89,7 @@ test("raw branch messages and input deletions are decoded", () => {
   assert.deepEqual(message.events[0].content, {
     kind: "source-input",
     text: "<dim-branch-message from=\"main\">\nhello\n</dim-branch-message>",
+    blocks: [{ text: "<dim-branch-message from=\"main\">\nhello\n</dim-branch-message>", retire: false }],
     mode: "steer",
   })
 

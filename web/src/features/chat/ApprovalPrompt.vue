@@ -5,20 +5,25 @@ import { FilePen, Globe, Search, Terminal, Wrench } from "lucide-vue-next"
 import type { ApprovalDecision, ApprovalRequest, MemberApprovalDescriptor } from "../../rpc/protocol"
 import { RpcError } from "../../rpc/client"
 import { useChatStore } from "../../stores/chat"
+import { alwaysCommand, fileGrant } from "../../approvals"
 import { approvalKeyDecision } from "../lines/line-state"
 import { diffLines, resolveToolDisplay, type ToolRenderer } from "./tool-display"
 
 /**
  * The tool approval prompt: it takes the composer's place, names the action,
- * shows the call's input, and answers Deny or Allow (Enter/y, Escape/n).
+ * shows the call's input, and answers Deny or Allow (Enter/y, Escape/n). A
+ * simple command also offers "Always allow" and a file tool offers "Allow for
+ * this session"; each saves its rule or grant before it allows.
  */
-const props = defineProps<{ sessionId: string; request: ApprovalRequest; keyboard?: boolean }>()
+const props = defineProps<{ sessionId: string; request: ApprovalRequest; keyboard?: boolean; rulesAvailable?: boolean }>()
 const { t } = useI18n()
 const chat = useChatStore()
 const pending = ref(false)
 const error = ref("")
 
 const isMember = computed(() => props.request.call.name === "member_approval_allow")
+const sessionGrant = computed(() => !isMember.value && fileGrant(props.request) !== undefined)
+const alwaysAllowed = computed(() => !isMember.value && props.rulesAvailable === true && alwaysCommand(props.request) !== undefined)
 const member = ref<MemberApprovalDescriptor>()
 const loading = ref(false)
 const retryable = ref(true)
@@ -55,13 +60,17 @@ const extra = computed(() => Object.entries(input.value)
   .filter(([key]) => !["command", "cwd", "path", "pattern", "oldText", "newText", "content", "query", "url"].includes(key))
   .map(([key, value]) => ({ key, value: typeof value === "string" ? value : JSON.stringify(value) })))
 
-async function respond(decision: ApprovalDecision): Promise<void> {
-  if (pending.value || (decision === "allow" && isMember.value && (loading.value || member.value === undefined))) return
+type Choice = ApprovalDecision | "always" | "session"
+
+async function respond(choice: Choice): Promise<void> {
+  if (pending.value || (choice === "allow" && isMember.value && (loading.value || member.value === undefined))) return
   pending.value = true
   error.value = ""
   try {
-    if (decision === "allow" && isMember.value && !await loadMember()) { pending.value = false; return }
-    await chat.respond(props.sessionId, props.request, decision)
+    if (choice === "allow" && isMember.value && !await loadMember()) { pending.value = false; return }
+    if (choice === "always") await chat.allowAlways(props.sessionId, props.request)
+    else if (choice === "session") await chat.allowForSession(props.sessionId, props.request)
+    else await chat.respond(props.sessionId, props.request, choice)
   } catch (cause) {
     error.value = cause instanceof Error && cause.message ? cause.message : t("prompt.permissionSubmitFailed")
     pending.value = false
@@ -149,6 +158,8 @@ watch(() => props.keyboard, () => props.keyboard === false ? detach() : attach()
     <div class="prompt-buttons">
       <button type="button" class="ui-button" data-size="md" data-variant="ghost" :disabled="pending" @click="respond('deny')">{{ t("prompt.reject") }}</button>
       <button v-if="isMember && error && retryable" type="button" class="ui-button" :disabled="loading" @click="loadMember()">Retry</button>
+      <button v-if="sessionGrant" type="button" class="ui-button" data-size="md" data-variant="secondary" :disabled="pending" @click="respond('session')">{{ t("prompt.allowSession") }}</button>
+      <button v-if="alwaysAllowed" type="button" class="ui-button" data-size="md" data-variant="secondary" :disabled="pending" @click="respond('always')">{{ t("prompt.allowAlways") }}</button>
       <button type="button" class="ui-button" data-size="md" data-variant="primary" :disabled="pending || (isMember && (loading || !member))" @click="respond('allow')">{{ t("prompt.allowOnce") }}</button>
     </div>
   </article>
