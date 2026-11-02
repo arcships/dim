@@ -143,7 +143,9 @@ class DimAgent(BaseInstalledAgent):
             "SSL_CERT_FILE": CA_BUNDLE,
             **self.extra_env,
         }
-        key_var = env["DIM_EVAL_API_KEY_ENV"]
+        key_var = env.get("DIM_EVAL_API_VAR") or env.get("DIM_EVAL_API_KEY_ENV", "DEEPSEEK_API_KEY")
+        if "****" in key_var:
+            key_var = "DEEPSEEK_API_KEY"
 
         # The model config travels as an env value and is written by the shell,
         # so no quoting of its JSON is needed. Missing credentials otherwise

@@ -186,7 +186,11 @@ def build_job_config(settings: ProviderSettings) -> dict:
                     settings.api_key_env: "${%s}" % settings.api_key_env,
                     # Written into the task environment as dimcode's --model-config.
                     "DIM_EVAL_MODEL_CONFIG_JSON": settings.model_config,
-                    "DIM_EVAL_API_KEY_ENV": settings.api_key_env,
+                    # Harbor's templatize_sensitive_env redacts the value of any
+                    # key whose name contains KEY/SECRET/TOKEN. This value is
+                    # itself the name of the real key variable, so the variable
+                    # name must not look sensitive or resume loses it.
+                    "DIM_EVAL_API_VAR": settings.api_key_env,
                 },
             }
         ],
