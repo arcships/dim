@@ -635,18 +635,6 @@ fn run_terminal(
                     app.set_fullscreen(entering);
                     dirty = true;
                 }
-                Outcome::Suspend => {
-                    if terminal.suspend().is_err() {
-                        let code = terminal.lost();
-                        app.host.shutdown();
-                        return code;
-                    }
-                    app.request_reflow();
-                    status.forget();
-                    progress.forget();
-                    title.forget();
-                    dirty = true;
-                }
                 Outcome::Edit {
                     area,
                     target,
@@ -718,8 +706,6 @@ enum Outcome {
     Continue,
     /// `/tui`: switch between the scrollback and fullscreen interfaces.
     SwitchMode,
-    /// `/suspend`: give the terminal to the shell until the job continues.
-    Suspend,
     /// A management panel's edit: the document's text and what its write
     /// becomes, for the external editor.
     Edit {
@@ -3723,7 +3709,6 @@ impl App {
                     .send(Command::Configure(text.trim_end().to_owned()));
                 Outcome::Continue
             }
-            "suspend" => Outcome::Suspend,
             "exit" => Outcome::Exit(0),
             "tui" => Outcome::SwitchMode,
             "new" => {

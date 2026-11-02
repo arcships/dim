@@ -286,7 +286,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "configure tool approvals" => "設定工具核准",
         "choose ask or full access" => "選擇詢問或完整存取",
         "open settings" => "開啟設定",
-        "suspend to the shell" => "暫停到 Shell",
         "exit" => "離開",
 
         // composer/palette.rs

@@ -361,16 +361,6 @@ pub const COMMANDS: &[Command] = &[
     slash("settings", "app", "open settings", &[], Needs::Nothing),
     slash("keys", "app", "show the key bindings", &[], Needs::Nothing),
     Command {
-        requires_exact_name: true,
-        ..slash(
-            "suspend",
-            "app",
-            "suspend to the shell",
-            &[],
-            Needs::Nothing,
-        )
-    },
-    Command {
         key: Some("Ctrl+C Ctrl+C"),
         requires_exact_name: true,
         ..slash("exit", "app", "exit", &["quit"], Needs::Nothing)

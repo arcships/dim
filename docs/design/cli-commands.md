@@ -17,7 +17,7 @@ contract records the native platform acceptance evidence and outstanding checks.
 In both scrollback and fullscreen TUI, group commands by category and sort
 categories and command names alphabetically by their canonical English identifiers.
 Search relevance takes priority; equally ranked matches use the same category/name order.
-Exit and suspend require their exact name or alias before dispatch: choosing an
+Exit requires its exact name or alias before dispatch: choosing an
 incomplete match fills the command name and keeps the composer open. Exact typed
 commands, including hidden commands, retain their own dispatch behavior.
 The command menu lists `/permissions` as the permission entry. `/approvals` and `/approval`

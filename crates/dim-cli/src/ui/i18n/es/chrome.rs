@@ -348,7 +348,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "configure tool approvals" => "configurar aprobaciones",
         "choose ask or full access" => "elegir preguntar o acceso total",
         "open settings" => "abrir ajustes",
-        "suspend to the shell" => "suspender al shell",
         "exit" => "salir",
 
         // composer/palette.rs

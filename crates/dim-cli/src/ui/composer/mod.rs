@@ -1929,15 +1929,12 @@ mod tests {
     }
 
     #[test]
-    fn typed_suspend_is_a_native_command_and_ctrl_z_stays_undo() {
+    fn removed_suspend_submits_as_text_and_ctrl_z_stays_undo() {
         let mut c = Composer::new(Vec::new());
         typed(&mut c, "/suspend");
         assert_eq!(
             c.handle_key(key(KeyCode::Enter)),
-            Outcome::Command {
-                name: "suspend".into(),
-                args: String::new(),
-            }
+            Outcome::Submit("/suspend".into())
         );
         let mut c = Composer::new(Vec::new());
         typed(&mut c, "draft");
@@ -1962,14 +1959,14 @@ mod tests {
     }
 
     #[test]
-    fn palette_requires_an_exact_exit_or_suspend_before_dispatch() {
-        for query in ["/", "/e", "/ex", "/sus"] {
+    fn palette_requires_an_exact_exit_before_dispatch() {
+        for query in ["/", "/e", "/ex"] {
             let mut c = Composer::new(Vec::new());
             typed(&mut c, query);
             assert_eq!(c.handle_key(key(KeyCode::Enter)), Outcome::Handled);
-            assert!(matches!(c.text(), "/exit" | "/suspend"));
+            assert_eq!(c.text(), "/exit");
         }
-        for query in ["/exit", "/quit", "/suspend"] {
+        for query in ["/exit", "/quit"] {
             let mut c = Composer::new(Vec::new());
             typed(&mut c, query);
             assert!(matches!(

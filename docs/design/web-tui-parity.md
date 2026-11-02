@@ -65,7 +65,7 @@ All P2 items are implemented or dropped (`/fast`). The P3 items remain planned; 
 
 ## 6. Out of scope
 
-- Terminal-only commands: `/tui`, `/keys`, `/suspend`, `/exit`, `/scroll-top`, `/scroll-bottom`, `/web`. The web workspace has its own shell and browser scrolling.
+- Terminal-only commands: `/tui`, `/keys`, `/exit`, `/scroll-top`, `/scroll-bottom`, `/web`. The web workspace has its own shell and browser scrolling.
 - Commands the web workspace already covers through Settings: `/connect`, `/login`, `/models`, `/mcp`, `/plugins`, `/skills`, `/reload-skills`, `/theme`, `/language`, `/settings`.
 
 ## 7. Remaining

@@ -3567,7 +3567,9 @@
       "parent": "dim_cli::ui",
       "file": "crates/dim-cli/src/ui/atomic.rs",
       "unexpandedMacros": [
-        "format"
+        "assert",
+        "format",
+        "vec"
       ]
     },
     {
@@ -29244,6 +29246,7 @@
       "to": "dim_cli::ui::atomic",
       "references": [
         "path sibling",
+        "path test_in_child",
         "path update"
       ]
     },
@@ -29436,6 +29439,14 @@
       "to": "dim_cli::ui::composer::history::tests",
       "references": [
         "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::composer::history::tests",
+      "to": "dim_cli::ui::atomic",
+      "references": [
+        "path atomic::TestChildren",
+        "path atomic::test_in_child"
       ]
     },
     {
@@ -29779,6 +29790,13 @@
       "to": "dim_cli::ui::config::tests",
       "references": [
         "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::config::tests",
+      "to": "dim_cli::ui::atomic",
+      "references": [
+        "path atomic::test_in_child"
       ]
     },
     {
@@ -33676,7 +33694,6 @@
         "path sys::enable_raw_mode",
         "path sys::install_signal_guard",
         "path sys::is_tty",
-        "path sys::raise_stop",
         "path sys::read_timeout",
         "path sys::rearm_restore_guard",
         "path sys::remove_signal_guard",
@@ -38348,6 +38365,18 @@
     {
       "module": "dim_cli::session_host::tests",
       "path": "RuntimeSource::System"
+    },
+    {
+      "module": "dim_cli::ui::atomic",
+      "path": "Duration::from_millis"
+    },
+    {
+      "module": "dim_cli::ui::atomic",
+      "path": "Duration::from_secs"
+    },
+    {
+      "module": "dim_cli::ui::atomic",
+      "path": "Instant::now"
     },
     {
       "module": "dim_cli::ui::composer",

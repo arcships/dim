@@ -181,8 +181,8 @@ impl WriteThread {
     /// Closes the queue and waits until everything queued was written. With a
     /// deadline, gives up there and leaves the writer behind, which only an
     /// exit may do: a writer still blocked on a terminal that stopped reading
-    /// ends with the process. A suspend waits for its writer instead, so the
-    /// next one starts on an empty queue.
+    /// ends with the process. An external command waits for its writer instead,
+    /// so the command starts on an empty queue.
     fn drain(&mut self, deadline: Option<Instant>) {
         self.sender = None;
         let Some(handle) = self.handle.take() else {
@@ -285,9 +285,8 @@ impl Terminal {
 
     /// Writes a program status report (`ui::status`). From then on every
     /// way out, the restore of a panic or a signal included, clears the
-    /// record; a suspend clears it too, so the next status is reported again.
-    /// The mode is marked before the write, so a signal that lands during
-    /// the write still clears it.
+    /// record. The mode is marked before the write, so a signal that lands
+    /// during the write still clears it.
     pub fn report_status(&mut self, report: Vec<u8>) -> io::Result<()> {
         modes::mark(Mode::Status);
         self.writer.send(report)
@@ -295,9 +294,8 @@ impl Terminal {
 
     /// Draws or removes the progress bar (`ui::progress`). From then on
     /// every way out, the restore of a panic or a signal included, removes
-    /// it; a suspend does too, so the next status draws it again. The mode is
-    /// marked before the write, so a signal that lands during the write still
-    /// removes it.
+    /// it. The mode is marked before the write, so a signal that lands during
+    /// the write still removes it.
     pub fn report_progress(&mut self, bar: &[u8]) -> io::Result<()> {
         modes::mark(Mode::Progress);
         self.writer.send(bar.to_vec())
@@ -512,22 +510,6 @@ impl Terminal {
         }
     }
 
-    /// Hands the terminal back to the shell and stops the process (Ctrl+Z).
-    /// Output already queued reaches the screen before the modes go; the
-    /// writer is restarted because the process keeps writing. Returns once
-    /// the job is continued, with the terminal entered again. A suspend is
-    /// not an exit: it waits for its writer, and only the writes that hand
-    /// the terminal back are bounded.
-    pub fn suspend(&mut self) -> Result<(), TerminalError> {
-        self.writer.drain(None);
-        let deadline = Instant::now() + EXIT_BUDGET;
-        self.writer = WriteThread::start();
-        let fullscreen = modes::is_live(Mode::AltScreen);
-        self.release_modes(deadline);
-        stop_process();
-        self.retake(fullscreen)
-    }
-
     /// Runs `command` on the terminal itself, as the external editor does:
     /// what this process turned on is released first and comes back, in both
     /// interfaces, when the command exits. The command inherits stdin,
@@ -631,16 +613,6 @@ impl Drop for Terminal {
         }
     }
 }
-
-/// Stops the process for job control. There is none on Windows, so Ctrl+Z
-/// only repaints there.
-#[cfg(unix)]
-fn stop_process() {
-    sys::raise_stop();
-}
-
-#[cfg(not(unix))]
-fn stop_process() {}
 
 fn install_panic_hook() {
     let previous = std::panic::take_hook();

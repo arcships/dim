@@ -135,6 +135,65 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 }
 
 #[cfg(test)]
+pub(super) struct TestChildren(pub(super) Vec<std::process::Child>);
+
+#[cfg(test)]
+impl TestChildren {
+    pub(super) fn wait(&mut self) {
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let mut running = false;
+            for child in &mut self.0 {
+                match child.try_wait().expect("poll the lock-flow child") {
+                    Some(status) => assert!(status.success(), "child {}: {status}", child.id()),
+                    None => running = true,
+                }
+            }
+            if !running {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "lock-flow children did not exit within 60 seconds"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestChildren {
+    fn drop(&mut self) {
+        for child in &mut self.0 {
+            let _ = child.kill();
+        }
+        for child in &mut self.0 {
+            let _ = child.wait();
+        }
+    }
+}
+
+#[cfg(test)]
+pub(super) fn test_in_child() -> bool {
+    const CHILD: &str = "DIM_TEST_ATOMIC_FLOW";
+    let thread = std::thread::current();
+    let test = thread.name().expect("the test thread has its test's name");
+    if std::env::var(CHILD).as_deref() == Ok(test) {
+        return false;
+    }
+    let mut children = TestChildren(vec![
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test])
+            .env(CHILD, test)
+            .spawn()
+            .expect("start the lock-flow child"),
+    ]);
+    children.wait();
+    true
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
@@ -143,6 +202,9 @@ mod tests {
     /// reporting contention as a failed write.
     #[test]
     fn a_write_waits_for_a_held_lock_and_then_writes() {
+        if test_in_child() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         std::fs::write(&path, b"{}\n").unwrap();

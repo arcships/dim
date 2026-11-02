@@ -236,10 +236,8 @@ daemon root (LocalId dim-daemon)                 dimcode leaf root
 ```
 
 The daemon does not start the leaf process: the user's shell does, and the
-process keeps the terminal it was started on. This keeps the terminal with
-the process the shell's job control knows (`/suspend`, Ctrl+Z and resume
-work as in a shell-started TUI), and leaves the daemon nothing to do with
-terminals, processes or their exit codes.
+process keeps the terminal it was started on. This leaves the daemon nothing
+to do with terminals, processes or their exit codes.
 
 **Session.** Before `ui.open`, the leaf binds a private address and mounts
 `LeafNode` in its client tree, accepting there. `LeafNode` provides the
@@ -329,7 +327,7 @@ once the new one is `online`. It is not atomic across processes: the new
 leaf stands when the old close fails, and no rollback is claimed.
 
 `/web` toggles the daemon-owned web switch, so the TUI stays in the
-terminal. `/suspend` and "Restart now" work as in a shell-started TUI: the
+terminal. "Restart now" works as in a shell-started TUI: the
 leaf is the shell's process.
 
 `hello` advertises `ui.*` to local connections only, with the internal

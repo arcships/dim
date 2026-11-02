@@ -312,7 +312,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "configure tool approvals" => "ツール承認を設定",
         "choose ask or full access" => "確認かフルアクセスを選ぶ",
         "open settings" => "設定を開く",
-        "suspend to the shell" => "シェルへサスペンド",
         "exit" => "終了",
 
         // composer/palette.rs

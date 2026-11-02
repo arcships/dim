@@ -330,7 +330,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "configure tool approvals" => "atur persetujuan tool",
         "choose ask or full access" => "pilih tanya atau akses penuh",
         "open settings" => "buka pengaturan",
-        "suspend to the shell" => "tangguhkan ke shell",
         "exit" => "keluar",
 
         // composer/palette.rs

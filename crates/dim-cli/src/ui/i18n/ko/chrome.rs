@@ -302,7 +302,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "configure tool approvals" => "도구 승인 설정",
         "choose ask or full access" => "확인 또는 전체 액세스 선택",
         "open settings" => "설정 열기",
-        "suspend to the shell" => "shell로 일시 중단",
         "exit" => "종료",
 
         // composer/palette.rs

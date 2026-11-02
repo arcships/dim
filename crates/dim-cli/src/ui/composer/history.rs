@@ -6,6 +6,7 @@
 //!
 //! `append` queues the entry to one writer thread and returns, so the submit
 //! path never waits for the file or its lock; a write that fails is dropped.
+//! If the writer cannot start, entries are dropped for the rest of the process.
 //! `flush` waits for the queue, and the interface calls it on the way out.
 
 use serde::{Deserialize, Serialize};
@@ -100,7 +101,7 @@ fn writer() -> &'static Sender<Message> {
     static WRITER: OnceLock<Sender<Message>> = OnceLock::new();
     WRITER.get_or_init(|| {
         let (sender, queued) = mpsc::channel();
-        std::thread::Builder::new()
+        let _ = std::thread::Builder::new()
             .name("dim-input-history".into())
             .spawn(move || {
                 for message in queued {
@@ -111,8 +112,7 @@ fn writer() -> &'static Sender<Message> {
                         }
                     }
                 }
-            })
-            .expect("the input history writer thread starts");
+            });
         sender
     })
 }
@@ -207,6 +207,9 @@ mod tests {
     /// Concurrent appends to one home keep every entry.
     #[test]
     fn concurrent_appends_keep_every_entry() {
+        if atomic::test_in_child() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         for round in 0..8 {
             let home = dir.path().join(format!("round-{round}"));
@@ -265,20 +268,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         let test = std::env::current_exe().unwrap();
-        let children: Vec<_> = (0..2)
-            .map(|writer| {
+        let mut children = atomic::TestChildren(Vec::new());
+        for writer in 0..2 {
+            children.0.push(
                 std::process::Command::new(&test)
                     .arg("--exact")
                     .arg("ui::composer::history::tests::the_lock_holds_across_processes")
                     .env(CHILD_HOME, home)
                     .env(CHILD_WRITER, writer.to_string())
                     .spawn()
-                    .unwrap_or_else(|error| panic!("writer {writer}: {error}"))
-            })
-            .collect();
-        for mut child in children {
-            assert!(child.wait().unwrap().success(), "a writer failed");
+                    .unwrap_or_else(|error| panic!("writer {writer}: {error}")),
+            );
         }
+        children.wait();
         for writer in 0..2 {
             let key = format!("key{writer}");
             assert_eq!(

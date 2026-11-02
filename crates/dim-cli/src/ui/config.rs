@@ -129,6 +129,9 @@ mod tests {
     /// parses, so a reader finds every key after the race.
     #[test]
     fn concurrent_writers_keep_every_key() {
+        if atomic::test_in_child() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         for round in 0..ROUNDS {
             let home = dir.path().join(format!("round-{round}"));

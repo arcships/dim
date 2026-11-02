@@ -235,17 +235,9 @@ pub fn restore_terminal_once_until(deadline: Instant) {
 }
 
 /// Lets the next exit path write the restore sequence again: the terminal was
-/// handed back by a suspend and is now ours.
+/// handed to an external command and is now ours.
 pub fn rearm_restore_guard() {
     RESTORED.store(false, Ordering::SeqCst);
-}
-
-/// Stops the process the way job control does, and returns once SIGCONT
-/// continues it. No handler is installed for SIGTSTP, so the default action
-/// (stop) applies.
-pub fn raise_stop() {
-    // SAFETY: raise only delivers a signal to this process.
-    unsafe { libc::raise(libc::SIGTSTP) };
 }
 
 /// Puts back the flags [`write_until`] recorded, when it recorded any: a
