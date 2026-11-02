@@ -26605,6 +26605,9 @@
         "path RuntimeAction::Configure",
         "path RuntimeAction::Install",
         "path RuntimeItem",
+        "path RuntimesError",
+        "path RuntimesError::Failed",
+        "path RuntimesError::Unsupported",
         "path SandboxBackend",
         "path SessionItem",
         "path SessionPort",
@@ -26674,6 +26677,7 @@
         "use crate::model::session::ProviderEntry",
         "use crate::model::session::RuntimeAction",
         "use crate::model::session::RuntimeItem",
+        "use crate::model::session::RuntimesError",
         "use crate::model::session::SandboxBackend",
         "use crate::model::session::SessionItem",
         "use crate::model::session::SessionPort",
@@ -30669,9 +30673,13 @@
         "path RuntimeAction::Configure",
         "path RuntimeAction::Install",
         "path RuntimeItem",
+        "path RuntimesError",
+        "path RuntimesError::Failed",
+        "path RuntimesError::Unsupported",
         "use crate::model::session::PluginItem",
         "use crate::model::session::RuntimeAction",
-        "use crate::model::session::RuntimeItem"
+        "use crate::model::session::RuntimeItem",
+        "use crate::model::session::RuntimesError"
       ]
     },
     {
@@ -30781,6 +30789,7 @@
         "path RuntimeSource",
         "path RuntimeSource::Download",
         "path RuntimeSource::System",
+        "path RuntimesError::Unsupported",
         "use crate::model::session::RuntimeSource"
       ]
     },
