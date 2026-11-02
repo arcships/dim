@@ -38,6 +38,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "list plugins, turn them on or off, reload (install PATH)" => {
             "listar plugins, ligar ou desligar, recarregar (install CAMINHO)"
         }
+        "Enter open /runtime · o on/off · r reload · Esc close" => {
+            "Enter abrir /runtime · o ligar/desligar · r recarregar · Esc fechar"
+        }
+        "waits for the {runtime} runtime" => "aguarda o runtime {runtime}",
         _ => return None,
     })
 }

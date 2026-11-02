@@ -38,6 +38,7 @@ pub mod prompts;
 pub mod providers_panel;
 pub mod render;
 pub mod rows;
+pub mod runtime_panel;
 pub mod sessions_panel;
 pub mod settings_panel;
 pub mod shell;
