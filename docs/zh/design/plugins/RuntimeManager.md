@@ -12,7 +12,7 @@ RuntimeManager 提供插件代码运行所需的 Node 与 Python rutis 运行时
 | Python：下载固定版本、按官方校验文件校验、按固定 hash 安装 `rutis` 包、启动（§3） | 是 | |
 | 两个运行时都支持 `source: system`（§2.2） | 是 | |
 | 下载源列表：官方源在前，镜像在后（§2.1） | 是 | |
-| `runtime.list`、`runtime.install`；`dimcode runtime list/install`（§5） | 是 | 状态变化通知客户端 |
+| `runtime.list`、`runtime.install`、`runtime.configure`、`/runtime` 面板与 `dimcode runtime` 各形态（§5） | 是 | 状态变化通知客户端 |
 | 发布包带默认插件和默认配置文件（§6） | 是 | |
 | Python 通过 PluginManager 的链接目录导入插件（§4） | 运行时一侧在这里；链接由 PluginManager 建（[#3](https://github.com/arcships/dim/issues/3)） | |
 | 删除本版 Dim 不再使用的运行时目录 | | 是 |
@@ -82,7 +82,7 @@ session-node / py：启动进程、握手、挂载会话、维护 RuntimeStatus
 
 - `source`：`download` 用上面的压缩包；`system` 用 `PATH` 上的解释器（`node`；`python3`，Windows 上是 `python`），获取时检查：Node 22.19 或更高（`@arcships/rutis-runtime` 的 `engines`）且带自己的 npm（`npm-cli.js` 在官方压缩包和安装程序放的位置；没有它的 Node 会失败，原因里写出这个路径），Python 3.12 或更高且有 pip。检查不通过就是这个运行时的失败（§3.3）。
 - `auto`：`true` 每次启动都获取。`false` 在 `runtime.install`（§5）之前不动；装好后会被记录（§2.4），之后每次启动都像 `auto` 一样获取。
-- 用户在 `<home>/runtimes/config.json` 里覆盖预置，形状相同，按运行时、按字段覆盖。它在 home 里，所以只有用户本地配置能改，项目配置不能。
+- 用户在 `<home>/runtimes/config.json` 里覆盖预置，形状相同，按运行时、按字段覆盖；客户端通过 `runtime.configure`（§5）写它，保持这个合并。它在 home 里，所以只有用户本地配置能改，项目配置不能。
 - 配置在动作应用它的那一刻读取，而不是启动时读一次：`runtime.install` 当时重新读文件和环境（§3.3），所以 `source` 或 `auto` 的改动不必重启进程即可生效。`runtime.list` 报告的是正在生效的运行时，不是文件——改了的文件要等某个动作应用它才出现。
 
 ### 2.3 `<home>/runtimes/` 下的布局
@@ -164,7 +164,8 @@ rutis 的 Python 运行时是一个进程；行 `py:<模块>` 用 `importlib.imp
 | `RuntimeService`（Rust 进程服务） | `list() -> [RuntimeEntry]`；`install(name)`：开启运行时并开始获取；正在获取或正在运行时什么都不做；获取失败后再获取一次；连接 `down` 后重新提供启动命令。用可选依赖读取，所以 RuntimeManager reload 不会让调用方 reload。 |
 | `runtime.list`（管理方法） | `[{name, source, version, status, reason?}]`；`status` 是 `off`、`acquiring`、`failed`，或提供启动命令后连接的 `RuntimeStatus`：`starting`（连接行还没启动时也是）、`ready`，或带原因的 `down`。 |
 | `runtime.install {name}`（管理方法，有修改） | `RuntimeService::install`：重读配置，`source` 变化时通过重启连接行应用（§3.3），并立即回复当前状态；配置无法读取时该调用以 `runtime_configuration` 错误返回。 |
-| `dimcode runtime list`、`dimcode runtime install <node|python>` | 上面的方法。 |
+| `runtime.configure {name, source?, auto?}`（管理方法，有修改） | 原子地写 `<home>/runtimes/config.json`，按运行时、按字段覆盖预置（§2.2），随后按 `runtime.install` 的方式应用；写不出或读不出时该调用以 `runtime_configuration` 错误返回。 |
+| 客户端 | 两种终端模式下的 `/runtime`（面板，以及打字的 `/runtime install|source|auto`），以及 `dimcode runtime list`、`install <node|python>` 和 `config NAME [--source …] [--auto …]`（[CLI 命令](../../../zh/design/cli-commands.md#插件运行时)）。 |
 
 ## 6. 发布
 

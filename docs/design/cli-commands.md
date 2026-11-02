@@ -148,6 +148,144 @@ forms and never contacts a daemon. A build without the Dim account provider
 says so, and names the API-key Provider alternative, from each of these
 commands.
 
+## Plugin runtimes
+
+RuntimeManager supplies the Node and Python runtimes that plugin code runs in
+([RuntimeManager](plugins/RuntimeManager.md)). The daemon reads its configuration when an
+action applies it (RuntimeManager §3.3), so a client can turn a runtime on, say where it comes
+from and show what it is doing, without editing `<home>/runtimes/config.json` by hand and without
+restarting anything. `/runtime` opens one panel in both terminal modes and the same area is
+`dimcode runtime` in the line client and in the CLI.
+
+### The panel
+
+Rows are the two runtimes, always node then python. A row shows its name, the configured source
+(`download` or `system`), the version in effect (the fixed version for `download`, the checked
+interpreter's version for `system`, empty while it is `off` and nothing has been checked), and the
+status `runtime.list` gives: `off`, `acquiring`, `starting`, `ready`, `down` with its reason, or
+`failed` with the reason that lists every source and its error.
+
+Below the rows the panel names what waits on the runtime — the plugin rows that are Pending because
+one is `off` or `down` ([PluginManager §2.5](plugins/PluginManager.md#25-runtimes)) — so "why is
+goal not working" is answered in the same place as its fix. A failure prints one line per source,
+as `runtime.list` reports it.
+
+```text
+/runtime
+╭─ Plugin runtimes ─────────────────────────────────────────────────────────╮
+│ › node      download  24.21.0    ready                                    │
+│   python    system    3.12.15    off      not installed                   │
+│                                                                           │
+│   4 plugins wait for node: goal, session-title, scheduler, workflow       │
+╰─ Enter install or apply · s source · a auto · r retry · Esc close ────────╯
+```
+
+```text
+╭─ Plugin runtimes ─────────────────────────────────────────────────────────╮
+│ › node      download  24.21.0    acquiring  12s                           │
+│   python    system    3.12.15    off                                      │
+╰─ Esc close · the acquisition keeps running if you close this ─────────────╯
+```
+
+```text
+╭─ Plugin runtimes ─────────────────────────────────────────────────────────╮
+│ › node      download  24.21.0    failed                                   │
+│               https://nodejs.org/dist/v24.21.0/…: connection timed out    │
+│               https://npmmirror.com/mirrors/node/v24.21.0/…: 404         │
+│   python    system    3.12.15    off      not installed                   │
+│                                                                           │
+│   4 plugins wait for node: goal, session-title, scheduler, workflow       │
+╰─ Enter retry · s switch node to system · Esc close ───────────────────────╯
+```
+
+`acquiring` shows elapsed seconds, not a percentage: the daemon reports no byte count for an
+acquisition, and the panel does not invent one. A source list appears only on failure, where the
+daemon already reports it.
+
+### Menu entry
+
+`/runtime` is a slash command in category `app`, so the menu lists it between `/keys` and
+`/settings`; it needs no Session (`Needs::Nothing`) and takes no inline argument, because the panel
+carries the actions. The typed subforms below are accepted when typed, not offered as menu
+completions.
+
+### Keys
+
+The panel is keyboard-only and the same in scrollback and fullscreen, as the command menu contract
+requires.
+
+| key | meaning |
+| --- | --- |
+| `Up` / `Down` | move between the runtime rows |
+| `Enter` | `runtime.install NAME`: apply the configuration as it stands |
+| `s` | switch that runtime's source (`download` ↔ `system`) and apply |
+| `a` | toggle that runtime's `auto` and apply |
+| `r` | retry: the same call as `Enter`, kept because a failed row's footer says so |
+| `Esc` | close the panel; an acquisition already running keeps running |
+
+`Enter` on an `acquiring` row does nothing, which is what the daemon's `install` does while it is
+acquiring. `Enter` on a `ready` row with an unchanged source does nothing either; with a changed
+source it withdraws, disposes and re-acquires, as RuntimeManager §3.3 defines.
+
+### Writes
+
+`runtime.install {name}` is the apply the runtime already has: acquire if `off` or `failed`,
+provide the launch command again if `down`, and, when the configuration's `source` changed since
+the last apply, withdraw, dispose and acquire under the new source. It replies at once with the
+entry, so the panel follows `runtime.list` rather than waiting for an acquisition.
+
+`s` and `a` are `runtime.configure {name, source?, auto?}` followed by that same apply. The method
+writes `<home>/runtimes/config.json` — RuntimeManager's own document — atomically, merging per
+runtime and per field over the preset, and a configuration that does not write or read is the
+call's `runtime_configuration` error. The panel then shows the error and keeps the row's previous
+state on screen, because nothing changed.
+
+### Plugins that wait
+
+`/plugins` names the runtime a Pending row waits for, and `Enter` on such a row opens `/runtime`
+with that runtime selected. Today the row says only `pending`.
+
+```text
+/plugins
+╭─ Plugins ─────────────────────────────────────────────────────────────────╮
+│ › goal           on     pending · waits for the node runtime              │
+│   session-title  on     pending · waits for the node runtime              │
+│   scheduler      on     pending · waits for the node runtime              │
+│   workflow       on     pending · waits for the node runtime              │
+╰─ Enter open /runtime · o on/off · r reload · Esc close ───────────────────╯
+```
+
+### Line client and CLI
+
+The typed forms are the whole area, so a caller needs no panel:
+
+```text
+/runtime                              the same rows, in the scrollback client
+/runtime install node                 apply the configuration for node
+/runtime source node system           switch node to the system interpreter and apply
+/runtime auto python on               turn python on by configuration and apply
+```
+
+```text
+$ dimcode runtime list
+node    download  24.21.0   ready
+python  system    3.12.15   off       not installed
+4 plugins wait for node: goal, session-title, scheduler, workflow
+$ dimcode runtime install node
+node    download  24.21.0   acquiring
+$ dimcode runtime config python --source system --auto on
+python  system    3.12.15   off
+```
+
+`dimcode runtime list` prints one tab-separated row per runtime with the fields the panel shows,
+then the waiting line when there is one. `install` and `config` print the runtime's row after the
+call, which is `acquiring` or the state it returned to; a failed call prints the error and exits
+non-zero. `--help` lists these forms and never contacts a daemon.
+
+A daemon that does not serve `runtime.list` answers `unknown_method`; the panel then says the
+daemon does not serve runtimes and prints the version, rather than an empty list that reads as "no
+runtimes".
+
 ## Process isolation settings
 
 `/settings` and `/permissions` expose the same `Process isolation` control. It replaces the old

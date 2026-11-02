@@ -153,6 +153,7 @@ Rows follow the sections of the [feature list](../feature-list.md), which descri
 | `/stats` | out | — | [overview](overview.md) App. A |
 | `/debug`, debug-log configuration | none (only the daemon's `daemon.log`) | — | |
 | `/tui` mode switch | done | — | [Tui](plugins/Tui.md) |
+| Plugin runtimes: see, install, switch source, turn on by configuration | `/runtime` panel and typed forms (designed, [#872](https://github.com/arcships/dim/issues/872)); `dimcode runtime` | — | [CLI commands](cli-commands.md#plugin-runtimes), [RuntimeManager](plugins/RuntimeManager.md) |
 | Version and upgrade | done (upgrade dialog); `dimcode upgrade` subcommand: none | — | |
 | Web access (`/web`, `dimcode web`) | done | — | [Web workspace](web-workspace.md) |
 

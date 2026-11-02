@@ -125,6 +125,131 @@ End     scroll to the bottom (fullscreen, empty draft)
 `dimcode account PROVIDER` 打印它的非机密状态。`--help` 列出这些形式，且从不连接守护进程。
 没有 Dim 账号提供方的构建会从这些命令里说明这一点，并指出 API-key 提供方这一替代方式。
 
+## 插件运行时
+
+RuntimeManager 提供插件代码运行的 Node 与 Python 运行时（[RuntimeManager](plugins/RuntimeManager.md)）。
+守护进程在动作应用配置的那一刻才读配置（RuntimeManager §3.3），所以客户端可以让用户打开运行时、
+选择它的来源、看它在做什么，而不必手改 `<home>/runtimes/config.json`，也不必重启任何东西。
+`/runtime` 在两种终端模式下打开同一个面板；行客户端与 CLI 里对应的区域是 `dimcode runtime`。
+
+### 面板
+
+行是两个运行时，固定 node 在前、python 在后。每行显示名字、配置的来源（`download` 或 `system`）、
+正在生效的版本（`download` 是固定版本，`system` 是检查过的解释器版本，`off` 且从未检查时为空），
+以及 `runtime.list` 给出的状态：`off`、`acquiring`、`starting`、`ready`、带原因的 `down`，或带
+原因（列出每个来源和它的错误）的 `failed`。
+
+行下方列出在等这个运行时的插件行——因为它是 `off` 或 `down` 而处于 Pending 的那些
+（[PluginManager §2.5](plugins/PluginManager.md#25-runtimes)）——这样"goal 为什么不工作"和它的
+解决办法在同一个地方。失败时每个来源一行，与 `runtime.list` 报的一致。
+
+```text
+/runtime
+╭─ 插件运行时 ──────────────────────────────────────────────────────────────╮
+│ › node      download  24.21.0    ready                                    │
+│   python    system    3.12.15    off      未安装                          │
+│                                                                           │
+│   4 个插件在等 node：goal、session-title、scheduler、workflow             │
+╰─ Enter 安装或应用 · s 来源 · a 自动 · r 重试 · Esc 关闭 ──────────────────╯
+```
+
+```text
+╭─ 插件运行时 ──────────────────────────────────────────────────────────────╮
+│ › node      download  24.21.0    acquiring  12s                           │
+│   python    system    3.12.15    off                                      │
+╰─ Esc 关闭 · 关掉面板不会中断正在进行的获取 ───────────────────────────────╯
+```
+
+```text
+╭─ 插件运行时 ──────────────────────────────────────────────────────────────╮
+│ › node      download  24.21.0    failed                                   │
+│               https://nodejs.org/dist/v24.21.0/…：连接超时                │
+│               https://npmmirror.com/mirrors/node/v24.21.0/…：404          │
+│   python    system    3.12.15    off      未安装                          │
+│                                                                           │
+│   4 个插件在等 node：goal、session-title、scheduler、workflow             │
+╰─ Enter 重试 · s 把 node 换成 system · Esc 关闭 ───────────────────────────╯
+```
+
+`acquiring` 只显示已用秒数，不显示百分比：守护进程不报告获取的字节数，面板也不编一个。来源列表只
+在失败时出现，因为那时守护进程已经报告了它。
+
+### 菜单项
+
+`/runtime` 是 `app` 类的 slash 命令，因此菜单把它列在 `/keys` 与 `/settings` 之间；它不需要 Session
+（`Needs::Nothing`），也不接受内联参数，因为动作都在面板里。下面打字的子形态只在输入时接受，不作为
+菜单补全列出。
+
+### 按键
+
+面板只接受键盘，scrollback 与 fullscreen 两种模式一致，符合命令菜单契约。
+
+| 按键 | 含义 |
+| --- | --- |
+| `Up` / `Down` | 在运行时的行之间移动 |
+| `Enter` | `runtime.install NAME`：把当前配置应用下去 |
+| `s` | 切换该运行时的来源（`download` ↔ `system`）并应用 |
+| `a` | 切换该运行时的 `auto` 并应用 |
+| `r` | 重试：与 `Enter` 同一个调用，保留它是因为失败行的页脚这么写 |
+| `Esc` | 关闭面板；已经在跑的获取继续跑 |
+
+`acquiring` 的行上按 `Enter` 什么也不做，这正是守护进程在获取期间的 `install` 行为。`ready` 的行上
+来源没变时按 `Enter` 也不做事；来源变了则撤回、释放并按新来源重新获取，即 RuntimeManager §3.3 的定义。
+
+### 写入
+
+`runtime.install {name}` 就是运行时已有的那个应用动作：`off` 或 `failed` 时获取，`down` 时重新提供
+启动命令，配置里的 `source` 与上次应用不同时撤回、释放并按新来源获取。它立即带着条目回复，所以面板
+跟着 `runtime.list` 走，而不是等一次获取完成。
+
+`s` 与 `a` 是 `runtime.configure {name, source?, auto?}` 再加上同一条应用路径。该方法原子地写
+`<home>/runtimes/config.json`——RuntimeManager 自己的文档——按运行时、按字段覆盖预置；写不出或读不出
+就是该调用的 `runtime_configuration` 错误。面板随后显示这个错误，并保留该行原来的状态，因为什么都没变。
+
+### 等在运行时上的插件
+
+`/plugins` 说明 Pending 的行在等哪个运行时，在这些行上按 `Enter` 会打开 `/runtime` 并选中那个运行时。
+今天这些行只说 `pending`。
+
+```text
+/plugins
+╭─ 插件 ────────────────────────────────────────────────────────────────────╮
+│ › goal           on     pending · 等待 node 运行时                        │
+│   session-title  on     pending · 等待 node 运行时                        │
+│   scheduler      on     pending · 等待 node 运行时                        │
+│   workflow       on     pending · 等待 node 运行时                        │
+╰─ Enter 打开 /runtime · o 开/关 · r 重载 · Esc 关闭 ───────────────────────╯
+```
+
+### 行客户端与 CLI
+
+打字的形态覆盖整个区域，调用方不需要面板：
+
+```text
+/runtime                              在 scrollback 客户端里打印同样的行
+/runtime install node                 应用 node 的配置
+/runtime source node system           把 node 换成系统解释器并应用
+/runtime auto python on               用配置打开 python 并应用
+```
+
+```text
+$ dimcode runtime list
+node    download  24.21.0   ready
+python  system    3.12.15   off       未安装
+4 个插件在等 node：goal、session-title、scheduler、workflow
+$ dimcode runtime install node
+node    download  24.21.0   acquiring
+$ dimcode runtime config python --source system --auto on
+python  system    3.12.15   off
+```
+
+`dimcode runtime list` 每个运行时打印一行制表符分隔的字段，与面板显示的一致，需要时再加等待那一行。
+`install` 与 `config` 在调用后打印该运行时的行，即 `acquiring` 或它回到的状态；调用失败则打印错误并以
+非零退出。`--help` 列出这些形态，且从不连接守护进程。
+
+不提供 `runtime.list` 的守护进程会回答 `unknown_method`；此时面板说明该守护进程不提供运行时并打印版本，
+而不是给一个读起来像"没有运行时"的空列表。
+
 ## 进程隔离设置
 
 `/settings` 和 `/permissions` 提供同一个 `Process isolation` 控件，替代旧 `Execution` 面板和

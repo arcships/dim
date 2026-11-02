@@ -12,7 +12,7 @@ The release ships the executable, the default configuration file and the default
 | Python: download of the fixed version, verification against the official checksum, the `rutis` package from pinned hashes, start (§3) | yes | |
 | `source: system` for both runtimes (§2.2) | yes | |
 | Source lists with official sources first and mirrors after (§2.1) | yes | |
-| `runtime.list`, `runtime.install`; `dimcode runtime list/install` (§5) | yes | client notifications of changes |
+| `runtime.list`, `runtime.install`, `runtime.configure`, the `/runtime` panel and the `dimcode runtime` forms (§5) | yes | client notifications of changes |
 | Default plugins and the default configuration file in the release (§6) | yes | |
 | Python import through PluginManager's link directory (§4) | the runtime side here; links are PluginManager's ([#3](https://github.com/arcships/dim/issues/3)) | |
 | Removing runtime versions this Dim no longer uses | | yes |
@@ -82,7 +82,7 @@ The default configuration file ([PluginManager §2.3](PluginManager.md#23-the-de
 
 - `source`: `download` uses the archive above; `system` uses the interpreter on `PATH` (`node`; `python3`, or `python` on Windows), checked when it is acquired: Node 22.19 or later (the `engines` of `@arcships/rutis-runtime`) with its bundled npm (`npm-cli.js` where the official archives and installers put it; a Node without it fails with a reason naming that path), Python 3.12 or later with pip. A check that fails is that runtime's failure (§3.3).
 - `auto`: `true` acquires the runtime at every start. `false` leaves it off until `runtime.install` (§5); once installed, it is recorded (§2.4) and acquired at every start like an `auto` one.
-- The user overrides the preset in `<home>/runtimes/config.json`, the same shape, merged per runtime and field over the preset. It is in the home, so only the user's local configuration changes it; no project source does.
+- The user overrides the preset in `<home>/runtimes/config.json`, the same shape, merged per runtime and field over the preset; a client writes it through `runtime.configure` (§5), which keeps that merge. It is in the home, so only the user's local configuration changes it; no project source does.
 - The configuration is read when an action applies it, not once at startup: `runtime.install` reads the file and the environment at that moment (§3.3), so a changed `source` or `auto` applies without restarting the process. `runtime.list` reports the runtime in effect, not the file — a changed file shows up when an action applies it.
 
 ### 2.3 Layout under `<home>/runtimes/`
@@ -164,7 +164,8 @@ The rutis Python runtime is one process; a row `py:<module>` is imported with `i
 | `RuntimeService` (Rust process service) | `list() -> [RuntimeEntry]`; `install(name)`: turns the runtime on and starts its acquisition; does nothing while it is being acquired or is running; after a failed acquisition, acquires again; once its connection is `down`, provides its launch command again. Read with an optional dependency, so RuntimeManager's reload does not reload the caller. |
 | `runtime.list` (management method) | `[{name, source, version, status, reason?}]`; `status` is `off`, `acquiring`, `failed`, or, once the launch command is provided, the connection's `RuntimeStatus`: `starting` (also while the connection row has not started), `ready`, or `down` with its reason. |
 | `runtime.install {name}` (management method, mutating) | `RuntimeService::install`: reads the configuration, applies a changed `source` by restarting the connection row (§3.3), and replies at once with the status; an unreadable configuration is the call's `runtime_configuration` error. |
-| `dimcode runtime list`, `dimcode runtime install <node|python>` | The methods above. |
+| `runtime.configure {name, source?, auto?}` (management method, mutating) | Writes `<home>/runtimes/config.json` atomically, merged per runtime and field over the preset (§2.2), then applies as `runtime.install` does; a file it cannot write or read is the call's `runtime_configuration` error. |
+| Client | `/runtime` in both terminal modes (the panel, and the typed `/runtime install|source|auto`), plus `dimcode runtime list`, `install <node|python>` and `config NAME [--source …] [--auto …]` ([CLI commands](../../design/cli-commands.md#plugin-runtimes)). |
 
 ## 6. Release
 
