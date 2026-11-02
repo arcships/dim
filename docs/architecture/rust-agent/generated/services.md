@@ -7,6 +7,7 @@
 flowchart LR
   subgraph main["main"]
     p32["branch"]
+    p33["BranchScope"]
     p35["BranchOptionalParts"]
     p34["BranchParts"]
     p47["TreeTimeline"]
@@ -21,10 +22,10 @@ flowchart LR
     p38["ContextPreparation"]
     p37["BranchLine"]
     p36["Approval"]
-    p33["BranchScope"]
   end
   subgraph session["session"]
     p20["session"]
+    p21["SessionScope"]
     p23["SessionOptionalParts"]
     p22["SessionParts"]
     p31["ToolRegistry"]
@@ -35,7 +36,6 @@ flowchart LR
     p26["PrepareModelHost"]
     p25["InputMethods"]
     p24["BranchTool"]
-    p21["SessionScope"]
   end
   p30 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p47
   p33 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p47

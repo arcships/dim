@@ -180,6 +180,8 @@ pub struct SetSkillEnabled {
 #[serde(rename_all = "camelCase")]
 pub struct SkillEntry {
     pub id: String,
+    /// `user`, `project` or `plugin:<plugin id>`: where the Skill was found.
+    pub source: String,
     pub name: String,
     pub description: String,
     pub file_path: String,
@@ -310,6 +312,7 @@ impl DynPlugin for SkillsCatalogPlugin {
                                         .into_iter()
                                         .map(|entry| SkillEntry {
                                             id: entry.definition.id.clone(),
+                                            source: entry.source.to_string(),
                                             name: entry.definition.name.clone(),
                                             description: entry.definition.description.clone(),
                                             file_path: entry

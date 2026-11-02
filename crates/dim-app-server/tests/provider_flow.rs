@@ -20,7 +20,8 @@ use dim_app_server::{
     model_catalog::{BundledCatalog, ModelEntry, ModelStatus},
     provider::{
         ConnectionInput, CreateProvider, CredentialUpdate, LegacyRow, ModelPreferences,
-        ProviderError, ProviderPlugin, ProviderService, StaticAuth, convert_legacy_provider,
+        ProviderError, ProviderPlugin, ProviderService, StaticAuth, StaticProviderRecord,
+        StoredSelectionError, convert_legacy_provider, parse_static, stored_selection,
     },
     storage::SqliteStoragePlugin,
 };
@@ -31,7 +32,7 @@ use rutis_loader::resolve::Build;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex, OnceLock},
 };
 use tokio_util::sync::CancellationToken;
@@ -242,6 +243,18 @@ fn target(provider: &str) -> ModelId {
         provider_id: provider.into(),
         model_id: "same".into(),
     }
+}
+
+fn stored_record(home: &Path, provider_id: &str) -> StaticProviderRecord {
+    let db = rusqlite::Connection::open(home.join("native.sqlite")).unwrap();
+    let (version, body): (u32, String) = db
+        .query_row(
+            "SELECT version,record FROM providers WHERE provider_id=?1",
+            [provider_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    parse_static(provider_id, version, &body).unwrap()
 }
 
 #[tokio::test]
@@ -1192,9 +1205,11 @@ async fn selectable_models_match_execution_and_hide_unavailable_models() {
     let provider = root.get::<ProviderService>().unwrap();
     let selectable = root.get::<SelectableModelsHost>().unwrap();
     let cancel = CancellationToken::new();
+    let bundled = BundledCatalog::load().unwrap();
     const MINE: &str = "00000000-0000-4000-8000-000000000030";
     const OFF: &str = "00000000-0000-4000-8000-000000000031";
     const ROUTELESS: &str = "00000000-0000-4000-8000-000000000032";
+    const NOCRED: &str = "00000000-0000-4000-8000-000000000033";
     let mut unavailable = model("unavailable", 1000);
     unavailable.status = ModelStatus::Unavailable;
     let mut image = model("image", 1000);
@@ -1250,6 +1265,16 @@ async fn selectable_models_match_execution_and_hide_unavailable_models() {
     );
     off.enabled = false;
     provider.create(off, &cancel).await.unwrap();
+    let mut nocred = input(
+        NOCRED,
+        &format!("{base}/v1"),
+        StaticAuth::Bearer,
+        None,
+        "nocred",
+        1000,
+    );
+    nocred.enabled = false;
+    provider.create(nocred, &cancel).await.unwrap();
     let mut route = input(ROUTELESS, &base, StaticAuth::Anonymous, None, "route", 1000);
     route.connection.driver_kind = "new-api-router".into();
     let mut no_route = model("image-only", 1000);
@@ -1335,6 +1360,87 @@ async fn selectable_models_match_execution_and_hide_unavailable_models() {
             "{excluded}"
         );
     }
+    let mine_record = stored_record(&home, MINE);
+    assert_eq!(
+        stored_selection(&bundled, MINE, &mine_record, "missing"),
+        Err(StoredSelectionError::NotFound)
+    );
+    assert!(
+        provider
+            .configuration(
+                Some(ModelId {
+                    provider_id: MINE.into(),
+                    model_id: "missing".into(),
+                }),
+                None,
+                ModelPreferences::default(),
+                &cancel,
+            )
+            .await
+            .is_err()
+    );
+    assert!(matches!(
+        stored_selection(&bundled, MINE, &mine_record, "text"),
+        Err(StoredSelectionError::Unavailable { disabled: true, .. })
+    ));
+    for model_id in ["served", "unavailable", "image", "nonchat", "narrow"] {
+        let offline = stored_selection(&bundled, MINE, &mine_record, model_id);
+        let execution = provider
+            .configuration(
+                Some(ModelId {
+                    provider_id: MINE.into(),
+                    model_id: model_id.into(),
+                }),
+                None,
+                ModelPreferences::default(),
+                &cancel,
+            )
+            .await;
+        match (&offline, &execution) {
+            (Ok(stored), Ok(selection)) => {
+                assert_eq!(
+                    Some(&stored.snapshot),
+                    selection.capability_snapshot.as_ref(),
+                    "{model_id}"
+                );
+                assert_eq!(
+                    Some(stored.protocol),
+                    catalog
+                        .models
+                        .iter()
+                        .find(|model| model.id == model_id)
+                        .and_then(|model| model.endpoint),
+                    "{model_id}"
+                );
+            }
+            (Err(_), Err(_)) => {}
+            (offline, execution) => {
+                panic!("stored/execution disagree for {model_id}: {offline:?} {execution:?}")
+            }
+        }
+    }
+    for (provider_id, model_id) in [(OFF, "same"), (ROUTELESS, "image-only"), (NOCRED, "same")] {
+        let record = stored_record(&home, provider_id);
+        let offline = stored_selection(&bundled, provider_id, &record, model_id);
+        let execution = provider
+            .configuration(
+                Some(ModelId {
+                    provider_id: provider_id.into(),
+                    model_id: model_id.into(),
+                }),
+                None,
+                ModelPreferences::default(),
+                &cancel,
+            )
+            .await;
+        assert!(offline.is_err(), "{provider_id} {offline:?}");
+        assert!(execution.is_err(), "{provider_id} {execution:?}");
+    }
+    let managed = stored_record(&home, "openai-codex");
+    assert_eq!(
+        stored_selection(&bundled, "openai-codex", &managed, "gpt-5"),
+        Err(StoredSelectionError::AccountOwned)
+    );
     assert!(
         requests.try_recv().is_err(),
         "the read made a provider request"
@@ -3295,6 +3401,7 @@ async fn vendor_routes_agree_across_selection_and_actual_http_execution() {
     let resolver = root.get::<ProviderConnectionResolver>().unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let cancel = CancellationToken::new();
+    let bundled = BundledCatalog::load().unwrap();
     for (index, (driver, model_id, suffix, max_field, app_code)) in [
         (
             "custom",
@@ -3433,6 +3540,8 @@ async fn vendor_routes_agree_across_selection_and_actual_http_execution() {
                 .insert("Authorization".into(), "Bearer fixture-secret".into());
         }
         provider.create(input, &cancel).await.unwrap();
+        let record = stored_record(&home, &id);
+        let stored = stored_selection(&bundled, &id, &record, model_id).unwrap();
         let target = ModelId {
             provider_id: id.clone(),
             model_id: model_id.into(),
@@ -3467,6 +3576,19 @@ async fn vendor_routes_agree_across_selection_and_actual_http_execution() {
             )
             .await
             .unwrap();
+        assert_eq!(
+            Some(&stored.snapshot),
+            selection.capability_snapshot.as_ref(),
+            "{model_id}"
+        );
+        assert_eq!(
+            stored.protocol,
+            serde_json::from_value(
+                selection.metadata.as_ref().unwrap().extensions["providerProtocol"].clone()
+            )
+            .unwrap(),
+            "{model_id}"
+        );
         if index == 0 {
             let unchanged = provider
                 .apply_preferences(
@@ -3641,6 +3763,7 @@ async fn new_api_metadata_routes_and_builtin_routes_survive_restart() {
         .join(uuid::Uuid::new_v4().to_string());
     std::fs::create_dir_all(&home).unwrap();
     let mut saved_version = 0;
+    let bundled = BundledCatalog::load().unwrap();
     for restart in [false, true] {
         let root = Ctx::root().unwrap();
         root.plugin(
@@ -3746,13 +3869,27 @@ async fn new_api_metadata_routes_and_builtin_routes_survive_restart() {
             let selection = provider
                 .configuration(Some(target), None, ModelPreferences::default(), &cancel)
                 .await;
+            let record = stored_record(&home, &id);
+            let stored = stored_selection(&bundled, &id, &record, model_id);
             let Some(suffix) = suffix else {
                 assert!(catalog.models[0].unavailable_reason.is_some(), "{model_id}");
                 assert!(selection.is_err(), "{model_id}");
+                assert!(stored.is_err(), "{model_id} {stored:?}");
                 continue;
             };
             assert!(catalog.models[0].unavailable_reason.is_none(), "{model_id}");
             let selection = selection.unwrap();
+            let stored = stored.unwrap();
+            assert_eq!(
+                Some(&stored.snapshot),
+                selection.capability_snapshot.as_ref(),
+                "{model_id}"
+            );
+            assert_eq!(
+                Some(stored.protocol),
+                catalog.models[0].endpoint,
+                "{model_id}"
+            );
             assert_eq!(
                 selection.metadata.as_ref().unwrap().extensions["providerProtocol"],
                 json!(catalog.models[0].endpoint.unwrap())

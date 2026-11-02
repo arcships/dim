@@ -190,6 +190,17 @@ mod tests {
         }
     }
 
+    /// Every string the management panel draws has a translation in every
+    /// locale.
+    #[test]
+    fn every_locale_translates_the_management_strings() {
+        for (code, lookup) in tables() {
+            for key in crate::ui::management_panel::STRINGS {
+                assert!(lookup(key).is_some(), "{code} lacks {key:?}");
+            }
+        }
+    }
+
     /// `/settings` names the execution row.
     #[test]
     fn every_locale_translates_execution_settings() {

@@ -319,7 +319,7 @@ AcpGateway's own design reports a Hooks `input_blocked` rejection from `session.
 | — | The event's stdin object (A.3) goes to a process HostPlatform starts for it, whose stdin is closed after the bytes; the environment adds `DIMCODE_HOME` and `DIM_PLUGIN_ROOT` (A.6.3) |
 | — | A hook reads the Session's Timeline with `dimcode export "$DIM_SESSION_ID"`; there is no `transcript_path` (A.3) |
 | — | `PreCompact`/`PostCompact`, `SessionEnd` and `SubagentStart`/`SubagentStop` stay unsupported, for the reasons in G.1 |
-| — | The native CLI gets `dimcode hooks list` and `dimcode hooks enable\|disable` ([CLI commands](../cli-commands.md#commands)) |
+| — | The native CLI gets `dimcode hooks list`, `dimcode hooks enable\|disable`, `dimcode hooks edit` and `dimcode hooks set PATH` ([CLI commands](../cli-commands.md#commands)) |
 
 ### 10.2 Accepted owner changes
 
@@ -472,11 +472,11 @@ Context and reasons are each at most 16 KiB per hook. Fields Dim does not suppor
 
 | Method | Parameters | Result |
 | --- | --- | --- |
-| `hooks.catalog` (not mutating) | `{cwd?}` | `userRevision`, `projectsRevision`; per source: `source`, `path` (`dir` for a plugin source), `enabled`, `state` (`ok`, `missing`, `invalid` with message); per handler: `event`, `matcher`, `command`, `timeout`, `onFailure`, `async`, `state` (`ok`, `unsupported`, `invalid`); `disableAllHooks` |
+| `hooks.catalog` (not mutating) | `{cwd?}` | `userRevision`, `userDocument` (the user's document as stored, which `hooks.save` replaces with that revision), `projectsRevision`; per source: `source`, `path` (`dir` for a plugin source), `enabled`, `state` (`ok`, `missing`, `invalid` with message); per handler: `event`, `matcher`, `command`, `timeout`, `onFailure`, `async`, `state` (`ok`, `unsupported`, `invalid`); `disableAllHooks` |
 | `hooks.save` | `{expectedRevision, document}` | `{revision}`; CAS write of the user scope of `hooks`, validated by its `BusinessDocument` |
 | `hooks.set_enabled` | `{cwd, enabled, expectedRevision}` | `{revision}`; CAS write of `hooks-projects` for the project root Settings authorizes for `cwd` |
 
-The project file is edited in the repository, not through these methods. `hooks-plugins` is written only by the owner operations (§1), never by a method here. Hooks has no tool and no agent-reachable path that writes configuration. The native CLI is the client surface for `hooks.catalog` and `hooks.set_enabled` ([CLI commands](../cli-commands.md#commands)).
+The project file is edited in the repository, not through these methods. `hooks-plugins` is written only by the owner operations (§1), never by a method here. Hooks has no tool and no agent-reachable path that writes configuration. The native client's management surfaces are the client surface for `hooks.catalog`, `hooks.save` and `hooks.set_enabled`: the `/hooks` panel, `dimcode hooks list|enable|disable`, `dimcode hooks edit` and `dimcode hooks set PATH` ([CLI commands](../cli-commands.md#commands)).
 
 ## Appendix B. Full conflict table
 
@@ -571,7 +571,7 @@ Neither is part of this design, and both stay unsupported.
 
 ## Appendix G. Migrating from Claude Code and Codex
 
-Dim does not read Claude or Codex files and has no import command. To migrate, copy the `hooks` object: from `~/.claude/settings.json` or `~/.codex/hooks.json` into the user document (`hooks.save`, or the CLI that calls it), and from a repository's `.claude/settings.json`, `.claude/settings.local.json` or `.codex/hooks.json` into `.dimcode/hooks.json`, then enable that workspace (`hooks.set_enabled`). Codex `[hooks]` tables in `config.toml` are rewritten as JSON. Scripts keep working when they use only the compatible parts below.
+Dim does not read Claude or Codex files and has no import command. To migrate, copy the `hooks` object: from `~/.claude/settings.json` or `~/.codex/hooks.json` into the user document (`dimcode hooks edit`, `dimcode hooks set PATH`, or Ctrl+E in `/hooks`, which call `hooks.save`), and from a repository's `.claude/settings.json`, `.claude/settings.local.json` or `.codex/hooks.json` into `.dimcode/hooks.json`, then enable that workspace (`hooks.set_enabled`). Codex `[hooks]` tables in `config.toml` are rewritten as JSON. Scripts keep working when they use only the compatible parts below.
 
 ### G.1 Events
 

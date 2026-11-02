@@ -430,9 +430,10 @@ impl AgentBuilder {
         agent
     }
     /// Registers the loader modules of this assembly in `builtins`: the
-    /// Session and branch scopes, their part mounters and every extension,
-    /// and returns the [`SESSION_GROUP`] row holding them and the nested
-    /// [`BRANCH_GROUP`]; a host puts it inside its [`AGENT_GROUP`] row.
+    /// Session and branch scopes and every extension, and returns the
+    /// [`SESSION_GROUP`] row holding them and the nested [`BRANCH_GROUP`]; a
+    /// host puts it inside its [`AGENT_GROUP`] row. A scope mounts its
+    /// instance's two mounters itself.
     /// These rows are required for readiness. Additional host rows remain
     /// owned by the group without being required to become Active. The
     /// builder's plugins are placed separately ([`Self::plugin_rows`]).
@@ -474,24 +475,6 @@ impl AgentBuilder {
             let session_scope_module = modules.name("SessionScope", builtins).await;
             let branch_scope_module = modules.name("BranchScope", builtins).await;
             let mut session = vec![row(&session_scope_module)];
-            if !assembly.extensions.is_empty() {
-                let module = modules.name("SessionExtension", builtins).await;
-                session.push(row(&module));
-                builtins.register(module, |build| {
-                    let owner = build.value::<Arc<SessionAssembly>>().ok_or_else(|| {
-                        rutis::Error::from(ErrorKind::PluginFailed(
-                            "Session extension created without its assembly".into(),
-                        ))
-                    })?;
-                    let scope = session_scope(build)?;
-                    Factory::new(move || {
-                        Box::new(SessionExtensionPlugin {
-                            owner: (*owner).clone(),
-                            identity: Key::of().instance(scope.instance),
-                        }) as Box<dyn DynPlugin>
-                    })
-                });
-            }
             let catalog = Arc::new(self.catalog.clone());
             for name in &assembly.value_names {
                 crate::names::named_in_group(&catalog, name, SESSION_GROUP)
@@ -500,41 +483,14 @@ impl AgentBuilder {
             if !assembly.process_values.is_empty() {
                 register_process_values(&assembly.process_values, &catalog, builtins).await?;
             }
-            let [session_parts, session_optional] = mounters(
-                crate::PartScope::Session,
-                assembly,
-                &catalog,
-                &mut modules,
-                builtins,
-            )
-            .await;
-            session.push(row(&session_parts));
-            let mut branch = vec![row(&branch_scope_module)];
-            let [branch_parts, branch_optional] = mounters(
-                crate::PartScope::Branch,
-                assembly,
-                &catalog,
-                &mut modules,
-                builtins,
-            )
-            .await;
-            branch.push(row(&branch_parts));
-            let required_branch: Arc<[String]> = branch
-                .iter()
-                .map(|row| row["id"].as_str().unwrap().to_owned())
-                .collect();
-            let mut required_session: Vec<String> = session
-                .iter()
-                .map(|row| row["id"].as_str().unwrap().to_owned())
-                .collect();
-            branch.push(row(&branch_optional));
-            session.push(row(&session_optional));
+            let required_session: Arc<[String]> = [session_scope_module.clone()].into();
+            let required_branch: Arc<[String]> = [branch_scope_module.clone()].into();
+            let branch = vec![row(&branch_scope_module)];
             session.push(group(BRANCH_GROUP, branch));
             for (name, makes) in &assembly.extensions {
                 let mut rows = vec![];
                 for (plugin, make) in makes {
                     let module = modules.name(plugin, builtins).await;
-                    required_session.push(module.clone());
                     rows.push(row(&module));
                     let (make, plugin, catalog) = (make.clone(), plugin.clone(), catalog.clone());
                     builtins.register(module, move |build| {
@@ -551,7 +507,6 @@ impl AgentBuilder {
                 }
                 session.push(group(name, rows));
             }
-            let required_session: Arc<[String]> = required_session.into();
             *assembly.required_rows.lock().unwrap() = RequiredRows {
                 session: required_session.clone(),
                 branch: required_branch.clone(),
@@ -565,12 +520,14 @@ impl AgentBuilder {
                 let scope = session_scope(build)?;
                 *owner.instance.lock().unwrap() = Some(scope.instance);
                 let required = required_session.clone();
+                let build = build.clone();
                 Factory::new(move || {
-                    Box::new(SessionScopePlugin(
-                        (*owner).clone(),
+                    Box::new(SessionScopePlugin {
+                        owner: (*owner).clone(),
                         scope,
-                        required.clone(),
-                    )) as Box<dyn DynPlugin>
+                        build: build.clone(),
+                        required: required.clone(),
+                    }) as Box<dyn DynPlugin>
                 })
             });
             builtins.register(branch_scope_module, move |build| {
@@ -582,9 +539,14 @@ impl AgentBuilder {
                 let scope = branch_scope(build)?;
                 *owner.instance.lock().unwrap() = Some(scope.instance);
                 let required = required_branch.clone();
+                let build = build.clone();
                 Factory::new(move || {
-                    Box::new(BranchScopePlugin((*owner).clone(), scope, required.clone()))
-                        as Box<dyn DynPlugin>
+                    Box::new(BranchScopePlugin {
+                        owner: (*owner).clone(),
+                        scope,
+                        build: build.clone(),
+                        required: required.clone(),
+                    }) as Box<dyn DynPlugin>
                 })
             });
             Ok(group(SESSION_GROUP, session))
@@ -796,75 +758,6 @@ impl ModuleNames {
         name
     }
 }
-/// Registers a scope's two mounters ([`crate::parts`]) and returns their
-/// module names, the required one first.
-async fn mounters(
-    scope: crate::PartScope,
-    assembly: &Assembly,
-    catalog: &Arc<rutis_loader::ServiceCatalog>,
-    modules: &mut ModuleNames,
-    builtins: &mut Modules,
-) -> [String; 2] {
-    let mut names = [String::new(), String::new()];
-    for (slot, required) in names.iter_mut().zip([true, false]) {
-        let module = modules
-            .name(crate::parts::PartMounter::module(scope, required), builtins)
-            .await;
-        let (registry, wanted, catalog) = (
-            assembly.parts.clone(),
-            assembly.required_parts.clone(),
-            catalog.clone(),
-        );
-        builtins.register(module.clone(), move |build| {
-            let (session, branch_id, mounted, copies) = match scope {
-                crate::PartScope::Session => {
-                    let session = (*build.value::<Arc<SessionAssembly>>().ok_or_else(|| {
-                        rutis::Error::from(ErrorKind::PluginFailed(
-                            "Session created without its assembly".into(),
-                        ))
-                    })?)
-                    .clone();
-                    let (mounted, copies) = (session.mounted.clone(), session.copies.clone());
-                    (session, None, mounted, copies)
-                }
-                crate::PartScope::Branch => {
-                    let branch = build.value::<Arc<BranchAssembly>>().ok_or_else(|| {
-                        rutis::Error::from(ErrorKind::PluginFailed(
-                            "branch created without its assembly".into(),
-                        ))
-                    })?;
-                    (
-                        branch.session.clone(),
-                        Some(branch.id.clone()),
-                        branch.mounted.clone(),
-                        branch.copies.clone(),
-                    )
-                }
-            };
-            let site = Arc::new(crate::parts::MountSite {
-                scope,
-                registry: registry.clone(),
-                required: wanted.clone(),
-                catalog: catalog.clone(),
-                build: build.clone(),
-                session: session.config.clone(),
-                session_id: session.id.clone(),
-                restored: session.restored,
-                branch_id,
-                mounted,
-                copies,
-            });
-            Factory::new(move || {
-                Box::new(crate::parts::PartMounter {
-                    site: site.clone(),
-                    required,
-                })
-            })
-        });
-        *slot = module;
-    }
-    names
-}
 /// Registers the part providing `values` in an Agent instance, checking
 /// their names first: each is a process name.
 async fn register_process_values(
@@ -963,20 +856,36 @@ pub(crate) struct Placement {
     pub anchor: Ctx,
 }
 
+/// The views a scope mounted when it opened: its two mounters and, for a
+/// Session, the requested extension's plugins. Creation waits for the
+/// required ones and lets the others settle with the instance.
+#[derive(Clone, Default)]
+pub(crate) struct Handed {
+    pub required: Vec<FiberView>,
+    pub optional: Vec<FiberView>,
+}
+
+impl Handed {
+    fn all(&self) -> impl Iterator<Item = FiberView> {
+        self.required.iter().chain(&self.optional).cloned()
+    }
+}
+
 /// A loaded scope plugin: its own context and the capability plugins it installed.
 pub(crate) struct Loaded<S> {
     pub ctx: Ctx,
     pub scope: S,
     pub children: Vec<FiberView>,
     pub(crate) required: Arc<[String]>,
-    /// The parts the required mounter mounted when the scope opened, which
-    /// creation waited for; the assembly check reports one that has left.
-    pub(crate) parts: Vec<FiberView>,
+    /// The required views the scope handed when it opened, and the required
+    /// parts its mounter mounted, which creation waited for; the assembly
+    /// check reports one that has left.
+    pub(crate) awaited: Vec<FiberView>,
 }
 
 pub(crate) struct SessionAssembly {
     pub assembly: Assembly,
-    extension: Mutex<ExtensionRequest>,
+    extension: Mutex<Option<Extension>>,
     /// The Session instance, once the loader spawned its rows.
     pub instance: Mutex<Option<rutis::host::InstanceId>>,
     pub loader: Loader,
@@ -991,6 +900,8 @@ pub(crate) struct SessionAssembly {
     /// The parts the Session's mounters mounted when it opened, until its
     /// creation ends.
     pub(crate) mounted: Arc<Mutex<crate::parts::Opened>>,
+    /// The views its scope mounted when it opened, until its creation ends.
+    pub(crate) handed: Mutex<Handed>,
     pub(crate) copies: crate::parts::Copies,
 }
 impl SessionAssembly {
@@ -1003,14 +914,20 @@ impl SessionAssembly {
     }
 }
 
-struct SessionScopePlugin(Arc<SessionAssembly>, SessionScope, Arc<[String]>);
+struct SessionScopePlugin {
+    owner: Arc<SessionAssembly>,
+    scope: SessionScope,
+    /// The names of this copy's instances, for the mounters it builds.
+    build: Build,
+    required: Arc<[String]>,
+}
 impl DynPlugin for SessionScopePlugin {
     fn name(&self) -> &str {
         "SessionScope"
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> RutisFuture<'a, std::result::Result<Effect, Error>> {
         Box::pin(async move {
-            let (owner, scope) = (&self.0, self.1);
+            let (owner, scope) = (&self.owner, self.scope);
             ctx.provide_at(
                 scope.key::<crate::SessionLoader>(),
                 Arc::new(crate::SessionLoader::new(owner.loader.clone(), ctx.clone())),
@@ -1044,74 +961,78 @@ impl DynPlugin for SessionScopePlugin {
             for provide in &owner.assembly.values {
                 provide(ctx, &scope)?;
             }
-            let mut loaded = owner.loaded.lock().unwrap();
-            if loaded.is_some() {
-                return Err(rutis::Error::from(ErrorKind::PluginFailed(
-                    "Session scope reloaded".into(),
-                )));
-            }
-            *loaded = Some(Arc::new(Loaded {
-                ctx: ctx.clone(),
-                scope,
-                children: vec![],
-                required: self.2.clone(),
-                parts: vec![],
-            }));
-            Ok(Effect::Done)
-        })
-    }
-}
-
-/// Structural assembly runs once, just like SessionScope itself. The nested
-/// instance belongs to the Session group, not to this launcher fiber.
-enum ExtensionRequest {
-    Pending(Option<Extension>),
-    Started,
-}
-struct SessionExtensionPlugin {
-    owner: Arc<SessionAssembly>,
-    /// Gated on the Session's identity, which its scope provides once the
-    /// Session is assembled.
-    identity: Key<SessionIdentity>,
-}
-impl DynPlugin for SessionExtensionPlugin {
-    fn name(&self) -> &str {
-        "SessionExtension"
-    }
-    fn injects(&self) -> Vec<TypeKey> {
-        vec![self.identity.erase()]
-    }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> RutisFuture<'a, std::result::Result<Effect, Error>> {
-        Box::pin(async move {
-            let request = std::mem::replace(
-                &mut *self.owner.extension.lock().unwrap(),
-                ExtensionRequest::Started,
-            );
-            let extension = match request {
-                ExtensionRequest::Pending(Some(extension)) => extension,
-                ExtensionRequest::Pending(None) => return Ok(Effect::Done),
-                ExtensionRequest::Started => {
+            {
+                let mut loaded = owner.loaded.lock().unwrap();
+                if loaded.is_some() {
                     return Err(rutis::Error::from(ErrorKind::PluginFailed(
-                        "Session extension launcher reloaded".into(),
+                        "Session scope reloaded".into(),
                     )));
                 }
+                *loaded = Some(Arc::new(Loaded {
+                    ctx: ctx.clone(),
+                    scope,
+                    children: vec![],
+                    required: self.required.clone(),
+                    awaited: vec![],
+                }));
+            }
+            let site = Arc::new(crate::parts::MountSite {
+                scope: crate::PartScope::Session,
+                registry: owner.assembly.parts.clone(),
+                required: owner.assembly.required_parts.clone(),
+                catalog: owner.assembly.catalog.clone(),
+                build: self.build.clone(),
+                session: owner.config.clone(),
+                session_id: owner.id.clone(),
+                restored: owner.restored,
+                branch_id: None,
+                mounted: owner.mounted.clone(),
+                copies: owner.copies.clone(),
+            });
+            let mut handed = Handed {
+                required: vec![ctx.plugin(crate::parts::PartMounter {
+                    site: site.clone(),
+                    required: true,
+                })],
+                optional: vec![ctx.plugin(crate::parts::PartMounter {
+                    site,
+                    required: false,
+                })],
             };
-            let cancel = ctx.cancellation_token();
-            let created = tokio::select! {
-                created = (extension.configure)(self.owner.loader.create_instance(ctx, &extension.group)) => created
-                    .map_err(|error| ErrorKind::PluginFailed(loader_error(error).into()))?,
-                _ = cancel.cancelled() => return Ok(Effect::Done),
-            };
-            let failures = created
-                .report
-                .into_iter()
-                .filter_map(|(_, result)| match result {
-                    InstanceResult::Failed(error) => Some(loader_error(error)),
-                    _ => None,
-                })
-                .collect();
-            AgentError::aggregate(failures)
-                .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
+            let extension = owner.extension.lock().unwrap().take();
+            if let Some(extension) = extension {
+                let cancel = ctx.cancellation_token();
+                let created = tokio::select! {
+                    created = (extension.configure)(owner.loader.create_instance(ctx, &extension.group)) => created
+                        .map_err(|error| ErrorKind::PluginFailed(loader_error(error).into()))?,
+                    _ = cancel.cancelled() => return Ok(Effect::Done),
+                };
+                let extension_rows: HashSet<String> = created
+                    .report
+                    .iter()
+                    .filter(|(_, result)| !matches!(result, InstanceResult::Skipped))
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                let failures = created
+                    .report
+                    .into_iter()
+                    .filter_map(|(_, result)| match result {
+                        InstanceResult::Failed(error) => Some(loader_error(error)),
+                        _ => None,
+                    })
+                    .collect();
+                AgentError::aggregate(failures)
+                    .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
+                handed.required.extend(
+                    owner
+                        .loader
+                        .instance_rows(created.view.instance())
+                        .into_iter()
+                        .filter(|(id, _)| extension_rows.contains(id))
+                        .map(|(_, view)| view),
+                );
+            }
+            *owner.handed.lock().unwrap() = handed;
             Ok(Effect::Done)
         })
     }
@@ -1153,6 +1074,8 @@ pub(crate) struct BranchAssembly {
     /// The parts the branch's mounters mounted when it opened, until its
     /// creation ends.
     mounted: Arc<Mutex<crate::parts::Opened>>,
+    /// The views its scope mounted when it opened, until its creation ends.
+    handed: Mutex<Handed>,
     copies: crate::parts::Copies,
 }
 struct LoadedBranch {
@@ -1162,14 +1085,20 @@ struct LoadedBranch {
     lifecycle: BranchLifecycle,
     opening: Arc<BranchOpening>,
 }
-struct BranchScopePlugin(Arc<BranchAssembly>, BranchScope, Arc<[String]>);
+struct BranchScopePlugin {
+    owner: Arc<BranchAssembly>,
+    scope: BranchScope,
+    /// The names of this copy's instances, for the mounters it builds.
+    build: Build,
+    required: Arc<[String]>,
+}
 impl DynPlugin for BranchScopePlugin {
     fn name(&self) -> &str {
         "BranchScope"
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> RutisFuture<'a, std::result::Result<Effect, Error>> {
         Box::pin(async move {
-            let (owner, scope) = (&self.0, self.1);
+            let (owner, scope) = (&self.owner, self.scope);
             let session = &owner.session;
             let ancestors = owner.ancestors.lock().unwrap().take().ok_or_else(|| {
                 rutis::Error::from(ErrorKind::PluginFailed("Branch scope reloaded".into()))
@@ -1206,14 +1135,37 @@ impl DynPlugin for BranchScopePlugin {
                     ctx: ctx.clone(),
                     scope,
                     children: vec![],
-                    required: self.2.clone(),
-                    parts: vec![],
+                    required: self.required.clone(),
+                    awaited: vec![],
                 },
                 timeline,
                 dispatcher,
                 lifecycle,
                 opening,
             }));
+            let site = Arc::new(crate::parts::MountSite {
+                scope: crate::PartScope::Branch,
+                registry: session.assembly.parts.clone(),
+                required: session.assembly.required_parts.clone(),
+                catalog: session.assembly.catalog.clone(),
+                build: self.build.clone(),
+                session: session.config.clone(),
+                session_id: session.id.clone(),
+                restored: session.restored,
+                branch_id: Some(owner.id.clone()),
+                mounted: owner.mounted.clone(),
+                copies: owner.copies.clone(),
+            });
+            *owner.handed.lock().unwrap() = Handed {
+                required: vec![ctx.plugin(crate::parts::PartMounter {
+                    site: site.clone(),
+                    required: true,
+                })],
+                optional: vec![ctx.plugin(crate::parts::PartMounter {
+                    site,
+                    required: false,
+                })],
+            };
             Ok(Effect::Done)
         })
     }
@@ -1259,6 +1211,7 @@ impl TimelineFactory {
                 sequence,
                 loaded: Mutex::new(None),
                 mounted: Arc::default(),
+                handed: Mutex::default(),
                 copies: Arc::default(),
             });
             let started = {
@@ -1275,15 +1228,17 @@ impl TimelineFactory {
                     required,
                     {
                         let owner = owner.clone();
-                        move || {
-                            let instance = *owner.instance.lock().unwrap();
-                            (instance, owner.mounted.lock().unwrap().clone())
+                        move || Opening {
+                            instance: *owner.instance.lock().unwrap(),
+                            handed: owner.handed.lock().unwrap().clone(),
+                            parts: owner.mounted.lock().unwrap().clone(),
                         }
                     },
                 )
                 .await
             };
             let mounted = std::mem::take(&mut *owner.mounted.lock().unwrap());
+            let handed = std::mem::take(&mut *owner.handed.lock().unwrap());
             let result = AssertUnwindSafe(async {
                 let created = started.as_ref().map_err(|(error, _)| error.clone())?;
                 let branch = {
@@ -1297,7 +1252,12 @@ impl TimelineFactory {
                             scope: current.scope.scope,
                             children: created.children.clone(),
                             required: current.scope.required.clone(),
-                            parts: mounted.required.clone(),
+                            awaited: handed
+                                .required
+                                .iter()
+                                .chain(&mounted.required)
+                                .cloned()
+                                .collect(),
                         },
                         timeline: current.timeline.clone(),
                         dispatcher: current.dispatcher.clone(),
@@ -1320,7 +1280,7 @@ impl TimelineFactory {
                     created.view.clone(),
                     branch.scope.children.clone(),
                     branch.scope.required.clone(),
-                    branch.scope.parts.clone(),
+                    branch.scope.awaited.clone(),
                     owner.copies.clone(),
                     scope,
                     branch.timeline.clone(),
@@ -1375,6 +1335,15 @@ pub(crate) struct Created {
     pub children: Vec<FiberView>,
 }
 
+/// What a creation reads of its scope while it waits: the instance once the
+/// loader spawned it, the views the scope handed, and the parts its mounters
+/// mounted.
+pub(crate) struct Opening {
+    pub instance: Option<rutis::host::InstanceId>,
+    pub handed: Handed,
+    pub parts: crate::parts::Opened,
+}
+
 /// Creates an instance of `group` from `ctx` and waits until its registered
 /// rows are Active, within the opening's inactivity window `timeout`. On
 /// failure the instance, when one was created, comes back with the error for
@@ -1382,8 +1351,8 @@ pub(crate) struct Created {
 /// running before the instance can be found, a task disposes it once the
 /// creation ends.
 ///
-/// `instance` reads its identity and the scope's registered row IDs; the
-/// identity locates an instance whose creation is still running.
+/// `instance` reads what the creation has to wait for and the identity that
+/// locates an instance whose creation is still running.
 #[allow(clippy::too_many_arguments)]
 async fn create_instance(
     loader: &Loader,
@@ -1394,7 +1363,7 @@ async fn create_instance(
     cancel: &CancellationToken,
     abandoned: &tokio_util::task::TaskTracker,
     required: Arc<[String]>,
-    instance: impl Fn() -> (Option<rutis::host::InstanceId>, crate::parts::Opened),
+    instance: impl Fn() -> Opening,
 ) -> std::result::Result<Created, (AgentError, Option<Created>)> {
     let mut progress = StartupProgress::new(ctx, timeout).map_err(|error| (error, None))?;
     let mut creation = {
@@ -1411,7 +1380,7 @@ async fn create_instance(
             },
             || {
                 instance()
-                    .0
+                    .instance
                     .and_then(|id| locate(loader, ctx, id))
                     .map(|created| vec![created.view.id])
                     .unwrap_or_default()
@@ -1429,8 +1398,9 @@ async fn create_instance(
             ));
         }
         None => {
-            let found = instance()
-                .0
+            let opening = instance();
+            let found = opening
+                .instance
                 .and_then(|instance| locate(loader, ctx, instance));
             let error = match &found {
                 _ if cancel.is_cancelled() => AgentError::Cancelled("initialization".into()),
@@ -1444,6 +1414,10 @@ async fn create_instance(
                     }
                 });
             }
+            let found = found.map(|mut created| {
+                extend_children(&mut created.children, opening.handed.all());
+                created
+            });
             return Err((error, found));
         }
     };
@@ -1451,10 +1425,7 @@ async fn create_instance(
         .report
         .into_iter()
         .filter(|(id, _)| required.contains(id))
-        .filter_map(|(id, result)| match result {
-            InstanceResult::Failed(error) if crate::parts::PartMounter::is_row(&id) => {
-                Some(AgentError::Build(loader_error(error).to_string()))
-            }
+        .filter_map(|(_, result)| match result {
             InstanceResult::Failed(error) => Some(loader_error(error)),
             _ => None,
         })
@@ -1467,8 +1438,9 @@ async fn create_instance(
         return Err((error, Some(created)));
     }
     // The instance's settle returns with its group or a row still waiting for
-    // dependencies. The group spawns the rows and the required rows mount the
-    // parts, so each is read once the one before it is Active.
+    // dependencies. The group spawns the rows, the scope row mounts the
+    // mounters, and the required mounter mounts the parts, so each is read
+    // once the one before it is Active.
     let group = [created.view.clone()];
     let mut ready = progress
         .wait(active_rows(&group, cancel), || vec![created.view.id])
@@ -1481,8 +1453,24 @@ async fn create_instance(
             .await
             .unwrap_or_else(|| Err(timed_out(ctx, &waiting)));
     }
+    let mut handed = Handed::default();
     if ready.is_ok() {
-        let parts = instance().1.required;
+        handed = instance().handed;
+        waiting.extend(handed.required.iter().cloned());
+        ready = progress
+            .wait(active_rows(&handed.required, cancel), || {
+                vec![created.view.id]
+            })
+            .await
+            .unwrap_or_else(|| Err(timed_out(ctx, &handed.required)));
+        if let Err(error) = &ready
+            && failed_mounter(&handed.required).is_some()
+        {
+            ready = Err(AgentError::Build(error.to_string()));
+        }
+    }
+    if ready.is_ok() {
+        let parts = instance().parts.required;
         waiting.extend(parts.iter().cloned());
         ready = progress
             .wait(active_rows(&parts, cancel), || vec![created.view.id])
@@ -1490,6 +1478,7 @@ async fn create_instance(
             .unwrap_or_else(|| Err(timed_out(ctx, &parts)));
     }
     created.children = rows(loader, &created.view, None);
+    extend_children(&mut created.children, handed.all());
     if let Err(error) = ready {
         return Err((error, Some(created)));
     }
@@ -1498,7 +1487,7 @@ async fn create_instance(
         .iter()
         .filter(|view| !waiting.iter().any(|required| required.id == view.id))
         .cloned()
-        .chain(instance().1.optional)
+        .chain(instance().parts.optional)
         .collect();
     let settled = async {
         for view in waiting.iter().chain(&optional) {
@@ -1521,6 +1510,20 @@ async fn create_instance(
         Ok(()) => Ok(created),
         Err(error) => Err((error, Some(created))),
     }
+}
+/// The mounter among `views` that failed, if one did: a mounter fails when a
+/// part it mounts has no place in the instance, which is a build failure.
+fn failed_mounter(views: &[FiberView]) -> Option<&FiberView> {
+    views.iter().find(|view| {
+        view.state().state == FiberState::Failed
+            && crate::parts::PartMounter::is_module(view.name())
+    })
+}
+/// Adds the views a scope handed to the rows a creation read, once each: a
+/// view can be a row of a nested instance too.
+fn extend_children(children: &mut Vec<FiberView>, views: impl Iterator<Item = FiberView>) {
+    let mut seen: HashSet<_> = children.iter().map(|view| view.id).collect();
+    children.extend(views.filter(|view| seen.insert(view.id)));
 }
 /// Reads current candidate rows, including nested instances added during readiness waits.
 /// Main and child branches have their own assembly snapshots.
@@ -1624,7 +1627,7 @@ pub(crate) async fn build_session(
     let host = &placement.anchor;
     let owner = Arc::new(SessionAssembly {
         assembly,
-        extension: Mutex::new(ExtensionRequest::Pending(extension)),
+        extension: Mutex::new(extension),
         instance: Mutex::new(None),
         loader: placement.loader.clone(),
         config,
@@ -1636,13 +1639,15 @@ pub(crate) async fn build_session(
         closing,
         loaded: Mutex::new(None),
         mounted: Arc::default(),
+        handed: Mutex::default(),
         copies: Arc::default(),
     });
     let instance = |owner: &Arc<SessionAssembly>| {
         let owner = owner.clone();
-        move || {
-            let instance = *owner.instance.lock().unwrap();
-            (instance, owner.mounted.lock().unwrap().clone())
+        move || Opening {
+            instance: *owner.instance.lock().unwrap(),
+            handed: owner.handed.lock().unwrap().clone(),
+            parts: owner.mounted.lock().unwrap().clone(),
         }
     };
     let started = {
@@ -1662,6 +1667,7 @@ pub(crate) async fn build_session(
         .await
     };
     let mounted = std::mem::take(&mut *owner.mounted.lock().unwrap());
+    let handed = std::mem::take(&mut *owner.handed.lock().unwrap());
     let result = AssertUnwindSafe(async {
         let created = started.as_ref().map_err(|(error, _)| error.clone())?;
         let current = owner.loaded()?;
@@ -1670,7 +1676,12 @@ pub(crate) async fn build_session(
             scope: current.scope,
             children: created.children.clone(),
             required: current.required.clone(),
-            parts: mounted.required.clone(),
+            awaited: handed
+                .required
+                .iter()
+                .chain(&mounted.required)
+                .cloned()
+                .collect(),
         });
         *owner.loaded.lock().unwrap() = Some(session.clone());
         let tree = required::<dyn TimelineTreeControl>(
@@ -1860,7 +1871,7 @@ fn timed_out(ctx: &Ctx, views: &[FiberView]) -> AgentError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AssemblyRule {
-    /// A required row, or a plugin below one, is not `Active`.
+    /// A required row or view, or a plugin below one, is not `Active`.
     Ready,
     /// A plugin reads an external service it does not declare.
     UndeclaredRead,
@@ -1915,25 +1926,25 @@ impl std::fmt::Display for AssemblyFinding {
     }
 }
 
-/// Checks one live scope of `snapshot`: its `required` rows, the parts its
-/// mounters mounted and everything else in the scope, as creation waits for
-/// them: a required row or part returns from `apply` once its own mounted
-/// children are `Active` ([`mount_active`]), so a child it left behind is not
-/// `Active` and breaks the rule. `rows` is the loader's [index](scope_rows) of
-/// rows by instance, `view` the scope instance, `required` the loader row ids
-/// its profile requires, `parts` the required parts it mounted and `nested`
-/// the scopes nested inside it. `scope` names the Session the scope belongs to
-/// and, for a branch scope, the branch. Each plugin is checked once, by the
-/// innermost scope that contains it: a nested scope's subtree is left to that
-/// scope's own pass. A required row or part that has left the tree is reported
-/// too: nothing in the snapshot would otherwise remember it.
+/// Checks one live scope of `snapshot`: its `required` rows, the views its
+/// scope handed and the parts its mounter mounted, as creation waited for
+/// them: a required view returns from `apply` once its own mounted children
+/// are `Active` ([`mount_active`]), so a child it left behind is not `Active`
+/// and breaks the rule. `rows` is the loader's [index](scope_rows) of rows by
+/// instance, `view` the scope instance, `required` the loader row ids its
+/// profile requires, `awaited` the required views creation waited for and
+/// `nested` the scopes nested inside it. `scope` names the Session the scope
+/// belongs to and, for a branch scope, the branch. Each plugin is checked
+/// once, by the innermost scope that contains it: a nested scope's subtree is
+/// left to that scope's own pass. A required row or view that has left the
+/// tree is reported too: nothing in the snapshot would otherwise remember it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_scope(
     snapshot: &rutis::host::diagnostics::RuntimeDiagnostics,
     rows: &std::collections::HashMap<rutis::host::InstanceId, Vec<EntryInfo>>,
     view: &FiberView,
     required: &[String],
-    parts: &[FiberView],
+    awaited: &[FiberView],
     nested: &[FiberView],
     scope: (&str, Option<&str>),
     findings: &mut Vec<AssemblyFinding>,
@@ -1961,9 +1972,13 @@ pub(crate) fn check_scope(
             absent(entry.id.clone());
         }
     }
-    for part in parts {
-        if !snapshot.plugins.iter().any(|plugin| plugin.id == part.id) {
-            absent(part.name().to_owned());
+    for awaited in awaited {
+        if !snapshot
+            .plugins
+            .iter()
+            .any(|plugin| plugin.id == awaited.id)
+        {
+            absent(awaited.name().to_owned());
         }
     }
     let excluded: HashSet<_> = nested
@@ -1977,7 +1992,11 @@ pub(crate) fn check_scope(
     let required: HashSet<_> = required_rows
         .iter()
         .filter_map(|entry| entry.view.as_ref().map(|row| row.id))
-        .flat_map(|id| subtree(snapshot, id))
+        .chain(
+            awaited
+                .iter()
+                .flat_map(|awaited| subtree(snapshot, awaited.id)),
+        )
         .collect();
     for plugin in snapshot.plugins.iter().filter(|p| members.contains(&p.id)) {
         if required.contains(&plugin.id) && plugin.state != FiberState::Active {

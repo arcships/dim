@@ -66,16 +66,17 @@ loader or builder. A per-builder counter restarts at 1, so two Agents built from
 their values under the same label, and generated descriptions of the assembly change between runs.
 Numbering in the process prevents this.
 
-**Mounting.** Every Session and branch instance holds two mounter rows, the only rows of its group
-besides the scope's own mechanisms.
+**Mounting.** The assembly places one row in a Session's or a branch's group: its scope. A host may
+append rows to a group's configuration; they stay optional. After it provides the instance's services,
+the scope mounts the instance's two mounters as its own children and hands their views to the
+instance's creation. It waits for none of them: creation is the one place that waits.
 
 - When the instance opens, each mounter calls the generators of its scope it owns and mounts each result
   with rutis's `ctx.plugin` as its own child; a generator that returns nothing for this instance mounts
   nothing.
   - The required mounter owns the parts the assembly profile requires. It hands them to the instance's
-    creation, which waits for them to be Active as it waits for its required rows; the instance
-    publishes only then. It does not wait in its own `apply`, because the loader's instance creation
-    waits for every Loading row.
+    creation, which waits for the mounter to be Active and then for the parts; the instance publishes
+    only then.
   - The optional mounter owns every other part. It hands the copies it mounts when the instance
     opens to the instance's creation, which lets them settle before publishing, as it does its
     optional rows. A failed or Pending optional part stays local.
@@ -461,9 +462,9 @@ registry.register(ctx, PartScope::Session, "Recorder", |mount| {
 })?;
 ```
 
-The required mounter mounts the parts the profile requires (`AgentBuilder::require_part`) and hands
-them to the instance's publication with its required rows; a required part nothing has registered
-yet holds the creation until it is, within the creation's deadline. The builder's registry
+The required mounter mounts the parts the profile requires (`AgentBuilder::require_part`); creation
+waits for the mounter and then for those parts, and the instance publishes only then. A required part
+nothing has registered yet holds the creation until it is, within the creation's deadline. The builder's registry
 (`AgentBuilder::parts`) serves the Agents the host builds (`AgentBuilder::build`), which provides it
 to its process plugins as `partRegistry` (`AgentBuilder::plugin_rows`); the minimal host creates a
 registry of its own. A registration is an effect of the caller's `ctx`. The mounters unload their copies themselves before rutis's own cascade, so a copy that

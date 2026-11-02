@@ -2,12 +2,12 @@ import { definePlugin } from '@arcships/rutis'
 import { z } from 'zod'
 import type { ManagementMethods, MethodReply, PartRegistry, PluginFiles, Sessions, Settings, WorkflowFiles } from '../../../npm/plugin.js'
 import { Catalog, type DefinitionEntry } from './catalog.ts'
-import { WorkflowError } from './definition.ts'
+import { WorkflowError, payloadBytes } from './definition.ts'
 import { Workflow } from './engine.ts'
 import { management, unloadingAfterCall, type RunReply, type RunRequest, type WorkflowRuns } from './requests.ts'
 import session from './session.ts'
 import { settings } from './settings.ts'
-import { bounded, RunStore, type Run } from './store.ts'
+import { bounded, boundedEncoded, RunStore, type Run } from './store.ts'
 
 /// `report_guidance` is one line: the entry names the report's last line as
 /// guidance, not part of the workflow's account, so a value with a line
@@ -22,12 +22,45 @@ const options = z.strictObject({
 })
 const provides = { workflowRuns: { call: 'async' } } as const
 
-function visible(entries: DefinitionEntry[]) {
-  return entries.map(entry => ({ name: entry.name, source: entry.source, enabled: entry.enabled,
+/** A listed field's preview: its serialized form stays within `limit`, and a cut
+ * text ends with an ellipsis so it is not read as the whole value. */
+function preview(text: string, limit: number): string {
+  return boundedEncoded(text, limit) === text ? text : `${boundedEncoded(text, limit - 8)}…`
+}
+
+function visible(entry: DefinitionEntry) {
+  return { name: entry.name, source: entry.source, enabled: entry.enabled,
     ...(entry.package_id ? { package_id: entry.package_id } : {}),
-    ...(entry.definition ? { description: entry.definition.description, parameters: entry.definition.parameters ?? [] } : {}),
-    valid: entry.issues.length === 0, issues: entry.issues.slice(0, 10), issue_count: entry.issues.length,
-  }))
+    ...(entry.definition ? {
+      description: preview(entry.definition.description, 4 * 1024),
+      parameters: (entry.definition.parameters ?? []).map(parameter => ({
+        name: parameter.name,
+        ...(parameter.required === undefined ? {} : { required: parameter.required }),
+        ...(parameter.description === undefined ? {} : { description: preview(parameter.description, 512) }),
+        ...(parameter.default === undefined ? {} : { default: preview(parameter.default, 1024) }),
+      })),
+    } : {}),
+    valid: entry.issues.length === 0,
+    issues: entry.issues.slice(0, 10).map(issue => preview(issue, 1024)),
+    issue_count: entry.issues.length,
+  }
+}
+
+/** One reply's listing: field previews, and entries while the serialized payload fits.
+ * `truncated` says later entries were omitted for the frame bound. */
+function listing(entries: DefinitionEntry[]) {
+  const definitions: ReturnType<typeof visible>[] = []
+  let bytes = Buffer.byteLength(JSON.stringify('{"definitions":[],"truncated":false}'))
+  let truncated = false
+  for (const entry of entries) {
+    const value = visible(entry)
+    const part = `${definitions.length ? ',' : ''}${JSON.stringify(value)}`
+    const size = Buffer.byteLength(JSON.stringify(part)) - 2
+    if (bytes + size + 64 > payloadBytes) { truncated = true; break }
+    definitions.push(value)
+    bytes += size
+  }
+  return { definitions, truncated }
 }
 
 export default definePlugin({
@@ -55,8 +88,8 @@ export default definePlugin({
         try {
           return await workflow.track(async (): Promise<RunReply> => {
             if (request.action === 'list') {
-              const listed = visible((await catalog.load(request.caller.cwd)).entries.filter(entry => entry.enabled))
-              return { content: JSON.stringify(listed), structured: { definitions: listed } }
+              return { content: JSON.stringify(listing(
+                (await catalog.load(request.caller.cwd)).entries.filter(entry => entry.enabled))) }
             }
             let result: Run
             if (request.action === 'start') {
@@ -99,7 +132,7 @@ export default definePlugin({
             const name = call.method.slice('workflow.'.length)
             if (name === 'list') {
               const { cwd } = management.list.parse(call.params)
-              return { kind: 'value' as const, value: visible((await catalog.load(cwd)).entries) }
+              return { kind: 'value' as const, value: listing((await catalog.load(cwd)).entries) }
             }
             if (name === 'save') {
               const { source, cwd, document } = management.save.parse(call.params)

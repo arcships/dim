@@ -312,7 +312,7 @@ Workflow 自身重载或重启使运行 interrupted，不重新启动（E15）�
 
 | 文本 | 类别与逐句标注 |
 | --- | --- |
-| `workflow` 声明 | Protocol：description「List workflow definitions, start a run, inspect stored stage results, or stop a run.」说明工具做什么，inputSchema 给出动作、`run_id`、`name`、`source` 与 `params` |
+| `workflow` 声明 | Protocol：description「List workflow definitions, start a run, inspect stored stage results, or stop a run. A listing marked truncated omits later definitions.」说明工具做什么，inputSchema 给出动作、`run_id`、`name`、`source` 与 `params` |
 | `workflow` 结果 | Protocol：首行 `workflow: <code>` 与其消息、`workflow: invalid_definition. Use list to inspect the definition issues.`、`workflow is available only in interactive Sessions.`、`workflow: cancelled before handover`、两条卸载通知，以及模型据此行动的 `run_id`、状态与 `result_preview` 字段。Policy：「Use list to inspect the definition issues.」是工作方式指引 |
 | 报告标记 | Protocol：元素 `dim-workflow`、`kind="report"`、`run` 与 `status`，以及该标记开辟的 Steer 输入；正文中的结果行 `Workflow <run_id>: <state>.` 与各阶段状态是这次运行的数据，有界预览承载各阶段自己在最后一步的结果。Policy：「Use workflow status with run_id … for stored stage results.」是工作方式指引，位于报告最后一行；其中写到的动作名属 protocol |
 | 阶段标记 | Protocol：元素 `dim-workflow`、`kind="stage"`、`run` 与 `stage`，以及该标记开辟的 Queue 输入；正文为空，其后的提示词是运行自己的文本 |
@@ -426,11 +426,11 @@ Settings 在边界按声明 schema 校验/填默认，Workflow 直接使用返�
 | 边界 | Workflow 的动作 |
 | --- | --- |
 | `workflow.save` | 在外部定义请求边界按 A.1 解码，在用户来源 CAS 或项目文件写入前检查语义。非法定义返回 invalid_definition，不修改来源，也不启用项目定义。 |
-| 通用客户端 `settings.update` | Settings 确认 schema/默认值和持久化，不确认 Workflow 可执行语义。结构合法但引用非法的条目可以保存；Workflow 不增加 Settings 回调，也不把写入回执当作运行准入。 |
+| 通用客户端 `settings.update` | Settings 确认 schema/默认值和持久化，不确认 Workflow 可执行语义。结构合法但引用非法的条目可以保存；Workflow 不增加 Settings 回调，也不把写入回执当作运行准入。该客户端自己的请求在一帧内携带整个文档；Workflow 的保存路径保证其写入的文档不超过 A.18 载荷，其他客户端增长的文档仍受该客户端自身的传输限制。 |
 | 定义列表 / start | 检查当前定义的语义；工具及管理列表按各自现有可见性规则显示问题，start 在保存运行或启动 Session 前拒绝选中的非法定义，保留来源条目供修正。来源读取失败是错误，不是空目录。 |
 | 项目/包文本 | 在此外部数据边界解析、检查结构一次，再应用相同的 Workflow 语义规则。来源读取使用已交付的 workflowFiles，不直接访问文件系统。 |
 
-定义 YAML 文件在原生 `workflowFiles` 读写边界限制为 8 MiB，为 base64 和 JSON 信封在既有 16 MiB 桥接帧内留出空间。读取已打开文件的长度后再分配内容，并在读取过程中继续限制，防止并发增长。项目保存先检查序列化 YAML 的 UTF-8 字节数，再创建目录或调用二进制写入；超限返回 `invalid_definition` 且不改文件。更大的既有文件保持原字节，并作为无效条目展示。新解码定义含用户来源条目和别名展开后的 YAML，仍按独立的 16 MiB 紧凑 JSON 上限准入。参数含默认值及未被模板引用的已声明参数，每个仍最多 32 KiB，合计最多 256 KiB，均按 UTF-8 字节计算；超限在保存运行前返回 `invalid_parameters`。已提交运行快照的 inner-v2 解码规则不变。
+定义 YAML 文件在原生 `workflowFiles` 读写边界限制为 8 MiB，为 base64 和 JSON 信封在既有 16 MiB 桥接帧内留出空间。读取已打开文件的长度后再分配内容，并在读取过程中继续限制，防止并发增长。项目保存先检查序列化 YAML 的 UTF-8 字节数，再创建目录或调用二进制写入；超限返回 `invalid_definition` 且不改文件。更大的既有文件保持原字节，并作为无效条目展示。新解码定义含用户来源条目和别名展开后的 YAML，其紧凑 JSON 最多 1 MiB（A.18）。一次跨桥的 Workflow 载荷按其序列化字节最多 8 MiB：16 MiB 帧的另一半留给服务信封。用户保存若使 `workflow` 文档（全部用户定义加启用状态和限制）超过该载荷，返回 `invalid_definition` 且不写入；A.4 让运行存储保持在同一载荷内。升级前已写入且超过 8 MiB 的用户文档只要仍在一帧内就仍可读取：其中超过 1 MiB 的条目显示为无效，`workflow.save` 拒绝结果仍超载荷的保存，缩小这类文档是受保护的 `settings.update` 客户端的操作。参数含默认值及未被模板引用的已声明参数，每个仍最多 32 KiB，合计最多 256 KiB，均按 UTF-8 字节计算；超限在保存运行前返回 `invalid_parameters`。已提交运行快照的 inner-v2 解码规则不变，也不重新施加这些准入限制。
 
 启动时校验传入参数的名称/值一次，拒绝缺失必填项或未知参数；并按业务转换应用定义中的参数默认值。把接受的定义和参数保存到现有运行快照，后续来源编辑不改变它。在准入一步中的任何阶段前，用参数及已存的前序阶段结果渲染、检查该步的所有阶段长度；首步和后续步骤超限均按附录 C 结算，该步检查失败时不启动任何同组阶段或写入其输入。后续阶段直接使用快照，不再解析、填默认或规范化。Agent/model 可用性及有效权限由 Agents 在实际准入时解析，不在定义校验时增加目录查询。
 
@@ -438,11 +438,11 @@ Settings 在边界按声明 schema 校验/填默认，Workflow 直接使用返�
 
 workflow 工具不按交互性改变注册（#30），config.interactive === false 时拒绝（A8），省略表示 true。C4 交付创建配置，不是当前 Permission；注册不做 I/O。execute(ToolCall,cancelled) 使用既有第二个按引用取消 Promise。已接受运行归进程 owner，清理及持久化前/后取消行为按该所有权处理，不从 JS Promise 推断原生调用已取消。ToolExecutor 拥有工具终态事实。
 
-`workflowRuns`，进程作用域，无 key，在此定义：`call(RunRequest): async -> RunReply`，其中 `RunRequest = {action, name?, source?, params?, run_id?, caller: {sessionId, branchId, callId, cwd}}` 使用下列动作，`RunReply = {content: string, structured: JSON}`，或下列错误码中的 `{code, message}`。风险：Collaboration 的 `agent` 工具声明的类别（目前没有，因此未分类：ReadOnly 拒绝、WorkspaceWrite 询问、FullAccess 允许；E2）。
+`workflowRuns`，进程作用域，无 key，在此定义：`call(RunRequest): async -> RunReply`，其中 `RunRequest = {action, name?, source?, params?, run_id?, caller: {sessionId, branchId, callId, cwd}}` 使用下列动作，`RunReply = {content: string, structured?: JSON}`，或下列错误码中的 `{code, message}`。风险：Collaboration 的 `agent` 工具声明的类别（目前没有，因此未分类：ReadOnly 拒绝、WorkspaceWrite 询问、FullAccess 允许；E2）。
 
 | 动作 | 参数 | `ToolResult.content` |
 | --- | --- | --- |
-| `list` | — | 对调用方 cwd 可见的已启用定义：名称、来源、描述、参数；非法条目仍可见，标为非法并把前 10 个问题及问题总数写进 `content` |
+| `list` | — | 对调用方 cwd 可见的已启用定义：`{"definitions":[...],"truncated":bool}`，含名称、来源、描述、参数；非法条目仍可见，标为非法并带前 10 个问题及问题总数。描述、参数文本和问题都是有界预览；条目在回复载荷处停止，`truncated` 表示省略了后续定义；列表只在 `content` 中发送一次 |
 | `start` | `name`、`source?`（先 `project`，再 `user`，再 `plugin`）、`params` | `{"run_id", "status": "running", "stages": [...]}`，并附一句说明结果会作为报告输入到达 |
 | `status` | `run_id` | 状态、各阶段状态、Session id、有界的结果预览、最近的日志条目 |
 | `stop` | `run_id` | 传播后的最终状态 |
@@ -461,7 +461,7 @@ start 保存 report_to = {session_id,branch_id} 和调用方 cwd；首阶段准�
 
 | 方法 | 参数 | 结果 | `mutating` |
 | --- | --- | --- | --- |
-| `workflow.list` | `cwd` | 定义及来源、启用状态、问题 | 否 |
+| `workflow.list` | `cwd` | `{definitions, truncated}`，含来源、启用状态、有界字段预览和问题；与工具 list 相同的载荷上限 | 否 |
 | `workflow.save` | `source: user\|project`、`cwd?`、`document` | A.1 语义检查通过后返回 `{name}`；`user`：Workflow 以类型化写入把条目写进 `workflow` 文档（按其 revision 做 CAS）；`project`：经 FileStorage 写入项目文件（文件权威）；保存不会启用项目定义 | 是 |
 | `workflow.start` | name、source?、cwd、resource_node?（P3）、params、report_to? | run_id；首 launch 记录返回 policy（A17），管理启动使用现有宿主上限/只读默认 | 是 |
 | `workflow.status` | `run_id?` | 一次运行或最近的运行 | 否 |
@@ -486,11 +486,13 @@ Stage { id, step, state: waiting | launching | running | completed | failed | st
 
 `created_at` 和终态的 `ended_at` 使用 UTC `YYYY-MM-DDTHH:mm:ss.sssZ`，固定三位小数，使时间顺序与字典序一致。宿主 S10 的 `{version:1,text}` 是独立的外层封装，仍由宿主负责。定义留在其已声明来源；运行中的定义快照是已接受的执行输入，不作为来源配置编辑。
 
+一次桥接帧承载存储文本、其替换请求及状态回复。尺寸按跨越边界时的字节计算：保存字符串的已提交 JSON 形式（引号和反斜杠转义、控制字符展开），以及文件服务承载存储文本时的 JSON 字符串（其中的转义可能再次加倍）。单个运行保存的阶段结果文本按已提交 JSON 合计最多 512 KiB；更后的结果按 UTF-8 边界截断到剩余载荷。每条保存的日志消息和阶段原因按已提交 JSON 最多 512 字节，日志仍在 A9 的 500 条内；运行保存的定义即准入的那份（A.1）。start 按文件服务承载的 JSON 字符串——而非原始文本——估算存储，计入每个活动运行的记录、其后续可能获得的阶段身份/结果/日志/`agent_id` 副本，以及新运行自己的记录；后续字段按其序列化形式的可能最大值计费。超过 8 MiB 载荷时先让最早的已结算终态运行过期（A.4），仍超出则返回 `limit_exceeded` 且不保存该运行。按这些限制准入的运行因此让每次存储读取、写入和回复都在一帧内；限制之前提交的记录仍按其原大小解码。
+
 文件缺失表示没有运行。只在此持久化边界解析、校验：损坏 JSON、缺失/未知版本、非法记录字段、重复 `run_id` 或单个运行内重复阶段身份，均失败并保留原字节。不自动重置、备份或迁移。此后直接使用类型化记录；不兼容的已提交格式必须采用新的内部版本并明确兼容策略。
 
 使用现有 `scope.withLock` 的读/修改/`file.replace` 持久化每个必要转换，释放事务后才调用 `sessions`。启动、输入和报告都先记录意图，再发起副作用；保存回复后才继续推进。不增互斥锁、日志、存储或公开服务。读/替换失败即停止新的运行副作用并报告存储错误。卸载先停止准入，结算自持调用和记录写入，再关闭文件 scope；A13 不限制已接受写入的结算时间。
 
-保留策略遵循 [S2 §8.7](../appserver/sessions-service.md#87-删除运行用的-session)：保留所有 running/stopping 运行、每条 pending 报告，以及其他终态中按 `ended_at` 最近的 100 条记录，同时间以 `run_id` 排序。日志最多 500 条（A9）。只有报告为 none/delivered/undeliverable 且所有自持阶段操作均已结算的运行才可移除。对于从 Workflow 自己成功 launch 回复中记录的 Session，先计算活动和保留运行的引用；没有引用时，先调用现有 sessions.delete，再移除过期运行的最后一条所有权记录。删除失败或不确定时保留记录并报告错误，供下一次保留期清理使用，不增清理队列。fork 和外部提供的 Session 身份不归 Workflow。报告或清理未结算时可暂时超过 100 条。没有持久化 launch 身份的 Session 仍适用附录 F 的已知限制。
+保留策略遵循 [S2 §8.7](../appserver/sessions-service.md#87-删除运行用的-session)：保留所有 running/stopping 运行、每条 pending 报告，以及其他终态中按 `ended_at` 最近的 100 条记录，同时间以 `run_id` 排序。日志最多 500 条（A9）。只有报告为 none/delivered/undeliverable 且所有自持阶段操作均已结算的运行才可移除。start 的帧估算超过载荷时，在准入前也可让最近 100 条内最早且已结算的终态运行过期：最近 100 条是存储在容量内时的保留目标，不是 start 为空间可过期记录的下限。pending 报告和未结算所有权不会为了空间而过期。对于从 Workflow 自己成功 launch 回复中记录的 Session，先计算活动和保留运行的引用；没有引用时，先调用现有 sessions.delete，再移除过期运行的最后一条所有权记录。删除失败或不确定时保留记录并报告错误，供下一次保留期清理使用，不增清理队列。fork 和外部提供的 Session 身份不归 Workflow。报告或清理未结算时可暂时超过 100 条。没有持久化 launch 身份的 Session 仍适用附录 F 的已知限制。
 
 启动恢复后、每次终态转换后及报告结算后执行保留期清理。失败清理仍留下过期记录时，经 owner 的定时器每分钟重试一次，即使没有活动运行。运行存储读取失败即跳过删除与裁剪，保留记录并报告错误。所有权引用来自运行存储；定义来源被删除或无法读取，不会使活动运行或 pending 报告过期。读取失败而跳过的清理也按同一分钟节奏重试。
 
@@ -576,8 +578,9 @@ Stage { id, step, state: waiting | launching | running | completed | failed | st
 9. 每个阶段（包括并行阶段）都在自己启动的非交互 Session 中运行；未声明 `agent` 的阶段使用 Agents 的默认 profile。
 10. 非交互阶段 Session 只在 profile 挂载 `workflow` 时（profile 没有挂载列表，或列表列出它）声明该工具，调用它返回错误结果。挂载列表未列出该工具的 profile 不因安装包而获得它。
 11. A17：首 launch 返回后，在输入/同组启动前保存实际 policy；后续权限不超过它，起始方关闭或宿主策略变化亦然；首准入前启动方缺失则失败关闭。
-12. 保留活动运行和 pending 报告；其他终态历史上限为 100 条。仅经 sessions.delete 删除没有引用的自持阶段 Session，之后才移除最后一条所有权记录。失败/不确定删除保留记录；Session 已删除但记录未移除时重启可复核。覆盖启动/终态/报告结算触发的清理，以及无活动运行时的重试。在存储边界检查固定精度时间戳与内部版本；非法原字节不变。#126 在发布前约束已加载空闲 Session。来源读取、owner CAS、项目默认禁用使用实际绑定，不绕过文件服务。
+12. 保留活动运行和 pending 报告；其他终态历史上限为 100 条，但 start 的帧估算会先让更早的已结算记录过期。仅经 sessions.delete 删除没有引用的自持阶段 Session，之后才移除最后一条所有权记录。失败/不确定删除保留记录；Session 已删除但记录未移除时重启可复核。覆盖启动/终态/报告结算触发的清理，以及无活动运行时的重试。在存储边界检查固定精度时间戳与内部版本；非法原字节不变。#126 在发布前约束已加载空闲 Session。来源读取、owner CAS、项目默认禁用使用实际绑定，不绕过文件服务。
 13. 经选定包绑定让报告运行在后台运行任务中，验证清理先 join 该任务及其记录写入，再关闭存储；仅有前台 drain 方法不证明此项。持有已准入的原生追加，然后使 Node 崩溃或仅重载固定行：替换行在写入被持有时重新提交，释放后得到该输入的回答；恢复和再次重载均不新增输入。标记开放后、input 前崩溃时，恢复写入一份报告。输入前和发布后的完整宿主重启都只写入一份报告。覆盖发布后 delivered 尚未保存和回复记录替换失败时的恢复，保持只有一份报告。已持有该报告的目标收到重新提交时不新增输入。真实包拒绝内部 v1、未知版本及 pending 缺标记并保留原字节。rejected 转 undeliverable，ambiguous 转 delivered 并记录违约，failed 在下次装载恢复。检查起始方历史中的实际输入数量；显式停止和目标缺失按 §3.4。
+14. 帧限制（A.18）：紧凑 JSON 超过 1 MiB 的定义在 save/list/start 以现有诊断拒绝；会使 `workflow` 文档超过 8 MiB 的用户保存返回 `invalid_definition` 且不改文档；单个运行保存的阶段结果按已提交 JSON 合计最多 512 KiB，超出部分按 UTF-8 边界截断；活动运行准入的存储文本按文件服务序列化后超过 8 MiB 时先让最早的已结算终态运行过期，仍超出则返回 `limit_exceeded` 且不保存运行；引号/反斜杠密集及控制字符结果和日志仍让存储保持在该上限内；`agent_id` 副本计入；列表只发送一次，到 8 MiB 时停止并置 `truncated`；完整 `workflow.status` 回复保持在 8 MiB 内。既有 inner-v2 记录仍可解码。
 
 ## 附录 E. 假设
 
@@ -588,15 +591,16 @@ Stage { id, step, state: waiting | launching | running | completed | failed | st
 | A3 | 用户保存的定义是 Settings 来源 `workflow` 中的一个文档，把名称映射到定义；项目定义按工作区和名称的启用状态也存于该文档 | 用户决定（第二轮 R7）；[ADR 003](../../adr/003-approval-scope.md) D3 | 存为 dim home 下的文件 |
 | A4 | 阶段或并行组（≤ 32 步，每组 ≤ 8）；快速失败 | 功能清单（“stages”）；限制为判断 | 每阶段的失败策略 |
 | A5 | 模型优先级：阶段 > profile > Provider 的默认选择 | [Overview §4](../overview.md#4-插件目录)；优先级为判断 | 其他优先级 |
-| A6 | 渲染后提示词 ≤ 32 KiB UTF-8；存储结果 ≤ 64 KiB。替入后超过提示词上限时，按预期使步骤/运行失败（附录 C），不截断 | 判断 | 其他上限 |
+| A6 | 渲染后提示词 ≤ 32 KiB UTF-8；存储结果每阶段 ≤ 64 KiB、每运行按已提交 JSON ≤ 512 KiB。替入后超过提示词上限时，按预期使步骤/运行失败（附录 C），不截断 | 判断 | 其他上限 |
 | A7 | 纯替换模板 | 判断 | 表达式需要沙箱 |
 | A8 | 工具只在交互 Session 中可用；在其他 Session 中处理函数拒绝 | 防止嵌套 | 需要深度限制 |
-| A9 | 日志 ≤ 500 条；最近 100 条终态运行，另保留活动运行、pending 报告和未结算清理记录（A.4） | 数量为判断；所有权/顺序遵循 S2 §8.7 | 其他保留策略 |
+| A9 | 日志 ≤ 500 条，每条消息按已提交 JSON ≤ 512 字节；最近 100 条终态运行，另保留活动运行、pending 报告和未结算清理记录（A.4） | 数量为判断；所有权/顺序遵循 S2 §8.7 | 其他保留策略 |
 | A11 | workflow 文档的 max_concurrent_runs/max_concurrent_stages，均为 ≥ 1 整数、默认 4；按来源合同在每次 start 读取 | 判断 | 其他限制 |
 | A13 | 卸载最多等待 10 s 以停止阶段 | 判断 | 其他上限 |
 | A15 | `start` 不去重 | 判断 | 幂等键 |
 | A16 | 报告预览 ≤ 4 KiB | 判断；`dim-agent-report` 先例 | 其他上限 |
 | A17 | 首阶段准入时捕获实际 policy，后续阶段在当前宿主上限下显式请求已存 policy | 维护者已确认；复用现有 S2 launch 回复 | — |
+| A18 | 一次跨桥的 Workflow 载荷按其序列化字节 ≤ 8 MiB：新定义紧凑 JSON ≤ 1 MiB，用户文档、作为 JSON 字符串的存储文本及列表/状态回复 ≤ 8 MiB，单运行保存的阶段结果 ≤ 512 KiB 已提交 JSON | 判断；16 MiB 桥接帧留一半给服务信封，与既有的 8 MiB 文件和 10 MiB 文本限制同理 | 其他上限；帧更大时可放宽 |
 
 已决定：每秒历史跟踪及现有停止/保留输入的边界（§3.2，维护者决定）、工具风险和阶段 policy 上限（E2）、`.dimcode/`（E11）、重启后报告一次（E15）、每个阶段都在启动的 Session 中运行（用户决定）、用户保存的定义存于 Settings 业务来源、运行记录存于 `pluginFiles`（用户决定）、内部 v2 运行记录及必需的 pending 尝试标记、拒绝 v1 并保留原字节，迁移后续统一处理（维护者决定）、没有宿主本地批准（用户决定）、撤回自己的输入、作用域（[ADR 002](../../adr/002-plugin-scope.md)）。
 

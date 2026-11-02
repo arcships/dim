@@ -37,6 +37,21 @@ fn project_state(id: &str, state: McpSessionState, tools: ToolSourcesState) -> M
         closed: state.closed,
     }
 }
+/// The refusal vocabulary of `session.mcp.app` (MCP Apps §4.3). A refusal and
+/// an unknown outcome are separate codes: only the first may be retried.
+pub(super) fn app_error(error: crate::mcp::McpAppError) -> RpcError {
+    let kind = match error {
+        crate::mcp::McpAppError::Absent => "mcp_app_absent",
+        crate::mcp::McpAppError::Unsupported => "mcp_app_unsupported",
+        crate::mcp::McpAppError::NotCallable => "mcp_app_not_callable",
+        crate::mcp::McpAppError::UnknownServer => "mcp_unknown_server",
+        crate::mcp::McpAppError::Unavailable => "mcp_unavailable",
+        crate::mcp::McpAppError::Refused => "mcp_app_refused",
+        crate::mcp::McpAppError::Unknown => "mcp_app_unknown",
+    };
+    RpcError::app(-32000, kind, error.to_string())
+}
+
 pub(super) fn session_state(session: &Session) -> Result<McpStateResult, RpcError> {
     Ok(project_state(
         session.id(),

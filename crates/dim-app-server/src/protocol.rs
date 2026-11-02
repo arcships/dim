@@ -126,6 +126,8 @@ pub enum Call {
     PromptRefresh(BranchRequest),
     SessionMcp(SessionId),
     McpRefresh(SessionId),
+    McpAppWidget(McpAppWidget),
+    McpAppCall(McpAppCall),
     SessionMethods(SessionId),
     WebOpen(WebOpen),
     WebToggle(WebOpen),
@@ -151,6 +153,8 @@ impl Call {
                 | Self::PromptRefresh(_)
                 | Self::SessionMcp(_)
                 | Self::McpRefresh(_)
+                | Self::McpAppWidget(_)
+                | Self::McpAppCall(_)
         )
     }
     /// Methods that open and report the local web entry; local transport only.
@@ -266,7 +270,7 @@ pub const WEB_MANAGEMENT_METHODS: &[&str] = &[
 
 pub const WEB_SETTINGS_SOURCES: &[&str] = &["model-log", "execution"];
 
-pub const LOCAL_EXECUTION_METHODS: [&str; 8] = [
+pub const LOCAL_EXECUTION_METHODS: [&str; 10] = [
     "session.permission.get",
     "session.permission.update",
     "session.exec.stop",
@@ -275,6 +279,8 @@ pub const LOCAL_EXECUTION_METHODS: [&str; 8] = [
     "session.prompt.refresh",
     "session.mcp",
     "session.mcp.refresh",
+    "session.mcp.app.widget",
+    "session.mcp.app.call",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -301,6 +307,24 @@ pub struct McpRejection {
     pub reason: String,
 }
 
+/// `session.mcp.app.widget`: the mount read starts from the published tool
+/// name a `tool/call` fact carries (MCP Apps D4).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpAppWidget {
+    pub session_id: String,
+    pub tool: String,
+}
+/// `session.mcp.app.call`: the server's own tool name in the entry the view
+/// was mounted from (MCP Apps §4.2).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpAppCall {
+    pub session_id: String,
+    pub server: String,
+    pub tool: String,
+    pub arguments: JsonObject,
+}
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BranchRequest {
@@ -775,6 +799,8 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
             "session.prompt.refresh" => Call::PromptRefresh(params(raw_params)?),
             "session.mcp" => Call::SessionMcp(params(raw_params)?),
             "session.mcp.refresh" => Call::McpRefresh(params(raw_params)?),
+            "session.mcp.app.widget" => Call::McpAppWidget(params(raw_params)?),
+            "session.mcp.app.call" => Call::McpAppCall(params(raw_params)?),
             "session.methods" => Call::SessionMethods(params(raw_params)?),
             "web.open" => Call::WebOpen(params(raw_params)?),
             "web.toggle" => Call::WebToggle(params(raw_params)?),
@@ -1124,6 +1150,8 @@ pub enum Reply {
     ModelUpdate(ModelUpdateResult),
     Configuration(ConfigurationResult),
     McpState(McpStateResult),
+    McpWidget(crate::mcp::McpWidgetResult),
+    McpAppCall(crate::mcp::McpAppCallResult),
     SessionMethods(SessionMethodsResult),
     WebOpened(WebOpened),
     WebToggled(WebToggled),
