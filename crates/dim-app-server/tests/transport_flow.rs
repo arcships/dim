@@ -119,6 +119,8 @@ mod process_typescript;
 mod session_typescript;
 #[path = "transport_flow/settings_methods.rs"]
 mod settings_methods;
+#[path = "transport_flow/skills_installation.rs"]
+mod skills_installation;
 #[path = "transport_flow/web.rs"]
 mod web;
 

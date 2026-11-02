@@ -472,7 +472,7 @@ mod tests {
         );
         assert!(names("/ss", SCROLLBACK).contains(&"resume"));
         assert!(names("/quit", SCROLLBACK).contains(&"exit"));
-        assert_eq!(names("/tim", SCROLLBACK), ["timeline"]);
+        assert_eq!(names("/tim", SCROLLBACK), ["timeline", "runtime"]);
     }
 
     /// A non-ASCII description has no spaces between words, so a non-ASCII

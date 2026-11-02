@@ -317,6 +317,13 @@ pub const COMMANDS: &[Command] = &[
         Needs::Nothing,
     ),
     slash(
+        "scheduled",
+        "model",
+        "list scheduled jobs, pause, resume, run or remove one",
+        &["schedule"],
+        Needs::Nothing,
+    ),
+    slash(
         "reload-skills",
         "model",
         "rescan the Skills of this workspace",
@@ -326,8 +333,15 @@ pub const COMMANDS: &[Command] = &[
     slash(
         "permissions",
         "model",
-        "configure file access, tool approval and process isolation",
+        "configure file access, tool approval and process isolation, and manage command rules",
         &["approvals", "approval"],
+        Needs::Nothing,
+    ),
+    slash(
+        "runtime",
+        "app",
+        "show, install or configure the plugin runtimes",
+        &[],
         Needs::Nothing,
     ),
     slash("settings", "app", "open settings", &[], Needs::Nothing),

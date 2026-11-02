@@ -9,7 +9,7 @@ use crate::{
     permission::{self, Added, PRESET_METHODS, RULE_METHODS, Removed, Rules, State, Switch},
     session::{Interrupts, settle},
 };
-use dim_agent_types::{CommandMatch, CommandRuleDecision, PermissionPreset};
+use dim_agent_types::PermissionPreset;
 
 const USAGE: &str = "Usage: /permissions [file-access read-only|workspace-read-write|unrestricted | tool-approval ask|bypass | PRESET | allow|deny exact|prefix COMMAND | remove N]";
 
@@ -139,25 +139,17 @@ pub async fn command(
                 }
             }
         }
-        [
-            decision @ ("allow" | "deny"),
-            matching @ ("exact" | "prefix"),
-            ref command @ ..,
-        ] if !command.is_empty() => {
+        [preset] if !matches!(preset, "remove" | "allow" | "deny") => {
+            let preset = permission::parse_preset(preset)?;
+            switch(client, input, interrupts, session_id, preset, display).await
+        }
+        _ => {
+            let Some((decision, matching, command)) = permission::parse_rule_words(&words[1..])
+            else {
+                return Err(USAGE.into());
+            };
             require_rules(client)?;
-            let rule = permission::rule(
-                &command.join(" "),
-                if matching == "exact" {
-                    CommandMatch::Exact
-                } else {
-                    CommandMatch::Prefix
-                },
-                if decision == "allow" {
-                    CommandRuleDecision::Allow
-                } else {
-                    CommandRuleDecision::Deny
-                },
-            )?;
+            let rule = permission::rule(&command, matching, decision)?;
             let described = permission::describe(&rule);
             match settle(interrupts, NOTICE, permission::add_rule(client, rule)).await? {
                 Added::Added(rules) => {
@@ -167,11 +159,6 @@ pub async fn command(
                 Added::Present => display.record(&format!("Rule already present: {described}")),
             }
         }
-        [preset] if !matches!(preset, "remove" | "allow" | "deny") => {
-            let preset = permission::parse_preset(preset)?;
-            switch(client, input, interrupts, session_id, preset, display).await
-        }
-        _ => Err(USAGE.into()),
     }
 }
 

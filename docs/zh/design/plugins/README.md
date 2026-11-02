@@ -31,6 +31,7 @@
 | [TemporaryMcp](../../../design/plugins/TemporaryMcp.md) | 由既有 MCP 功能注册 | 临时绑定、MCP server 子插件和工具；不写持久配置 | — | 已实现；#436 的客户端 MCP 接入 |
 | [RemoteGateway](RemoteGateway.md) | 远程入口、设备 | — | — | P3 |
 | [Modality](Modality.md) | 任务、实时连接 | — | — | P3 |
+| [Skills](../../../design/plugins/Skills.md)（安装） | 既有 SkillsCatalog：预览本地目录或 Git 来源、按选择安装到用户根、更新与确认后移除松散的技能 | —（发现、启用和 `skill` 工具已归 Skills 能力） | — | #740 |
 | [PluginManager](PluginManager.md) | 插件配置（`plugins.json`）、安装、插件代码的 loader 行、内容登记 | `PluginTools`（`plugin` 工具） | — | M1 |
 | [RuntimeManager](RuntimeManager.md) | 插件代码的 Node 与 Python 运行时：固定版本下载、校验、启动；`runtime.*` | — | — | M1（#476） |
 
@@ -38,6 +39,6 @@
 
 | 作用域 | 部分 |
 | --- | --- |
-| 进程部件 | daemon 内的 Provider（管理补充提案）、Scheduler、Workflow、ExternalAgent、Modality、PluginManager、RuntimeManager、RemoteGateway；接入方宿主进程内的 AcpGateway |
+| 进程部件 | daemon 内的 Provider（管理补充提案）、Scheduler、Workflow、ExternalAgent、Modality、PluginManager、RuntimeManager、RemoteGateway、Skills（安装）；接入方宿主进程内的 AcpGateway |
 | Session 部件 | Questions、ShellInput、Attachments、SessionTitle、Goal、Web、Recall、Hooks、Scheduler、Workflow、PromptSources、Prompt（条目表） |
 | 分支部件 | Goal（含 Pursuit）、Hooks、Prompt |

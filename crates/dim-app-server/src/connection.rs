@@ -4,11 +4,12 @@ use crate::{
     control::ServerControl,
     outbound::{Frame, Sender},
     protocol::*,
+    skills_management::skills_error,
 };
 use dim_agent_capabilities::{
     methods::{Accepted, RpcError},
     permission::{Permission, PermissionState, PermissionUpdateError},
-    skills::{SkillsBranch, SkillsError},
+    skills::SkillsBranch,
     workspace_tools::background::{BackgroundExec, TaskError},
 };
 use dim_agent_runtime::{AgentError, Names, Session};
@@ -1440,18 +1441,6 @@ fn integration_pending() -> RpcError {
         "product_integration_pending",
         "Programming integration is pending",
     )
-}
-
-fn skills_error(error: SkillsError) -> RpcError {
-    let app = match &error {
-        SkillsError::Closed => return RpcError::reloading(),
-        SkillsError::UnknownSkill(_) => "skill_unknown",
-        SkillsError::SettingsConflict => "skills_conflict",
-        SkillsError::SettingsWrite(_) => "skills_write_failed",
-        SkillsError::SettingsSync(_) => "skills_sync_failed",
-        SkillsError::SettingsRead(_) | SkillsError::RootUnreadable { .. } => "skills_unavailable",
-    };
-    RpcError::app(-32000, app, error.to_string())
 }
 
 pub(crate) fn provider_error(error: dim_agent_capabilities::host::HostError) -> RpcError {

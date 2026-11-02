@@ -231,6 +231,7 @@ enum StepOutcome {
     },
     Failed {
         retain_from: Option<String>,
+        estimated_output_tokens: Option<f64>,
         error: String,
         diagnostics: Option<StrategyDiagnostics>,
     },
@@ -255,9 +256,6 @@ struct Pass<'a> {
 }
 
 impl Pass<'_> {
-    /// The strategy's result composed for the record: its cut validated
-    /// against the legal cuts, the running turn's pins, and the projected
-    /// request.
     fn compose(
         &self,
         window: &PolicyWindow,
@@ -296,7 +294,7 @@ impl Pass<'_> {
         let baseline = self.view.history[kept - 1].baseline.clone();
         let tokens = self
             .view
-            .compacted(self.model, kept, &replacement, &baseline)?
+            .compacted(self.model, kept, &replacement, &baseline)
             .1;
         Ok(Composed {
             retain_from,
@@ -788,6 +786,7 @@ impl ContextPolicy {
                             }
                             StepOutcome::Failed {
                                 retain_from,
+                                estimated_output_tokens,
                                 error,
                                 diagnostics: second,
                             } => {
@@ -798,7 +797,7 @@ impl ContextPolicy {
                                     diagnostics: Some(record(
                                         retain_from,
                                         redo_limit,
-                                        None,
+                                        estimated_output_tokens,
                                         0,
                                         diagnostics,
                                         None,
@@ -821,12 +820,20 @@ impl ContextPolicy {
             },
             StepOutcome::Failed {
                 retain_from,
+                estimated_output_tokens,
                 error,
                 diagnostics,
             } => ContextCompactionResult::Failed {
                 error,
                 diagnostics: diagnostics.map(|diagnostics| {
-                    record(retain_from, limit_from.clone(), None, 0, diagnostics, None)
+                    record(
+                        retain_from,
+                        limit_from.clone(),
+                        estimated_output_tokens,
+                        0,
+                        diagnostics,
+                        None,
+                    )
                 }),
             },
             StepOutcome::Cancelled { reason } => ContextCompactionResult::Cancelled { reason },
@@ -912,8 +919,10 @@ impl ContextPolicy {
             .retained_entry(&view.history, retain_from)
             .map_err(HostError::failed)
             .and_then(|kept| {
-                view.compacted(model.as_ref(), kept, replacement, context_baseline)
-                    .map(|(request, _)| request)
+                let (request, tokens) =
+                    view.compacted(model.as_ref(), kept, replacement, context_baseline);
+                view.check_compacted(model.as_ref(), tokens)
+                    .map(|()| request)
                     .map_err(HostError::failed)
             });
         if request.is_ok() {
@@ -975,18 +984,28 @@ impl ContextPolicy {
                     Err(error) => {
                         return StepOutcome::Failed {
                             retain_from: Some(retain_from),
+                            estimated_output_tokens: None,
                             error: error.to_string(),
                             diagnostics: Some(diagnostics),
                         };
                     }
                 };
                 match pass.compose(&window, retain_from.clone(), replacement) {
-                    Ok(composed) => StepOutcome::Completed {
-                        composed,
-                        diagnostics,
+                    Ok(composed) => match pass.view.check_compacted(pass.model, composed.tokens) {
+                        Ok(()) => StepOutcome::Completed {
+                            composed,
+                            diagnostics,
+                        },
+                        Err(error) => StepOutcome::Failed {
+                            retain_from: Some(retain_from),
+                            estimated_output_tokens: Some(composed.tokens),
+                            error: error.into(),
+                            diagnostics: Some(diagnostics),
+                        },
                     },
                     Err(error) => StepOutcome::Failed {
                         retain_from: Some(retain_from),
+                        estimated_output_tokens: None,
                         error: error.into(),
                         diagnostics: Some(diagnostics),
                     },
@@ -1001,6 +1020,7 @@ impl ContextPolicy {
             },
             Ok(StrategyOutcome::Failed { error, diagnostics }) => StepOutcome::Failed {
                 retain_from: None,
+                estimated_output_tokens: None,
                 error,
                 diagnostics: Some(diagnostics),
             },
@@ -1009,6 +1029,7 @@ impl ContextPolicy {
             },
             Err(error) => StepOutcome::Failed {
                 retain_from: None,
+                estimated_output_tokens: None,
                 error: error.to_string(),
                 diagnostics: None,
             },
@@ -1137,15 +1158,14 @@ impl View {
     pub fn events(&self) -> &[Arc<AgentEvent>] {
         &self.events
     }
-    /// The request with `history[..kept]` replaced, if it is smaller than
-    /// before and below the window.
+    /// The request with `history[..kept]` replaced and its token estimate.
     fn compacted(
         &self,
         model: &dyn ContextModel,
         kept: usize,
         replacement: &[Message],
         baseline: &[ContextBaselineEntry],
-    ) -> Result<(Arc<ModelRequest>, f64), &'static str> {
+    ) -> (Arc<ModelRequest>, f64) {
         let request = project(
             &self.request,
             self.prefix_len,
@@ -1154,10 +1174,18 @@ impl View {
             &self.history[kept..],
         );
         let tokens = model.count_tokens(&request);
-        if tokens < model.count_tokens(&self.prepared) && tokens < model.context_window() {
-            Ok((request, tokens))
+        (request, tokens)
+    }
+
+    fn check_compacted(&self, model: &dyn ContextModel, tokens: f64) -> Result<(), &'static str> {
+        if tokens < model.count_tokens(&self.prepared) {
+            if tokens < model.context_window() {
+                Ok(())
+            } else {
+                Err("Compacted context does not fit the model window.")
+            }
         } else {
-            Err("Compacted context does not reduce input within the model budget.")
+            Err("Compacted context does not reduce input.")
         }
     }
 }

@@ -22,12 +22,14 @@ use crate::ui::i18n::{t, tf};
 use crate::ui::prompts::Effect;
 use crate::ui::render::panel::{bordered, confirm_panel, follow_window, key_hints, wrap_words};
 use crate::ui::rows::{Columns, Kind, Row, panel_row, title_plain};
+use crate::ui::runtime_panel::{runtime_row, waited_runtime};
 use crate::ui::terminal::{KeyCode, KeyEvent, Modifiers};
 use crate::ui::text::truncate_cells;
 use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::fg;
 
 const HINT: &str = "Enter on/off · r reload · Ctrl+R refresh · Esc close";
+const WAITING_HINT: &str = "Enter open /runtime · o on/off · r reload · Esc close";
 const CONFIRM_HINT: &str = "Tab switch  Enter confirm  Esc cancel";
 const LOCKED: &str = "Locked: Dim needs it, so it cannot be turned off.";
 
@@ -37,6 +39,7 @@ const LOCKED: &str = "Locked: Dim needs it, so it cannot be turned off.";
 pub const STRINGS: &[&str] = &[
     "Plugins",
     HINT,
+    WAITING_HINT,
     CONFIRM_HINT,
     LOCKED,
     "Loading plugins...",
@@ -53,6 +56,7 @@ pub const STRINGS: &[&str] = &[
     "Candidates: {candidates}",
     "Error: {error}",
     "Waiting for: {names}",
+    "waits for the {runtime} runtime",
     "Refused {kind}: {error}",
     "Turn off {name}?",
     "Its tools and content stop in new turns until you turn it on again.",
@@ -186,23 +190,33 @@ impl PluginsPanel {
                 self.loading = true;
                 Effect::Refresh
             }
-            KeyCode::Enter => match self.items.get(self.selected) {
-                Some(item) if item.off => self.change(PluginAction::Enable(item.name.clone())),
-                Some(item) if item.locked => {
-                    self.message = Some(Err(t(LOCKED).to_owned()));
-                    Effect::None
-                }
-                Some(item) => {
-                    self.confirming = Some((item.name.clone(), 1));
-                    Effect::None
-                }
-                None => Effect::None,
+            KeyCode::Enter => match self.items.get(self.selected).and_then(waited_runtime) {
+                Some(runtime) => Effect::OpenRuntime(runtime.to_owned()),
+                None => self.toggle(),
             },
+            KeyCode::Char('o') => self.toggle(),
             KeyCode::Char('r') => match self.items.get(self.selected) {
                 Some(item) => self.change(PluginAction::Reload(item.name.clone())),
                 None => Effect::None,
             },
             _ => Effect::None,
+        }
+    }
+
+    /// Turns the selected name on, or off after a confirmation; a locked one
+    /// only says why it stays.
+    fn toggle(&mut self) -> Effect {
+        match self.items.get(self.selected) {
+            Some(item) if item.off => self.change(PluginAction::Enable(item.name.clone())),
+            Some(item) if item.locked => {
+                self.message = Some(Err(t(LOCKED).to_owned()));
+                Effect::None
+            }
+            Some(item) => {
+                self.confirming = Some((item.name.clone(), 1));
+                Effect::None
+            }
+            None => Effect::None,
         }
     }
 
@@ -217,6 +231,14 @@ impl PluginsPanel {
         self.busy = true;
         self.message = None;
         Effect::Plugin(action)
+    }
+
+    /// The keys for the selected row: one that waits for a runtime opens it.
+    fn hint(&self) -> &'static str {
+        match self.items.get(self.selected) {
+            Some(item) if waited_runtime(item).is_some() => t(WAITING_HINT),
+            _ => t(HINT),
+        }
     }
 
     /// `width` columns including borders; `rows` is the panel's row budget.
@@ -307,7 +329,7 @@ impl PluginsPanel {
             None,
             &p.border,
             Some(&title_plain(t("Plugins"), inner, p)),
-            Some(&key_hints(t(HINT), p)),
+            Some(&key_hints(self.hint(), p)),
         )
     }
 }
@@ -324,6 +346,13 @@ fn row(item: &PluginItem) -> Row {
         _ => t("on"),
     };
     let mut detail = state.to_owned();
+    if let Some(runtime) = waited_runtime(item) {
+        detail.push_str(" · ");
+        detail.push_str(&tf(
+            "waits for the {runtime} runtime",
+            &[("runtime", runtime)],
+        ));
+    }
     if let Some(in_use) = &item.in_use {
         detail.push_str("  ");
         detail.push_str(in_use);
@@ -360,8 +389,14 @@ fn about(item: &PluginItem) -> Vec<(String, bool)> {
     if let Some(error) = &item.error {
         lines.push((tf("Error: {error}", &[("error", error)]), true));
     }
-    if !item.waiting_for.is_empty() {
-        let names = item.waiting_for.join(", ");
+    let others: Vec<&str> = item
+        .waiting_for
+        .iter()
+        .map(String::as_str)
+        .filter(|wait| runtime_row(wait).is_none())
+        .collect();
+    if !others.is_empty() {
+        let names = others.join(", ");
         lines.push((tf("Waiting for: {names}", &[("names", &names)]), true));
     }
     for refused in &item.refused {
@@ -570,6 +605,40 @@ mod tests {
             Effect::Plugin(action) => assert_eq!(action, PluginAction::Enable("goal".into())),
             _ => panic!("expected enable"),
         }
+    }
+
+    /// A Pending row that waits for a runtime names it and opens `/runtime`
+    /// on it; `o` still turns the name on or off there.
+    #[test]
+    fn a_waiting_row_names_its_runtime_and_opens_it() {
+        let mut pending = item("goal", "default", "pending");
+        pending.waiting_for = vec!["session-node".into()];
+        let mut py = item("py-tool", "default", "pending");
+        py.waiting_for = vec!["py".into()];
+        let mut panel = PluginsPanel::new();
+        panel.set_items(Ok(vec![pending, py]));
+        let text = shown(&panel, 80, 12).join("\n");
+        assert!(
+            text.contains("pending · waits for the node runtime"),
+            "{text}"
+        );
+        assert!(text.contains("Enter open /runtime"), "{text}");
+        match panel.handle_key(key(KeyCode::Enter)) {
+            Effect::OpenRuntime(runtime) => assert_eq!(runtime, "node"),
+            other => panic!("{other:?}"),
+        }
+        match panel.handle_key(key(KeyCode::Char('o'))) {
+            Effect::None => {}
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            shown(&panel, 80, 12).join("\n").contains("Turn off goal?"),
+            "{text}"
+        );
+        panel.handle_key(key(KeyCode::Esc));
+        panel.handle_key(key(KeyCode::Down));
+        let text = shown(&panel, 80, 12).join("\n");
+        assert!(text.contains("waits for the python runtime"), "{text}");
     }
 
     /// A failed change shows the method's message; an install names what

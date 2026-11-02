@@ -4,7 +4,7 @@ use super::session_typescript::{fixture, start, submit, when_served};
 use super::*;
 use std::path::{Path, PathBuf};
 
-fn home() -> PathBuf {
+pub(super) fn home() -> PathBuf {
     PathBuf::from("/tmp").join(format!(
         "dm-pm-{}",
         &uuid::Uuid::new_v4().simple().to_string()[..8]
@@ -13,7 +13,7 @@ fn home() -> PathBuf {
 
 /// A server on `home` whose default configuration locks the protocol rows
 /// and PluginManager.
-fn config(home: &Path) -> ServerConfig {
+pub(super) fn config(home: &Path) -> ServerConfig {
     std::fs::create_dir_all(home).unwrap();
     let defaults = home.join("defaults.json");
     std::fs::write(
@@ -59,7 +59,7 @@ fn plugin_dir(root: &Path, name: &str) -> PathBuf {
     dir
 }
 
-fn git(dir: &Path, args: &[&str]) -> String {
+pub(super) fn git(dir: &Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
         .current_dir(dir)
         .args([
@@ -80,7 +80,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 /// Makes `ssh://fixture/<path>` reach the repository at `<path>` on this
 /// machine: Git runs this stand-in for ssh, which runs the remote command
 /// locally. Only Git child processes read these variables.
-fn ssh_stand_in() {
+pub(super) fn ssh_stand_in() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let script = std::env::temp_dir().join(format!("dm-ssh-{}", std::process::id()));
@@ -1151,7 +1151,7 @@ async fn node_python_plugin_installs_and_reloads_through_its_link() {
 
 /// The product's local execution profile with mock model hosts: Sessions
 /// mount Skills and MCP.
-fn product_builder() -> AgentBuilder {
+pub(super) fn product_builder() -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install_local_execution(
         &mut builder,

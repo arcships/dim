@@ -106,7 +106,8 @@ impl Plugin for Tui {
             .ok_or_else(|| {
                 rutis::Error::from(ErrorKind::PluginFailed("Tui was loaded twice".into()))
             })?;
-        let host = SessionHost::start(self.options.clone(), client);
+        let language = ui::i18n::interface_locale(&self.options.home).code();
+        let host = SessionHost::start(self.options.clone(), client, language);
         let env = self.env.clone();
         let render = std::thread::Builder::new()
             .name("dim-tui".into())

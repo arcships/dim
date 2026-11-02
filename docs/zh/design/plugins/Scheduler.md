@@ -394,7 +394,7 @@ policy 文本是出厂配置成员：`code.config.description` 替换声明的 d
 | `schedule` | 注册到 `toolRegistry` 的工具（Session），风险 `persistent_configuration` | 模型管理任务 |
 | `schedule.list/save/delete/set_enabled/run_now/history` | `managementMethods`（进程，命名空间 `schedule`） | 运维方管理任务 |
 | 运行结果投递 | 向保存方分支尝试一个 Steer，不补发（A.6） | Scheduler 自有通知；持久记录为 schedule.history |
-| CLI 入口 | 方法绑定后的独立客户端工作 | 本文不声称已实现命令 |
+| CLI 入口 | `dimcode scheduled <verb>` 与 `/scheduled` 面板（[管理界面](../cli-commands.md#管理界面)） | 运维方在终端经这些方法管理任务：面板中每个任务一个条目，提供 toggle、edit、add、remove、run 与 history；子命令是同一适配器，无需 Session |
 | `sessions` | 依赖（进程） | 带节点、模型和启动方上限 policy 的非交互运行 Session；input、history、lookup、stop、withdraw、delete |
 
 ## 7. 安全
@@ -508,7 +508,7 @@ cwd 默认取调用方 Session 配置；P3 前没有 resource_node，使用控�
 | `schedule.save` | `{job, revision?}` | 已保存任务按 §3.3 一起替换为 created_by: user 和宿主最大 policy_cap，并返回旧 → 新变化；可选 revision 检查 Job.revision，内部写入另用 Settings 文档 CAS；任一冲突均返回 schedule_conflict |
 | `schedule.delete` | `{job_id}` | 从 Settings 删除任务；按 A.7 清理其终态历史和自持 Session。活动运行和未结算的清理记录保留至结算；不停止活动运行（A14） |
 | `schedule.set_enabled` | `{job_id, enabled}` | 暂停/恢复 |
-| `schedule.run_now` | `{job_id}` | `run_id` 或跳过原因 |
+| `schedule.run_now` | `{job_id}` | 它接受或跳过的 `Run` 记录（A.1）：`run_id`、`job_id`、`window`、`state`、`detail`、`created_at`、`ended_at`、`submission_id`，以及该运行实际具备的 A.1 可选字段 |
 | `schedule.history` | `{job_id, limit?}` | 运行列表，最新在前 |
 
 进程行的 schedule 命名空间（§1.3）复用现有准入：list/history 为 report，变更为 drain，使已接受工作在卸载前结算。Pending/重载 owner 返回 service_reloading，Failed/Unresolved 返回 service_unavailable，禁用/不存在返回 unknown_method。

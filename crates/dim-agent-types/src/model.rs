@@ -884,8 +884,8 @@ pub struct CompactionDiagnosticsRecord {
     /// The request before compaction, from `count_tokens`.
     #[serde(with = "crate::finite_number")]
     pub estimated_input_tokens: f64,
-    /// The projected request after compaction, from `count_tokens`; absent
-    /// when nothing was replaced.
+    /// The projected candidate request, from `count_tokens`, including one
+    /// rejected by validation; absent when no candidate could be projected.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

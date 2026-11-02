@@ -275,6 +275,8 @@ Installing and turning on are host configuration done through management methods
 - No manifest path may leave the plugin directory after following symbolic links; a symbolic link inside a Git clone that points outside it is refused.
 - `plugins.json` is written atomically (§2.2).
 
+The acquisition and link-check code behind these rules is one crate-internal implementation, `crates/dim-app-server/src/plugin_manager/acquire.rs`, shared with the Skills installation ([Skills](Skills.md) §4), which reads a local directory or clones a repository for its own destination, staging directory and record. The rules above are stated once because there is one implementation.
+
 ## 8. Rule check
 
 PluginManager is not a Capability: it has no Timeline state, writes no Timeline event and has no branch part.

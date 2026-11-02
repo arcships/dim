@@ -95,12 +95,16 @@ pub struct Plan {
 #[derive(Clone, Debug)]
 pub struct Runtimes {
     root: PathBuf,
+    /// The home the configuration was read from, kept so an action can read it
+    /// again (§2.2).
+    home: PathBuf,
+    preset: Choices,
     node: Plan,
     python: Plan,
 }
 
 /// One runtime's entry in the `runtimes` section (RuntimeManager §2.2).
-#[derive(Deserialize, Default, Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Choice {
     pub source: Option<Source>,
@@ -135,10 +139,30 @@ impl Runtimes {
                 user.auto.or(preset.auto).unwrap_or(false),
             )
         };
-        Self::new(root, choice(Kind::Node), choice(Kind::Python))
+        Self::new(
+            home,
+            root,
+            preset.clone(),
+            choice(Kind::Node),
+            choice(Kind::Python),
+        )
     }
 
-    fn new(root: PathBuf, node: (Source, bool), python: (Source, bool)) -> Result<Self, String> {
+    /// The configuration this value was loaded with, read again (§2.2): the
+    /// action that applies a changed `source` or `auto` reads `config.json` and
+    /// the environment at that moment instead of at startup. `runtime.list`
+    /// keeps reporting the runtime in effect until such an action runs.
+    pub fn reload(&self) -> Result<Self, String> {
+        Self::load(&self.home, &self.preset)
+    }
+
+    fn new(
+        home: &Path,
+        root: PathBuf,
+        preset: Choices,
+        node: (Source, bool),
+        python: (Source, bool),
+    ) -> Result<Self, String> {
         let pins: Pins = serde_json::from_str(PINS).expect("runtime/runtimes.json is valid");
         let platform = platform();
         let mirror = |variable: &str| std::env::var(variable).ok().filter(|v| !v.is_empty());
@@ -241,6 +265,8 @@ impl Runtimes {
         };
         Ok(Self {
             root,
+            home: home.to_owned(),
+            preset,
             node: node_plan,
             python: python_plan,
         })
@@ -251,6 +277,10 @@ impl Runtimes {
             Kind::Node => &self.node,
             Kind::Python => &self.python,
         }
+    }
+    /// The home this configuration was read from.
+    pub fn home(&self) -> &Path {
+        &self.home
     }
     /// `@arcships/rutis-runtime` in the Node packages directory.
     pub fn js_runtime(&self) -> PathBuf {
@@ -264,6 +294,11 @@ impl Runtimes {
     }
     fn record_file(&self) -> PathBuf {
         self.root.join("runtimes.json")
+    }
+    /// The user's override (§2.2): the file `runtime.configure` writes and
+    /// every action that applies a configuration reads.
+    fn config_file(&self) -> PathBuf {
+        self.root.join("config.json")
     }
 }
 
@@ -331,6 +366,8 @@ fn read_records(path: &Path) -> BTreeMap<String, Record> {
 pub struct RuntimeEntry {
     pub name: &'static str,
     pub source: Source,
+    /// The configuration's `auto` (§2.2): whether every start acquires it.
+    pub auto: bool,
     /// The fixed version for `download`; for `system`, the version of the
     /// checked interpreter, absent until it is checked.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -340,6 +377,17 @@ pub struct RuntimeEntry {
     pub status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+enum Step {
+    /// An acquisition is in flight; it owns its plan, so nothing changes.
+    Busy,
+    /// The runtime keeps running; its plan is the fresh one.
+    Keep,
+    Acquire,
+    /// Dispose the launch command it was given, then acquire (`true`) or
+    /// provide again.
+    Restart(Option<Disposer>, bool),
 }
 
 enum State {
@@ -353,8 +401,15 @@ enum State {
 /// The process service of RuntimeManager: what other process parts (and the
 /// `runtime` methods) call.
 pub struct RuntimeService {
-    runtimes: Arc<Runtimes>,
-    local: [ForeignRuntime; 2],
+    /// The configuration file's home and preset (§2.2), which an action reads
+    /// again; `plans` is what each runtime is actually on.
+    runtimes: Mutex<Arc<Runtimes>>,
+    /// One runtime's plan in effect. Applying a runtime replaces its own entry
+    /// only, so the other runtime keeps reporting what it is running.
+    plans: Mutex<[Plan; 2]>,
+    /// Serializes the read-modify-write of the user's configuration file.
+    config: Mutex<()>,
+    local: Mutex<[ForeignRuntime; 2]>,
     states: Mutex<[State; 2]>,
     versions: Mutex<[Option<String>; 2]>,
     record: tokio::sync::Mutex<()>,
@@ -368,12 +423,13 @@ impl RuntimeService {
     }
     /// Every runtime's status.
     pub fn list(&self) -> Vec<RuntimeEntry> {
+        let plans = self.plans.lock().unwrap().clone();
         let states = self.states.lock().unwrap();
         let versions = self.versions.lock().unwrap();
         Kind::ALL
             .into_iter()
             .map(|kind| {
-                let plan = self.runtimes.plan(kind);
+                let plan = &plans[Self::index(kind)];
                 let (status, reason) = match &states[Self::index(kind)] {
                     State::Off => ("off", None),
                     State::Acquiring => ("acquiring", None),
@@ -387,6 +443,7 @@ impl RuntimeService {
                 RuntimeEntry {
                     name: kind.name(),
                     source: plan.source,
+                    auto: plan.auto,
                     version: match plan.source {
                         Source::Download => Some(plan.version.clone()),
                         Source::System => versions[Self::index(kind)].clone(),
@@ -401,14 +458,15 @@ impl RuntimeService {
     /// The status of `kind`'s connection; `starting` while its row has not
     /// started.
     fn status(&self, kind: Kind) -> RuntimeState {
+        let row = self.local.lock().unwrap()[Self::index(kind)].row;
         self.ctx
-            .get_at(&RuntimeStatus::key(self.local[Self::index(kind)].row))
+            .get_at(&RuntimeStatus::key(row))
             .map_or(RuntimeState::Starting, |status| status.state())
     }
 
     /// Provides `kind`'s launch command.
     fn provide(&self, kind: Kind) -> State {
-        let runtime = &self.local[Self::index(kind)];
+        let runtime = self.local.lock().unwrap()[Self::index(kind)].clone();
         match self
             .ctx
             .provide_at(runtime.command.clone(), runtime.launch.clone())
@@ -418,62 +476,170 @@ impl RuntimeService {
         }
     }
 
-    /// Turns `kind` on: acquires it and provides its launch command. While
-    /// it is being acquired or runs, nothing happens; after a failure it is
-    /// acquired again, and once its connection is down its command is
-    /// provided again, which starts a new process.
-    pub fn install(self: &Arc<Self>, kind: Kind) {
-        let mut states = self.states.lock().unwrap();
-        match &mut states[Self::index(kind)] {
-            State::Acquiring | State::Provided(None) => {}
-            State::Provided(provided @ Some(_)) => {
-                if matches!(self.status(kind), RuntimeState::Down(_)) {
-                    let provided = provided.take().expect("matched");
-                    let service = self.clone();
-                    let task = tokio::spawn(async move {
-                        if let Err(error) = provided.dispose().await {
-                            tracing::warn!(runtime = kind.name(), %error, "runtime command withdrawal failed");
-                        }
-                        let state = service.provide(kind);
-                        service.states.lock().unwrap()[Self::index(kind)] = state;
-                    });
-                    self.tasks.lock().unwrap().push(task);
+    /// Turns `kind` on and applies the configuration in effect. It reads
+    /// `<home>/runtimes/config.json` again (§2.2) and makes what it gives that
+    /// runtime's plan: when the `source` differs from the one it is on, it
+    /// withdraws the launch command by disposing it, then disposes the running
+    /// connection and acquires under the new source. Only that runtime's plan
+    /// changes; the other keeps reporting what it is running. While an
+    /// acquisition is in flight the call changes nothing, so one acquisition
+    /// never sees two plans: a change made meanwhile applies on the next call. A
+    /// configuration that does not read fails here and leaves the runtime as it
+    /// was.
+    pub fn install(self: &Arc<Self>, kind: Kind) -> Result<(), String> {
+        let fresh = self.runtimes.lock().unwrap().reload()?.plan(kind).clone();
+        let index = Self::index(kind);
+        // The decision, the plan it decides on and the command that plan starts
+        // are one critical section: releasing the state lock in between would
+        // let a second call commit its own plan and command after this one
+        // reserved the transition, and the transition would be lost.
+        let step = {
+            let mut states = self.states.lock().unwrap();
+            let changed = self.plans.lock().unwrap()[index].source != fresh.source;
+            let step = match &mut states[index] {
+                State::Acquiring | State::Provided(None) => Step::Busy,
+                State::Provided(provided) => {
+                    let down = matches!(self.status(kind), RuntimeState::Down(_));
+                    if changed {
+                        Step::Restart(provided.take(), true)
+                    } else if down {
+                        Step::Restart(provided.take(), false)
+                    } else {
+                        Step::Keep
+                    }
                 }
+                State::Off | State::Failed(_) => {
+                    states[index] = State::Acquiring;
+                    Step::Acquire
+                }
+            };
+            if !matches!(step, Step::Busy) {
+                let mut plans = self.plans.lock().unwrap();
+                plans[index] = fresh;
+                let runtimes = self.runtimes.lock().unwrap().clone();
+                self.local.lock().unwrap()[index] = launch(kind, &plans[index], &runtimes);
             }
-            State::Off | State::Failed(_) => {
-                states[Self::index(kind)] = State::Acquiring;
-                let service = self.clone();
+            step
+        };
+        if matches!(step, Step::Busy) {
+            return Ok(());
+        }
+        let service = self.clone();
+        match step {
+            Step::Busy | Step::Keep => Ok(()),
+            Step::Acquire => {
                 let task = tokio::spawn(async move {
-                    let result = tokio::select! {
-                        result = service.acquire(kind) => result,
-                        _ = service.stop.cancelled() => return,
-                    };
-                    let state = match result {
-                        Ok(version) => {
-                            service.versions.lock().unwrap()[Self::index(kind)] = Some(version);
-                            service.provide(kind)
-                        }
-                        Err(reason) => {
-                            tracing::warn!(runtime = kind.name(), %reason, "runtime acquisition failed");
-                            State::Failed(reason)
-                        }
-                    };
-                    service.states.lock().unwrap()[Self::index(kind)] = state;
+                    let state = service
+                        .acquired(kind)
+                        .await
+                        .unwrap_or_else(|| State::Acquiring);
+                    service.states.lock().unwrap()[index] = state;
                 });
                 self.tasks.lock().unwrap().push(task);
+                Ok(())
+            }
+            Step::Restart(disposed, acquire) => {
+                let task = tokio::spawn(async move {
+                    if let Some(disposed) = disposed
+                        && let Err(error) = disposed.dispose().await
+                    {
+                        tracing::warn!(runtime = kind.name(), %error, "runtime command withdrawal failed");
+                    }
+                    let state = if acquire {
+                        service
+                            .acquired(kind)
+                            .await
+                            .unwrap_or_else(|| State::Acquiring)
+                    } else {
+                        service.provide(kind)
+                    };
+                    service.states.lock().unwrap()[index] = state;
+                });
+                self.tasks.lock().unwrap().push(task);
+                Ok(())
             }
         }
     }
 
+    /// Writes `kind`'s `source` and `auto` into the user's configuration
+    /// (§2.2) and applies it, as `runtime.install` does. The file keeps the
+    /// merge over the preset: only the fields given change. A file it cannot
+    /// read or write is the caller's error.
+    pub fn configure(
+        self: &Arc<Self>,
+        kind: Kind,
+        source: Option<Source>,
+        auto: Option<bool>,
+    ) -> Result<(), String> {
+        if source.is_none() && auto.is_none() {
+            return Ok(());
+        }
+        let _guard = self.config.lock().unwrap();
+        let index = Self::index(kind);
+        if matches!(
+            self.states.lock().unwrap()[index],
+            State::Acquiring | State::Provided(None)
+        ) {
+            return Err(format!(
+                "{} is being acquired; change its configuration when that settles",
+                kind.name()
+            ));
+        }
+        let path = self.runtimes.lock().unwrap().config_file();
+        if let Some(directory) = path.parent() {
+            std::fs::create_dir_all(directory)
+                .map_err(|e| format!("{}: {e}", directory.display()))?;
+        }
+        let mut user: Choices = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| format!("{}: {error}", path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Choices::new(),
+            Err(error) => return Err(format!("{}: {error}", path.display())),
+        };
+        let choice = user.entry(kind.name().to_owned()).or_default();
+        if source.is_some() {
+            choice.source = source;
+        }
+        if auto.is_some() {
+            choice.auto = auto;
+        }
+        let bytes = serde_json::to_vec_pretty(&user).map_err(|e| e.to_string())?;
+        let partial = sibling(&path, &format!(".partial-{}", std::process::id()));
+        std::fs::write(&partial, bytes)
+            .and_then(|()| std::fs::rename(&partial, &path))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        self.install(kind)
+    }
+
+    /// Acquires `kind` and provides its launch command; `None` when the
+    /// service is stopping, which leaves the runtime as it is.
+    async fn acquired(self: &Arc<Self>, kind: Kind) -> Option<State> {
+        let result = tokio::select! {
+            result = self.acquire(kind) => result,
+            _ = self.stop.cancelled() => return None,
+        };
+        Some(match result {
+            Ok(version) => {
+                self.versions.lock().unwrap()[Self::index(kind)] = Some(version);
+                self.provide(kind)
+            }
+            Err(reason) => {
+                tracing::warn!(runtime = kind.name(), %reason, "runtime acquisition failed");
+                State::Failed(reason)
+            }
+        })
+    }
+
     async fn acquire(&self, kind: Kind) -> Result<String, String> {
-        let plan = self.runtimes.plan(kind);
+        let runtimes = self.runtimes.lock().unwrap().clone();
+        let plan = self.plans.lock().unwrap()[Self::index(kind)].clone();
         let version = match plan.source {
             Source::Download => plan.version.clone(),
             Source::System => check_system(kind, &plan.interpreter).await?,
         };
-        let installed = read_records(&self.runtimes.record_file())
+        let installed = read_records(&runtimes.record_file())
             .get(kind.name())
-            .is_some_and(|record| *record == Record::of(plan, &version, record.sha256.clone()))
+            .is_some_and(|record| *record == Record::of(&plan, &version, record.sha256.clone()))
             && plan
                 .archive
                 .as_ref()
@@ -482,7 +648,7 @@ impl RuntimeService {
         if installed {
             return Ok(version);
         }
-        std::fs::create_dir_all(&self.runtimes.root).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&runtimes.root).map_err(|e| e.to_string())?;
         let sha256 = match &plan.archive {
             Some((archive, directory)) => {
                 let client = client()?;
@@ -494,15 +660,15 @@ impl RuntimeService {
             }
             None => None,
         };
-        let record = Record::of(plan, &version, sha256);
+        let record = Record::of(&plan, &version, sha256);
         if !plan.packages.is_dir() {
             match kind {
-                Kind::Node => npm_ci(plan).await?,
-                Kind::Python => pip_install(plan).await?,
+                Kind::Node => npm_ci(&plan).await?,
+                Kind::Python => pip_install(&plan).await?,
             }
         }
         let _guard = self.record.lock().await;
-        let path = self.runtimes.record_file();
+        let path = runtimes.record_file();
         let mut records = read_records(&path);
         records.insert(kind.name().to_owned(), record);
         let bytes = serde_json::to_vec_pretty(&records).expect("records serialize");
@@ -511,6 +677,22 @@ impl RuntimeService {
             .and_then(|()| std::fs::rename(&partial, &path))
             .map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(version)
+    }
+}
+
+/// `kind`'s launch command for `runtimes` (RuntimeManager §2.3): what its
+/// connection row starts, rebuilt when `runtime.install` applies a changed
+/// configuration.
+fn launch(kind: Kind, plan: &Plan, runtimes: &Runtimes) -> ForeignRuntime {
+    match kind {
+        Kind::Node => {
+            ForeignRuntime::node(&plan.interpreter, &runtimes.js_runtime(), runtimes.anchor())
+        }
+        Kind::Python => ForeignRuntime::python(
+            &plan.interpreter,
+            Some(&plan.packages),
+            runtimes.home().join("plugins").join(".python"),
+        ),
     }
 }
 
@@ -955,8 +1137,13 @@ impl DynPlugin for RuntimeManagerPlugin {
             let methods = ctx.require_at(&self.methods)?;
             let records = read_records(&self.runtimes.record_file());
             let service = Arc::new(RuntimeService {
-                runtimes: self.runtimes.clone(),
-                local: self.local.clone(),
+                runtimes: Mutex::new(self.runtimes.clone()),
+                plans: Mutex::new([
+                    self.runtimes.plan(Kind::Node).clone(),
+                    self.runtimes.plan(Kind::Python).clone(),
+                ]),
+                config: Mutex::new(()),
+                local: Mutex::new(self.local.clone()),
                 states: Mutex::new([State::Off, State::Off]),
                 versions: Mutex::new([None, None]),
                 record: tokio::sync::Mutex::new(()),
@@ -981,6 +1168,7 @@ impl DynPlugin for RuntimeManagerPlugin {
                 vec![
                     MethodDecl::new("runtime.list", false, Interruption::Report),
                     MethodDecl::new("runtime.install", true, Interruption::Report),
+                    MethodDecl::new("runtime.configure", true, Interruption::Report),
                 ],
                 Arc::new(move |method, value, _stopping, _| {
                     let service = handler.clone();
@@ -996,7 +1184,27 @@ impl DynPlugin for RuntimeManagerPlugin {
                                 let kind = Kind::parse(&name).ok_or_else(|| {
                                     RpcError::invalid(format!("unknown runtime {name}"))
                                 })?;
-                                service.install(kind);
+                                service.install(kind).map_err(|error| {
+                                    RpcError::app(-32000, "runtime_configuration", error)
+                                })?;
+                                reply(service.list().into_iter().find(|s| s.name == kind.name()))
+                            }
+                            "runtime.configure" => {
+                                #[derive(Deserialize)]
+                                struct Configure {
+                                    name: String,
+                                    #[serde(default)]
+                                    source: Option<Source>,
+                                    #[serde(default)]
+                                    auto: Option<bool>,
+                                }
+                                let Configure { name, source, auto } = params(value)?;
+                                let kind = Kind::parse(&name).ok_or_else(|| {
+                                    RpcError::invalid(format!("unknown runtime {name}"))
+                                })?;
+                                service.configure(kind, source, auto).map_err(|error| {
+                                    RpcError::app(-32000, "runtime_configuration", error)
+                                })?;
                                 reply(service.list().into_iter().find(|s| s.name == kind.name()))
                             }
                             _ => unreachable!("registered runtime management method"),
@@ -1005,8 +1213,10 @@ impl DynPlugin for RuntimeManagerPlugin {
                 }),
             )?;
             for kind in Kind::ALL {
-                if self.runtimes.plan(kind).auto || records.contains_key(kind.name()) {
-                    service.install(kind);
+                if (self.runtimes.plan(kind).auto || records.contains_key(kind.name()))
+                    && let Err(error) = service.install(kind)
+                {
+                    tracing::warn!(runtime = kind.name(), %error, "runtime configuration did not read");
                 }
             }
             Ok(Effect::Done)

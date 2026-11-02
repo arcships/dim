@@ -1,6 +1,3 @@
-//! The composer's context reading for a Session method the hello does not
-//! list: the reading is asked for like `/usage` asks, and a failed call
-//! leaves the border without one and adds no transcript line.
 use super::*;
 use std::sync::mpsc;
 
@@ -22,6 +19,89 @@ fn event_on(wire: &mut Wire, branch: &str, sequence: u64, name: &str, data: Valu
             {"id":format!("event-{branch}-{sequence}"),"sequence":sequence,"create_at":1,
              "type":"step","name":name,"data":data}}),
     );
+}
+
+#[test]
+fn tui_compaction_reports_committed_failures_once_and_keeps_call_errors() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&[]);
+            wire.created();
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let history = wire.read("session.history");
+            wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+            let mut attempt = 0;
+            let mut line = String::new();
+            while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                line.clear();
+                match request["method"].as_str().unwrap() {
+                    "account.providers" => wire.reply(&request, json!([])),
+                    "session.context.usage" => wire.reply(&request, usage(1849.0)),
+                    "session.detach" => wire.reply(&request, json!({})),
+                    "session.context.compact" => {
+                        assert_eq!(request["params"]["branchId"], "main");
+                        match attempt {
+                            0 | 1 => {
+                                let error = format!("candidate {} does not reduce input", attempt + 1);
+                                let reply = json!({"jsonrpc":"2.0","id":request["id"],"error":{
+                                    "code":-32000,"message":"duplicate RPC outcome","data":{"appError":"compaction_failed"}}});
+                                if attempt == 0 { wire.send(reply.clone()); }
+                                let start = 9 + attempt * 2;
+                                for (sequence, name, data) in [
+                                    (start, "compaction-start", json!({"through":8,"trigger":"manual","strategy":"fixture"})),
+                                    (start + 1, "compaction", json!({"through":8,"start":start,"status":"failed","error":error})),
+                                ] {
+                                    wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":{
+                                        "id":format!("compact-{sequence}"),"sequence":sequence,"create_at":1,
+                                        "type":"context","name":name,"data":data}}));
+                                }
+                                if attempt == 1 { wire.send(reply); }
+                            }
+                            2 => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
+                                "code":-32602,"message":"compact request rejected","data":{"appError":"invalid_params"}}})),
+                            3 => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
+                                "code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
+                            4 => wire.reply(&request, json!({"status":"unexpected"})),
+                            _ => panic!("unexpected compaction request"),
+                        }
+                        attempt += 1;
+                    }
+                    method => panic!("unexpected request {method}"),
+                }
+            }
+            assert_eq!(attempt, 5);
+        });
+        let mut command = home.command();
+        command.arg(if fullscreen {
+            "--fullscreen"
+        } else {
+            "--scrollback"
+        });
+        let mut terminal = Terminal::launch_tui(command);
+        terminal.until("1.8K / 256K");
+        for expected in [
+            "candidate 1 does not reduce input",
+            "candidate 2 does not reduce input",
+            "compact request rejected",
+            "This daemon does not support context compaction",
+            "Invalid session.context.compact response",
+        ] {
+            terminal.write(b"/compact\r");
+            terminal.until(expected);
+        }
+        terminal.write(b"/exit\r");
+        terminal.until("Bye!");
+        assert!(terminal.wait().success());
+        daemon.join().unwrap();
+        assert!(
+            !terminal.transcript.contains("duplicate RPC outcome"),
+            "{}",
+            terminal.transcript
+        );
+    }
 }
 
 /// The hello omits `session.context.usage`, which a Session contributes, and

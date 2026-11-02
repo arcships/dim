@@ -2,15 +2,17 @@
 //! interface. Wording follows the TS build's `zh-CN` catalogue.
 
 mod chrome;
-mod management;
+pub(super) mod management;
 mod plugins;
 mod prompts;
 mod providers;
+mod runtime;
 
 pub fn lookup(english: &str) -> Option<&'static str> {
     chrome::lookup(english)
         .or_else(|| prompts::lookup(english))
         .or_else(|| providers::lookup(english))
         .or_else(|| plugins::lookup(english))
+        .or_else(|| runtime::lookup(english))
         .or_else(|| management::lookup(english))
 }

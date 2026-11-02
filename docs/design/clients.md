@@ -134,7 +134,7 @@ Rows follow the sections of the [feature list](../feature-list.md), which descri
 | Open links, tool groups, `/tools` | done | done (rendering) | |
 | Streaming output, run status, terminal status and progress | done | done | |
 | File change feedback | done | done | |
-| Tool approvals | done (`/approval` chooses ask or full access; `/approvals` also edits command rules) | done | [ADR 003](../adr/003-approval-scope.md) |
+| Tool approvals | done (`/permissions` sets File access and Tool approval and manages command rules; `/approvals` and `/approval` are aliases) | done | [ADR 003](../adr/003-approval-scope.md) |
 | Member tool-approval forwarding and original-action review | done | done | [Member approval](subagent-tool-approval.md), [shared client requirements](#member-tool-approval) |
 | User questions (`ask_user`) | done (line client and terminal UIs) | none | [Questions](plugins/Questions.md) (implemented in #269, #336, #351) |
 | Todo status | out | out | [overview](overview.md) §1 |
@@ -154,6 +154,7 @@ Rows follow the sections of the [feature list](../feature-list.md), which descri
 | `/stats` | out | — | [overview](overview.md) App. A |
 | `/debug`, debug-log configuration | none (only the daemon's `daemon.log`) | — | [Web workspace §4.3](web-workspace.md#diagnostics-the-legacy-logging-controls) |
 | `/tui` mode switch | done | — | [Tui](plugins/Tui.md) |
+| Plugin runtimes: see, install, switch source, turn on by configuration | `/runtime` panel and typed forms (designed, [#872](https://github.com/arcships/dim/issues/872)); `dimcode runtime` | — | [CLI commands](cli-commands.md#plugin-runtimes), [RuntimeManager](plugins/RuntimeManager.md) |
 | Version and upgrade | done (upgrade dialog); `dimcode upgrade` subcommand: none | — | |
 | Web access (`/web`, `dimcode web`) | done | — | [Web workspace](web-workspace.md) |
 

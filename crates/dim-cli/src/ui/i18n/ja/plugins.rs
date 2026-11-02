@@ -38,6 +38,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "list plugins, turn them on or off, reload (install PATH)" => {
             "プラグインの一覧、オン/オフ、再読み込み（install パス）"
         }
+        "Enter open /runtime · o on/off · r reload · Esc close" => {
+            "Enter で /runtime を開く · o オン/オフ · r 再読み込み · Esc 閉じる"
+        }
+        "waits for the {runtime} runtime" => "{runtime} ランタイムを待機中",
         _ => return None,
     })
 }

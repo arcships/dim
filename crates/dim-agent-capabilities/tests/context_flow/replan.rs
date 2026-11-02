@@ -180,6 +180,78 @@ async fn compact_now(session: &dim_agent_runtime::Session) -> (u64, Vec<Arc<Agen
     (command, events)
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejected_candidates_keep_their_size_and_report_the_failed_condition() {
+    for (chars, summary, window, expected) in [
+        (20, 500, 4096., "does not reduce input"),
+        (6000, 4500, 4096., "does not fit the model window"),
+    ] {
+        let summary: &str = Box::leak("s".repeat(summary).into_boxed_str());
+        let strategy = Overshoot::new(1., vec![summary; 4]);
+        let (agent, session) = replanned_session_with(
+            Context {
+                window,
+                output: 64.,
+                threshold: Some(f64::MAX),
+                ..Context::default()
+            },
+            Arc::new(EchoModel),
+            strategy.clone(),
+        )
+        .await;
+        turns(&session, 2, chars).await;
+        let calls_before = strategy.cuts().len();
+        let events = session.history("main", None).await.unwrap();
+        let before = session
+            .context("main", events.last().unwrap().sequence)
+            .await
+            .unwrap();
+        let history = project_context_history(&before).unwrap();
+        let messages = dim_agent_capabilities::history::context_messages(&before, &history);
+        for _ in 0..2 {
+            let (command, events) = compact_now(&session).await;
+            let (error, diagnostics) = events
+                .iter()
+                .find_map(|event| match &event.kind {
+                    EventKind::ContextCompaction(ContextCompactionData {
+                        command: Some(id),
+                        outcome: ContextCompactionResult::Failed { error, diagnostics },
+                        ..
+                    }) if *id == command => Some((error, diagnostics.as_ref().unwrap())),
+                    _ => None,
+                })
+                .expect("the rejected candidate has a failed fact and diagnostics");
+            assert!(error.contains(expected), "{error}");
+            let after = diagnostics
+                .estimated_output_tokens
+                .expect("the candidate size");
+            if expected == "does not reduce input" {
+                assert!(after >= diagnostics.estimated_input_tokens);
+            } else {
+                assert!(after < diagnostics.estimated_input_tokens);
+                assert!(after >= window);
+            }
+            assert_eq!(diagnostics.entries_replaced, 0);
+            assert_eq!(diagnostics.model_call_count, 1);
+            let context = session
+                .context("main", events.last().unwrap().sequence)
+                .await
+                .unwrap();
+            let history = project_context_history(&context).unwrap();
+            assert_eq!(
+                dim_agent_capabilities::history::context_messages(&context, &history),
+                messages
+            );
+        }
+        assert_eq!(
+            strategy.cuts().len(),
+            calls_before + 2,
+            "manual attempts still invoke the strategy"
+        );
+        agent.close().await.unwrap();
+    }
+}
+
 /// The one completed result of `command` with its replacement and after-size.
 fn completed(
     events: &[Arc<AgentEvent>],

@@ -38,6 +38,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "list plugins, turn them on or off, reload (install PATH)" => {
             "Plugins auflisten, ein- oder ausschalten, neu laden (install PFAD)"
         }
+        "Enter open /runtime · o on/off · r reload · Esc close" => {
+            "Enter öffnet /runtime · o an/aus · r neu laden · Esc schließen"
+        }
+        "waits for the {runtime} runtime" => "wartet auf die {runtime}-Laufzeit",
         _ => return None,
     })
 }

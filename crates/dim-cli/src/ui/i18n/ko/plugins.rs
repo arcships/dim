@@ -38,6 +38,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "list plugins, turn them on or off, reload (install PATH)" => {
             "플러그인 목록, 켜기/끄기, 다시 로드 (install 경로)"
         }
+        "Enter open /runtime · o on/off · r reload · Esc close" => {
+            "Enter /runtime 열기 · o 켜기/끄기 · r 다시 로드 · Esc 닫기"
+        }
+        "waits for the {runtime} runtime" => "{runtime} 런타임 대기 중",
         _ => return None,
     })
 }

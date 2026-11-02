@@ -5,10 +5,12 @@
 //! > File access          Workspace read/write ›
 //!   Tool approval        Ask ›
 //!   Process isolation    ›
+//!   Command rules        ›
 //! ```
 
 use dim_agent_types::{FileAccess, PermissionPolicy, PermissionPreset, ToolApproval};
 
+use crate::model::session::Area;
 use crate::permission::{Change, file_label, tool_policy_label};
 use crate::ui::list_panel::{Event, Item, ListPanel};
 use crate::ui::prompts::Effect;
@@ -77,6 +79,7 @@ impl ApprovalsPanel {
                         format!("{} ›", tool_policy_label(&self.policy)),
                     ),
                     Item::new("isolation", "Process isolation", "›"),
+                    Item::new("rules", "Command rules", "›"),
                 ],
                 None,
             ),
@@ -184,6 +187,12 @@ impl ApprovalsPanel {
                         "file" => self.page = Page::File,
                         "tool" => self.page = Page::Tool,
                         "isolation" => return Effect::Setting(Setting::Isolation),
+                        "rules" => {
+                            return Effect::OpenArea {
+                                area: Area::Permissions,
+                                note: None,
+                            };
+                        }
                         _ => return Effect::None,
                     }
                     self.refresh();

@@ -790,7 +790,7 @@ async fn an_automatic_compaction_skips_a_cut_that_removes_no_more_than_its_repla
         assert_eq!(reply["error"]["data"]["appError"], "compaction_failed");
         assert_eq!(
             reply["error"]["message"],
-            "Compacted context does not reduce input within the model budget."
+            "Compacted context does not reduce input."
         );
         assert_eq!(provider.summaries(), 1);
         let events = history(&mut client, &sid).await;
@@ -802,6 +802,12 @@ async fn an_automatic_compaction_skips_a_cut_that_removes_no_more_than_its_repla
         assert_eq!(manual["data"]["status"], "failed");
         assert_eq!(manual["data"]["diagnostics"]["trigger"], "manual");
         assert_eq!(manual["data"]["diagnostics"]["modelCallCount"], 1);
+        let diagnostics = &manual["data"]["diagnostics"];
+        assert!(
+            diagnostics["estimatedOutputTokens"].as_f64().unwrap()
+                >= diagnostics["estimatedInputTokens"].as_f64().unwrap()
+        );
+        assert_eq!(diagnostics["entriesReplaced"], 0);
         assert!(manual["data"]["command"].is_u64());
         server.child.kill().await.unwrap();
         http.abort();

@@ -427,7 +427,10 @@ latest start's `through`, and recovery compares its estimate with `B` — so the
 reader shows (§9, rule 9).
 
 Every compaction that reached the strategy carries this common record. One that failed
-validation carries the strategy's record with no after-size. One whose strategy failed carries
+validation carries the strategy's record and, when its candidate request was projected, its
+after-size in `estimatedOutputTokens`; no candidate is adopted and `entriesReplaced` stays zero.
+A candidate that does not reduce input reports that condition separately from a smaller candidate
+that still does not fit the model window. One whose strategy failed carries
 it too, with no after-size: a failure is an outcome that carries its diagnostics (§4.2), so
 `modelCallCount`, `modelUsage` and `durationMs` are reported as on a completion. Only a manual
 compaction that never built a request has no diagnostics.
@@ -1466,7 +1469,7 @@ fix, the smallest choice was made and is recorded here.
 | Start trigger values | `trigger` uses the existing `CompactionTrigger`: `manual`, `threshold`, `provider_output_budget_exhausted` (§4.3 said `recovery`; §4.2 and acceptance 2 already used the latter). |
 | Legal cuts | `CompactionInput` also carries `cuts`: every legal cut in order (`retain_from`, the first kept entry, and whether it is within `retain_limit`), computed by ContextPolicy from the event-based validity rule. Candidates are turn starts, events that place entries, and the boundary's last event (which replaces everything). `CompactionInput::cut()` returns the latest cut within the limit or, when none is, the latest cut that keeps something (any cut under budget recovery). A strategy may return any `retain_from`; the policy still validates it. |
 | Adoption | `compact_step` validates the strategy's result before it appends the fact, then adopts the committed fact as Timeline middleware left it: the projection, the reduction check and the snapshot use the committed `retain_from`, `replacement` and baseline. A committed cut that cannot be projected fails the preparation, as a committed cursor did before. |
-| Diagnostics | `retainFrom` is absent when the strategy found no cut (`skipped`), and `estimatedOutputTokens` is absent when nothing was replaced. |
+| Diagnostics | `retainFrom` is absent when the strategy found no cut (`skipped`), and `estimatedOutputTokens` is absent when no candidate request could be projected. |
 | v1 | There is no v1-to-native conversion in production code: the frozen samples decode as v1 events only, and `v1::EventRef` has no form for `context/compact`, `context/compaction-start` or the changed `context/compaction`, so v1 connections no longer receive compaction facts. The old flat diagnostics type moved into the v1 module. |
 | Loop subscription | The Loop subscribes to `context/compact` and `context/compaction`; starts are folded only at rebuild, where they tell a running step from a pending command. |
 | One outstanding command | Maintainer's decision during review: repeated requests are deduplicated at the interaction boundary. `AgentLoop::compact` joins an outstanding command instead of writing another, the slot holds at most one command, a command consumed while another is outstanding is skipped, and the waiter matches its own command id (§4.1, §5.4, acceptance 7). This replaces an earlier active/pending split, so commands can no longer interleave with a running step. |

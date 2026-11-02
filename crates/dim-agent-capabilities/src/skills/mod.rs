@@ -4,13 +4,16 @@
 mod catalog;
 pub(crate) mod content;
 mod discovery;
+mod install;
 mod session;
 
 pub use catalog::{
     CatalogChanged, MemorySkillSettings, SkillsCatalog, SkillsCatalogPlugin, catalog_changes,
 };
+pub use install::selection_path;
 pub use session::{SessionSkills, SkillsBranch, SkillsBranchPlugin, SkillsPlugin};
 
+use crate::skill_settings::SkillInstallation;
 use dim_agent_runtime::{AgentBuilder, PartRegistry, PartScope};
 use rutis::{Ctx, Error};
 use std::{
@@ -135,12 +138,104 @@ pub struct CatalogView {
     pub issues: Vec<SkillIssue>,
 }
 
+/// An installation id: `[a-z0-9_-]{1,64}`, which is also its directory name
+/// under the user skills root.
+pub fn valid_installation_id(id: &str) -> bool {
+    install::valid_id(id)
+}
+
+/// One Skill a preview found; `path` is the selection identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewSkill {
+    pub path: String,
+    pub name: String,
+    pub description: String,
+    pub revision: String,
+}
+
+/// A Skill in the user root that already provides one of the selected names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewConflict {
+    pub path: String,
+    pub name: String,
+    pub by: String,
+}
+
+/// A Skill outside the user root that the installation would hide.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewShadow {
+    pub path: String,
+    pub name: String,
+    pub by: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SkillPreview {
+    pub skills: Vec<PreviewSkill>,
+    pub conflicts: Vec<PreviewConflict>,
+    pub shadows: Vec<PreviewShadow>,
+    pub issues: Vec<SkillIssue>,
+}
+
+/// A Skill the caller selected, with the revision it reviewed: `Some` must
+/// match the tree, `None` accepts what the source holds (an update).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedSkill {
+    pub path: String,
+    pub revision: Option<String>,
+}
+
+/// What an install may replace at `<user root>/<id>`. Only a directory the
+/// record owns is ever replaced; the user root also holds hand-written Skills.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Replace {
+    /// Create the installation. A recorded id is [`SkillsError::InstallationExists`].
+    Create,
+    /// Replace the record the id holds now, or create it (the user confirmed
+    /// the overwrite).
+    Recorded,
+    /// Replace exactly this record. A record that is gone or different is
+    /// [`SkillsError::UnknownInstallation`], so an update cannot undo a removal
+    /// or another install made while its source was acquired.
+    Expected(SkillInstallation),
+}
+
+#[derive(Debug, Clone)]
+pub struct InstallOutcome {
+    pub installation: SkillInstallation,
+    pub previous: Option<SkillInstallation>,
+    pub version: CatalogVersion,
+    pub issues: Vec<SkillIssue>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SkillsError {
     #[error("Skills catalog is closed")]
     Closed,
     #[error("unknown skill: {0}")]
     UnknownSkill(String),
+    #[error("Skill installation {0:?} already exists; confirm overwrite or choose another id")]
+    InstallationExists(String),
+    #[error("unknown Skill installation: {0}")]
+    UnknownInstallation(String),
+    /// `<user root>/<id>` holds something no record owns, which is never
+    /// replaced: the user root is where hand-written Skills live.
+    #[error("{0}")]
+    UnmanagedDirectory(String),
+    #[error("Skill {path:?} changed since the preview: reviewed {expected}, found {found}")]
+    StalePreview {
+        path: String,
+        expected: String,
+        found: String,
+    },
+    #[error("invalid Skill selection: {0}")]
+    SelectionInvalid(String),
+    #[error("Skill {0:?} is already provided by another Skill")]
+    InstallConflict(String),
+    #[error("Skill installation failed: {0}")]
+    InstallIo(String),
+    #[error("Skill removal failed: {0}")]
+    RemoveFailed(String),
     #[error("Skill settings changed; retry")]
     SettingsConflict,
     #[error("Skill settings read failed: {0}")]

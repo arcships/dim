@@ -20,6 +20,46 @@ use crate::ui::text::{display_width, truncate_cells, wrap_cells};
 use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::{Paint, fg, paint};
 
+/// What the external editor's draft is written as.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WriteTarget {
+    /// A new entry of the area.
+    Create,
+    /// The area's own document, at the revision it was read at.
+    Area { revision: String },
+    /// One entry's document, at the revision it was read at.
+    Entry { id: String, revision: String },
+}
+
+impl WriteTarget {
+    /// Whether this target and `other` are the same write target. The
+    /// revision a draft was read at is not part of what it is for: a kept
+    /// draft reopens at its own revision, whatever the area reports now.
+    pub fn same_target(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Create, Self::Create) | (Self::Area { .. }, Self::Area { .. }) => true,
+            (Self::Entry { id, .. }, Self::Entry { id: other, .. }) => id == other,
+            _ => false,
+        }
+    }
+
+    /// Whether `action`, sent for this target, reports its reply.
+    pub fn is_written_by(&self, action: &crate::model::session::ManagementAction) -> bool {
+        use crate::model::session::ManagementAction;
+        match (self, action) {
+            (Self::Create, ManagementAction::Add { .. }) => true,
+            (Self::Area { .. }, ManagementAction::Save { id: None, .. }) => true,
+            (
+                Self::Entry { id, .. },
+                ManagementAction::Save {
+                    id: Some(written), ..
+                },
+            ) => id == written,
+            _ => false,
+        }
+    }
+}
+
 /// What a key did to a prompt.
 #[derive(Debug, PartialEq)]
 pub enum Effect {
@@ -112,15 +152,25 @@ pub enum Effect {
     LanguageRestore(Option<crate::ui::i18n::Locale>),
     /// Flip or open a `/settings` row.
     Setting(crate::ui::settings_panel::Setting),
+    /// Open a management area's panel and read it, holding `note` until the
+    /// user's first key there.
+    OpenArea {
+        area: crate::model::session::Area,
+        note: Option<String>,
+    },
     /// Change a plugin (`/plugins`).
     Plugin(crate::model::session::PluginAction),
+    /// Change a plugin runtime (`/runtime`).
+    Runtime(crate::model::session::RuntimeAction),
+    /// Open `/runtime` on the runtime the plugin row waits for.
+    OpenRuntime(String),
     /// One request to a management area (`/skills`, `/hooks`).
     Management(crate::model::session::ManagementRequest),
-    /// Open a management area's document in the external editor, with the
-    /// revision the panel read it at.
+    /// Open a management document in the external editor: the area's, one
+    /// entry's at the revision the panel read, or a new entry's.
     EditManagement {
         area: crate::model::session::Area,
-        revision: String,
+        target: WriteTarget,
         text: String,
     },
     /// Change a provider (`/connect`).

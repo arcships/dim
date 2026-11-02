@@ -43,3 +43,17 @@ pub fn safe(text: &str) -> String {
     }
     output
 }
+
+/// [`safe`] for text that is drawn on one line: every newline, carriage
+/// return and tab becomes a space, so a name cannot break a row, a heading,
+/// a title or a column into pieces.
+pub fn safe_line(text: &str) -> String {
+    let mut folded = String::with_capacity(text.len());
+    for ch in text.chars() {
+        folded.push(match ch {
+            '\n' | '\r' | '\t' => ' ',
+            ch => ch,
+        });
+    }
+    safe(&folded)
+}

@@ -69,15 +69,6 @@ fn outcome(fields: &mut Map<String, Value>) {
 
 fn git_source(source: &mut Map<String, Value>) {
     if let Some(Value::String(git)) = source.get_mut("git") {
-        *git = match url::Url::parse(git) {
-            Ok(mut url) if matches!(url.scheme(), "https" | "ssh") && url.host_str().is_some() => {
-                let _ = url.set_username("");
-                let _ = url.set_password(None);
-                url.set_query(None);
-                url.set_fragment(None);
-                url.to_string()
-            }
-            _ => "Git repository".into(),
-        };
+        *git = super::acquire::git_url_safe(git);
     }
 }

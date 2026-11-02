@@ -1090,3 +1090,963 @@ fn member_approval_in_line_mode_allows_rejection_during_loading_and_rechecks_an_
         daemon.join().unwrap();
     }
 }
+
+/// A `permission.rules` reply.
+fn rules_reply(revision: &str, command_rules: Value) -> Value {
+    json!({"revision": revision, "commandRules": command_rules})
+}
+
+/// One `CommandRule` as the owner reports it.
+fn command_rule(decision: &str, matching: &str, command: &str) -> Value {
+    json!({"command": command, "match": matching, "decision": decision})
+}
+
+#[test]
+fn permissions_list_prints_each_rule_and_the_notes_that_read_them() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&RULE_METHODS);
+        let request = wire.read("permission.rules");
+        wire.reply(
+            &request,
+            rules_reply(
+                "r1",
+                json!([
+                    command_rule("allow", "exact", "cargo test -p dim-cli"),
+                    command_rule("deny", "prefix", "git push"),
+                ]),
+            ),
+        );
+    });
+    let output = home
+        .command()
+        .args(["permissions", "list"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "allow\texact\tcargo test -p dim-cli\ndeny\tprefix\tgit push\n"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Columns: decision, match, command."),
+        "{stderr}"
+    );
+    assert!(stderr.contains("deny wins over allow"), "{stderr}");
+
+    // An owner with no rule says so instead of printing nothing.
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&RULE_METHODS);
+        let request = wire.read("permission.rules");
+        wire.reply(&request, rules_reply("r1", json!([])));
+    });
+    let output = home
+        .command()
+        .args(["permissions", "list"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("No command rule is configured."),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The command is one column: an owner's text that carries a newline or a
+    // tab cannot break the row into pieces.
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&RULE_METHODS);
+        let request = wire.read("permission.rules");
+        wire.reply(
+            &request,
+            rules_reply(
+                "r1",
+                json!([command_rule("deny", "prefix", "git\npush\tnow")]),
+            ),
+        );
+    });
+    let output = home
+        .command()
+        .args(["permissions", "list"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "deny\tprefix\tgit push now\n"
+    );
+}
+
+#[test]
+fn permissions_add_appends_the_document_and_names_the_rule() {
+    let home = Home::new();
+    let path = home.0.join("rule.json");
+    fs::write(
+        &path,
+        r#"{"command":"git  push","match":"prefix","decision":"deny"}"#,
+    )
+    .unwrap();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&RULE_METHODS);
+        let read = wire.read("permission.rules");
+        wire.reply(
+            &read,
+            rules_reply(
+                "r1",
+                json!([command_rule("allow", "exact", "cargo test -p dim-cli")]),
+            ),
+        );
+        let write = wire.read("permission.set_rules");
+        assert_eq!(write["params"]["expectedRevision"], "r1");
+        assert_eq!(
+            write["params"]["commandRules"],
+            json!([
+                command_rule("allow", "exact", "cargo test -p dim-cli"),
+                command_rule("deny", "prefix", "git push"),
+            ])
+        );
+        wire.reply(&write, json!({"revision": "r2"}));
+    });
+    let output = home
+        .command()
+        .args(["permissions", "add"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Rule added: deny prefix `git push`.\n"
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn permissions_add_reports_a_rule_that_is_already_present() {
+    let home = Home::new();
+    let path = home.0.join("rule.json");
+    fs::write(
+        &path,
+        r#"{"command":"git  push","match":"prefix","decision":"deny"}"#,
+    )
+    .unwrap();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&RULE_METHODS);
+        // The stored rule compares equal word by word, so nothing is
+        // written; the list is read again so the answer carries it.
+        for _ in 0..2 {
+            let read = wire.read("permission.rules");
+            wire.reply(
+                &read,
+                rules_reply("r1", json!([command_rule("deny", "prefix", "git push")])),
+            );
+        }
+    });
+    let output = home
+        .command()
+        .args(["permissions", "add"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Rule already present: deny prefix `git push`.\n"
+    );
+}
+
+#[test]
+fn permissions_remove_takes_the_whole_rule_as_one_argument() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&RULE_METHODS);
+        let read = wire.read("permission.rules");
+        wire.reply(
+            &read,
+            rules_reply(
+                "r1",
+                json!([
+                    command_rule("allow", "exact", "cargo test -p dim-cli"),
+                    command_rule("deny", "prefix", "git push"),
+                ]),
+            ),
+        );
+        let write = wire.read("permission.set_rules");
+        assert_eq!(write["params"]["expectedRevision"], "r1");
+        assert_eq!(
+            write["params"]["commandRules"],
+            json!([command_rule("allow", "exact", "cargo test -p dim-cli")])
+        );
+        wire.reply(&write, json!({"revision": "r2"}));
+    });
+    let output = home
+        .command()
+        .args(["permissions", "remove", "deny prefix git push"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Rule removed: deny prefix `git push`.\n"
+    );
+}
+
+/// A rule document the line prompt would refuse is refused here too, before
+/// anything is read or written.
+#[test]
+fn permissions_add_refuses_an_invalid_rule_document() {
+    for (name, document) in [
+        (
+            "separator",
+            json!({"command": "git push; rm -rf /", "match": "prefix", "decision": "deny"}),
+        ),
+        (
+            "empty",
+            json!({"command": "", "match": "prefix", "decision": "deny"}),
+        ),
+    ] {
+        let home = Home::new();
+        let daemon = home.daemon(|wire| {
+            wire.hello(&RULE_METHODS);
+            let mut line = String::new();
+            while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
+                assert!(
+                    !line.contains("\"permission.rules\"")
+                        && !line.contains("\"permission.set_rules\""),
+                    "a refused rule document sends no request: {line}"
+                );
+                line.clear();
+            }
+        });
+        let path = home.0.join(format!("{name}.json"));
+        fs::write(&path, document.to_string()).unwrap();
+        let output = home
+            .command()
+            .args(["permissions", "add"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        daemon.join().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{name}");
+        assert!(output.stdout.is_empty(), "{name}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("A command rule needs a simple command without"),
+            "{name}: {stderr}"
+        );
+        assert!(stderr.contains("Your text is kept in"), "{name}: {stderr}");
+    }
+}
+
+/// A remove finds its rule by its words, so the owner's stored spacing is
+/// not an identity: the rule typed with different spacing is still removed.
+#[test]
+fn permissions_remove_matches_a_stored_rule_by_its_words() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&RULE_METHODS);
+        let read = wire.read("permission.rules");
+        wire.reply(
+            &read,
+            rules_reply(
+                "r1",
+                json!([
+                    command_rule("allow", "exact", "cargo test -p dim-cli"),
+                    command_rule("deny", "prefix", "git   push"),
+                ]),
+            ),
+        );
+        let write = wire.read("permission.set_rules");
+        assert_eq!(write["params"]["expectedRevision"], "r1");
+        assert_eq!(
+            write["params"]["commandRules"],
+            json!([command_rule("allow", "exact", "cargo test -p dim-cli")])
+        );
+        wire.reply(&write, json!({"revision": "r2"}));
+    });
+    let output = home
+        .command()
+        .args(["permissions", "remove", "deny prefix git push"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Rule removed: deny prefix `git   push`.\n"
+    );
+}
+
+#[test]
+fn permissions_remove_refuses_a_rule_that_is_no_longer_listed() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&RULE_METHODS);
+        // Another client removed the rule after this user saw it; a remove
+        // acts on the rule it names, and writes nothing when it is gone.
+        let read = wire.read("permission.rules");
+        wire.reply(
+            &read,
+            rules_reply(
+                "r2",
+                json!([command_rule("allow", "exact", "cargo test -p dim-cli")]),
+            ),
+        );
+    });
+    let output = home
+        .command()
+        .args(["permissions", "remove", "deny prefix git push"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("That command rule is no longer listed; nothing was removed."),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn permissions_remove_keeps_a_rule_another_client_added() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&RULE_METHODS);
+        // The list the user saw changed, but the rule the remove names is
+        // still there: a change to another rule is not a conflict.
+        let read = wire.read("permission.rules");
+        wire.reply(
+            &read,
+            rules_reply(
+                "r2",
+                json!([
+                    command_rule("deny", "prefix", "git push"),
+                    command_rule("deny", "exact", "rm -rf /"),
+                ]),
+            ),
+        );
+        let write = wire.read("permission.set_rules");
+        assert_eq!(write["params"]["expectedRevision"], "r2");
+        assert_eq!(
+            write["params"]["commandRules"],
+            json!([command_rule("deny", "exact", "rm -rf /")])
+        );
+        wire.reply(&write, json!({"revision": "r3"}));
+    });
+    let output = home
+        .command()
+        .args(["permissions", "remove", "deny prefix git push"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Rule removed: deny prefix `git push`.\n"
+    );
+}
+
+#[test]
+fn permissions_remove_reports_a_write_another_client_raced() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&RULE_METHODS);
+        let read = wire.read("permission.rules");
+        wire.reply(
+            &read,
+            rules_reply("r1", json!([command_rule("deny", "prefix", "git push")])),
+        );
+        let write = wire.read("permission.set_rules");
+        fail(wire, &write, "permission_rules_conflict");
+        // The list as it is now, which the answer carries.
+        let read = wire.read("permission.rules");
+        wire.reply(&read, rules_reply("r2", json!([])));
+    });
+    let output = home
+        .command()
+        .args(["permissions", "remove", "deny prefix git push"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Command rules changed since they were read; nothing was removed."),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn permissions_needs_the_rule_methods() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&[]);
+    });
+    let output = home
+        .command()
+        .args(["permissions", "list"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.stdout, b"");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("This daemon cannot manage command rules."),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// A daemon that serves the rules but not the write method: the two writes
+/// name the kind they lack before reading input, and the list still works.
+#[test]
+fn permissions_refuse_a_read_only_daemon_but_still_list() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["permission.rules"]);
+        let mut line = String::new();
+        while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
+            assert!(!line.contains("permission."), "unexpected request: {line}");
+            line.clear();
+        }
+    });
+    let output = home
+        .command()
+        .args(["permissions", "remove", "deny prefix git push"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.stdout, b"");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("This daemon lists command rules but cannot remove them."),
+        "{stderr}"
+    );
+
+    // A path that does not exist: reading it first would be the error.
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["permission.rules"]);
+        let mut line = String::new();
+        while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
+            assert!(!line.contains("permission."), "unexpected request: {line}");
+            line.clear();
+        }
+    });
+    let missing = home.0.join("missing-rule.json");
+    let output = home
+        .command()
+        .args(["permissions", "add"])
+        .arg(&missing)
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.stdout, b"");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("This daemon lists command rules but cannot add them."),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("missing-rule.json"), "{stderr}");
+
+    // The catalog read is served, so the list still prints.
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["permission.rules"]);
+        let request = wire.read("permission.rules");
+        wire.reply(
+            &request,
+            rules_reply("r1", json!([command_rule("deny", "prefix", "git push")])),
+        );
+    });
+    let output = home
+        .command()
+        .args(["permissions", "list"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "deny\tprefix\tgit push\n"
+    );
+}
+
+/// The requests a terminal UI makes before its management panel opens: the
+/// Session attach, then the readings the interface asks for when it enters.
+fn rules_start(wire: &mut Wire) {
+    wire.hello(&RULE_METHODS);
+    wire.created();
+    let attach = wire.read("session.attach");
+    wire.reply(&attach, attach_record(&attach));
+    let history = wire.read("session.history");
+    wire.reply(
+        &history,
+        json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+    );
+    for _ in 0..2 {
+        let request = wire.read_any();
+        match request["method"].as_str() {
+            Some("account.providers") => wire.reply(&request, json!([])),
+            Some("session.context.usage") => wire
+                .send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
+                "code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
+            method => panic!("unexpected request {method:?}"),
+        }
+    }
+}
+
+fn rules_drain(wire: &mut Wire) {
+    let mut line = String::new();
+    while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
+        line.clear();
+    }
+}
+
+/// Opens the Permissions panel and walks to its Command rules row.
+fn open_command_rules(terminal: &mut Terminal) {
+    terminal.write(b"/permissions\r");
+    terminal.until("Process isolation");
+    terminal.until("Command rules");
+    for _ in 0..3 {
+        terminal.raw(b"\x1b[B");
+    }
+    terminal.raw(b"\r");
+}
+
+/// An editor that turns the one-rule document into `git status`.
+fn rules_editor(home: &Home) -> PathBuf {
+    let path = home.0.join("rules-editor.sh");
+    fs::write(
+        &path,
+        "#!/bin/sh\nprintf '%s' '{\"command\":\"git status\",\"match\":\"exact\",\"decision\":\"deny\"}' > \"$1\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// `/permissions` reaches the Command rules area, which lists the rules with
+/// their states and detail, and Esc returns to the Permissions panel. A
+/// command wider than the panel is readable in full in the entry's detail.
+#[test]
+fn tui_permissions_panel_lists_command_rules_and_returns() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let (shown, wait_shown) = std::sync::mpsc::channel();
+        let daemon = home.daemon(move |wire| {
+            rules_start(wire);
+            wait_shown.recv_timeout(PATIENCE).unwrap();
+            let request = wire.read("permission.rules");
+            wire.reply(
+                &request,
+                rules_reply(
+                    "r1",
+                    json!([
+                        command_rule("allow", "exact", "cargo test -p dim-cli"),
+                        command_rule("deny", "prefix", "git push"),
+                        command_rule(
+                            "deny",
+                            "prefix",
+                            "cargo run --example a-command-wider-than-the-panel \
+                             --features wide-tail",
+                        ),
+                    ]),
+                ),
+            );
+            rules_drain(wire);
+        });
+        let mut command = home.command();
+        if fullscreen {
+            command.arg("--fullscreen");
+        }
+        sized(&mut command, 80, 24);
+        let mut terminal = Terminal::launch_tui(command);
+        terminal.until("test / model");
+        shown.send(()).unwrap();
+        open_command_rules(&mut terminal);
+        terminal.until("allow exact cargo test -p dim-cli");
+        terminal.until("deny prefix git push");
+        terminal.until("Matches only this command.");
+        terminal.until("Allows a simple command that would otherwise ask.");
+        terminal.until("Applies in every Session, in every workspace.");
+        // The hint paints each key and its label as separate spans.
+        terminal.until("Ctrl+N");
+        terminal.until("Ctrl+X");
+        // The row is one line and cuts the tail; the detail wraps the whole
+        // command, so the end of it is on screen once the entry is selected.
+        for _ in 0..2 {
+            terminal.raw(b"\x1b[B");
+        }
+        terminal.until("wide-tail");
+        // Esc returns to the Permissions panel the row was opened from.
+        terminal.raw(b"\x1b");
+        terminal.until("File access");
+        terminal.raw(b"\x1b");
+        thread::sleep(Duration::from_millis(200));
+        terminal.write(b"/exit\r");
+        terminal.until("Bye!");
+        assert!(terminal.wait().success());
+        daemon.join().unwrap();
+    }
+}
+
+/// Ctrl+N opens one rule in the editor and appends it; Ctrl+X asks, then
+/// removes the selected rule.
+#[test]
+fn tui_permissions_panel_adds_and_removes_command_rules() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let program = rules_editor(&home);
+        let (shown, wait_shown) = std::sync::mpsc::channel();
+        let daemon = home.daemon(move |wire| {
+            rules_start(wire);
+            wait_shown.recv_timeout(PATIENCE).unwrap();
+            let request = wire.read("permission.rules");
+            wire.reply(
+                &request,
+                rules_reply(
+                    "r1",
+                    json!([
+                        command_rule("allow", "exact", "cargo test -p dim-cli"),
+                        command_rule("deny", "prefix", "git push"),
+                    ]),
+                ),
+            );
+            // The create reads the list immediately before the append.
+            let request = wire.read("permission.rules");
+            wire.reply(
+                &request,
+                rules_reply(
+                    "r1",
+                    json!([
+                        command_rule("allow", "exact", "cargo test -p dim-cli"),
+                        command_rule("deny", "prefix", "git push"),
+                    ]),
+                ),
+            );
+            let request = wire.read("permission.set_rules");
+            assert_eq!(request["params"]["expectedRevision"], "r1");
+            assert_eq!(
+                request["params"]["commandRules"],
+                json!([
+                    command_rule("allow", "exact", "cargo test -p dim-cli"),
+                    command_rule("deny", "prefix", "git push"),
+                    command_rule("deny", "exact", "git status"),
+                ])
+            );
+            wire.reply(&request, json!({"revision": "r2"}));
+            // The remove reads the list it names the rule from.
+            let request = wire.read("permission.rules");
+            wire.reply(
+                &request,
+                rules_reply(
+                    "r2",
+                    json!([
+                        command_rule("allow", "exact", "cargo test -p dim-cli"),
+                        command_rule("deny", "prefix", "git push"),
+                        command_rule("deny", "exact", "git status"),
+                    ]),
+                ),
+            );
+            let request = wire.read("permission.set_rules");
+            assert_eq!(request["params"]["expectedRevision"], "r2");
+            assert_eq!(
+                request["params"]["commandRules"],
+                json!([
+                    command_rule("deny", "prefix", "git push"),
+                    command_rule("deny", "exact", "git status"),
+                ])
+            );
+            wire.reply(&request, json!({"revision": "r3"}));
+            rules_drain(wire);
+        });
+        let mut command = home.command();
+        command.env_remove("VISUAL").env("EDITOR", &program);
+        if fullscreen {
+            command.arg("--fullscreen");
+        }
+        let mut terminal = Terminal::launch_tui(command);
+        terminal.until("test / model");
+        shown.send(()).unwrap();
+        open_command_rules(&mut terminal);
+        terminal.until("allow exact cargo test -p dim-cli");
+        terminal.raw(b"\x0e");
+        // The list is drawn before the footer that names the addition.
+        terminal.until("deny exact git status");
+        terminal.until("Rule added: deny exact `git status`.");
+        // Ctrl+X asks about the selected rule first.
+        terminal.raw(b"\x18");
+        terminal.until("allow exact cargo test -p dim-cli? Enter confirm");
+        terminal.raw(b"\r");
+        terminal.until("Rule removed: allow exact `cargo test -p dim-cli`.");
+        terminal.raw(b"\x1b");
+        thread::sleep(Duration::from_millis(200));
+        terminal.raw(b"\x1b");
+        thread::sleep(Duration::from_millis(200));
+        terminal.write(b"/exit\r");
+        terminal.until("Bye!");
+        assert!(terminal.wait().success());
+        daemon.join().unwrap();
+    }
+}
+
+/// An editor that leaves the document as it found it, and keeps the copy it
+/// was given.
+fn inplace_editor(home: &Home, seen: &std::path::Path) -> PathBuf {
+    let path = home.0.join("inplace-editor.sh");
+    fs::write(
+        &path,
+        format!("#!/bin/sh\ncp \"$1\" '{}'\n", seen.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// Ctrl+N opens a template nobody would keep, so saving it unchanged is
+/// plainly the example: the panel says `No change.` and nothing is written.
+#[test]
+fn tui_permissions_panel_opens_a_placeholder_template() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let seen = home.0.join("template.json");
+        let program = inplace_editor(&home, &seen);
+        let (shown, wait_shown) = std::sync::mpsc::channel();
+        let daemon = home.daemon(move |wire| {
+            rules_start(wire);
+            wait_shown.recv_timeout(PATIENCE).unwrap();
+            let request = wire.read("permission.rules");
+            wire.reply(
+                &request,
+                rules_reply("r1", json!([command_rule("deny", "prefix", "git push")])),
+            );
+            let mut line = String::new();
+            while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
+                assert!(
+                    !line.contains("\"permission.set_rules\"")
+                        && !line.contains("\"permission.rules\""),
+                    "an unchanged template sends no request: {line}"
+                );
+                line.clear();
+            }
+        });
+        let mut command = home.command();
+        command.env_remove("VISUAL").env("EDITOR", &program);
+        if fullscreen {
+            command.arg("--fullscreen");
+        }
+        let mut terminal = Terminal::launch_tui(command);
+        terminal.until("test / model");
+        shown.send(()).unwrap();
+        open_command_rules(&mut terminal);
+        terminal.until("deny prefix git push");
+        terminal.raw(b"\x0e");
+        terminal.until("No change.");
+        let template: Value = serde_json::from_str(&fs::read_to_string(&seen).unwrap()).unwrap();
+        assert_eq!(template["command"], "replace-with-a-command", "{template}");
+        assert_eq!(template["match"], "prefix", "{template}");
+        assert_eq!(template["decision"], "deny", "{template}");
+        // Esc leaves the rule panel for the one the row was opened from.
+        terminal.raw(b"\x1b");
+        thread::sleep(Duration::from_millis(200));
+        terminal.raw(b"\x1b");
+        thread::sleep(Duration::from_millis(200));
+        terminal.write(b"/exit\r");
+        terminal.until("Bye!");
+        assert!(terminal.wait().success());
+        daemon.join().unwrap();
+    }
+}
+
+/// A raced write writes nothing: the panel reports the conflict and shows
+/// the list read when it was found.
+#[test]
+fn tui_permissions_panel_reports_a_raced_remove() {
+    let home = Home::new();
+    let (shown, wait_shown) = std::sync::mpsc::channel();
+    let daemon = home.daemon(move |wire| {
+        rules_start(wire);
+        wait_shown.recv_timeout(PATIENCE).unwrap();
+        let request = wire.read("permission.rules");
+        wire.reply(
+            &request,
+            rules_reply("r1", json!([command_rule("deny", "prefix", "git push")])),
+        );
+        let request = wire.read("permission.rules");
+        wire.reply(
+            &request,
+            rules_reply("r1", json!([command_rule("deny", "prefix", "git push")])),
+        );
+        let write = wire.read("permission.set_rules");
+        fail(wire, &write, "permission_rules_conflict");
+        let request = wire.read("permission.rules");
+        wire.reply(&request, rules_reply("r2", json!([])));
+        rules_drain(wire);
+    });
+    let mut terminal = Terminal::launch_tui(home.command());
+    terminal.until("test / model");
+    shown.send(()).unwrap();
+    open_command_rules(&mut terminal);
+    terminal.until("deny prefix git push");
+    terminal.raw(b"\x18");
+    terminal.until("deny prefix git push? Enter confirm");
+    terminal.raw(b"\r");
+    // The list is drawn before the footer that reports the conflict.
+    terminal.until("No entries.");
+    terminal.until("Command rules changed since they were read; nothing was removed.");
+    terminal.raw(b"\x1b");
+    thread::sleep(Duration::from_millis(200));
+    terminal.raw(b"\x1b");
+    thread::sleep(Duration::from_millis(200));
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+/// A rule another surface writes appears on the next read, not before it.
+#[test]
+fn tui_permissions_panel_shows_a_rule_written_elsewhere_on_the_next_read() {
+    let home = Home::new();
+    let (shown, wait_shown) = std::sync::mpsc::channel();
+    let daemon = home.daemon(move |wire| {
+        rules_start(wire);
+        wait_shown.recv_timeout(PATIENCE).unwrap();
+        let request = wire.read("permission.rules");
+        wire.reply(
+            &request,
+            rules_reply(
+                "r1",
+                json!([command_rule("allow", "exact", "cargo test -p dim-cli")]),
+            ),
+        );
+        // Allow always, the line prompt or Web wrote a second rule.
+        let request = wire.read("permission.rules");
+        wire.reply(
+            &request,
+            rules_reply(
+                "r1",
+                json!([
+                    command_rule("allow", "exact", "cargo test -p dim-cli"),
+                    command_rule("deny", "prefix", "npm publish"),
+                ]),
+            ),
+        );
+        rules_drain(wire);
+    });
+    let mut terminal = Terminal::launch_tui(home.command());
+    terminal.until("test / model");
+    shown.send(()).unwrap();
+    open_command_rules(&mut terminal);
+    terminal.until("allow exact cargo test -p dim-cli");
+    let mark = terminal.transcript.len();
+    assert!(
+        !terminal.transcript[mark..].contains("deny prefix npm publish"),
+        "the panel does not read the list without a reload: {}",
+        terminal.transcript
+    );
+    terminal.raw(b"\x12");
+    terminal.until("deny prefix npm publish");
+    terminal.until("Reloaded.");
+    terminal.raw(b"\x1b");
+    thread::sleep(Duration::from_millis(200));
+    terminal.raw(b"\x1b");
+    thread::sleep(Duration::from_millis(200));
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+/// `/permissions` with arguments opens the rule panel, which holds the line
+/// that says where arguments work until the user's first key there. A read
+/// slower than any notice keeps the line: the panel owns it, and it is drawn
+/// again with the list.
+#[test]
+fn tui_permissions_arguments_open_the_panel_and_are_not_ignored() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let (shown, wait_shown) = std::sync::mpsc::channel();
+        let daemon = home.daemon(move |wire| {
+            rules_start(wire);
+            wait_shown.recv_timeout(PATIENCE).unwrap();
+            let request = wire.read("permission.rules");
+            // Well past the notice the terminal UI used to expire.
+            thread::sleep(Duration::from_secs(3));
+            wire.reply(
+                &request,
+                rules_reply("r1", json!([command_rule("deny", "prefix", "git push")])),
+            );
+            rules_drain(wire);
+        });
+        let mut command = home.command();
+        if fullscreen {
+            command.arg("--fullscreen");
+        }
+        let mut terminal = Terminal::launch_tui(command);
+        terminal.until("test / model");
+        shown.send(()).unwrap();
+        terminal.write(b"/permissions allow prefix npm test\r");
+        terminal.until("Use the line prompt or dimcode permissions.");
+        terminal.until("deny prefix git push");
+        // The line is drawn after the list it arrived with, so this proves
+        // it survived the slow read rather than lingering from before it.
+        terminal.until("Use the line prompt or dimcode permissions.");
+        terminal.raw(b"\x1b");
+        thread::sleep(Duration::from_millis(200));
+        terminal.write(b"/exit\r");
+        terminal.until("Bye!");
+        assert!(terminal.wait().success());
+        daemon.join().unwrap();
+    }
+}

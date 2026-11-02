@@ -30,7 +30,7 @@ picking an earlier message and scrolling to the top or bottom are also omitted;
 Commands
   app     /exit        exit
   app     /keys        show the key bindings
-  model   /permissions   file access, tool approval and process isolation
+  model   /permissions   file access, tool approval, process isolation and command rules
   session /rename      rename this session
 
 / + Enter          -> /exit (completion only)
@@ -283,6 +283,145 @@ forms and never contacts a daemon. A build without the Dim account provider
 says so, and names the API-key Provider alternative, from each of these
 commands.
 
+## Plugin runtimes
+
+RuntimeManager supplies the Node and Python runtimes that plugin code runs in
+([RuntimeManager](plugins/RuntimeManager.md)). The daemon reads its configuration when an
+action applies it (RuntimeManager §3.3), so a client can turn a runtime on, say where it comes
+from and show what it is doing, without editing `<home>/runtimes/config.json` by hand and without
+restarting anything. `/runtime` opens one panel in both terminal modes and the same area is
+`dimcode runtime` in the line client and in the CLI.
+
+### The panel
+
+Rows are the two runtimes, always node then python. A row shows its name, the configured source
+(`download` or `system`), the version in effect (the fixed version for `download`, the checked
+interpreter's version for `system`, empty while it is `off` and nothing has been checked), `auto`
+when it is on, and the status `runtime.list` gives: `off`, `acquiring`, `starting`, `ready`, `down` with its reason, or
+`failed` with the reason that lists every source and its error.
+
+Below the rows the panel names what waits on the runtime — the plugin rows that are Pending because
+one is `off` or `down` ([PluginManager §2.5](plugins/PluginManager.md#25-runtimes)) — so "why is
+goal not working" is answered in the same place as its fix. A failure prints one line per source,
+as `runtime.list` reports it.
+
+```text
+/runtime
+╭─ Plugin runtimes ─────────────────────────────────────────────────────────╮
+│ › node      download  24.21.0    ready                                    │
+│   python    system    3.12.15    off      not installed                   │
+│                                                                           │
+│   4 plugins wait for node: goal, session-title, scheduler, workflow       │
+╰─ Enter install or apply · s source · a auto · r retry · Esc close ────────╯
+```
+
+```text
+╭─ Plugin runtimes ─────────────────────────────────────────────────────────╮
+│ › node      download  24.21.0    acquiring  12s                           │
+│   python    system    3.12.15    off                                      │
+╰─ Esc close · the acquisition keeps running if you close this ─────────────╯
+```
+
+```text
+╭─ Plugin runtimes ─────────────────────────────────────────────────────────╮
+│ › node      download  24.21.0    failed                                   │
+│               https://nodejs.org/dist/v24.21.0/…: connection timed out    │
+│               https://npmmirror.com/mirrors/node/v24.21.0/…: 404         │
+│   python    system    3.12.15    off      not installed                   │
+│                                                                           │
+│   4 plugins wait for node: goal, session-title, scheduler, workflow       │
+╰─ Enter retry · s switch node to system · Esc close ───────────────────────╯
+```
+
+`acquiring` shows elapsed seconds, not a percentage: the daemon reports no byte count for an
+acquisition, and the panel does not invent one. A source list appears only on failure, where the
+daemon already reports it.
+
+### Menu entry
+
+`/runtime` is a slash command in category `app`, so the menu lists it between `/keys` and
+`/settings`; it needs no Session (`Needs::Nothing`) and takes no inline argument, because the panel
+carries the actions. The typed subforms below are accepted when typed, not offered as menu
+completions.
+
+### Keys
+
+The panel is keyboard-only and the same in scrollback and fullscreen, as the command menu contract
+requires.
+
+| key | meaning |
+| --- | --- |
+| `Up` / `Down` | move between the runtime rows |
+| `Enter` | `runtime.install NAME`: apply the configuration as it stands |
+| `s` | switch that runtime's source (`download` ↔ `system`) and apply |
+| `a` | toggle that runtime's `auto` and apply |
+| `r` | retry: the same call as `Enter`, kept because a failed row's footer says so |
+| `Esc` | close the panel; an acquisition already running keeps running |
+
+`Enter` on an `acquiring` row does nothing, which is what the daemon's `install` does while it is
+acquiring. `Enter` on a `ready` row with an unchanged source does nothing either; with a changed
+source it withdraws, disposes and re-acquires, as RuntimeManager §3.3 defines.
+
+### Writes
+
+`runtime.install {name}` is the apply the runtime already has: acquire if `off` or `failed`,
+provide the launch command again if `down`, and, when the configuration's `source` changed since
+the last apply, withdraw, dispose and acquire under the new source. It replies at once with the
+entry, so the panel follows `runtime.list` rather than waiting for an acquisition.
+
+`s` and `a` are `runtime.configure {name, source?, auto?}` followed by that same apply. The method
+writes `<home>/runtimes/config.json` — RuntimeManager's own document — atomically, merging per
+runtime and per field over the preset, and a configuration that does not write or read is the
+call's `runtime_configuration` error. The panel then shows the error and keeps the row's previous
+state on screen, because nothing changed.
+
+### Plugins that wait
+
+`/plugins` names the runtime a Pending row waits for, and `Enter` on such a row opens `/runtime`
+with that runtime selected. Today the row says only `pending`.
+
+```text
+/plugins
+╭─ Plugins ─────────────────────────────────────────────────────────────────╮
+│ › goal           on     pending · waits for the node runtime              │
+│   session-title  on     pending · waits for the node runtime              │
+│   scheduler      on     pending · waits for the node runtime              │
+│   workflow       on     pending · waits for the node runtime              │
+╰─ Enter open /runtime · o on/off · r reload · Esc close ───────────────────╯
+```
+
+### Line client and CLI
+
+The typed forms are the whole area, so a caller needs no panel:
+
+```text
+/runtime                              the same rows, in the scrollback client
+/runtime install node                 apply the configuration for node
+/runtime source node system           switch node to the system interpreter and apply
+/runtime auto python on               turn python on by configuration and apply
+```
+
+```text
+$ dimcode runtime list
+node    download  24.21.0   ready
+python  system    3.12.15   off       not installed
+4 plugins wait for node: goal, session-title, scheduler, workflow
+$ dimcode runtime install node
+node    download  24.21.0   acquiring
+$ dimcode runtime config python --source system --auto on
+python  system    3.12.15   off
+```
+
+`dimcode runtime list` prints one tab-separated row per runtime with the fields the panel shows.
+Which plugins wait for a runtime is `/plugins`' answer (`dimcode plugin list` in the line client), not
+this command's: one place names it per plugin, and the panel repeats it only for the runtime in view. `install` and `config` print the runtime's row after the
+call, which is `acquiring` or the state it returned to; a failed call prints the error and exits
+non-zero. `--help` lists these forms and never contacts a daemon.
+
+A daemon that does not serve `runtime.list` answers `unknown_method`; the panel then says the
+daemon does not serve runtimes and prints the version, rather than an empty list that reads as "no
+runtimes".
+
 ## Process isolation settings
 
 `/settings` and `/permissions` expose the same `Process isolation` control. It replaces the old
@@ -339,12 +478,17 @@ Both surfaces use the same area adapter. `dimcode hooks list|enable|disable` kee
 exit codes, except that a source's state line is worded once for the panel and the command;
 `dimcode hooks edit` and `dimcode hooks set PATH` write through the same adapter.
 
+Management text is composed in the interface language on both surfaces. The panel's text follows
+`/language` from the next reply, and `dimcode <area>` uses the saved language, else the system's.
+
 ### The adapter
 
 An adapter talks to the daemon through the client connection, so a subcommand needs no Session.
 It turns its owner's reply into one client view at that boundary, it performs the area's actions,
 and it refuses an action whose methods the daemon does not advertise, with an unsupported-daemon
-error. It never falls back to a file, to another method or to the host's own environment.
+error. That refusal names the area when the daemon does not serve its read, and names the kind
+when it serves the read without the kind's method: `This daemon lists scheduled jobs but cannot
+remove them.` It never falls back to a file, to another method or to the host's own environment.
 
 The client infers nothing the methods do not report. A view that needs a fact the reply does not
 carry gets that fact from the producer: `skills.catalog` reports each entry's `source`, and
@@ -397,10 +541,44 @@ lists the area's kinds plus the selected entry's kinds, in the table's order.
 
 Esc closes the panel. An action key is a Ctrl chord, or a key the filter never takes, because
 the filter takes every plain letter. A kind that acts on the area itself belongs to the area's
-view rather than to one entry — today only reload — so it needs no selection: the hint lists it
-whether or not an entry is selected, and Ctrl+R reads the area again after a failed read. The
-areas these surfaces first carry use toggle, reload and edit; a later area adds the code of the
-kinds it needs, and the design of the area that introduces one names it here.
+view rather than to one entry — reload, and add, which creates one — so it needs no selection:
+the hint lists it whether or not an entry is selected, and Ctrl+R reads the area again after a
+failed read. The first two areas use toggle, reload and edit. The Scheduler area introduces
+add, remove, run and inspect, and the client's kinds are what it writes; a later area adds its
+adapter and the methods its kinds call, and names here the kinds it adds.
+
+A hint the bottom border cannot hold is drawn as rows above a plain bottom border, wrapped at
+the ` · ` separators; a part wider than a row wraps across rows by display width, so no key or
+action is ever cut. The rows take their space from the list like the footer's, so every key
+stays visible at any width, the remove confirmation included.
+
+- add opens the external editor on a new-entry document that the adapter supplies — the owner's
+  create shape, filled with example values — and writes it with the area's create method. An
+  unchanged document writes nothing, and a refusal keeps the draft, which the next Ctrl+N
+  reopens, as Ctrl+E does for an edit. A conflict keeps it too: a create has no revision, so
+  dropping the draft's link to a stale revision is an edit's rule, not a create's. An add that
+  appends an entry to a list it read, as the command rules area's does, retries the conflict
+  instead, because an append overwrites nothing.
+  `dimcode <area> add PATH` (`-` for stdin) is the same write without an editor.
+- remove asks in the hint first: it becomes `Remove <label>? Enter confirm · Esc cancel`, and
+  every key but Enter cancels without changing anything. Enter sends the area's delete method
+  and reads the area again. `dimcode <area> remove ID` deletes without a prompt, because the id
+  typed on the command line is the intent, as `dimcode logout PROVIDER` signs out without one.
+- run sends the area's named operation for the selected entry, reads the area again, and its
+  message reports what the owner answered — a run the owner skipped says why. An operation that
+  takes parameters is the area's own step, not this kind's.
+- inspect asks the adapter for the entry's detail: a title and lines, not a view. The panel
+  shows it in place of the list, the arrows and PageUp/PageDown scroll it, Esc returns to the
+  list with the selection kept, and a second Esc closes the panel. `dimcode <area> inspect ID`
+  prints the same lines, or the area's own verb where its design names one.
+
+An entry of an area whose documents are per entry offers edit for its own document: the Save
+action then carries the entry's id, and the adapter keeps the revision it read with the draft.
+
+A kept draft belongs to the write target it was taken for: the area's document, one entry's
+document, or a create. The edit key of a target reopens only that target's kept draft, at the
+revision its text came from; another target's edit opens its own document and leaves the kept
+draft where it is, and only the reply to a draft's own write settles that draft.
 
 ### Writes
 
@@ -409,11 +587,14 @@ Writes follow [Execution settings](#execution-settings):
 - the adapter keeps the revision it read with the draft, and the revision is not a field the user
   types;
 - a conflict writes nothing and shows the error; the area is read again, the draft's link to the
-  stale revision is dropped, and the next edit opens the stored document. It never retries
-  automatically and never overwrites a newer document;
+  stale revision is dropped, and the next edit opens the stored document. A read that fails after
+  the conflict still drops that link and says why the area is not drawn, and the next read retries
+  it. It never retries automatically and never overwrites a newer document;
 - reload discards the draft and reads again;
-- an edit the conflict prevented is not lost silently: the message names the file that holds the
-  user's text;
+- a conflict message states the owner's fact — what changed, and that nothing was written — and
+  leaves where the text is to the surface that holds it: the panel says what the next edit or add
+  does with the kept text and names its file, and the command line names the file that holds the
+  text, a stdin input included, and exits 1;
 - a refusal that does not involve a newer document — text that does not parse, or one the owner
   refuses — keeps the draft's revision, so the edit key reopens the user's text and writes it
   again;
@@ -425,11 +606,13 @@ Writes follow [Execution settings](#execution-settings):
   since it calls nothing before `hooks.catalog`;
 - a write the daemon accepted is reported as done: a failure of the read that follows is
   reported after the action, as a read failure, never as a refusal or a conflict. The CLI prints
-  the action's line, then the read error on standard error, and exits 0; a Skills toggle's line
-  names the id, since the read is what supplies the name, and a Hooks toggle names the workspace,
-  since the toggle is the project source; a read on its own that fails is still a failure. The
-  panel shows the action's message and the read error, keeps no view until the next
-  read, and settles the draft as on success: its file is removed and its link dropped;
+  the action's line, then the read error on standard error, and exits 0; a Skills or Scheduler
+  toggle names the entry from the read that follows it, and the id when that read failed, since
+  the read is what supplies the name; a Hooks toggle names the workspace, since the toggle is the
+  project source; a read on its own that fails is still a failure. The panel shows the action's
+  message and the read error, keeps no view until the next read, and settles the draft as on
+  success: its file is removed and its link dropped. An applied action keeps the owner's answer
+  even when the read after it fails;
 - loading and writing disable mutation.
 
 ### The external editor
@@ -464,8 +647,9 @@ Writes follow [Execution settings](#execution-settings):
   message state live in one place.
 - Adding an area means an adapter, its command menu rows, its subcommand verbs and its design
   rows. It adds no new `Prompt`, `Command` or `Update` variant.
-- Existing panels — `/plugins`, `/permissions` — move onto this structure when they are next
-  changed. This section does not migrate them, and they keep their own keys until then.
+- `/plugins` keeps its own panel. `/permissions` keeps its panel and its keys, and its Command
+  rules row opens the area below; the three controls are choices among values, not entries, so
+  they stay pages of the one panel.
 
 ```text
 /skills ──► Command::Management { area, List } ──► adapter
@@ -476,7 +660,7 @@ Panel  ◄───────────────────{ area, view 
    │
    ├─ Enter ──► Command { area, Toggle { id, enabled } } ──► skills.set_enabled ──► skills.catalog
    │                                                                                (the view again)
-   └─ Ctrl+E ──► the external editor ──► Command { area, Save { expectedRevision, document } }
+   └─ Ctrl+E ──► the external editor ──► Command { area, Save { id?, expectedRevision, document } }
                                           ──► hooks.save ──► hooks.catalog
 
 dimcode skills enable ID ──────────────────────────────► the same adapter, over its own connection
@@ -499,6 +683,143 @@ of the Settings source `hooks`. `dimcode hooks set PATH` (`-` for stdin) is the 
 an editor, and either one keeps the user's text in its own file under `<home>/edit/` when the
 revision is stale. The user source offers edit and no toggle, because it is always in effect; a
 plugin's source offers neither, and its detail names the plugin.
+
+### The Scheduler area
+
+Scheduler (#815): the `/scheduled` panel, `/schedule` its alias in both modes, and `dimcode
+scheduled list|enable ID|disable ID|edit ID|set ID PATH|add PATH|remove ID|run ID|history ID`
+over `schedule.list`, `schedule.save`, `schedule.delete`, `schedule.set_enabled`,
+`schedule.run_now` and `schedule.history` ([Scheduler §A.3](plugins/Scheduler.md#a3-management-methods)).
+Every job is an entry: its name is the label, and its schedule, next window and last outcome are
+its detail. A job whose schedule the owner cannot use is marked invalid and its detail carries the
+owner's message; a job the scheduler holds while it is disabled says it has no next window. The
+owner reports no grouping, so the jobs share one heading, `jobs`.
+
+A job's document is the record the owner wrote; the client changes only the fields `schedule.save`
+takes — `name`, `schedule`, `prompt`, `cwd`, `model`, `mode`, `policy`, `max_run_minutes`,
+`enabled`, `session_id` and `agent_id` — and carries the id on the Save action and the job's
+revision as the revision the draft was read at. `schedule.save` is a patch merged over the stored
+job, so an edit writes only the members the draft changed: the adapter reads the job again,
+refuses a draft whose revision is no longer the job's, and sends the changed members with the id
+and the revision. A draft that changes no editable member writes nothing, and a member the draft
+deletes cannot be cleared because the patch has no null: the write is refused before it is sent
+and names the member. The exception is a `session_id` whose `mode` becomes `create`, which the
+owner clears itself. A stale revision is `schedule_conflict`, the
+typed conflict: nothing is written, the jobs are read again, and the next edit opens the current
+record. `created_by`, `policy_cap` and `enabled_at` are the owner's to derive and are never sent.
+A new entry starts from the owner's create shape — a name, an example `every` schedule, a prompt
+and the Session's workspace — and writes with `schedule.save` without a revision. `inspect` is
+`history`: the job's recent runs, newest first, with the state the owner recorded.
+
+```text
+╭─ Scheduler ──────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ >                                                                                                                    │
+│                                                                                                                      │
+│   jobs                                                                                                               │
+│ › nightly-build   enabled                                                                                            │
+│   release         disabled  invalid                                                                                  │
+│                                                                                                                      │
+│   every 60 minutes                                                                                                   │
+│   Next run 2026-11-02T09:00:00.000Z.                                                                                 │
+│   Last run completed at 2026-11-01T09:00:12.000Z.                                                                    │
+╰───── Enter toggle · Ctrl+E edit · Ctrl+R reload · Ctrl+N add · Ctrl+X remove · Ctrl+T run · Tab inspect · Esc close ─╯
+```
+
+Ctrl+T runs the selected job now and reports what the owner answered — `launching`, or the reason
+the run was skipped — and Tab shows the job's history in place of the list:
+
+```text
+╭─ Recent runs of nightly-build ─────────────────────────────╮
+│ 2026-11-01T09:00:12.000Z  completed                        │
+│ 2026-11-01T08:00:05.000Z  skipped (overlap)                │
+│ 2026-10-31T09:00:03.000Z  completed                        │
+╰───────────────────────────────────── ↑↓ scroll · Esc back ─╯
+```
+
+`dimcode scheduled add PATH` (`-` for stdin) is the create without an editor, `dimcode scheduled
+history ID` prints the lines the detail shows, and `dimcode scheduled remove ID` deletes without
+the panel's confirmation.
+
+### The command rules area
+
+Command rules (#819): the Permissions panel's Command rules row and `dimcode permissions
+list|add PATH|remove RULE` over the user's command rules ([permission
+controls](#permission-controls), [command rules](appserver/permission-command-rules.md)). The
+owner reports the list and its Settings revision with `permission.rules`, and replaces the whole
+list at that revision with `permission.set_rules`; a stale revision is
+`permission_rules_conflict`.
+
+The row is appended after Process isolation, so the existing rows keep their positions. It opens
+this area's panel, and Esc there returns to the Permissions panel; the three controls above it
+keep their own pages.
+
+```text
+╭─ Permissions ─────────────────────────────────────────────────╮
+│ >                                                             │
+│   File access          Workspace read/write                 › │
+│   Tool approval        Ask (legacy tool exceptions)         › │
+│   Process isolation                                         › │
+│   Command rules                                             › │
+╰──── ↑↓/Tab move · Enter apply · Esc back ─────────────────────╯
+
+╭─ Command rules ───────────────────────────────────────────────╮
+│ >                                                             │
+│   user                                                        │
+│ › allow exact cargo test -p dim-cli                           │
+│   deny prefix git push                                        │
+│                                                               │
+│   Matches only this command.                                  │
+│   Allows a simple command that would otherwise ask.           │
+│   Applies in every Session, in every workspace.               │
+╰──── Ctrl+R reload · Ctrl+N add · Ctrl+X remove · Esc close ───╯
+```
+
+Every rule is an entry. The owner has no id for one, so the id and the label are the rule's value,
+`DECISION MATCH COMMAND` — `allow exact cargo test -p dim-cli`, `deny prefix git push`. A rule has
+a decision, not an on/off state, so the entry reports no enablement (`enabled: None`) and the
+panel draws neither `enabled` nor `disabled`; it reports no states either, because a stored rule
+the owner cannot use fails the whole read. The area offers three kinds: reload re-reads
+`permission.rules` (the owner reads the Settings source on every call, so there is no rescan
+method), add appends one rule, and remove removes the rule the entry names. Toggle, edit, run and
+inspect are not offered: a rule is not on or off, the one write replaces the whole list, and a
+rule's whole content is its label and its two detail lines.
+
+Add opens the external editor on one rule, the owner's write unit without the revision:
+
+```json
+{"command": "replace-with-a-command", "match": "prefix", "decision": "deny"}
+```
+
+The command is a placeholder no one keeps, so the template reads as the example it is: the
+shared create rule writes nothing for a document left as it was, and the panel says `No change.`
+`deny` with `prefix` is the fail-closed example: a user who replaces only the command still denies.
+The adapter decodes the document as a command rule and checks it with the line prompt's
+`permission::rule` (word normalization, a non-empty command, no shell separators); the write is
+`permission::add_rule`, the line prompt's own operation: read `permission.rules`, append unless an
+equal rule exists, and write at the read revision. An add is the one kind that retries a conflict,
+up to three attempts, because an append does not depend on the other rules and overwrites
+nothing. An equal rule writes nothing and says it is already present. `dimcode permissions add
+PATH` (`-` for stdin) is the same write without an editor.
+
+Remove asks in the hint first, `Remove deny prefix git push? Enter confirm · Esc cancel`, and
+writes the list without that rule at the revision the adapter read. The action carries no
+revision: a rule's id is its value, so a remove acts on exactly the rule the user saw, and a
+change to some other rule while the panel was open is not a conflict. Two failures write nothing
+and show the list as it now is: the rule is no longer listed (`That command rule is no longer
+listed; nothing was removed.`), or another client wrote between the read and the write and the
+owner answered `permission_rules_conflict` (`Command rules changed since they were read; nothing
+was removed.`). `dimcode permissions remove 'deny prefix git push'` takes the whole rule as one
+quoted argument and deletes without a prompt, because the rule typed on the command line is the
+intent.
+
+The area is user scope only: Permission has one user Settings source, with no project rules, and a
+`.dimcode/permission.json` has no effect. Nothing is cached: the panel reads the list when it
+opens, on Ctrl+R and after each of its writes, so a rule written by Allow always, by the line
+prompt or by Web appears on the next of those reads, not while the panel sits idle.
+
+`dimcode permissions list` prints one rule per line, with the decision, the match and the command
+separated by tabs, then the columns and what deny means. `dimcode permissions remove` takes the
+whole rule as one quoted argument, so global options stay unambiguous.
 
 ## Commands
 
@@ -530,6 +851,18 @@ plugin's source offers neither, and its detail names the plugin.
 | `dimcode hooks edit` | Open the user's hook document in `$VISUAL`, `$EDITOR` or the platform default, and write it over `hooks.save` with the revision `hooks.catalog` reported; an interactive edit needs a terminal. |
 | `dimcode hooks set PATH` | Write the user's hook document from `PATH`, or from stdin for `-`, with the revision read immediately before the write; unchanged text writes nothing. |
 | `/hooks` | Open the Hooks panel of the Session's workspace ([management surfaces](#management-surfaces)): a source per entry, the project's toggle and the user document's edit. |
+| `dimcode scheduled list` | List the jobs the Scheduler holds over `schedule.list` ([Scheduler](plugins/Scheduler.md#a3-management-methods)): each job's id, name, schedule, state, next window and last outcome, then the jobs whose schedule the owner cannot use. |
+| `dimcode scheduled enable\|disable ID` | Enable or pause one job over `schedule.set_enabled`, then report the jobs again. |
+| `dimcode scheduled edit ID` | Open one job's document in `$VISUAL`, `$EDITOR` or the platform default, and write it over `schedule.save` with the revision the listing reported; an interactive edit needs a terminal. |
+| `dimcode scheduled set ID PATH` | Write one job's document from `PATH`, or from stdin for `-`, with the revision read immediately before the write; unchanged text writes nothing. |
+| `dimcode scheduled add PATH` | Create a job from `PATH`, or from stdin for `-`, over `schedule.save` without a revision: the owner derives the id, `created_by` and `policy_cap`. |
+| `dimcode scheduled remove ID` | Delete one job over `schedule.delete` without a prompt: the id on the command line is the intent. |
+| `dimcode scheduled run ID` | Run one job now over `schedule.run_now` and report what the owner returned, or why it skipped the run. |
+| `dimcode scheduled history ID` | Print one job's recent runs over `schedule.history`, newest first, with each run's state and time. |
+| `/scheduled`, `/schedule` | Open the Scheduler panel ([management surfaces](#management-surfaces)): a job per entry with its schedule, next window and last outcome, and the toggle, edit, add, remove, run and inspect kinds; the Scheduler's verb for inspect is history. Jobs are the host's, not the Session's or workspace's; only a new job's default `cwd` comes from the Session. |
+| `dimcode permissions list` | List the user's command rules over `permission.rules`: each rule's decision, match and command, then the columns and what deny means. |
+| `dimcode permissions add PATH` | Add one rule from `PATH`, or from stdin for `-`, over `permission.rules` and `permission.set_rules`: an equal rule writes nothing; a conflict re-reads and retries, at most three attempts. |
+| `dimcode permissions remove RULE` | Remove the rule named by `RULE`, which is the whole rule as one quoted `'DECISION MATCH COMMAND'` argument, over `permission.rules` and `permission.set_rules` at the revision just read; a rule that is gone, or a raced write, writes nothing and exits 1. |
 | `dimcode login [PROVIDER] [--directory URL] [--device] [--redirect-uri URI]` | Start the described account's browser or device sign-in ([Provider accounts](#provider-accounts)); without PROVIDER, list the described accounts. |
 | `dimcode account PROVIDER` | Print the described account's non-secret state. |
 | `dimcode logout PROVIDER` | Sign the described account out. |
@@ -538,7 +871,7 @@ plugin's source offers neither, and its detail names the plugin.
 | `!command` / `!!command` | Call the Session's existing `shell.run` in record/private mode, including during a model turn. |
 | `--permission read-only\|workspace-write\|full-access` | Select the preset of a new or resumed Session for `dimcode`, `tui`, `exec` and `exec resume` ([permission controls](#permission-controls)). |
 | `/goal [OBJECTIVE \| set OBJECTIVE \| edit OBJECTIVE \| pause \| resume \| clear]` | Read and write the goal of the shown line, in the line client and both terminal UI modes ([goal](#goal)). |
-| `/permissions` | Open independent File access, Tool approval and Process isolation controls; manage command rules while idle ([permission controls](#permission-controls)). |
+| `/permissions` | Open the Permissions panel: independent File access, Tool approval and Process isolation controls, and the Command rules row that lists, adds and removes the user's command rules ([permission controls](#permission-controls)). |
 | `/approvals`, `/approval` | Compatibility aliases for `/permissions`; legacy preset arguments remain supported. |
 
 `dimcode hooks` writes only the user's hook document, and only through the edit kind: `dimcode hooks
@@ -1235,11 +1568,20 @@ same controls as compatibility aliases, not a second preset chooser. The control
 `main`; each field selection writes only its dimension using the current whole policy and
 version. A failed save neither changes remembered choices nor falls back to a legacy preset.
 
+Process isolation opens the execution settings. The Command rules row opens the management panel
+of [The command rules area](#the-command-rules-area), where the rules are listed, added and
+removed; Esc there returns to this panel, and the three controls above the row keep their pages.
+Arguments after `/permissions` in the terminal UI open that panel instead of being ignored, and
+it opens holding one line that says where arguments work — the line prompt and `dimcode
+permissions` — which stands above the panel's answers until the user's first key there, however
+long the opening read takes; the compact grammar belongs to the line prompt.
+
 ```text
 Permissions (main branch)
 > File access          Workspace read/write >
   Tool approval        Ask                  >
   Process isolation    Off                  >
+  Command rules                             >
 
 File access                         Tool approval
   Read only                       > Ask
@@ -1302,6 +1644,10 @@ a number never refers to a position the user has not seen. A form that prints no
 already present, a preset switch, an "always" answer during a turn) keeps the last printed one; if
 the rules changed since, its revision makes the next `remove` fail, and the conflict prints the
 current list. Without a printed list in this process, `remove` asks for `/permissions` first.
+`remove N` keeps the number because it acts on the list this prompt printed and holds that
+listing's revision, while `dimcode permissions remove` and the panel take the rule's value
+because each reads the list immediately before the write, so there is no printed listing to
+number.
 COMMAND is the rest of the line; the CLI rejects an empty command or one containing a separator
 character (`dim_agent_types::COMMAND_SEPARATORS`, the set F2 validates) before any call. A
 preset that is already in force writes nothing. Without the advertised methods, the command

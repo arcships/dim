@@ -398,14 +398,21 @@ See the [MCP OAuth contract](../../docs/design/appserver/mcp-oauth.md#13-require
 ## Permission presets and approvals
 
 The App Server decides each tool call; the CLI selects settings and never decides a call itself.
-`/permissions` opens three independent controls, also available under `/settings`:
+`/permissions` opens three independent controls, also available under `/settings`, and the
+Command rules area:
 
 ```text
 Permissions
   File access         Read only / Workspace read/write / Unrestricted
   Tool approval       Ask / Bypass
   Process isolation   Off / Sandboxed · No network / Sandboxed · Network allowed
+  Command rules       List, add and remove the user's command rules
 ```
+
+The Command rules row opens the management panel of `Area::Permissions`: one entry per rule,
+whose id and label are the rule's value (`DECISION MATCH COMMAND`), with `Ctrl+R` reload, `Ctrl+N`
+add and `Ctrl+X` remove. A rule has a decision, not an on/off state. Esc returns to the Permissions
+panel.
 
 Choosing File access writes only `fileAccess`; choosing Tool approval writes only `toolApproval`.
 The UI preserves the branch's legacy preset and tool lists, and saves the chosen field alone in
@@ -1077,9 +1084,10 @@ The terminal UI reaches the same Session methods as the line client:
 | `/mcp enable ID` / `/mcp disable ID` | Turns a server on or off with the request `dimcode mcp enable` / `mcp disable` sends and the same result text. Enabling a project entry runs this workspace's `.mcp.json` entry, including later edits, in active and new sessions; disabling stops it in every session before the call returns. The next `/mcp` lists the new state |
 | `/plugins` (`/plugin`) | Lists every plugin name from `plugin.list` (built-in, default, installed): the candidate in use, its state, whether it is locked, and for the selected one its candidates and any error, wait or refused content. `Enter` turns an off plugin on (`plugin.enable`) or, after a confirmation, turns it off (`plugin.disable`); a locked one says why it cannot be turned off. `r` reloads it (`plugin.reload`), `Ctrl+R` lists again. The list is read again after each change, and a failed call shows the method's message |
 | `/plugins install PATH` | Installs and turns on the plugin directory at `PATH`, relative to the workspace (`plugin.install`), then opens the list with the outcome, including when a restart is required. Git installs, update and remove are `dimcode plugin ...` |
-| `/skills` | Lists the Skills of the Session's workspace from `skills.catalog`, grouped under the source each was found in (`user`, `project`, `plugin:<id>`), with its state and, for the selected one, its description and file; the catalog's issues follow the entries. `Enter` or `Space` enables or disables the selected Skill (`skills.set_enabled`) and the list is read again; `Ctrl+R` rescans the roots (`skills.refresh`). A daemon without the methods says it cannot manage Skills |
+| `/skills` | Lists the Skills of the Session's workspace from `skills.catalog`, grouped under the source each was found in (`user`, `project`, `plugin:<id>`), with its state and, for the selected one, its description and file; the catalog's issues follow the entries. `Enter` or `Space` enables or disables the selected Skill (`skills.set_enabled`) and the list is read again; `Ctrl+R` rescans the roots (`skills.refresh`). A daemon without the methods says it cannot manage skills |
 | `/reload-skills` | Runs the rescan of the Session's workspace with no panel and reports the entry and issue counts it found, plus each issue |
 | `/hooks` | Lists each hook source of the Session's workspace as an entry from `hooks.catalog`, with its state and detail; `Enter` or `Space` enables or disables the Session's project source (`hooks.set_enabled`), `Ctrl+E` opens the user document in `$EDITOR` and writes it with `hooks.save` and the revision the panel read, `Ctrl+R` reads the area again. A plugin source is read-only and offers no write |
+| `/scheduled` (`/schedule`) | Lists the jobs the Scheduler holds from `schedule.list`, one entry per job with its schedule, next window and last outcome as its detail, and a job whose schedule the owner cannot use marked with that error; jobs are the host's, not the Session's or workspace's, and only a new job's default `cwd` comes from the Session. `Enter` or `Space` enables or pauses the job (`schedule.set_enabled`), `Ctrl+E` edits the job's document in `$EDITOR` with the revision the list reported (`schedule.save`), `Ctrl+N` creates a job from the document the adapter supplies, `Ctrl+X` removes the job after `Remove NAME? Enter confirm · Esc cancel` (`schedule.delete`), `Ctrl+T` runs it now (`schedule.run_now`) and reports the state the owner returned, `Tab` asks the inspect kind, which the Scheduler serves as history (`schedule.history`), and shows the job's recent runs in place of the list with `Esc` returning to it, `Ctrl+R` reads the list again. An edit sends only the members the draft changed |
 | `/login` | Opens the Dim sign-in panel. It shows the account from `account.status` as a status line; signed out, its entries are browser, enterprise-email or device sign-in through `account.login.*` at the entry's account directory (below), each entering its own flow (`Esc` after a failure returns to the entries); signed in, it shows the account's name and email, its plan, credits, token windows and feature meters from `account.usage` (`Ctrl+R` asks again; a plugin without the method shows why), and its entries open `/models`, open the plan page at the account directory's `/console/subscription` in the browser, or sign out with `account.logout`, after which the panel shows the sign-in entries again. Browser sign-in redirects to `http://localhost:54321/auth/callback` (`--redirect-uri` overrides it), catches the callback on a loopback listener when that port is free and opens the authorization URL (neither over SSH); a callback URL pasted in the panel completes it too; device sign-in shows the code and polls the attempt every second. `Esc` closes the panel and cancels a pending attempt. On success the catalog is refreshed with `provider.refresh` and `/models` opens |
 | `/connect` | Reads safe connection snapshots with `provider.management`. `Test + apply` probes the unsaved draft, then updates only changed fields at the form's original version with `provider.update`; a record whose models are its own has them replaced by the new endpoint's listing in that same write when the edit changes `baseUrl`, `credential` or `headers`, so the catalog follows the new endpoint, while a proxy or timeout edit saves alone and a builtin whose models are the bundled catalog's keeps them; unsupported model listing still permits saving and reports that the key was not tested. Other probe failures keep the draft. `Disconnect` atomically clears credentials and disables the record, and a catalog of the record's own goes with it, because the listing taken with that key is that key's view; the next connect lists the endpoint again. Enable/Disable update only that flag. `Add custom provider` probes a Name, Base URL and API Key draft, then calls `provider.create` with the form's retained UUID and discovered defaults. IDs never derive from names. Failures retain edits; rereads update the safe status/version and require confirmation before retrying. `Ctrl+R` rereads without discarding the draft. Fields and filters use the composer's line editor. A row whose entry carries an `account` descriptor opens the account step instead of the form: signed out, its row says `Sign in` and opening it starts the only flow the descriptor's `loginMethods` list, and signed in, it shows `Signed in` and signs out through `<namespace>.logout`; a daemon that does not advertise the method reports that instead; a row whose namespace is `account` opens the Dim account's `/login` panel instead |
 | `/resume` | Lists saved Sessions across workspaces, 50 at a time through `session.catalog`; moving near the end loads the next page. Each row is labelled by the Session's creation origin — `[Chat]`, `[ACP ]` or `[Agent]` — and reads its title, else its first message, else its id. Sessions Dim created for its own work are not listed; ACP Sessions are listed only while `/settings` → Show ACP sessions is on, and only on a daemon that advertises `session.catalog.origins`. The filter searches the server after 150 ms, including Sessions not loaded yet. Ctrl+R refreshes; closing, refreshing or replacing a search cancels the pending read when the daemon advertises `session.catalog.cancel`. Older daemons use `session.summaries` and local filtering |
@@ -1088,7 +1096,7 @@ The terminal UI reaches the same Session methods as the line client:
 | `/timeline` | Lists the shown line's user messages, oldest first, numbered, each with the first text of its answer, the newest selected. Typing does not filter: `e`, `q`, `b` and `f` act on the selected message as on a pick. `Enter` jumps: fullscreen picks the message (drawing from it first when it is earlier history), so the pick keys apply; scrollback draws a message it has not drawn yet, and everything after it up to what is drawn, as an earlier-history page, and otherwise says `/tui` can jump to it ([timeline UI §4.6](../../docs/design/timeline-ui.md#46-timeline-jumping-to-a-message)) |
 | `/branch [TEXT]`, `/fork [TEXT]` | As `b` and `f` on a picked message, at the shown line's newest turn end: `/branch` puts `TEXT` in the composer as the new line's opening input; `/fork` asks, then forks `main` there with `TEXT` in the fork's composer |
 | `/usage` | Reports main's context window from `session.context.usage`: estimated input tokens against the window, the output allowance and the compaction threshold; before a model has answered it says so, and a failed call is reported alone. With the reading it appends the cache read share of the last `model/usage` request on `main` (` · last request cached {percent}`), rounded down: `100%` only when every prompt token was a cache read, one decimal between `99%` and `100%`, an integer between `1%` and `99%`, `<1%` for a positive share below one percent, and `0%` for a request that reported no cache reads; the prompt token count includes cache writes, so a request that only writes the cache reads `0%`. The segment appears only once `main`'s history has finished loading, so a page that is not the last never reports its older request; after that it shows the newest request, whether it came from the history or a live event. It is absent when that request reported no cache read count or its counters cannot produce a share (cache reads above prompt tokens, or a zero prompt) |
-| `/compact` | Asks the shown line to compact its context with `session.context.compact`, during a run too. The transcript row shows the work and its outcome; the reply is reported when the method answers — `completed`, `skipped` with its reason, or the method's failure (`compaction_failed`, `compaction_cancelled`). A daemon without the method says it does not support context compaction |
+| `/compact` | Asks the shown line to compact its context with `session.context.compact`, during a run too. The matching Timeline row reports the work and its terminal outcome once; the RPC reply adds no second completed, skipped, failed or cancelled notice. Failures of the call itself and invalid replies are reported separately. A daemon without the method says it does not support context compaction |
 | `/rename TITLE`, `/rename --clear` | Sets, or clears, the shown Session's manual title with `session.rename` and reports the stored title or that the Session is untitled. Choosing `/rename` from the palette fills `/rename ` and waits; a bare `/rename` is refused with a notice and sends nothing, so `--clear` is the way to clear it without a title. The text is a command: it is never queued or submitted, also while a turn runs. With no Session shown it says so, and a Session that does not serve `session.rename` (`unknown_method`) reports that instead |
 | `/goal [OBJECTIVE \| set OBJECTIVE \| edit OBJECTIVE \| pause \| resume \| clear]` | Reads and writes the goal of the shown line through `session.goal.*`. The command's first line names the call, the line and the status in force, the objective follows it, and `/goal` alone prints the goal the line's events give; `edited` is the form that found a live goal and changed only its objective, and a typed objective after a finished goal starts a new one. While the shown line follows a goal the status area carries `◎ goal active` or `◎ goal paused`. A daemon whose Session lists no `session.goal.set` says Goal is not available and calls nothing ([Goal](#goal)) |
 | `/effort VALUE` (`/reasoning`), `/fast on\|off`, `/agent ID` | Change the Session's reasoning effort, service tier or agent; without a value they list the choices for the adopted model. `/fast` is listed in the palette only while the adopted model's catalog entry advertises priority/default service tiers |
@@ -1191,12 +1199,34 @@ than one per feature ([management surfaces](../../docs/design/cli-commands.md#ma
 - `dimcode <area> <verb>` calls the same adapter over its own connection, so a subcommand needs
   no Session.
 
-The keys are one per action kind in every area: `Enter` or `Space` toggles, `Ctrl+E` opens the
-area's document in the external editor, `Ctrl+R` re-reads the area or asks its owner to rescan,
-and `Esc` closes. An action key is a Ctrl chord, or a key the filter never takes, because the
-filter takes every plain letter. The bottom border names the area's kinds plus the selected
-entry's; reload acts on the area, so it works with no entry selected and retries a failed read.
-The panel reads and writes the Session's workspace, not the directory the client started in.
+Both surfaces compose their text in the interface language ([`/language`](#terminal-ui-modes)).
+The session starts in the language the interface chose and switches on every `/language` save,
+so a switch shows from the next reply. A subcommand uses the saved language, else the system's.
+
+The keys are one per action kind in every area, and each keeps one meaning: `Enter` or `Space`
+toggles, `Ctrl+E` opens a document in the external editor, `Ctrl+R` re-reads the area or asks its
+owner to rescan, `Ctrl+N` adds, `Ctrl+X` removes, `Ctrl+T` runs, `Tab` inspects, and `Esc`
+closes. A kind is offered only where the area's method table and the owner's view have one, so
+an area with no run action never names `Ctrl+T`. An action key is a Ctrl chord, or a key the
+filter never takes, because the filter takes every plain letter. The hint names the area's
+kinds plus the selected entry's, on the bottom border or, when that cannot hold it, in rows
+above the border wrapped by width so no key or action is cut; reload and add act on the area, so
+they work with no entry selected: reload retries a failed read, and add opens on an empty area.
+A remove asks first, `Remove LABEL? Enter confirm · Esc cancel`, and any other key cancels;
+`dimcode <area> remove ID` takes the id on the command line as the intent and does not ask.
+Inspect replaces the list with the title and lines the owner returned and scrolls them with the
+arrows and PageUp/PageDown; the first `Esc` returns to the list and the next closes the panel.
+The Skills and Hooks panels read and write the Session's workspace, not the directory the
+client started in; the Scheduler's jobs are the host's, and only a new job's `cwd` defaults from
+the Session. A panel holds no area's vocabulary: an area's entries, kinds, documents and detail
+arrive from its adapter.
+
+The areas below use it, over the same kinds:
+
+- Skills (`/skills`, `dimcode skills ...`) lists and toggles skills.
+- Hooks (`/hooks`, `dimcode hooks ...`) adds the user document's edit.
+- The Scheduler (`/scheduled`, `/schedule`, `dimcode scheduled ...`) introduces add, remove, run and inspect, a job per entry from `schedule.list`, with `schedule.set_enabled`, `schedule.save` for the edit and the create, `schedule.delete`, `schedule.run_now` and `schedule.history`. Its subcommands are `dimcode scheduled list`, `enable ID`, `disable ID`, `edit ID`, `set ID PATH`, `add PATH`, `remove ID`, `run ID` and `history ID`.
+- Command rules (`/permissions`'s Command rules row, `dimcode permissions ...`) is a rule per entry from `permission.rules` with `Ctrl+R`, `Ctrl+N` and `Ctrl+X`, writing through `permission.set_rules`; its subcommands are `dimcode permissions list`, `add PATH` and `remove 'DECISION MATCH COMMAND'`.
 
 The external editor is `$VISUAL`, then `$EDITOR`, then `vi` (`notepad` on Windows), run on Unix
 through `sh -c '<editor> "$@"' <editor> <file>` as git does, so a quoted path with a space
@@ -1208,15 +1238,19 @@ refuses keeps it and the message names it; a refused editor exit (`:cq`, a non-z
 writes nothing and does the same. `Ctrl+E` opens the user's text again from that file, unless
 the owner's refusal was a conflict: then the area is read again and the next edit opens the
 current document at its new revision. `dimcode <area> set PATH` (`-` for stdin) is the same
-write without an editor.
+write without an editor, and `dimcode <area> add PATH` the same shape for a create.
 
 ```text
-/skills ──► Command::Management { area, List } ──► adapter ──► skills.catalog
-                                                      │
-Panel  ◄── Update::Management { area, view } ◄────────┘  groups, entries, states, actions
+/scheduled ─► Command::Management { area, List } ──► adapter ──► schedule.list
+                                                        │
+Panel  ◄── Update::Management { area, report } ◄────────┘  groups, entries, states, actions
 
-Enter ────► Command { area, Toggle { id, enabled } } ─► skills.set_enabled ─► skills.catalog
-Ctrl+E ───► external editor ─► Command { area, Save { expectedRevision, document } } ─► hooks.save
+Enter ────► Command { area, Toggle { id, enabled } } ─► schedule.set_enabled ─► schedule.list
+Ctrl+E ───► external editor ─► Command { area, Save { id, expectedRevision, document } } ─► schedule.save
+Ctrl+N ───► Command { area, Add { document } } ─► schedule.save
+Ctrl+X ───► confirm ─► Command { area, Remove { id } } ─► schedule.delete
+Ctrl+T ───► Command { area, Run { id } } ─► schedule.run_now ─► note: "Run nightly: completed."
+Tab ──────► Command { area, Inspect { id } } ─► schedule.history ─► Detail { title, lines }
 ```
 
 ## Accounts
