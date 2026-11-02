@@ -15,13 +15,14 @@ use serde_json::Value;
 use crate::Result;
 use crate::args::Options;
 use crate::client::Client;
-use crate::management::{self, editor, hooks, mcp, permissions, scheduler, skills};
+use crate::management::{self, editor, hooks, mcp, permissions, scheduler, skills, workflow};
 use crate::mcp_command::print_report;
 use crate::model::session::{
     ActionKind, Area, ManagementAction, ManagementRequest, ManagementResult,
 };
 use crate::permission;
 use crate::sanitize::{safe, safe_line};
+use crate::ui::i18n::t;
 
 /// Runs `request` and prints its area's report.
 pub async fn run(
@@ -34,6 +35,7 @@ pub async fn run(
         Area::Hooks => run_hooks(client, options, request).await,
         Area::Mcp => run_mcp(client, options, request).await,
         Area::Scheduled => run_scheduled(client, request).await,
+        Area::Workflow => run_workflow(client, options, request).await,
         Area::Permissions => run_permissions(client, request).await,
     }
 }
@@ -178,6 +180,42 @@ pub async fn add(client: &mut Client, options: &Options, area: Area, path: &Path
     create(client, options, area, &text, &kept).await
 }
 
+/// `workflow start NAME [PATH]`: the definition's parameters from a file, or
+/// from stdin for `-`, and no reporter, since the command line has no
+/// Session.
+pub async fn start(
+    client: &mut Client,
+    options: &Options,
+    area: Area,
+    id: String,
+    path: Option<&Path>,
+) -> Result<i32> {
+    // Refuse a start the daemon cannot serve before the input can hold the
+    // call, as `add` does.
+    management::supports_kind(client, area, ActionKind::Run)?;
+    let document = match path {
+        Some(path) => {
+            let text = read_text(path)?;
+            Some(
+                serde_json::from_str::<Value>(&text)
+                    .map_err(|error| format!("{}: {error}", path.display()))?,
+            )
+        }
+        None => None,
+    };
+    let request = ManagementRequest {
+        area,
+        action: ManagementAction::Run {
+            id,
+            document,
+            // A file or stdin document is the caller's own: it was never
+            // opened in the panel's editor, so it has no seed.
+            seed: None,
+        },
+    };
+    run(client, options, &request).await
+}
+
 /// The document a command reads, from a file or from stdin for `-`.
 fn read_text(path: &Path) -> Result<String> {
     if path == Path::new("-") {
@@ -242,6 +280,36 @@ async fn read(
                 .ok_or_else(|| format!("No scheduled job has that id: {id}"))?;
             Ok((job.revision.to_string(), job.document()))
         }
+        Area::Workflow => {
+            let Some(id) = id else {
+                return Err("workflow edit and set take a definition name."
+                    .to_owned()
+                    .into());
+            };
+            let listing = workflow::read(client, &options.cwd).await?;
+            let entry = listing
+                .find(id)
+                .ok_or_else(|| format!("No workflow definition is named {id}."))?;
+            match entry.source.as_str() {
+                "project" => {
+                    return Err(format!(
+                        "A project definition is a file; edit {}.",
+                        workflow::project_path(&options.cwd, &entry.name).display()
+                    )
+                    .into());
+                }
+                "user" => {}
+                _ => {
+                    return Err("A package definition is installed by its package."
+                        .to_owned()
+                        .into());
+                }
+            }
+            let (revision, document) = listing
+                .document(entry)
+                .ok_or("The user workflow source has no such definition.")?;
+            Ok((revision.to_owned(), document.clone()))
+        }
         Area::Permissions => Err("A command rule has no document to edit.".to_owned().into()),
     }
 }
@@ -277,7 +345,7 @@ async fn write(client: &mut Client, options: &Options, draft: &Draft) -> Result<
             document,
         },
     };
-    match management::apply(client, &request, &options.cwd).await {
+    match management::apply(client, &request, &options.cwd, None).await {
         ManagementResult::Refused(error) => {
             Err(format!("{error} Your text is kept in {}.", draft.kept).into())
         }
@@ -320,7 +388,7 @@ async fn create(
         area,
         action: ManagementAction::Add { document },
     };
-    match management::apply(client, &request, &options.cwd).await {
+    match management::apply(client, &request, &options.cwd, None).await {
         ManagementResult::View { note, .. } => {
             // The note names the entry the owner saved: made safe, as every
             // line the Scheduler prints is.
@@ -474,6 +542,52 @@ async fn run_scheduled(client: &mut Client, request: &ManagementRequest) -> Resu
     Ok(0)
 }
 
+/// `workflow ...`: the definitions as its owner reports them, and the kinds
+/// this twin performs.
+async fn run_workflow(
+    client: &mut Client,
+    options: &Options,
+    request: &ManagementRequest,
+) -> Result<i32> {
+    management::supported(client, request)?;
+    match workflow::apply(client, &request.action, &options.cwd, None).await {
+        Ok(workflow::Answer::Detail(detail)) => {
+            // The owner names definitions and states reasons: what it wrote
+            // is made safe before it reaches the terminal.
+            let lines = detail.lines.iter().map(|line| safe(line)).collect();
+            print_report(lines, Vec::new())
+        }
+        Ok(workflow::Answer::Definitions { listing, note }) => match (&request.action, note) {
+            // The owner's own answer: the definition a create made, or a
+            // run's start.
+            (_, Some(note)) => print_report(vec![safe_line(&note)], Vec::new()),
+            // A read reports what it read; an action reports its line.
+            (ManagementAction::List | ManagementAction::Reload, None) => {
+                print_report(workflow_rows(&listing), workflow_notes(&listing))
+            }
+            (_, None) => {
+                // The definitions the adapter just re-read name the entry.
+                let name = management::named_id(&request.action)
+                    .and_then(|id| listing.find(id))
+                    .map(|entry| entry.name.as_str());
+                let line = management::applied_line(&request.action, name);
+                print_report(vec![safe_line(&line)], Vec::new())
+            }
+        },
+        // The action was applied; only the report after it failed. The
+        // action's own line stands, made safe, and the read error goes to
+        // stderr with the exit still 0.
+        Err(workflow::Failure::ReadFailed { note, error }) => {
+            // The read that would name the entry failed; what the user typed
+            // names it, except where the owner's own answer stands.
+            let line = note.unwrap_or_else(|| management::applied_line(&request.action, None));
+            print_report(vec![safe_line(&line)], vec![error])
+        }
+        Err(error) => return Err(error.to_string().into()),
+    }
+    Ok(0)
+}
+
 /// `mcp ...`: the entries the catalog reports, or one entry's detail and
 /// what the owner answered.
 async fn run_mcp(
@@ -556,6 +670,29 @@ async fn run_mcp(
     Ok(0)
 }
 
+/// One definition: its name, source, state and description.
+fn workflow_rows(listing: &workflow::Listing) -> Vec<String> {
+    listing
+        .entries
+        .iter()
+        .map(|entry| {
+            let state = match (entry.enabled, entry.valid) {
+                (true, true) => "enabled",
+                (false, true) => "disabled",
+                (true, false) => "invalid",
+                (false, false) => "disabled, invalid",
+            };
+            format!(
+                "{}\t{}\t{}\t{}",
+                safe(&entry.name),
+                safe(&entry.source),
+                state,
+                safe(entry.description.as_deref().unwrap_or("—")),
+            )
+        })
+        .collect()
+}
+
 /// `permissions ...`: the user's command rules, printed as its owner reports
 /// them.
 async fn run_permissions(client: &mut Client, request: &ManagementRequest) -> Result<i32> {
@@ -590,6 +727,25 @@ fn rule_rows(rules: &permission::Rules) -> Vec<String> {
             )
         })
         .collect()
+}
+
+fn workflow_notes(listing: &workflow::Listing) -> Vec<String> {
+    let mut notes = if listing.entries.is_empty() {
+        vec!["No workflow definition is configured.".to_owned()]
+    } else {
+        vec!["Columns: name, source, state, description.".to_owned()]
+    };
+    if listing.truncated {
+        notes.push(
+            t("The list reached its size limit; later definitions are not shown.").to_owned(),
+        );
+    }
+    for entry in listing.entries.iter().filter(|entry| !entry.valid) {
+        for issue in &entry.issues {
+            notes.push(format!("{}: {}", safe(&entry.name), safe(issue)));
+        }
+    }
+    notes
 }
 
 fn rule_notes(rules: &permission::Rules) -> Vec<String> {

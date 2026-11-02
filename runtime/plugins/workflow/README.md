@@ -34,9 +34,12 @@ An unavailable dependency leaves its optional row Pending under existing assembl
 
 ## Definitions and execution
 
-`workflow.save` accepts `{source:"user"|"project", cwd?, document}`. User definitions are saved
-with owner CAS in the `workflow` Settings document; project definitions use
-`.dimcode/workflows/<name>.yaml` through `workflowFiles`. Project definitions start disabled.
+`workflow.save` takes one of two strict branches. `{source:"user", document, expectedRevision?}`
+saves the definition into the `workflow` Settings document with owner CAS: at `expectedRevision`
+when the caller gives one, and at the revision the owner reads otherwise; a user save that names
+`cwd` is refused. `{source:"project", cwd, document}` writes
+`.dimcode/workflows/<name>.yaml` through `workflowFiles` and refuses `expectedRevision`, since the
+file belongs to the workspace `cwd` names. Project definitions start disabled.
 Only the user's local `settings.update` can change the protected
 `projectEnabled[canonicalCwd][name]` field. An enabled definition takes effect at the next start;
 a running workflow keeps its accepted definition and parameter snapshot.

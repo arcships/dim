@@ -860,6 +860,10 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
         Action::ManagementAdd { area, path } => {
             management_command::add(&mut client, &options, *area, path).await
         }
+        Action::ManagementStart { area, id, path } => {
+            management_command::start(&mut client, &options, *area, id.clone(), path.as_deref())
+                .await
+        }
         Action::Recording { enabled } => recording::run(&mut client, &options, *enabled).await,
         Action::Chat | Action::Tui | Action::Exec => {
             session::chat(&mut client, &options, images.blocks, images.notes).await

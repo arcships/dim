@@ -304,6 +304,7 @@ pub enum Area {
     Hooks,
     Mcp,
     Scheduled,
+    Workflow,
     Permissions,
 }
 
@@ -315,6 +316,7 @@ impl Area {
             Self::Hooks => "hooks",
             Self::Mcp => "mcp",
             Self::Scheduled => "scheduled",
+            Self::Workflow => "workflow",
             Self::Permissions => "permissions",
         }
     }
@@ -322,7 +324,7 @@ impl Area {
     /// Whether the area's documents are per entry, so `edit` and `set` name
     /// one, rather than one document for the area.
     pub fn per_entry(self) -> bool {
-        matches!(self, Self::Scheduled | Self::Mcp)
+        matches!(self, Self::Scheduled | Self::Mcp | Self::Workflow)
     }
 }
 
@@ -348,8 +350,18 @@ pub enum ManagementAction {
     Add { document: serde_json::Value },
     /// Remove one entry.
     Remove { id: String },
-    /// Perform the area's named operation on one entry.
-    Run { id: String },
+    /// Perform the area's named operation on one entry, with the input
+    /// document the editor left when the entry carries one.
+    Run {
+        id: String,
+        /// The parameters the operation takes; `None` sends it at once.
+        document: Option<serde_json::Value>,
+        /// The input document the editor was opened with, `None` when the
+        /// document came from elsewhere. The shared layer carries it and
+        /// never reads it: an adapter that knows what it means applies its
+        /// own rule.
+        seed: Option<serde_json::Value>,
+    },
     /// Read one entry's detail, in place of the list.
     Inspect { id: String },
 }
@@ -409,6 +421,9 @@ pub struct ManagementEntry {
     /// The entry's own document, for an area whose documents are per entry
     /// and whose entries offer edit.
     pub document: Option<EntryDocument>,
+    /// The operation's input document when the run kind takes one: the panel
+    /// opens the editor on it before the run. `None` sends the run at once.
+    pub run: Option<serde_json::Value>,
 }
 
 /// One entry's document and the revision a write of it takes.

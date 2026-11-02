@@ -29,6 +29,9 @@ pub enum WriteTarget {
     Area { revision: String },
     /// One entry's document, at the revision it was read at.
     Entry { id: String, revision: String },
+    /// The input document of one entry's operation. A run always sends it,
+    /// so it has no revision and is never unchanged.
+    Run { id: String },
 }
 
 impl WriteTarget {
@@ -39,6 +42,7 @@ impl WriteTarget {
         match (self, other) {
             (Self::Create, Self::Create) | (Self::Area { .. }, Self::Area { .. }) => true,
             (Self::Entry { id, .. }, Self::Entry { id: other, .. }) => id == other,
+            (Self::Run { id }, Self::Run { id: other }) => id == other,
             _ => false,
         }
     }
@@ -55,6 +59,7 @@ impl WriteTarget {
                     id: Some(written), ..
                 },
             ) => id == written,
+            (Self::Run { id }, ManagementAction::Run { id: written, .. }) => id == written,
             _ => false,
         }
     }
@@ -172,6 +177,9 @@ pub enum Effect {
         area: crate::model::session::Area,
         target: WriteTarget,
         text: String,
+        /// The document the editor opens with, when the panel has one to
+        /// measure the user's edits against: a run's parameters.
+        seed: Option<serde_json::Value>,
     },
     /// Change a provider (`/connect`).
     Provider(crate::model::session::ProviderAction),

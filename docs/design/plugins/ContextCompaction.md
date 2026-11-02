@@ -237,8 +237,8 @@ failures before any model work.
 | Event | Writer | Consumer | Data |
 | --- | --- | --- | --- |
 | `context/compact` (new) | Loop, through its public write operation `AgentLoop::compact` | Loop, in sequence order | `{}` |
-| `context/compaction-start` (new) | ContextPolicy in `compact_step`, for its caller (Loop step or ContextPreparation) | Loop and ContextPreparation (rebuild), clients | `{turn_id?, request_id?, command?, through, trigger: "manual" \| "threshold" \| "provider_output_budget_exhausted", strategy}` |
-| `context/compaction` (changed) | ContextPolicy, for its caller; on reload, the settling owner | Loop (manual step terminal), ContextPolicy (retry reuse), projection, ContextMethods, clients | `{turn_id?, request_id?, command?, start?, through, outcome}` |
+| `context/compaction-start` (new) | ContextPolicy in `compact_step`, for its caller (Loop step or ContextPreparation) | Loop (rebuild), ContextPreparation (steer deferral and rebuild), clients | `{turn_id?, request_id?, command?, through, trigger: "manual" \| "threshold" \| "provider_output_budget_exhausted", strategy}` |
+| `context/compaction` (changed) | ContextPolicy, for its caller; on reload, the settling owner | Loop (manual step terminal), ContextPreparation (steer deferral), ContextPolicy (retry reuse), projection, ContextMethods, clients | `{turn_id?, request_id?, command?, start?, through, outcome}` |
 
 `outcome` is one of:
 
@@ -276,8 +276,8 @@ failures before any model work.
 - At most one start per branch is unmatched at any time: the Loop never runs a manual step while
   a request is in flight, and ContextPreparation runs one preparation at a time.
 - On reload, an unmatched start means a compaction was in flight, and its owner writes the
-  `cancelled` result (§5.8). Automatic compaction now also writes a `cancelled` result when it is
-  cancelled after its start (interrupt or steer), instead of writing no fact.
+  `cancelled` result (§5.8). Automatic compaction also writes a `cancelled` result when it is
+  cancelled after its start by an interrupt. Steer waits for the result (§5.3).
 
 **The cut: `retain_from`.** A completed result names the first Timeline event kept verbatim.
 Cuts fall only on event boundaries.
@@ -766,6 +766,23 @@ Callers:
   builds one: the latest `context/configured` settings and system with the projected messages,
   without binding tools.
 
+**Steer during compaction.** From `context/compaction-start` through its terminal
+`context/compaction`, a steer never cancels or restarts the compaction, regardless of its
+producer. Inputs are accepted and applied in their normal order, but the Loop consumes them
+only after the result commits. The source `through` stays fixed. An automatic preparation
+whose request was replaced finishes the compaction before ending that request `Cancelled`
+with `replaced by steer`; the Loop then consumes the pending inputs and prepares a new
+request from the resulting context. Manual steps follow §5.4. Explicit interrupts, closing
+and reload keep their cancellation behavior (§5.8).
+
+```text
+compaction running -- steer arrives --> input pending
+        |
+compaction terminal committed
+        |
+consume pending inputs --> prepare next request
+```
+
 **Budget recovery.** `validate`, called by ModelProvider before every model call, uses the
 trigger's estimate of the request (the provider baseline plus the delta when one exists, else the
 full local count) and fails with budget facts when it exceeds `B`; the Loop then retries the request
@@ -846,8 +863,8 @@ Without a provider baseline the full local estimate and its error remain (#128).
 - **No advance.** While a step runs, `next_model` and `try_start` wait for its fact. Inputs queue
   as usual and are not consumed by the step.
 
-**Steer.** A driving input applied during a step does not cancel it. It joins the next request,
-or starts a turn after the step. Interrupt, failure, reload and restart are in §5.8.
+**Steer.** Inputs wait as in §5.3, joining the next request or starting a turn after the step.
+Interrupt, failure, reload and restart are in §5.8.
 
 ### 5.5 What the Loop gains
 
@@ -1326,6 +1343,10 @@ window, and the same App Server on a `--models` file whose entry declares a smal
      anchor is not a completed compaction, or whose `retain_from` does not match its state, and
      the context falls back to fact replay with the same result.
 6. **Interrupt, reload and restart.**
+   - During threshold, recovery or manual compaction, user steers and child-branch final
+     reports leave the same strategy call running. Its result precedes any consumption of
+     those inputs and any replacement request. The next request carries the compacted
+     history and each pending input once, in order, including when several steers arrive.
    - `session.stop` during a step writes `cancelled` (or `completed` if the strategy had
      returned).
    - A plugin reload during a step writes `cancelled: capability reloading` without a second

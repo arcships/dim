@@ -1594,7 +1594,15 @@ impl Worker {
                     .as_deref()
                     .map(std::path::PathBuf::from)
                     .unwrap_or_else(|| self.options.cwd.clone());
-                let result = crate::management::apply(&mut self.client, &request, &cwd).await;
+                // A run a panel starts reports to the line the transcript
+                // shows, the line a submit goes to. Home has no Session yet,
+                // so it has no line to report to.
+                let line = (!self.session_id.is_empty()).then(|| crate::management::SessionLine {
+                    session_id: self.session_id.clone(),
+                    branch_id: self.focus.clone(),
+                });
+                let result =
+                    crate::management::apply(&mut self.client, &request, &cwd, line.as_ref()).await;
                 self.send(Update::Management(ManagementReply { request, result }));
             }
             Command::SetLocale(language) => crate::management::use_language(language),

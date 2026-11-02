@@ -345,7 +345,7 @@ policy 文本是出厂配置成员：`code.config.report_guidance` 替换报告�
 | --- | --- | --- |
 | `workflow`（`list`、`start`、`status`、`stop`） | 注册到 `toolRegistry` 的工具（Session），风险类别同 Collaboration 的 `agent` 工具 | 模型运行工作流 |
 | `workflow.list/save/start/status/stop` | `managementMethods`（进程，命名空间 `workflow`） | 运维方管理定义和运行 |
-| CLI 入口 | 方法绑定后的独立客户端工作 | 本文不声称已实现命令 |
+| CLI 入口 | [管理界面](../cli-commands.md#workflow-领域) | 客户端经 A.3 列出、启用、保存并启动定义；它不新增方法 |
 | `sessions` | 依赖 | 阶段 Session：launch、input、history、lookup、stop、withdraw、delete |
 | `dim.workflow/v1` | 此处定义 | 定义格式（附录 A） |
 
@@ -462,10 +462,12 @@ start 保存 report_to = {session_id,branch_id} 和调用方 cwd；首阶段准�
 | 方法 | 参数 | 结果 | `mutating` |
 | --- | --- | --- | --- |
 | `workflow.list` | `cwd` | `{definitions, truncated}`，含来源、启用状态、有界字段预览和问题；与工具 list 相同的载荷上限 | 否 |
-| `workflow.save` | `source: user\|project`、`cwd?`、`document` | A.1 语义检查通过后返回 `{name}`；`user`：Workflow 以类型化写入把条目写进 `workflow` 文档（按其 revision 做 CAS）；`project`：经 FileStorage 写入项目文件（文件权威）；保存不会启用项目定义 | 是 |
+| `workflow.save` | `source: user\|project`；`user`：`expectedRevision?`、`document`；`project`：`cwd`、`document` | A.1 语义检查通过后返回 `{name}`；`user`：Workflow 以类型化写入把条目写进 `workflow` 文档，调用方给出 `expectedRevision` 时按它做 CAS，否则按刚读到的 revision；`project`：经 FileStorage 写入项目文件（文件权威），无 revision；保存不会启用项目定义 | 是 |
 | `workflow.start` | name、source?、cwd、resource_node?（P3）、params、report_to? | run_id；首 launch 记录返回 policy（A17），管理启动使用现有宿主上限/只读默认 | 是 |
 | `workflow.status` | `run_id?` | 一次运行或最近的运行 | 否 |
 | `workflow.stop` | `run_id` | 运行的最终状态 | 是 |
+
+`user` 保存的 CAS 单位是用户 `workflow` 文档，也是 owner 持有的唯一 revision：自调用方读取后，若另一个定义或某项目定义的启用状态变了，保存同样返回 `conflict`。此时不写入任何内容；调用方重新读取，再用那时持有的 revision 写。`project` 保存不带 revision，因为它替换文件；携带 revision 的请求返回 `invalid_params`。
 
 使用已交付绑定和既有准入：list/status 为 report，save/start/stop 为 drain，已接受变更在卸载前结算。Pending/重载 owner 返回 service_reloading，Failed/Unresolved 返回 service_unavailable，禁用/不存在返回 unknown_method，TS 管理投影已交付；Workflow 在自己的进程行实现这些方法。
 

@@ -19,11 +19,18 @@ export const toolRequest = z.discriminatedUnion('action', [
 ])
 export const management = {
   list: z.strictObject({ cwd: id }),
-  save: z.strictObject({ source: z.enum(['user', 'project']), cwd: id.optional(), document: z.unknown() }),
+  // A user save writes the one document Settings holds, so it names the
+  // revision its caller read as its CAS when the caller has one; a project
+  // save replaces one file and takes its workspace instead.
+  save: z.discriminatedUnion('source', [
+    z.strictObject({ source: z.literal('user'), expectedRevision: z.string().min(1).optional(), document: z.unknown() }),
+    z.strictObject({ source: z.literal('project'), cwd: id, document: z.unknown() }),
+  ]),
   start: z.strictObject({ ...start, cwd: id, report_to: z.strictObject({ session_id: id, branch_id: id }).optional() }),
   status: z.strictObject({ run_id: id.optional() }),
   stop: z.strictObject({ run_id: id }),
 }
+export type SaveRequest = z.infer<typeof management.save>
 export type RunRequest = z.infer<typeof toolRequest> & { caller: Caller }
 export type RunReply = { content: string; structured?: JsonObject } | { code: string; message: string }
 export interface WorkflowRuns { call(request: RunRequest): Promise<RunReply> }

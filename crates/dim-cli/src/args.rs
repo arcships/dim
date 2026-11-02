@@ -71,6 +71,16 @@ Commands:\n\
   permissions add PATH             Add one rule from PATH, or from stdin for -\n\
   permissions remove RULE          Remove a rule, given as one quoted\n\
                                    'DECISION MATCH COMMAND'\n\
+  workflow list                    List workflow definitions, their sources\n\
+                                   and states\n\
+  workflow enable|disable NAME     Turn a project definition on or off\n\
+  workflow edit NAME               Edit a user definition in the editor\n\
+  workflow set NAME PATH           Write a user definition from PATH,\n\
+                                   or from stdin for -\n\
+  workflow add PATH                Create a definition from PATH,\n\
+                                   or from stdin for -\n\
+  workflow start NAME [PATH]       Start a definition with parameters from PATH\n\
+  workflow history NAME            List a definition's recent runs\n\
   recording [on|off]               Record model requests to the home's\n\
                                    model-log/recordings.jsonl; prompts, code\n\
                                    and tool output are written there\n\
@@ -225,6 +235,13 @@ pub enum Action {
     ManagementAdd {
         area: crate::model::session::Area,
         path: std::path::PathBuf,
+    },
+    /// `<area> start ID [PATH]`: run one entry, with its input from a file or
+    /// from stdin for `-`.
+    ManagementStart {
+        area: crate::model::session::Area,
+        id: String,
+        path: Option<std::path::PathBuf>,
     },
     /// `recording [on|off]`: the daemon's model request record.
     Recording {
@@ -701,6 +718,8 @@ impl Options {
                             area: Area::Mcp,
                             action: ManagementAction::Run {
                                 id: value(&mut args)?,
+                                document: None,
+                                seed: None,
                             },
                         }),
                         "inspect" => Action::Management(ManagementRequest {
@@ -800,7 +819,11 @@ impl Options {
                             let id = value(&mut args)?;
                             let action = match command {
                                 "remove" => ManagementAction::Remove { id },
-                                "run" => ManagementAction::Run { id },
+                                "run" => ManagementAction::Run {
+                                    id,
+                                    document: None,
+                                    seed: None,
+                                },
                                 _ => ManagementAction::Inspect { id },
                             };
                             Action::Management(ManagementRequest {
@@ -810,6 +833,53 @@ impl Options {
                         }
                         _ => {
                             return Err("Use scheduled list, enable ID, disable ID, edit ID, set ID PATH, add PATH, remove ID, run ID or history ID".into());
+                        }
+                    };
+                }
+                "workflow" if matches!(options.action, Action::Chat) => {
+                    use crate::model::session::{Area, ManagementAction, ManagementRequest};
+                    let verb = value(&mut args)?;
+                    options.action = match verb.as_str() {
+                        "list" => Action::Management(ManagementRequest {
+                            area: Area::Workflow,
+                            action: ManagementAction::List,
+                        }),
+                        command @ ("enable" | "disable") => Action::Management(ManagementRequest {
+                            area: Area::Workflow,
+                            action: ManagementAction::Toggle {
+                                id: value(&mut args)?,
+                                enabled: command == "enable",
+                            },
+                        }),
+                        "edit" => Action::ManagementEdit {
+                            area: Area::Workflow,
+                            id: Some(value(&mut args)?),
+                        },
+                        "set" => Action::ManagementSet {
+                            area: Area::Workflow,
+                            id: Some(value(&mut args)?),
+                            path: value(&mut args)?.into(),
+                        },
+                        "add" => Action::ManagementAdd {
+                            area: Area::Workflow,
+                            path: value(&mut args)?.into(),
+                        },
+                        "start" => Action::ManagementStart {
+                            area: Area::Workflow,
+                            id: value(&mut args)?,
+                            path: args.next().map(Into::into),
+                        },
+                        "history" => Action::Management(ManagementRequest {
+                            area: Area::Workflow,
+                            action: ManagementAction::Inspect {
+                                id: value(&mut args)?,
+                            },
+                        }),
+                        _ => {
+                            return Err(
+                                "Use workflow list, enable NAME, disable NAME, edit NAME, set NAME PATH, add PATH, start NAME [PATH] or history NAME"
+                                    .into(),
+                            );
                         }
                     };
                 }

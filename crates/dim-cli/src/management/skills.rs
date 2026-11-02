@@ -125,6 +125,7 @@ pub(super) fn view(catalog: &Catalog, actions: &[ActionKind]) -> ManagementView 
                 states,
                 actions: super::entry_kinds(actions),
                 document: None,
+                run: None,
             },
         );
     }

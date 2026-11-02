@@ -8,6 +8,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "skills" => "Skills",
         "hooks" => "hooks",
         "scheduled jobs" => "tâches planifiées",
+        "workflow definitions" => "définitions de flux de travail",
         "command rules" => "Règles de commande",
         "enabled" => "activé",
         "shadowed by {name}" => "masqué par {name}",
@@ -77,6 +78,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The Scheduler has no area document." => "Le planificateur n'a pas de document de domaine.",
         "No scheduled job has that id." => "Aucune tâche planifiée n'a cet id.",
+        "A scheduled job's run takes no input document." => {
+            "L'exécution d'une tâche planifiée ne prend aucun document d'entrée."
+        }
+        "An MCP server's test takes no input document." => {
+            "Le test d'un serveur MCP ne prend pas de document d'entrée."
+        }
         "This daemon cannot manage {area}." => "Impossible de gérer {area}.",
         "This daemon lists {area} but cannot toggle them." => {
             "Le daemon liste {area}, mais ne peut pas les basculer."
@@ -107,6 +114,49 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "This workspace's hook settings changed since they were read; nothing was written." => {
             "Les réglages des hooks de cet espace de travail ont changé depuis leur lecture ; rien n'a été écrit."
+        }
+        "Workflow" => "Flux de travail",
+        "Saved {name}. It stays disabled until you enable it." => {
+            "{name} enregistré. Il reste désactivé jusqu'à ce que vous l'activiez."
+        }
+        "The definitions changed since they were read; nothing was written." => {
+            "Les définitions ont changé depuis leur lecture ; rien n'a été écrit."
+        }
+        "A definition's name is its key; add it to save it under another name." => {
+            "Le nom d'une définition est sa clé ; ajoutez-la pour l'enregistrer sous un autre nom."
+        }
+        "No project definition is named {name}." => {
+            "Aucune définition de projet ne s'appelle {name}."
+        }
+        "No workflow definition is named {name}." => {
+            "Aucune définition de flux de travail ne s'appelle {name}."
+        }
+        "Saved in the user workflow source; always enabled." => {
+            "Enregistré dans la source de flux de travail de l'utilisateur ; toujours activé."
+        }
+        "Starts only after you enable it." => "Ne démarre qu'après que vous l'avez activé.",
+        "Defined by package {package}." => "Défini par le paquet {package}.",
+        "{name} — {description} (required)" => "{name} — {description} (requis)",
+        "{name} — {description}" => "{name} — {description}",
+        "{name} — required" => "{name} — requis",
+        "{name} — default: {default}" => "{name} — par défaut : {default}",
+        "and {count} more" => "et {count} de plus",
+        "Recent runs" => "Exécutions récentes",
+        "A workflow definition is saved as an object with a source and a document." => {
+            "Une définition de flux de travail est enregistrée comme un objet avec une source et un document."
+        }
+        "A definition is saved to the user source or the project source." => {
+            "Une définition est enregistrée dans la source utilisateur ou la source du projet."
+        }
+        "Started {name}: {run_id}." => "{name} démarré : {run_id}.",
+        "Parameters are a JSON object of strings." => {
+            "Les paramètres sont un objet JSON de chaînes."
+        }
+        "The list reached its size limit; later definitions are not shown." => {
+            "La liste a atteint sa limite de taille ; les définitions suivantes ne sont pas affichées."
+        }
+        "No workflow definition named {name} is in the list, which reached its size limit." => {
+            "Aucune définition de workflow nommée {name} n'est dans la liste, qui a atteint sa limite de taille."
         }
         "MCP" => "MCP",
         "MCP servers" => "serveurs MCP",

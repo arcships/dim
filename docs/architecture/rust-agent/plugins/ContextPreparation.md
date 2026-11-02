@@ -22,8 +22,8 @@ atomic ConfigurationPublisher used by Prompt.
 ## Events and lifetime
 
 Consumes `context/prepare`, `stop/interrupt`, `step/model-start`, `input/applied`,
-turn start/end. Produces `model/call` on success or `step/model-output-end` on
-failure, with `context/compaction-start` and one `context/compaction` around
+compaction start/result and turn start/end. Produces `model/call` on success or
+`step/model-output-end` on failure, with `context/compaction-start` and one `context/compaction` around
 each strategy call. `usage` reads the head's budget without writing. Its publisher commits prompt changes, adopted inputs and
 `context/configured` atomically; it composes the System at every adoption that
 publishes a configuration. A change that renders the System composes the new
@@ -35,7 +35,10 @@ with the settings unchanged, and nothing while the branch is closing: the phase
 is read before the context and checked again in the commit's register step. A
 configuration written before the source was recorded keeps its adopted System
 ([Prompt §6.3](../../../design/plugins/Prompt.md#63-contextpreparation-the-entries-and-the-published-system)). Preparation is single-flight, tracked,
-cancelled by stop/steer and joined during cleanup; cleanup aggregates failures.
+cancelled by stop/steer and joined during cleanup; a steer during automatic compaction waits
+for its result before replacing the request
+([ContextCompaction §5.3](../../../design/plugins/ContextCompaction.md#53-one-compaction-path-contextpolicy)).
+Cleanup aggregates failures.
 Replay settles unmatched handoffs and automatic compaction starts without
 rerunning host work. The mock profile
 has no context resolver. Completed compaction facts remain authoritative across

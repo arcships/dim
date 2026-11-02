@@ -160,6 +160,7 @@ pub(super) fn view(rules: &Rules, actions: &[ActionKind]) -> ManagementView {
                 states: Vec::new(),
                 actions: super::entry_kinds(actions),
                 document: None,
+                run: None,
             },
         );
     }

@@ -266,6 +266,25 @@ test('source validation, project enablement and diagnostics run through manageme
   assert.equal(noninteractive.isError, true)
 })
 
+test('a user save writes at the revision its caller read', async t => {
+  const f = await fixture(t)
+  const document = definition('review', [{ stage: { id: 'one', prompt: 'one' } }])
+  const saved = await f.method('save', { source: 'user', expectedRevision: '0', document })
+  assert.deepEqual(saved, { kind: 'value', value: { name: 'review' } })
+  assert.equal(f.state.revision, '1')
+  const stale = await f.method('save', { source: 'user', expectedRevision: '0',
+    document: { ...document, description: 'changed' } })
+  assert.equal(stale.code, 'conflict')
+  assert.equal(f.state.revision, '1')
+  assert.equal(f.state.document.definitions.review.description, 'review')
+  const project = await f.method('save', { source: 'project', cwd: '/workspace', expectedRevision: '1', document })
+  assert.equal(project.code, 'invalid_params')
+  assert.equal(f.state.files.size, 0)
+  const unversioned = await f.method('save', { source: 'user', document: { ...document, description: 'again' } })
+  assert.deepEqual(unversioned, { kind: 'value', value: { name: 'review' } })
+  assert.equal(f.state.document.definitions.review.description, 'again')
+})
+
 test('whole-step prompt overflow admits no valid sibling and leaves first policy absent', async t => {
   const f = await fixture(t)
   await f.method('save', { source: 'user', document: definition('large', [{ parallel: [
