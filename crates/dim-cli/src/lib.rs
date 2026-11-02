@@ -854,9 +854,18 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
 
 /// One `runtime.list` entry as a tab-separated line.
 fn runtime_line(status: &serde_json::Value) -> String {
-    ["name", "source", "version", "status", "reason"]
+    let auto = status["auto"]
+        .as_bool()
+        .map(|on| if on { "on" } else { "off" });
+    ["name", "source"]
         .iter()
         .filter_map(|field| status[field].as_str())
+        .chain(auto)
+        .chain(
+            ["version", "status", "reason"]
+                .iter()
+                .filter_map(|field| status[field].as_str()),
+        )
         .map(|value| crate::sanitize::safe(value).replace(['\n', '\t'], " "))
         .collect::<Vec<_>>()
         .join("\t")

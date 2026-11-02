@@ -57,6 +57,7 @@ pub const STRINGS: &[&str] = &[
     "1 plugin waits for {runtime}: {names}",
     "{count} plugins wait for {runtime}: {names}",
     "show, install or configure the plugin runtimes",
+    "This daemon does not serve plugin runtimes ({version})",
     "Usage: /runtime [install NAME | source NAME download|system | auto NAME on|off]",
 ];
 

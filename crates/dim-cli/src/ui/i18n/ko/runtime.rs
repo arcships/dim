@@ -1,5 +1,8 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "This daemon does not serve plugin runtimes ({version})" => {
+            "이 데몬은 플러그인 런타임을 제공하지 않습니다({version})"
+        }
         "Plugin runtimes" => "플러그인 런타임",
         "Enter install or apply · s source · a auto · r retry · Esc close" => {
             "Enter 설치 또는 적용 · s 소스 · a 자동 · r 재시도 · Esc 닫기"

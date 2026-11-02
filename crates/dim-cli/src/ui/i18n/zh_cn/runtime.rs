@@ -1,5 +1,8 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "This daemon does not serve plugin runtimes ({version})" => {
+            "该守护进程不提供插件运行时（{version}）"
+        }
         "Plugin runtimes" => "插件运行时",
         "Enter install or apply · s source · a auto · r retry · Esc close" => {
             "Enter 安装或应用 · s 来源 · a 自动 · r 重试 · Esc 关闭"

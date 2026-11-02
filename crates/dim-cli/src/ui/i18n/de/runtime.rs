@@ -1,5 +1,8 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "This daemon does not serve plugin runtimes ({version})" => {
+            "Dieser Daemon bietet keine Plugin-Runtimes an ({version})"
+        }
         "Plugin runtimes" => "Plugin-Laufzeiten",
         "Enter install or apply · s source · a auto · r retry · Esc close" => {
             "Enter installieren oder anwenden · s Quelle · a automatisch · r erneut · Esc schließen"

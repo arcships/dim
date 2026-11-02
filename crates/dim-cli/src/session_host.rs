@@ -2380,9 +2380,10 @@ impl Worker {
     /// The `/runtime` rows: what `runtime.list` reports.
     async fn runtimes(&mut self) -> Result<Vec<RuntimeItem>, String> {
         if !self.client.supports(&["runtime.list"]) {
-            return Err(format!(
-                "This daemon does not serve plugin runtimes ({})",
-                self.client.server_version()
+            let version = self.client.server_version();
+            return Err(crate::ui::i18n::tf(
+                "This daemon does not serve plugin runtimes ({version})",
+                &[("version", version)],
             ));
         }
         self.client
@@ -4026,10 +4027,9 @@ fn runtime_calls(action: &RuntimeAction) -> Vec<(&'static str, serde_json::Value
             if let Some(auto) = auto {
                 configure["auto"] = json!(auto);
             }
-            vec![
-                ("runtime.configure", configure),
-                ("runtime.install", json!({"name": name})),
-            ]
+            // `runtime.configure` applies what it wrote; installing again
+            // would only re-read the same file.
+            vec![("runtime.configure", configure)]
         }
     }
 }
@@ -4061,7 +4061,7 @@ mod tests {
     /// A `/runtime` change writes the configuration it carries and then
     /// applies it; an apply alone calls only `runtime.install`.
     #[test]
-    fn runtime_changes_call_configure_then_install() {
+    fn a_runtime_change_asks_the_owner_once() {
         use crate::model::session::RuntimeSource;
         let cases = [
             (
@@ -4074,13 +4074,10 @@ mod tests {
                     source: Some(RuntimeSource::System),
                     auto: None,
                 },
-                vec![
-                    (
-                        "runtime.configure",
-                        json!({"name": "node", "source": "system"}),
-                    ),
-                    ("runtime.install", json!({"name": "node"})),
-                ],
+                vec![(
+                    "runtime.configure",
+                    json!({"name": "node", "source": "system"}),
+                )],
             ),
             (
                 RuntimeAction::Configure {
@@ -4088,13 +4085,10 @@ mod tests {
                     source: None,
                     auto: Some(false),
                 },
-                vec![
-                    (
-                        "runtime.configure",
-                        json!({"name": "python", "auto": false}),
-                    ),
-                    ("runtime.install", json!({"name": "python"})),
-                ],
+                vec![(
+                    "runtime.configure",
+                    json!({"name": "python", "auto": false}),
+                )],
             ),
         ];
         for (action, calls) in cases {

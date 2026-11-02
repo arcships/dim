@@ -281,6 +281,22 @@ async fn node_runtime_manager_reads_the_configuration_when_it_applies_it() {
         "configuring what is already in effect changes nothing"
     );
 
+    let listed = client.rpc("runtime.list", json!({})).await;
+    assert_eq!(listed["result"][0]["auto"], true, "{listed}");
+    assert_eq!(listed["result"][1]["auto"], false, "{listed}");
+    let untouched = listed["result"][1].clone();
+
+    let configured = client
+        .rpc("runtime.configure", json!({"name": "node", "auto": false}))
+        .await;
+    assert_ok(&configured);
+    assert_eq!(configured["result"]["auto"], false, "{configured}");
+    let listed = client.rpc("runtime.list", json!({})).await;
+    assert_eq!(
+        listed["result"][1], untouched,
+        "applying one runtime leaves the other as it was: {listed}"
+    );
+
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
