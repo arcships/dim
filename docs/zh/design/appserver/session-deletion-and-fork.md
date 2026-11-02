@@ -15,7 +15,7 @@
 - **删除。** Agents 不再加载该 Session；若它已加载，就关闭它，让各能力结算在途工作并释放所持资源。随后 SessionStore 移除该 Session 的输出目录：它自己的 `command-output/<S>/`，以及它每一行路径所在的目录；另一个 Session 仍在该目录下有行时保留（ADR 013 D4）。然后在同一个事务内删除存储为它保存的所有行，包括 Session 文件和输出所有权行。失去最后一个所有者的文件由 S5a 的清扫移除。删除不存在的 Session 也成功。
 - **清理。** 一次删除移除该 Session 拥有的一切（§3.3）。按时间或保留数量清理并预览，由 CLI 组合 `session.summaries` 与 `session.delete` 完成，没有对应的服务端方法。
 - **崩溃安全。** 目录的移除在行事务提交之前落盘，Session 文件按 S5a 的行处理。删除在任何一步中断，都只会留下完整的 Session 或者它的行全部消失，重试或下一次清扫会完成剩余工作（§4）。
-- **分叉。** 分叉在一个事务内把源 Session 的 `main` 截至某个切点的部分按存储的字节复制到一个新 Session，并共享源的 Session 文件。切点必须是 `main` 的静止点，`main` 到那时创建的分支只复制目录、不带事件，因此客户端给分叉发送输入之前，分叉不会自己开始任何工作（§6.5）。分叉的 `main` 以 `branch/resume` 打开：分叉就是源的对话在切点处、以新 id 恢复。分叉紧接在复制的事实之后写下自己的一个事实 `session/forked`，让折叠分支自身历史的所有者知道复制到哪里为止（§6.5）。`SessionConfig` 整体复制，`interactive` 和权限预设随之带过去，不放宽任何权限。
+- **分叉。** 分叉在一个事务内把源 Session 的 `main` 截至某个切点的部分按存储的字节复制到一个新 Session，并共享源的 Session 文件。切点必须是 `main` 的静止点，`main` 到那时创建的分支只复制目录、不带事件，因此客户端给分叉发送输入之前，分叉不会自己开始任何工作（§6.5）。分叉的 `main` 以 `branch/resume` 打开：分叉就是源的对话在切点处、以新 id 恢复。分叉紧接在复制的事实之后写下自己的一个事实 `session/forked`，让折叠分支自身历史的所有者知道复制到哪里为止（§6.5）；v3 连接会投递它，v2 保持自己的事件列表。`SessionConfig` 整体复制，`interactive` 和权限预设随之带过去，不放宽任何权限。
 - **格式。** S5c 不改格式。新事件行是在 v16 下加入的开发阶段扩展，在它之前构建的守护进程读不了；格式 v17 原样保留它（§8）。不加来源列，不写墓碑。
 
 新增一种事件 `session/forked`（数据为空），不改 Timeline、Dispatcher、TimelineTree、Prompt、rutis 或 Session 门面。
@@ -264,7 +264,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 
 Agents 用现有的预备创建来创建 F：预备步骤是 SessionStore 的分叉事务，而不是 `create_owned_session`。随后运行时校验 F 的行并构建 F。失败时回滚 F，包括它的所有者行（[Session 文件 §5.3](session-files.md)）；源不受影响。
 
-TimelineTree 以 `branch/resume` 打开已有事件的根分支（[timeline_tree.rs](../../../../crates/dim-agent-capabilities/src/timeline_tree.rs) 的 `restore`），因此 F 的 `main` 在复制来的事实之后接着写 `branch/resume`。在此之前，分叉事务自己在复制来的事实之后写一条自己的事实：位于 `at + 1` 的 `session/forked`（数据为空），因此 F 不会在没有它的情况下存在。它表示 F 的 `main` 中此前的每条事件都是复制来的。按分支自身历史折叠的所有者（Goal，A11）从它之后开始；其他所有者仍按各自的重载规则把复制来的事实当作 F 的历史。在 `0` 处分叉不复制任何东西，不写 `session/forked`，像新 Session 一样以 `branch/start` 打开。F 就是源的对话在切点处、以新 id 恢复，每个所有者按现有的重载规则处理。切点是静止点（§6.2），子分支不带事件（§6.3），所以没有哪条重载规则会开始工作：**客户端给 F 发送输入之前，F 不运行任何轮次、模型调用或工具。** F 与 S 共用 `cwd`，这一点保证分叉不会重复源的副作用。
+TimelineTree 以 `branch/resume` 打开已有事件的根分支（[timeline_tree.rs](../../../../crates/dim-agent-capabilities/src/timeline_tree.rs) 的 `restore`），因此 F 的 `main` 在复制来的事实之后接着写 `branch/resume`。在此之前，分叉事务自己在复制来的事实之后写一条自己的事实：位于 `at + 1` 的 `session/forked`（数据为空），因此 F 不会在没有它的情况下存在。它表示 F 的 `main` 中此前的每条事件都是复制来的。按分支自身历史折叠的所有者（Goal，A11）从它之后开始，v3 客户端也这样读；其他所有者仍按各自的重载规则把复制来的事实当作 F 的历史，v2 连接则保持自己的事件列表、丢弃这条事实。在 `0` 处分叉不复制任何东西，不写 `session/forked`，像新 Session 一样以 `branch/start` 打开。F 就是源的对话在切点处、以新 id 恢复，每个所有者按现有的重载规则处理。切点是静止点（§6.2），子分支不带事件（§6.3），所以没有哪条重载规则会开始工作：**客户端给 F 发送输入之前，F 不运行任何轮次、模型调用或工具。** F 与 S 共用 `cwd`，这一点保证分叉不会重复源的副作用。
 
 | 切点处 | 在 F 中 |
 | --- | --- |

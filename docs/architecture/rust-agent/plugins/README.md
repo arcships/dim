@@ -12,10 +12,10 @@ The graph uses isolated host facts and one fixture Skill, not the developer's
 home. The host fixture reuses HostPlatformPlugin's declared dependencies and keys.
 SessionStore's `sessionFiles` is a graph-only fixture that stores nothing.
 
-Infrastructure rows `BranchScope`, `SessionScope`, `SessionBroadcast`,
-`SessionBroadcastEnd`, `SessionExtension`, `rutis-loader`, `session` and `branch`, the instances'
-mounters (`SessionParts`, `SessionOptionalParts`, `BranchParts`, `BranchOptionalParts`), the row
-providing `partRegistry`, and the scripted `PrepareModelHost` plugin are excluded. This list may hold only
+Infrastructure plugins `BranchScope`, `SessionScope`, `SessionBroadcast`,
+`SessionBroadcastEnd`, `rutis-loader`, `session` and `branch`, the instances' mounters
+(`SessionParts`, `SessionOptionalParts`, `BranchParts`, `BranchOptionalParts`), the row providing
+`partRegistry`, and the scripted `PrepareModelHost` plugin are excluded. This list may hold only
 runtime assembly and scripted model hosts: a newly assembled capability needs its own page instead of an
 entry here. Excluded rows can still appear as providers or consumers in the generated blocks. A service
 dependency is not necessarily a plugin with the same name.

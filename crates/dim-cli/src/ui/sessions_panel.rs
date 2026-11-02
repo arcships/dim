@@ -18,16 +18,18 @@ pub struct SessionsPanel {
     due: Option<Instant>,
     append: bool,
     next_cursor: Option<String>,
+    show_acp: bool,
 }
 
 impl SessionsPanel {
-    pub fn new() -> Self {
+    pub fn new(show_acp: bool) -> Self {
         Self {
             request_id: None,
             paged: None,
             due: Some(Instant::now()),
             append: false,
             next_cursor: None,
+            show_acp,
             list: ListPanel::new(
                 "Sessions",
                 HINT,
@@ -89,6 +91,7 @@ impl SessionsPanel {
             id,
             query: self.list.query().trim().to_owned(),
             cursor: if reset { None } else { self.next_cursor.take() },
+            show_acp: self.show_acp,
         })
     }
 
@@ -141,7 +144,10 @@ fn session_rows(items: Vec<SessionItem>) -> Vec<Item> {
         .map(|item| {
             let mut row = Item::new(
                 item.id.clone(),
-                label(item),
+                match tag(item.origin.as_deref()) {
+                    Some(tag) => format!("{tag} {}", label(item)),
+                    None => label(item),
+                },
                 relative_time(item.updated_at, now_ms()),
             );
             row.search = search_text(item);
@@ -162,6 +168,17 @@ fn search_text(item: &SessionItem) -> String {
     .flatten()
     .collect::<Vec<_>>()
     .join(" ")
+}
+
+/// The row's class, by the origin the daemon reports. A fixed token, not
+/// prose: the three labels stay one column wide (#557).
+fn tag(origin: Option<&str>) -> Option<&'static str> {
+    match origin {
+        Some("acp") => Some("[ACP ]"),
+        Some("internal") => Some("[Agent]"),
+        Some("client") | Some("unknown") => Some("[Chat]"),
+        _ => None,
+    }
 }
 
 /// The name unless it is the placeholder, else the first words, else the id.
@@ -219,6 +236,7 @@ mod tests {
             cwd: "/w".into(),
             updated_at: 0,
             model: "p/m".into(),
+            origin: Some("client".into()),
         }
     }
 
@@ -236,7 +254,7 @@ mod tests {
     fn moving_up_inside_the_window_moves_the_highlight_not_the_list() {
         use crate::ui::theme::{Appearance, ColorMode, palette::terminal_palette};
         let p = terminal_palette(ColorMode::TrueColor, Appearance::Dark);
-        let mut panel = SessionsPanel::new();
+        let mut panel = SessionsPanel::new(false);
         let items = (0..30)
             .map(|i| item(&format!("s{i}"), Some(&format!("session {i:02}")), None))
             .collect();
@@ -249,7 +267,7 @@ mod tests {
                 .map(|r| {
                     let plain = crate::ui::render::panel::strip_escapes(r);
                     if r.contains("\x1b[30;43m") {
-                        plain.replacen("  session", "› session", 1)
+                        plain.replacen("  [Chat] session", "› [Chat] session", 1)
                     } else {
                         plain
                     }
@@ -263,21 +281,21 @@ mod tests {
         }
         let rows = shown(&panel);
         assert!(
-            rows[0].contains("session 03") && rows[4].contains("› session 07"),
+            rows[0].contains("session 03") && rows[4].contains("› [Chat] session 07"),
             "{rows:?}"
         );
         panel.handle_key(key(KeyCode::Up));
         panel.handle_key(key(KeyCode::Up));
         let rows = shown(&panel);
         assert!(
-            rows[0].contains("session 03") && rows[2].contains("› session 05"),
+            rows[0].contains("session 03") && rows[2].contains("› [Chat] session 05"),
             "{rows:?}"
         );
         for _ in 0..3 {
             panel.handle_key(key(KeyCode::Up));
         }
         let rows = shown(&panel);
-        assert!(rows[0].contains("› session 02"), "{rows:?}");
+        assert!(rows[0].contains("› [Chat] session 02"), "{rows:?}");
     }
 
     #[test]
@@ -290,7 +308,7 @@ mod tests {
 
     #[test]
     fn filter_narrows_and_enter_resumes_the_selected_row() {
-        let mut panel = SessionsPanel::new();
+        let mut panel = SessionsPanel::new(false);
         panel.set_items(Ok(vec![
             item("one", None, Some("alpha topic")),
             item("two", None, Some("beta topic")),

@@ -12,7 +12,7 @@ use std::{
 };
 
 /// The native store format this daemon creates and opens.
-pub const FORMAT: u32 = 29;
+pub const FORMAT: u32 = 30;
 /// The oldest schema the startup transaction upgrades: the first step of
 /// `UPGRADES`, which is ordered oldest first.
 const MIN_FORMAT: u32 = UPGRADES[0].0;
@@ -33,7 +33,7 @@ const LEGACY_BY_END: (&str, &str) = (
 pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "agent_store_format",
-        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 29))",
+        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 30))",
     ),
     (
         "settings_documents",
@@ -53,7 +53,7 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
     ),
     (
         "agent_sessions",
-        "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id))",
+        "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown')))",
     ),
     (
         "agent_sessions_by_leader",
@@ -148,14 +148,23 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
 /// to recognize a store older than v27.
 const AGENT_SESSIONS_BEFORE_V27: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0))";
 const AGENTS_BEFORE_V27: &str = "CREATE TABLE agents(agent_id TEXT PRIMARY KEY, profile TEXT NOT NULL, is_default INTEGER NOT NULL CHECK(is_default IN (0, 1)))";
+/// The text of `agent_sessions` from v27 through v29; `schema_of` uses it to
+/// recognize a store older than v30.
+const AGENT_SESSIONS_BEFORE_V30: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id))";
 /// v27 adds a column to two tables, which `SCHEMA` cannot express as a new
 /// entry: the upgrade alters them before it creates the indexes on them.
 const V27_COLUMNS: &str = "ALTER TABLE agent_sessions ADD COLUMN leader_session_id TEXT REFERENCES agent_sessions(session_id);
 ALTER TABLE agents ADD COLUMN owner_session_id TEXT REFERENCES agent_sessions(session_id);";
+/// v30 adds one column to `agent_sessions` and backfills the rows whose leader
+/// link already records an internal Session. The `ALTER` text must reproduce
+/// `SCHEMA`'s column definition exactly: the startup gate compares the stored
+/// statement character by character.
+const V30_COLUMNS: &str = "ALTER TABLE agent_sessions ADD COLUMN origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown'));
+UPDATE agent_sessions SET origin='internal' WHERE leader_session_id IS NOT NULL;";
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
-const UPGRADES: [(u32, &[&str]); 15] = [
+const UPGRADES: [(u32, &[&str]); 16] = [
     (
         13,
         &[
@@ -205,6 +214,9 @@ const UPGRADES: [(u32, &[&str]); 15] = [
         28,
         &["session_output_owners", "session_output_owners_by_path"],
     ),
+    // #557: a Session's creation origin; the column only, and the step fills
+    // in the rows whose leader link already records one.
+    (29, &[]),
 ];
 
 fn format_table(version: u32) -> String {
@@ -227,6 +239,7 @@ fn schema_of(version: u32) -> Vec<(&'static str, String)> {
             let sql = match name {
                 "agent_store_format" => format_table(version),
                 "agent_sessions" if version < 27 => AGENT_SESSIONS_BEFORE_V27.to_owned(),
+                "agent_sessions" if version < 30 => AGENT_SESSIONS_BEFORE_V30.to_owned(),
                 "agents" if version < 27 => AGENTS_BEFORE_V27.to_owned(),
                 _ => sql.to_owned(),
             };
@@ -491,6 +504,9 @@ impl SqliteStorage {
                 for (from, added) in UPGRADES.iter().filter(|(from, _)| *from >= version) {
                     if *from == 26 {
                         tx.execute_batch(V27_COLUMNS).map_err(storage)?;
+                    }
+                    if *from == 29 {
+                        tx.execute_batch(V30_COLUMNS).map_err(storage)?;
                     }
                     for (_, sql) in SCHEMA.iter().filter(|(name, _)| added.contains(name)) {
                         tx.execute_batch(sql).map_err(storage)?;

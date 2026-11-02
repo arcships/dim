@@ -548,6 +548,9 @@ impl Gateway {
                         if let Some(agent) = agent {
                             args["agentId"] = json!(agent);
                         }
+                        if rpc.supports("session.create.origin") {
+                            args["origin"] = json!("acp");
+                        }
                         if !explicit && !managed.is_empty() && rpc.supports("provider.selection") {
                             #[derive(Deserialize)]
                             struct Selection {

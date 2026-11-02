@@ -1310,22 +1310,34 @@ pub(super) fn waiting(reply: &Value) -> bool {
 
 /// The copies of the registered part `part` that the Session `session`
 /// mounted so far: a part registered by a TypeScript row is a plugin
-/// definition, and each Session's mounter mounts its own copy.
+/// definition, and a mounter of that Session mounts its own copy. The mounter
+/// is a child of the Session's scope row, so the walk reads the mounter's
+/// enclosing fibers rather than its immediate parent.
 pub(super) fn session_copies(
     ctx: &rutis::Ctx,
     session: InstanceId,
     part: &str,
 ) -> Vec<rutis::host::FiberView> {
     let plugins = ctx.diagnostics().plugins;
-    let parent = |id: Option<rutis::host::PluginId>| plugins.iter().find(|p| Some(p.id) == id);
+    let by_id = |id: rutis::host::PluginId| plugins.iter().find(|plugin| plugin.id == id);
+    let in_session = |mut id: Option<rutis::host::PluginId>| {
+        while let Some(enclosing) = id.and_then(by_id) {
+            if enclosing.instance == session {
+                return true;
+            }
+            id = enclosing.parent;
+        }
+        false
+    };
     plugins
         .iter()
         .filter(|plugin| plugin.name == part)
         .filter(|plugin| {
-            parent(plugin.parent)
+            plugin
+                .parent
+                .and_then(by_id)
                 .filter(|mounter| mounter.name.starts_with("Session"))
-                .and_then(|mounter| parent(mounter.parent))
-                .is_some_and(|instance| instance.instance == session)
+                .is_some_and(|mounter| in_session(mounter.parent))
         })
         .filter_map(|plugin| ctx.view(plugin.id))
         .collect()

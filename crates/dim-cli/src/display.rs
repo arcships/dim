@@ -15,6 +15,8 @@ struct TextPosition {
 pub struct Display {
     pub mcp_auth_required: HashSet<String>,
     pub model: Option<Configuration>,
+    /// The goal of the branch whose events this display folds.
+    pub goal: crate::goal::Fold,
     /// Local sequence of the last `permission/changed` of `main` already
     /// reported, by a record or by the command that wrote it.
     pub permission_seen: u64,
@@ -35,6 +37,7 @@ impl Display {
         Self {
             mcp_auth_required: HashSet::new(),
             model: None,
+            goal: crate::goal::Fold::default(),
             permission_seen: 0,
             json,
             cursor: 0,
@@ -117,6 +120,7 @@ impl Display {
             return Ok(());
         }
         self.cursor = event.sequence;
+        self.goal.apply(&event);
         match event.content {
             EventContent::Configuration(data) => {
                 self.model = Some(data);

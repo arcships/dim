@@ -525,6 +525,36 @@ impl Terminal {
         let fullscreen = modes::is_live(Mode::AltScreen);
         self.release_modes(deadline);
         stop_process();
+        self.retake(fullscreen)
+    }
+
+    /// Runs `command` on the terminal itself, as the external editor does:
+    /// what this process turned on is released first and comes back, in both
+    /// interfaces, when the command exits. The command inherits stdin,
+    /// stdout and stderr, so its screen is the terminal's.
+    /// The command's own result is the inner one: a command that could not
+    /// start is the caller's to report, while a terminal that could not be
+    /// taken back leaves this interface unable to draw.
+    pub fn run_external(
+        &mut self,
+        command: &mut std::process::Command,
+    ) -> Result<io::Result<std::process::ExitStatus>, TerminalError> {
+        self.writer.drain(None);
+        let fullscreen = modes::is_live(Mode::AltScreen);
+        self.release_modes(Instant::now() + EXIT_BUDGET);
+        let status = command
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status();
+        self.writer = WriteThread::start();
+        self.retake(fullscreen)?;
+        Ok(status)
+    }
+
+    /// Takes the terminal again after it was released: raw mode, the
+    /// keyboard protocol, paste, the title and the interface's screen.
+    fn retake(&mut self, fullscreen: bool) -> Result<(), TerminalError> {
         sys::rearm_restore_guard();
         sys::enable_raw_mode()?;
         sys::install_signal_guard();

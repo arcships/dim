@@ -75,14 +75,17 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Provider management for Desktop and CLI](design/appserver/provider-management.md) (#329)（[中文](zh/design/appserver/provider-management.md)）
 - [Settings service](design/appserver/settings-service.md)（[中文](zh/design/appserver/settings-service.md)）
 - [MCP OAuth](design/appserver/mcp-oauth.md)（[中文](zh/design/appserver/mcp-oauth.md)）
+- [MCP Apps host contract](design/appserver/mcp-apps.md) (#451): the document a tool declares, a view's tool call and its admission, what a client renders
 - [Session files](design/appserver/session-files.md)（[中文](zh/design/appserver/session-files.md)）
 - [Agents sessions service](design/appserver/sessions-service.md)（[中文](zh/design/appserver/sessions-service.md)）
 - [Session deletion, cleanup and fork](design/appserver/session-deletion-and-fork.md)（[中文](zh/design/appserver/session-deletion-and-fork.md)）
 - [Client Session catalog](design/appserver/session-catalog.md) (#556)（[中文](zh/design/appserver/session-catalog.md)）
+- [Session classification: creation origin and catalog visibility](design/appserver/session-classification.md) (#557)
 - [Session broadcast notices](design/appserver/session-notices.md)（[中文](zh/design/appserver/session-notices.md)）
 - [Bounded latest-turn history window](design/appserver/session-history-window.md) (#712)
 - [SessionStore title metadata](design/appserver/session-title-metadata.md)（[中文](zh/design/appserver/session-title-metadata.md)）
 - [Restore-scoped shared history read](design/appserver/restore-shared-read.md) (#193)（[中文](zh/design/appserver/restore-shared-read.md)）
+- [Cold first session.attach](design/appserver/cold-attach-profile.md) (#713)
 - [Idle Session unload](design/appserver/idle-unload.md) (#126, #331)（[中文](zh/design/appserver/idle-unload.md)）
 - [Request delta storage](design/appserver/request-delta-storage.md) (#193)（[中文](zh/design/appserver/request-delta-storage.md)）
 - [Timeline export](design/appserver/timeline-export.md) (ADR 005 D3, #275)（[中文](zh/design/appserver/timeline-export.md)）

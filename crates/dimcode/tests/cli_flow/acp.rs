@@ -41,6 +41,45 @@ fn recovery_hello(wire: &mut Wire, instance: &str) {
     wire.reply(&hello,json!({"instanceId":instance,"serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.input_lookup"]}));
 }
 
+/// #557: `session/new` records the editor as its creation origin, on a daemon
+/// that reports the marker, and creates as before on one that does not.
+#[test]
+fn acp_session_new_declares_its_creation_origin_when_the_daemon_reports_one() {
+    for (declared, expected) in [(true, Some("acp")), (false, None)] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
+            if declared {
+                let mut features = METHODS.to_vec();
+                features.push("session.create.origin");
+                wire.hello(&features);
+            } else {
+                wire.hello(METHODS);
+            }
+            let created = wire.created();
+            assert_eq!(
+                created["params"].get("origin").and_then(Value::as_str),
+                expected,
+                "{created}"
+            );
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, json!({}));
+            let history = wire.read("session.history");
+            wire.reply(
+                &history,
+                json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+            );
+            detached_eof(wire);
+        });
+        let mut peer = Peer::start(&home);
+        peer.initialize();
+        peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+        let created = peer.response(2);
+        assert!(created.get("error").is_none(), "{created}");
+        peer.close();
+        daemon.join().unwrap();
+    }
+}
+
 #[test]
 fn acp_stdio_reports_the_version_the_cli_prints() {
     let home = Home::new();

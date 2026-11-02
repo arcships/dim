@@ -150,4 +150,4 @@ Content mappings are in plan §4.3; event projections are in §7. The existing C
 
 ### A.5 Client labels
 
-There is no native client-origin field on persisted Sessions. ACP Session filtering/display and a durable createdBy label are unsupported; no marker, interactive flag or private gateway map is used to fake one. The ordinary Session remains visible to other native clients.
+`session/new` records the Session's creation origin as `acp` ([Session classification](../appserver/session-classification.md)), so a picker can label it and its own "Show ACP sessions" preference can hide it. The gateway sends the origin only when the daemon advertises `session.create.origin`; it reads no connection label and keeps no private map, and a later attachment never changes the stored origin. The ordinary Session remains visible to other native clients. Earlier gateways marked nothing, and their Sessions read as `client` or `unknown`.

@@ -41,7 +41,7 @@ const END: &str = "<!-- /generated -->";
 const TOOLS: [&str; 8] = [
     "read", "write", "edit", "glob", "grep", "exec", "wait", "skill",
 ];
-const INFRASTRUCTURE: [&str; 13] = [
+const INFRASTRUCTURE: [&str; 12] = [
     "rutis-loader",
     "session",
     "branch",
@@ -55,7 +55,6 @@ const INFRASTRUCTURE: [&str; 13] = [
     "SessionBroadcast",
     "SessionBroadcastEnd",
     "PrepareModelHost",
-    "SessionExtension",
 ];
 
 /// Graph-only host facts. Keep real local-execution dependencies but never scan

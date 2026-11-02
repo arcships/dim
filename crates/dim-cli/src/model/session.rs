@@ -74,10 +74,27 @@ impl<'de> serde::Deserialize<'de> for SandboxBackend {
     }
 }
 
+/// Whether a submitted message starts after the current run (`Queue`) or
+/// joins the run at its next turn boundary (`Steer`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitMode {
+    Queue,
+    Steer,
+}
+
+impl SubmitMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queue => "queue",
+            Self::Steer => "steer",
+        }
+    }
+}
+
 pub enum Command {
-    Submit(String),
+    Submit(String, SubmitMode),
     /// A draft with pastes to store or content blocks to send.
-    SubmitDraft(Vec<DraftPart>),
+    SubmitDraft(Vec<DraftPart>, SubmitMode),
     Stop,
     /// Answer an approval request.
     Approval {
@@ -182,6 +199,8 @@ pub enum Command {
         id: String,
         query: String,
         cursor: Option<String>,
+        /// The "Show ACP sessions" preference the picker was opened with.
+        show_acp: bool,
     },
     CloseSessions,
     /// List the models that can be chosen.
@@ -202,6 +221,8 @@ pub enum Command {
     Usage,
     /// `/compact`: ask the shown line to compact its context.
     Compact,
+    /// `/goal`: show, set, edit, pause, resume or clear the shown line's goal.
+    Goal(crate::goal::Request),
     SetPermission(crate::permission::Change),
     /// List the providers of the `/connect` panel.
     ListProviders,
@@ -238,6 +259,8 @@ pub enum Command {
     Recording(String),
     /// List the plugins of the `/plugins` panel (`plugin.list`).
     ListPlugins,
+    /// One request to a management area's owner, through its adapter.
+    Management(ManagementRequest),
     /// Change one plugin; the worker lists the plugins again after it.
     Plugin(PluginAction),
     /// A configuration command line (`/effort high`, `/agent`, ...).
@@ -258,6 +281,155 @@ pub enum Command {
     },
     /// Install the offered version (the update dialog's "Update now").
     UpgradeInstall(crate::update::Install),
+}
+
+/// One management area: an owner's management methods, drawn by the native
+/// client through the area's adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Area {
+    Skills,
+    Hooks,
+}
+
+impl Area {
+    /// The slash command and the subcommand stem of the area.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Skills => "skills",
+            Self::Hooks => "hooks",
+        }
+    }
+}
+
+/// What a management request asks of its area's owner.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ManagementAction {
+    /// Read the area.
+    List,
+    /// Enable or disable one entry, and report the area again.
+    Toggle { id: String, enabled: bool },
+    /// Re-read the area, or ask its owner to rescan it.
+    Reload,
+    /// Replace the area's document if it is still at `expected_revision`.
+    Save {
+        expected_revision: String,
+        document: serde_json::Value,
+    },
+}
+
+/// One request to a management area, carrying the area and what it asks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManagementRequest {
+    pub area: Area,
+    pub action: ManagementAction,
+}
+
+/// An area as its owner reports it, at the adapter's boundary.
+///
+/// The client infers nothing here: every fact comes from the owner's reply.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ManagementView {
+    /// The revision the next write takes.
+    pub revision: Option<String>,
+    /// The area's document, when its owner reports one the client can edit.
+    pub document: Option<serde_json::Value>,
+    /// The kinds that act on the area itself rather than on one entry, in the
+    /// order a panel offers them. Today only reload: it needs no selection,
+    /// so it works on an empty area and after a failed read.
+    pub actions: Vec<ActionKind>,
+    /// Entries under the source headings their owner reports.
+    pub groups: Vec<ManagementGroup>,
+    /// What the owner could not use, after the entries.
+    pub issues: Vec<String>,
+}
+
+/// The entries one source holds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManagementGroup {
+    pub heading: String,
+    pub entries: Vec<ManagementEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManagementEntry {
+    /// The id the owner's actions take.
+    pub id: String,
+    pub label: String,
+    /// What the entry says about itself, a line each, shown for the entry the
+    /// panel has selected.
+    pub detail: Vec<String>,
+    /// Whether the entry is on; a toggle asks for the other state.
+    pub enabled: bool,
+    /// What the row names besides on and off.
+    pub states: Vec<EntryState>,
+    pub actions: Vec<ActionKind>,
+}
+
+/// A property of an entry that its row names besides on and off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryState {
+    /// The owner could not use what it found there; the entry's detail says
+    /// what the owner reported.
+    Invalid,
+    /// Another entry of the same name takes precedence.
+    Shadowed { by: String },
+    /// The owner does not let the client write the entry; the entry's detail
+    /// says why.
+    ReadOnly,
+}
+
+/// An action kind the client offers. Every kind has one key in every panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionKind {
+    Toggle,
+    Reload,
+    Edit,
+}
+
+/// A management request and what it came to.
+#[derive(Debug, Clone)]
+pub struct ManagementReply {
+    pub request: ManagementRequest,
+    pub result: ManagementResult,
+}
+
+/// What a management request came to.
+#[derive(Debug, Clone)]
+pub enum ManagementResult {
+    /// The area as its owner reports it after the request.
+    View(ManagementView),
+    /// The action was applied and the read that reports the area failed: the
+    /// change was made, and this is why it is not shown.
+    Applied { read_error: String },
+    /// Nothing was applied, and this is why.
+    Refused(ManagementRefusal),
+}
+
+/// Why a management request did not produce a view.
+#[derive(Debug, Clone)]
+pub enum ManagementRefusal {
+    /// The owner kept the stored document because it changed since the client
+    /// read it. Nothing was written; the area was read again, and this is
+    /// what it now is, or why that read failed.
+    Conflict {
+        message: String,
+        view: Result<Box<ManagementView>, String>,
+    },
+    /// The daemon does not advertise the methods, or the owner refused the
+    /// text: nothing was written.
+    Refused(String),
+}
+
+impl std::fmt::Display for ManagementRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict { message, view } => match view {
+                Ok(_) => formatter.write_str(message),
+                Err(error) => write!(formatter, "{message} {error}"),
+            },
+            Self::Refused(message) => formatter.write_str(message),
+        }
+    }
 }
 
 /// One change the `/plugins` panel asks PluginManager for.
@@ -564,6 +736,9 @@ pub struct SessionItem {
     pub cwd: String,
     pub updated_at: u64,
     pub model: String,
+    /// The creation origin the daemon reports (`client`, `acp`, `internal`,
+    /// `unknown`); absent from a daemon that does not report one.
+    pub origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -598,6 +773,11 @@ pub enum CompactReply {
 
 #[allow(dead_code)]
 pub enum Update {
+    /// A queued input the TUI withdrew (`Command::InputControl` with action
+    /// `withdraw`) is deleted: its text goes back into the draft.
+    Withdrawn {
+        input_id: String,
+    },
     /// The session's adopted configuration: `provider / model`, and the
     /// reasoning effort it sends when it carries one, label the status line.
     Ready(Configuration),
@@ -675,6 +855,8 @@ pub enum Update {
         providers: Result<Vec<ProviderEntry>, String>,
     },
     Plugins(Result<Vec<PluginItem>, String>),
+    /// What a management request came to.
+    Management(ManagementReply),
     /// What a plugin change came to, and the plugins listed after it.
     PluginResult {
         action: PluginAction,
@@ -742,8 +924,8 @@ pub trait SessionPort {
     fn drain(&self) -> Vec<Update>;
     /// Closes the connection and gives the worker a moment to wind down.
     fn shutdown(self: Box<Self>);
-    fn submit(&self, text: String) {
-        self.send(Command::Submit(text));
+    fn submit(&self, text: String, mode: SubmitMode) {
+        self.send(Command::Submit(text, mode));
     }
     fn stop(&self) {
         self.send(Command::Stop);

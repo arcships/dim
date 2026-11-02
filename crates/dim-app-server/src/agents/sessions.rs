@@ -4,7 +4,7 @@
 //! [`AgentIndex`]; Agents' directory part, which never reloads, serves them by
 //! name and looks up the index on each call.
 use super::AgentIndex;
-use crate::protocol::{Empty, PROTOCOL_VERSION, SessionId, session_cwd};
+use crate::protocol::{Empty, PROTOCOL_VERSION, SessionId, SessionOrigin, session_cwd};
 use dim_agent_capabilities::{
     input_queue::{InputQueue, Withdrawal},
     permission::PermissionState,
@@ -465,7 +465,13 @@ impl AgentIndex {
         let index = self.clone();
         let session = tokio::spawn(async move {
             let session = index
-                .create_session(&host, config, PROTOCOL_VERSION, None)
+                .create_session(
+                    &host,
+                    config,
+                    PROTOCOL_VERSION,
+                    None,
+                    SessionOrigin::Internal,
+                )
                 .await?;
             index.retain_versions();
             Ok::<_, AgentError>(session)

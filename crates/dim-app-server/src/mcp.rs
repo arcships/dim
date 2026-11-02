@@ -11,7 +11,10 @@ mod session;
 mod temporary;
 pub(crate) use publication::Publication;
 pub use publication::{McpApplication, McpOwner, McpPublication};
-pub use session::{McpSession, McpSessionPlugin, McpSessionState, McpSourceState, install};
+pub use session::{
+    McpAppCallResult, McpAppError, McpSession, McpSessionPlugin, McpSessionState, McpSourceState,
+    McpWidgetResult, install,
+};
 
 use crate::settings::{BusinessDocument, SettingsError, SettingsScope, SettingsService};
 use config::{
@@ -233,6 +236,16 @@ impl McpConnection {
     pub fn state(&self) -> server::McpServerState {
         self.service.state()
     }
+    /// The connection generation this lease names; a new one starts whenever
+    /// the server establishes a connection.
+    pub fn generation(&self) -> u64 {
+        self.service.generation()
+    }
+    /// The tools of this generation's last complete discovery, including the
+    /// ones no model sees.
+    pub fn discovered(&self) -> Option<Vec<server::McpTool>> {
+        self.service.discovered()
+    }
     /// The generation was retired because its entry was disabled or removed,
     /// not because the connection failed.
     pub fn withdrawn(&self) -> bool {
@@ -258,6 +271,21 @@ impl McpConnection {
         cancel: &CancellationToken,
     ) -> server::Result<dim_agent_types::ToolResult> {
         self.service.call(name, arguments, cancel).await
+    }
+    pub async fn call_result(
+        &self,
+        name: String,
+        arguments: dim_agent_types::JsonObject,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<server::McpCall, server::ViewFailure> {
+        self.service.call_result(name, arguments, cancel).await
+    }
+    pub async fn resource(
+        &self,
+        uri: String,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<server::McpResource, server::ViewFailure> {
+        self.service.resource(uri, cancel).await
     }
 }
 impl Drop for McpConnection {

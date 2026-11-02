@@ -8,6 +8,7 @@ use super::{
     metadata::{self, Titles},
     sqlite::error,
 };
+use crate::protocol::SessionOrigin;
 use dim_agent_capabilities::host::SessionFilesHost;
 use dim_agent_runtime::Names;
 use dim_agent_runtime::{
@@ -1119,7 +1120,7 @@ impl SessionStore {
                 };
                 let sql = format!(
                     "SELECT s.session_id, s.config, s.created_at_ms, b.sequence, o.agent_id, \
-                 m.revision, m.title, m.title_source \
+                 m.revision, m.title, m.title_source, s.origin, s.leader_session_id \
                  FROM session_owners o JOIN agent_sessions s USING(session_id) \
                  JOIN timeline_branches b ON b.session_id=s.session_id AND b.branch_id='main' \
                  LEFT JOIN session_metadata m ON m.session_id=s.session_id \
@@ -1139,6 +1140,14 @@ impl SessionStore {
                     let parsed = (|| -> Result<_> {
                         let config: String = row.get(1).map_err(error)?;
                         let config: SessionConfig = serde_json::from_str(&config).map_err(error)?;
+                        let (origin, parent) = if version >= 3 {
+                            (
+                                Some(stored_origin(row, 8)?),
+                                row.get::<_, Option<String>>(9).map_err(error)?,
+                            )
+                        } else {
+                            (None, None)
+                        };
                         Ok(crate::protocol::SessionInfo {
                             session_id: id.clone(),
                             cwd: config.cwd,
@@ -1151,6 +1160,8 @@ impl SessionStore {
                             running: false,
                             attached_clients: 0,
                             agent_id: Some(row.get(4).map_err(error)?),
+                            origin,
+                            parent_session_id: parent,
                             title: Some(metadata::decode(row, 5).map_err(error)?.into()),
                         })
                     })();
@@ -1162,6 +1173,30 @@ impl SessionStore {
                     }
                 }
                 Ok(result)
+            })
+            .await
+    }
+    /// One Session's stored creation origin and leader link, for an attach
+    /// reply (#557): one row of `agent_sessions`, no config decode, no history
+    /// and no lease.
+    pub async fn creation_record(
+        &self,
+        session_id: &str,
+    ) -> Result<(SessionOrigin, Option<String>)> {
+        let id = session_id.to_owned();
+        self.timeline
+            .db
+            .run(move |connection| {
+                let (text, parent): (String, Option<String>) = connection
+                    .query_row(
+                        "SELECT origin, leader_session_id FROM agent_sessions WHERE session_id=?1",
+                        [&id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(error)?
+                    .ok_or_else(|| AgentError::Closed(id))?;
+                Ok((origin_from_stored(&text)?, parent))
             })
             .await
     }
@@ -1635,13 +1670,16 @@ impl SessionStore {
                     return Err(AgentError::Closed(source));
                 };
                 let cut = sql_sequence(at)?;
+                // A fork is a new Session of the client that forked it, never
+                // its source's origin (session classification §3.2).
                 tx.execute(
-                    "INSERT INTO agent_sessions (session_id, config, created_at_ms) \
-                     VALUES (?1, ?2, ?3)",
+                    "INSERT INTO agent_sessions (session_id, config, created_at_ms, origin) \
+                     VALUES (?1, ?2, ?3, ?4)",
                     params![
                         fork,
                         config,
-                        sql_sequence(dim_agent_runtime::core::unix_millis())?
+                        sql_sequence(dim_agent_runtime::core::unix_millis())?,
+                        SessionOrigin::Client.as_str()
                     ],
                 )
                 .map_err(error)?;
@@ -1771,6 +1809,7 @@ impl SessionStore {
         agent_id: &str,
         protocol_version: u32,
         leader: Option<&str>,
+        origin: SessionOrigin,
     ) -> Result<()> {
         let session = session_id.to_owned();
         let config = config.clone();
@@ -1782,7 +1821,7 @@ impl SessionStore {
                 let tx = connection
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(error)?;
-                create_session(&tx, &session, &config, leader.as_deref())?;
+                create_session(&tx, &session, &config, leader.as_deref(), origin)?;
                 tx.execute(
                     "INSERT INTO session_owners VALUES (?1, ?2, ?3)",
                     params![session, agent, protocol_version],
@@ -1845,17 +1884,19 @@ fn create_session(
     session: &str,
     config: &SessionConfig,
     leader: Option<&str>,
+    origin: SessionOrigin,
 ) -> Result<()> {
     let config = serde_json::to_string(config).map_err(error)?;
     connection
         .execute(
-            "INSERT INTO agent_sessions (session_id, config, created_at_ms, leader_session_id) \
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO agent_sessions (session_id, config, created_at_ms, leader_session_id, origin) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 session,
                 config,
                 sql_sequence(dim_agent_runtime::core::unix_millis())?,
-                leader
+                leader,
+                origin.as_str()
             ],
         )
         .map_err(error)?;
@@ -1867,6 +1908,16 @@ fn create_session(
     };
     insert_branch(connection, session, &info)?;
     super::catalog::create(connection, session)
+}
+/// The creation origin a stored value names. The column's `CHECK` and the
+/// format gate keep any other text out; reaching this error means the store
+/// was written around them, so it is reported rather than mapped to a value.
+fn origin_from_stored(text: &str) -> Result<SessionOrigin> {
+    SessionOrigin::from_stored(text)
+        .ok_or_else(|| error(format!("Session origin {text:?} is not a stored origin")))
+}
+pub(super) fn stored_origin(row: &rusqlite::Row<'_>, index: usize) -> Result<SessionOrigin> {
+    origin_from_stored(&row.get::<_, String>(index).map_err(error)?)
 }
 fn insert_branch(connection: &Connection, session: &str, info: &BranchRecord) -> Result<()> {
     connection
@@ -2693,7 +2744,7 @@ impl TimelineStore for SqliteTimelineStore {
                     let tx = connection
                         .transaction_with_behavior(TransactionBehavior::Immediate)
                         .map_err(error)?;
-                    create_session(&tx, &session, &config, None)?;
+                    create_session(&tx, &session, &config, None, SessionOrigin::Unknown)?;
                     tx.commit().map_err(error)
                 })
                 .await

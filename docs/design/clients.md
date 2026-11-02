@@ -53,6 +53,7 @@ Dashed boxes are outside this repository (Desktop) or not implemented (remote de
 | Reading a Session: `session.attach`, then `session.history` up to a fixed head, then live `session.event`, `session.state`, `session.model.progress`; clients fold these themselves. The attach reply carries that Session's `SessionInfo`, whose `model` follows the Session's latest adopted configuration, so a client that opens a known Session takes the model from it and reads no catalog; `session.list` items still report the creation model until [#795](https://github.com/arcships/dim/issues/795) lands. A reload leaves the title fields absent and `running` false, and the notices that follow correct them. The `session.create` and `session.attach` replies also carry `modelPreferences`, the preferences the Session's adopted configuration sends, derived from it and absent when it carries none; `session.list` items do not carry it | [Session access](contracts/session-access.md), [CLI commands](cli-commands.md); triage of [#276](https://github.com/arcships/dim/issues/276) |
 | Broadcast notices that are not Timeline facts (`session.notice`, e.g. titles) | [Session notices](appserver/session-notices.md) |
 | Approvals and questions: `approval.request` / `cancelled` / `resolved`; a question is a pending `ask_user` call answered by `session.question.respond` | [ADR 003](../adr/003-approval-scope.md), [Questions](plugins/Questions.md) |
+| MCP App views: the document a tool declares (`session.mcp.app.widget`), a view's tool call (`session.mcp.app.call`), a view's message through `session.submit` | [MCP Apps](appserver/mcp-apps.md) |
 | Interfaces viewing a Session: the UI registry, terminal UIs as UI leaves (`ui.open`, `ui.attach`, `ui.status`) | [Tui §3.6](plugins/Tui.md#36-ui-registry-and-ui-leaves) |
 | Provider management for every client | [Provider management](appserver/provider-management.md) |
 
@@ -109,7 +110,7 @@ Rows follow the sections of the [feature list](../feature-list.md), which descri
 
 | Capability | CLI | Web | Source |
 | --- | --- | --- | --- |
-| New, resume, Session list | done; project/all switch: none | done (grouped by directory) | |
+| New, resume, Session list | done; project/all switch: none. `/resume` labels each row by creation origin and hides ACP Sessions unless the preference says otherwise | done (grouped by directory) | [Session classification](appserver/session-classification.md) |
 | Export conversation | done in the line client and `dimcode session export`; inside the terminal UIs: none | — | [CLI commands](cli-commands.md) |
 | `/timeline` and message actions | done in the TUI; it also replaces `/history`'s paging | — | [Timeline UI §4.6](timeline-ui.md#46-timeline-jumping-to-a-message) |
 | Titles | automatic: done (optional SessionTitle package); manual rename: designed | — | [SessionTitle](plugins/SessionTitle.md) |
@@ -122,9 +123,9 @@ Rows follow the sections of the [feature list](../feature-list.md), which descri
 
 | Capability | CLI | Web | Source |
 | --- | --- | --- | --- |
-| Send, queue, automatic sending, steer (`Ctrl+S`), interrupt | done | send and stop: done; queue: later phase | InputQueue (S1) |
+| Send, queue (`Enter` while running), automatic sending, steer (`Ctrl+S`, or `Enter` on an empty draft), interrupt | done | send and stop: done; queue: later phase | InputQueue (S1) |
 | Lines: tree, switch, create, send, stop, approvals, end | done | done (right-side Lines panel) | [Timeline branches](timeline-branches.md) §14, [Web workspace](web-workspace.md#41-lines-and-branch) |
-| `/queue` panel and queue deletion | none (only Up-withdraw) | — | server contract done (S1) |
+| `/queue` panel and queue deletion | none | — | server contract done (S1) |
 | Retrieve a queued message for editing | done; a message with attachments loses them (§4 item 4) | — | |
 | Multiline, paste, large paste, images, mixed attachments, `@` files, `!` / `!!` | done | attachments: later phase | [CLI attachment input](cli-attachment-input.md), [ShellInput](plugins/ShellInput.md) |
 | Skill references (`$`, `/`, `@`) | partial: palette code exists, no Skills are listed | — | none |
@@ -148,10 +149,10 @@ Rows follow the sections of the [feature list](../feature-list.md), which descri
 | `/settings`: theme, language, startup form, mouse, notifications, approvals | done | later phase (needs a decision on management methods, §6) | Model selection uses `/model` (`/models`), not `/settings`. |
 | `/settings`: subagent model, auxiliary model, default multimodal model, execution shell, sandbox, prompt language | designed elsewhere, no client UI | — | overview B.1, [Modality](plugins/Modality.md) |
 | `/settings`: VS Code focus, resource monitoring, plan usage display | none | — | |
-| `/settings`: ACP Session display | unsupported: no native persisted client-origin field | — | [AcpGateway](plugins/AcpGateway.md#a5-client-labels) |
+| `/settings`: ACP Session display | done: a saved "Show ACP sessions" switch, off by default; `/resume` labels rows by creation origin | — | [AcpGateway](plugins/AcpGateway.md#a5-client-labels), [Session classification](appserver/session-classification.md) |
 | `/usage` | context usage and, for active Dim OAuth models, account usage | — | [CLI usage report](cli-commands.md#usage-report) |
 | `/stats` | out | — | [overview](overview.md) App. A |
-| `/debug`, debug-log configuration | none (only the daemon's `daemon.log`) | — | |
+| `/debug`, debug-log configuration | none (only the daemon's `daemon.log`) | — | [Web workspace §4.3](web-workspace.md#diagnostics-the-legacy-logging-controls) |
 | `/tui` mode switch | done | — | [Tui](plugins/Tui.md) |
 | Version and upgrade | done (upgrade dialog); `dimcode upgrade` subcommand: none | — | |
 | Web access (`/web`, `dimcode web`) | done | — | [Web workspace](web-workspace.md) |
@@ -190,6 +191,7 @@ Desktop lives in its own repository. This repository owns the App Server contrac
 | Attachment read, archive, file history | Attachment path from `attachment.put`; archive is client-local; rewind is `session.fork` ([#279](https://github.com/arcships/dim/issues/279)) |
 | Branch metadata, rename, per-branch model | From `branch/*` facts; rename client-local; per-branch model not built ([#280](https://github.com/arcships/dim/issues/280)) |
 | Local tools, edit/retry, usage, subagent relations | Client-run MCP server; `session.fork` + `session.submit`; client-side usage; `collaboration/*` facts ([#281](https://github.com/arcships/dim/issues/281)) |
+| MCP App views (widget document, a view's tool call, its message) | The Session's own MCP connection through `session.mcp.app.*`; rendering and sandboxing stay in the client ([MCP Apps](appserver/mcp-apps.md), [#451](https://github.com/arcships/dim/issues/451)) |
 
 Desktop's own feature coverage and UI acceptance are tracked in its repository. A capability that this repository's contracts cannot back becomes an issue here, under the same rule.
 

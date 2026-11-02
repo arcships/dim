@@ -142,7 +142,7 @@ Not needed for this design; possible additions if users ask:
 | Option | Note |
 | --- | --- |
 | Read-only or cheaper evaluator | Needs a branch configured before its first input and a per-branch Permission narrowing; neither exists |
-| CLI `/pursue` | The CLI has no `/goal` commands yet; `/pursue` is `/goal` with `judge: "evaluator"` |
+| CLI `/pursue` | `/goal` sets a goal whose completion the model reports; `/pursue` would be `/goal` with `judge: "evaluator"`, which no client form sends yet ([CLI commands § Goal](../cli-commands.md#goal)) |
 
 ## 11. Ablation review
 

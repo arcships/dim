@@ -60,12 +60,14 @@ pub fn report(fullscreen: bool, mouse: bool) -> Vec<String> {
         t("Application keys").to_owned(),
         format!(
             "  {}",
-            t("Enter submit · Shift+Enter or Ctrl+J newline · ↑↓ history")
+            t(
+                "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history"
+            )
         ),
         format!(
             "  {}",
             t(
-                "Ctrl+O or Ctrl+P commands · Esc interrupt or clear · Ctrl+S steer queued · ↑ edit queued"
+                "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued"
             )
         ),
         format!(
@@ -115,8 +117,14 @@ mod tests {
     fn keys_report_keeps_shortcut_only_actions_and_distinguishes_modes() {
         for fullscreen in [false, true] {
             let report = report(fullscreen, false).join("\n");
-            assert!(report.contains("Esc interrupt or clear"), "{report}");
-            assert!(report.contains("Ctrl+S steer queued"), "{report}");
+            assert!(
+                report.contains("Esc interrupt, queued messages return"),
+                "{report}"
+            );
+            assert!(
+                report.contains("Ctrl+S steer draft or first queued"),
+                "{report}"
+            );
             if fullscreen {
                 assert!(
                     report.contains("Home/End top or bottom (empty draft)"),

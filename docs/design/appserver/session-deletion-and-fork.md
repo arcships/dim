@@ -30,7 +30,7 @@ file steps.
   copied without their events, so the fork starts no work until a client sends it input (§6.5). The fork's `main`
   opens with `branch/resume`: the fork is the source's conversation restored at the cut under a new id. Right after
   the copied facts the fork writes one fact of its own, `session/forked`, so an owner that folds a branch's own
-  history knows where the copy ends (§6.5).
+  history knows where the copy ends (§6.5); v3 connections deliver it and v2 keeps its list.
   `SessionConfig` is copied whole, so `interactive` and the permission preset carry over and nothing is widened.
 - **Format.** S5c changes no format. The new event row was added at v16 as a development-phase extension that daemons
   built before it cannot read, and format v17 keeps it as it is (§8). No provenance column and no tombstone.
@@ -395,7 +395,8 @@ TimelineTree opens a root branch that already has events with `branch/resume`
 continues with `branch/resume` after the copied facts. Before that, the fork transaction itself writes one fact of its
 own after the copied facts: `session/forked` (empty data) at `at + 1`, so F never exists without it. It says that
 every earlier event of F's `main` was copied. Owners that fold a branch's own history (Goal, A11) start
-after it; every other owner keeps treating the copied facts as F's history under its reload rule. A fork at `0`
+after it, and v3 clients read it the same way; every other owner keeps treating the copied facts as F's
+history under its reload rule, and a v2 connection keeps its list and drops this fact. A fork at `0`
 copies nothing, writes no `session/forked` and opens with `branch/start` like a new Session. F is the source's conversation restored at the cut under a new
 id, and every owner applies its existing reload rule. The cut is a rest point (§6.2) and child branches come without
 events (§6.3), so no reload rule starts work: **F runs no turn, model call or tool until a client sends it input.**

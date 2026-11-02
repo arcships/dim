@@ -2,7 +2,8 @@
 
 Issue: [#556](https://github.com/arcships/dim/issues/556), whose required outcome this page serves: a bounded
 `/resume` first page and catalog metadata without decoding full effective-context replacements.
-[#557](https://github.com/arcships/dim/issues/557) adds the classification filters this contract reserves a place for.
+[#557](https://github.com/arcships/dim/issues/557) adds the classification filters this contract reserves a place for;
+the fields they select are [Session classification](session-classification.md)'s.
 Overview: [Appendix B.2](../overview.md#b2-app-server-process-plugins), Rpc and SessionStore rows. Scope:
 [ADR 002](../../adr/002-plugin-scope.md) process scope, in the existing Agents and Rpc built-ins, with one new Rpc
 built-in. Consumers: clients through `session.catalog` and `session.summaries`, first the CLI's `/resume` picker.
@@ -37,7 +38,7 @@ It does not own:
 
 - the projection's table, its indexes, write transaction, delete and fork maintenance, and the upgrade's backfill —
   the [native storage format](native-storage-format.md#556-v23-格式决定) decides those;
-- the classification fields, their defaults and their presentation — [#557](https://github.com/arcships/dim/issues/557);
+- the classification fields, their defaults and their presentation — [Session classification](session-classification.md);
 - the picker's interaction and the project/all switch — the client that adds them (§6);
 - `session.list`, `session.attach`, and how a client sorts or presents rows.
 
@@ -53,23 +54,30 @@ It does not own:
 | Protocol | v3. v1 and v2 reply `unknown_method` ("Method requires protocol v3"), as they do for `session.summaries` |
 | Discovery | `hello.features` lists it only while a native store is open, the condition `session.fork` uses, so a client that does not see it keeps using `session.summaries`. Without a store there is no projection to page, and `session.summaries` answers from the loaded Sessions as today (§3.3) |
 | `limit` | 1 to 200, default 50. A larger one is rejected, not clamped, as `history`'s `limit` is |
-| `cursor` | Opaque. It encodes the last returned row's `(updatedAt, sessionId)` and a digest of the request's `query`, `cwd` and `withPreview`; it pages by keyset, and a client echoes it back unchanged. It is not a Session id |
+| `cursor` | Opaque. It encodes the last returned row's `(updatedAt, sessionId)` and a digest of the request's `query`, `cwd`, `withPreview`, `withInternal` and `withAcpSessions`; it pages by keyset, and a client echoes it back unchanged. It is not a Session id |
 | Order | `updatedAt` descending, then `sessionId` ascending |
 | `query` | Case-insensitive, literal substring match over the four fields the picker searches today — the Session id, the workspace, the model id and the preview — plus the title and the provider id, which its search text never holds. At query time a SQL function the store registers on its connection lowercases the query and each field with `str::to_lowercase`, the picker's fold; the match is `instr(fold(field), fold(query)) > 0` field by field, so it is literal and `%` and `_` match only themselves. It is applied in the catalog query before the page boundary. The model is read from the stored Session config, the value `session.list` reports, so the query decodes no event |
 | `cwd` | Exact match on the workspace, applied before the page boundary |
 | `withPreview` | Boolean, default `false`. `true` keeps only rows whose preview is not NULL, applied before the page boundary, so a client that hides preview-less rows receives a full page of rows it shows; the projection's partial index over previews keeps that read bounded ([native storage format](native-storage-format.md#556-v23-格式决定)) |
-| Reply | `SessionSummary` entries, the shape `session.summaries` returns: the fields of a `session.list` record with `preview` and `updatedAt`. `nextCursor` is absent on the last page |
+| `withInternal` | Boolean, default `false`. `true` lists the Sessions whose origin is `internal`; `false` drops them, applied before the page boundary. What the class means and who writes it: [Session classification](session-classification.md#35-catalog-visibility) |
+| `withAcpSessions` | Boolean, default `false`. `true` lists the Sessions whose origin is `acp`; `false` drops them, applied before the page boundary. A Session of an unknown origin (`unknown`) is always listed |
+| Reply | `SessionSummary` entries, the shape `session.summaries` returns: the fields of a `session.list` record — `origin` and `parentSessionId` among them ([Session classification](session-classification.md#33-reported-fields)) — with `preview` and `updatedAt`. `nextCursor` is absent on the last page |
 
-A `cursor` that does not decode, or whose digest does not match the request's `query`, `cwd` and `withPreview`, is
-rejected as `invalid_params` rather than treated as the first page, so a client cannot silently read the catalog from
-the start again, or continue one filter set by the key of another. A cursor is not tagged with a store: one taken from
-another store's catalog cannot be told apart, and needs no check, because it only positions a keyset in the same
-order.
+A `cursor` that does not decode, or whose digest does not match the request's `query`, `cwd`, `withPreview`,
+`withInternal` and `withAcpSessions`, is rejected as `invalid_params` rather than treated as the first page, so a client
+cannot silently read the catalog from the start again, or continue one filter set by the key of another. A cursor is not
+tagged with a store: one taken from another store's catalog cannot be told apart, and needs no check, because it only
+positions a keyset in the same order.
 
 A search with a rare match scans the catalog's rows: the filters read the projection, the stored title and the stored
 model, and no filter decodes an event. Registering that function needs rusqlite's `functions` feature and no new
 dependency. The fold runs at query time, so no folded value is stored and none has to be kept in step with the title
 or the model.
+
+The two classification filters prune rows while the query walks its activity index and the page stops after one row
+past its limit, so a filtered page costs one page plus the rows it hides, and visits only the `agent_sessions` row it
+already joins. They add no index: the cost and the reason are
+[Session classification §3.6](session-classification.md#36-cost-of-a-listing).
 
 ### 3.2 Order, cursor and paging
 
@@ -77,16 +85,17 @@ The order is the projection's activity time, newest first, with the Session id b
 contiguous run of one total order and the same store always pages the same way. The cursor is the last row's key, not
 a position: a Session that becomes active between two pages moves to the first page, and the later pages neither
 repeat nor skip any other Session. It also carries the filters it was taken under (§3.1), so a page boundary can be
-continued only by the same `query`, `cwd` and `withPreview`.
+continued only by the same `query`, `cwd`, `withPreview`, `withInternal` and `withAcpSessions`.
 
 ### 3.3 `session.summaries`
 
 `session.summaries` keeps its parameters, its reply type and its per-client protocol v3 rule. With a native store open
 it answers from the same projection instead of reading history, and its contents do not change: the projection
-applies the preview rule below unchanged, and its row exists from the Session's creation (§5). A daemon without a
-store has no projection and answers from the loaded Sessions as today; it does not list `session.catalog` either
-(§3.1). So the method is how a client that does not find `session.catalog` lists, and how clients on a daemon older
-than this change list; both stay working because the method's shape does not change.
+applies the preview rule below unchanged, its row exists from the Session's creation (§5), and the read applies
+neither classification filter, so a Session of any origin is listed, with the two fields every v3 item now carries. A
+daemon without a store has no projection and answers from the loaded Sessions as today; it does not list
+`session.catalog` either (§3.1). So the method is how a client that does not find `session.catalog` lists, and how
+clients on a daemon older than this change list; both stay working because the method's shape does not change.
 
 **The preview keeps today's rule, its batch-complete window included.** The window is the batches that start within
 the first 256 `main` events, and it is batch-complete as today's read is: the batch that holds sequence 256 is read
@@ -109,10 +118,11 @@ takes no lease and loads nothing.
 
 ### 3.5 Catalog filters (#557)
 
-Hierarchy and origin filters are conditions of the same catalog query and apply before the page boundary, so a match
-on a later page is never hidden by what the page already fetched. [#557](https://github.com/arcships/dim/issues/557)
-defines their fields and defaults. This contract reserves where they apply and requires that a row's position, the
-cursor and any count stay consistent across refreshes with them in place.
+Visibility filters are conditions of the same catalog query and apply before the page boundary, so a match on a later
+page is never hidden by what the page already fetched. [#557](https://github.com/arcships/dim/issues/557) adds two,
+`withInternal` and `withAcpSessions` (§3.1), which select the creation origin a Session records; what each class means,
+who writes it and why `unknown` is always listed is [Session classification](session-classification.md#35-catalog-visibility).
+A row's position, the cursor and the client's row count stay consistent across refreshes with them in place.
 
 ### 3.6 Cancelling a read
 
@@ -129,14 +139,18 @@ connection, so cancellation cannot interrupt a later write. RPC ownership lasts 
 
 This part writes no event and owns no state. The projection is derived state: every column follows from events the
 Timeline already holds, and the upgrade rebuilds it once for the whole store from them
-([native storage format](native-storage-format.md#556-v23-格式决定)). Nothing here enters the Timeline: the catalog is
-display data for a picker, which [design rules §4 rule 9](../../architecture/rust-agent/principles.md) keeps out of it.
+([native storage format](native-storage-format.md#556-v23-格式决定)). The creation class and the parent are not taken
+from the projection: they are creation input, recorded on the stored Session record and read from the row this query
+already joins ([Session classification §4](session-classification.md#4-events-and-state)). Nothing here enters the
+Timeline: the catalog is display data for a picker, which
+[design rules §4 rule 9](../../architecture/rust-agent/principles.md) keeps out of it.
 
 ## 5. Dependencies
 
 | Dependency | What this part requires |
 | --- | --- |
 | SessionStore catalog projection | One row per Session with the last activity time, the preview and the workspace, written by the creation transaction with the creation time and no preview, kept by the transaction of every later `main` batch, and absent for a Session that does not exist: the row is 1:1 with `agent_sessions` from creation, so a new Session lists as `session.summaries` lists it today |
+| Stored Session record (`agent_sessions`) | The creation origin and the leader link of every listed Session, read from the row the query joins, and the filter of §3.5 ([Session classification](session-classification.md#31-the-origin)) |
 | [Title metadata](session-title-metadata.md) | The stored title of a Session, joined for display and for `query`, never read from a Session |
 | `hello.features` (App Server) | The method list a client discovers the catalog through: the catalog is listed under the conditions that list `session.summaries`, plus the native-store condition `session.fork` also requires |
 | Agents' directory | The protocol-version and agent filtering the catalog applies, as `session.list` applies it |
@@ -161,6 +175,10 @@ own design owns its interaction.
 - **Cancellation.** Closing, refreshing or replacing a search sends `session.catalog.cancel` for the pending read
   when advertised, then drops its local request identity. A command entered afterwards does not wait for the obsolete
   query. An older daemon without cancellation discovery retains its existing behavior.
+- **Visibility.** The picker asks for conversations: `withInternal` off, and `withAcpSessions` from its persisted
+  "Show ACP sessions" preference, off by default. It sends either only when `session.catalog.origins` is advertised,
+  labels a row by the origin it reports, and shows the parent of an internal row it lists
+  ([Session classification §3.8](session-classification.md#38-client-requirements)).
 - **Fallback.** A daemon that does not advertise the method is listed through `session.summaries`.
 
 ```text
@@ -187,12 +205,16 @@ page boundary, and the picker's first page does not use it. The gap is recorded 
 | C7 | The preview is today's rule over its batch-complete window, applied identically by a live batch and by the backfill | An unbounded live rule, writing the preview with the batch that carries the first user input; a strict cutoff after sequence 256 | It changes what `session.summaries` lists for a Session whose first user message follows the window, or whose first user input is just past sequence 256 in the batch that holds 256, and leaves backfilled and live rows different. Dropping or narrowing the window is a separate, visible change |
 | C8 | `withPreview` drops preview-less rows in the catalog query, over the projection's partial index | A client that fetches pages until it holds enough rows it shows | A cold launch creates a Session that may never get a message, so the newest rows are often preview-less and that loop reads an unbounded run of them; the partial index keeps the server read bounded |
 | C9 | `query` folds both sides with Unicode `str::to_lowercase` at query time, as the picker does | ASCII-only matching through SQLite's `LIKE`, which folds ASCII alone | It would silently miss accented and non-Latin case pairs the picker finds today |
+| C10 | The default page lists `client` and `unknown` origins; `internal` and `acp` are opt-in through the two filters | Filtering every non-`client` origin out by default | An imported or otherwise unmapped Session must not disappear from the only list a user has; the crowding this issue fixes comes from the two classes whose records exist |
 
 ## 8. Changes to other documents
 
-- [Native storage format](native-storage-format.md#556-v23-格式决定): the catalog table, its two indexes, the
-  same-transaction write from creation on, delete and fork maintenance, and the upgrade's backfill and its one-time
-  cost.
+- [Session classification](session-classification.md): the origin and parent fields, the creation entries that write
+  them, the v30 storage column and what a client does with them; this page keeps the query they select and their place
+  before the page boundary.
+- [Native storage format](native-storage-format.md#557-v30-格式决定): the `agent_sessions.origin` column and its upgrade
+  step, beside the catalog table, its two indexes, the same-transaction write from creation on, delete and fork
+  maintenance, and the upgrade's backfill and its one-time cost.
 - [Session deletion and fork](session-deletion-and-fork.md#32-sequence): its delete and fork row lists name
   `session_catalog` beside the other rows they remove and write.
 - [Documentation index](../../INDEX.md) lists this page.
@@ -227,8 +249,13 @@ page boundary, and the picker's first page does not use it. The gap is recorded 
   preview; all apply before the page boundary.
 - A `%` or `_` in `query` matches only that character.
 - A page with `withPreview` returns `limit` rows even when many preview-less Sessions precede them in the order.
-- A cursor returned for one combination of `query`, `cwd` and `withPreview` is rejected as `invalid_params` when
-  replayed with another.
+- A cursor returned for one combination of `query`, `cwd`, `withPreview`, `withInternal` and `withAcpSessions` is
+  rejected as `invalid_params` when replayed with another.
+- A page holds rows of the classes it asked for: with 60 internal Sessions newer than 50 conversations, a 50-row page
+  with `withInternal` off holds 50 conversations, and paging returns the rest exactly once; `withAcpSessions` behaves
+  the same for ACP rows, and `unknown` rows are always listed.
+- `session.summaries` still lists every stored Session, internal and ACP ones included, with the two fields every v3
+  item carries.
 - A Session created and never written to is listed from its creation with `updatedAt` equal to its creation time and
   no preview, as `session.summaries` lists it today.
 - The preview keeps its batch-complete window and its finality: a user input just past sequence 256 in the batch that

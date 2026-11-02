@@ -4,7 +4,8 @@
 //! A plugin registers parts for the Session or branch scope while it runs:
 //! a Rust plugin a generator, whose registration is an effect of the caller
 //! and is withdrawn when the caller unloads; a plugin of another language a
-//! rutis plugin definition, which ends with the row that handed it over. Every Session and branch holds two mounters. The required
+//! rutis plugin definition, which ends with the row that handed it over. Every Session and branch
+//! scope mounts two mounters as its children. The required
 //! one mounts the parts the assembly profile requires and hands them to the
 //! instance, which publishes only once they are Active. The optional one
 //! mounts every other registered part; the instance lets the copies it
@@ -312,13 +313,7 @@ impl PartMounter {
         }
     }
 
-    /// Whether `name` is a mounter's module name.
-    /// Whether the row `id` is a mounter: a module name, with the suffix
-    /// the assembly adds to a name in use.
-    pub(crate) fn is_row(id: &str) -> bool {
-        Self::is_module(id.split_once('#').map_or(id, |(module, _)| module))
-    }
-
+    /// Whether `name` is one of the mounters' names.
     pub(crate) fn is_module(name: &str) -> bool {
         [PartScope::Session, PartScope::Branch]
             .into_iter()

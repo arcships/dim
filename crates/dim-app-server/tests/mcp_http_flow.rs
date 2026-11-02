@@ -1431,3 +1431,116 @@ async fn node_legacy_sse_sdk_discovery_call_notifications_cancel_close_and_no_re
             .success()
     );
 }
+
+/// The same fixture with the widget tools, app-only tool, model-only tool and
+/// the `ui://` document the specification describes.
+async fn stdio_widget_fixture() -> Fixture {
+    let fixture = Fixture::configured(json!({"command":"node"})).await;
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp-stdio.cjs");
+    fs::write(
+        fixture.home.join("mcp.json"),
+        serde_json::to_vec(&json!({"mcpServers":{"docs":{
+            "command":"node", "args":[script, "normal"],
+            "cwd":fixture.home, "env":{"MCP_PID_FILE":fixture.home.join("pid"), "MCP_WIDGETS":"1"}
+        }}}))
+        .unwrap(),
+    )
+    .unwrap();
+    fixture
+}
+
+#[tokio::test]
+#[ignore = "Requires npm ci --prefix runtime --ignore-scripts and Node"]
+async fn node_stdio_sdk_serves_widget_metadata_and_its_document() {
+    use dim_app_server::mcp::server::{McpTool, ToolScope};
+
+    let fixture = stdio_widget_fixture().await;
+    let cancel = CancellationToken::new();
+    let connection = fixture
+        .mcp
+        .server(None, "docs".into(), &cancel)
+        .await
+        .unwrap();
+    let tools = connection.tools(&cancel).await.unwrap();
+    let tool = |name: &str| -> McpTool {
+        tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("{name} was not discovered"))
+            .clone()
+    };
+    let chart = tool("chart");
+    assert_eq!(
+        chart.ui.as_ref().and_then(|ui| ui.resource_uri.as_deref()),
+        Some("ui://widget/counter.html"),
+        "a discovered tool keeps the widget association it declares"
+    );
+    let refresh = tool("refresh").ui.unwrap();
+    assert!(
+        !refresh.allows(ToolScope::Model) && refresh.allows(ToolScope::App),
+        "an app-only tool is not published to the model"
+    );
+    let summary = tool("summary").ui.unwrap();
+    assert!(
+        summary.allows(ToolScope::Model) && !summary.allows(ToolScope::App),
+        "a model-only tool is not callable from a view"
+    );
+    assert_eq!(
+        connection
+            .discovered()
+            .unwrap()
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["inspect", "slow", "chart", "refresh", "summary"]
+    );
+
+    let document = connection
+        .resource("ui://widget/counter.html".into(), &cancel)
+        .await
+        .unwrap();
+    assert_eq!(
+        document.mime_type.as_deref(),
+        Some("text/html;profile=mcp-app")
+    );
+    assert!(
+        document
+            .text
+            .as_deref()
+            .is_some_and(|text| text.contains("<p>counter</p>"))
+    );
+    assert!(
+        document
+            .meta
+            .as_ref()
+            .is_some_and(|meta| meta["ui"]["prefersBorder"] == json!(true)),
+        "the document's `_meta.ui` reaches the host: {:?}",
+        document.meta
+    );
+    let call = connection
+        .call_result(
+            "chart".into(),
+            json!({"step":2}).as_object().cloned().unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(&call.content[..], [ContentBlock::Text { text }] if text == "chart 2"),
+        "{:?}",
+        call.content
+    );
+    assert_eq!(
+        call.structured_content,
+        json!({"step":2}).as_object().cloned()
+    );
+    assert_eq!(
+        call.meta
+            .as_ref()
+            .and_then(|meta| meta.get("widget"))
+            .and_then(Value::as_str),
+        Some("chart"),
+        "a call keeps the result's `_meta` for the view"
+    );
+    fixture.close().await;
+}

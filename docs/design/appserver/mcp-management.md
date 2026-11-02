@@ -23,10 +23,10 @@ It does not own:
 | Revisions, compare-and-set, project authorization | [Settings service](settings-service.md#33-persistence-and-revisions) |
 | Which plugin registers which entry, and how | [PluginManager](../plugins/PluginManager.md#37-content-registration) |
 
-An MCP Apps host contract — resources, tool invocation from a widget, widget metadata and
-model-context messages — is not part of this surface. The probe lists tools for a diagnostic and
-exposes no resource, invocation or widget; [#451](https://github.com/arcships/dim/issues/451)
-owns that boundary.
+An MCP Apps host contract — the document a tool declares, a view's tool call and its admission,
+and what a client renders — is not part of this surface; [MCP Apps](mcp-apps.md) owns it
+([#451](https://github.com/arcships/dim/issues/451)). The probe lists tools for a diagnostic and
+exposes no resource, invocation or view.
 
 Two terms are used below:
 

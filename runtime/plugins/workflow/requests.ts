@@ -25,5 +25,5 @@ export const management = {
   stop: z.strictObject({ run_id: id }),
 }
 export type RunRequest = z.infer<typeof toolRequest> & { caller: Caller }
-export type RunReply = { content: string; structured: JsonObject } | { code: string; message: string }
+export type RunReply = { content: string; structured?: JsonObject } | { code: string; message: string }
 export interface WorkflowRuns { call(request: RunRequest): Promise<RunReply> }

@@ -7,8 +7,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::management::editor;
 use crate::model::session::{
-    Command, CompactReply, ContextReading, DIM_OAUTH_ID, DraftPart, SessionPort, SwitchKind, Update,
+    Area, Command, CompactReply, ContextReading, DIM_OAUTH_ID, DraftPart, ManagementAction,
+    ManagementRefusal, ManagementRequest, ManagementResult, SessionPort, SubmitMode, SwitchKind,
+    Update,
 };
 #[cfg(test)]
 use crate::model::shell::Outcome as ShellOutcome;
@@ -24,6 +27,7 @@ use crate::ui::composer::{Composer, Outcome as ComposerOutcome, Shell, history};
 use crate::ui::i18n::{self, t, tf};
 use crate::ui::language_panel::LanguagePanel;
 use crate::ui::lines_panel::{LinesPanel, short_id};
+use crate::ui::management_panel::ManagementPanel;
 use crate::ui::models_panel::ModelsPanel;
 use crate::ui::oauth_view::OauthView;
 use crate::ui::plugins_panel::PluginsPanel;
@@ -159,6 +163,7 @@ pub struct Restart {
 pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> Leave {
     let mut restart = None;
     let code = run_terminal(host, surroundings, &mut restart);
+    history::flush();
     match restart {
         Some(restart) => Leave::Restart(restart),
         None => Leave::Exit(code),
@@ -620,6 +625,46 @@ fn run_terminal(
                     title.forget();
                     dirty = true;
                 }
+                Outcome::Edit {
+                    area,
+                    revision,
+                    text,
+                } => {
+                    // A draft a refused edit kept continues in its own file;
+                    // anything else starts from the document the panel read.
+                    let (revision, draft, reopened) = match app.kept_draft(area) {
+                        Some((revision, draft)) => (revision, draft, true),
+                        None => {
+                            let draft = match editor::Draft::open(&app.home, area, &text) {
+                                Ok(draft) => draft,
+                                Err(error) => {
+                                    if let Some(Prompt::Management(panel)) = &mut app.prompt {
+                                        panel.failed(error);
+                                    }
+                                    dirty = true;
+                                    continue;
+                                }
+                            };
+                            (revision, draft, false)
+                        }
+                    };
+                    let mut command = editor::command(draft.path());
+                    let program = command.get_program().to_string_lossy().into_owned();
+                    let ran = match terminal.run_external(&mut command) {
+                        Ok(ran) => ran,
+                        Err(_) => {
+                            let code = terminal.lost();
+                            app.host.shutdown();
+                            return code;
+                        }
+                    };
+                    app.write_draft(area, revision, draft, reopened, program, ran);
+                    app.request_reflow();
+                    status.forget();
+                    progress.forget();
+                    title.forget();
+                    dirty = true;
+                }
                 Outcome::Exit(code) => break code,
                 Outcome::Web => {
                     app.host.send(Command::ToggleWeb);
@@ -676,6 +721,13 @@ enum Outcome {
     SwitchMode,
     /// `/suspend`: give the terminal to the shell until the job continues.
     Suspend,
+    /// A management panel's edit: the document's text and the revision it
+    /// was read at, for the external editor.
+    Edit {
+        area: Area,
+        revision: String,
+        text: String,
+    },
     /// `/web`: flip the daemon-owned Web entry switch without leaving.
     Web,
     /// Start the updated CLI from this path on the session.
@@ -890,6 +942,21 @@ struct App {
     fork_confirm: Option<ForkAsk>,
     /// The picked message, set in the fork's composer once it is attached.
     fork_draft: Option<String>,
+    /// A management area's draft while the editor runs and until its write
+    /// comes back: a refused write keeps it, so the edit key reopens the
+    /// user's text.
+    management_edit: Option<ManagementDraft>,
+    /// Queued messages withdrawn for the draft, by input id, until the host
+    /// confirms each withdrawal; a confirmed one goes into the draft.
+    recovering: Vec<(String, String)>,
+}
+
+/// A management area's draft of one document: the text the editor was
+/// given, and the revision it was read at, which its write expects.
+struct ManagementDraft {
+    area: Area,
+    revision: String,
+    draft: editor::Draft,
 }
 
 /// Where a line the user is drafting opens.
@@ -942,6 +1009,7 @@ enum Prompt {
     Models(ModelsPanel),
     Providers(Box<ProvidersPanel>),
     Plugins(PluginsPanel),
+    Management(ManagementPanel),
     Login(Box<OauthView>),
     Approvals(ApprovalsPanel),
     Theme(ThemePanel),
@@ -1055,6 +1123,8 @@ impl App {
             line_draft: None,
             fork_confirm: None,
             fork_draft: None,
+            management_edit: None,
+            recovering: Vec::new(),
         }
     }
 
@@ -1193,13 +1263,65 @@ impl App {
         }
     }
 
-    /// Sends the next queued message in as steering (Ctrl+S).
+    /// Sends the oldest queued message in as steering (Ctrl+S, and Enter on an
+    /// empty draft).
     fn steer(&mut self) {
         if let Some((id, _)) = self.queued().into_iter().next() {
             self.host.send(Command::InputControl {
                 input_id: id,
                 action: "steer",
             });
+        }
+    }
+
+    /// Whether a key steers the draft: Ctrl+S during a run with a draft.
+    /// Without a draft, Ctrl+S steers the oldest queued message.
+    fn steers_draft(&self, key: &KeyEvent) -> bool {
+        key.code == KeyCode::Char('s')
+            && key.mods.contains(Modifiers::CTRL)
+            && self.running()
+            && !self.composer.is_empty()
+            && self.composer.shell().is_none()
+            && !self.composer.palette_open()
+            && !self.composer.mention_open()
+    }
+
+    /// Withdraws the newest queued message into the draft (Shift+Left).
+    fn recall_newest_queued(&mut self) {
+        if let Some((id, text)) = self.queued().pop() {
+            self.withdraw(id, text);
+        }
+    }
+
+    /// Withdraws every queued message, oldest first, for an interrupt. The
+    /// withdrawals reach the session before its stop, so no queued message
+    /// starts the next run.
+    fn recall_all_queued(&mut self) {
+        for (id, text) in self.queued() {
+            self.withdraw(id, text);
+        }
+    }
+
+    fn withdraw(&mut self, id: String, text: String) {
+        self.recovering.push((id.clone(), text));
+        self.host.send(Command::InputControl {
+            input_id: id,
+            action: "withdraw",
+        });
+    }
+
+    /// Puts a withdrawn message into the draft after the text already there,
+    /// once the session confirmed the withdrawal.
+    fn restore_withdrawn(&mut self, input_id: &str) {
+        let Some(at) = self.recovering.iter().position(|(id, _)| id == input_id) else {
+            return;
+        };
+        let (_, text) = self.recovering.remove(at);
+        let draft = self.composer.text();
+        if draft.trim().is_empty() {
+            self.composer.set_draft(&text);
+        } else {
+            self.composer.set_draft(&format!("{draft}\n{text}"));
         }
     }
 
@@ -1247,6 +1369,7 @@ impl App {
             | Some(Prompt::Models(_))
             | Some(Prompt::Providers(_))
             | Some(Prompt::Plugins(_))
+            | Some(Prompt::Management(_))
             | Some(Prompt::Login(_))
             | Some(Prompt::Approvals(_))
             | Some(Prompt::Theme(_))
@@ -1414,6 +1537,7 @@ impl App {
 
     fn apply(&mut self, update: Update) {
         match update {
+            Update::Withdrawn { input_id } => self.restore_withdrawn(&input_id),
             Update::Ready(configuration) => {
                 self.label = Some(ModelLabel::new(&configuration));
             }
@@ -1598,6 +1722,102 @@ impl App {
                     panel.set_result(&action, result, plugins);
                 }
             }
+            Update::Management(reply) => {
+                let save = matches!(reply.request.action, ManagementAction::Save { .. });
+                // Only a reload of the draft's own area discards it. Every
+                // other reply — a toggle, a read, another area's reply —
+                // leaves the kept text and the revision it came from for the
+                // edit key; a revision the owner no longer honors answers
+                // the next write with a conflict.
+                if reply.request.action == ManagementAction::Reload
+                    && self
+                        .management_edit
+                        .as_ref()
+                        .is_some_and(|kept| kept.area == reply.request.area)
+                {
+                    self.management_edit = None;
+                }
+                if let Some(Prompt::Management(panel)) = &mut self.prompt {
+                    panel.set_result(&reply);
+                    // The write took it: the file is no longer the user's
+                    // text. That holds when only the read that reports the
+                    // area failed, since the change itself was made. A
+                    // refused write keeps the file and says where it is;
+                    // after a conflict the area was read again, so the link
+                    // to the stale revision goes and the next edit opens
+                    // the current document.
+                    if save {
+                        match (&reply.result, self.management_edit.take()) {
+                            (
+                                ManagementResult::View(_) | ManagementResult::Applied { .. },
+                                Some(kept),
+                            ) => kept.draft.remove(),
+                            (
+                                ManagementResult::Refused(ManagementRefusal::Conflict { .. }),
+                                Some(kept),
+                            ) => {
+                                panel.kept(&kept.draft.path().display().to_string());
+                            }
+                            (ManagementResult::Refused(_), Some(kept)) => {
+                                panel.kept(&kept.draft.path().display().to_string());
+                                self.management_edit = Some(kept);
+                            }
+                            (_, None) => {}
+                        }
+                    }
+                } else if save {
+                    // Esc closed the panel while the write was in flight;
+                    // the reply still settles the draft and says what it
+                    // came to.
+                    match (&reply.result, self.management_edit.take()) {
+                        (ManagementResult::View(_), Some(kept)) => {
+                            kept.draft.remove();
+                            self.set_notice(t("Saved.").to_owned());
+                        }
+                        (ManagementResult::Applied { read_error }, Some(kept)) => {
+                            kept.draft.remove();
+                            self.set_notice(format!("{} {read_error}", t("Saved.")));
+                        }
+                        (ManagementResult::Refused(error), Some(kept)) => {
+                            let where_it_is = tf(
+                                "Your text is kept in {path}.",
+                                &[("path", &kept.draft.path().display().to_string())],
+                            );
+                            self.set_notice(format!("{error} {where_it_is}"));
+                            // A conflict drops the link, as it does with the
+                            // panel open; a refusal keeps it, so the edit key
+                            // reopens this text at its revision.
+                            if let ManagementResult::Refused(ManagementRefusal::Refused(_)) =
+                                &reply.result
+                            {
+                                self.management_edit = Some(kept);
+                            }
+                        }
+                        (ManagementResult::Refused(error), None) => {
+                            self.set_notice(error.to_string())
+                        }
+                        (ManagementResult::View(_) | ManagementResult::Applied { .. }, None) => {}
+                    }
+                } else if reply.request.action == ManagementAction::Reload {
+                    match &reply.result {
+                        ManagementResult::View(view) => {
+                            let text =
+                                crate::ui::management_panel::reloaded(reply.request.area, view);
+                            self.reports.push(Block::Status {
+                                text,
+                                tone: Tone::Muted,
+                            });
+                        }
+                        // The owner rescanned; only the read of the result
+                        // failed, so the rescan stands and the read is what
+                        // the notice reports after it.
+                        ManagementResult::Applied { read_error } => {
+                            self.set_notice(format!("{} {read_error}", t("Reloaded.")))
+                        }
+                        ManagementResult::Refused(error) => self.set_notice(error.to_string()),
+                    }
+                }
+            }
             Update::Login(account) => {
                 let signed_in = matches!(account, Ok(Some(_)));
                 self.signed_in = signed_in;
@@ -1779,6 +1999,7 @@ impl App {
                     Some(Prompt::Language(panel)) => panel.paste(&text),
                     Some(Prompt::Settings(panel)) => panel.paste(&text),
                     Some(Prompt::Isolation(panel)) => panel.paste(&text),
+                    Some(Prompt::Management(panel)) => panel.paste(&text),
                     Some(Prompt::Ask(prompt)) => prompt.paste(&text),
                     Some(_) => {}
                 }
@@ -1859,6 +2080,7 @@ impl App {
                 Prompt::Models(p) => p.handle_key(key),
                 Prompt::Providers(p) => p.handle_key(key),
                 Prompt::Plugins(p) => p.handle_key(key),
+                Prompt::Management(p) => p.handle_key(key),
                 Prompt::Login(p) => match p.handle_key(key) {
                     Effect::OauthBack => Effect::Close,
                     Effect::OauthCancel => {
@@ -1887,6 +2109,14 @@ impl App {
     /// A key for the composer: the palette, the shortcuts around it and the
     /// draft editor, with what a submit, a command or a shell line does.
     fn composer_key(&mut self, key: KeyEvent) -> Outcome {
+        let (key, mode) = if self.steers_draft(&key) {
+            (
+                KeyEvent::new(KeyCode::Enter, Modifiers::NONE),
+                SubmitMode::Steer,
+            )
+        } else {
+            (key, SubmitMode::Queue)
+        };
         let ctrl = key.mods.contains(Modifiers::CTRL);
         match key.code {
             KeyCode::Char('o' | 'p') if ctrl && !self.composer.palette_open() => {
@@ -1925,8 +2155,9 @@ impl App {
                 } else if self.shell.is_some() {
                     self.stop_shell();
                 } else if self.running() {
+                    self.recall_all_queued();
                     self.interrupt();
-                } else if !self.composer.is_empty() || self.composer.shell().is_some() {
+                } else if self.composer.shell().is_some() {
                     self.composer.clear();
                 }
                 return Outcome::Continue;
@@ -1940,16 +2171,18 @@ impl App {
                 self.set_notice(t("A shell command is already running"));
                 return Outcome::Continue;
             }
-            KeyCode::Up
+            KeyCode::Enter
                 if key.mods.0 == 0 && self.composer.is_empty() && !self.queued().is_empty() =>
             {
-                if let Some((id, text)) = self.queued().pop() {
-                    self.host.send(Command::InputControl {
-                        input_id: id,
-                        action: "withdraw",
-                    });
-                    self.composer.set_draft(&text);
-                }
+                self.steer();
+                return Outcome::Continue;
+            }
+            KeyCode::Left
+                if key.mods.0 == Modifiers::SHIFT.0
+                    && self.composer.is_empty()
+                    && !self.queued().is_empty() =>
+            {
+                self.recall_newest_queued();
                 return Outcome::Continue;
             }
             _ => {}
@@ -1968,27 +2201,27 @@ impl App {
             }
             ComposerOutcome::Submit(text) => {
                 let text = text.trim().to_owned();
-                let _ = history::append(&self.home, &self.cwd_key, &text);
+                history::append(&self.home, &self.cwd_key, &text);
                 self.composer.push_history(&text);
                 self.jump = Some(Jump::Bottom);
-                if self.running() {
+                if mode == SubmitMode::Queue && self.running() {
                     self.set_notice(t("Message queued"));
                 }
-                self.host.submit(text);
+                self.host.submit(text, mode);
             }
             ComposerOutcome::SubmitDraft { text, parts } => {
                 let text = text.trim().to_owned();
-                let _ = history::append(&self.home, &self.cwd_key, &text);
+                history::append(&self.home, &self.cwd_key, &text);
                 self.composer.push_history(&text);
                 self.jump = Some(Jump::Bottom);
-                if self.running() {
+                if mode == SubmitMode::Queue && self.running() {
                     self.set_notice(t("Message queued"));
                 }
-                self.host.send(Command::SubmitDraft(parts));
+                self.host.send(Command::SubmitDraft(parts, mode));
             }
             ComposerOutcome::Shell { command, shell } => {
                 let entry = format!("{}{command}", shell.prefix());
-                let _ = history::append(&self.home, &self.cwd_key, &entry);
+                history::append(&self.home, &self.cwd_key, &entry);
                 self.composer.push_history(&entry);
                 self.jump = Some(Jump::Bottom);
                 let running = crate::ui::shell::Running::new(command, shell == Shell::Private);
@@ -2270,7 +2503,7 @@ impl App {
             return;
         };
         let text = text.trim().to_owned();
-        let _ = history::append(&self.home, &self.cwd_key, &text);
+        history::append(&self.home, &self.cwd_key, &text);
         self.composer.push_history(&text);
         self.host.send(Command::OpenLine {
             session_id: draft.session_id,
@@ -2555,6 +2788,18 @@ impl App {
             }
             Effect::Provider(action) => self.host.send(Command::Provider(action)),
             Effect::Plugin(action) => self.host.send(Command::Plugin(action)),
+            Effect::Management(request) => self.host.send(Command::Management(request)),
+            Effect::EditManagement {
+                area,
+                revision,
+                text,
+            } => {
+                return Outcome::Edit {
+                    area,
+                    revision,
+                    text,
+                };
+            }
             Effect::OauthStart(start) => self.host.send(Command::OauthStart(start)),
             Effect::OauthCancel => self.host.send(Command::OauthCancel),
             Effect::OauthBack => {}
@@ -2770,6 +3015,7 @@ impl App {
             tools_expanded: self.tool_detail == Detail::Expanded,
             mouse: self.mouse,
             notify: self.notify,
+            acp_sessions: crate::ui::config::saved_show_acp(&self.home),
             file_access: file_label(self.permission_policy.file_access()).to_owned(),
             approvals: tool_policy_label(&self.permission_policy).to_owned(),
         };
@@ -2820,6 +3066,14 @@ impl App {
                 self.settings_return = None;
                 self.open_settings(setting);
             }
+            Setting::AcpSessions => {
+                let show = !crate::ui::config::saved_show_acp(&self.home);
+                if let Some(error) = crate::ui::config::save_show_acp(&self.home, show) {
+                    self.set_notice(error);
+                }
+                self.settings_return = None;
+                self.open_settings(setting);
+            }
             Setting::ToolDetails => {
                 self.toggle_tool_details();
                 self.settings_return = None;
@@ -2858,6 +3112,158 @@ impl App {
         ) {
             self.set_notice(tf("Tool details not saved: {error}", &[("error", &error)]));
         }
+    }
+
+    /// The draft a refused edit kept for `area`, if its text is still
+    /// there: the editor reopens it as it is, so an edit that continues
+    /// keeps working in its own file, at the revision that text came from.
+    fn kept_draft(&mut self, area: Area) -> Option<(String, editor::Draft)> {
+        let kept = self.management_edit.as_ref()?;
+        if kept.area != area {
+            return None;
+        }
+        let kept = self.management_edit.take()?;
+        if kept.draft.text().is_err() {
+            self.management_edit = Some(kept);
+            return None;
+        }
+        Some((kept.revision, kept.draft))
+    }
+
+    /// Says why an edit could not go on, in the panel or as a notice when
+    /// its panel is gone.
+    fn failed(&mut self, message: String) {
+        if let Some(Prompt::Management(panel)) = &mut self.prompt {
+            panel.failed(message);
+        } else {
+            self.set_notice(message);
+        }
+    }
+
+    /// Keeps a draft file and the revision it came from, and says where the
+    /// user's text is.
+    fn keep_draft(&mut self, area: Area, revision: String, draft: editor::Draft, message: String) {
+        self.failed(message);
+        self.management_edit = Some(ManagementDraft {
+            area,
+            revision,
+            draft,
+        });
+    }
+
+    /// What the external editor left: a non-zero exit and an unreadable or
+    /// unparseable draft write nothing and keep their file, the unchanged
+    /// document writes nothing, and a new document is written with the
+    /// revision the panel read.
+    fn write_draft(
+        &mut self,
+        area: Area,
+        revision: String,
+        draft: editor::Draft,
+        reopened: bool,
+        program: String,
+        result: std::io::Result<std::process::ExitStatus>,
+    ) {
+        let path = draft.path().display().to_string();
+        let read = match result {
+            Ok(status) if status.success() => draft.text(),
+            Ok(status) => {
+                // The text the editor leaves on a non-zero exit is not a
+                // document to write; the file keeps it, as a refusal does.
+                self.keep_draft(
+                    area,
+                    revision,
+                    draft,
+                    format!(
+                        "{} Nothing was written. Your text is kept in {path}.",
+                        editor::exited(status)
+                    ),
+                );
+                return;
+            }
+            Err(error) => {
+                // An editor that could not start leaves no text of the
+                // user's to keep — unless it reopened the user's own.
+                let message = format!("{program}: {error}");
+                if reopened {
+                    self.keep_draft(
+                        area,
+                        revision,
+                        draft,
+                        format!("{message} Your text is kept in {path}."),
+                    );
+                } else {
+                    self.failed(message);
+                    draft.remove();
+                }
+                return;
+            }
+        };
+        /// What the draft asks next.
+        enum Next {
+            Keep,
+            Unchanged,
+            Save(serde_json::Value),
+        }
+        let next = {
+            let Some(Prompt::Management(panel)) = &mut self.prompt else {
+                return;
+            };
+            match read.and_then(|text| {
+                serde_json::from_str::<serde_json::Value>(&text)
+                    .map_err(|error| format!("{path}: {error}"))
+            }) {
+                Err(error) => {
+                    panel.failed(error);
+                    panel.kept(&path);
+                    Next::Keep
+                }
+                Ok(document) if panel.document() == Some(&document) => {
+                    panel.unchanged();
+                    Next::Unchanged
+                }
+                Ok(document) => Next::Save(document),
+            }
+        };
+        match next {
+            Next::Keep => {
+                self.management_edit = Some(ManagementDraft {
+                    area,
+                    revision,
+                    draft,
+                })
+            }
+            Next::Unchanged => {
+                self.management_edit = None;
+                draft.remove();
+            }
+            Next::Save(document) => {
+                if let Some(Prompt::Management(panel)) = &mut self.prompt {
+                    panel.saving();
+                }
+                self.management_edit = Some(ManagementDraft {
+                    area,
+                    revision: revision.clone(),
+                    draft,
+                });
+                self.host.send(Command::Management(ManagementRequest {
+                    area,
+                    action: ManagementAction::Save {
+                        expected_revision: revision,
+                        document,
+                    },
+                }));
+            }
+        }
+    }
+
+    /// `/<area>` opens the management panel of `area`, which reads it.
+    fn open_management(&mut self, area: Area) {
+        self.open_prompt(Prompt::Management(ManagementPanel::new(area)));
+        self.host.send(Command::Management(ManagementRequest {
+            area,
+            action: ManagementAction::List,
+        }));
     }
 
     /// `/plugins` opens the list; `/plugins install PATH` installs the
@@ -2933,6 +3339,16 @@ impl App {
                 self.host.send(Command::Compact);
                 Outcome::Continue
             }
+            "goal" => {
+                match crate::goal::request(args) {
+                    Some(request) => self.host.send(Command::Goal(request)),
+                    None => self.reports.push(Block::Status {
+                        text: crate::goal::USAGE.to_owned(),
+                        tone: Tone::Muted,
+                    }),
+                }
+                Outcome::Continue
+            }
             "mcp" => {
                 self.host.send(Command::Mcp(args.to_owned()));
                 Outcome::Continue
@@ -2952,7 +3368,9 @@ impl App {
             }
             "web" => Outcome::Web,
             "resume" => {
-                self.open_prompt(Prompt::Sessions(SessionsPanel::new()));
+                self.open_prompt(Prompt::Sessions(SessionsPanel::new(
+                    crate::ui::config::saved_show_acp(&self.home),
+                )));
                 self.sync_sessions();
                 Outcome::Continue
             }
@@ -3013,6 +3431,21 @@ impl App {
             }
             "plugins" => {
                 self.plugins(args);
+                Outcome::Continue
+            }
+            "skills" => {
+                self.open_management(Area::Skills);
+                Outcome::Continue
+            }
+            "reload-skills" => {
+                self.host.send(Command::Management(ManagementRequest {
+                    area: Area::Skills,
+                    action: ManagementAction::Reload,
+                }));
+                Outcome::Continue
+            }
+            "hooks" => {
+                self.open_management(Area::Hooks);
                 Outcome::Continue
             }
             "connect" => {
@@ -3551,6 +3984,7 @@ impl App {
                 Some(Prompt::Models(prompt)) => list(prompt.render(list_width, budget, p)),
                 Some(Prompt::Providers(prompt)) => list(prompt.render(list_width, budget, p)),
                 Some(Prompt::Plugins(prompt)) => list(prompt.render(list_width, budget, p)),
+                Some(Prompt::Management(prompt)) => list(prompt.render(list_width, budget, p)),
                 Some(Prompt::Login(prompt)) => list(prompt.render(list_width, budget, p)),
                 Some(Prompt::Approvals(prompt)) => list(prompt.render(list_width, budget, p)),
                 Some(Prompt::Theme(prompt)) => list(prompt.render(list_width, budget, p)),
@@ -3574,6 +4008,7 @@ impl App {
             Some(Prompt::Models(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Providers(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Plugins(prompt)) => Some(prompt.render(outer, panel_rows, p)),
+            Some(Prompt::Management(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Login(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Approvals(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Theme(prompt)) => Some(prompt.render(outer, panel_rows, p)),
@@ -4421,6 +4856,16 @@ impl App {
                 >= u128::from(reading.threshold) * u128::from(CONTEXT_WARNING_PERCENT)
     }
 
+    /// The shown line's goal, while the line follows it: a goal that
+    /// continues, or one held paused.
+    fn goal_label(&self) -> Option<&'static str> {
+        match self.snapshot.as_ref()?.goal.as_ref()?.status {
+            crate::goal::Status::Active => Some(t("◎ goal active")),
+            crate::goal::Status::Paused(_) => Some(t("◎ goal paused")),
+            _ => None,
+        }
+    }
+
     /// Fullscreen's bottom border label, the status corner: the run
     /// status, the slot (a notice in the highlight colour), the approvals
     /// mode when it is not the default one and the context use.
@@ -4437,6 +4882,9 @@ impl App {
                 &p.muted
             };
             parts.push(fg(&slot, color));
+        }
+        if let Some(goal) = self.goal_label() {
+            parts.push(fg(goal, &p.muted));
         }
         if self.permission_policy.tool_approval() == dim_agent_types::ToolApproval::Bypass {
             let mode = tool_policy_label(&self.permission_policy);
@@ -4463,6 +4911,10 @@ impl App {
             tool_policy_label(&self.permission_policy)
         };
         let mut left = format!("{}AGENT  \u{23f5}\u{23f5} {}", " ".repeat(MARGIN), approval);
+        if let Some(goal) = self.goal_label() {
+            left.push_str("  ");
+            left.push_str(goal);
+        }
         if let Some(context) = self.context_label() {
             left.push_str("  ");
             left.push_str(&context);
@@ -4610,8 +5062,8 @@ const QUEUE_ROWS: usize = 5;
 
 /// The queue strip's hint, and its form when messages are not shown. Every
 /// `/name` it can draw is a command in the table.
-const QUEUE_HINT: &str = "↑ edit · ctrl+s steer now";
-const QUEUE_HINT_MORE: &str = "+{count} more · ↑ edit · ctrl+s steer now";
+const QUEUE_HINT: &str = "shift+← edit last · ctrl+s steer now";
+const QUEUE_HINT_MORE: &str = "+{count} more · shift+← edit last · ctrl+s steer now";
 
 /// The queue, drawn in a titled border above the composer: the next message
 /// to run reads at the top. `height` message rows are drawn (at least the
@@ -5352,7 +5804,9 @@ mod tests {
         let expected = app.composer.expanded_text().trim().to_owned();
         assert!(expected.ends_with(" appended"));
         press(&mut app, KeyCode::Enter);
-        assert!(matches!(sent.borrow().as_slice(), [Command::Submit(text)] if text == &expected));
+        assert!(
+            matches!(sent.borrow().as_slice(), [Command::Submit(text, _)] if text == &expected)
+        );
     }
 
     #[test]
@@ -5656,7 +6110,7 @@ mod tests {
         );
         let key = |code| InputEvent::Key(crate::ui::terminal::KeyEvent::new(code, Modifiers::NONE));
         app.run_command("settings", "");
-        for _ in 0..8 {
+        for _ in 0..9 {
             app.handle_input(key(KeyCode::Down));
         }
         app.handle_input(key(KeyCode::Enter));
@@ -7137,7 +7591,7 @@ mod tests {
             assert!(!drawn.app.composer.text().contains("[Image #1]"));
             drawn.key(KeyCode::Enter);
             match sent.borrow().last().unwrap() {
-                Command::Submit(text) => assert!(!text.contains("[Image #1]")),
+                Command::Submit(text, _) => assert!(!text.contains("[Image #1]")),
                 Command::OpenLine { prompt, .. } => assert_eq!(prompt, "look [Image #7]"),
                 _ => panic!("message reuse must submit text or open a line"),
             }
@@ -7152,14 +7606,23 @@ mod tests {
         snapshot.focus = "main".into();
         drawn.app.apply(Update::Snapshot(Box::new(snapshot)));
         drawn.app.composer.clear();
-        drawn.key(KeyCode::Up);
-        assert_eq!(drawn.app.composer.text(), "look [Image #7]");
+        let _ = drawn
+            .app
+            .handle(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
+                KeyCode::Left,
+                Modifiers::SHIFT,
+            )));
+        assert!(drawn.app.composer.is_empty());
         assert!(
             matches!(sent.borrow().last(), Some(Command::InputControl { input_id, action: "withdraw" }) if input_id == "queued-image")
         );
+        drawn.app.apply(Update::Withdrawn {
+            input_id: "queued-image".into(),
+        });
+        assert_eq!(drawn.app.composer.text(), "look [Image #7]");
         drawn.key(KeyCode::Enter);
         assert!(
-            matches!(sent.borrow().last(), Some(Command::Submit(text)) if text == "look [Image #7]")
+            matches!(sent.borrow().last(), Some(Command::Submit(text, _)) if text == "look [Image #7]")
         );
     }
 
@@ -7543,6 +8006,201 @@ mod tests {
             Some(Prompt::Ask(prompt)) => prompt.selections.get("tall").cloned(),
             _ => None,
         }
+    }
+
+    /// A session with `queued` messages waiting, while a run is in progress
+    /// when `running` is set.
+    fn session_with_queue(
+        running: bool,
+        queued: &[(&str, &str)],
+    ) -> (
+        App,
+        std::rc::Rc<std::cell::RefCell<Vec<Command>>>,
+        tempfile::TempDir,
+    ) {
+        let home = tempfile::tempdir().unwrap();
+        let theme = test_theme();
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut app = App::new(
+            Box::new(Recorder(sent.clone())),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            projection_id: 7,
+            focus: "main".into(),
+            running,
+            main_running: running,
+            queued: queued
+                .iter()
+                .map(|(id, text)| crate::model::view::QueuedInput {
+                    id: (*id).into(),
+                    text: (*text).into(),
+                    display: None,
+                })
+                .collect(),
+            ..ViewSnapshot::default()
+        })));
+        (app, sent, home)
+    }
+
+    fn describe(commands: &[Command]) -> Vec<String> {
+        commands
+            .iter()
+            .map(|command| match command {
+                Command::Submit(text, mode) => format!("submit:{}:{}", mode.as_str(), text),
+                Command::InputControl { input_id, action } => format!("{action}:{input_id}"),
+                Command::Stop => "stop".into(),
+                _ => "other".into(),
+            })
+            .collect()
+    }
+
+    /// During a run Enter queues the draft, and Ctrl+S steers a draft that is
+    /// not empty.
+    #[test]
+    fn enter_queues_a_draft_and_ctrl_s_steers_it_during_a_run() {
+        let (mut app, sent, _home) = session_with_queue(true, &[]);
+        typed(&mut app, "queue me");
+        press(&mut app, KeyCode::Enter);
+        typed(&mut app, "steer me");
+        let _ = app.handle(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
+            KeyCode::Char('s'),
+            Modifiers::CTRL,
+        )));
+        assert_eq!(
+            describe(&sent.borrow()),
+            ["submit:queue:queue me", "submit:steer:steer me"]
+        );
+    }
+
+    #[test]
+    fn steering_waits_for_pending_clipboard_and_image_insertions() {
+        for fullscreen in [false, true] {
+            for image in [false, true] {
+                let (mut app, sent, home) = session_with_queue(true, &[("a", "queued")]);
+                app.fullscreen = fullscreen;
+                app.composer.set_accepts_images(true);
+                let (clipboard_send, clipboard_receive) = std::sync::mpsc::channel();
+                let (image_send, image_receive) = std::sync::mpsc::channel();
+                let path = home.path().join("screen.png");
+                wide_png(&path, 32);
+                let plan = app.composer.plan_files(&[path]).unwrap();
+                let images = crate::ui::composer::read_planned(&plan).unwrap();
+                if image {
+                    app.image_read = Some(ImageRead {
+                        plan,
+                        receive: image_receive,
+                    });
+                } else {
+                    app.clipboard = Some(ClipboardRead::Native(clipboard_receive));
+                }
+                typed(&mut app, "look");
+                for key in [
+                    KeyEvent::new(KeyCode::Enter, Modifiers::NONE),
+                    KeyEvent::new(KeyCode::Char('s'), Modifiers::CTRL),
+                ] {
+                    app.handle(InputEvent::Key(key));
+                    assert!(
+                        sent.borrow().is_empty(),
+                        "pending insertion must hold sending"
+                    );
+                    assert_eq!(app.composer.text(), "look");
+                    let notice = if image {
+                        "Wait for the image insertion before sending"
+                    } else {
+                        "Wait for clipboard insertion before sending"
+                    };
+                    assert_eq!(
+                        app.notice.as_ref().map(|(text, _)| text.as_str()),
+                        Some(notice)
+                    );
+                }
+                if image {
+                    image_send.send(Ok(images)).unwrap();
+                } else {
+                    clipboard_send
+                        .send(Ok(crate::clipboard::Source::Text(" at this".into())))
+                        .unwrap();
+                }
+                app.tick();
+                app.handle(InputEvent::Key(KeyEvent::new(
+                    KeyCode::Char('s'),
+                    Modifiers::CTRL,
+                )));
+                if image {
+                    assert!(matches!(
+                        sent.borrow().as_slice(),
+                        [Command::SubmitDraft(parts, SubmitMode::Steer)]
+                            if matches!(parts.as_slice(), [DraftPart::Text(text), DraftPart::Block(dim_agent_types::ContentBlock::Image { .. })] if text == "look ")
+                    ));
+                } else {
+                    assert_eq!(describe(&sent.borrow()), ["submit:steer:look at this"]);
+                }
+            }
+        }
+    }
+
+    /// Esc withdraws the queue oldest first before the stop, and each text
+    /// joins the draft only when its withdrawal is deleted.
+    #[test]
+    fn escape_withdraws_the_queue_before_the_stop_and_restores_the_drafts() {
+        let (mut app, sent, _home) = session_with_queue(true, &[("a", "first"), ("b", "second")]);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(
+            describe(&sent.borrow()),
+            ["withdraw:a", "withdraw:b", "stop"]
+        );
+        assert!(app.composer.is_empty());
+        app.apply(Update::Withdrawn {
+            input_id: "a".into(),
+        });
+        app.apply(Update::Withdrawn {
+            input_id: "b".into(),
+        });
+        assert_eq!(app.composer.text(), "first\nsecond");
+    }
+
+    /// Shift+Left takes the newest queued message back, and its text enters
+    /// the draft once the withdrawal is deleted.
+    #[test]
+    fn shift_left_withdraws_the_newest_queued_message_into_the_draft() {
+        let (mut app, sent, _home) = session_with_queue(true, &[("a", "first"), ("b", "second")]);
+        let _ = app.handle(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
+            KeyCode::Left,
+            Modifiers::SHIFT,
+        )));
+        assert_eq!(describe(&sent.borrow()), ["withdraw:b"]);
+        assert!(app.composer.is_empty());
+        app.apply(Update::Withdrawn {
+            input_id: "b".into(),
+        });
+        assert_eq!(app.composer.text(), "second");
+    }
+
+    /// Enter on an empty draft steers the oldest queued message, as Ctrl+S does.
+    #[test]
+    fn enter_on_an_empty_draft_steers_like_ctrl_s() {
+        let (mut app, sent, _home) = session_with_queue(true, &[("a", "first"), ("b", "second")]);
+        press(&mut app, KeyCode::Enter);
+        let _ = app.handle(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
+            KeyCode::Char('s'),
+            Modifiers::CTRL,
+        )));
+        assert_eq!(describe(&sent.borrow()), ["steer:a", "steer:a"]);
+    }
+
+    /// Esc with no run in progress keeps the draft.
+    #[test]
+    fn escape_keeps_an_idle_draft() {
+        let (mut app, sent, _home) = session_with_queue(false, &[]);
+        typed(&mut app, "keep");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.composer.text(), "keep");
+        assert!(sent.borrow().is_empty());
     }
 
     /// With a question pending and its answer to be chosen, `/` and Ctrl+O
@@ -8060,5 +8718,102 @@ mod tests {
         assert_eq!(app.composer.text(), "");
         assert!(app.image_read.is_none());
         drop(send);
+    }
+
+    /// A Save reply reaches the app after its panel closed (Esc is allowed
+    /// while a write is in flight): the draft is settled and the outcome is
+    /// said as a notice.
+    #[test]
+    fn a_save_reply_without_its_panel_still_settles_the_draft() {
+        use crate::model::session::{ManagementReply, ManagementView};
+        fn view() -> ManagementView {
+            ManagementView {
+                revision: None,
+                document: None,
+                actions: Vec::new(),
+                groups: Vec::new(),
+                issues: Vec::new(),
+            }
+        }
+        fn save_reply(result: ManagementResult) -> Update {
+            Update::Management(ManagementReply {
+                request: ManagementRequest {
+                    area: Area::Hooks,
+                    action: ManagementAction::Save {
+                        expected_revision: "user:1".into(),
+                        document: serde_json::json!({}),
+                    },
+                },
+                result,
+            })
+        }
+        let root = tempfile::tempdir().unwrap();
+        let theme = test_theme();
+        let mut app = App::new(
+            Box::new(Idle),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            root.path().join("home"),
+            "/w".into(),
+        );
+        let draft = |app: &mut App| {
+            app.management_edit = Some(ManagementDraft {
+                area: Area::Hooks,
+                revision: "user:1".into(),
+                draft: editor::Draft::open(root.path(), Area::Hooks, "{}").unwrap(),
+            });
+            app.management_edit
+                .as_ref()
+                .unwrap()
+                .draft
+                .path()
+                .to_path_buf()
+        };
+        // Written: the file goes and the outcome is a notice.
+        let path = draft(&mut app);
+        app.apply(save_reply(ManagementResult::View(view())));
+        assert!(!path.exists(), "the written draft is removed");
+        assert_eq!(
+            app.notice.as_ref().map(|(text, _)| text.as_str()),
+            Some("Saved.")
+        );
+        assert!(app.management_edit.is_none());
+        // Written, and only the read after it failed: the write still took
+        // the text, so the file goes too and the notice says what failed.
+        let path = draft(&mut app);
+        app.apply(save_reply(ManagementResult::Applied {
+            read_error: "catalog unavailable".into(),
+        }));
+        assert!(!path.exists(), "an applied write keeps no draft");
+        let (text, _) = app.notice.clone().unwrap();
+        assert_eq!(text, "Saved. catalog unavailable");
+        assert!(!text.contains("kept in"), "{text}");
+        assert!(app.management_edit.is_none());
+        // Refused: the file stays, the notice names it, and the link keeps
+        // the revision the draft came from.
+        let path = draft(&mut app);
+        app.apply(save_reply(ManagementResult::Refused(
+            ManagementRefusal::Refused("nope".into()),
+        )));
+        assert!(path.exists(), "the refused draft stays");
+        let (text, _) = app.notice.clone().unwrap();
+        assert!(text.contains("nope"), "{text}");
+        assert!(text.contains(&path.display().to_string()), "{text}");
+        let kept = app.management_edit.as_ref().expect("the link stays");
+        assert_eq!(kept.revision, "user:1");
+        assert_eq!(kept.draft.path(), path.as_path());
+        // A conflict keeps the file and names it, and drops the link.
+        let path = draft(&mut app);
+        app.apply(save_reply(ManagementResult::Refused(
+            ManagementRefusal::Conflict {
+                message: "The user document changed since it was read.".into(),
+                view: Ok(Box::new(view())),
+            },
+        )));
+        assert!(path.exists(), "the conflicted draft stays");
+        let (text, _) = app.notice.clone().unwrap();
+        assert!(text.contains("The user document changed"), "{text}");
+        assert!(text.contains(&path.display().to_string()), "{text}");
+        assert!(app.management_edit.is_none(), "a conflict drops the link");
     }
 }

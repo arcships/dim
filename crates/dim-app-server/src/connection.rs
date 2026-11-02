@@ -421,7 +421,11 @@ impl Connection {
                 "Method requires protocol v3",
             ));
         }
-        if matches!(call, Call::SessionMcp(_) | Call::McpRefresh(_)) && rpc.mcp.is_none() {
+        if matches!(
+            call,
+            Call::SessionMcp(_) | Call::McpRefresh(_) | Call::McpAppWidget(_) | Call::McpAppCall(_)
+        ) && rpc.mcp.is_none()
+        {
             return Err(RpcError::app(
                 -32601,
                 "unknown_method",
@@ -457,6 +461,8 @@ impl Connection {
             | Call::SessionMcp(p)
             | Call::McpRefresh(p)
             | Call::SessionMethods(p) => (Some(&p.session_id), None),
+            Call::McpAppWidget(p) => (Some(&p.session_id), None),
+            Call::McpAppCall(p) => (Some(&p.session_id), None),
             Call::Create(p) => {
                 if p.agent_id.is_some() && self.protocol_version() < 3 {
                     return Err(RpcError::invalid("agentId requires protocol v3"));
@@ -622,6 +628,8 @@ impl Connection {
             Call::ExecStop(p) => Some(&p.session_id),
             Call::ModelUpdate(p) => Some(&p.session_id),
             Call::SessionMcp(p) | Call::McpRefresh(p) => Some(&p.session_id),
+            Call::McpAppWidget(p) => Some(&p.session_id),
+            Call::McpAppCall(p) => Some(&p.session_id),
             Call::Attach(p) => Some(&p.session_id),
             Call::BranchCreate(p) => Some(&p.session_id),
             Call::BranchEnd(p) => Some(&p.session_id),
@@ -748,7 +756,11 @@ impl Connection {
                         match rpc
                             .index
                             .session_catalog(
-                                Catalog::default(),
+                                Catalog {
+                                    with_internal: true,
+                                    with_acp_sessions: true,
+                                    ..Catalog::default()
+                                },
                                 filter,
                                 self.protocol_version(),
                                 cancel,
@@ -815,6 +827,8 @@ impl Connection {
                                 attached_clients: self.hub.attached_clients(s.id()),
                                 agent_id: (self.protocol_version() >= 3)
                                     .then(|| host.agent_id.clone()),
+                                origin: None,
+                                parent_session_id: None,
                                 title: (self.protocol_version() >= 3)
                                     .then(crate::storage::TitleFields::default),
                             })
@@ -1048,6 +1062,43 @@ impl Connection {
                     .refresh()
                     .map_err(mcp::error)?;
                 Reply::empty()
+            }
+            Call::McpAppWidget(p) => {
+                if p.tool.is_empty() {
+                    return Err(RpcError::invalid("tool must not be empty"));
+                }
+                let widget = session
+                    .session_service::<crate::mcp::McpSession>()?
+                    .widget(&p.tool)
+                    .await
+                    .map_err(mcp::app_error)?;
+                Reply::McpWidget(widget)
+            }
+            Call::McpAppCall(p) => {
+                if p.server.is_empty() {
+                    return Err(RpcError::invalid("server must not be empty"));
+                }
+                if p.tool.is_empty() {
+                    return Err(RpcError::invalid("tool must not be empty"));
+                }
+                let started = std::time::Instant::now();
+                let outcome = session
+                    .session_service::<crate::mcp::McpSession>()?
+                    .call(&p.server, &p.tool, p.arguments)
+                    .await;
+                tracing::info!(
+                    target: "mcp.app",
+                    session = %session.id(),
+                    server = %p.server,
+                    tool = %p.tool,
+                    operation = "call",
+                    outcome = %match &outcome {
+                        Ok(_) => "ok".to_owned(),
+                        Err(error) => error.to_string(),
+                    },
+                    duration_ms = started.elapsed().as_millis() as u64,
+                );
+                Reply::McpAppCall(outcome.map_err(mcp::app_error)?)
             }
             Call::PermissionGet(p) => {
                 let state = session
@@ -1285,9 +1336,18 @@ impl Connection {
         if let Some(interactive) = params.interactive {
             config.interactive = interactive;
         }
+        let origin = match params.origin {
+            None | Some(SessionOrigin::Client) => SessionOrigin::Client,
+            Some(SessionOrigin::Acp) => SessionOrigin::Acp,
+            Some(_) => {
+                return Err(RpcError::invalid(
+                    "a client may declare client or acp as a Session origin",
+                ));
+            }
+        };
         let session = rpc
             .index
-            .create_session(&host, config, self.protocol_version(), None)
+            .create_session(&host, config, self.protocol_version(), None, origin)
             .await
             .map_err(RpcError::from)?;
         rpc.index.retain_versions();

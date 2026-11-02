@@ -466,7 +466,10 @@ mod tests {
             ]
         );
         assert_eq!(names("/stg", SCROLLBACK), ["settings"]);
-        assert_eq!(&names("/re", SCROLLBACK)[..2], ["resume", "effort"]);
+        assert_eq!(
+            &names("/re", SCROLLBACK)[..3],
+            ["reload-skills", "resume", "effort"]
+        );
         assert!(names("/ss", SCROLLBACK).contains(&"resume"));
         assert!(names("/quit", SCROLLBACK).contains(&"exit"));
         assert_eq!(names("/tim", SCROLLBACK), ["timeline"]);
