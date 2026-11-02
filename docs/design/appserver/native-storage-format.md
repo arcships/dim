@@ -10,7 +10,7 @@ a model limit that only a declaration writes, a delegation's Agent owner and
 member leader, a Session's creation origin, Session file grants, command output
 ownership and the two context reading switches on timeline events. Startup
 requires the exact v31 SQL schema and a single
-format marker of 31 before writable PRAGMAs, or the exact v29, v28, v27, v26, v25, v24, v23,
+format marker of 31 before writable PRAGMAs, or the exact v30, v29, v28, v27, v26, v25, v24, v23,
 v22, v21, v20, v19, v18, v17, v16, v15 or v13 schema with its own marker,
 which the same startup transaction upgrades in place to v31 one step after
 another ([#708 v31 decision](#708-v31-格式决定), [#557 v30 decision](#557-v30-格式决定), [ADR 013 v29 decision](#adr-013-v29-格式决定), [#717 v28 decision](#717-v28-格式决定), [#593 v27 decision](#593-v27-格式决定),
@@ -26,7 +26,7 @@ branch-only v14 `user_configuration` format are unsupported and preserved, never
 migrated, downgraded or interpreted as an admitted format.
 No migration API or startup option is provided. S5c (Session deletion and fork)
 kept v15 unchanged ([S5c decision](#s5c-格式决定)). v13 document bytes remain
-valid in v30, and v16 request rows stay readable as written.
+valid in v31, and v16 request rows stay readable as written.
 除格式自身的 SQL 外，每次打开都接受派生索引 `timeline_history_anchors`
 （`(session_id, branch_id, kind, sequence) WHERE kind IN ('turn/start', 'input/message')`，
 [latest-turn 窗口 §5.1](session-history-window.md#51-the-derived-index)）：读写打开在启动事务内用
@@ -123,7 +123,7 @@ Cannot open native store <path>.
 - **写入与清理**：拒绝前用同目录临时文件写入并原子替换；写入失败不改变返回值，原错误照常返回。正常打开、升级成功和其他启动失败不写说明。成功打开（含升级成功）时，存储 owner 删除遗留说明；删除失败不影响启动，下一次成功打开再清理。说明的读取、打印和其余清理属于 CLI 启动，见 [CLI 命令 §守护进程启动失败](../cli-commands.md#daemon-startup-failure)；说明不进入日志历史。
 - **位置**：说明是库的同级文件，不是新数据库格式，也不是 `daemon.log` 的一部分。CLI 启动的守护进程使用 `<native home>/dimcode.sqlite`，所以 CLI 读取 `<native home>/dimcode.sqlite.startup`。直接以 `--database` 启动的守护进程把说明写在它的库旁，CLI 的启动路径不读取。
 - **不自动恢复**：不删除、重建、降级、重置标记或复制库；`--home PATH` 只建立另一个环境。终端说明只给兼容构建和 `--home` 两条路；开发说明继续使用 `./dev` 的隔离 home。
-- **验证**：`storage_flow` 用一次性库覆盖全部分支：v31 标记的未知结构被拒绝、库字节不变，说明为“更新格式”；当前格式的库把标记改成 v29，以及 v13 结构配 v31 标记，都得到“标记与结构不符”而不是“更新格式”；当前格式的空标记表得到 `v30 (format marker is missing or ambiguous)`；未知结构配可读标记 v20 得到 `v20 (unrecognized schema)`，没有可读标记得到 `unrecognized`；v12 和已移除的 v14 得到“过旧”；正常打开和升级成功删除遗留说明，失败替换上一次留下的说明。CLI 启动流程另覆盖终端打印、PID、权限和控制字符，见 [CLI 命令 §守护进程启动失败](../cli-commands.md#daemon-startup-failure)。
+- **验证**：`storage_flow` 用一次性库覆盖全部分支：v32 标记的未知结构被拒绝、库字节不变，说明为“更新格式”；当前格式的库把标记改成 v29，以及 v13 结构配 v31 标记，都得到“标记与结构不符”而不是“更新格式”；当前格式的空标记表得到 `v31 (format marker is missing or ambiguous)`；未知结构配可读标记 v20 得到 `v20 (unrecognized schema)`，没有可读标记得到 `unrecognized`；v12 和已移除的 v14 得到“过旧”；正常打开和升级成功删除遗留说明，失败替换上一次留下的说明。CLI 启动流程另覆盖终端打印、PID、权限和控制字符，见 [CLI 命令 §守护进程启动失败](../cli-commands.md#daemon-startup-failure)。
 
 ## SQLite 运行参数与空间回收
 

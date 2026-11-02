@@ -28,6 +28,8 @@ pub type BuildProjectionCheckpoint =
 pub type EncodeProjectionCheckpoint =
     fn(&RecoverySnapshot, &ProjectionCheckpoint) -> Result<String, String>;
 pub struct HistoryRenderer {
+    /// Explicit readers only; the prepare path always folds with the default
+    /// projection.
     pub render: RenderHistory,
     pub checkpoint: BuildProjectionCheckpoint,
     /// Identifies the saved projection semantics, independently of store format.

@@ -949,10 +949,7 @@ impl ContextPolicy {
                     (Some(context), _) => {
                         Some(self.history.snapshot(context, retain_from, &fact)?)
                     }
-                    (None, Some(checkpoint)) => {
-                        Some(self.history.snapshot_from_checkpoint(checkpoint, &fact)?)
-                    }
-                    (None, None) => {
+                    (None, Some(_)) | (None, None) => {
                         let checkpoint = self
                             .history
                             .stream_checkpoint(&self.timeline, view.facts.through, retain_from, 256)

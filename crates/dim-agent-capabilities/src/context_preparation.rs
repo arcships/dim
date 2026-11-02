@@ -614,6 +614,12 @@ impl ContextPreparation {
                     &event.kind,
                     dim_agent_types::EventKind::ContextConfigured(_)
                         | dim_agent_types::EventKind::PromptChanged(_)
+                        | dim_agent_types::EventKind::ContextCompaction(
+                            dim_agent_types::ContextCompactionData {
+                                outcome: dim_agent_types::ContextCompactionResult::Completed { .. },
+                                ..
+                            }
+                        )
                 )
         }) {
             return Ok(None);
