@@ -7091,6 +7091,13 @@ async fn a_v25_seed_upgrades_to_the_fresh_bundle_record() {
                  DROP TABLE sessions_rows;
                  DROP TABLE session_output_owners;
                  DROP TABLE session_grants;
+                 CREATE TEMP TABLE events_rows AS SELECT session_id, branch_id, sequence, last_sequence, kind, body, event_id FROM timeline_events;
+                 DROP TABLE timeline_events;
+                 CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id));
+                 INSERT INTO timeline_events(session_id, branch_id, sequence, last_sequence, kind, body, event_id) SELECT session_id, branch_id, sequence, last_sequence, kind, body, event_id FROM events_rows;
+                 DROP TABLE events_rows;
+                 CREATE INDEX timeline_events_by_id ON timeline_events(session_id, event_id) WHERE event_id IS NOT NULL;
+                 CREATE INDEX timeline_tool_use_starts ON timeline_events(session_id, json_extract(body, '$.record.event.data.request_id'), json_extract(body, '$.record.event.data.call_id')) WHERE branch_id = 'main' AND kind = 'step/tool-use-start';
                  DROP TABLE agent_store_format;
                  CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 25));
                  INSERT INTO agent_store_format VALUES (25);",
