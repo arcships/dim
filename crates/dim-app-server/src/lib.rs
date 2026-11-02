@@ -15,6 +15,7 @@ mod managed_oauth;
 pub mod managed_provider;
 pub mod mcp;
 pub mod methods;
+pub mod modality;
 pub mod model_catalog;
 pub mod model_log;
 mod outbound;
@@ -70,6 +71,10 @@ pub struct ServerConfig {
     pub database_path: Option<PathBuf>,
     pub target_home: Option<PathBuf>,
     pub product_home: Option<PathBuf>,
+    /// The user home the process reports, `$HOME` by default. A host that
+    /// runs with an isolated home sets it; every capability then resolves
+    /// `~` and the user Skill root inside it.
+    pub platform_home: Option<PathBuf>,
     /// A managed provider plugin built outside this repository.
     pub managed_provider: Option<managed_provider::ManagedProviderRow>,
     pub session_typescript: Option<session_typescript::SessionTypeScriptConfig>,
@@ -111,6 +116,7 @@ impl Default for ServerConfig {
             database_path: None,
             target_home: None,
             product_home: None,
+            platform_home: None,
             managed_provider: None,
             session_typescript: None,
             daemon_profile: protocol::DaemonProfile::Mock,
@@ -667,6 +673,9 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         rows.push(register_part(&mut builtins, builder.catalog(), |names| {
             Ok(Box::new(provider::ProviderPlugin::new(names)?))
         })?);
+        rows.push(register_part(&mut builtins, builder.catalog(), |names| {
+            Ok(Box::new(modality::ModalityPlugin::new(names)?))
+        })?);
     }
     if let Some(home_root) = execution_root.or(product_root) {
         let build = rutis_loader::resolve::Build::default();
@@ -699,6 +708,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         }
     }
     if let Some(home_root) = execution_root {
+        let platform_home = config.platform_home.clone();
         mcp::install(&mut builder);
         if native_home.is_some() {
             dim_agent_attachments::install(&mut builder);
@@ -727,6 +737,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                         dim_agent_capabilities::host_platform::HostPlatformConfig {
                             execution: names.key()?,
                             exec_shell_file: Some((home_root, "exec-shell.json".into())),
+                            home: platform_home.clone(),
                         },
                     )?,
                 ))
@@ -1160,6 +1171,7 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     register::<mcp::Publication>(catalog, None);
     register::<hooks_settings::HooksService>(catalog, None);
     register::<methods::ManagementMethods>(catalog, None);
+    register::<modality::ModalityAdapterService>(catalog, None);
     register::<runtime_manager::RuntimeService>(catalog, None);
     register::<collaboration::CollaborationSession>(catalog, Some(SESSION_GROUP));
     register::<mcp::McpSession>(catalog, Some(SESSION_GROUP));

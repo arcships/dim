@@ -1,7 +1,9 @@
 use super::*;
 use dim_agent_capabilities::{
     context_block,
-    history::{context_configuration, project_context_history, projection_checkpoint},
+    history::{
+        HistoryRender, context_configuration, project_context_history, projection_checkpoint,
+    },
     prompt_state::PromptSnapshot,
 };
 
@@ -272,7 +274,7 @@ async fn incompatible_snapshot_is_rejected_before_custom_renderer_decoding() {
             .is_some()
     );
     let renderer = HistoryRenderer {
-        render: external_history,
+        render: HistoryRender::Custom(external_history),
         checkpoint_interpreter: "custom/v1",
         decode_checkpoint: |_, _| panic!("must not decode an incompatible interpreter"),
         ..HistoryRenderer::default()
@@ -286,7 +288,7 @@ async fn incompatible_snapshot_is_rejected_before_custom_renderer_decoding() {
     assert_eq!(
         dim_agent_capabilities::history::context_messages(
             &replay,
-            &(renderer.render)(&replay).unwrap()
+            &renderer.render.project(&replay).unwrap()
         )
         .into_iter()
         .map(Arc::unwrap_or_clone)
@@ -323,8 +325,8 @@ async fn incompatible_snapshot_is_rejected_before_custom_renderer_decoding() {
     assert_eq!(accelerated.checkpoint, Some(checkpoint.clone()));
     assert!(accelerated.events.iter().any(|event| event.id == fact.id));
     assert_eq!(
-        (renderer.render)(&accelerated).unwrap(),
-        (renderer.render)(&replay).unwrap()
+        renderer.render.project(&accelerated).unwrap(),
+        renderer.render.project(&replay).unwrap()
     );
     let full = timeline.context(fact.sequence).await.unwrap();
     assert!(full.checkpoint.is_none());
@@ -477,7 +479,7 @@ async fn a_checkpoint_whose_render_fails_falls_back_to_full_replay() {
         "the read must use the checkpoint"
     );
     let renderer = HistoryRenderer {
-        render: fail_on_checkpoint,
+        render: HistoryRender::Custom(fail_on_checkpoint),
         ..HistoryRenderer::default()
     };
     let (context, history) = renderer
@@ -1174,4 +1176,571 @@ fn an_unclosed_call_or_an_open_output_fails_the_next_request_context() {
         let error = project_context_history(&fixed(events)).unwrap_err();
         assert!(error.contains("previous model output"), "{error}");
     }
+}
+
+/// A branch appended through the public interface, for the streamed reads.
+async fn paged_branch(name: &str) -> Timeline {
+    let store = Arc::new(MemoryTimelineStore::default());
+    store
+        .create_session(name, &SessionConfig::default())
+        .await
+        .unwrap();
+    Timeline::new(
+        rutis::Ctx::root().unwrap(),
+        TimelineKey {
+            session_id: name.into(),
+            branch_id: "main".into(),
+        },
+        vec![],
+        store,
+    )
+}
+
+fn model_start(turn: &str, request: &str) -> EventKind {
+    EventKind::ModelStart(StepData {
+        turn_id: turn.into(),
+        request_id: request.into(),
+    })
+}
+
+fn delta(turn: &str, request: &str, text: &str) -> EventKind {
+    EventKind::Text(DeltaData {
+        turn_id: turn.into(),
+        request_id: request.into(),
+        delta: text.into(),
+    })
+}
+
+fn output_end(turn: &str, request: &str) -> EventKind {
+    EventKind::ModelOutputEnd(ModelOutputEndData {
+        turn_id: turn.into(),
+        request_id: request.into(),
+        outcome: ModelOutputOutcome::Completed {
+            finish_reason: FinishReason::EndTurn,
+        },
+    })
+}
+
+fn turn_start(turn: &str) -> EventKind {
+    EventKind::TurnStart(TurnStartData {
+        turn_id: turn.into(),
+    })
+}
+
+fn turn_end(turn: &str) -> EventKind {
+    EventKind::TurnEnd(TurnEndData {
+        turn_id: turn.into(),
+        outcome: TurnOutcome::Completed {
+            reason: "end_turn".into(),
+        },
+    })
+}
+
+/// One model step from `start` through `end`, one delta per entry.
+fn step(timeline: &Timeline, turn: &str, request: &str, deltas: &[&str]) {
+    timeline.append(model_start(turn, request).into()).unwrap();
+    for text in deltas {
+        timeline.append(delta(turn, request, text).into()).unwrap();
+    }
+    timeline.append(output_end(turn, request).into()).unwrap();
+}
+
+fn input(timeline: &Timeline, text: &str) -> Arc<AgentEvent> {
+    timeline
+        .append(
+            EventKind::InputMessage(InputMessageData::text(text, Some(InputMode::Queue))).into(),
+        )
+        .unwrap()
+}
+
+fn consumed(timeline: &Timeline, event: &AgentEvent) {
+    timeline
+        .append(
+            EventKind::InputConsumed(InputConsumedData {
+                input_id: event.id.clone(),
+            })
+            .into(),
+        )
+        .unwrap();
+}
+
+async fn assert_stream_matches_full(name: &str, timeline: &Timeline, through: u64) {
+    use dim_agent_capabilities::history::context_messages;
+    let renderer = HistoryRenderer::default();
+    let (full, full_history) = renderer.rendered_context(timeline, through).await.unwrap();
+    let full_messages: Vec<Message> = context_messages(&full, &full_history)
+        .into_iter()
+        .map(Arc::unwrap_or_clone)
+        .collect();
+    let compacted = full
+        .events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::ContextCompaction(data)
+                if matches!(data.outcome, ContextCompactionResult::Completed { .. }) =>
+            {
+                Some(event.id.clone())
+            }
+            _ => None,
+        });
+    for batch in [1, 2, 3, through + 1] {
+        let streamed = renderer
+            .rendered_stream(timeline, through, batch)
+            .await
+            .unwrap();
+        assert!(!streamed.fallback, "{name} batch {batch} fell back");
+        assert_eq!(
+            streamed.history, full_history,
+            "{name} batch {batch} entries"
+        );
+        assert_eq!(
+            context_messages(&full, &streamed.history)
+                .into_iter()
+                .map(Arc::unwrap_or_clone)
+                .collect::<Vec<_>>(),
+            full_messages,
+            "{name} batch {batch} messages"
+        );
+        assert_eq!(
+            streamed.compaction.as_ref().map(|event| event.id.clone()),
+            compacted,
+            "{name} batch {batch} compaction"
+        );
+        assert_eq!(
+            streamed.configuration,
+            context_configuration(&full),
+            "{name} batch {batch} configuration"
+        );
+        assert_eq!(
+            streamed.prompt,
+            PromptSnapshot::from_context(&full).revision,
+            "{name} batch {batch} prompt"
+        );
+    }
+}
+
+/// The streamed read and the full render agree on entries, messages,
+/// configuration, prompt and the compaction, at page sizes that cut through
+/// outputs, atomic batches and compaction cuts.
+#[tokio::test]
+async fn streamed_and_full_renders_agree_across_pages() {
+    let mut cases = Vec::new();
+
+    let timeline = paged_branch("turn-tool-output").await;
+    let hello = input(&timeline, "hello");
+    consumed(&timeline, &hello);
+    timeline.append(turn_start("one").into()).unwrap();
+    timeline.append(model_start("one", "r1").into()).unwrap();
+    timeline.append(delta("one", "r1", "a").into()).unwrap();
+    timeline.append(delta("one", "r1", "b").into()).unwrap();
+    timeline
+        .append(
+            EventKind::Thinking(DeltaData {
+                turn_id: "one".into(),
+                request_id: "r1".into(),
+                delta: "hmm".into(),
+            })
+            .into(),
+        )
+        .unwrap();
+    timeline
+        .append(
+            EventKind::ToolUseStart(ToolUseStartData {
+                turn_id: "one".into(),
+                request_id: "r1".into(),
+                call_id: "call-1".into(),
+                name: "read".into(),
+            })
+            .into(),
+        )
+        .unwrap();
+    timeline
+        .append(
+            EventKind::ToolUse(ToolUseData {
+                turn_id: "one".into(),
+                request_id: "r1".into(),
+                call: ToolCall {
+                    id: "call-1".into(),
+                    name: "read".into(),
+                    input: JsonObject::new(),
+                },
+            })
+            .into(),
+        )
+        .unwrap();
+    timeline.append(output_end("one", "r1").into()).unwrap();
+    timeline
+        .append(
+            EventKind::ToolResult(ToolResultData {
+                turn_id: "one".into(),
+                request_id: "r1".into(),
+                call_event_id: None,
+                results: vec![ToolCallResult {
+                    call_id: "call-1".into(),
+                    result: ToolResult::text("ok"),
+                }],
+            })
+            .into(),
+        )
+        .unwrap();
+    step(&timeline, "one", "r2", &["c", "d"]);
+    timeline.append(turn_end("one").into()).unwrap();
+    let through = timeline.sequence();
+    cases.push(("a turn with a tool call and its result", timeline, through));
+
+    let timeline = paged_branch("atomic-batch").await;
+    let hello = input(&timeline, "hello");
+    consumed(&timeline, &hello);
+    timeline.append(turn_start("one").into()).unwrap();
+    timeline
+        .append_batch_registered(
+            vec![
+                model_start("one", "r1").into(),
+                delta("one", "r1", "a").into(),
+                output_end("one", "r1").into(),
+            ],
+            |_| Ok(()),
+        )
+        .unwrap();
+    timeline.append(turn_end("one").into()).unwrap();
+    let through = timeline.sequence();
+    cases.push(("an atomic batch across a page edge", timeline, through));
+
+    let timeline = paged_branch("cut-in-earlier-page").await;
+    let hello = input(&timeline, "hello");
+    let cut = timeline
+        .append(
+            EventKind::InputConsumed(InputConsumedData {
+                input_id: hello.id.clone(),
+            })
+            .into(),
+        )
+        .unwrap();
+    step(&timeline, "one", "r1", &["a", "b"]);
+    timeline
+        .append(completed(&cut.id, "summary", timeline.sequence(), Vec::new()).into())
+        .unwrap();
+    timeline.append(turn_start("two").into()).unwrap();
+    step(&timeline, "two", "r2", &["c"]);
+    let through = timeline.sequence();
+    cases.push(("a compaction cut in an earlier page", timeline, through));
+
+    let timeline = paged_branch("two-compactions").await;
+    let hello = input(&timeline, "hello");
+    let first = timeline
+        .append(
+            EventKind::InputConsumed(InputConsumedData {
+                input_id: hello.id.clone(),
+            })
+            .into(),
+        )
+        .unwrap();
+    step(&timeline, "one", "r1", &["a"]);
+    timeline
+        .append(completed(&first.id, "first", timeline.sequence(), Vec::new()).into())
+        .unwrap();
+    let second = timeline.append(turn_start("two").into()).unwrap();
+    step(&timeline, "two", "r2", &["b"]);
+    timeline
+        .append(completed(&second.id, "second", timeline.sequence(), Vec::new()).into())
+        .unwrap();
+    timeline.append(turn_start("three").into()).unwrap();
+    step(&timeline, "three", "r3", &["c"]);
+    let through = timeline.sequence();
+    cases.push(("two compactions with advancing cuts", timeline, through));
+
+    let timeline = paged_branch("keyed-blocks").await;
+    let hello = input(&timeline, "hello");
+    timeline
+        .append(
+            EventKind::InputMessage(InputMessageData {
+                blocks: vec![context_block::raw(
+                    "<live>a</live>".into(),
+                    Some("a".into()),
+                )],
+                ..InputMessageData::text("first", Some(InputMode::Queue))
+            })
+            .into(),
+        )
+        .unwrap();
+    consumed(&timeline, &hello);
+    timeline.append(turn_start("one").into()).unwrap();
+    step(&timeline, "one", "r1", &["a"]);
+    let second = input(&timeline, "second");
+    consumed(&timeline, &second);
+    step(&timeline, "one", "r2", &["b"]);
+    let through = timeline.sequence();
+    cases.push(("keyed input blocks", timeline, through));
+
+    let timeline = paged_branch("configured-prompt").await;
+    timeline
+        .append(
+            EventKind::ContextConfigured(ContextConfiguredData {
+                timeline: "main".into(),
+                revision: "config".into(),
+                previous: None,
+                prompt: None,
+                settings: Box::new(ModelConfiguration {
+                    provider_id: "provider".into(),
+                    model_id: "model".into(),
+                    capability_snapshot: None,
+                    tools: None,
+                    tool_sources: Vec::new(),
+                    config: None,
+                    metadata: None,
+                }),
+                system: Some(SystemPrompt::Text("system".into())),
+                system_source: None,
+            })
+            .into(),
+        )
+        .unwrap();
+    let hello = input(&timeline, "hello");
+    consumed(&timeline, &hello);
+    timeline.append(turn_start("one").into()).unwrap();
+    step(&timeline, "one", "r1", &["a"]);
+    timeline
+        .append(
+            EventKind::PromptChanged(PromptChangedData {
+                timeline: "main".into(),
+                revision: "prompt-1".into(),
+                previous: None,
+                reason: PromptChangeReason::Initialize,
+                changes: vec![PromptChange::Set {
+                    entry: PromptEntry {
+                        source: "host".into(),
+                        version: "v1".into(),
+                        body: "rules".into(),
+                        scope: PromptScope::Branch {
+                            timeline: "main".into(),
+                        },
+                        delivery: PromptDelivery::Context,
+                        order: 0,
+                    },
+                }],
+            })
+            .into(),
+        )
+        .unwrap();
+    let through = timeline.sequence();
+    cases.push(("a configured model and prompt", timeline, through));
+
+    for (name, timeline, through) in cases {
+        assert_stream_matches_full(name, &timeline, through).await;
+    }
+}
+
+/// A completed compaction whose cut is earlier than the cut in effect is data
+/// the stream cannot follow, so it falls back to the full render, which keeps
+/// the entries that cut retains.
+#[tokio::test]
+async fn a_cut_that_moves_backwards_falls_back_to_the_full_render() {
+    let timeline = paged_branch("backwards-cut").await;
+    let hello = input(&timeline, "hello");
+    let early = timeline
+        .append(
+            EventKind::InputConsumed(InputConsumedData {
+                input_id: hello.id.clone(),
+            })
+            .into(),
+        )
+        .unwrap();
+    let late = timeline.append(model_start("one", "r1").into()).unwrap();
+    timeline.append(delta("one", "r1", "a").into()).unwrap();
+    timeline.append(output_end("one", "r1").into()).unwrap();
+    timeline
+        .append(completed(&late.id, "late", timeline.sequence(), Vec::new()).into())
+        .unwrap();
+    timeline
+        .append(completed(&early.id, "early", timeline.sequence(), Vec::new()).into())
+        .unwrap();
+    let through = timeline.sequence();
+    let renderer = HistoryRenderer::default();
+    let streamed = renderer
+        .rendered_stream(&timeline, through, 1)
+        .await
+        .unwrap();
+    assert!(streamed.fallback, "a backwards cut falls back");
+    let (_, full) = renderer.rendered_context(&timeline, through).await.unwrap();
+    assert_eq!(full.len(), 2, "the full render keeps what the cut retains");
+}
+
+/// A memory store whose reads stop before the branch head: a truncated branch,
+/// where the page after the last readable event is empty.
+struct TruncatedStore {
+    memory: MemoryTimelineStore,
+    visible: u64,
+    reads: AtomicUsize,
+}
+
+impl TimelineStore for TruncatedStore {
+    fn create_session<'a>(
+        &'a self,
+        id: &'a str,
+        config: &'a SessionConfig,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.memory.create_session(id, config)
+    }
+    fn rollback_session<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<()>> {
+        self.memory.rollback_session(id)
+    }
+    fn release_session<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<()>> {
+        self.memory.release_session(id)
+    }
+    fn session_config<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Option<SessionConfig>>> {
+        self.memory.session_config(id)
+    }
+    fn branches<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Vec<StoredBranch>>> {
+        self.memory.branches(id)
+    }
+    fn head<'a>(&'a self, key: &'a TimelineKey) -> BoxFuture<'a, Result<u64>> {
+        self.memory.head(key)
+    }
+    fn trace<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        sequence: u64,
+    ) -> BoxFuture<'a, Result<Option<TimelineTrace>>> {
+        self.memory.trace(key, sequence)
+    }
+    fn append(
+        &self,
+        key: TimelineKey,
+        events: Vec<StoredEvent>,
+        publish: PublishCallback,
+    ) -> Result<()> {
+        self.memory.append(key, events, publish)
+    }
+    fn read_segments<'a>(
+        &'a self,
+        session_id: &'a str,
+        segments: Vec<(String, std::ops::RangeInclusive<u64>)>,
+    ) -> BoxFuture<'a, Result<Vec<Vec<StoredEvent>>>> {
+        Box::pin(async move {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let mut segments = self.memory.read_segments(session_id, segments).await?;
+            for events in &mut segments {
+                events.retain(|record| record.event.sequence <= self.visible);
+            }
+            Ok(segments)
+        })
+    }
+}
+
+/// The streamed checkpoint read stops at the first empty page instead of
+/// walking one sequence at a time to `through`.
+#[tokio::test]
+async fn a_streamed_checkpoint_stops_at_an_empty_page() {
+    let store = Arc::new(TruncatedStore {
+        memory: MemoryTimelineStore::default(),
+        visible: 1,
+        reads: AtomicUsize::new(0),
+    });
+    let key = TimelineKey {
+        session_id: "truncated".into(),
+        branch_id: "main".into(),
+    };
+    store
+        .memory
+        .create_session(&key.session_id, &SessionConfig::default())
+        .await
+        .unwrap();
+    let timeline = Timeline::new(Ctx::root().unwrap(), key, vec![], store.clone());
+    let hello = input(&timeline, "hello");
+    let cut = timeline
+        .append(
+            EventKind::InputConsumed(InputConsumedData {
+                input_id: hello.id.clone(),
+            })
+            .into(),
+        )
+        .unwrap();
+    step(&timeline, "one", "r1", &["a", "b"]);
+    let through = timeline.sequence();
+    assert!(cut.sequence > store.visible);
+    store.reads.store(0, Ordering::SeqCst);
+    let renderer = HistoryRenderer::default();
+    let error = renderer
+        .stream_checkpoint(
+            &timeline,
+            TimelinePosition {
+                branch_id: "main".into(),
+                sequence: cut.sequence,
+            },
+            through,
+            &cut.id,
+            1,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("compaction cut was not read"),
+        "{error}"
+    );
+    assert_eq!(
+        store.reads.load(Ordering::SeqCst),
+        store.visible as usize + 1,
+        "the read stops at the first empty page"
+    );
+}
+
+/// A checkpoint stream whose `resume` is not the cut event's own position is
+/// refused, where its existing error answers: the restored read would start
+/// after the cut and lose the entries between them.
+#[tokio::test]
+async fn a_streamed_checkpoint_refuses_a_resume_that_is_not_its_cut() {
+    let store = Arc::new(MemoryTimelineStore::default());
+    let key = TimelineKey {
+        session_id: "resume".into(),
+        branch_id: "main".into(),
+    };
+    store
+        .create_session(&key.session_id, &SessionConfig::default())
+        .await
+        .unwrap();
+    let timeline = Timeline::new(Ctx::root().unwrap(), key, vec![], store);
+    let hello = input(&timeline, "hello");
+    let cut = timeline
+        .append(
+            EventKind::InputConsumed(InputConsumedData {
+                input_id: hello.id.clone(),
+            })
+            .into(),
+        )
+        .unwrap();
+    step(&timeline, "one", "r1", &["a", "b"]);
+    let through = timeline.sequence();
+    let renderer = HistoryRenderer::default();
+    let error = renderer
+        .stream_checkpoint(
+            &timeline,
+            TimelinePosition {
+                branch_id: "main".into(),
+                sequence: through,
+            },
+            through,
+            &cut.id,
+            256,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("compaction cut was not read"),
+        "{error}"
+    );
+    let checkpoint = renderer
+        .stream_checkpoint(
+            &timeline,
+            TimelinePosition {
+                branch_id: "main".into(),
+                sequence: cut.sequence,
+            },
+            through,
+            &cut.id,
+            256,
+        )
+        .await
+        .expect("the cut's own position is accepted");
+    assert_eq!(checkpoint.resume.sequence, cut.sequence);
 }

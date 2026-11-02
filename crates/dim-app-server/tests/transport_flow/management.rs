@@ -113,18 +113,20 @@ async fn owner_contributions_survive_reload_and_keep_entry_boundaries() {
     }
     let mut remote = Client::new_version(&server, true, 3).await;
     let mut legacy = Client::new_version(&server, false, 2).await;
-    for method in [
-        "mcp.catalog",
-        "skills.catalog",
-        "provider.catalog",
-        "configuration.catalog",
+    for (method, params) in [
+        ("mcp.catalog", json!({})),
+        ("skills.catalog", json!({})),
+        ("skills.preview", json!({"source": {"path": "/"} })),
+        ("skills.installations", json!({})),
+        ("provider.catalog", json!({})),
+        ("configuration.catalog", json!({})),
     ] {
         assert_eq!(
-            remote.rpc(method, json!({})).await["error"]["data"]["appError"],
+            remote.rpc(method, params.clone()).await["error"]["data"]["appError"],
             "local_transport_required"
         );
         assert_eq!(
-            legacy.rpc(method, json!({})).await["error"]["data"]["appError"],
+            legacy.rpc(method, params).await["error"]["data"]["appError"],
             "unknown_method"
         );
     }

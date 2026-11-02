@@ -78,6 +78,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "fork the session at its last finished turn" => {
             "fazer fork da sessão no último turno terminado"
         }
+        "rename this session" => "renomear esta sessão",
+        "Renamed to {title}" => "Renomeada para {title}",
+        "The Session is now untitled." => "A sessão está agora sem título.",
+        "This daemon does not support renaming Sessions" => {
+            "Este daemon não suporta renomear sessões"
+        }
+        "Renaming failed" => "Falha ao renomear",
         "Starting" => "A iniciar",
         "Delegation result" => "Resultado da delegação",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {

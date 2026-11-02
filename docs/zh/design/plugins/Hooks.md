@@ -203,7 +203,7 @@ sequenceDiagram
   end
 ```
 
-`PostToolUse` 对 `step/tool-result` 批次中结果不是错误的每个匹配调用运行，`PostToolUseFailure` 对结果为 `is_error` 的每个匹配调用运行；一个批次写一个 Append 输入。`Stop` 在结果为 `completed` 的 `turn/end` 上运行；阻止会写一个携带原因的 Queue 续跑输入，连续最多 3 次（A8）。`SessionStart` 在 `main` 的历史中没有 `turn/start` 且没有 `hooks:session-start/*` 带键块时运行一次；其 Append 输入与任何空闲 Append 一样，等待第一个驱动输入。分支上已有回合开始时，`SessionStart` 的输出同样被丢弃，因为该块必须先于第一个回合。`Notification` 在 `approval/request` 上运行，不写任何东西。带 `async: true` 的处理器可在上述任何点运行，没有任何东西等待或读取它们的输出。`HooksBranch` 还从它消费的已采用 `context/configured` 中，记下每个已声明 MCP 工具的迁移别名（G.2）。
+`PostToolUse` 对 `step/tool-result` 批次中结果不是错误的每个匹配调用运行，`PostToolUseFailure` 对结果为 `is_error` 的每个匹配调用运行；一个批次写一个 Append 输入。`Stop` 在结果为 `completed` 的 `turn/end` 上运行；阻止会写一个携带原因的 Queue 续跑输入，连续最多 3 次（A8）。`SessionStart` 在 `main` 的历史中没有 `turn/start` 且没有 `hooks:session-start/*` 带键块时运行一次；其 Append 输入与任何空闲 Append 一样，等待第一个驱动输入。分支上已有回合开始时，`SessionStart` 的输出同样被丢弃，因为该块必须先于第一个回合。`Notification` 在 `approval/request` 上运行，不写任何东西。带 `async: true` 的处理器可在上述任何点运行，没有任何东西等待或读取它们的输出。`HooksBranch` 按分支上生效的声明解析每个工具事件的迁移别名（G.2）。
 
 ## 4. 时序与冲突
 
@@ -590,11 +590,11 @@ Dim 不读取 Claude 或 Codex 的文件，也没有导入命令。迁移时复�
 
 ### G.2 工具名
 
-匹配器同时对 Dim 工具名和别名测试，所以粘贴过来的匹配器仍选中相同的工具；stdin 上的 `tool_name` 始终是 Dim 名。
+匹配器同时对 Dim 工具名和别名测试，所以粘贴过来的匹配器仍选中相同的工具；stdin 上的 `tool_name` 始终是 Dim 名。别名是工具声明的属性，`HooksBranch` 在每个工具事件上用同一种方式解析它：分支已采用工具部分时，别名来自该部分的声明；只有分支未采用任何工具部分时，才读取注册表。
 
 | Dim 工具 | 匹配器接受的别名 |
 | --- | --- |
-| 风险为 `execute_process` 的任何工具（`exec`，即 shell 工具） | `Bash` |
+| 声明风险为 `execute_process` 的任何工具（`exec`，即 shell 工具） | `Bash` |
 | `read` | `Read` |
 | `write` | `Write` |
 | `edit` | `Edit` |

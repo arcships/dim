@@ -18,13 +18,14 @@ use dim_agent_capabilities::{
     permission::{CommandRulesHost, ReadCommandRules},
     skill_settings::SkillSettingsHost,
     skills::{MemorySkillSettings, SkillsCatalogPlugin},
+    tool_registry::{ToolContribution, ToolHandler, ToolProvider, ToolRegistry, ToolSourceSet},
     workspace_tools::WorkspaceToolsConfig,
 };
 use dim_agent_runtime::testing::MinimalHost;
 use dim_agent_runtime::*;
 use dim_agent_types::*;
 use rutis::Ctx;
-use rutis::host::{BoxFuture, DynPlugin, Effect, FiberView, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberView, Key, TypeKey};
 use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -324,6 +325,152 @@ impl Model {
     }
 }
 
+/// What a tool declaration in the test's assembly is known by.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Extra {
+    /// The host's tools only.
+    #[default]
+    None,
+    /// A registered `deploy` tool, with risk `execute_process`.
+    Registered,
+    /// A tool source offering an MCP-style `lookup` tool, so `ToolBinding`
+    /// adopts a tool part.
+    Served,
+}
+
+/// The handler of the test's registered `deploy` tool.
+struct Deploy;
+impl ToolHandler for Deploy {
+    fn execute(
+        &self,
+        _: ToolCall,
+        _: ToolExecutionContext,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ToolResult> {
+        Box::pin(async move { Ok(ToolResult::text("deployed")) })
+    }
+}
+
+/// Registers `deploy`, a tool other than `exec` with risk `execute_process`.
+struct RegisteredTool {
+    registry: Key<ToolRegistry>,
+}
+impl DynPlugin for RegisteredTool {
+    fn name(&self) -> &str {
+        "RegisteredTool"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.registry.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let registry = ctx.require_at(&self.registry)?;
+            let mut definition = dim_agent_capabilities::tool_registry::definition(
+                "deploy",
+                "Deploy",
+                serde_json::json!({"type": "object"}),
+            );
+            definition.risk = Some("execute_process".into());
+            registry.register(
+                ctx,
+                ToolContribution {
+                    definition,
+                    handler: Arc::new(Deploy),
+                },
+            )?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// The handler of the test's MCP-style `lookup` tool.
+struct Lookup;
+impl ToolHandler for Lookup {
+    fn execute(
+        &self,
+        _: ToolCall,
+        _: ToolExecutionContext,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ToolResult> {
+        Box::pin(async move { Ok(ToolResult::text("looked up")) })
+    }
+}
+
+/// A tool source offering one tool with MCP metadata, which names it
+/// `mcp__<server>__<original>` for matchers (G.2).
+struct Served;
+impl ToolProvider for Served {
+    fn sets(&self) -> Vec<Arc<ToolSourceSet>> {
+        let mut definition = dim_agent_capabilities::tool_registry::definition(
+            "lookup",
+            "Look up an item",
+            serde_json::json!({"type": "object"}),
+        );
+        definition.metadata = Some(ToolMetadata {
+            mcp_server_id: Some("server".into()),
+            mcp_original_tool_name: Some("lookup_item".into()),
+            ..Default::default()
+        });
+        vec![Arc::new(ToolSourceSet {
+            key: "served".into(),
+            version: "1".into(),
+            tools: vec![Arc::new(ToolContribution {
+                definition,
+                handler: Arc::new(Lookup),
+            })],
+        })]
+    }
+}
+
+/// Registers the `served` source, so the branch declares a tool part.
+struct ServedSource {
+    registry: Key<ToolRegistry>,
+}
+impl DynPlugin for ServedSource {
+    fn name(&self) -> &str {
+        "ServedSource"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.registry.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let registry = ctx.require_at(&self.registry)?;
+            registry.register_source(ctx, "served", Arc::new(Served))?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// Reaches the branch's Timeline and the Session's registry, so a test can
+/// write the configuration a branch runs with, ahead of any adoption.
+#[derive(Default)]
+struct ToolsProbe {
+    timeline: Mutex<Option<Arc<Timeline>>>,
+    registry: Mutex<Option<Arc<ToolRegistry>>>,
+}
+/// Captures the Timeline and the registry for [`ToolsProbe`].
+struct ToolsProbePlugin {
+    probe: Arc<ToolsProbe>,
+    timeline: Key<Timeline>,
+    registry: Key<ToolRegistry>,
+}
+impl DynPlugin for ToolsProbePlugin {
+    fn name(&self) -> &str {
+        "ToolsProbe"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.timeline.erase(), self.registry.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            *self.probe.timeline.lock().unwrap() = Some(ctx.require_at(&self.timeline)?);
+            *self.probe.registry.lock().unwrap() = Some(ctx.require_at(&self.registry)?);
+            Ok(Effect::Done)
+        })
+    }
+}
+
 struct Env {
     agent: MinimalHost,
     sources: Arc<Sources>,
@@ -336,23 +483,39 @@ struct Env {
     hooks: Arc<Mutex<Vec<FiberView>>>,
     /// The `HooksBranch` instance the same owner mounts, per branch.
     branch_hooks: Arc<Mutex<Vec<FiberView>>>,
+    /// The tools the Session's configuration mounts.
+    mounted: Vec<String>,
+    probe: Arc<ToolsProbe>,
 }
 impl Env {
     async fn new() -> Self {
-        Self::build(Arc::new(Model::default()), None, false).await
+        Self::build(Arc::new(Model::default()), None, false, Extra::None).await
     }
 
     async fn with(model: Arc<Model>, strategy: Option<Arc<Small>>) -> Self {
-        Self::build(model, strategy, false).await
+        Self::build(model, strategy, false, Extra::None).await
     }
 
     /// The same host, with `HooksSession` mounted as a child of a test owner
     /// so a test can unload it mid-call.
     async fn with_mounted_hooks(model: Arc<Model>, strategy: Option<Arc<Small>>) -> Self {
-        Self::build(model, strategy, true).await
+        Self::build(model, strategy, true, Extra::None).await
     }
 
-    async fn build(model: Arc<Model>, strategy: Option<Arc<Small>>, mounted_hooks: bool) -> Self {
+    /// A Session whose registry declares `extra` and whose configuration
+    /// mounts `mounted`.
+    async fn with_tools(extra: Extra, mounted: &[&str]) -> Self {
+        let mut env = Self::build(Arc::new(Model::default()), None, false, extra).await;
+        env.mounted = mounted.iter().map(|name| (*name).to_owned()).collect();
+        env
+    }
+
+    async fn build(
+        model: Arc<Model>,
+        strategy: Option<Arc<Small>>,
+        mounted_hooks: bool,
+        extra: Extra,
+    ) -> Self {
         let context_model: Option<Arc<dyn ResolveContextModel>> = match &strategy {
             Some(strategy) => {
                 let model: Arc<dyn ResolveContextModel> = strategy.clone();
@@ -410,6 +573,40 @@ impl Env {
             dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
         );
         builder.plugin(|names| Ok(Box::new(SkillsCatalogPlugin::new(names)?)));
+        let probe = Arc::new(ToolsProbe::default());
+        let captured = probe.clone();
+        builder.require_feature(
+            Feature::new("ToolsProbe").branch("ToolsProbe", move |names| {
+                Ok(Box::new(ToolsProbePlugin {
+                    probe: captured.clone(),
+                    timeline: names.key()?,
+                    registry: names.key()?,
+                }))
+            }),
+        );
+        match extra {
+            Extra::None => {}
+            Extra::Registered => {
+                builder.require_feature(Feature::new("RegisteredTool").session(
+                    "RegisteredTool",
+                    |names| {
+                        Ok(Box::new(RegisteredTool {
+                            registry: names.key()?,
+                        }))
+                    },
+                ));
+            }
+            Extra::Served => {
+                builder.require_feature(Feature::new("ServedSource").session(
+                    "ServedSource",
+                    |names| {
+                        Ok(Box::new(ServedSource {
+                            registry: names.key()?,
+                        }))
+                    },
+                ));
+            }
+        }
         let hooks: Arc<Mutex<Vec<FiberView>>> = Arc::new(Mutex::new(Vec::new()));
         let branch_hooks: Arc<Mutex<Vec<FiberView>>> = Arc::new(Mutex::new(Vec::new()));
         if mounted_hooks {
@@ -458,6 +655,8 @@ impl Env {
             rules,
             hooks,
             branch_hooks,
+            mounted: vec!["read".into(), "exec".into()],
+            probe,
         }
     }
 
@@ -494,7 +693,7 @@ impl Env {
         self.agent
             .create_session(SessionConfig {
                 cwd: self.dir.join("work").to_string_lossy().into_owned(),
-                tools: Some(vec!["read".into(), "exec".into()]),
+                tools: Some(self.mounted.clone()),
                 permission_policy: PermissionPolicy {
                     preset,
                     ..Default::default()
@@ -507,6 +706,61 @@ impl Env {
 
     fn path(&self, name: &str) -> PathBuf {
         self.dir.join(name)
+    }
+
+    /// Writes a `context/configured` whose tool part declares `names`, from
+    /// the Session's own declarations, so a test can change the branch's part
+    /// mid-flight as removing a tool source does.
+    async fn declare_tools(&self, session: &Session, names: &[&str]) {
+        let registry = self
+            .probe
+            .registry
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the registry probe");
+        let tools: Vec<ToolDefinition> = registry
+            .definitions()
+            .into_iter()
+            .filter(|tool| names.contains(&tool.name.as_str()))
+            .collect();
+        let events = events(session).await;
+        let previous = events
+            .iter()
+            .rev()
+            .find_map(|event| match &event.kind {
+                EventKind::ContextConfigured(data) => Some(data.clone()),
+                _ => None,
+            })
+            .expect("a context/configured");
+        let timeline = self
+            .probe
+            .timeline
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the timeline probe");
+        timeline
+            .append(
+                EventKind::ContextConfigured(ContextConfiguredData {
+                    timeline: "main".into(),
+                    revision: uuid::Uuid::new_v4().to_string(),
+                    previous: Some(PromptReference {
+                        timeline: previous.timeline.clone(),
+                        revision: previous.revision.clone(),
+                    }),
+                    prompt: previous.prompt.clone(),
+                    settings: Box::new(ModelConfiguration {
+                        tools: Some(tools),
+                        tool_sources: Vec::new(),
+                        ..(*previous.settings).clone()
+                    }),
+                    system: previous.system.clone(),
+                    system_source: previous.system_source.clone(),
+                })
+                .into(),
+            )
+            .unwrap();
     }
 
     async fn close(self) {
@@ -3113,6 +3367,313 @@ async fn a_pasted_bash_matcher_runs_for_exec_and_reads_the_command() {
         payload["turn_id"].as_str().is_some_and(|id| !id.is_empty()),
         "{payload}"
     );
+    env.close().await;
+}
+
+/// A handler that appends `text` to `path`, so a test can count its runs.
+fn marking(path: &Path, text: &str) -> String {
+    format!("printf '{text}\\n' >> {}", path.display())
+}
+
+/// A `PermissionRequest` handler that appends `ran` and answers allow, so
+/// the turn needs no operator answer.
+fn allowing(path: &Path) -> String {
+    format!(
+        "printf 'ran\\n' >> {path}; printf '%s' '{decision}'",
+        path = path.display(),
+        decision = r#"{"hookSpecificOutput":{"decision":{"behavior":"allow"}}}"#,
+    )
+}
+
+/// G.2: a Session with no MCP server adopts no tool part, and the built-in
+/// alias still selects `exec` at `PermissionRequest`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pasted_permission_matcher_runs_without_an_adopted_tool_part() {
+    let env = Env::new().await;
+    let ran = env.path("permission-ran");
+    env.sources.set(document(serde_json::json!({
+        "PermissionRequest": [{
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": allowing(&ran)}],
+        }],
+    })));
+    let session = env.session_with(PermissionPreset::WorkspaceWrite).await;
+    turn(&session, "tool:exec {\"command\":\"true\"}").await;
+    assert!(
+        ran.exists(),
+        "the Bash matcher did not select exec at PermissionRequest"
+    );
+    assert_eq!(last_result(&session).await.is_error, None);
+    env.close().await;
+}
+
+/// G.2: without an adopted tool part, `PostToolUse` and `PostToolUseFailure`
+/// groups match `exec` by `Bash` and `read` by `Read`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pasted_post_tool_matchers_run_for_exec_and_read_without_an_adopted_tool_part() {
+    let env = Env::new().await;
+    let (bash_ok, bash_failed) = (env.path("bash-ok"), env.path("bash-failed"));
+    let (read_ok, read_failed) = (env.path("read-ok"), env.path("read-failed"));
+    env.sources.set(document(serde_json::json!({
+        "PostToolUse": [
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": marking(&bash_ok, "bash")}]},
+            {"matcher": "Read", "hooks": [{"type": "command", "command": marking(&read_ok, "read")}]},
+        ],
+        "PostToolUseFailure": [
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": marking(&bash_failed, "bash")}]},
+            {"matcher": "Read", "hooks": [{"type": "command", "command": marking(&read_failed, "read")}]},
+        ],
+    })));
+    let session = env.session().await;
+    turn(&session, "tool:exec {\"command\":\"true\"}").await;
+    wait_file(&bash_ok, "the Bash matcher did not select exec").await;
+    turn(&session, "tool:exec {\"command\":\"exit 1\"}").await;
+    wait_file(
+        &bash_failed,
+        "the Bash matcher did not select a failed exec",
+    )
+    .await;
+    let note = env.path("work/note.txt");
+    std::fs::write(&note, "note\n").unwrap();
+    turn(
+        &session,
+        &format!("tool:read {{\"path\":{:?}}}", note.to_str().unwrap()),
+    )
+    .await;
+    wait_file(&read_ok, "the Read matcher did not select read").await;
+    turn(
+        &session,
+        &format!(
+            "tool:read {{\"path\":{:?}}}",
+            env.path("work/missing.txt").to_str().unwrap()
+        ),
+    )
+    .await;
+    wait_file(
+        &read_failed,
+        "the Read matcher did not select a failed read",
+    )
+    .await;
+    env.close().await;
+}
+
+/// G.2: the alias is the call's own declaration, so `Bash` does not select
+/// `read` and `Read` does not select `exec`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pasted_matcher_does_not_select_the_other_tool() {
+    let env = Env::new().await;
+    let (bash, read) = (env.path("bash-ran"), env.path("read-ran"));
+    env.sources.set(document(serde_json::json!({
+        "PostToolUse": [
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": marking(&bash, "bash")}]},
+            {"matcher": "Read", "hooks": [{"type": "command", "command": marking(&read, "read")}]},
+        ],
+    })));
+    let session = env.session().await;
+    let note = env.path("work/note.txt");
+    std::fs::write(&note, "note\n").unwrap();
+    turn(
+        &session,
+        &format!("tool:read {{\"path\":{:?}}}", note.to_str().unwrap()),
+    )
+    .await;
+    wait_file(&read, "the Read matcher did not select read").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!bash.exists(), "the Bash matcher selected read");
+    turn(&session, "tool:exec {\"command\":\"true\"}").await;
+    wait_file(&bash, "the Bash matcher did not select exec").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        std::fs::read_to_string(&read).unwrap(),
+        "read\n",
+        "the Read matcher selected exec"
+    );
+    env.close().await;
+}
+
+/// G.2: `Bash` selects a registered tool with risk `execute_process` other
+/// than `exec` on `PreToolUse`, `PermissionRequest` and `PostToolUse`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bash_selects_a_registered_tool_with_risk_execute_process() {
+    let env = Env::with_tools(Extra::Registered, &["read", "exec", "deploy"]).await;
+    let (pre, permission, post) = (
+        env.path("pre-ran"),
+        env.path("permission-ran"),
+        env.path("post-ran"),
+    );
+    env.sources.set(document(serde_json::json!({
+        "PreToolUse": [{
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": marking(&pre, "pre")}],
+        }],
+        "PermissionRequest": [{
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": allowing(&permission)}],
+        }],
+        "PostToolUse": [{
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": marking(&post, "post")}],
+        }],
+    })));
+    let session = env.session_with(PermissionPreset::WorkspaceWrite).await;
+    turn(&session, "tool:deploy {}").await;
+    assert!(
+        pre.exists(),
+        "the Bash matcher did not select deploy at PreToolUse"
+    );
+    assert!(
+        permission.exists(),
+        "the Bash matcher did not select deploy at PermissionRequest"
+    );
+    wait_file(
+        &post,
+        "the Bash matcher did not select deploy at PostToolUse",
+    )
+    .await;
+    assert_eq!(last_result(&session).await.is_error, None);
+    env.close().await;
+}
+
+/// G.2: with an adopted tool part, the built-in matchers still run, and an
+/// MCP tool still matches `mcp__<server>__<tool>`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn matchers_keep_selecting_tools_with_an_adopted_tool_part() {
+    let env = Env::with_tools(Extra::Served, &["read", "exec"]).await;
+    let (bash, mcp) = (env.path("bash-ran"), env.path("mcp-ran"));
+    env.sources.set(document(serde_json::json!({
+        "PostToolUse": [
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": marking(&bash, "bash")}]},
+            {"matcher": "mcp__server__lookup_item", "hooks": [{"type": "command", "command": marking(&mcp, "mcp")}]},
+        ],
+    })));
+    let session = env.session().await;
+    turn(&session, "tool:exec {\"command\":\"true\"}").await;
+    wait_file(&bash, "the Bash matcher did not select exec").await;
+    turn(&session, "tool:lookup {\"query\":\"x\"}").await;
+    wait_file(&mcp, "the MCP alias did not select lookup").await;
+    assert_eq!(last_result(&session).await.is_error, None);
+    env.close().await;
+}
+
+/// G.2: with an adopted tool part, `PreToolUse` selects an MCP tool by its
+/// alias.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_adopted_tool_part_alias_selects_at_pre_tool_use() {
+    let env = Env::with_tools(Extra::Served, &["read", "exec"]).await;
+    let pre = env.path("pre-ran");
+    env.sources.set(document(serde_json::json!({
+        "PreToolUse": [{
+            "matcher": "mcp__server__lookup_item",
+            "hooks": [{"type": "command", "command": marking(&pre, "pre")}],
+        }],
+    })));
+    let session = env.session().await;
+    turn(&session, "tool:lookup {\"query\":\"x\"}").await;
+    assert!(
+        pre.exists(),
+        "the MCP alias did not select lookup at PreToolUse"
+    );
+    assert_eq!(last_result(&session).await.is_error, None);
+    env.close().await;
+}
+
+/// G.2: with an adopted tool part, `PermissionRequest` selects an MCP tool
+/// by its alias.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_adopted_tool_part_alias_selects_at_permission_request() {
+    let env = Env::with_tools(Extra::Served, &["read", "exec"]).await;
+    let permission = env.path("permission-ran");
+    env.sources.set(document(serde_json::json!({
+        "PermissionRequest": [{
+            "matcher": "mcp__server__lookup_item",
+            "hooks": [{"type": "command", "command": allowing(&permission)}],
+        }],
+    })));
+    let session = env.session_with(PermissionPreset::WorkspaceWrite).await;
+    session
+        .submit(
+            "tool:lookup {\"query\":\"x\"}".into(),
+            InputMode::Queue,
+            "main",
+        )
+        .await
+        .unwrap();
+    // The hook answers the approval; a group that the alias does not select
+    // leaves the call waiting for an answer that never comes.
+    wait_file(
+        &permission,
+        "the MCP alias did not select lookup at PermissionRequest",
+    )
+    .await;
+    session.idle("main").await.unwrap();
+    assert_eq!(last_result(&session).await.is_error, None);
+    env.close().await;
+}
+
+/// G.2: a batch's alias is the declaration in force where the batch folded,
+/// so a reconfiguration consumed while the queue drains does not change it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tool_batch_keeps_the_alias_of_the_declaration_it_folded_under() {
+    let env = Env::with_tools(Extra::Served, &["read", "exec"]).await;
+    let (holding, release, mcp) = (
+        env.path("holding"),
+        env.path("release"),
+        env.path("mcp-ran"),
+    );
+    env.sources.set(document(serde_json::json!({
+        "PostToolUse": [
+            {"hooks": [{"type": "command", "command": format!(
+                "printf started > {}; while [ ! -e {} ]; do sleep 0.02; done",
+                holding.display(),
+                release.display(),
+            )}]},
+            {"matcher": "mcp__server__lookup_item", "hooks": [{"type": "command", "command": marking(&mcp, "mcp")}]},
+        ],
+    })));
+    let session = env.session().await;
+    let note = env.path("work/note.txt");
+    std::fs::write(&note, "note\n").unwrap();
+    session
+        .submit(
+            format!("tool:read {{\"path\":{:?}}}", note.to_str().unwrap()),
+            InputMode::Queue,
+            "main",
+        )
+        .await
+        .unwrap();
+    wait_file(&holding, "the PostToolUse hook did not start").await;
+    session
+        .submit(
+            "tool:lookup {\"query\":\"x\"}".into(),
+            InputMode::Queue,
+            "main",
+        )
+        .await
+        .unwrap();
+    wait_event(&session, |kind| {
+        let EventKind::ToolResult(data) = kind else {
+            return None;
+        };
+        data.results
+            .iter()
+            .any(|result| {
+                matches!(&result.result.content, ToolContent::Text(text) if text == "looked up")
+            })
+            .then_some(())
+    })
+    .await;
+    // The configuration a source's removal leaves: the registered tools with
+    // no sources, which no longer declares `lookup`.
+    env.declare_tools(&session, &["read", "exec"]).await;
+    // Idle returns once the dispatcher has delivered the reconfiguration, so
+    // the branch has folded it before the queue moves.
+    session.idle("main").await.unwrap();
+    std::fs::write(&release, "").unwrap();
+    wait_file(
+        &mcp,
+        "the batch took the alias of a declaration folded after it",
+    )
+    .await;
     env.close().await;
 }
 

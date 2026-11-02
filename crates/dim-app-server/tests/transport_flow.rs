@@ -109,6 +109,8 @@ mod foreign_rows;
 mod goal;
 #[path = "transport_flow/guide_entries.rs"]
 mod guide_entries;
+#[path = "transport_flow/modality.rs"]
+mod modality;
 #[path = "transport_flow/plugin_manager.rs"]
 mod plugin_manager;
 #[path = "transport_flow/process_typescript.rs"]
@@ -117,6 +119,8 @@ mod process_typescript;
 mod session_typescript;
 #[path = "transport_flow/settings_methods.rs"]
 mod settings_methods;
+#[path = "transport_flow/skills_installation.rs"]
+mod skills_installation;
 #[path = "transport_flow/web.rs"]
 mod web;
 

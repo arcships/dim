@@ -9,7 +9,8 @@ async fn snapshot_codecs_preserve_completed_compaction_even_when_saving_fails() 
         let mut renderer = HistoryRenderer::default();
         match mode {
             "builder-failure" => {
-                renderer.checkpoint = |_, _| Err("snapshot builder unavailable".into())
+                renderer.checkpoint =
+                    CheckpointBuilder::Custom(|_, _| Err("snapshot builder unavailable".into()))
             }
             "encoder-failure" => {
                 renderer.encode_checkpoint = |_, _| Err("snapshot encoder unavailable".into())

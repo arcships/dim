@@ -99,7 +99,7 @@ pub enum Call {
     Shutdown(Shutdown),
     Create(Create),
     List(SessionList),
-    Summaries(SessionList),
+    Summaries(Summaries),
     Catalog(Catalog),
     CatalogCancel(CatalogCancel),
     Attach(Attach),
@@ -110,7 +110,7 @@ pub enum Call {
     Stop(Stop),
     Idle(Idle),
     Close(SessionId),
-    Delete(SessionId),
+    Delete(Delete),
     Fork(Fork),
     ApprovalRespond(ApprovalRespond),
     BranchCreate(BranchCreate),
@@ -238,10 +238,17 @@ pub const WEB_MANAGEMENT_METHODS: &[&str] = &[
     "skills.catalog",
     "skills.set_enabled",
     "skills.refresh",
+    "skills.preview",
+    "skills.install",
+    "skills.update",
+    "skills.remove",
+    "skills.installations",
     "permission.rules",
     "permission.set_rules",
     "collaboration.model_policy",
     "collaboration.set_model_policy",
+    "modality.capabilities",
+    "modality.configure",
     "host.exec_shell.get",
     "host.exec_shell.update",
     "host.execution.backend",
@@ -547,6 +554,16 @@ pub struct SessionList {
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Summaries {
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub agent_id: Option<String>,
+    /// Whether the catalog also lists Sessions this daemon closed, which
+    /// keep their stored rows.
+    #[serde(default)]
+    pub include_closed: bool,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Catalog {
     #[serde(default, deserialize_with = "optional_non_null")]
     pub limit: Option<usize>,
@@ -581,6 +598,15 @@ pub struct CatalogCancel {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionId {
     pub session_id: String,
+}
+/// `session.delete`: with `requireInactive`, a Session in use refuses the
+/// delete with `session_active` instead of being closed and removed.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Delete {
+    pub session_id: String,
+    #[serde(default)]
+    pub require_inactive: bool,
 }
 /// `session.fork`: `at` is the last `main` sequence the fork inherits.
 #[derive(Debug, Deserialize)]
@@ -1024,6 +1050,14 @@ pub struct ForkResult {
     pub session_id: String,
     pub sequence: u64,
 }
+/// The `session.delete` reply (S5c §3.1): `deleted` is true when this call
+/// removed the Session's stored rows, or, in a daemon without a native
+/// store, a loaded Session.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteResult {
+    pub deleted: bool,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionOrigin {
@@ -1096,6 +1130,9 @@ pub struct SessionSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
     pub updated_at: u64,
+    /// Whether this daemon closed the Session; its rows stay stored, and
+    /// only a read that asked for closed Sessions lists it.
+    pub closed: bool,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1129,6 +1166,8 @@ pub enum Reply {
     Ping(PingResult),
     Create(CreateResult),
     Fork(ForkResult),
+    /// The `session.delete` reply: whether this call removed the Session.
+    Deleted(DeleteResult),
     List(Vec<SessionInfo>),
     /// The attached Session's directory record, with `model` and
     /// `modelPreferences` from its latest adopted configuration, falling back

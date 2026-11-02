@@ -1967,6 +1967,17 @@ mod tests {
     }
 
     #[test]
+    fn a_command_that_declares_an_argument_fills_the_prompt_instead_of_running() {
+        for code in [KeyCode::Enter, KeyCode::Tab] {
+            let mut c = Composer::new(Vec::new());
+            typed(&mut c, "/ren");
+            assert_eq!(c.handle_key(key(code)), Outcome::Handled);
+            assert_eq!(c.text(), "/rename ", "the palette waits for the title");
+            assert!(!c.palette_open());
+        }
+    }
+
+    #[test]
     fn hidden_exact_approval_is_dispatched_before_palette_prefix_matches() {
         let mut c = Composer::new(Vec::new());
         typed(&mut c, "/approval");

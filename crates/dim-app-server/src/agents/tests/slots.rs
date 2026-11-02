@@ -8,6 +8,7 @@
 use super::{AgentIndex, builder, config};
 use crate::{RunningServer, ServerConfig, agents::SessionSlot};
 use dim_agent_runtime::{AgentBuilder, Feature, Names, SessionIdentity};
+use dim_agent_types::EventKind;
 use futures_util::{SinkExt, StreamExt};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -316,6 +317,125 @@ async fn a_pass_during_a_restore_keeps_the_slot_the_restore_holds() {
     drop((client, attaching));
     server.shutdown();
     server.join().await.unwrap();
+}
+
+/// S5c §3.2 step 1 and idle unload §6.4: a delete that refuses a Session
+/// leaves no slot behind. The leader is unloaded when the delete names it,
+/// so the slot that call would create is one nothing keeps: the refusal
+/// sweeps it like any other unused slot. Its member is loaded, which an
+/// attached client uses, and keeps its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_delete_leaves_no_slot_for_a_session_it_did_not_load() {
+    let store = Store::new();
+    let mut builder = builder();
+    crate::collaboration::install(&mut builder);
+    let server = store.serve(builder).await;
+    let index = server.root.get::<AgentIndex>().unwrap();
+    let agent = server.agent().unwrap();
+    let mut client = Client::new(&server).await;
+    let lead = client
+        .ok(
+            "session.create",
+            json!({"cwd":store.0,"tools":["echo","wait","agent"],
+                "permissionPolicy":{"allowedTools":["echo","wait","agent"]}}),
+        )
+        .await["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let holder = client.ok("agent.list", json!({})).await[0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let request = json!({"action":"request","agentId":holder,"prompt":"hello"});
+    client
+        .ok(
+            "session.submit",
+            json!({"sessionId":lead,"branchId":"main",
+                "text":format!("tool:agent {request}"),"mode":"queue"}),
+        )
+        .await;
+    let member = poll_member(&agent, &lead).await;
+    client
+        .ok("session.idle", json!({"sessionId":lead,"branchId":"main"}))
+        .await;
+    let mut marks = Marks::new();
+    settle(&index, &mut marks, 0).await;
+    assert_eq!(slots(&index), (0, 0), "both Sessions are unloaded");
+
+    let mut watcher = Client::new(&server).await;
+    watcher
+        .ok("session.attach", json!({"sessionId":member}))
+        .await;
+    assert_eq!(slots(&index), (1, 0), "only the loaded member keeps a slot");
+
+    let refused = client
+        .rpc(
+            "session.delete",
+            json!({"sessionId":lead,"requireInactive":true}),
+        )
+        .await;
+    assert_eq!(
+        refused["error"]["data"]["appError"], "session_active",
+        "{refused}"
+    );
+    assert_eq!(
+        uses(&index, &lead),
+        None,
+        "the refused delete kept no slot for the leader"
+    );
+    assert_eq!(slots(&index), (1, 0));
+    drop((client, watcher));
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// The member of the leader's delivered request, once the reply reached the
+/// leader.
+async fn poll_member(agent: &dim_agent_runtime::Agent, lead: &str) -> String {
+    let session = agent.get_session(lead).unwrap();
+    tokio::time::timeout(DEADLINE, async {
+        loop {
+            let report_delivered =
+                session
+                    .history("main", None)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|event| {
+                        matches!(&event.kind, EventKind::InputMessage(data)
+                    if data.blocks.first().is_some_and(|block| matches!(block,
+                        dim_agent_types::InputBlock::Raw { text, .. }
+                            if text.starts_with("<dim-agent-report "))))
+                    });
+            if report_delivered {
+                let member = session
+                    .history("main", None)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .find_map(|event| {
+                        let EventKind::ToolResult(data) = &event.kind else {
+                            return None;
+                        };
+                        data.results.iter().find_map(|result| {
+                            let dim_agent_types::ToolContent::Text(text) = &result.result.content
+                            else {
+                                return None;
+                            };
+                            let value: Value = serde_json::from_str(text).ok()?;
+                            (value["status"] == "running")
+                                .then(|| value["sessionId"].as_str().unwrap().to_owned())
+                        })
+                    })
+                    .expect("the request names its member");
+                return member;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the member reported to the leader")
 }
 
 /// Holds the next restore of one Session in its Session part's apply,

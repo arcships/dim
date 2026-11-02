@@ -159,6 +159,48 @@ without fetching child histories. Files are created new, never overwritten, and
 use mode 0600 on Unix or the inherited ACL on Windows. A write error can leave a
 partial new file. Relative paths use the CLI process cwd; `~` is literal.
 
+`dimcode session rename SESSION TITLE` sets the Session's manual title with
+`session.rename` and prints the title the server returns;
+`dimcode session rename SESSION --clear` sends `title: null` and prints that the
+Session is untitled. Exactly one of TITLE and `--clear` is required, so a
+forgotten or blank argument is a usage error and never clears a title. The method is
+Session-scoped, so `hello.features` does not list it: the client calls it directly,
+and a Session that does not serve it answers `unknown_method`, reported as an
+unsupported daemon.
+
+`dimcode session delete SESSION` permanently deletes the Session through
+`session.delete`, and `dimcode session cleanup (--older-than DURATION | --keep N)
+[--yes]` deletes the Sessions a selector matches. The delete reply says whether the
+call removed the Session: `true` prints `Deleted ID`; `false` prints `Nothing was
+removed: no stored Session ID.` on stderr and exits 1,
+and a reply without the field, from an older App Server, prints `Deleted ID`. Cleanup
+selects only the Sessions `/resume` lists by default
+([classification](../../docs/design/appserver/session-classification.md)): origin
+`client` or `unknown`, or a daemon that records none; an `internal` or `acp` Session is
+never selected, does not count toward `--keep N` and does not appear in the preview.
+It reads `session.summaries` with `includeClosed: true`, so a Session this daemon closed
+is listed and marked `closed`; an older App Server refuses the field `invalid_params`,
+and cleanup then stops before any delete with
+`This App Server is too old to clean up Sessions safely; nothing was deleted.` and exits
+1. It orders and filters by `updatedAt` (the last activity), and prints its selection
+before anything is deleted: the id, the title and how long ago the Session was active,
+one tab-separated line each. A Session with a running turn or an attached client is
+kept, listed after the selection under `Kept (active):` with its reason, and `--keep N`
+keeps it without its consuming one of the N; a failed or closing line is not a reason
+to keep one, so such a Session is deleted when nothing else uses it. Every delete
+carries `requireInactive: true`, so the daemon checks the Session again at the delete; a
+`session_active` refusal is listed under `Kept (in use at the delete):` after the
+deletes with the daemon's reason and is not a failure, and a `deleted: false` reply
+prints `Already gone: ID` and counts as neither. When nothing was deleted because every
+matching Session is active, the command prints `Nothing to delete: every matching
+Session is active.` and exits 0; a selector that names no Session prints what it kept,
+`Nothing to delete: --keep N keeps every Session.` or `Nothing to delete: no Session is
+older than DURATION.`. On a terminal only `y` or `yes` confirms and `--yes` skips
+the prompt; without a terminal nothing confirms, so a script passes `--yes`. A
+confirmed run deletes every selected id: each failure is printed with its id and the
+method's error, `dimcode session delete ID` is printed to retry it, and the run exits
+1. `DURATION` is a count with a unit `d`, `h` or `m`.
+
 Use `dimcode export SESSION_ID [--output PATH] [--database PATH]` for a Session's
 whole Timeline ([ADR 005](../../docs/adr/005-observability.md) D3): every event of
 every branch with its before trace, as versioned JSONL. It runs the App Server binary
@@ -1047,6 +1089,7 @@ The terminal UI reaches the same Session methods as the line client:
 | `/branch [TEXT]`, `/fork [TEXT]` | As `b` and `f` on a picked message, at the shown line's newest turn end: `/branch` puts `TEXT` in the composer as the new line's opening input; `/fork` asks, then forks `main` there with `TEXT` in the fork's composer |
 | `/usage` | Reports main's context window from `session.context.usage`: estimated input tokens against the window, the output allowance and the compaction threshold; before a model has answered it says so, and a failed call is reported alone. With the reading it appends the cache read share of the last `model/usage` request on `main` (` · last request cached {percent}`), rounded down: `100%` only when every prompt token was a cache read, one decimal between `99%` and `100%`, an integer between `1%` and `99%`, `<1%` for a positive share below one percent, and `0%` for a request that reported no cache reads; the prompt token count includes cache writes, so a request that only writes the cache reads `0%`. The segment appears only once `main`'s history has finished loading, so a page that is not the last never reports its older request; after that it shows the newest request, whether it came from the history or a live event. It is absent when that request reported no cache read count or its counters cannot produce a share (cache reads above prompt tokens, or a zero prompt) |
 | `/compact` | Asks the shown line to compact its context with `session.context.compact`, during a run too. The transcript row shows the work and its outcome; the reply is reported when the method answers — `completed`, `skipped` with its reason, or the method's failure (`compaction_failed`, `compaction_cancelled`). A daemon without the method says it does not support context compaction |
+| `/rename TITLE`, `/rename --clear` | Sets, or clears, the shown Session's manual title with `session.rename` and reports the stored title or that the Session is untitled. Choosing `/rename` from the palette fills `/rename ` and waits; a bare `/rename` is refused with a notice and sends nothing, so `--clear` is the way to clear it without a title. The text is a command: it is never queued or submitted, also while a turn runs. With no Session shown it says so, and a Session that does not serve `session.rename` (`unknown_method`) reports that instead |
 | `/goal [OBJECTIVE \| set OBJECTIVE \| edit OBJECTIVE \| pause \| resume \| clear]` | Reads and writes the goal of the shown line through `session.goal.*`. The command's first line names the call, the line and the status in force, the objective follows it, and `/goal` alone prints the goal the line's events give; `edited` is the form that found a live goal and changed only its objective, and a typed objective after a finished goal starts a new one. While the shown line follows a goal the status area carries `◎ goal active` or `◎ goal paused`. A daemon whose Session lists no `session.goal.set` says Goal is not available and calls nothing ([Goal](#goal)) |
 | `/effort VALUE` (`/reasoning`), `/fast on\|off`, `/agent ID` | Change the Session's reasoning effort, service tier or agent; without a value they list the choices for the adopted model. `/fast` is listed in the palette only while the adopted model's catalog entry advertises priority/default service tiers |
 | Paste of local file paths | An image the model takes becomes an `[Image #N]` token sent as an image block; another file is inserted as its path, and so is an image the model does not take. At most 20 images, a group all or nothing |

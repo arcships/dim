@@ -59,6 +59,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "after message {count}" => "第 {count} 条消息之后",
         "open a line from the end of the shown line" => "从当前线的末尾开一条线",
         "fork the session at its last finished turn" => "在最近结束的回合处派生会话",
+        "rename this session" => "重命名此会话",
+        "Renamed to {title}" => "已重命名为 {title}",
+        "The Session is now untitled." => "会话现在没有标题。",
+        "This daemon does not support renaming Sessions" => "此守护进程不支持重命名会话",
+        "Renaming failed" => "重命名失败",
         "Starting" => "启动中",
         "Delegation result" => "委派结果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {

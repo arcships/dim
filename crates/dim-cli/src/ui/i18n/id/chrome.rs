@@ -76,6 +76,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "fork the session at its last finished turn" => {
             "fork sesi pada giliran terakhir yang selesai"
         }
+        "rename this session" => "ganti nama sesi ini",
+        "Renamed to {title}" => "Diganti namanya menjadi {title}",
+        "The Session is now untitled." => "Sesi ini sekarang tanpa judul.",
+        "This daemon does not support renaming Sessions" => {
+            "Daemon ini tidak mendukung penggantian nama Sesi"
+        }
+        "Renaming failed" => "Penggantian nama gagal",
         "Starting" => "Memulai",
         "Delegation result" => "Hasil delegasi",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {

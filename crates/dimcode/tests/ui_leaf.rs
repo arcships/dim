@@ -6,6 +6,10 @@
 //! the process restores the terminal and exits. A `Tui` that fails to load
 //! ends the process nonzero, and with it the session.
 
+#[path = "support/daemon.rs"]
+#[allow(dead_code)]
+mod daemon_cleanup;
+
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Write},
@@ -307,13 +311,14 @@ impl Home {
 
 impl Drop for Home {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        daemon_cleanup::stop_daemon(&self.home);
+        daemon_cleanup::remove_directory(&self.root);
         if let Some(parent) = self.root.parent()
             && parent
                 .file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with("dim-long-"))
         {
-            let _ = std::fs::remove_dir_all(parent);
+            daemon_cleanup::remove_directory(parent);
         }
     }
 }

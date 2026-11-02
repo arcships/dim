@@ -158,6 +158,7 @@ fn configured_platform(home: PathBuf) -> impl FnOnce(&mut AgentBuilder) {
                 HostPlatformConfig {
                     execution: names.key()?,
                     exec_shell_file: Some((0, "exec-shell.json".into())),
+                    home: None,
                 },
             )?))
         });

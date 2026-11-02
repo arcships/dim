@@ -13,6 +13,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Agent context: goals and requirements to define](design/agent-context.md)（中文；branches, compaction, model prompts; requirements, not design）
 - [Migration plugin](design/plugins/Migration.md)（中文；on-demand legacy data import, native-role history, retry and incremental import; implementation plan included）
 - [Plugin management: requirements](design/plugin-management.md)（中文；one plugin concept, install, reload, replacement; requirements, not design）
+- [Skills installation](design/plugins/Skills.md): preview of a local or Git source without a manifest, selective installation into the user root, update and confirmed removal of loose Skills (#740)
 - [Document templates](templates/README.md)
 - [ADR 002 — Plugin scope](adr/002-plugin-scope.md)（[中文](zh/adr/002-plugin-scope.md)）
 - [ADR 003 — Approval scope](adr/003-approval-scope.md)（[中文](zh/adr/003-approval-scope.md)）
@@ -85,6 +86,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Bounded latest-turn history window](design/appserver/session-history-window.md) (#712)
 - [SessionStore title metadata](design/appserver/session-title-metadata.md)（[中文](zh/design/appserver/session-title-metadata.md)）
 - [Restore-scoped shared history read](design/appserver/restore-shared-read.md) (#193)（[中文](zh/design/appserver/restore-shared-read.md)）
+- [Restore validation reuse](design/appserver/restore-validation.md) (#601)
 - [Cold first session.attach](design/appserver/cold-attach-profile.md) (#713)
 - [Idle Session unload](design/appserver/idle-unload.md) (#126, #331)（[中文](zh/design/appserver/idle-unload.md)）
 - [Request delta storage](design/appserver/request-delta-storage.md) (#193)（[中文](zh/design/appserver/request-delta-storage.md)）

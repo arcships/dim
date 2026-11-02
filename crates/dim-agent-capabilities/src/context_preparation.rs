@@ -628,12 +628,11 @@ impl ContextPreparation {
             (PolicyContext::from_stream(&streamed), streamed.history)
         };
         crate::context_policy::check_cancel(&cancel)?;
-        let prefix = context.messages(&history);
-        if request.messages.len() < prefix.len()
-            || !prefix
-                .iter()
+        if request.messages.len() < context.messages_len(&history)
+            || !context
+                .message_refs(&history)
                 .zip(&request.messages)
-                .all(|(entry, message)| entry.as_ref() == message.as_ref())
+                .all(|(entry, message)| entry == message.as_ref())
         {
             return Err(HostError::failed(
                 "Context preparation must preserve the timeline history prefix; additional messages may be appended.",

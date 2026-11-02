@@ -87,6 +87,68 @@ export function readSkills(value: unknown): SkillsView {
   }) }
 }
 
+export type SkillSource = { path: string } | { git: string; ref: string | undefined; commit: string }
+function readSkillSource(value: unknown): SkillSource {
+  const source = object(value)
+  const path = optionalString(source.path)
+  if (path !== undefined) return { path }
+  return { git: string(source.git), ref: optionalString(source.ref), commit: string(source.commit) }
+}
+export function readSkillSourceText(source: SkillSource): string {
+  if ("path" in source) return source.path
+  return `${source.git}${source.ref === undefined ? "" : ` (${source.ref})`} @${source.commit.slice(0, 8)}`
+}
+export type SkillPreviewSkill = { path: string; name: string; description: string; revision: string }
+export type SkillPreviewNamed = { path: string; name: string; by: string }
+export type SkillPreview = { source: SkillSource; skills: SkillPreviewSkill[]; conflicts: SkillPreviewNamed[]; shadows: SkillPreviewNamed[]; issues: SkillIssue[] }
+export function readSkillPreview(value: unknown): SkillPreview {
+  const preview = object(value)
+  const named = (item: unknown) => {
+    const entry = object(item)
+    return { path: string(entry.path), name: string(entry.name), by: string(entry.by) }
+  }
+  return {
+    source: readSkillSource(preview.source),
+    skills: array(preview.skills, (item) => {
+      const skill = object(item)
+      return { path: string(skill.path), name: string(skill.name), description: string(skill.description), revision: string(skill.revision) }
+    }),
+    conflicts: array(preview.conflicts, named),
+    shadows: array(preview.shadows, named),
+    issues: array(preview.issues, (item) => {
+      const issue = object(item)
+      return { path: string(issue.path), message: string(issue.message) }
+    }),
+  }
+}
+export type SkillInstallation = { id: string; source: SkillSource; revision: string; skills: { path: string; id: string }[] }
+function readSkillInstallation(value: unknown): SkillInstallation {
+  const installation = object(value)
+  return {
+    id: string(installation.id), source: readSkillSource(installation.source), revision: string(installation.revision),
+    skills: array(installation.skills, (item) => {
+      const skill = object(item)
+      return { path: string(skill.path), id: string(skill.id) }
+    }),
+  }
+}
+export function readSkillInstallations(value: unknown): SkillInstallation[] {
+  return array(object(value).installations, readSkillInstallation)
+}
+export type SkillInstallResult = { installation: SkillInstallation; previous: SkillInstallation | undefined; version: number; issues: SkillIssue[] }
+export function readSkillInstall(value: unknown): SkillInstallResult {
+  const result = object(value)
+  return {
+    installation: readSkillInstallation(result.installation),
+    previous: result.previous === undefined ? undefined : readSkillInstallation(result.previous),
+    version: number(result.version),
+    issues: array(result.issues, (item) => {
+      const issue = object(item)
+      return { path: string(issue.path), message: string(issue.message) }
+    }),
+  }
+}
+
 export type PluginEntry = {
   name: string; use: string | undefined; off: boolean; locked: boolean; status: string | undefined; error: string | undefined
   candidates: { id: string; kinds: string[]; git: string | undefined }[]
@@ -222,20 +284,55 @@ export function readSandboxBackend(value: unknown): SandboxBackend {
   return boolean(source.available) ? { available: true } : { available: false, reason: string(source.reason) }
 }
 
-export type ModalityModel = { id: string; name: string; vision: boolean; toolCalling: boolean; modalities: string[] }
-export type ModalityCatalog = { version: number; models: ModalityModel[] }
-export function readModalityCatalog(value: unknown): ModalityCatalog | undefined {
-  const result = object(value)
-  if (result.catalog === null) return undefined
-  return readEditedModalityCatalog(result.catalog)
+export type ModalityReason = { dimension: string; detail: string }
+export type ModalityOption = ModelId & { available: boolean; reason?: ModalityReason }
+export type ModalityEffective = ModelId & { source: "default" | "automatic" }
+export type ModalityOperation = {
+  operation: string
+  key?: string
+  available: boolean
+  reasons: ModalityReason[]
+  default?: ModalityOption
+  effective?: ModalityEffective
+  options: ModalityOption[]
 }
-export function readEditedModalityCatalog(value: unknown): ModalityCatalog {
-  const catalog = object(value)
-  return { version: number(catalog.version), models: array(catalog.models, (item) => {
-    const model = object(item)
-    const capabilities = object(model.capabilities)
-    const metadata = model.metadata === null || model.metadata === undefined ? undefined : object(model.metadata)
-    const raw = metadata?.raw === undefined ? undefined : object(metadata.raw)
-    return { id: string(model.id), name: string(model.name), vision: boolean(capabilities.vision), toolCalling: boolean(capabilities.toolCalling), modalities: raw?.modalityCapabilities === undefined ? [] : array(raw.modalityCapabilities, string) }
-  }) }
+export type ModalityCategory = { category: string; available: boolean; reasons: ModalityReason[]; operations: ModalityOperation[] }
+export type ModalitySnapshot = { revision: string; categories: ModalityCategory[] }
+function readModalityReason(value: unknown): ModalityReason {
+  const source = object(value)
+  return { dimension: string(source.dimension), detail: string(source.detail) }
+}
+function readModalityOption(value: unknown): ModalityOption {
+  const source = object(value)
+  const reason = source.reason === null || source.reason === undefined ? undefined : readModalityReason(source.reason)
+  return { providerId: string(source.providerId), modelId: string(source.modelId), available: boolean(source.available), ...(reason === undefined ? {} : { reason }) }
+}
+function readModalityOperation(value: unknown): ModalityOperation {
+  const source = object(value)
+  const key = optionalString(source.key)
+  const effective = source.effective === null || source.effective === undefined ? undefined : object(source.effective)
+  return {
+    operation: string(source.operation),
+    ...(key === undefined ? {} : { key }),
+    available: boolean(source.available),
+    reasons: array(source.reasons, readModalityReason),
+    ...(source.default === null || source.default === undefined ? {} : { default: readModalityOption(source.default) }),
+    ...(effective === undefined ? {} : { effective: { providerId: string(effective.providerId), modelId: string(effective.modelId), source: choice(effective.source, ["default", "automatic"]) } }),
+    options: array(source.options, readModalityOption),
+  }
+}
+export function readModalitySnapshot(value: unknown): ModalitySnapshot {
+  const source = object(value)
+  return {
+    revision: string(source.revision),
+    categories: array(source.categories, (item) => {
+      const category = object(item)
+      return {
+        category: string(category.category),
+        available: boolean(category.available),
+        reasons: array(category.reasons, readModalityReason),
+        operations: array(category.operations, readModalityOperation),
+      }
+    }),
+  }
 }

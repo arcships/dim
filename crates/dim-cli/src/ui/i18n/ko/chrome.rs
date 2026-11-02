@@ -70,6 +70,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "after message {count}" => "메시지 {count}개 이후",
         "open a line from the end of the shown line" => "표시 중인 라인의 끝에서 라인 열기",
         "fork the session at its last finished turn" => "마지막으로 끝난 턴에서 세션 포크",
+        "rename this session" => "이 세션 이름 바꾸기",
+        "Renamed to {title}" => "{title}(으)로 이름을 바꿨습니다",
+        "The Session is now untitled." => "세션에 이제 제목이 없습니다.",
+        "This daemon does not support renaming Sessions" => {
+            "이 데몬은 세션 이름 바꾸기를 지원하지 않습니다"
+        }
+        "Renaming failed" => "이름 바꾸기에 실패했습니다",
         "Starting" => "시작 중",
         "Delegation result" => "위임 결과",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {

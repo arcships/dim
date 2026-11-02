@@ -555,7 +555,7 @@ async fn titles_survive_restart_skip_forks_and_go_with_their_session() {
         client
             .rpc("session.delete", json!({"sessionId": sid}))
             .await["result"],
-        json!({})
+        json!({"deleted": true})
     );
     assert!(store.rows(&sid).is_empty(), "{:?}", store.rows(&sid));
     assert_eq!(code(&metadata.read(&sid).await), "not_found");

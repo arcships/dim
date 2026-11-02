@@ -163,5 +163,5 @@ owned by Dim and built on existing rutis effects and the bridge's calling row.
 | 作用域 | Session |
 | 注入 | `S:SessionConfig`、`S:SessionIdentity`、`S:SessionLifecycle`、`S:ToolHost` |
 | 提供 | `S:ToolRegistry`、`S:ToolSourcesView`、`S:dyn HostDispatch#toolRegistry` |
-| 被注入于 | `BranchTool`、`Questions`、`Recall`、`Skills`、`ToolBinding`、`Wait` |
+| 被注入于 | `BranchTool`、`HooksBranch`、`Questions`、`Recall`、`Skills`、`ToolBinding`、`Wait` |
 <!-- /generated -->

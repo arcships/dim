@@ -70,6 +70,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "fork the session at its last finished turn" => {
             "最後に終了したターンでセッションをフォーク"
         }
+        "rename this session" => "このセッションの名前を変更",
+        "Renamed to {title}" => "{title} に名前を変更しました",
+        "The Session is now untitled." => "セッションはタイトルなしになりました。",
+        "This daemon does not support renaming Sessions" => {
+            "このデーモンはセッションの名前変更に対応していません"
+        }
+        "Renaming failed" => "名前の変更に失敗しました",
         "Starting" => "起動中",
         "Delegation result" => "委任結果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {

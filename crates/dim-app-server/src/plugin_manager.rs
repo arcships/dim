@@ -3,7 +3,7 @@
 //! runtime state: rows are rutis-loader's, content is its owners'. It
 //! carries out a configuration change by giving the loader and the content
 //! owners (SkillsCatalog, Mcp, Hooks) commands.
-mod acquire;
+pub(crate) mod acquire;
 mod management;
 mod record;
 mod tools;

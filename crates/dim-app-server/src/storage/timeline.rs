@@ -99,6 +99,10 @@ pub struct SqliteTimelineStore {
     /// The writer memo (§6.2 of the request storage design), `None` when a
     /// flow test disabled it. Only the writer thread changes it.
     memo: Option<Mutex<Memo>>,
+    /// Per Session, the branch directory a successful validation pass checked
+    /// or a closing load last left. A restore reuses the pass while the stored
+    /// directory equals this record ([restore validation reuse](../../../../docs/design/appserver/restore-validation.md)).
+    validated: Mutex<BTreeMap<String, ValidatedDirectory>>,
     #[cfg(feature = "testing")]
     node_loads: Mutex<codec::NodeLoads>,
     #[cfg(feature = "testing")]
@@ -213,6 +217,7 @@ impl SqliteTimelineStore {
             worker: Mutex::new(None),
             closing: Mutex::new(None),
             memo: memo.then(Mutex::default),
+            validated: Mutex::default(),
             #[cfg(feature = "testing")]
             node_loads: Mutex::default(),
             #[cfg(feature = "testing")]
@@ -255,6 +260,7 @@ impl SqliteTimelineStore {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .failures
                             .remove(&session_id);
+                        store.refresh_validated(&session_id);
                         let _ = done.send(Ok(()));
                         continue;
                     }
@@ -589,6 +595,49 @@ impl SqliteTimelineStore {
                 .remove(session);
         }
     }
+    /// Drops the validation record of `session`, so its next restore validates.
+    fn forget_validated(&self, session: &str) {
+        self.validated
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session);
+    }
+    /// Refreshes the validation record of `session` to the directory the writer
+    /// just settled. Only a Session whose stored history this process validated
+    /// has a record; a failed read drops it, and the next restore validates.
+    fn refresh_validated(&self, session: &str) {
+        if !self
+            .validated
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(session)
+        {
+            return;
+        }
+        let current = {
+            let guard = self
+                .db
+                .connection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard
+                .as_ref()
+                .ok_or_else(|| error("SQLite storage is closed"))
+                .and_then(|connection| directory_rows(connection, session))
+        };
+        let mut validated = self
+            .validated
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match current {
+            Ok(directory) => {
+                validated.insert(session.to_owned(), directory);
+            }
+            Err(_) => {
+                validated.remove(session);
+            }
+        }
+    }
     /// Runs `step` with `reader` in connection holds of at most
     /// `NODE_LOADS_PER_HOLD` node loads until it returns a value; the
     /// writer's form of `holds`.
@@ -890,6 +939,7 @@ impl SqliteTimelineStore {
         if released > 0 {
             self.sweep_files.notify_one();
         }
+        self.forget_validated(session_id);
         self.admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2739,7 +2789,8 @@ impl TimelineStore for SqliteTimelineStore {
         Box::pin(async move {
             let session = session_id.to_owned();
             let config = config.clone();
-            self.db
+            let result = self
+                .db
                 .run(move |connection| {
                     let tx = connection
                         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -2747,7 +2798,11 @@ impl TimelineStore for SqliteTimelineStore {
                     create_session(&tx, &session, &config, None, SessionOrigin::Unknown)?;
                     tx.commit().map_err(error)
                 })
-                .await
+                .await;
+            if result.is_ok() {
+                self.forget_validated(session_id);
+            }
+            result
         })
     }
     fn rollback_session<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<()>> {
@@ -2822,10 +2877,44 @@ impl TimelineStore for SqliteTimelineStore {
     }
     fn branches<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Vec<StoredBranch>>> {
         Box::pin(async move {
+            let directory = match read_directory(&self.db, session_id).await {
+                Ok(directory) => directory,
+                Err(failure) => {
+                    self.forget_validated(session_id);
+                    return Err(failure);
+                }
+            };
+            let reused = self
+                .validated
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(session_id)
+                .is_some_and(|validated| validated == &directory);
+            if reused {
+                return match directory.branches() {
+                    Ok(branches) => Ok(branches.into_values().collect()),
+                    Err(failure) => {
+                        self.forget_validated(session_id);
+                        Err(failure)
+                    }
+                };
+            }
             let mut reader = self.reader(RequestBodies::Rebuild);
-            let branches = validate_session(&self.db, &mut reader, session_id).await?;
+            let result = validate_session(&self.db, &mut reader, session_id, &directory).await;
             self.finish(reader);
-            Ok(branches)
+            match result {
+                Ok(branches) => {
+                    self.validated
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(session_id.to_owned(), directory);
+                    Ok(branches)
+                }
+                Err(failure) => {
+                    self.forget_validated(session_id);
+                    Err(failure)
+                }
+            }
         })
     }
     fn head<'a>(&'a self, key: &'a TimelineKey) -> BoxFuture<'a, Result<u64>> {
@@ -3123,35 +3212,148 @@ impl TimelineStore for SqliteTimelineStore {
     }
 }
 
+/// The branch directory a validation pass fixes: every branch row, in
+/// branch-id order. The Session config is parsed by the read but is not part of
+/// the directory (restore validation reuse).
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct ValidatedDirectory {
+    branches: Vec<(String, String, u64)>,
+}
+impl ValidatedDirectory {
+    /// The directory's branches after the checks that need no event: identity,
+    /// main as the root, and every child's parent, anchor, cut and a
+    /// cycle-free ancestry.
+    fn branches(&self) -> Result<BTreeMap<String, StoredBranch>> {
+        let mut branches = BTreeMap::new();
+        for (id, info, sequence) in &self.branches {
+            let info: BranchRecord = serde_json::from_str(info).map_err(error)?;
+            if info.id != *id {
+                return Err(error("branch directory identity mismatch"));
+            }
+            branches.insert(
+                id.clone(),
+                StoredBranch {
+                    info,
+                    sequence: *sequence,
+                },
+            );
+        }
+        let main = branches
+            .get("main")
+            .ok_or_else(|| error("Session main directory is missing"))?;
+        if main.info.parent.is_some()
+            || main.info.branch_point.is_some()
+            || main.info.create_anchor.is_some()
+        {
+            return Err(error("invalid main branch directory"));
+        }
+        for (id, branch) in &branches {
+            if id == "main" {
+                continue;
+            }
+            let parent = branch
+                .info
+                .parent
+                .as_ref()
+                .ok_or_else(|| error("child branch has no parent"))?;
+            let anchor = branch
+                .info
+                .create_anchor
+                .ok_or_else(|| error("child branch has no create anchor"))?;
+            branch
+                .info
+                .branch_point
+                .ok_or_else(|| error("child branch has no branch point"))?;
+            let parent_branch = branches
+                .get(parent)
+                .ok_or_else(|| error("child branch parent is missing"))?;
+            if anchor > parent_branch.sequence {
+                return Err(error("child branch references future create anchor"));
+            }
+            let mut seen = BTreeSet::new();
+            let mut cursor = Some(id);
+            while let Some(current) = cursor {
+                if !seen.insert(current) {
+                    return Err(error("branch directory cycle"));
+                }
+                cursor = branches
+                    .get(current)
+                    .ok_or_else(|| error("child branch ancestor is missing"))?
+                    .info
+                    .parent
+                    .as_ref();
+            }
+        }
+        Ok(branches)
+    }
+}
+/// Reads `session`'s directory: the config must exist and parse, and the branch
+/// rows come in branch-id order.
+fn directory_rows(connection: &Connection, session: &str) -> Result<ValidatedDirectory> {
+    let config: String = connection
+        .query_row(
+            "SELECT config FROM agent_sessions WHERE session_id=?1",
+            [session],
+            |row| row.get(0),
+        )
+        .map_err(error)?;
+    let _: SessionConfig = serde_json::from_str(&config).map_err(error)?;
+    let branches = connection
+        .prepare("SELECT branch_id, info, sequence FROM timeline_branches WHERE session_id=?1 ORDER BY branch_id")
+        .map_err(error)?
+        .query_map([session], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                read_sequence(row, 2)?,
+            ))
+        })
+        .map_err(error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(error)?;
+    Ok(ValidatedDirectory { branches })
+}
+/// The directory read of a restore or export pass.
+pub(super) async fn read_directory(
+    db: &Arc<SqliteStorage>,
+    session: &str,
+) -> Result<ValidatedDirectory> {
+    let id = session.to_owned();
+    db.run(move |connection| directory_rows(connection, &id))
+        .await
+}
+
 /// Checks every row of `session` with one reader, which carries its content
-/// cache and kept request across the pass.
+/// cache and kept request across the pass. `directory` is the read this pass
+/// validates and, on success, records.
 pub(super) async fn validate_session(
     db: &Arc<SqliteStorage>,
     reader: &mut Reader,
     session: &str,
+    directory: &ValidatedDirectory,
 ) -> Result<Vec<StoredBranch>> {
     let id = session.to_owned();
-    let directory = db.run(move |connection| {
-        let config: String = connection.query_row("SELECT config FROM agent_sessions WHERE session_id=?1", [&id], |row| row.get(0)).map_err(error)?;
-        let _: SessionConfig = serde_json::from_str(&config).map_err(error)?;
-        let orphan: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM timeline_events e LEFT JOIN timeline_branches b \
+    let orphan: bool = db
+        .run(move |connection| {
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM timeline_events e LEFT JOIN timeline_branches b \
              ON b.session_id=e.session_id AND b.branch_id=e.branch_id \
-             WHERE e.session_id=?1 AND b.branch_id IS NULL)", [&id], |row| row.get(0)).map_err(error)?;
-        if orphan { return Err(error("Timeline event references a missing branch")); }
-        connection.prepare("SELECT branch_id, info, sequence FROM timeline_branches WHERE session_id=?1 ORDER BY branch_id")
-            .map_err(error)?.query_map([id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, read_sequence(row, 2)?)))
-            .map_err(error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(error)
-    }).await?;
-    let mut branches = BTreeMap::new();
+             WHERE e.session_id=?1 AND b.branch_id IS NULL)",
+                    [&id],
+                    |row| row.get(0),
+                )
+                .map_err(error)
+        })
+        .await?;
+    if orphan {
+        return Err(error("Timeline event references a missing branch"));
+    }
+    let branches = directory.branches()?;
     let mut event_ids = BTreeSet::new();
     let mut created = BTreeSet::new();
     let mut completions = vec![];
-    for (id, info, sequence) in directory {
-        let info: BranchRecord = serde_json::from_str(&info).map_err(error)?;
-        if info.id != id {
-            return Err(error("branch directory identity mismatch"));
-        }
+    for (id, _info, sequence) in &directory.branches {
         let mut next = 1;
         let mut batch_end = 0;
         loop {
@@ -3203,7 +3405,7 @@ pub(super) async fn validate_session(
                     }
                     if record.event.sequence != next
                         || record.batch_end < next
-                        || record.batch_end > sequence
+                        || record.batch_end > *sequence
                     {
                         return Err(error("invalid Timeline sequence or batch boundary"));
                     }
@@ -3235,19 +3437,9 @@ pub(super) async fn validate_session(
                 }
             }
         }
-        if next != sequence + 1 || batch_end != sequence {
+        if next != *sequence + 1 || batch_end != *sequence {
             return Err(error("Timeline head or final batch boundary is invalid"));
         }
-        branches.insert(id, StoredBranch { info, sequence });
-    }
-    let main = branches
-        .get("main")
-        .ok_or_else(|| error("Session main directory is missing"))?;
-    if main.info.parent.is_some()
-        || main.info.branch_point.is_some()
-        || main.info.create_anchor.is_some()
-    {
-        return Err(error("invalid main branch directory"));
     }
     if created.iter().any(|id| !branches.contains_key(id)) {
         return Err(error("branch create event has no directory"));
@@ -3260,21 +3452,15 @@ pub(super) async fn validate_session(
             .info
             .parent
             .as_ref()
-            .ok_or_else(|| error("child branch has no parent"))?;
+            .expect("the directory check required a parent");
         let anchor = branch
             .info
             .create_anchor
-            .ok_or_else(|| error("child branch has no create anchor"))?;
+            .expect("the directory check required a create anchor");
         let cut = branch
             .info
             .branch_point
-            .ok_or_else(|| error("child branch has no branch point"))?;
-        let parent_branch = branches
-            .get(parent)
-            .ok_or_else(|| error("child branch parent is missing"))?;
-        if anchor > parent_branch.sequence {
-            return Err(error("child branch references future create anchor"));
-        }
+            .expect("the directory check required a branch point");
         let parent_key = TimelineKey {
             session_id: session.into(),
             branch_id: parent.clone(),
@@ -3292,19 +3478,6 @@ pub(super) async fn validate_session(
                             BranchCreateAt::Sequence { sequence } => sequence,
                         } => {}
             _ => return Err(error("branch directory does not match create event")),
-        }
-        let mut seen = BTreeSet::new();
-        let mut cursor = Some(id);
-        while let Some(current) = cursor {
-            if !seen.insert(current) {
-                return Err(error("branch directory cycle"));
-            }
-            cursor = branches
-                .get(current)
-                .ok_or_else(|| error("child branch ancestor is missing"))?
-                .info
-                .parent
-                .as_ref();
         }
     }
     for (branch, at, through) in completions {

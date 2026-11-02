@@ -365,7 +365,7 @@ ProjectionCheckpoint = {
 
 ### 读取校验
 
-读取时先解析 `Row` 和运行时事件，再按 `(session_id, hash)` 查请求引用的内容、复核 hash 与 kind，并重建 `Arc<ModelRequest>`；同一次读取或恢复校验中，内容行在加载时复核一次，此后复用解码结果，被缓存上限清出后重新加载并复核。`ListReferences` 从 `list` 向首个节点遍历：每个节点须是 `kind=node`、hash 匹配、正文可解析为 `{parent,message}`，遍历恰好经过 `length` 个节点，最后一个的 `parent` 为 `null`，其余都有父节点。同一次读取保留上一个由列表重建的事件请求及其各消息的节点地址，遍历遇到与它同位置的同一节点即停止，其余前缀取自该请求；共用节点已在重建该请求时复核。遍历每加载至多 256 个节点释放一次连接，下一次持有从中断处继续。随后校验序号、行 kind、批次、before 的 `event_id`、分支关系和所有 completed 事实的 through 边界。可选 snapshot state 不参与 Session 恢复校验。坏行保留原字节并归属该 Session；缺失或损坏的节点以 "missing request content"、"request content hash mismatch" 或 "request list length mismatch" 明确失败，不得通过默认值把损坏请求还原为空请求或部分请求。不使用请求正文的读取（历史分页、摘要、上下文投影、协作）不还原这两类记录中的请求，也不加载或校验其内容行，只校验记录种类与引用形状相符（[请求增量存储 §7.5](request-delta-storage.md#75-不使用请求正文的读取)）；因此损坏的节点不会让这些读取失败，而恢复、导出与每个使用请求的读取仍会失败。
+读取时先解析 `Row` 和运行时事件，再按 `(session_id, hash)` 查请求引用的内容、复核 hash 与 kind，并重建 `Arc<ModelRequest>`；同一次读取或恢复校验中，内容行在加载时复核一次，此后复用解码结果，被缓存上限清出后重新加载并复核。`ListReferences` 从 `list` 向首个节点遍历：每个节点须是 `kind=node`、hash 匹配、正文可解析为 `{parent,message}`，遍历恰好经过 `length` 个节点，最后一个的 `parent` 为 `null`，其余都有父节点。同一次读取保留上一个由列表重建的事件请求及其各消息的节点地址，遍历遇到与它同位置的同一节点即停止，其余前缀取自该请求；共用节点已在重建该请求时复核。遍历每加载至多 256 个节点释放一次连接，下一次持有从中断处继续。随后校验序号、行 kind、批次、before 的 `event_id`、分支关系和所有 completed 事实的 through 边界。可选 snapshot state 不参与 Session 恢复校验。坏行保留原字节并归属该 Session；缺失或损坏的节点以 "missing request content"、"request content hash mismatch" 或 "request list length mismatch" 明确失败，不得通过默认值把损坏请求还原为空请求或部分请求。不使用请求正文的读取（历史分页、摘要、上下文投影、协作）不还原这两类记录中的请求，也不加载或校验其内容行，只校验记录种类与引用形状相符（[请求增量存储 §7.5](request-delta-storage.md#75-不使用请求正文的读取)）；因此损坏的节点不会让这些读取失败；首次或目录变化后的完整恢复校验、导出与每个使用请求的读取仍会失败（[恢复校验复用](restore-validation.md)）。
 
 ## 格式版本
 

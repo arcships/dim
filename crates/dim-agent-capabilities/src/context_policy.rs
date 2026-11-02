@@ -1,7 +1,7 @@
 use crate::{
     history::{
         HistoryEntry, HistoryRenderer, context_compaction, context_configuration, digest_message,
-        projection_checkpoint, truncate_middle, user_message,
+        truncate_middle, user_message,
     },
     host::*,
 };
@@ -71,7 +71,6 @@ pub(crate) struct PolicyContext {
     compaction: Option<ContextCompactionData>,
     order: Vec<PolicyOrderEvent>,
     full: Option<ContextHistory>,
-    checkpoint: Option<ProjectionCheckpoint>,
 }
 
 impl PolicyContext {
@@ -101,7 +100,6 @@ impl PolicyContext {
             compaction,
             order,
             full: Some(context),
-            checkpoint: None,
         }
     }
 
@@ -118,7 +116,6 @@ impl PolicyContext {
             compaction,
             order: streamed.order.clone(),
             full: None,
-            checkpoint: streamed.checkpoint.clone(),
         }
     }
 
@@ -131,39 +128,19 @@ impl PolicyContext {
     }
 
     pub fn messages_len(&self, history: &[HistoryEntry]) -> usize {
-        let mut len = history.len();
-        if let Some(ContextCompactionData {
-            outcome:
-                ContextCompactionResult::Completed {
-                    replacement,
-                    context_baseline,
-                    ..
-                },
-            ..
-        }) = self.compaction()
-        {
-            len += replacement.len() + context_baseline.len();
-        }
-        len
+        crate::history::projected_messages_len(self.compaction(), history)
     }
 
     pub fn messages(&self, history: &[HistoryEntry]) -> Vec<Arc<Message>> {
-        let mut messages = Vec::with_capacity(self.messages_len(history));
-        if let Some(ContextCompactionData {
-            outcome:
-                ContextCompactionResult::Completed {
-                    replacement,
-                    context_baseline,
-                    ..
-                },
-            ..
-        }) = self.compaction()
-        {
-            messages.extend(replacement.iter().cloned().map(Arc::new));
-            messages.extend(context_baseline.iter().map(|entry| entry.message.clone()));
-        }
-        messages.extend(history.iter().map(|entry| entry.message.clone()));
-        messages
+        crate::history::projected_messages(self.compaction(), history)
+    }
+
+    /// The same messages by reference, for checks that only compare them.
+    pub fn message_refs<'a>(
+        &'a self,
+        history: &'a [HistoryEntry],
+    ) -> impl Iterator<Item = &'a Message> + 'a {
+        crate::history::projected_message_refs(self.compaction(), history)
     }
 
     pub fn retained_entry(&self, history: &[HistoryEntry], cut: &str) -> Result<usize, String> {
@@ -185,10 +162,6 @@ impl PolicyContext {
 
     pub fn full(&self) -> Option<&ContextHistory> {
         self.full.as_ref()
-    }
-
-    pub fn checkpoint(&self) -> Option<&ProjectionCheckpoint> {
-        self.checkpoint.as_ref()
     }
 
     pub fn sequence(&self, id: &str) -> Option<u64> {
@@ -734,7 +707,9 @@ impl ContextPolicy {
                     None,
                 ),
             };
-            return self.commit(step, view, model, start, outcome).await;
+            return self
+                .commit(step, view, model, start, outcome, &policy_order)
+                .await;
         }
         let first = self
             .pass(
@@ -851,7 +826,8 @@ impl ContextPolicy {
             },
             StepOutcome::Cancelled { reason } => ContextCompactionResult::Cancelled { reason },
         };
-        self.commit(step, view, model, start, outcome).await
+        self.commit(step, view, model, start, outcome, &policy_order)
+            .await
     }
 
     /// Whether the entries a compaction at `cut` removes — less the pinned
@@ -897,6 +873,7 @@ impl ContextPolicy {
         model: Arc<dyn ContextModel>,
         start: Arc<AgentEvent>,
         outcome: ContextCompactionResult,
+        policy_order: &PolicyOrder,
     ) -> Result<Compacted, HostError> {
         let fact = self
             .timeline
@@ -938,27 +915,32 @@ impl ContextPolicy {
             });
         if request.is_ok() {
             let saved = async {
-                let snapshot = match (view.context.full(), view.context.checkpoint()) {
-                    (Some(context), _) => {
-                        Some(self.history.snapshot(context, retain_from, &fact)?)
-                    }
-                    (None, Some(checkpoint)) => {
-                        Some(self.history.snapshot_from_checkpoint(checkpoint, &fact)?)
-                    }
-                    (None, None)
-                        if std::ptr::eq(
-                            self.history.checkpoint as *const (),
-                            projection_checkpoint as *const (),
-                        ) =>
-                    {
+                let snapshot = match view.context.full() {
+                    Some(context) => Some(self.history.snapshot(context, retain_from, &fact)?),
+                    None if self.history.checkpoint.is_builtin() => {
+                        let resume = policy_order
+                            .events
+                            .iter()
+                            .find(|event| event.id == *retain_from)
+                            .map(|event| TimelinePosition {
+                                branch_id: event.branch_id.clone(),
+                                sequence: event.sequence,
+                            })
+                            .ok_or_else(|| "compaction cut is outside the branch".to_owned())?;
                         let checkpoint = self
                             .history
-                            .stream_checkpoint(&self.timeline, view.facts.through, retain_from, 256)
+                            .stream_checkpoint(
+                                &self.timeline,
+                                resume,
+                                view.facts.through,
+                                retain_from,
+                                256,
+                            )
                             .await
                             .map_err(|error| error.to_string())?;
                         Some(self.history.snapshot_from_checkpoint(&checkpoint, &fact)?)
                     }
-                    (None, None) => {
+                    None => {
                         let (context, _) = self
                             .history
                             .rendered_context(&self.timeline, view.facts.through)

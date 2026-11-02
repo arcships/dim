@@ -130,6 +130,11 @@ pub trait TimelineStore: Send + Sync + 'static {
         &'a self,
         session_id: &'a str,
     ) -> BoxFuture<'a, Result<Option<SessionConfig>>>;
+    /// Returns the Session's branch directory after checking the stored
+    /// Timeline. An implementation may reuse a check it already ran for this
+    /// Session in the same store while the stored directory and every branch
+    /// head are unchanged. The first check of a Session in a process reads the
+    /// whole Timeline.
     fn branches<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Vec<StoredBranch>>>;
     fn head<'a>(&'a self, key: &'a TimelineKey) -> BoxFuture<'a, Result<u64>>;
     fn append(
