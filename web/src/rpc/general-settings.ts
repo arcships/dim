@@ -222,20 +222,55 @@ export function readSandboxBackend(value: unknown): SandboxBackend {
   return boolean(source.available) ? { available: true } : { available: false, reason: string(source.reason) }
 }
 
-export type ModalityModel = { id: string; name: string; vision: boolean; toolCalling: boolean; modalities: string[] }
-export type ModalityCatalog = { version: number; models: ModalityModel[] }
-export function readModalityCatalog(value: unknown): ModalityCatalog | undefined {
-  const result = object(value)
-  if (result.catalog === null) return undefined
-  return readEditedModalityCatalog(result.catalog)
+export type ModalityReason = { dimension: string; detail: string }
+export type ModalityOption = ModelId & { available: boolean; reason?: ModalityReason }
+export type ModalityEffective = ModelId & { source: "default" | "automatic" }
+export type ModalityOperation = {
+  operation: string
+  key?: string
+  available: boolean
+  reasons: ModalityReason[]
+  default?: ModalityOption
+  effective?: ModalityEffective
+  options: ModalityOption[]
 }
-export function readEditedModalityCatalog(value: unknown): ModalityCatalog {
-  const catalog = object(value)
-  return { version: number(catalog.version), models: array(catalog.models, (item) => {
-    const model = object(item)
-    const capabilities = object(model.capabilities)
-    const metadata = model.metadata === null || model.metadata === undefined ? undefined : object(model.metadata)
-    const raw = metadata?.raw === undefined ? undefined : object(metadata.raw)
-    return { id: string(model.id), name: string(model.name), vision: boolean(capabilities.vision), toolCalling: boolean(capabilities.toolCalling), modalities: raw?.modalityCapabilities === undefined ? [] : array(raw.modalityCapabilities, string) }
-  }) }
+export type ModalityCategory = { category: string; available: boolean; reasons: ModalityReason[]; operations: ModalityOperation[] }
+export type ModalitySnapshot = { revision: string; categories: ModalityCategory[] }
+function readModalityReason(value: unknown): ModalityReason {
+  const source = object(value)
+  return { dimension: string(source.dimension), detail: string(source.detail) }
+}
+function readModalityOption(value: unknown): ModalityOption {
+  const source = object(value)
+  const reason = source.reason === null || source.reason === undefined ? undefined : readModalityReason(source.reason)
+  return { providerId: string(source.providerId), modelId: string(source.modelId), available: boolean(source.available), ...(reason === undefined ? {} : { reason }) }
+}
+function readModalityOperation(value: unknown): ModalityOperation {
+  const source = object(value)
+  const key = optionalString(source.key)
+  const effective = source.effective === null || source.effective === undefined ? undefined : object(source.effective)
+  return {
+    operation: string(source.operation),
+    ...(key === undefined ? {} : { key }),
+    available: boolean(source.available),
+    reasons: array(source.reasons, readModalityReason),
+    ...(source.default === null || source.default === undefined ? {} : { default: readModalityOption(source.default) }),
+    ...(effective === undefined ? {} : { effective: { providerId: string(effective.providerId), modelId: string(effective.modelId), source: choice(effective.source, ["default", "automatic"]) } }),
+    options: array(source.options, readModalityOption),
+  }
+}
+export function readModalitySnapshot(value: unknown): ModalitySnapshot {
+  const source = object(value)
+  return {
+    revision: string(source.revision),
+    categories: array(source.categories, (item) => {
+      const category = object(item)
+      return {
+        category: string(category.category),
+        available: boolean(category.available),
+        reasons: array(category.reasons, readModalityReason),
+        operations: array(category.operations, readModalityOperation),
+      }
+    }),
+  }
 }

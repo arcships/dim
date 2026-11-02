@@ -17,6 +17,7 @@ use crate::{
     host_platform::{HostPlatform, Os},
     input_queue::{CheckSubmission, SubmitCheckReply, SubmitCheckRequest, SubmitChecks},
     permission::{AdmissionDecision, AdviseTool, Permission, ToolAdviceReply, ToolAdviceRequest},
+    tool_registry::ToolRegistry,
 };
 use dim_agent_runtime::{
     BranchLifecycle, Delivery, Dispatcher, Names, SessionConfig, SessionIdentity, Timeline,
@@ -25,8 +26,7 @@ use dim_agent_runtime::{
 use dim_agent_types::{
     AgentEvent, ApprovalCancelledData, ApprovalDecision, ApprovalRequestData, ApprovalRespondData,
     BranchSource, ContentBlock, EventKind, InputBlock, InputMessageData, InputMode, JsonObject,
-    PermissionPreset, ToolCallResult, ToolContent, ToolDefinition, ToolMetadata, TurnOutcome,
-    UserInput,
+    PermissionPreset, ToolCallResult, ToolContent, ToolDefinition, TurnOutcome, UserInput,
 };
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -972,6 +972,8 @@ struct ToolRun {
     turn_id: String,
     name: String,
     input: JsonObject,
+    /// The alias of the declaration in force where the result batch folded,
+    /// so a reconfiguration queued before the drain does not change it.
     alias: Option<String>,
     content: ToolContent,
     is_error: bool,
@@ -1004,8 +1006,10 @@ struct View {
     operator_inputs: HashSet<String>,
     /// Tool calls by `call_id`, from `step/tool-call`.
     calls: HashMap<String, (String, JsonObject, String)>,
-    /// Tool aliases for matchers, from the adopted `context/configured`.
-    aliases: HashMap<String, String>,
+    /// The matcher aliases of the tool part the last consumed
+    /// `context/configured` carried, by tool name; `None` when it carried
+    /// none, and the registry answers for the aliases.
+    tool_aliases: Option<HashMap<String, String>>,
     /// The id of the follow-up input Hooks wrote and no turn has consumed yet.
     follow_up_input: Option<String>,
     /// A follow-up input was consumed since the last `turn/end`.
@@ -1091,14 +1095,12 @@ impl View {
                 });
             }
             EventKind::ContextConfigured(data) => {
-                self.aliases.clear();
-                if let Some(tools) = &data.settings.tools {
-                    for tool in tools {
-                        if let Some(alias) = alias(tool) {
-                            self.aliases.insert(tool.name.clone(), alias);
-                        }
-                    }
-                }
+                self.tool_aliases = data.settings.tools.as_ref().map(|tools| {
+                    tools
+                        .iter()
+                        .filter_map(|tool| Some((tool.name.clone(), alias(tool)?)))
+                        .collect()
+                });
             }
             _ => {}
         }
@@ -1114,7 +1116,7 @@ impl View {
             } else {
                 HookEvent::PostToolUse
             },
-            alias: self.aliases.get(&name).cloned(),
+            alias: None,
             call_id: result.call_id.clone(),
             turn_id,
             name,
@@ -1127,19 +1129,13 @@ impl View {
 
 /// The migration alias a pasted Claude or Codex matcher selects (G.2).
 fn alias(tool: &ToolDefinition) -> Option<String> {
-    alias_of(&tool.name, tool.risk.as_deref(), tool.metadata.as_ref())
-}
-
-/// [`alias`] from what the name carries: a tool declaration, or the call
-/// Permission is admitting.
-fn alias_of(name: &str, risk: Option<&str>, metadata: Option<&ToolMetadata>) -> Option<String> {
-    if let Some(metadata) = metadata
+    if let Some(metadata) = tool.metadata.as_ref()
         && let (Some(server), Some(original)) =
             (&metadata.mcp_server_id, &metadata.mcp_original_tool_name)
     {
         return Some(format!("mcp__{server}__{original}"));
     }
-    match (name, risk) {
+    match (tool.name.as_str(), tool.risk.as_deref()) {
         (_, Some("execute_process")) => Some("Bash".into()),
         ("read", _) => Some("Read".into()),
         ("write", _) => Some("Write".into()),
@@ -1186,6 +1182,7 @@ struct Branch {
     runtime: Arc<HooksRuntime>,
     timeline: Arc<Timeline>,
     approval: Arc<Approval>,
+    registry: Arc<ToolRegistry>,
     branch_id: String,
     view: Mutex<View>,
     jobs: mpsc::UnboundedSender<Job>,
@@ -1197,6 +1194,37 @@ struct Branch {
 }
 
 impl Branch {
+    /// The alias a matcher of a tool event is tested against (G.2): a
+    /// property of the declaration the branch uses. A branch that adopted a
+    /// tool part uses that part, and a name it does not declare has no alias.
+    /// Without one, the registry answers for the alias.
+    fn alias(&self, view: &View, name: &str) -> Option<String> {
+        if let Some(aliases) = &view.tool_aliases {
+            return aliases.get(name).cloned();
+        }
+        self.registry
+            .fixed(name)
+            .or_else(|| self.registry.contributed(name))
+            .and_then(|tool| alias(&tool.definition))
+    }
+
+    /// Fills a settled batch's aliases from the view it folded under.
+    fn with_aliases(&self, view: &View, job: Job) -> Job {
+        match job {
+            Job::ToolResults { trigger, calls } => Job::ToolResults {
+                trigger,
+                calls: calls
+                    .into_iter()
+                    .map(|call| ToolRun {
+                        alias: self.alias(view, &call.name),
+                        ..call
+                    })
+                    .collect(),
+            },
+            job => job,
+        }
+    }
+
     /// Advances the consumed view; a live event that needs work is spawned or
     /// enqueued, and the handler returns.
     fn fold(self: &Arc<Self>, event: &AgentEvent, live: bool) {
@@ -1208,7 +1236,7 @@ impl Branch {
         }
         let job = {
             let mut view = self.view.lock().unwrap();
-            view.fold(event)
+            view.fold(event).map(|job| self.with_aliases(&view, job))
         };
         match &event.kind {
             EventKind::ApprovalRespond(ApprovalRespondData { approval_id, .. })
@@ -1414,13 +1442,10 @@ impl Branch {
     }
 
     async fn approval(self: &Arc<Self>, data: ApprovalRequestData, cancel: CancellationToken) {
-        let alias = self
-            .view
-            .lock()
-            .unwrap()
-            .aliases
-            .get(&data.call.name)
-            .cloned();
+        let alias = {
+            let view = self.view.lock().unwrap();
+            self.alias(&view, &data.call.name)
+        };
         let runs = approval_point(
             &self.runtime,
             &self.branch_id,
@@ -1462,14 +1487,12 @@ impl Branch {
         request: &ToolAdviceRequest,
         cancel: &CancellationToken,
     ) -> ToolAdviceReply {
-        // A branch that adopted no tool part has no alias map, so the name
-        // and risk the call declares answer for the built-in aliases (G.2).
+        // The alias comes from the declaration in force, never from the risk
+        // this admission carries, so the same matcher selects the call on
+        // every tool event (G.2).
         let alias = {
             let view = self.view.lock().unwrap();
-            view.aliases
-                .get(&request.call.name)
-                .cloned()
-                .or_else(|| alias_of(&request.call.name, request.risk.as_deref(), None))
+            self.alias(&view, &request.call.name)
         };
         let Some(snapshot) = self.runtime.snapshot().await else {
             return ToolAdviceReply::None;
@@ -1723,6 +1746,7 @@ pub struct HooksBranchPlugin {
     permission: Key<Permission>,
     identity: Key<TimelineIdentity>,
     lifecycle: Key<BranchLifecycle>,
+    registry: Key<ToolRegistry>,
 }
 impl HooksBranchPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
@@ -1734,6 +1758,7 @@ impl HooksBranchPlugin {
             permission: names.key()?,
             identity: names.key()?,
             lifecycle: names.key()?,
+            registry: names.key()?,
         })
     }
 }
@@ -1750,6 +1775,7 @@ impl DynPlugin for HooksBranchPlugin {
             self.permission.erase(),
             self.identity.erase(),
             self.lifecycle.erase(),
+            self.registry.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -1761,12 +1787,14 @@ impl DynPlugin for HooksBranchPlugin {
             let permission = ctx.require_at(&self.permission)?;
             let identity = ctx.require_at(&self.identity)?;
             let lifecycle = ctx.require_at(&self.lifecycle)?;
+            let registry = ctx.require_at(&self.registry)?;
             let (sender, receiver) = mpsc::unbounded_channel();
             let tracker = TaskTracker::new();
             let branch = Arc::new(Branch {
                 runtime,
                 timeline,
                 approval,
+                registry,
                 branch_id: identity.branch_id.clone(),
                 view: Mutex::new(View::default()),
                 jobs: sender,

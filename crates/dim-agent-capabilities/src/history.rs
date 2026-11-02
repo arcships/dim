@@ -264,9 +264,7 @@ impl HistoryRenderer {
         }
     }
 
-    /// Streams a branch in batches and returns only the projection. `fallback`
-    /// means the caller must use the full `rendered_context` path (ancestry,
-    /// compaction, or an empty range).
+    /// Streams the branch chain in batches and returns only the projection.
     pub async fn rendered_stream(
         &self,
         timeline: &Timeline,
@@ -508,13 +506,6 @@ struct Projection {
     history: Vec<HistoryEntry>,
     origins: Vec<usize>,
     state: ProjectionCheckpointState,
-}
-
-/// One batch of a streaming projection.
-#[derive(Debug, Clone)]
-pub struct StreamedState {
-    pub resume_event: String,
-    pub state: ProjectionCheckpointState,
 }
 
 pub struct ProjectedBatch {
@@ -817,41 +808,60 @@ pub fn project_context_history(context: &ContextHistory) -> Result<Vec<HistoryEn
 
 /// The replay rule of every strategy: the stored replacement, the keyed
 /// baseline, then the entries the cut keeps.
-pub fn context_messages(context: &ContextHistory, history: &[HistoryEntry]) -> Vec<Arc<Message>> {
-    let mut messages = Vec::with_capacity(context_messages_len(context, history));
-    if let Some(ContextCompactionData {
-        outcome:
-            ContextCompactionResult::Completed {
-                replacement,
-                context_baseline,
-                ..
-            },
-        ..
-    }) = context_compaction(context)
-    {
-        messages.extend(replacement.iter().cloned().map(Arc::new));
-        messages.extend(context_baseline.iter().map(|entry| entry.message.clone()));
+fn segments<'a>(
+    compaction: Option<&'a ContextCompactionData>,
+    history: &'a [HistoryEntry],
+) -> (
+    &'a [Message],
+    &'a [ContextBaselineEntry],
+    &'a [HistoryEntry],
+) {
+    match compaction.map(|data| &data.outcome) {
+        Some(ContextCompactionResult::Completed {
+            replacement,
+            context_baseline,
+            ..
+        }) => (replacement, context_baseline, history),
+        _ => (&[], &[], history),
     }
+}
+
+/// The number of messages the replay rule returns, without building them.
+pub(crate) fn projected_messages_len(
+    compaction: Option<&ContextCompactionData>,
+    history: &[HistoryEntry],
+) -> usize {
+    let (replacement, baseline, history) = segments(compaction, history);
+    replacement.len() + baseline.len() + history.len()
+}
+
+pub(crate) fn projected_messages(
+    compaction: Option<&ContextCompactionData>,
+    history: &[HistoryEntry],
+) -> Vec<Arc<Message>> {
+    let (replacement, baseline, history) = segments(compaction, history);
+    let mut messages = Vec::with_capacity(replacement.len() + baseline.len() + history.len());
+    messages.extend(replacement.iter().cloned().map(Arc::new));
+    messages.extend(baseline.iter().map(|entry| entry.message.clone()));
     messages.extend(history.iter().map(|entry| entry.message.clone()));
     messages
 }
 
-/// The number of messages `context_messages` returns, without building it.
-pub fn context_messages_len(context: &ContextHistory, history: &[HistoryEntry]) -> usize {
-    let mut len = history.len();
-    if let Some(ContextCompactionData {
-        outcome:
-            ContextCompactionResult::Completed {
-                replacement,
-                context_baseline,
-                ..
-            },
-        ..
-    }) = context_compaction(context)
-    {
-        len += replacement.len() + context_baseline.len();
-    }
-    len
+/// The replay rule's messages in order, without building a list.
+pub(crate) fn projected_message_refs<'a>(
+    compaction: Option<&'a ContextCompactionData>,
+    history: &'a [HistoryEntry],
+) -> impl Iterator<Item = &'a Message> + 'a {
+    let (replacement, baseline, history) = segments(compaction, history);
+    replacement
+        .iter()
+        .chain(baseline.iter().map(|entry| entry.message.as_ref()))
+        .chain(history.iter().map(|entry| entry.message.as_ref()))
+}
+
+/// The replay rule applied to a whole `ContextHistory`.
+pub fn context_messages(context: &ContextHistory, history: &[HistoryEntry]) -> Vec<Arc<Message>> {
+    projected_messages(context_compaction(context), history)
 }
 
 pub fn context_configuration(context: &ContextHistory) -> Option<ContextConfiguredData> {

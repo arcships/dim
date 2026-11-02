@@ -4087,6 +4087,69 @@ async fn deleting_the_last_two_members_together_ends_their_agent() {
     tokio::fs::remove_dir_all(directory).await.unwrap();
 }
 
+/// S5c §3.1: `requireInactive` covers the Sessions a delete would remove
+/// with the one it names. A leader whose led member is in use refuses
+/// `session_active`, names the member, and removes neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_whose_member_is_in_use_is_not_deleted_when_inactive_is_required() {
+    let store = super::deletion::Store::new();
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, true, 3).await;
+    let lead = leader(&mut client, allowed()).await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    let holder = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "request", "agentId": holder, "prompt": "hello"})),
+        "queue",
+    )
+    .await;
+    returned(&mut client, &lead, &lead_session, 1).await;
+    let member = next_member(&lead_session, 0).await;
+    // An attached client keeps the member in use; the leader itself is idle
+    // once its request completed.
+    let mut watcher = Client::new_version(&server, true, 3).await;
+    assert_ok(
+        &watcher
+            .rpc("session.attach", json!({"sessionId":member}))
+            .await,
+    );
+
+    let refused = client
+        .rpc(
+            "session.delete",
+            json!({"sessionId":lead,"requireInactive":true}),
+        )
+        .await;
+    assert_eq!(refused["error"]["data"]["appError"], "session_active");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&member),
+        "the reason names the member in use: {refused}"
+    );
+    assert!(
+        agent.get_session(&lead).is_some(),
+        "the leader is not closed"
+    );
+    assert!(!store.rows(&lead).is_empty() && !store.rows(&member).is_empty());
+
+    assert_ok(
+        &client
+            .rpc("session.delete", json!({"sessionId":lead}))
+            .await,
+    );
+    assert!(store.rows(&lead).is_empty() && store.rows(&member).is_empty());
+    drop((client, agent));
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 /// A store left with an incomplete delegation and an orphaned one: startup
 /// removes both before it serves, and leaves no member rows behind.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -8,7 +8,9 @@ use crate::{
     display::Display,
     export, goal_command,
     input::Input,
-    mcp, permission, permission_command,
+    mcp,
+    model::session::RenameReply,
+    permission, permission_command,
     question::line::Questions,
 };
 use dim_agent_types::{ApprovalCallData, ContentBlock, ModelId, PermissionPolicy, UserInput};
@@ -424,6 +426,39 @@ pub async fn chat(
                     if let Err(error) = result {
                         display.record(&format!("Error: {error}"))?;
                     }
+                    draft.clear();
+                    continue;
+                }
+                Some("/rename") => {
+                    let text = text.as_deref().expect("plain rename command");
+                    let rest = text
+                        .trim_start()
+                        .strip_prefix("/rename")
+                        .expect("rename command");
+                    let title = rest.trim();
+                    if title.is_empty() {
+                        display.record("Use /rename TITLE or /rename --clear")?;
+                        draft.clear();
+                        continue;
+                    }
+                    let reply = crate::session_command::set_title(
+                        client,
+                        &session_id,
+                        (title != "--clear").then_some(title),
+                    )
+                    .await;
+                    let line = match reply {
+                        RenameReply::Titled(title) => format!(
+                            "Renamed to {}",
+                            crate::sanitize::safe(&title).replace(['\n', '\t'], " ")
+                        ),
+                        RenameReply::Untitled => "The Session is now untitled.".to_owned(),
+                        RenameReply::Unsupported => {
+                            "This daemon does not support renaming Sessions".to_owned()
+                        }
+                        RenameReply::Failed(error) => format!("Renaming failed: {error}"),
+                    };
+                    display.record(&line)?;
                     draft.clear();
                     continue;
                 }

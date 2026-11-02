@@ -93,8 +93,8 @@
 | `context_with_checkpoint(through, ..)` | 最近有效快照的 `resume` 起的祖先链和本分支后缀 | 不扫描快照恢复位置之前的请求正文 |
 | `local(range)`、`trace(sequence)` | 指定区间或命中事件的物理行 | 合并行完整解码后按逻辑序号过滤；trace 只返回指定事件的轨迹 |
 | 分段读取 | 固定水位，按键 seek；内部读段可切开原子批次，`TimelineStore::read/read_segments` 的最终区间终点须为批次边界 | 每段结束释放连接锁；合并行完整解码后截取，不在锁内解码无限历史 |
-| 不读请求正文的分页 | `read_page_without_request_bodies`：历史分页、摘要、协作与流式投影；批次边界与 `read_page` 相同 | 不还原 `context/prepare`、`model/call` 的请求，也不加载其内容行，只校验记录种类与引用形状（[请求增量存储 §7.5](../../design/appserver/request-delta-storage.md#75-不使用请求正文的读取)）；使用请求的读取与恢复仍完整校验 |
-| 恢复 | 固定 Session 目录和所有分支头，逐页校验事件、引用、祖先截点及 completed 事实的 through 边界；可选快照 state 不参与恢复校验 | 每页结束释放连接锁；解码内容缓存跨页共用、有界（第 2 节），校验结束释放；跨页保留事件 ID 和目录校验信息 |
+| 不读请求正文的分页 | `read_page_without_request_bodies`：历史分页、摘要、协作与流式投影；批次边界与 `read_page` 相同 | 不还原 `context/prepare`、`model/call` 的请求，也不加载其内容行，只校验记录种类与引用形状（[请求增量存储 §7.5](../../design/appserver/request-delta-storage.md#75-不使用请求正文的读取)）；使用请求的读取与首次恢复仍完整校验 |
+| 恢复 | 固定 Session 目录和所有分支头，逐页校验事件、引用、祖先截点及 completed 事实的 through 边界；可选快照 state 不参与恢复校验 | 每页结束释放连接锁；解码内容缓存跨页共用、有界（第 2 节），校验结束释放；跨页保留事件 ID 和目录校验信息；进程内首次恢复全量校验，之后目录与所有分支头不变时复用上次结果，记录只在存储的进程内存，校验失败或目录变化回退全量（[恢复校验复用](../../design/appserver/restore-validation.md)）；校验内容与不变量不变 |
 
 协作 `read_page` 的 `after` 和固定水位必须为批次边界；页长是目标值，末批超出时完整返回。内部读段可切开批次，但不把内部段尾作为业务游标。反向 `session.history` 仍为独立协议草案。
 
@@ -145,7 +145,7 @@
 | 场景 | 约定 |
 | --- | --- |
 | 建分支 | 分支目录与 `branch/create` 在同一事务中提交；子 Timeline 以祖先链描述构造 |
-| 恢复 | 按[存储格式](../../design/appserver/native-storage-format.md)校验物理格式与提交边界后，Timeline 以存储中最后的 sequence 为发布水位构造；能力按 `context` 或 `local` 重建，这些读取在分支打开期间共用一份解码副本（第 4 节“使用方”）；TimelineTree 的恢复事实（分支记录的创建失败）也在打开期间从中读取，子分支的创建检查只分页读到它的第一个排队输入 |
+| 恢复 | 按[存储格式](../../design/appserver/native-storage-format.md)校验物理格式与提交边界后（进程内首次恢复全量校验；之后目录与所有分支头不变时复用上次结果，记录只在存储的进程内存，校验失败或目录变化回退全量；[恢复校验复用](../../design/appserver/restore-validation.md)），Timeline 以存储中最后的 sequence 为发布水位构造；能力按 `context` 或 `local` 重建，这些读取在分支打开期间共用一份解码副本（第 4 节“使用方”）；TimelineTree 的恢复事实（分支记录的创建失败）也在打开期间从中读取，子分支的创建检查只分页读到它的第一个排队输入 |
 | Timeline close | 关闭前提交的事件全部发布后，才完成关闭 |
 | Session close | 各分支关闭并结算其写入、Session scope 清理完成后释放该次加载的存储准入状态；存储仍接收写入时，释放排在已接收批次之后，完成后才从 Agent 移除 Session。只清理故障与 writer memo，不删除持久数据；恢复初始化失败且生产者停止后也执行此释放 |
 

@@ -142,7 +142,8 @@ compaction（[agent_loop.rs:359](../../crates/dim-agent-capabilities/src/agent_l
 不保留投影 cache，也不把整段历史装进 `ContextHistory.events`。每次 prepare 按批读取事件，
 边读边投影，投影之外的批立即释放。没有跨 prepare 的派生状态，也没有缓存失效规则。
 
-- **读取**：`Timeline::stored_local` 按范围直接读 store，`HistoryRenderer::rendered_stream`
+- **读取**：`Timeline::stored_page` 在固定 head 上读取某个位置之后的完整原子批次，
+  目标是一批的事件数、永不在原子批次中间结束；`HistoryRenderer::rendered_stream`
   以 256 条为默认批大小顺序读取；不经过 hot cache，不保留事件体。
 - **投影**：`project_batch` 接受上一批的 `ProjectionCheckpointState`，返回新的 entries/state；
   `rendered_stream` 合并 entries，事件只活到当前批。
@@ -165,8 +166,7 @@ policy 需要的事实和窗口单独查询，不经过 `ContextHistory.events`�
 - `ContextPolicy` 的输入改为 `PolicyContext`，只持有 configuration、compaction、order、
   streamed checkpoint 和可选的 full context；`full` 只用于显式的 `rendered_context` 读取，
   准备路径总是用默认投影。
-- `compact_step` 的 snapshot 由 `stream_checkpoint` 从最近的有效快照折叠到 cut；
-  自定义 checkpoint builder 只影响 `rendered_context` 读取，不参与准备路径。
+- `compact_step` 的 snapshot 由 `stream_checkpoint` 从最近的有效快照折叠到 cut。
 
 #### 与快照的关系
 
@@ -182,7 +182,7 @@ P3 已经覆盖冷重建：读取按批进行，不再一次物化整段历史�
 | 项 | 方式 |
 | --- | --- |
 | 现有流程 | `context_flow`、`context_policy`、`storage_flow` 不变通过 |
-| 流式/全量一致 | 在固定前缀上分别用流式批读取和全量 `rendered_context`，entries/state 必须一致（复用 checkpoint_projection 的测试模式） |
+| 流式/全量一致 | 在固定前缀上分别用流式批读取和全量 `rendered_context`，entries、由它们组出的 messages，以及 configuration 与 prompt 必须一致（复用 checkpoint_projection 的测试模式） |
 | 失败路径 | 无缓存可推进；读取、解码、前缀校验失败只影响本次 prepare，下一次仍从全量开始 |
 | 每步分配 | P0 命令：改动前后的 live/peak 曲线 |
 | 流式峰值 | 峰值只跟批大小和投影有关，不随历史长度增长；用 `restore-replay` / `context-breakdown` 对照 |

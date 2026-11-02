@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use crate::management::editor;
 use crate::model::session::{
     Area, Command, CompactReply, ContextReading, DIM_OAUTH_ID, DraftPart, ManagementAction,
-    ManagementRefusal, ManagementRequest, ManagementResult, SessionPort, SubmitMode, SwitchKind,
-    Update,
+    ManagementRefusal, ManagementRequest, ManagementResult, RenameReply, SessionPort, SubmitMode,
+    SwitchKind, Update,
 };
 #[cfg(test)]
 use crate::model::shell::Outcome as ShellOutcome;
@@ -1875,6 +1875,25 @@ impl App {
                 };
                 self.reports.push(Block::Status { text, tone });
             }
+            Update::Renamed(reply) => {
+                let (text, tone) = match reply {
+                    RenameReply::Titled(title) => {
+                        (tf("Renamed to {title}", &[("title", &title)]), Tone::Muted)
+                    }
+                    RenameReply::Untitled => {
+                        (t("The Session is now untitled.").to_owned(), Tone::Muted)
+                    }
+                    RenameReply::Unsupported => (
+                        t("This daemon does not support renaming Sessions").to_owned(),
+                        Tone::Warning,
+                    ),
+                    RenameReply::Failed(message) => (
+                        [t("Renaming failed"), " · ", message.as_str()].concat(),
+                        Tone::Warning,
+                    ),
+                };
+                self.reports.push(Block::Status { text, tone });
+            }
             Update::Oauth { attempt, event } => {
                 let effect = match &mut self.prompt {
                     Some(Prompt::Providers(panel)) => panel.oauth_event(attempt, event),
@@ -3337,6 +3356,16 @@ impl App {
             }
             "compact" => {
                 self.host.send(Command::Compact);
+                Outcome::Continue
+            }
+            "rename" => {
+                let title = args.trim();
+                let title = if title == "--clear" {
+                    None
+                } else {
+                    Some(title.to_owned())
+                };
+                self.host.send(Command::Rename(title));
                 Outcome::Continue
             }
             "goal" => {

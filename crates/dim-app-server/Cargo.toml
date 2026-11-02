@@ -57,6 +57,9 @@ webpki-roots = "1"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_SystemServices", "Win32_System_Threading"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
+
 [features]
 # Hooks that race flow tests use to hold an operation open.
 testing = []
@@ -76,5 +79,3 @@ tokio-tungstenite.workspace = true
 [build-dependencies]
 flate2 = "1.1"
 
-[target.'cfg(unix)'.dev-dependencies]
-libc = "0.2.189"

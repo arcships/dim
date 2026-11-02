@@ -229,6 +229,9 @@ impl SessionStore {
                             origin: Some(stored_origin(row, 12)?), parent_session_id: row.get(13).map_err(error)?,
                             running: false, attached_clients: 0,
                         }, preview: row.get(8).map_err(error)?, updated_at: read_sequence(row, 9).map_err(error)?,
+                        // Agents marks the rows this daemon closed; the query
+                        // already leaves them out unless it asked for them.
+                        closed: false,
                     })
                 })();
                 match parsed {

@@ -86,6 +86,8 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Bounded latest-turn history window](design/appserver/session-history-window.md) (#712)
 - [SessionStore title metadata](design/appserver/session-title-metadata.md)（[中文](zh/design/appserver/session-title-metadata.md)）
 - [Restore-scoped shared history read](design/appserver/restore-shared-read.md) (#193)（[中文](zh/design/appserver/restore-shared-read.md)）
+- [Restore validation reuse](design/appserver/restore-validation.md) (#601)
+- [Cold first session.attach](design/appserver/cold-attach-profile.md) (#713)
 - [Idle Session unload](design/appserver/idle-unload.md) (#126, #331)（[中文](zh/design/appserver/idle-unload.md)）
 - [Request delta storage](design/appserver/request-delta-storage.md) (#193)（[中文](zh/design/appserver/request-delta-storage.md)）
 - [Timeline export](design/appserver/timeline-export.md) (ADR 005 D3, #275)（[中文](zh/design/appserver/timeline-export.md)）

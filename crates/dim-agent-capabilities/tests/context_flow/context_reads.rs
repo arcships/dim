@@ -818,6 +818,120 @@ async fn each_model_step_reads_full_context_for_policy_and_streams_otherwise() {
     }
 }
 
+/// A compaction prepared from the streamed context saves the snapshot for its
+/// own cut, so the snapshot after a second compaction still decodes and a
+/// restored Timeline resumes from it.
+#[tokio::test]
+async fn a_second_compaction_saves_a_snapshot_that_decodes() {
+    let store = Arc::new(CountContextReads::default());
+    let mut builder = builder_with_context(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        Context {
+            threshold: Some(900.),
+            ..Context::default()
+        },
+    );
+    builder.timeline_store(store.clone());
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    for input in [
+        "x".repeat(1_500),
+        "next".into(),
+        "y".repeat(1_500),
+        "last".into(),
+    ] {
+        session
+            .submit(input, InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+    }
+    let history = session.history("main", None).await.unwrap();
+    let compactions: Vec<_> = history
+        .iter()
+        .filter(|event| {
+            matches!(&event.kind,
+                EventKind::ContextCompaction(data) if matches!(data.outcome,
+                    ContextCompactionResult::Completed { .. }))
+        })
+        .collect();
+    let first = *compactions.first().expect("a first compaction");
+    let second = *compactions.last().expect("a newest compaction");
+    assert_ne!(
+        first.id, second.id,
+        "the newest compaction is not the first"
+    );
+    let EventKind::ContextCompaction(data) = &second.kind else {
+        unreachable!()
+    };
+    let ContextCompactionResult::Completed { retain_from, .. } = &data.outcome else {
+        unreachable!()
+    };
+    let key = TimelineKey {
+        session_id: session.id().into(),
+        branch_id: "main".into(),
+    };
+    let renderer = HistoryRenderer::default();
+    let snapshot = store
+        .memory
+        .latest_snapshot(
+            &key,
+            history.last().unwrap().sequence,
+            renderer.checkpoint_interpreter,
+        )
+        .await
+        .unwrap()
+        .expect("a snapshot");
+    assert_eq!(
+        snapshot.event_id, second.id,
+        "anchored at the last compaction"
+    );
+    assert!(
+        (renderer.decode_checkpoint)(&snapshot, second).is_some(),
+        "the snapshot decodes against the second compaction; it decodes against the first instead: {}",
+        (renderer.decode_checkpoint)(&snapshot, first).is_some()
+    );
+    let checkpoint = (renderer.decode_checkpoint)(&snapshot, second).unwrap();
+    assert_eq!(checkpoint.state.retain_from, *retain_from);
+    assert!(checkpoint.resume.sequence >= 1);
+    let timeline = Timeline::restore(Ctx::root().unwrap(), key, vec![], store.clone())
+        .await
+        .unwrap();
+    store.earliest_read.store(u64::MAX, Ordering::SeqCst);
+    let (recovered, restored) = renderer
+        .rendered_context(&timeline, timeline.sequence())
+        .await
+        .unwrap();
+    assert!(
+        recovered.checkpoint.is_some(),
+        "the restore resumes from a checkpoint"
+    );
+    assert_eq!(
+        store.earliest_read.load(Ordering::SeqCst),
+        checkpoint.resume.sequence
+    );
+    let full = project_context_history(&timeline.context(timeline.sequence()).await.unwrap())
+        .expect("the full replay renders");
+    assert_eq!(
+        restored
+            .iter()
+            .map(|entry| entry.message.clone())
+            .collect::<Vec<_>>(),
+        full.iter()
+            .map(|entry| entry.message.clone())
+            .collect::<Vec<_>>(),
+        "the restored render equals the full replay"
+    );
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+    agent.close().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_is_dispatched_while_either_context_read_is_waiting() {
     for read in [1] {

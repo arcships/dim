@@ -31,6 +31,7 @@ Commands
   app     /exit        exit
   app     /keys        show the key bindings
   model   /permissions   file access, tool approval and process isolation
+  session /rename      rename this session
 
 / + Enter          -> /exit (completion only)
 /exit + Enter      -> exit
@@ -508,6 +509,11 @@ plugin's source offers neither, and its detail names the plugin.
 | `dimcode exec [-p TEXT] [--image PATH ...] [--json]` | Run text and/or local images and exit; read redirected stdin when `-p` is absent. |
 | `dimcode exec resume SESSION_ID [-p TEXT] [--image PATH ...] [--json]` | Continue the named persisted Session with text and/or images. |
 | `dimcode session export SESSION_ID --format markdown\|json [--output PATH]` | Export the main branch; write to stdout when no output path is supplied. |
+| `dimcode session rename SESSION TITLE` | Set the Session's manual title through `session.rename` and print the title the server returns. |
+| `dimcode session rename SESSION --clear` | Clear the manual title, so the Session is untitled again. |
+| `dimcode session delete SESSION` | Permanently delete the Session and everything the store keeps for it; there is no prompt. |
+| `dimcode session cleanup (--older-than DURATION\|--keep N) [--yes]` | Show the Sessions one selector matches, then delete them after confirmation. |
+| `/rename TITLE` or `/rename --clear` | Set, or clear, the shown Session's manual title; the text is a command and never becomes model input. |
 | `/export markdown PATH` or `/export json PATH` | Export the current main branch to a file while the interactive client is idle. |
 | `dimcode export SESSION_ID [--output PATH] [--database PATH]` | Write the Session's whole Timeline as versioned JSONL without a daemon ([Timeline export](appserver/timeline-export.md)); write to stdout when no output path is supplied. |
 | `dimcode daemon vacuum [--database PATH]` | Rewrite an offline native store with SQLite `VACUUM` to reclaim the pages deleted Sessions left, and print its size before and after ([storage format](appserver/native-storage-format.md#sqlite-运行参数与空间回收)); it fails while a daemon owns the database and never creates or upgrades one. |
@@ -559,6 +565,15 @@ argument errors do not start the daemon.
 ### Daemon startup failure
 
 All entries that start a daemon share the client startup in `connect_inner`.
+On Unix, the daemon keeps only the standard descriptors 0-2 that it inherits
+and closes every other inherited descriptor when it starts, so a long-lived
+daemon never holds its launcher's pipes. Linux closes the range in one
+`close_range` call; where that call is unavailable, and on the other Unix
+systems, the daemon lists `/proc/self/fd` (Linux) or `/dev/fd` and closes
+every number the listing names; when no listing can be read, it closes 3 up to
+the process's descriptor limit, which is the soft limit, else the hard limit,
+else `sysconf(_SC_OPEN_MAX)`, else 65,536, so no path leaves an inherited
+descriptor open.
 The daemon is detached and its stderr is the append-only `daemon.log`, so a
 per-launch note is the only channel that does not parse history or depend on a
 pipe the client may close. Before spawning, the CLI removes
@@ -601,6 +616,122 @@ quote expansion. Missing paths and unsupported formats print usage and return
 to the prompt without submitting input. `/exit` takes no arguments. Only these
 exact command names are intercepted; other text follows the normal input path.
 Subcommands do not create a plugin command registry.
+
+### Session titles
+
+The manual title is the Session's own state: `session.list` and
+`session.summaries` report it with its `manual` source, and later automatic
+generation never replaces it ([title metadata](appserver/session-title-metadata.md),
+[SessionTitle](plugins/SessionTitle.md)). `session.rename {sessionId, title}` sets
+it and `title: null` clears it. Title text belongs to no branch and to no Timeline
+event, so a rename adds nothing the model reads.
+
+`session.rename` is a Session method: the client calls it directly and `hello.features` does not list it. A Session that does not serve it answers `unknown_method`, which the client reports as the unsupported-daemon error, and the typed
+text is never submitted in its place. The same holds for a Session that is not
+attached yet: with no Session shown, `/rename` reports that and sends nothing.
+
+`dimcode session rename SESSION TITLE` prints the title the server returns and
+`--clear` prints that the Session is untitled. Exactly one of TITLE and `--clear`
+is required, so a forgotten argument is a usage error and never clears a title; a
+blank or whitespace-only TITLE is missing, and is refused the same way.
+
+`/rename TITLE` and `/rename --clear` do the same for the shown Session and report
+which happened in one status line. The palette row declares the title argument, so
+choosing `/rename` from the palette fills `/rename ` and waits for it; Enter on a
+bare `/rename` is refused with a `needs <title>` notice and sends nothing, and
+`--clear` is the only form that clears without one. Every form is a command the
+client handles: the text is never queued and never submitted, including while a turn
+runs. The `/resume` list reads `session.catalog` each time it opens, and falls back to
+`session.summaries` on a daemon before the catalog, so it shows the new title; the header
+shows the first message's topic and is unaffected. The
+idle line client reads the same two forms and prints
+`Use /rename TITLE or /rename --clear` for a bare `/rename`.
+
+### Session deletion and cleanup
+
+`dimcode session delete SESSION` removes the Session and everything its store keeps
+([session deletion](appserver/session-deletion-and-fork.md)). There is no prompt: the
+id on the command line is the intent. The reply says whether this call removed it
+([`deleted`](appserver/session-deletion-and-fork.md#31-method)): `Deleted ID` on `true`,
+and on `false` the command prints `Nothing was removed: no stored Session ID.` on stderr
+and exits 1. An id the daemon holds no rows of is a successful delete that removed
+nothing; that is not a usage error, a malformed command line is. A reply without the
+field, from an App Server before it, reads as a delete: the rows are gone either way,
+which is the state asked for.
+
+`dimcode session cleanup` composes deletion from the same two methods, as
+[§5.1](appserver/session-deletion-and-fork.md#51-cleanup-by-age-or-count) requires. It
+reads `session.summaries` with `includeClosed: true`, so a Session this daemon closed is
+listed too and marked `closed` in the preview: its rows are still stored, and no other
+listing shows it ([session catalog](appserver/session-catalog.md#33-sessionsummaries)).
+An App Server before that parameter refuses it `invalid_params`, and without it the
+command cannot see a closed Session; it therefore stops before any delete, prints
+`This App Server is too old to clean up Sessions safely; nothing was deleted.` and exits
+1. The field it sends with every delete, `requireInactive`, lands with `includeClosed`,
+so a server that refuses one refuses both, and a delete that answers `invalid_params`
+before anything was deleted stops the same way. It
+selects with one of two selectors and reads both from the `updatedAt` of
+`session.summaries`, the Session's last activity:
+
+| Selector | Selection |
+| --- | --- |
+| `--older-than DURATION` | Every Session whose `updatedAt` is at least `DURATION` ago. `DURATION` is a count and a unit `d`, `h` or `m`, such as `30d`. |
+| `--keep N` | The N most recently active Sessions stay; every other Session is selected. |
+
+Cleanup selects only the Sessions `/resume` lists by default
+([classification](appserver/session-classification.md#35-catalog-visibility)): origin
+`client` or `unknown`. An `internal` Session is never selected: a member goes with
+its leader's delete and a launched Session belongs to its plugin. An `acp` Session is
+never selected either; `dimcode session delete ID` deletes one. A Session it does not
+select neither counts toward `--keep N` nor appears in the preview.
+
+A Session with a running turn or an attached client is kept: the preview lists the
+skipped Sessions after the selection under `Kept (active):`, in the same columns
+followed by the reason (`running`, `N clients attached`), and no such Session is
+deleted, `--yes` included. A line that failed or is closing is not a reason to keep
+one: nothing runs on it, and the delete's own close settles it, so cleanup deletes such
+a Session when nothing else uses it. `--keep N`
+still keeps the N most recently active Sessions, and an active Session older than those
+is kept as well without its consuming one of the N. `dimcode session delete ID` still
+deletes an active Session on purpose: the server permits it, and this is the bulk
+command's rule. The partition is the preview's reading of `running` (which covers
+`main`) and `attachedClients`; every delete carries `requireInactive: true`, so the owner
+checks again at the delete, on every line and with uses and holds included. A Session
+the owner refuses with `session_active` is listed under `Kept (in use at the delete):`
+after the deletes, in the same columns followed by the owner's reason, and a refusal is
+not a failure: it does not change the exit status. A delete whose reply is
+`deleted: false` means another caller removed the Session after the summaries were read:
+the command prints `Already gone: ID` and counts it as neither a delete nor a failure. A
+reply without the field counts as a delete, as `dimcode session delete` reads it. When
+every selected Session was kept, the command prints `Nothing to delete: every matching
+Session is active.`, whether the preview kept them all or the owner refused each delete,
+and exits 0.
+
+Exactly one selector is required. The command prints the selection before it reads a
+key — the id, the title (`-` when untitled) and how long ago the Session was last
+active, as one tab-separated line each, with `closed` after a Session this daemon
+closed, drawn here with spaces — and deletes only after confirmation:
+
+```text
+$ dimcode session cleanup --keep 1
+a1b2c3d4-…  Notes on the build  3d ago
+5e6f7a8b-…  -                   12d ago  closed
+Kept (active):
+c3d4e5f6-…  Fix the parser      1d ago   running
+Delete 2 Sessions? [y/N] y
+Deleted a1b2c3d4-…
+Deleted 5e6f7a8b-…
+```
+
+On a terminal, only `y` or `yes` confirms. Without a terminal nothing confirms, so a
+script passes `--yes`, which also skips the prompt; otherwise the command refuses and
+names `--yes`. A confirmed run deletes every selected id even when one fails: each
+failure is reported with its id and the method's error, the command that retries it
+(`dimcode session delete ID`) is printed for each failed id, and the run exits 1. A
+selector that names no Session prints what it kept: `Nothing to delete: --keep N keeps
+every Session.` for `--keep N`, or `Nothing to delete: no Session is older than
+DURATION.` for `--older-than DURATION`; the run exits 0 either way. A selection whose
+Sessions are all active prints the sentence above instead.
 
 ### Migration interaction
 

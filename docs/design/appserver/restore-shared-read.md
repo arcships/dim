@@ -388,7 +388,9 @@ page by page, with a bounded cache released at the end of the pass
 ([timeline-storage §4](../../architecture/rust-agent/timeline-storage.md#有界读取与恢复扫描), "恢复" row). Handing its
 decoded events to the runtime would hold every branch's history from validation until the last branch opens, change
 what the `TimelineStore` port returns or keep state between its calls, and contradict the bounded-cache convention.
-Making validation itself cheaper is storage's work and needs no runtime change.
+Making validation itself cheaper is storage's work and needs no runtime change
+([restore validation reuse](restore-validation.md)); the first pass of a process still decodes every event, and a
+later restore with an unchanged directory reuses it.
 
 **TimelineTree's scan (read B) stays in this design**, which changes no capability code: it ran before the branch's
 Timeline existed. §17 takes it up: the failed creates are read from the copy while the branch opens, and a child's

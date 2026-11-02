@@ -23,6 +23,7 @@ Commands
   app     /exit        exit
   app     /keys        show the key bindings
   model   /permissions   file access, tool approval and process isolation
+  session /rename      rename this session
 
 / + Enter          -> /exit (completion only)
 /exit + Enter      -> exit
@@ -381,6 +382,11 @@ Hooks（#809）：`/hooks` 面板与 `dimcode hooks list|enable|disable|edit|set
 | `dimcode exec [-p TEXT] [--image PATH ...] [--json]` | 运行文本和/或本地图片后退出；没有 `-p` 时读取重定向的 stdin。 |
 | `dimcode exec resume SESSION_ID [-p TEXT] [--image PATH ...] [--json]` | 用文本和/或图片继续指定的已持久化 Session。 |
 | `dimcode session export SESSION_ID --format markdown\|json [--output PATH]` | 导出主分支；未给输出路径时写到 stdout。 |
+| `dimcode session rename SESSION TITLE` | 经 `session.rename` 设置该 Session 的手动标题，并打印服务端返回的标题。 |
+| `dimcode session rename SESSION --clear` | 清除手动标题，Session 回到无标题状态。 |
+| `dimcode session delete SESSION` | 永久删除该 Session 及存储为它保留的一切；不弹出确认。 |
+| `dimcode session cleanup (--older-than DURATION\|--keep N) [--yes]` | 列出某个选择器命中的 Session，确认后删除。 |
+| `/rename TITLE` 或 `/rename --clear` | 设置或清除所显示 Session 的手动标题；该文本是命令，永不成为模型输入。 |
 | `/export markdown PATH` 或 `/export json PATH` | 交互客户端空闲时把当前主分支导出到文件。 |
 | `dimcode export SESSION_ID [--output PATH] [--database PATH]` | 不经守护进程，把 Session 的完整 Timeline 写成带版本的 JSONL（[Timeline 导出](appserver/timeline-export.md)）；未给输出路径时写到 stdout。 |
 | `dimcode daemon vacuum [--database PATH]` | 用 SQLite `VACUUM` 重写离线原生库，回收已删除 Session 留下的页，并打印操作前后的大小（[存储格式](appserver/native-storage-format.md#sqlite-运行参数与空间回收)）；守护进程持库时失败，也不创建或升级库。 |
@@ -422,7 +428,13 @@ login/account/logout、models、MCP 和 daemon 命令仍然可用。现有的 `-
 
 ### 守护进程启动失败
 
-所有启动守护进程的入口共用 `connect_inner` 里的客户端启动。守护进程是 detached 的，
+所有启动守护进程的入口共用 `connect_inner` 里的客户端启动。在 Unix 上，守护进程只保留
+从启动方继承的标准描述符 0-2，启动时关闭其余继承来的描述符，因此长期运行的守护进程
+不会持有启动方的管道。Linux 用一次 `close_range` 调用关闭整个范围；该调用不可用时，
+以及其他 Unix 系统上，守护进程列出 Linux 的 `/proc/self/fd` 或 `/dev/fd`，关闭列表中
+的每个编号；连列表都读不到时，从 3 关闭到进程的描述符上限（依次取软限制、硬限制、
+`sysconf(_SC_OPEN_MAX)`，都没有时取 65,536），因此没有哪条路径会留下
+继承来的描述符。守护进程是 detached 的，
 stderr 追加到 `daemon.log`，所以每次启动的一份说明是唯一既不解析历史、也不依赖客户端
 可能关闭的管道的通道。启动前 CLI 删除 `<native home>/dimcode.sqlite.startup`；原生 home
 是守护进程自己的 home，即 `<home>/rust`。子进程在客户端连上之前退出时，CLI 读取这份
@@ -453,6 +465,100 @@ Error: Cannot open native store /Users/me/.dimcode-alpha/rust/dimcode.sqlite.
 交互式导出解析器读取格式词，把行的其余部分当作字面路径（包括空格），不做 shell 求值或引号展开。
 缺少路径或格式不支持时打印用法并回到提示符，不提交输入。`/exit` 不带参数。只拦截这些确切的命令名；
 其他文本走普通输入路径。子命令不建立插件命令注册表。
+
+### 会话标题
+
+手动标题是 Session 自己的状态：`session.list` 与 `session.summaries` 以 `manual` 来源报告它，
+之后的自动生成永不替换它（[标题元数据](appserver/session-title-metadata.md)、
+[SessionTitle](plugins/SessionTitle.md)）。`session.rename {sessionId, title}` 设置它，
+`title: null` 清除它。标题文本不属于任何线，也不产生 Timeline 事件，所以重命名不增添模型读到的内容。
+
+`session.rename` 是 Session 方法：客户端直接调用它，`hello.features` 并不列出它。不提供它的
+Session 回答 `unknown_method`，客户端将其报告为不支持的守护进程错误，输入的文字绝不会
+作为替代被提交。尚未附加 Session 时同理：没有显示中的 Session，`/rename` 直接说明并不发送任何内容。
+
+`dimcode session rename SESSION TITLE` 打印服务端返回的标题，`--clear` 打印该 Session 已无标题。
+TITLE 与 `--clear` 必须恰好给出一个，所以漏写参数是用法错误，绝不因此清除标题；空白或只含空格的
+TITLE 视为缺失，也按同样方式拒绝。
+`/rename TITLE` 与 `/rename --clear` 对所显示的 Session 做同样的事，并用一行状态说明发生了
+哪一种。命令面板的这一行声明了标题参数，所以从面板选中 `/rename` 只是填入 `/rename ` 并等待
+输入；对空的 `/rename` 回车会得到 `needs <title>` 提示且不发送任何内容，`--clear` 是唯一
+无需标题即可清除的形式。两种形式都是客户端处理的命令：文本从不入队、从不提交，模型回合进行
+中也是如此。`/resume` 列表每次打开都读取 `session.catalog`，在没有该目录的守护进程上退回
+`session.summaries`，因此显示新标题；页头显示的是首条消息的主题，不受影响。空闲的行式客户端
+读取同样的两种形式，对空的 `/rename` 打印 `Use /rename TITLE or /rename --clear`。
+
+### 会话删除与清理
+
+`dimcode session delete SESSION` 删除该 Session 及其存储为它保留的一切
+（[Session 删除](appserver/session-deletion-and-fork.md)）。不弹出确认：命令行上给出的 id 就是意图。
+回复说明本次调用是否移除了它（[`deleted`](appserver/session-deletion-and-fork.md#31-method)）：为
+`true` 时打印 `Deleted ID`，为 `false` 时在 stderr 打印
+`Nothing was removed: no stored Session ID.` 并以 1 退出。守护进程
+在这个 id 下没有行，是一次什么都没移除的成功删除；这不是用法错误，命令行本身写错才是。回复不带该字段
+（来自更旧的 App Server）时按一次删除处理：两种情况下行都已不在，也就是所要求的状态。
+
+`dimcode session cleanup` 用同样的两个方法组合删除，符合
+[§5.1](appserver/session-deletion-and-fork.md#51-cleanup-by-age-or-count) 的要求。它用
+`includeClosed: true` 读 `session.summaries`，因此本守护进程关闭的 Session 也会列出，并在预览里
+标为 `closed`：它的行仍在存储中，而别的列目录都不显示它
+（[Session 目录](appserver/session-catalog.md#33-sessionsummaries)）。没有这个参数的旧版 App Server
+会以 `invalid_params` 拒绝，而缺了它命令就看不到本守护进程关闭的 Session；因此命令在任何删除之前
+停下，打印 `This App Server is too old to clean up Sessions safely; nothing was deleted.` 并以 1
+退出。它在每次删除时带的 `requireInactive` 与 `includeClosed` 一同落地，所以拒绝其一的服务器两者
+都拒绝；某次删除在尚未删除任何东西之前回答 `invalid_params` 时，也按同一方式停下。它用两个选择器之一，
+两者都读 `session.summaries` 的 `updatedAt`，即 Session 的最后活跃时间：
+
+| 选择器 | 选择范围 |
+| --- | --- |
+| `--older-than DURATION` | `updatedAt` 距今至少 `DURATION` 的每个 Session。`DURATION` 是数字加单位 `d`、`h` 或 `m`，例如 `30d`。 |
+| `--keep N` | 保留最近活跃的 N 个 Session；其余全部选中。 |
+
+清理只选 `/resume` 默认列出的 Session
+（[分类](../../design/appserver/session-classification.md#35-catalog-visibility)）：来源为 `client` 或 `unknown`。
+`internal` 的 Session
+永远不会被选中：成员随其 leader 的删除一起消失，启动的 Session 属于它的插件。`acp` 的 Session
+同样不会被选中；用 `dimcode session delete ID` 删除它。不被选中的 Session 既不占用 `--keep N`
+的名额，也不出现在预览里。
+
+轮次正在运行或仍有客户端附着的 Session 会被保留：预览在选择结果之后以 `Kept (active):` 列出这些
+被跳过的 Session，列与选择结果相同，其后是原因（`running`、`N clients attached`），这样的 Session
+一律不删除，`--yes` 也一样。失败或正在关闭的线不是保留的理由：线上没有工作，删除自身的关闭会结算它，
+所以没有别的使用在用时，清理会删除这样的 Session。`--keep N` 仍然保留最近活跃的 N 个 Session；
+比这 N 个更旧的活跃 Session
+也保留，且不占用 N 中的一个名额。`dimcode session delete ID` 仍可有意删除一个活跃 Session：服务端
+允许，这条规则属于批量命令。这个划分是预览对 `running`（只覆盖 `main`）与 `attachedClients` 的读取；
+每个删除都带 `requireInactive: true`，所以所有者在删除时再查一次，逐条线，并把使用与 hold 都算进去。
+被所有者以 `session_active` 拒绝的 Session 在删除之后以 `Kept (in use at the delete):` 列出，列相同，
+其后是所有者的
+原因；拒绝不是失败，不改变退出状态。回复为 `deleted: false` 的删除表示摘要读出之后另一个调用方已把该
+Session 移除：命令打印 `Already gone: ID`，既不算作删除也不算作失败。回复中没有该字段则算作删除，与
+`dimcode session delete` 的读法一致。选中的 Session 全部被保留时，命令打印
+`Nothing to delete: every matching Session is active.` 并以 0 退出，无论预览把它们全部保留还是
+所有者拒绝了每一次删除。
+
+必须恰好给出一个选择器。命令在读取按键之前先打印选择结果——id、标题（无标题时 `-`）以及该 Session
+最后活跃距今多久，每个一行，本守护进程关闭的 Session 在其后加 `closed`，此处以空格示意——确认之后
+才删除：
+
+```text
+$ dimcode session cleanup --keep 1
+a1b2c3d4-…  Notes on the build  3d ago
+5e6f7a8b-…  -                   12d ago  closed
+Kept (active):
+c3d4e5f6-…  Fix the parser      1d ago   running
+Delete 2 Sessions? [y/N] y
+Deleted a1b2c3d4-…
+Deleted 5e6f7a8b-…
+```
+
+在终端上只有 `y` 或 `yes` 确认。没有终端时任何输入都不算确认，脚本要传 `--yes`，它同时跳过提示；
+否则命令拒绝并点名 `--yes`。确认后的运行即使某个 id 失败也会删除其余每个选中的 id：每个失败都连同
+其 id 和方法错误一起报告，并为每个失败的 id 打印可重试的命令（`dimcode session delete ID`），
+整次运行以 1 退出。选择器没有选中任何 Session 时，命令说明它保留了什么：`--keep N` 打印
+`Nothing to delete: --keep N keeps every Session.`，`--older-than DURATION` 打印
+`Nothing to delete: no Session is older than DURATION.`；两种情况都以 0 退出。
+选中的 Session 全部活跃时打印上面那句。
 
 P1 shell 前缀只用于交互输入。其执行、记录、进度、取消和生命周期遵循 [ShellInput](plugins/ShellInput.md)。
 CLI 在发送请求前生成 `runId`，从不重试一次运行。前缀之后的命令原样传递；空命令打印用法。

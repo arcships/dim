@@ -15,6 +15,11 @@ Commands:\n\
                                    Run text and/or local images and exit\n\
   exec resume SESSION_ID [-p TEXT] [--image PATH ...] [--json]\n\
   session export SESSION_ID --format markdown|json [--output PATH]\n\
+  session rename SESSION TITLE     Set the manual title; --clear removes it\n\
+  session delete SESSION           Permanently delete a Session\n\
+  session cleanup (--older-than DURATION | --keep N) [--yes]\n\
+                                   Show the Sessions that will go, then\n\
+                                   delete them after confirmation\n\
   export SESSION_ID [--output PATH] [--database PATH]\n\
                                    Write a Session's whole Timeline as JSONL;\n\
                                    it holds prompts, code and tool output.\n\
@@ -91,7 +96,7 @@ Options:\n\
   -V, --version                    Show version without starting a daemon\n\n\
 Ctrl+C stops a running turn and waits for settlement; idle Ctrl+C or EOF exits.\n\
 Without -p, exec reads redirected stdin through EOF, including with --image.\n\
-Idle commands: /export <markdown|json> PATH, /exit.\n\
+Idle commands: /export <markdown|json> PATH, /rename TITLE|--clear, /exit.\n\
 PATH is relative to the CLI current directory; ~ is literal.\n\
 /permissions (aliases /approvals, /approval) opens separate File access, Tool\n\
   approval (Ask/Bypass), and Process isolation controls in the terminal UI.\n\
@@ -111,8 +116,14 @@ Questions take option numbers (comma separated for several) or 0 to type your\n\
 Account commands sign in to every Provider the daemon describes with a login\n\
   method. A build without the Dim account provider says so and offers API-key\n\
   Providers instead.\n\
-Exit codes: 0 success, 1 configuration/transport error, 2 model/turn failure,\n\
-            3 interactive approval or answer required, 130 interrupted.\n";
+Exit codes: 0 success, 1 configuration/transport error, a delete that removed\n\
+            nothing or a cleanup in which a delete failed, 2 model/turn\n\
+            failure, 3 interactive approval or answer required, 130\n\
+            interrupted.\n";
+
+/// What `dimcode session` names besides `export`.
+const USAGE_SESSION: &str =
+    "Use session export, session rename, session delete or session cleanup; see --help";
 
 #[derive(Clone, Debug)]
 pub enum Action {
@@ -128,6 +139,25 @@ pub enum Action {
         session_id: String,
         format: Format,
         output: Option<PathBuf>,
+    },
+    /// `session rename`: `title` sets the manual title, `clear` sends `null`.
+    SessionRename {
+        session_id: String,
+        title: Option<String>,
+        clear: bool,
+    },
+    /// `session delete`: permanently delete the named Session.
+    SessionDelete {
+        session_id: String,
+    },
+    /// `session cleanup`: delete the Sessions one selector names.
+    SessionCleanup {
+        /// Sessions last active at least this long ago.
+        older_than: Option<std::time::Duration>,
+        /// The newest Sessions to keep, leaving the rest to delete.
+        keep: Option<usize>,
+        /// Delete without asking.
+        yes: bool,
     },
     /// `export`: the Session's whole Timeline (ADR 005 D3).
     Timeline {
@@ -351,6 +381,36 @@ impl Options {
                         return Err("Supply the database path only once".into());
                     }
                 }
+                "--clear" => {
+                    let Action::SessionRename { clear, .. } = &mut options.action else {
+                        return Err("--clear requires session rename".into());
+                    };
+                    *clear = true;
+                }
+                "--older-than" => {
+                    let value = parse_age(&value(&mut args)?)?;
+                    let Action::SessionCleanup { older_than, .. } = &mut options.action else {
+                        return Err("--older-than requires session cleanup".into());
+                    };
+                    if older_than.replace(value).is_some() {
+                        return Err("Supply --older-than only once".into());
+                    }
+                }
+                "--keep" => {
+                    let count = parse_count("--keep", &value(&mut args)?)?;
+                    let Action::SessionCleanup { keep, .. } = &mut options.action else {
+                        return Err("--keep requires session cleanup".into());
+                    };
+                    if keep.replace(count).is_some() {
+                        return Err("Supply --keep only once".into());
+                    }
+                }
+                "--yes" => {
+                    let Action::SessionCleanup { yes, .. } = &mut options.action else {
+                        return Err("--yes requires session cleanup".into());
+                    };
+                    *yes = true;
+                }
                 "--home" => {
                     options.home = PathBuf::from(value(&mut args)?);
                     options.home_explicit = true;
@@ -445,17 +505,44 @@ impl Options {
                     }
                 }
                 "session" if matches!(options.action, Action::Chat) => {
-                    if value(&mut args)? != "export" {
-                        return Err(
-                            "Use session export SESSION_ID --format markdown|json [--output PATH]"
-                                .into(),
-                        );
+                    match value(&mut args)?.as_str() {
+                        "-h" | "--help" => {
+                            options.action = Action::Help;
+                            return Ok(options);
+                        }
+                        "export" => {
+                            options.action = Action::Export {
+                                session_id: value(&mut args)?,
+                                format: Format::Markdown,
+                                output: None,
+                            };
+                        }
+                        "rename" => {
+                            let session_id = value(&mut args)?;
+                            let title = match args.peek().map(String::as_str) {
+                                Some(next) if !next.starts_with("--") => Some(value(&mut args)?),
+                                _ => None,
+                            };
+                            options.action = Action::SessionRename {
+                                session_id,
+                                title,
+                                clear: false,
+                            };
+                        }
+                        "delete" => {
+                            options.action = Action::SessionDelete {
+                                session_id: value(&mut args)?,
+                            };
+                        }
+                        "cleanup" => {
+                            options.action = Action::SessionCleanup {
+                                older_than: None,
+                                keep: None,
+                                yes: false,
+                            };
+                        }
+                        _ => return Err(USAGE_SESSION.into()),
                     }
-                    options.action = Action::Export {
-                        session_id: value(&mut args)?,
-                        format: Format::Markdown,
-                        output: None,
-                    };
                 }
                 "export" if matches!(options.action, Action::Chat) => {
                     options.action = Action::Timeline {
@@ -696,6 +783,25 @@ impl Options {
         if matches!(options.action, Action::Export { .. }) && !export_format {
             return Err("session export requires --format markdown|json".into());
         }
+        if let Action::SessionRename { title, clear, .. } = &options.action
+            && (title.is_some() == *clear
+                || title
+                    .as_deref()
+                    .is_some_and(|title| title.trim().is_empty()))
+        {
+            return Err(
+                "Use session rename SESSION TITLE or session rename SESSION --clear".into(),
+            );
+        }
+        if let Action::SessionCleanup {
+            older_than, keep, ..
+        } = &options.action
+            && older_than.is_some() == keep.is_some()
+        {
+            return Err(
+                "Use session cleanup --older-than DURATION or session cleanup --keep N".into(),
+            );
+        }
         if options.clear_preferences.is_some()
             && (!matches!(options.action, Action::Models(_)) || options.refresh)
         {
@@ -780,6 +886,30 @@ fn parse_limit(flag: &str, value: &str) -> Result<u64> {
         );
     }
     Ok(limit)
+}
+
+/// `--older-than` takes a count and a unit, such as `30d`, `12h` or `45m`.
+fn parse_age(value: &str) -> Result<std::time::Duration> {
+    const USAGE: &str = "--older-than takes a number and a unit d, h or m, such as 30d";
+    let mut chars = value.chars();
+    let unit = match chars.next_back() {
+        Some('d') => 86_400,
+        Some('h') => 3_600,
+        Some('m') => 60,
+        _ => return Err(USAGE.into()),
+    };
+    let count: u64 = chars.as_str().parse().map_err(|_| USAGE)?;
+    let seconds = count
+        .checked_mul(unit)
+        .ok_or("--older-than is too large to measure")?;
+    Ok(std::time::Duration::from_secs(seconds))
+}
+
+/// `--keep` takes the number of Sessions to keep.
+fn parse_count(flag: &str, value: &str) -> Result<usize> {
+    value
+        .parse()
+        .map_err(|_| format!("{flag} must be a whole number").into())
 }
 
 /// The product home: `DIMCODE_HOME`, else `~/.dimcode-alpha` for an alpha

@@ -276,3 +276,57 @@ async fn product_management_without_execution_still_exposes_summaries() {
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
+
+/// A Session this daemon closed stays out of `session.summaries` until the
+/// read asks for it; `includeClosed` lists it marked `closed`, and an
+/// unknown parameter is still refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn summaries_list_a_closed_session_only_when_asked() {
+    let store = deletion::Store::new();
+    let (server, _) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let sid = deletion::session(&mut client).await;
+    assert_ok(&client.rpc("session.close", json!({"sessionId":sid})).await);
+
+    let open = client.rpc("session.summaries", json!({})).await;
+    assert_ok(&open);
+    let rows = open["result"].as_array().unwrap();
+    assert!(
+        !rows.iter().any(|row| row["sessionId"] == sid),
+        "the closed Session is not listed: {open}"
+    );
+    assert!(
+        rows.iter().all(|row| row["closed"] == false),
+        "every summary carries closed: {open}"
+    );
+
+    let including = client
+        .rpc("session.summaries", json!({"includeClosed":true}))
+        .await;
+    assert_ok(&including);
+    let rows = including["result"].as_array().unwrap();
+    let row = rows
+        .iter()
+        .find(|row| row["sessionId"] == sid)
+        .unwrap_or_else(|| panic!("the closed Session is listed: {including}"));
+    assert_eq!(row["closed"], true, "{including}");
+    assert!(
+        rows.iter()
+            .filter(|row| row["sessionId"] != sid)
+            .all(|row| row["closed"] == false),
+        "{including}"
+    );
+
+    let refused = client
+        .rpc("session.summaries", json!({"unknownField":true}))
+        .await;
+    assert_eq!(refused["error"]["code"], -32602, "{refused}");
+    assert_eq!(
+        refused["error"]["data"]["appError"], "invalid_params",
+        "{refused}"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}

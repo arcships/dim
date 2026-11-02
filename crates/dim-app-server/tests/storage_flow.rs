@@ -2747,6 +2747,62 @@ async fn recovery_rejects_corrupt_records_and_preserves_them() {
     db.close().await.unwrap();
 }
 
+/// [#601] A restore reuses a validation pass while the stored branch directory
+/// is unchanged, and validates again once a branch head changes.
+#[tokio::test]
+async fn restore_validation_reuses_an_unchanged_directory_and_revalidates_a_changed_head() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("session", &SessionConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        store.branches("session").await.unwrap()[0].sequence,
+        0,
+        "the first pass fixes the empty directory"
+    );
+    append(&store, key("session", "main"), vec![text(1, "saved")])
+        .await
+        .unwrap();
+    store.release_session("session").await.unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    let original: String = connection
+        .query_row("SELECT body FROM timeline_events", [], |row| row.get(0))
+        .unwrap();
+    let mut corrupt: serde_json::Value = serde_json::from_str(&original).unwrap();
+    corrupt["records"][0]["batch_end"] = 3.into();
+    let corrupt = serde_json::to_string(&corrupt).unwrap();
+    connection
+        .execute("UPDATE timeline_events SET body = ?1", [&corrupt])
+        .unwrap();
+    drop(connection);
+    assert_eq!(
+        store.branches("session").await.unwrap()[0].sequence,
+        1,
+        "the release-refreshed directory is reused"
+    );
+    append(
+        &store,
+        key("session", "main"),
+        vec![record(
+            2,
+            EventKind::TurnStart(TurnStartData {
+                turn_id: "turn".into(),
+            }),
+        )],
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(store.branches("session").await, Err(AgentError::Storage(_))),
+        "a changed head validates again and rejects the damage"
+    );
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn invalid_ancestor_directory_rejects_only_its_session() {
     let database = Database::new();
@@ -4939,6 +4995,9 @@ async fn reads_share_bounded_content_across_pages_and_still_check_every_load() {
     let store = SqliteTimelineStore::new(db.clone());
     let fitting = SqliteTimelineStore::with_content_budget(db.clone(), 256);
     let small = SqliteTimelineStore::with_content_budget(db.clone(), 150);
+    // A store that has run no validation pass yet: a reuse would hide the
+    // damaged row this test plants (restore validation reuse).
+    let checking = SqliteTimelineStore::new(db.clone());
     let request = Arc::new(ModelRequest::new(
         "mock",
         "test",
@@ -5063,7 +5122,7 @@ async fn reads_share_bounded_content_across_pages_and_still_check_every_load() {
                     Err(AgentError::Storage(message)) if message.contains(failure)
                 ));
                 assert!(matches!(
-                    reader.branches(session).await,
+                    checking.branches(session).await,
                     Err(AgentError::Storage(message)) if message.contains(failure)
                 ));
             }
@@ -5077,6 +5136,7 @@ async fn reads_share_bounded_content_across_pages_and_still_check_every_load() {
         store.branches(session).await.unwrap();
     }
     drop(connection);
+    checking.close().await.unwrap();
     small.close().await.unwrap();
     fitting.close().await.unwrap();
     store.close().await.unwrap();
@@ -6495,10 +6555,18 @@ async fn streamed_context_reads_complete_batches_across_the_window() {
     )
     .await
     .unwrap();
-    HistoryRenderer::default()
-        .rendered_stream(&timeline, 257, 256)
-        .await
-        .unwrap();
+    let renderer = HistoryRenderer::default();
+    let streamed = renderer.rendered_stream(&timeline, 257, 256).await.unwrap();
+    for limit in 1..=3 {
+        let page = timeline.stored_page(254, limit, 257).await.unwrap();
+        assert_eq!(
+            page.iter().map(|event| event.sequence).collect::<Vec<_>>(),
+            vec![255, 256, 257],
+            "a page whose limit would end inside the atomic batch reads it whole: {limit}"
+        );
+    }
+    let (_, full) = renderer.rendered_context(&timeline, 257).await.unwrap();
+    assert_eq!(streamed.history, full);
     db.close().await.unwrap();
 }
 

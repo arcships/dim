@@ -221,6 +221,10 @@ pub enum Command {
     Usage,
     /// `/compact`: ask the shown line to compact its context.
     Compact,
+    /// `/rename`: set the shown Session's manual title, or clear it when
+    /// `title` is `None`; an empty text is refused, and only `--clear`
+    /// clears. Nothing here reaches the model.
+    Rename(Option<String>),
     /// `/goal`: show, set, edit, pause, resume or clear the shown line's goal.
     Goal(crate::goal::Request),
     SetPermission(crate::permission::Change),
@@ -771,6 +775,19 @@ pub enum CompactReply {
     Unsupported,
 }
 
+/// A `session.rename` reply as `/rename` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenameReply {
+    /// The manual title the server stored.
+    Titled(String),
+    /// The Session has no title again.
+    Untitled,
+    /// The daemon serves no `session.rename` for this Session.
+    Unsupported,
+    /// The call failed, with its message.
+    Failed(String),
+}
+
 #[allow(dead_code)]
 pub enum Update {
     /// A queued input the TUI withdrew (`Command::InputControl` with action
@@ -874,6 +891,8 @@ pub enum Update {
     Context(Option<ContextReading>),
     /// What a `/compact` came to, localized by the interface.
     Compacted(CompactReply),
+    /// What a `/rename` came to, localized by the interface.
+    Renamed(RenameReply),
     /// Progress of the sign-in tagged `attempt`.
     Oauth {
         attempt: u64,

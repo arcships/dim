@@ -61,7 +61,7 @@ It does not own:
 | `withPreview` | Boolean, default `false`. `true` keeps only rows whose preview is not NULL, applied before the page boundary, so a client that hides preview-less rows receives a full page of rows it shows; the projection's partial index over previews keeps that read bounded ([native storage format](native-storage-format.md#556-v23-格式决定)) |
 | `withInternal` | Boolean, default `false`. `true` lists the Sessions whose origin is `internal`; `false` drops them, applied before the page boundary. What the class means and who writes it: [Session classification](session-classification.md#35-catalog-visibility) |
 | `withAcpSessions` | Boolean, default `false`. `true` lists the Sessions whose origin is `acp`; `false` drops them, applied before the page boundary. A Session of an unknown origin (`unknown`) is always listed |
-| Reply | `SessionSummary` entries, the shape `session.summaries` returns: the fields of a `session.list` record — `origin` and `parentSessionId` among them ([Session classification](session-classification.md#33-reported-fields)) — with `preview` and `updatedAt`. `nextCursor` is absent on the last page |
+| Reply | `SessionSummary` entries, the shape `session.summaries` returns: the fields of a `session.list` record — `origin` and `parentSessionId` among them ([Session classification](session-classification.md#33-reported-fields)) — with `preview`, `updatedAt` and `closed`, false here because this query leaves closed Sessions out (§3.3). `nextCursor` is absent on the last page |
 
 A `cursor` that does not decode, or whose digest does not match the request's `query`, `cwd`, `withPreview`,
 `withInternal` and `withAcpSessions`, is rejected as `invalid_params` rather than treated as the first page, so a client
@@ -89,13 +89,26 @@ continued only by the same `query`, `cwd`, `withPreview`, `withInternal` and `wi
 
 ### 3.3 `session.summaries`
 
-`session.summaries` keeps its parameters, its reply type and its per-client protocol v3 rule. With a native store open
+`session.summaries` keeps its reply type and its per-client protocol v3 rule; its parameters gain the optional
+`includeClosed` below. With a native store open
 it answers from the same projection instead of reading history, and its contents do not change: the projection
 applies the preview rule below unchanged, its row exists from the Session's creation (§5), and the read applies
 neither classification filter, so a Session of any origin is listed, with the two fields every v3 item now carries. A
 daemon without a store has no projection and answers from the loaded Sessions as today; it does not list
 `session.catalog` either (§3.1). So the method is how a client that does not find `session.catalog` lists, and how
 clients on a daemon older than this change list; both stay working because the method's shape does not change.
+
+**Open Sessions and `includeClosed`.** A Session this daemon closed, through `session.close` or ACP's
+`session/close`, keeps its stored rows but stays out of every catalog read: the admission slot's closed flag
+([idle unload §6.4](idle-unload.md#64-admission-slots)) filters the same catalog query, so a resume picker never
+offers a Session this daemon refuses to attach. Cleanup reads stored data, which such a Session still has, so
+`session.summaries` takes `includeClosed?: boolean`, default `false`. When it is `true`, the same query runs without
+the closed filter and each summary of a closed Session carries `closed: true`; every summary carries `closed`, false
+for a Session this daemon did not close. One read answers either way: the flag removes a condition of the query
+rather than adding a second one. An App Server before this parameter refuses it `invalid_params`
+(`deny_unknown_fields`), so a client that needs the closed rows re-reads once without it. A daemon without a store
+answers from its loaded Sessions as before, with the same `closed` fact from the slot.
+
 
 **The preview keeps today's rule, its batch-complete window included.** The window is the batches that start within
 the first 256 `main` events, and it is batch-complete as today's read is: the batch that holds sequence 256 is read

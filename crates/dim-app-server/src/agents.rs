@@ -7,8 +7,8 @@ use crate::{
 };
 use dim_agent_capabilities::host::ModelSelectionHost;
 use dim_agent_runtime::{
-    AGENT_GROUP, Agent, AgentBuilder, AgentError, CollaborationRole, Modules, Names, NoConfig,
-    Session, SessionConfig, TimelineKey,
+    AGENT_GROUP, Agent, AgentBuilder, AgentError, CollaborationRole, InUse, Modules, Names,
+    NoConfig, Session, SessionConfig, TimelineKey,
 };
 pub use dim_agent_types::AgentProfile;
 use dim_agent_types::{ContentBlock, EventKind};
@@ -21,7 +21,7 @@ use rutis_loader::Loader;
 use rutis_loader::edit::InstanceResult;
 use rutis_loader::resolve::Build;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::{Component, Path},
     sync::{
         Arc, Mutex, OnceLock,
@@ -162,6 +162,17 @@ impl Drop for SessionUse {
     }
 }
 
+/// What a delete that requires an inactive Session answers
+/// ([S5c §3.5](../../../docs/design/appserver/session-deletion-and-fork.md#35-idempotence-and-errors)):
+/// it removed the Session, or it refused because something uses it. The App
+/// Server owns this answer; the runtime's errors do not carry it.
+pub(crate) enum DeleteOutcome {
+    /// The call removed the Session's rows, or a loaded Session.
+    Removed(bool),
+    /// Nothing was removed; this says what uses the Session.
+    InUse(String),
+}
+
 struct Entry {
     host: Arc<AgentHost>,
     view: FiberView,
@@ -191,6 +202,13 @@ impl Inner {
         self.sessions
             .get(id)
             .is_some_and(|slot| slot.closed.load(Ordering::Acquire))
+    }
+    /// How many uses Session `id` has. A lookup: reading the count creates
+    /// no slot.
+    fn uses(&self, id: &str) -> usize {
+        self.sessions
+            .get(id)
+            .map_or(0, |slot| slot.uses.load(Ordering::Acquire))
     }
     /// The Agent owning Session `id`: its recorded owner, live or closing,
     /// or the live Agent that has it loaded.
@@ -597,7 +615,7 @@ impl AgentIndex {
             .contains_key(agent_id)
     }
     /// See [`Inner::closed`].
-    fn closed(&self, id: &str) -> bool {
+    pub(crate) fn closed(&self, id: &str) -> bool {
         self.directory.inner.lock().expect("agent index").closed(id)
     }
     pub(crate) fn session_available(&self, id: &str) -> bool {
@@ -909,6 +927,7 @@ impl AgentIndex {
         request: crate::protocol::Catalog,
         agent: Option<String>,
         version: u32,
+        include_closed: bool,
         cancel: CancellationToken,
     ) -> dim_agent_runtime::Result<crate::protocol::CatalogResult> {
         let store = self
@@ -920,7 +939,7 @@ impl AgentIndex {
             .into_iter()
             .map(|host| host.agent_id.clone())
             .collect();
-        let closed = self
+        let closed: HashSet<String> = self
             .directory
             .inner
             .lock()
@@ -930,10 +949,16 @@ impl AgentIndex {
             .filter(|(_, slot)| slot.closed.load(Ordering::Acquire))
             .map(|(id, _)| id.clone())
             .collect();
+        let excluded: Vec<String> = if include_closed {
+            Vec::new()
+        } else {
+            closed.iter().cloned().collect()
+        };
         let mut page = store
-            .catalog(request, agent, version, hosts, closed, cancel)
+            .catalog(request, agent, version, hosts, excluded, cancel)
             .await?;
         for summary in &mut page.sessions {
+            summary.closed = closed.contains(&summary.session.session_id);
             if let Some((_, session)) = self.session(&summary.session.session_id) {
                 match session
                     .state("main")
@@ -1194,16 +1219,64 @@ impl AgentIndex {
     /// keeps no slot. A delete that fails before the rows go leaves a
     /// Session it closed as `session.close` does, closed in this process with
     /// its rows kept (D5); one it did not close loads again on its next use.
-    pub(crate) async fn delete(&self, id: &str) -> dim_agent_runtime::Result<()> {
-        // The id names `command-output/<id>`, so only a single path component
-        // can be a Session's (D3); refused before any admission state exists.
+    ///
+    /// The reply reports whether this call removed the Session: its stored
+    /// rows, or, in a daemon without a native store, a loaded Session. A
+    /// Session in use is closed and removed as before;
+    /// [`Self::delete_if_inactive`] is the delete that refuses it.
+    pub(crate) async fn delete(&self, id: &str) -> dim_agent_runtime::Result<bool> {
+        Self::check_session_id(id)?;
+        let slot = self.slot(id);
+        let gate = slot.gate.lock().await;
+        let deleted = self.remove_locked(id, &slot).await?;
+        drop(gate);
+        drop(slot);
+        self.directory.inner.lock().expect("agent index").sweep();
+        Ok(deleted)
+    }
+
+    /// `session.delete` with `requireInactive`: a Session that is in use is
+    /// answered with [`DeleteOutcome::InUse`] and nothing is removed. The
+    /// check runs for S under its admission gate, before its led members,
+    /// owned Agents, close and store delete, and covers every Session this
+    /// delete would remove with it, its led members recursively; their own
+    /// deletes need no second check because this one already covered them.
+    pub(crate) async fn delete_if_inactive(
+        &self,
+        id: &str,
+    ) -> dim_agent_runtime::Result<DeleteOutcome> {
+        Self::check_session_id(id)?;
+        let slot = self.slot(id);
+        let gate = slot.gate.lock().await;
+        let outcome = match self.in_use_reason(id).await? {
+            Some(reason) => DeleteOutcome::InUse(reason),
+            None => DeleteOutcome::Removed(self.remove_locked(id, &slot).await?),
+        };
+        drop(gate);
+        drop(slot);
+        self.directory.inner.lock().expect("agent index").sweep();
+        Ok(outcome)
+    }
+
+    /// The id names `command-output/<id>`, so only a single path component
+    /// can be a Session's (D3); refused before any admission state exists.
+    fn check_session_id(id: &str) -> dim_agent_runtime::Result<()> {
         if !matches!(Path::new(id).components().collect::<Vec<_>>()[..],
             [Component::Normal(name)] if name == id)
         {
             return Err(AgentError::InvalidInput(format!("invalid Session id {id}")));
         }
-        let slot = self.slot(id);
-        let gate = slot.gate.lock().await;
+        Ok(())
+    }
+
+    /// Removes `id` with its admission gate held: its led members, its owned
+    /// Agents, its close, what the store holds of it, and its slot. The
+    /// caller drops the gate and the slot and sweeps after this returns.
+    async fn remove_locked(
+        &self,
+        id: &str,
+        slot: &Arc<SessionSlot>,
+    ) -> dim_agent_runtime::Result<bool> {
         if let Some(records) = &self.records {
             for member in records.led_members(id).await? {
                 Box::pin(self.delete(&member)).await?;
@@ -1227,6 +1300,7 @@ impl AgentIndex {
             Some(store) => store.delete_session(id).await?,
             None => false,
         };
+        let deleted = stored || (self.session_store.is_none() && loaded.is_some());
         let owner = {
             let mut inner = self.directory.inner.lock().expect("agent index");
             let owner = inner.versions.remove(id);
@@ -1246,18 +1320,48 @@ impl AgentIndex {
                 .loader
                 .get()
                 .expect("AgentsPlugin apply sets the loader");
-            let deleted = Arc::new(UnloadedSessionDeleted {
+            let announcement = Arc::new(UnloadedSessionDeleted {
                 agent_id,
                 session_id: id.to_owned(),
             });
-            if let Err(error) = root.parallel(deleted).await {
+            if let Err(error) = root.parallel(announcement).await {
                 tracing::warn!(%error, session_id = id, "Deletion of an unloaded Session was not announced");
             }
         }
-        drop(gate);
-        drop(slot);
-        self.directory.inner.lock().expect("agent index").sweep();
-        Ok(())
+        Ok(deleted)
+    }
+    /// Why `id` is in use, for a delete that requires an inactive Session:
+    /// its uses, its hold or a line of it, or a Session it leads, recursively.
+    /// `None` when nothing uses it. A Session that is not loaded has no line
+    /// and no hold to read; its uses alone answer. Reading them creates no
+    /// slot: a Session with no slot has no uses.
+    async fn in_use_reason(&self, id: &str) -> dim_agent_runtime::Result<Option<String>> {
+        let mut reasons = Vec::new();
+        let uses = self.directory.inner.lock().expect("agent index").uses(id);
+        if uses > 0 {
+            reasons.push(match uses {
+                1 => "1 request or subscription is using it".to_owned(),
+                uses => format!("{uses} requests or subscriptions are using it"),
+            });
+        }
+        if let Some((_, session)) = self.session(id) {
+            match session.in_use() {
+                Some(InUse::Held) => reasons.push("a background task holds it".to_owned()),
+                Some(InUse::Running) => reasons.push("a turn is running".to_owned()),
+                None => {}
+            }
+        }
+        if !reasons.is_empty() {
+            return Ok(Some(reasons.join(", ")));
+        }
+        if let Some(records) = &self.records {
+            for member in records.led_members(id).await? {
+                if let Some(reason) = Box::pin(self.in_use_reason(&member)).await? {
+                    return Ok(Some(format!("its member {member} is in use: {reason}")));
+                }
+            }
+        }
+        Ok(None)
     }
     /// Whether an Agent has any member Session, loaded or stored. An owned
     /// Agent with none is an incomplete delegation, which no request may

@@ -1181,7 +1181,9 @@ pub const CONTEXT_STATE_KEYS: &[&str] = &[
 ];
 
 /// The two reading switches for a row with this event key. Unknown keys,
-/// including extension events, are off until a renderer claims them.
+/// including extension events, never take part in rendering or checkpoint
+/// state: extension content reaches the model only as an adopted input or a
+/// tool result.
 pub fn context_flags(key: &str) -> (bool, bool) {
     (
         CONTEXT_RENDER_KEYS.contains(&key),

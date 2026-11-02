@@ -49,16 +49,17 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 
 ### 3.1 方法
 
-`session.delete {sessionId: string} -> {}`
+`session.delete {sessionId: string, requireInactive?: bool} -> {deleted: bool}`
 
 | 项目 | 规则 |
 | --- | --- |
+| `requireInactive` | 可选，默认 `false`。为 `true` 时，正在使用中的 Session 被拒绝为 `session_active`，且什么都不移除（§3.2 第 1 步）。不设它时删除照旧关闭并移除该 Session，`dimcode session delete ID` 与直接调用的客户端依赖这一行为 |
 | 类别 | Rpc 内建方法，与 `session.create`、`session.close` 并列。它不是 `sessionMethods` 条目，因为 Session 不能通过自己的部件卸载自己；也不是管理方法：它作用于一个 Session，Rpc 对 Session 的检查都适用 |
 | 协议 | v3。v1 与 v2 得到 `unknown_method`（"Method requires protocol v3"）。`hello.features` 在列出 `session.create` 的条件下列出它。协议版本仍为 3：客户端通过 `hello.features` 发现新的内建方法，与发现 `session.summaries` 相同 |
 | 调用方 | 能调用 `session.close` 的连接都能调用，配置规则相同：受保护配置下只限本地传输。已配对设备（P3）在 RemoteGateway 的兼容性表中与其他 Session 内建方法一起决定 |
 | Session 版本 | Session 记录的协议版本必须等于连接的版本（`session_protocol_version`），与所有 Session 内建方法相同。没有可读所有者行的 Session 没有记录版本，检查通过 |
 | 已损坏的 Session | 按 id 删除。删除不读取 Session 的任何记录，因此校验失败或没有可用所有者的 Session 也能删除；Rpc 对不可用 Session 的检查不适用于 `session.delete` |
-| 回复 | Session 的行全部删除后回复 `{}`。未知或已删除的 id 也回复 `{}` |
+| 回复 | 本次调用移除了 Session 时回复 `{deleted: true}`：移除了它的存储行，或在不带原生存储的守护进程中移除了一个已加载的 Session。未知或已删除的 id 同样成功，回复 `{deleted: false}`：该 id 什么都没被移除，客户端的重试也找不到行。该字段是加在回复上的：旧版 App Server 的 `{}` 仍按原来的成功处理 |
 
 ### 3.2 顺序
 
@@ -76,10 +77,12 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
   |             |                              |    Timeline 行、owner、记录 -> 提交            |
   |             |                              |  5 安排 S5a 清扫                               |
   |             | 6 忘记 S；移除其槽位         |                     |                          |
-  |<---- {} ----|                              |                     |                          |
+  |<-{deleted}-|                              |                     |                          |
 ```
 
 1. **准入。** Agents 检查 id（D3），并取得 S 的准入门，即 `acquire` 恢复 Session 时持有、创建在其构建的 Session 发布之前一直持有的 `SessionSlot` 门（§7）。删除进行期间没有请求、订阅或分叉能加载 S，删除仍在构建的 Session 时会等构建结束。已经持有 S 使用权的请求继续持有，由第 2 步的关闭结束其工作。
+
+   设了 `requireInactive` 时，删除在移除任何东西之前检查：S 和它会一并移除的每个 Session（它领导的成员，递归）都没有被使用。检查在 S 的准入门下进行，并对每个 Session 分别读取。一个 Session 处于使用中，指持有 `SessionUse`（每个被接受的请求和每个订阅都持有，所以附着的客户端算），或存在 `SessionHold`（被接受的分离工作取得），或它已加载且任一条线有回合在运行、或其已接受的工作尚未被派发（`Session::in_use`，逐条线）。失败或正在关闭的线不让 Session 处于使用中：线上没有工作，删除自身的关闭会结算它持有的东西。卸载的 Session 没有线和 hold，只有使用数能让它处于使用中。拒绝为 `session_active`（§3.5），什么都不移除；消息说明是什么在用它。只有所有者能回答这件事：只有它看得到此刻的使用、hold 和线，而客户端读摘要只能读到删除之前的状态。准入门一直持有到 S 被忘记，所以检查之后不会再有对 S 的新使用被接纳。成员是在它自己的准入门之外读取的，因此客户端在检查与该成员删除之间附着到成员的情况不在保证之内。不持 `SessionUse` 就启动回合的调用方，要么在启动期间持有该 Session（后台任务的唤醒取得 `SessionHold`，Scheduler 经 `sessions` 服务的运行取得租约），要么在关闭之后追加，而分支会拒绝。
 2. **关闭。** 若 S 已加载，Agents 像 `session.close` 那样关闭它：业务关闭，不是卸载。各能力结算已接受的工作，写出终态事实，释放进程、FileStorage 租约和成员请求。关闭报告清理错误时记日志并继续删除：未能写出的事实会随其余部分一起删除。从关闭起 S 的槽位即关闭：无论行最终是否删除，S 在本进程内都不再加载（第 6 步）。
 3. **命令输出。** SessionStore 在改动任何行之前移除该 Session 的输出目录（ADR 013 D4）：它自己的 `<数据库目录>/command-output/<S>/`，以及它每一行路径所在的目录，因此分叉复制来的 `command-output/<parent>/` 和 `.dim/exec/<parent>/<branch>/` 目录也覆盖在内。另一个 Session 仍在该目录下有行时，目录保留。SessionStore 的所有权锁把这次移除与第 4 步的删行跨 Session 串行化：否则两个并发删除可能都看到对方的行，都保留共享目录，提交后目录没有所有者。分叉步骤在复制时持有同一把锁并复制当前的全部输出行；一致由锁保证，而不是靠检查文件是否存在，因此运行中的命令在写出文件之前登记的行也会被复制，该命令创建的文件归分叉所有。`command-output` 目录通过 S 的资源节点上的 FileStorage（与 S5a 一样每次调用时查找）移除；`.dim/exec` 目录由 HostPlatform 移除，HostPlatform 不读取所有权行。目录不存在视为已移除。每次移除必须在第 4 步之前落盘（§4），因此 FileStorage 的 `remove` 要同步被移除条目的父目录（§14）。失败时删除在改动任何行之前结束（§3.5）。只有本数据库有 S 的行时，SessionStore 才移除自己的 `command-output/<S>/`：`command-output/` 由同一目录下的所有数据库共用，本库没有行的 id，其目录可能属于另一个数据库的 Session（§4）。
 4. **行。** 一个 `IMMEDIATE` 事务删除 S 的全部行：`session_file_owners`、`session_output_owners`、`timeline_snapshots`、`timeline_events`、`timeline_branches`、`timeline_content`、`session_grants`、`session_owners`、`session_catalog` 和 `agent_sessions`，因外键按此顺序，另加 S5b 的标题元数据（§14）。`session_catalog` 是 [#556 的目录投影](../../../design/appserver/native-storage-format.md#556-v23-格式决定)的派生行。这就是如今创建回滚执行的操作（[timeline.rs](../../../../crates/dim-app-server/src/storage/timeline.rs) 的 `rollback_creation`），S5a 为它加上所有者行；删除与回滚共用它。它像回滚一样在 Timeline 写线程上执行，因此排在已为 S 排队的所有追加之后，并清除 S 记下的写入失败。
@@ -117,10 +120,11 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 
 | 结果 | 何时 | 之后的状态 |
 | --- | --- | --- |
-| `{}` | 行已删除，或本来就没有 | Session 不存在；失去所有者的文件由清扫处理 |
+| `{deleted: true}` 或 `{deleted: false}` | 行已删除，或本来就没有 | Session 不存在；失去所有者的文件由清扫处理 |
 | `unknown_method`（-32601） | 协议 v1 或 v2 | 不变 |
 | `invalid_params`（-32602） | 缺少 `sessionId` 或不是字符串 | 不变 |
 | `session_protocol_version` | S 属于另一个协议版本 | 不变 |
+| `session_active`（-32000） | 设了 `requireInactive`，且 S 或它会一并移除的某个 Session 处于使用中（§3.2 第 1 步） | 不变：什么都不移除，也不关闭任何东西。消息说明原因：回合正在运行、后台任务持有它，或有几个请求与订阅在用它。失败或正在关闭的线不是原因：它不让 Session 处于使用中 |
 | `product_integration_pending` | 该配置不提供 Session 执行 | 不变 |
 | `-32603` "Session operation failed" | 第 3 步失败（`Locked`、`DirectoryNotEmpty`、`Unsynced`、I/O、节点不可用）或第 4 步失败（SQLite） | 若第 2 步关闭了 S，S 已关闭但未删除，与 `session.close` 之后相同：行还在，本进程内不再列出、不再加载，关闭结束的关系也不恢复。重启后它照常加载，命令输出可能已部分移除。没有加载的 Session 不变。重试 |
 | 没有回复 | 回复之前连接或 Rpc 已结束 | 两种状态之一。重试 |
@@ -143,12 +147,12 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 | 关闭之前或期间 | 行都在 | 目录在 | 没有损失；S 下次使用时加载；重试 |
 | 移除期间 | 行都在 | 目录部分移除 | 重试：继续移除，不存在的条目视为已移除 |
 | 移除之后、提交之前 | 行都在 | 目录已无，已落盘 | 重试。期间 S 可以加载，只是没有命令输出文件 |
-| 提交之后、回复之前 | 无行 | 目录已无；S 的文件无所有者 | 客户端重试时本库已无行，不移除目录，得到 `{}` 并再次安排清扫；否则由 S5a 的下一次触发（另一次删除，或之后某一代的第一次写入）移除文件 |
+| 提交之后、回复之前 | 无行 | 目录已无；S 的文件无所有者 | 客户端重试时本库已无行，不移除目录，得到 `{deleted: false}` 并再次安排清扫；否则由 S5a 的下一次触发（另一次删除，或之后某一代的第一次写入）移除文件 |
 | 清扫期间 | S5a 的状态 | — | [Session 文件 §6](session-files.md) 的崩溃恢复表 |
 
 **为什么目录在提交之前移除。** S 自己的 `command-output/<S>/` 目录没有自己的行（只有其中的文件可能有）。行删除之后，孤立的目录只能靠列出 `command-output/` 找到，而这个目录由同一数据库目录下的所有数据库共用（一个目录下两个 `--database` 文件），列目录无法区分已删除 Session 的目录和另一个存储的目录。先移除目录，任何已提交的删除都不会留下它。本数据库另一个 Session 仍命名的目录保留（ADR 013 D4）：它仍能通过那个 Session 的行找到，下一次删除再移除它。S5a 的文件采用相反的顺序，因为有行记录它们，清扫能找到。FileStorage 的移除原本不同步（[S6](https://github.com/arcships/dim/pull/87)）：断电后，被移除的目录可能重新出现，而之后以 `synchronous=FULL` 提交的事务仍然有效。现在 `remove` 在返回前同步父目录（§14），消除了这个窗口；HostPlatform 对移除的 `.dim/exec` 目录也同步父目录。
 
-**只移除本库有行的 id。** 出于同样的原因，只有本数据库有该 id 的行时，删除才移除它的目录。同一目录下 `a.sqlite` 和 `b.sqlite` 两个守护进程共用 `command-output/`；把 `session.delete {S_b}` 发给前者（例如 CLI 用错了 `--database`）时，它回复 `{}`，不能移除仍在后者中运行的 S_b 的输出。这个检查不影响收敛：目录在行之前移除，所以本库没有 S 的行时，也已没有 S 的目录可移除；Agents 的准入门保证同一 id 的两次删除不会交错。因此提交之后的重试什么都不移除，也不需要移除。
+**只移除本库有行的 id。** 出于同样的原因，只有本数据库有该 id 的行时，删除才移除它的目录。同一目录下 `a.sqlite` 和 `b.sqlite` 两个守护进程共用 `command-output/`；把 `session.delete {S_b}` 发给前者（例如 CLI 用错了 `--database`）时，它回复 `{deleted: false}`，不能移除仍在后者中运行的 S_b 的输出。这个检查不影响收敛：目录在行之前移除，所以本库没有 S 的行时，也已没有 S 的目录可移除；Agents 的准入门保证同一 id 的两次删除不会交错。因此提交之后的重试什么都不移除，也不需要移除。
 
 被否决的方案：
 
@@ -162,7 +166,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 
 ### 5.1 按时间或数量清理
 
-[功能清单](../../../feature-list.md)要求"按时间或保留数量清理，并可预览"。由 CLI 组合实现：`session.summaries` 为连接所属协议版本的每个 Session 返回 `createdAt`、`updatedAt` 和预览；CLI 选出要删的 Session、展示所选内容，再逐个调用 `session.delete`。失败的 id 会报告出来并可重试，其余照常删除。
+[功能清单](../../../feature-list.md)要求"按时间或保留数量清理，并可预览"。由 CLI 组合实现：`session.summaries` 为连接所属协议版本的每个 Session 返回 `createdAt`、`updatedAt` 和预览；CLI 选出要删的 Session、展示所选内容，再逐个以 `requireInactive: true` 调用 `session.delete`，让所有者在删除时拒绝仍在使用的 Session。失败的 id 会报告出来并可重试；其余照常删除，被所有者拒绝的 Session 报为保留而不是失败。预览自己对 `running` 与 `attachedClients` 的读取只是预览：所有者在删除时决定，逐条线，并把使用与 hold 都算进去。
 
 被否决：`session.cleanup {olderThan, keep, dryRun}` 这样的服务端方法。它重复了客户端已有的选择和预览；保留策略需要一个业务所有者和配置，而目前没有任何定义；部分失败时仍要逐个 id 返回结果。
 
@@ -340,7 +344,7 @@ S5c 中被否决：在 S 的分叉都删除之前保留 S 的命令输出。ADR 
 | 源的删除先提交，然后是分叉事务 | 分叉找不到源：`session_closed`，什么都没创建 |
 | 删除的关闭发生在分叉检查切点期间 | 检查失败于 `session_closed` |
 | 写入与删除或分叉 | Session 文件 §6 |
-| 两次删除 | 第二次等准入门，然后发现没有行：`{}` |
+| 两次删除 | 第二次等准入门，然后发现没有行：`{deleted: false}` |
 | 删除仍在构建的 Session：行已提交并已列出的 `session.create`、成员创建或分叉 | 创建从其行提交之前起持有新 id 的准入门，直到 Session 发布、协议版本记下为止（D6）。删除等待，然后关闭已发布的 Session 并删除其行。创建失败时回滚它的行，删除什么也找不到 |
 | 删除与 attach、submit 或 Session 方法 | 它们等准入门，然后失败于 `session_closed`；已持有使用权的请求随关闭结束 |
 | 删除与该 Session 自己的追加 | 关闭结算它们；行事务在 Timeline 写线程上排在所有已排队的追加之后 |
@@ -439,8 +443,8 @@ S5c 与 S5a 一样只实现控制节点。在控制节点上，FileStorage 正�
 
 ## 15. 验收（流程测试）
 
-1. 删除一个正在运行轮次、并有客户端附着的已加载 Session：客户端收到 `session.closed`，回复为 `{}`，`session.list` 不再列出它，`session.attach` 失败于 `session_closed`。任何表中都不再有它 id 的行，`command-output/<id>/` 已移除，它的 Session 文件由清扫移除。第二次删除回复 `{}`。
-2. 删除未加载的 Session，以及行校验失败的 Session：都回复 `{}`，不留任何行。
+1. 删除一个正在运行轮次、并有客户端附着的已加载 Session：客户端收到 `session.closed`，回复为 `{deleted: true}`，`session.list` 不再列出它，`session.attach` 失败于 `session_closed`。任何表中都不再有它 id 的行，`command-output/<id>/` 已移除，它的 Session 文件由清扫移除。第二次删除回复 `{deleted: false}`。
+2. 删除未加载的 Session，以及行校验失败的 Session：都回复 `{deleted: true}`，不留任何行。
 3. 在 `main` 的静止点处分叉，一个子分支在切点之前创建、一个在之后：F 的 `main` 含有源截至 `at` 的事件且 id 相同，之后是 `session/forked`、`branch/resume` 和为第一个子分支写的一条 `branch/create-failed`；F 有第一个子分支的目录、没有其事件，不含第二个子分支的任何东西；F 只有其 `main` 事件引用的内容行和快照；重启后重新加载，不再写第二条 `session/forked` 或 `branch/create-failed`。在 `0` 处分叉以 `branch/start` 打开，没有 `session/forked`。
 4. §6.5 的几种情况：子分支在切点之后完成时分叉，子分支有未结束的轮次、工具批次和后台任务时分叉，客户端在切点之后给子分支发 steer 时分叉。每种情况下 F 的子分支都没有事件；客户端给 F 提交输入之前，F 不记录任何 `turn/start`、模型调用、工具执行或 `exec/started`；源的子分支不受影响地继续。
 5. 分叉的 `SessionConfig` 文本与源相同，包括 `"interactive": false`。切点之前在源上设置的权限预设和模型就是 F 的预设和模型。
@@ -449,7 +453,7 @@ S5c 与 S5a 一样只实现控制节点。在控制节点上，FileStorage 正�
 8. 分叉后删除源：F 能加载并读取它的 Session 文件；删除 F 后文件被移除。对同一源的删除与分叉竞争：要么 F 带着文件存在，要么分叉失败于 `session_closed`；绝不会出现没有文件的分叉。
 9. 在一次性存储上：命令输出目录已不在但行还在的 Session 能加载，随后删除能完成；删除提交后留下的无所有者文件行在下一代的第一次写入时被清扫。
 10. 关闭了一个已加载 leader 之后、因其命令输出无法移除而失败的删除，回复 -32603，leader 的行都在；本进程内不再列出、不再加载 leader，它的成员仍是一个 Session。重启后 leader 照常加载，重试即可删除（D5）。
-11. 删除仍在构建的 Session（一次 `session.create` 和一次 `session.fork`，在行提交并被列出之后停在某个能力的 apply 中）时等构建结束，然后回复 `{}`；该 id 既没有行，也没有已加载的 Session（D6）。不是单一路径分量的 id 被拒绝，什么都不移除（D3）。
+11. 删除仍在构建的 Session（一次 `session.create` 和一次 `session.fork`，在行提交并被列出之后停在某个能力的 apply 中）时等构建结束，然后回复 `{deleted: true}`；该 id 既没有行，也没有已加载的 Session（D6）。不是单一路径分量的 id 被拒绝，什么都不移除（D3）。
 
 测试：第 1、2 条是 [deletion.rs](../../../../crates/dim-app-server/tests/transport_flow/deletion.rs) 中的 `delete_closes_a_running_session_and_removes_what_it_stored` 和 `unloaded_and_damaged_sessions_are_deleted_by_id`。第 3 到 8 条在 [fork.rs](../../../../crates/dim-app-server/tests/transport_flow/fork.rs) 中：`a_fork_copies_main_through_a_rest_point_and_starts_nothing`（第 3、4 条和第 5 条的 `interactive`），`a_fork_waits_for_background_work_and_keeps_preset_and_model`（第 4 条中带后台任务的子分支、第 5 条的预设和模型、第 6 条的后台任务与批次切点，使用真实的 BackgroundExec），`a_fork_is_refused_unless_the_cut_is_a_rest_point`（第 6 条，以及 D1 允许留在切点的输入：被撤回的 Queue 输入和停止前未消费的 Steer 输入），`a_fork_of_a_leader_does_not_stop_the_source_member`（第 7 条），`a_fork_shares_session_files_and_outlives_its_source`（第 8 条）。[storage_flow.rs](../../../../crates/dim-app-server/tests/storage_flow.rs) 中的 `a_fork_copies_main_through_the_cut_with_its_content_and_snapshots` 在存储层检查第 3 条的内容行和快照，包括只被 before 记录引用的内容。第 9 条是 [files/tests.rs](../../../../crates/dim-app-server/src/storage/files/tests.rs) 中的 `an_interrupted_delete_converges_on_retry_and_the_next_sweep`，它让删除停在移除输出与提交之间，另加 `unloaded_and_damaged_sessions_are_deleted_by_id` 中没有输出目录的 Session。deletion.rs 中的 `a_delete_leaves_another_databases_command_output` 用两个守护进程检查 §4 的共用目录，其中的 `a_failed_delete_leaves_the_session_closed_until_a_retry` 是第 10 条，`a_delete_waits_for_a_building_session` 是第 11 条，被拒绝的 id 在 `delete_closes_a_running_session_and_removes_what_it_stored` 中。
 

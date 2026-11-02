@@ -142,12 +142,13 @@ compacted context baseline.
 | `B:TimelineIdentity` | Name the branch in the payload and in the main-branch rule. |
 | `B:Dispatcher` | Follow the events that open each hook point. |
 | `B:Timeline` | Read the history for `SessionStart` and append output. |
+| `S:ToolRegistry` | Read a tool's declaration for its matcher alias when the branch adopted no tool part. |
 
 <!-- generated:plugin HooksBranch — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:Approval`、`B:BranchLifecycle`、`B:Dispatcher`、`B:Permission`、`B:Timeline`、`B:TimelineIdentity`、`S:HooksRuntime` |
+| 注入 | `B:Approval`、`B:BranchLifecycle`、`B:Dispatcher`、`B:Permission`、`B:Timeline`、`B:TimelineIdentity`、`S:HooksRuntime`、`S:ToolRegistry` |
 | 提供 | — |
 | 被注入于 | — |
 <!-- /generated -->
@@ -210,6 +211,14 @@ reported by `hooks.catalog` rather than at the hook point.
 `a_command_rule_deny_runs_no_pre_tool_use_hook`,
 `the_recheck_after_an_answer_runs_no_pre_tool_use_hook`,
 `a_pasted_bash_matcher_runs_for_exec_and_reads_the_command`,
+`a_pasted_permission_matcher_runs_without_an_adopted_tool_part`,
+`a_pasted_post_tool_matchers_run_for_exec_and_read_without_an_adopted_tool_part`,
+`a_pasted_matcher_does_not_select_the_other_tool`,
+`bash_selects_a_registered_tool_with_risk_execute_process`,
+`matchers_keep_selecting_tools_with_an_adopted_tool_part`,
+`an_adopted_tool_part_alias_selects_at_pre_tool_use`,
+`an_adopted_tool_part_alias_selects_at_permission_request`,
+`a_tool_batch_keeps_the_alias_of_the_declaration_it_folded_under`,
 `the_first_deny_in_catalog_order_is_the_reason`,
 `an_interrupt_while_pre_tool_use_runs_cancels_the_call_and_ends_the_command`,
 `a_hooks_unload_drops_a_pending_pre_tool_use_advice`;

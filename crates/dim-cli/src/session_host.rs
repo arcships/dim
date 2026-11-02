@@ -1257,6 +1257,7 @@ impl Worker {
                 }
             }
             Command::Compact => self.compact().await,
+            Command::Rename(title) => self.rename(title).await,
             Command::Goal(request) => self.goal(request).await,
             Command::ToggleWeb => {
                 let result: crate::Result<WebToggled> =
@@ -1788,6 +1789,15 @@ impl Worker {
             Ok(request) => self.compact_requests.push(request),
             Err(error) => self.send(Update::Compacted(CompactReply::Failed(error.to_string()))),
         }
+    }
+
+    /// `/rename`: sets the shown Session's manual title, or clears it when
+    /// `title` is `None`. The text is a command, never an input.
+    async fn rename(&mut self, title: Option<String>) {
+        let reply =
+            crate::session_command::set_title(&mut self.client, &self.session_id, title.as_deref())
+                .await;
+        self.send(Update::Renamed(reply));
     }
 
     /// `/goal`: the shown line's goal, written by the method the request

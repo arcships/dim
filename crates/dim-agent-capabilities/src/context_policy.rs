@@ -71,7 +71,6 @@ pub(crate) struct PolicyContext {
     compaction: Option<ContextCompactionData>,
     order: Vec<PolicyOrderEvent>,
     full: Option<ContextHistory>,
-    checkpoint: Option<ProjectionCheckpoint>,
 }
 
 impl PolicyContext {
@@ -102,7 +101,6 @@ impl PolicyContext {
             compaction,
             order,
             full: Some(context),
-            checkpoint: None,
         }
     }
 
@@ -119,7 +117,6 @@ impl PolicyContext {
             compaction,
             order: streamed.order.clone(),
             full: None,
-            checkpoint: None,
         }
     }
 
@@ -132,39 +129,19 @@ impl PolicyContext {
     }
 
     pub fn messages_len(&self, history: &[HistoryEntry]) -> usize {
-        let mut len = history.len();
-        if let Some(ContextCompactionData {
-            outcome:
-                ContextCompactionResult::Completed {
-                    replacement,
-                    context_baseline,
-                    ..
-                },
-            ..
-        }) = self.compaction()
-        {
-            len += replacement.len() + context_baseline.len();
-        }
-        len
+        crate::history::projected_messages_len(self.compaction(), history)
     }
 
     pub fn messages(&self, history: &[HistoryEntry]) -> Vec<Arc<Message>> {
-        let mut messages = Vec::with_capacity(self.messages_len(history));
-        if let Some(ContextCompactionData {
-            outcome:
-                ContextCompactionResult::Completed {
-                    replacement,
-                    context_baseline,
-                    ..
-                },
-            ..
-        }) = self.compaction()
-        {
-            messages.extend(replacement.iter().cloned().map(Arc::new));
-            messages.extend(context_baseline.iter().map(|entry| entry.message.clone()));
-        }
-        messages.extend(history.iter().map(|entry| entry.message.clone()));
-        messages
+        crate::history::projected_messages(self.compaction(), history)
+    }
+
+    /// The same messages by reference, for checks that only compare them.
+    pub fn message_refs<'a>(
+        &'a self,
+        history: &'a [HistoryEntry],
+    ) -> impl Iterator<Item = &'a Message> + 'a {
+        crate::history::projected_message_refs(self.compaction(), history)
     }
 
     pub fn retained_entry(&self, history: &[HistoryEntry], cut: &str) -> Result<usize, String> {
@@ -192,10 +169,6 @@ impl PolicyContext {
 
     pub fn full(&self) -> Option<&ContextHistory> {
         self.full.as_ref()
-    }
-
-    pub fn checkpoint(&self) -> Option<&ProjectionCheckpoint> {
-        self.checkpoint.as_ref()
     }
 
     pub fn sequence(&self, id: &str) -> Option<u64> {
@@ -945,11 +918,9 @@ impl ContextPolicy {
             });
         if request.is_ok() {
             let saved = async {
-                let snapshot = match (view.context.full(), view.context.checkpoint()) {
-                    (Some(context), _) => {
-                        Some(self.history.snapshot(context, retain_from, &fact)?)
-                    }
-                    (None, Some(_)) | (None, None) => {
+                let snapshot = match view.context.full() {
+                    Some(context) => Some(self.history.snapshot(context, retain_from, &fact)?),
+                    None => {
                         let checkpoint = self
                             .history
                             .stream_checkpoint(&self.timeline, view.facts.through, retain_from, 256)

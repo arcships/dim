@@ -1,6 +1,6 @@
 use crate::{
     ServerConfig,
-    agents::{AgentIndex, SessionUse},
+    agents::{AgentIndex, DeleteOutcome, SessionUse},
     control::ServerControl,
     outbound::{Frame, Sender},
     protocol::*,
@@ -665,6 +665,7 @@ impl Connection {
                 .map(|a| a.delivery.clone())
         });
         let include_summary = matches!(call, Call::Summaries(_));
+        let include_closed = matches!(&call, Call::Summaries(params) if params.include_closed);
         Some(match call {
             Call::Hello(_) => Err(RpcError::invalid("hello has already completed")),
             Call::Ping => Ok(Reply::Ping(PingResult {
@@ -718,7 +719,7 @@ impl Connection {
                     .expect("catalog reads have cancellation");
                 match rpc
                     .index
-                    .session_catalog(params, None, self.protocol_version(), cancel)
+                    .session_catalog(params, None, self.protocol_version(), false, cancel)
                     .await
                 {
                     Ok(mut page) => {
@@ -737,9 +738,9 @@ impl Connection {
                     Err(error) => Err(RpcError::from(error)),
                 }
             }
-            Call::List(params) | Call::Summaries(params) => {
+            Call::List(SessionList { agent_id }) | Call::Summaries(Summaries { agent_id, .. }) => {
                 let filter: Option<String> = if self.protocol_version() >= 3 {
-                    params.agent_id
+                    agent_id
                 } else {
                     Some(rpc.index.default_agent_id().to_owned())
                 };
@@ -763,6 +764,7 @@ impl Connection {
                                 },
                                 filter,
                                 self.protocol_version(),
+                                include_closed,
                                 cancel,
                             )
                             .await
@@ -857,6 +859,7 @@ impl Connection {
                         Err(error) => return Some(Err(RpcError::from(error))),
                     };
                     summaries.push(SessionSummary {
+                        closed: rpc.index.closed(&session.session_id),
                         session,
                         preview,
                         updated_at,
@@ -950,11 +953,25 @@ impl Connection {
                 rpc.index.remove_version(&params.session_id);
                 result.map(|_| Reply::empty())
             }
+            Call::Delete(params) if params.require_inactive => {
+                match rpc.index.delete_if_inactive(&params.session_id).await {
+                    Ok(DeleteOutcome::Removed(deleted)) => {
+                        Ok(Reply::Deleted(DeleteResult { deleted }))
+                    }
+                    Ok(DeleteOutcome::InUse(reason)) => {
+                        Err(RpcError::app(-32000, "session_active", reason))
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, session_id=%params.session_id, "Session delete failed");
+                        Err(RpcError::from(error))
+                    }
+                }
+            }
             Call::Delete(params) => rpc
                 .index
                 .delete(&params.session_id)
                 .await
-                .map(|()| Reply::empty())
+                .map(|deleted| Reply::Deleted(DeleteResult { deleted }))
                 .map_err(|error| {
                     tracing::error!(%error, session_id=%params.session_id, "Session delete failed");
                     RpcError::from(error)

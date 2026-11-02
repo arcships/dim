@@ -60,6 +60,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "after message {count}" => "第 {count} 則訊息之後",
         "open a line from the end of the shown line" => "從目前線的末尾開一條線",
         "fork the session at its last finished turn" => "在最近結束的回合處派生會話",
+        "rename this session" => "重新命名此工作階段",
+        "Renamed to {title}" => "已重新命名為 {title}",
+        "The Session is now untitled." => "工作階段現在沒有標題。",
+        "This daemon does not support renaming Sessions" => "此守護進程不支援重新命名工作階段",
+        "Renaming failed" => "重新命名失敗",
         "Starting" => "啟動中",
         "Delegation result" => "委派結果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {

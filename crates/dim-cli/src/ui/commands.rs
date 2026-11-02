@@ -176,6 +176,16 @@ pub const COMMANDS: &[Command] = &[
         &[],
         Needs::Session,
     ),
+    Command {
+        argument: Some("<title>"),
+        ..slash(
+            "rename",
+            "session",
+            "rename this session",
+            &[],
+            Needs::Session,
+        )
+    },
     slash(
         "usage",
         "session",

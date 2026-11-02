@@ -283,6 +283,23 @@ mod tests {
         }
     }
 
+    /// `/rename`, its menu row and its replies are translated in every
+    /// locale.
+    #[test]
+    fn every_locale_translates_the_rename_strings() {
+        for (code, lookup) in tables() {
+            for key in [
+                "rename this session",
+                "Renamed to {title}",
+                "The Session is now untitled.",
+                "This daemon does not support renaming Sessions",
+                "Renaming failed",
+            ] {
+                assert!(lookup(key).is_some(), "{code} lacks {key:?}");
+            }
+        }
+    }
+
     /// A delegation the server refused before a member existed reads as a
     /// rejected attempt, in every locale; a table that drops a placeholder
     /// would print the refusal's reason or the count nowhere.
