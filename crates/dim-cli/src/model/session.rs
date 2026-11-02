@@ -265,6 +265,9 @@ pub enum Command {
     ListPlugins,
     /// One request to a management area's owner, through its adapter.
     Management(ManagementRequest),
+    /// The interface language's code (`en`, `zh-CN`, ...), which the worker
+    /// composes management text in from the next command on.
+    SetLocale(&'static str),
     /// Change one plugin; the worker lists the plugins again after it.
     Plugin(PluginAction),
     /// List the runtimes of the `/runtime` panel (`runtime.list`) and the
@@ -299,6 +302,8 @@ pub enum Command {
 pub enum Area {
     Skills,
     Hooks,
+    Scheduled,
+    Permissions,
 }
 
 impl Area {
@@ -307,7 +312,15 @@ impl Area {
         match self {
             Self::Skills => "skills",
             Self::Hooks => "hooks",
+            Self::Scheduled => "scheduled",
+            Self::Permissions => "permissions",
         }
+    }
+
+    /// Whether the area's documents are per entry, so `edit` and `set` name
+    /// one, rather than one document for the area.
+    pub fn per_entry(self) -> bool {
+        matches!(self, Self::Scheduled)
     }
 }
 
@@ -320,11 +333,23 @@ pub enum ManagementAction {
     Toggle { id: String, enabled: bool },
     /// Re-read the area, or ask its owner to rescan it.
     Reload,
-    /// Replace the area's document if it is still at `expected_revision`.
+    /// Replace the area's document, or one entry's, if it is still at
+    /// `expected_revision`.
     Save {
+        /// The entry whose document this is, for an area whose documents are
+        /// per entry; `None` writes the area's own document.
+        id: Option<String>,
         expected_revision: String,
         document: serde_json::Value,
     },
+    /// Create an entry from `document`.
+    Add { document: serde_json::Value },
+    /// Remove one entry.
+    Remove { id: String },
+    /// Perform the area's named operation on one entry.
+    Run { id: String },
+    /// Read one entry's detail, in place of the list.
+    Inspect { id: String },
 }
 
 /// One request to a management area, carrying the area and what it asks.
@@ -343,9 +368,14 @@ pub struct ManagementView {
     pub revision: Option<String>,
     /// The area's document, when its owner reports one the client can edit.
     pub document: Option<serde_json::Value>,
+    /// The document a new entry starts from, when the area can create one:
+    /// the owner's create shape, filled with example values.
+    pub create: Option<serde_json::Value>,
     /// The kinds that act on the area itself rather than on one entry, in the
-    /// order a panel offers them. Today only reload: it needs no selection,
-    /// so it works on an empty area and after a failed read.
+    /// order a panel offers them: reload and add, neither of which needs a
+    /// selection, so both work on an empty area. Add still needs this view's
+    /// create document; without a view there is none, and the hint offers
+    /// only reload.
     pub actions: Vec<ActionKind>,
     /// Entries under the source headings their owner reports.
     pub groups: Vec<ManagementGroup>,
@@ -368,11 +398,22 @@ pub struct ManagementEntry {
     /// What the entry says about itself, a line each, shown for the entry the
     /// panel has selected.
     pub detail: Vec<String>,
-    /// Whether the entry is on; a toggle asks for the other state.
-    pub enabled: bool,
+    /// Whether the entry is on; a toggle asks for the other state. `None`
+    /// for an entry that has no on/off state, such as a command rule.
+    pub enabled: Option<bool>,
     /// What the row names besides on and off.
     pub states: Vec<EntryState>,
     pub actions: Vec<ActionKind>,
+    /// The entry's own document, for an area whose documents are per entry
+    /// and whose entries offer edit.
+    pub document: Option<EntryDocument>,
+}
+
+/// One entry's document and the revision a write of it takes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntryDocument {
+    pub revision: String,
+    pub document: serde_json::Value,
 }
 
 /// A property of an entry that its row names besides on and off.
@@ -392,8 +433,12 @@ pub enum EntryState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
     Toggle,
-    Reload,
     Edit,
+    Reload,
+    Add,
+    Remove,
+    Run,
+    Inspect,
 }
 
 /// A management request and what it came to.
@@ -404,19 +449,41 @@ pub struct ManagementReply {
 }
 
 /// What a management request came to.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ManagementResult {
-    /// The area as its owner reports it after the request.
-    View(ManagementView),
-    /// The action was applied and the read that reports the area failed: the
-    /// change was made, and this is why it is not shown.
-    Applied { read_error: String },
+    /// The area as its owner reports it after the request, and what the
+    /// owner answered beyond the view: a run's state, or the entry an add
+    /// created. A read has no note.
+    View {
+        view: Box<ManagementView>,
+        note: Option<String>,
+    },
+    /// The action was applied and the read that reports the area failed:
+    /// the change was made, and `read_error` says why the area is not shown.
+    /// `note` is the owner's answer when that is more than the view, such as
+    /// a run's state; without one, the surface composes the action's line
+    /// with the entry's name from the read it holds.
+    Applied {
+        note: Option<String>,
+        read_error: String,
+    },
+    /// What an inspect found, in place of the list.
+    Detail(ManagementDetail),
     /// Nothing was applied, and this is why.
     Refused(ManagementRefusal),
 }
 
+/// One entry's read-only detail, in place of the list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManagementDetail {
+    /// What the detail is about, as the panel's title.
+    pub title: String,
+    /// Its lines, in the order the owner reports them.
+    pub lines: Vec<String>,
+}
+
 /// Why a management request did not produce a view.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ManagementRefusal {
     /// The owner kept the stored document because it changed since the client
     /// read it. Nothing was written; the area was read again, and this is
@@ -841,14 +908,11 @@ pub struct ContextReading {
     pub threshold: u64,
 }
 
-/// A `session.context.compact` reply as `/compact` reports it.
+/// Failures `/compact` reports independently of committed outcomes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompactReply {
-    Completed,
-    Skipped(String),
-    /// `compaction_failed` or another failure of the call, with its message.
+    /// Failure of the call itself, with its message.
     Failed(String),
-    Cancelled(String),
     /// The daemon offers no `session.context.compact`.
     Unsupported,
 }

@@ -49,6 +49,20 @@ Commands:\n\
   hooks edit                       Edit the user's hook document\n\
   hooks set PATH                   Write the user's hook document from PATH,\n\
                                    or from stdin for -\n\
+  scheduled list                   List scheduled jobs, their windows and\n\
+                                   last runs\n\
+  scheduled enable|disable ID      Pause or resume one job\n\
+  scheduled edit ID                Edit a job document in the editor\n\
+  scheduled set ID PATH            Write a job document from PATH,\n\
+                                   or from stdin for -\n\
+  scheduled add PATH               Create a job from PATH, or from stdin for -\n\
+  scheduled remove ID              Delete a job\n\
+  scheduled run ID                 Run a job now\n\
+  scheduled history ID             List a job's recent runs\n\
+  permissions list                 List the user's command rules\n\
+  permissions add PATH             Add one rule from PATH, or from stdin for -\n\
+  permissions remove RULE          Remove a rule, given as one quoted\n\
+                                   'DECISION MATCH COMMAND'\n\
   recording [on|off]               Record model requests to the home's\n\
                                    model-log/recordings.jsonl; prompts, code\n\
                                    and tool output are written there\n\
@@ -100,7 +114,8 @@ Without -p, exec reads redirected stdin through EOF, including with --image.\n\
 Idle commands: /export <markdown|json> PATH, /rename TITLE|--clear, /exit.\n\
 PATH is relative to the CLI current directory; ~ is literal.\n\
 /permissions (aliases /approvals, /approval) opens separate File access, Tool\n\
-  approval (Ask/Bypass), and Process isolation controls in the terminal UI.\n\
+  approval (Ask/Bypass) and Process isolation controls in the terminal UI, and\n\
+  a Command rules row that lists, adds and removes the user's command rules.\n\
 The line prompt accepts file-access read-only|workspace-read-write|unrestricted,\n\
   tool-approval ask|bypass, PRESET, allow|deny exact|prefix COMMAND, or remove N.\n\
 Approval accepts only y/yes; empty input denies. For a simple exec command, a/always\n\
@@ -184,11 +199,21 @@ pub enum Action {
     },
     /// `<area> ...`: one request to a management area's owner.
     Management(crate::model::session::ManagementRequest),
-    /// `<area> edit`: the area's document in the external editor.
-    ManagementEdit(crate::model::session::Area),
-    /// `<area> set PATH`: the area's document from a file, or from stdin for
+    /// `<area> edit [ID]`: the area's document in the external editor, or one
+    /// entry's for an area whose documents are per entry.
+    ManagementEdit {
+        area: crate::model::session::Area,
+        id: Option<String>,
+    },
+    /// `<area> set [ID] PATH`: the same write from a file, or from stdin for
     /// `-`.
     ManagementSet {
+        area: crate::model::session::Area,
+        id: Option<String>,
+        path: std::path::PathBuf,
+    },
+    /// `<area> add PATH`: a new entry from a file, or from stdin for `-`.
+    ManagementAdd {
         area: crate::model::session::Area,
         path: std::path::PathBuf,
     },
@@ -684,9 +709,13 @@ impl Options {
                                 enabled: command == "enable",
                             },
                         }),
-                        "edit" => Action::ManagementEdit(Area::Hooks),
+                        "edit" => Action::ManagementEdit {
+                            area: Area::Hooks,
+                            id: None,
+                        },
                         "set" => Action::ManagementSet {
                             area: Area::Hooks,
+                            id: None,
                             path: value(&mut args)?.into(),
                         },
                         _ => {
@@ -694,6 +723,74 @@ impl Options {
                                 "Use hooks list, hooks enable, hooks disable, hooks edit or hooks set PATH"
                                     .into(),
                             );
+                        }
+                    };
+                }
+                "scheduled" if matches!(options.action, Action::Chat) => {
+                    use crate::model::session::{Area, ManagementAction, ManagementRequest};
+                    let verb = value(&mut args)?;
+                    options.action = match verb.as_str() {
+                        "list" => Action::Management(ManagementRequest {
+                            area: Area::Scheduled,
+                            action: ManagementAction::List,
+                        }),
+                        command @ ("enable" | "disable") => Action::Management(ManagementRequest {
+                            area: Area::Scheduled,
+                            action: ManagementAction::Toggle {
+                                id: value(&mut args)?,
+                                enabled: command == "enable",
+                            },
+                        }),
+                        "edit" => Action::ManagementEdit {
+                            area: Area::Scheduled,
+                            id: Some(value(&mut args)?),
+                        },
+                        "set" => Action::ManagementSet {
+                            area: Area::Scheduled,
+                            id: Some(value(&mut args)?),
+                            path: value(&mut args)?.into(),
+                        },
+                        "add" => Action::ManagementAdd {
+                            area: Area::Scheduled,
+                            path: value(&mut args)?.into(),
+                        },
+                        command @ ("remove" | "run" | "history") => {
+                            let id = value(&mut args)?;
+                            let action = match command {
+                                "remove" => ManagementAction::Remove { id },
+                                "run" => ManagementAction::Run { id },
+                                _ => ManagementAction::Inspect { id },
+                            };
+                            Action::Management(ManagementRequest {
+                                area: Area::Scheduled,
+                                action,
+                            })
+                        }
+                        _ => {
+                            return Err("Use scheduled list, enable ID, disable ID, edit ID, set ID PATH, add PATH, remove ID, run ID or history ID".into());
+                        }
+                    };
+                }
+                "permissions" if matches!(options.action, Action::Chat) => {
+                    use crate::model::session::{Area, ManagementAction, ManagementRequest};
+                    let verb = value(&mut args)?;
+                    options.action = match verb.as_str() {
+                        "list" => Action::Management(ManagementRequest {
+                            area: Area::Permissions,
+                            action: ManagementAction::List,
+                        }),
+                        "add" => Action::ManagementAdd {
+                            area: Area::Permissions,
+                            path: value(&mut args)?.into(),
+                        },
+                        "remove" => Action::Management(ManagementRequest {
+                            area: Area::Permissions,
+                            action: ManagementAction::Remove {
+                                id: value(&mut args)?,
+                            },
+                        }),
+                        _ => {
+                            return Err("Use permissions list, permissions add PATH or permissions remove 'DECISION MATCH COMMAND'".into());
                         }
                     };
                 }

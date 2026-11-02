@@ -27,6 +27,8 @@ mod migration;
 mod permission;
 #[path = "cli_flow/question.rs"]
 mod question;
+#[path = "cli_flow/scheduled.rs"]
+mod scheduled;
 #[path = "cli_flow/server.rs"]
 mod server;
 #[path = "cli_flow/session_management.rs"]
@@ -8292,10 +8294,8 @@ fn tui_compaction_row_runs_then_shows_the_summary_it_recorded() {
     daemon.join().unwrap();
 }
 
-/// `/compact` calls `session.context.compact` for the shown line and reports
-/// what the method answered, including a daemon without the method.
 #[test]
-fn tui_compact_calls_the_context_method_and_reports_its_reply() {
+fn tui_compact_displays_committed_outcomes_and_reports_an_unsupported_daemon() {
     let home = Home::new();
     let daemon = home.daemon(move |wire| {
         wire.hello(&[]);
@@ -8317,7 +8317,19 @@ fn tui_compact_calls_the_context_method_and_reports_its_reply() {
                 json!({"sessionId":"session","branchId":"main"})
             );
             match attempt {
-                0 => wire.reply(&compact, json!({"status":"completed","sequence":12})),
+                0 => {
+                    wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":
+                        {"id":"dim-compaction-start-completed","sequence":11,"create_at":1,"type":"context","name":"compaction-start",
+                         "data":{"through":10,"trigger":"manual","strategy":"summary"}}}));
+                    wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":
+                        {"id":"dim-compaction-completed","sequence":12,"create_at":1,"type":"context","name":"compaction",
+                         "data":{"through":10,"start":11,"status":"completed","retain_from":"dim-2","strategy":"summary",
+                                 "replacement":[{"role":"user","content":"<dim-summary>\nThe parser is half done.\n</dim-summary>"}],
+                                 "diagnostics":{"reason":"manual","trigger":"manual","estimatedInputTokens":300.0,
+                                                "entriesReplaced":3,"modelCallCount":1,"durationMs":10,"strategy":{"kind":"summary"}}}}}));
+                    wire.reply(&compact, json!({"status":"completed","sequence":12}));
+                    wire.no_context();
+                }
                 1 => {
                     wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":
                         {"id":"dim-compaction-start","sequence":14,"create_at":1,"type":"context","name":"compaction-start",
@@ -8328,7 +8340,6 @@ fn tui_compact_calls_the_context_method_and_reports_its_reply() {
                                  "diagnostics":{"reason":"manual","trigger":"manual","estimatedInputTokens":120.0,
                                                 "entriesReplaced":0,"modelCallCount":0,"durationMs":1,"strategy":{"kind":"summary"}}}}}));
                     wire.reply(&compact, json!({"status":"skipped","reason":"nothing to cut"}));
-                    // The compaction result marks the reading stale.
                     wire.no_context();
                 }
                 _ => wire.send(json!({"jsonrpc":"2.0","id":compact["id"],"error":

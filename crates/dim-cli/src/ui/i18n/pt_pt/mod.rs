@@ -2,7 +2,7 @@
 //! interface.
 
 mod chrome;
-mod management;
+pub(super) mod management;
 mod plugins;
 mod prompts;
 mod providers;

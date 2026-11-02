@@ -401,7 +401,8 @@ fn a_daemon_without_skill_enablement_lists_but_refuses_a_change() {
     daemon.join().unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("This daemon cannot manage skills."),
+        String::from_utf8_lossy(&output.stderr)
+            .contains("This daemon lists skills but cannot toggle them."),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -535,7 +536,7 @@ fn tui_skills_panel_lists_toggles_and_reloads() {
     // as its modifier.
     thread::sleep(Duration::from_millis(200));
     terminal.write(b"/reload-skills\r");
-    terminal.until("Reloaded Skills: 0 entries, 0 disabled.");
+    terminal.until("Reloaded Skills: 0 entries.");
     terminal.until("/w/old: unreadable");
     terminal.write(b"/exit\r");
     terminal.until("Bye!");

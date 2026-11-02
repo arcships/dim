@@ -61,10 +61,13 @@ pub enum Outcome {
 /// The action is applied once the method behind it returns: the owner
 /// declares every Skills method except `skills.catalog` mutating, so a
 /// `skills.refresh` that succeeded rescanned the roots even when the read
-/// after it fails.
+/// after it fails. A kind this area has no method for is refused by
+/// `management::supported` before the adapter runs.
 pub async fn apply(client: &mut Client, action: &ManagementAction, cwd: &Path) -> Outcome {
     let params = json!({"cwd": cwd.to_string_lossy()});
     let applied = match action {
+        // Both are reads: `skills.catalog` is the only method they call.
+        ManagementAction::List | ManagementAction::Inspect { .. } => false,
         ManagementAction::Reload => {
             if let Err(error) = client.rpc("skills.refresh", params.clone()).await {
                 return Outcome::Refused(error.to_string());
@@ -80,9 +83,12 @@ pub async fn apply(client: &mut Client, action: &ManagementAction, cwd: &Path) -
             }
             true
         }
-        // A Skill has no document, so `management::supported` refuses a save
-        // before the adapter runs; every other action only reads the area.
-        _ => false,
+        // The kinds this area has no method for: `management::supported`
+        // refuses them before the adapter runs, so nothing applied.
+        ManagementAction::Save { .. }
+        | ManagementAction::Add { .. }
+        | ManagementAction::Remove { .. }
+        | ManagementAction::Run { .. } => false,
     };
     match catalog(client, &cwd.to_string_lossy()).await {
         Ok(catalog) => Outcome::Catalog(catalog),
@@ -115,15 +121,17 @@ pub(super) fn view(catalog: &Catalog, actions: &[ActionKind]) -> ManagementView 
                 id: entry.id.clone(),
                 label: entry.name.clone(),
                 detail: [entry.description.clone(), entry.file_path.clone()].to_vec(),
-                enabled: entry.enabled,
+                enabled: Some(entry.enabled),
                 states,
                 actions: super::entry_kinds(actions),
+                document: None,
             },
         );
     }
     ManagementView {
         revision: None,
         document: None,
+        create: None,
         actions: super::area_kinds(actions),
         groups: groups.into_vec(),
         issues: catalog

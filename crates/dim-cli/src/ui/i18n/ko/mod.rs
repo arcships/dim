@@ -1,7 +1,7 @@
 //! Korean, keyed by the English text, one table per area of the interface.
 
 mod chrome;
-mod management;
+pub(super) mod management;
 mod plugins;
 mod prompts;
 mod providers;

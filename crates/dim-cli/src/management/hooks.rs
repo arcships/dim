@@ -143,6 +143,7 @@ pub async fn apply(
         ManagementAction::Save {
             expected_revision,
             document,
+            ..
         } => {
             let saved = client
                 .rpc(
@@ -157,17 +158,18 @@ pub async fn apply(
                 if crate::client::app_error(&error) != Some("hooks_conflict") {
                     return Err(Failure::Refused(error.to_string()));
                 }
-                return Err(
-                    conflict(
-                        client,
-                        &cwd,
-                        "The user document changed since it was read; nothing was written. Your next edit opens the current document.",
-                    )
-                    .await,
-                );
+                return Err(conflict(
+                    client,
+                    &cwd,
+                    "The user document changed since it was read; nothing was written.",
+                )
+                .await);
             }
             applied = true;
         }
+        // A kind this area has no method for is refused by
+        // `management::supported` before the adapter runs.
+        _ => {}
     }
     catalog(client, &cwd).await.map_err(|error| {
         if applied {
@@ -210,13 +212,14 @@ pub(super) fn view(catalog: &Catalog, available: &[ActionKind]) -> ManagementVie
                 id: source.source.clone(),
                 label: source.source.clone(),
                 detail: detail(source),
-                enabled: source.enabled,
+                enabled: Some(source.enabled),
                 states,
                 actions: offered
                     .iter()
                     .filter(|kind| available.contains(kind))
                     .copied()
                     .collect(),
+                document: None,
             },
         );
     }
@@ -227,6 +230,7 @@ pub(super) fn view(catalog: &Catalog, available: &[ActionKind]) -> ManagementVie
     ManagementView {
         revision: Some(catalog.user_revision.clone()),
         document: catalog.user_document.clone(),
+        create: None,
         actions: super::area_kinds(available),
         groups: groups.into_vec(),
         issues,

@@ -118,6 +118,11 @@ pub fn saved_locale(home: &std::path::Path) -> Option<Locale> {
         .and_then(Locale::from_code)
 }
 
+/// The interface language: the saved locale, else the system's.
+pub fn interface_locale(home: &std::path::Path) -> Locale {
+    saved_locale(home).unwrap_or_else(system_locale)
+}
+
 thread_local! {
     static ACTIVE: Cell<Locale> = const { Cell::new(Locale::En) };
 }
@@ -180,6 +185,26 @@ mod tests {
         tables
     }
 
+    /// Every locale's full lookup beside its management table's own.
+    fn management_tables() -> [(&'static str, Lookup, Lookup); 10] {
+        [
+            (
+                "zh-CN",
+                zh_cn::lookup as Lookup,
+                zh_cn::management::lookup as Lookup,
+            ),
+            ("ja", ja::lookup, ja::management::lookup),
+            ("ko", ko::lookup, ko::management::lookup),
+            ("zh-Hant", zh_hant::lookup, zh_hant::management::lookup),
+            ("id", id::lookup, id::management::lookup),
+            ("de", de::lookup, de::management::lookup),
+            ("fr", fr::lookup, fr::management::lookup),
+            ("es", es::lookup, es::management::lookup),
+            ("pt-BR", pt_br::lookup, pt_br::management::lookup),
+            ("pt-PT", pt_pt::lookup, pt_pt::management::lookup),
+        ]
+    }
+
     /// Every string `/plugins` draws has a translation in every locale.
     #[test]
     fn every_locale_translates_the_plugins_strings() {
@@ -207,6 +232,25 @@ mod tests {
         for (code, lookup) in tables() {
             for key in crate::ui::management_panel::STRINGS {
                 assert!(lookup(key).is_some(), "{code} lacks {key:?}");
+            }
+        }
+    }
+
+    /// A management string resolves to its own table's text: an earlier
+    /// table must not shadow it, as chrome's noun "run" does. A key the
+    /// management table does not translate is shared with an earlier table
+    /// on purpose, such as "Skills" and "Esc close".
+    #[test]
+    fn every_management_string_resolves_to_its_management_translation() {
+        for (code, lookup, management) in management_tables() {
+            for key in crate::ui::management_panel::STRINGS {
+                if let Some(own) = management(key) {
+                    assert_eq!(
+                        lookup(key),
+                        Some(own),
+                        "{code} resolves {key:?} away from its management table"
+                    );
+                }
             }
         }
     }

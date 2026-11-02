@@ -256,7 +256,7 @@ Session 值不持有状态。解析出的连接只存在于一次策略调用内
 
 `modelCallCount` 是策略发出的模型请求数，每个在发出时计数：它的分块、它自己的重试，以及共享失败策略的各次尝试（§5.2）。`durationMs` 在策略调用周围测量，所以它是一次摘要的耗时；策略层自身的本地工作不计。`modelUsage` 是策略各次回复报告的 `Usage` 之和——`promptTokens`、`completionTokens`、`totalTokens` 以及缓存读写的 token；`cost` 和 `currency` 不出现，没有发过请求的策略不报告它。`insufficientSpace` 恰好出现在总数——投影请求的大小，记录里报告为 `estimatedOutputTokens`——超过 `0.5 × B` 的已完成压缩上；超出的部分是总数减去 `0.5 × B`，`parts` 按从大到小列出覆盖这个差额的不可压缩部分，每项带它的 `count_tokens` 大小。部分名称为 `systemPrompt`、`tools`、`appendedMessages`、`keyedBaseline`、`pinnedInputs`、`digest` 和 `summary`；保留的尾部从不出现在其中（§5.3）。两个字段都是描述性的：没有任何后续决定读它们——触发点把已提交历史与最近一条开始事实的 `through` 比较，预算恢复把估算与 `B` 比较——所以它们是给读者看的内容（§9 规则 9）。
 
-每个走到策略的压缩都带上这段公共记录。验收失败的那个带上策略的记录、没有压缩后大小。策略内部失败的那个同样带着它，只是没有压缩后大小：失败也是携带诊断的结果（§4.2），所以 `modelCallCount`、`modelUsage` 和 `durationMs` 与完成时一样报告。只有从未构造出请求的手动压缩没有诊断。
+每个走到策略的压缩都带上这段公共记录。验收失败的那个带上策略的记录；只要候选请求已完成投影，就在 `estimatedOutputTokens` 中记录其大小。候选不被采用，`entriesReplaced` 保持零。候选没有减少输入，与候选虽变小但仍达到或超出模型窗口，分别报告。策略内部失败的那个同样带着记录，只是没有压缩后大小：失败也是携带诊断的结果（§4.2），所以 `modelCallCount`、`modelUsage` 和 `durationMs` 与完成时一样报告。只有从未构造出请求的手动压缩没有诊断。
 
 **客户端可见性。** SessionBroadcast 不加过滤地转发每个分支事件（[session_broadcast.rs](../../../../crates/dim-agent-capabilities/src/session_broadcast.rs)），但 Rpc 的 wire 过滤器——[tree_protocol.rs](../../../../crates/dim-app-server/src/tree_protocol.rs) 中的 `ProductEvent::new`——目前会丢掉 `context/compaction`。F1 经 `ProductEvent::new` 让协议 v3 连接能看到 `context/compact`、`context/compaction-start` 和 `context/compaction`，客户端由此可以从实时事件或历史中看到每一种状态。`context/budget` 和 `context/prepare` 仍然隐藏。展示摘要的客户端展示的是替换内容中属于策略的部分，由 `replacement_parts` 定位；没有这个字段时，整份替换内容就是策略的部分。
 
@@ -753,7 +753,7 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
 | 开始事实的触发值 | `trigger` 使用现有的 `CompactionTrigger`：`manual`、`threshold`、`provider_output_budget_exhausted`（§4.3 原写 `recovery`；§4.2 与验收 2 已用后者）。 |
 | 合法切点 | `CompactionInput` 另带 `cuts`：按顺序列出每个合法切点（`retain_from`、第一个保留条目、是否在 `retain_limit` 之内），由 ContextPolicy 按基于事件的有效性规则算出。候选为轮次开始、放置条目的事件，以及边界的最后一个事件（替换全部）。`CompactionInput::cut()` 返回限制内最晚的切点；限制内没有时，返回最晚的、仍保留内容的切点（预算恢复时可以是任意切点）。策略可以返回任意 `retain_from`，策略层仍会校验。 |
 | 采纳 | `compact_step` 在追加事实前校验策略结果，再采纳 Timeline 中间件处理后的已提交事实：投影、缩减检查和快照都使用已提交的 `retain_from`、`replacement` 与基线。已提交的切点无法投影时，本次准备失败，与此前已提交游标的行为一致。 |
-| 诊断 | 策略找不到切点（`skipped`）时省略 `retainFrom`；没有替换任何内容时省略 `estimatedOutputTokens`。 |
+| 诊断 | 策略找不到切点（`skipped`）时省略 `retainFrom`；无法投影出候选请求时省略 `estimatedOutputTokens`。 |
 | v1 | 生产代码中没有 v1 到原生的转换：冻结样本只按 v1 事件解码；`v1::EventRef` 对 `context/compact`、`context/compaction-start` 和变更后的 `context/compaction` 没有形式，因此 v1 连接不再收到压缩事实。旧的扁平诊断类型移入 v1 模块。 |
 | Loop 订阅 | Loop 订阅 `context/compact` 与 `context/compaction`；开始事实只在重建时折叠，用来区分运行中的步骤和待处理的命令。 |
 | 至多一条未完成指令 | 评审中维护者的决定：重复请求在交互边界去重。`AgentLoop::compact` 加入未完成的指令而不再写入新指令，压缩槽至多一条指令，另一条指令未完成时消费到的指令被跳过，等待方按自己的指令 id 匹配（§4.1、§5.4、验收 7）。这取代了此前的当前/待处理拆分，指令因此不会再与运行中的步骤交错。 |
