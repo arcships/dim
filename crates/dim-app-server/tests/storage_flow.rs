@@ -1095,6 +1095,58 @@ async fn stored_trace_drafts_do_not_persist_producer_ids() {
 /// row of its own holding its data's bytes, so the output deltas around it are
 /// not merged across it, and a restored Session, whose TimelineTree reads each
 /// branch's history once as it opens, decodes it unchanged.
+/// A compaction cut may name any event, including one the stream never reads:
+/// the stream and the snapshot resolve it by position, not by looking for its
+/// row among the flagged ones.
+#[tokio::test]
+async fn a_cut_on_an_unflagged_event_still_streams_and_saves_its_checkpoint() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("session", &SessionConfig::default())
+        .await
+        .unwrap();
+    for entry in [
+        record(1, EventKind::ContextCompact(ContextCompactData {})),
+        record(
+            2,
+            EventKind::ContextCompaction(completed("event-1", "short", 2)),
+        ),
+    ] {
+        append(&store, key("session", "main"), vec![entry])
+            .await
+            .unwrap();
+    }
+    let timeline = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("session", "main"),
+        vec![],
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        EventKind::ContextCompact(ContextCompactData {}).context_flags(),
+        (false, false)
+    );
+    let renderer = HistoryRenderer::default();
+    renderer.rendered_stream(&timeline, 2, 256).await.unwrap();
+    let checkpoint = renderer
+        .stream_checkpoint(&timeline, 2, "event-1", 256)
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            checkpoint.resume.branch_id.as_str(),
+            checkpoint.resume.sequence
+        ),
+        ("main", 1)
+    );
+    assert_eq!(checkpoint.state.retain_from, "event-1");
+    db.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn extension_events_store_the_switches_their_producer_sets() {
     let database = Database::new();
@@ -6482,7 +6534,11 @@ async fn policy_facts_keeps_a_queued_input_consumed_after_turn_start() {
         .policy_facts(&key("session", "main"), 4, "turn")
         .await
         .unwrap();
-    let ids: Vec<_> = facts.events.iter().map(|event| event.id.as_str()).collect();
+    let ids: Vec<_> = facts
+        .events
+        .iter()
+        .map(|fact| fact.event.id.as_str())
+        .collect();
     assert!(ids.contains(&"event-1"), "{ids:?}");
     assert!(ids.contains(&"event-2"), "{ids:?}");
     assert!(ids.contains(&"event-3"), "{ids:?}");
@@ -6564,12 +6620,12 @@ async fn policy_facts_selects_latest_completed_compaction_in_both_stores() {
     let sqlite_ids: Vec<_> = sqlite_facts
         .events
         .iter()
-        .map(|event| event.id.as_str())
+        .map(|fact| fact.event.id.as_str())
         .collect();
     let memory_ids: Vec<_> = memory_facts
         .events
         .iter()
-        .map(|event| event.id.as_str())
+        .map(|fact| fact.event.id.as_str())
         .collect();
     assert_eq!(sqlite_ids, memory_ids);
     assert_eq!(sqlite_ids, ["event-1"]);
@@ -6667,7 +6723,11 @@ async fn policy_facts_ranges_end_at_the_atomic_batch() {
         .policy_facts(&key("session", "main"), 7, "turn")
         .await
         .unwrap();
-    let ids: Vec<_> = facts.events.iter().map(|event| event.id.as_str()).collect();
+    let ids: Vec<_> = facts
+        .events
+        .iter()
+        .map(|fact| fact.event.id.as_str())
+        .collect();
     assert!(ids.contains(&"event-3"), "{ids:?}");
     assert!(ids.contains(&"event-4"), "{ids:?}");
     db.close().await.unwrap();

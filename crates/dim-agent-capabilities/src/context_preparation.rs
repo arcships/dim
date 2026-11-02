@@ -608,10 +608,19 @@ impl ContextPreparation {
         let Some(call) = last_call(facts, &usage.request_id) else {
             return Ok(None);
         };
-        if facts.events.iter().any(|event| {
-            event.sequence > call.sequence
+        let segments = self
+            .timeline
+            .segments(through)
+            .map_err(ContextOpError::Read)?;
+        let rank = |branch: &str| segments.iter().position(|(name, _)| name == branch);
+        let Some(call_rank) = rank(&call.position.branch_id) else {
+            return Ok(None);
+        };
+        let at = (Some(call_rank), call.position.sequence);
+        if facts.events.iter().any(|fact| {
+            (rank(&fact.position.branch_id), fact.position.sequence) > at
                 && matches!(
-                    &event.kind,
+                    &fact.event.kind,
                     dim_agent_types::EventKind::ContextConfigured(_)
                         | dim_agent_types::EventKind::PromptChanged(_)
                         | dim_agent_types::EventKind::ContextCompaction(
@@ -624,45 +633,68 @@ impl ContextPreparation {
         }) {
             return Ok(None);
         }
-        let branch = self.timeline.branch_id();
-        let mut events = Vec::new();
-        let mut cursor = call.sequence + 1;
-        while cursor <= through {
-            let page = self
-                .timeline
-                .stored_context_page_in(&branch, cursor - 1, 256, through)
-                .await
-                .map_err(ContextOpError::Read)?;
-            if page.is_empty() {
-                break;
-            }
-            let end = page.last().map_or(cursor, |event| event.sequence);
-            events.extend(page);
-            cursor = end + 1;
-        }
-        let mut supplied: Vec<Arc<dim_agent_types::AgentEvent>> = Vec::new();
-        for event in &events {
-            if let dim_agent_types::EventKind::InputConsumed(data) = &event.kind
-                && !events.iter().any(|seen| {
-                    seen.id == data.input_id
-                        && matches!(seen.kind, dim_agent_types::EventKind::InputMessage(_))
-                })
-                && !supplied.iter().any(|seen| seen.id == data.input_id)
-                && let Some(input) = self
+        let mut tail = Vec::new();
+        for (index, (branch, cut)) in segments.iter().enumerate().skip(call_rank) {
+            let mut cursor = if index == call_rank {
+                call.position.sequence + 1
+            } else {
+                1
+            };
+            let mut events = Vec::new();
+            while cursor <= *cut {
+                let page = self
                     .timeline
-                    .event_by_id(&data.input_id)
+                    .stored_context_page_in(branch, cursor - 1, 256, *cut)
                     .await
-                    .map_err(ContextOpError::Read)?
-            {
-                supplied.push(input);
+                    .map_err(ContextOpError::Read)?;
+                if page.is_empty() {
+                    break;
+                }
+                let end = page.last().map_or(cursor, |event| event.sequence);
+                events.extend(page);
+                cursor = end + 1;
+            }
+            if !events.is_empty() {
+                tail.push((branch.clone(), events));
             }
         }
-        supplied.sort_by_key(|event| event.sequence);
-        let mut all = supplied;
-        all.extend(events);
-        let history = crate::history::project_batch(&all, None, &branch)
-            .map_err(|error| ContextOpError::Model(HostError::failed(error)))?
-            .history;
+        let mut history = Vec::new();
+        let mut state = None;
+        for (branch, events) in &tail {
+            let mut supplied: Vec<Arc<dim_agent_types::AgentEvent>> = Vec::new();
+            for event in events {
+                if let dim_agent_types::EventKind::InputConsumed(data) = &event.kind
+                    && !events.iter().any(|seen| {
+                        seen.id == data.input_id
+                            && matches!(seen.kind, dim_agent_types::EventKind::InputMessage(_))
+                    })
+                    && !supplied.iter().any(|seen| seen.id == data.input_id)
+                {
+                    let input = if let Some(fact) = facts
+                        .events
+                        .iter()
+                        .find(|fact| fact.event.id == data.input_id)
+                    {
+                        Some(fact.event.clone())
+                    } else {
+                        self.timeline
+                            .event_by_id(&data.input_id)
+                            .await
+                            .map_err(ContextOpError::Read)?
+                    };
+                    if let Some(input) = input {
+                        supplied.push(input);
+                    }
+                }
+            }
+            supplied.sort_by_key(|event| event.sequence);
+            let mut all = supplied;
+            all.extend(events.iter().cloned());
+            let projected = crate::history::project_batch(&all, state.as_ref(), branch)
+                .map_err(|error| ContextOpError::Model(HostError::failed(error)))?;
+            history.extend(projected.history);
+            state = Some(projected.state);
+        }
         let messages = history
             .into_iter()
             .map(|entry| entry.message.clone())
@@ -992,7 +1024,7 @@ fn last_usage(facts: &PolicyFacts) -> Option<&dim_agent_types::ModelUsageData> {
         .events
         .iter()
         .rev()
-        .find_map(|event| match &event.kind {
+        .find_map(|fact| match &fact.event.kind {
             dim_agent_types::EventKind::ModelUsage(data) => Some(data),
             _ => None,
         })
@@ -1001,16 +1033,16 @@ fn last_usage(facts: &PolicyFacts) -> Option<&dim_agent_types::ModelUsageData> {
 fn last_call<'a>(
     facts: &'a PolicyFacts,
     request_id: &str,
-) -> Option<&'a std::sync::Arc<dim_agent_types::AgentEvent>> {
-    facts.events.iter().rev().find(|event| {
-        matches!(&event.kind, dim_agent_types::EventKind::ModelCall(data) if data.request_id == request_id)
+) -> Option<&'a dim_agent_runtime::PolicyEvent> {
+    facts.events.iter().rev().find(|fact| {
+        matches!(&fact.event.kind, dim_agent_types::EventKind::ModelCall(data) if data.request_id == request_id)
     })
 }
 
 fn canary_request(facts: &PolicyFacts) -> Option<Arc<ModelRequest>> {
     let usage = last_usage(facts)?;
     let call = last_call(facts, &usage.request_id)?;
-    match &call.kind {
+    match &call.event.kind {
         dim_agent_types::EventKind::ModelCall(data) => Some(data.request.clone()),
         _ => None,
     }

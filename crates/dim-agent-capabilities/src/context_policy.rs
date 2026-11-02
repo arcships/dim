@@ -409,7 +409,7 @@ impl ContextPolicy {
                 request.clone(),
             ),
         };
-        let mut events = facts.events.clone();
+        let mut events = facts.arcs();
         events.extend(reusable);
         Ok(View {
             request,
@@ -1063,7 +1063,7 @@ impl ContextPolicy {
                     .policy_facts(self.timeline.committed(), "")
                     .await
                     .map_err(|error| HostError::failed(error.to_string()))?;
-                self.estimate(&request, model.as_ref(), &facts.events)?
+                self.estimate(&request, model.as_ref(), &facts.arcs())?
                     .input
             }
         };

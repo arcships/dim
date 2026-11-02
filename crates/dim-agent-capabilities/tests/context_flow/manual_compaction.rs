@@ -462,6 +462,7 @@ fn counting_render(context: &ContextHistory) -> std::result::Result<Vec<HistoryE
 
 /// A checkpointed context read plus its caller's use renders once: the render
 /// that validates the checkpoint is the render the step keeps.
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_checkpointed_step_renders_its_context_once() {
     let store = Arc::new(CountContextReads::default());

@@ -160,18 +160,31 @@ impl HistoryRenderer {
             ));
         }
         let segments = timeline.segments(through)?;
+        let Some(cut) = timeline.event_position(retain_from).await? else {
+            return Err(AgentError::InvalidInput(
+                "Compaction cut is outside the branch chain".into(),
+            ));
+        };
+        let boundary = segments
+            .iter()
+            .position(|(branch, _)| *branch == cut.branch_id)
+            .ok_or_else(|| {
+                AgentError::fault(
+                    "History",
+                    "Compaction cut is outside the branch chain".to_owned(),
+                )
+            })?;
         let checkpoint = timeline
             .checkpoint(through, self.checkpoint_interpreter, self.decode_checkpoint)
             .await?;
-        let cut_event = timeline.event_by_id(retain_from).await?;
-        let local = segments.len().saturating_sub(1);
-        let (first, start, mut state) = match (&checkpoint, &cut_event) {
-            (Some(checkpoint), Some(event)) => {
+        let (first, start, mut state) = match &checkpoint {
+            Some(checkpoint) => {
                 let index = segments
                     .iter()
                     .position(|(branch, _)| *branch == checkpoint.resume.branch_id);
                 let before = index.is_some_and(|index| {
-                    index < local || (index == local && checkpoint.resume.sequence < event.sequence)
+                    index < boundary
+                        || (index == boundary && checkpoint.resume.sequence < cut.sequence)
                 });
                 match index {
                     Some(index) if before => (
@@ -182,42 +195,38 @@ impl HistoryRenderer {
                     _ => (0, 1, None),
                 }
             }
-            _ => (0, 1, None),
+            None => (0, 1, None),
         };
-        for (index, (branch, cut)) in segments.iter().enumerate().skip(first) {
+        for (index, (branch, end)) in segments.iter().enumerate().skip(first) {
             let mut cursor = if index == first { start } else { 1 };
-            while cursor <= *cut {
+            while cursor <= *end {
                 let events = timeline
-                    .stored_context_page_in(branch, cursor.saturating_sub(1), batch as usize, *cut)
+                    .stored_context_page_in(branch, cursor.saturating_sub(1), batch as usize, *end)
                     .await?;
                 if events.is_empty() {
                     break;
                 }
-                let end = events.last().map_or(cursor, |event| event.sequence);
-                if let Some(index) = events.iter().position(|event| event.id == retain_from) {
-                    let positions = planned(&events, branch);
-                    let mut state = replay(&events[..index], state.as_ref(), &positions[..index])
-                        .map_err(|error| AgentError::fault("History", error))?
-                        .state;
-                    state.retain_from = retain_from.to_owned();
-                    return Ok(ProjectionCheckpoint {
-                        resume: TimelinePosition {
-                            branch_id: branch.clone(),
-                            sequence: events[index].sequence,
-                        },
-                        state,
-                    });
-                }
+                let fold = events
+                    .iter()
+                    .position(|event| branch == &cut.branch_id && event.sequence >= cut.sequence)
+                    .unwrap_or(events.len());
+                let positions = planned(&events[..fold], branch);
                 state = Some(
-                    project_batch(&events, state.as_ref(), branch)
+                    replay(&events[..fold], state.as_ref(), &positions)
                         .map_err(|error| AgentError::fault("History", error))?
                         .state,
                 );
-                cursor = end + 1;
+                if fold < events.len() {
+                    let mut state = state.unwrap_or_default();
+                    state.retain_from = retain_from.to_owned();
+                    return Ok(ProjectionCheckpoint { resume: cut, state });
+                }
+                let last = events.last().map_or(cursor, |event| event.sequence);
+                cursor = last + 1;
             }
         }
         Err(AgentError::InvalidInput(
-            "Compaction cut is outside the branch".into(),
+            "Compaction cut is outside the branch chain".into(),
         ))
     }
 
@@ -316,31 +325,18 @@ impl HistoryRenderer {
                     && let EventKind::ContextCompaction(data) = &event.kind
                     && let ContextCompactionResult::Completed { retain_from, .. } = &data.outcome
                 {
-                    let rank =
-                        |branch: &str| policy_order.branches.iter().position(|name| name == branch);
-                    let cut = policy_order
-                        .events
-                        .iter()
-                        .find(|event| event.id == retain_from.as_str())
-                        .map(|event| (rank(&event.branch_id), event.sequence))
-                        .or_else(|| {
-                            history
-                                .iter()
-                                .find(|entry| entry.event_id == retain_from.as_str())
-                                .map(|entry| {
-                                    (rank(&entry.position.branch_id), entry.position.sequence)
-                                })
-                        })
-                        .ok_or_else(|| {
-                            AgentError::fault(
-                                "History",
-                                "Compaction cut is outside the stream".to_owned(),
-                            )
-                        })?;
+                    let cut = timeline.event_position(retain_from).await?.ok_or_else(|| {
+                        AgentError::fault(
+                            "History",
+                            "Compaction cut is outside the stream".to_owned(),
+                        )
+                    })?;
+                    let rank = |branch: &str| segments.iter().position(|(name, _)| name == branch);
+                    let at = (rank(&cut.branch_id), cut.sequence);
                     let kept = history
                         .iter()
                         .position(|entry| {
-                            (rank(&entry.position.branch_id), entry.position.sequence) >= cut
+                            (rank(&entry.position.branch_id), entry.position.sequence) >= at
                         })
                         .unwrap_or(history.len());
                     history.drain(..kept);

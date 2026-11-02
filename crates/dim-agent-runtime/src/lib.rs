@@ -32,7 +32,7 @@ pub use names::Names;
 pub use parts::{Feature, Generator, Mount, PartRegistry, PartScope};
 pub use registrations::{Registration, Registrations};
 pub use rutis::host::BoxFuture;
-pub use timeline_store::{PolicyFacts, PolicyOrder, PolicyOrderEvent, PolicyWindow};
+pub use timeline_store::{PolicyEvent, PolicyFacts, PolicyOrder, PolicyOrderEvent, PolicyWindow};
 
 pub use scope::*;
 pub use state::*;

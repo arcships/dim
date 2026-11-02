@@ -957,6 +957,7 @@ impl ModelDriver for UsageModel {
         })
     }
 }
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provider_usage_baseline_counts_only_new_history_after_a_matching_request() {
     tokio::time::timeout(Duration::from_secs(10), async {

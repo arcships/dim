@@ -12,13 +12,13 @@ use crate::protocol::SessionOrigin;
 use dim_agent_capabilities::host::SessionFilesHost;
 use dim_agent_runtime::Names;
 use dim_agent_runtime::{
-    AgentError, BoxFuture, BranchRecord, PolicyFacts, PolicyOrder, PolicyOrderEvent, PolicyWindow,
-    PublishCallback, Result, SessionConfig, StoredBranch, StoredEvent, TimelineKey, TimelineStore,
-    TimelineTrace, panic_message,
+    AgentError, BoxFuture, BranchRecord, PolicyEvent, PolicyFacts, PolicyOrder, PolicyOrderEvent,
+    PolicyWindow, PublishCallback, Result, SessionConfig, StoredBranch, StoredEvent, TimelineKey,
+    TimelineStore, TimelineTrace, panic_message,
 };
 use dim_agent_types::{
     AgentEvent, BranchCreateAt, ContextCompactionResult, EventKind, ModelRequest, RecoverySnapshot,
-    SessionForkedData,
+    SessionForkedData, TimelinePosition,
     grant::{GrantKind, GrantMode, SessionGrant},
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -3142,8 +3142,14 @@ impl TimelineStore for SqliteTimelineStore {
                 .await?
                 .into_iter()
                 .flatten()
-                .map(|record| record.event)
-                .filter(|event| event.sequence <= through && is_policy_event(event))
+                .filter(|record| record.event.sequence <= through && is_policy_event(&record.event))
+                .map(|record| PolicyEvent {
+                    position: TimelinePosition {
+                        branch_id: key.branch_id.clone(),
+                        sequence: record.event.sequence,
+                    },
+                    event: record.event,
+                })
                 .collect();
             Ok(PolicyFacts { through, events })
         })

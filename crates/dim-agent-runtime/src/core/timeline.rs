@@ -806,6 +806,30 @@ impl Timeline {
         self.0.store.event_by_id(&self.0.key, id).await
     }
 
+    /// The position of one event anywhere in the branch chain.
+    #[service(skip)]
+    pub async fn event_position(&self, id: &str) -> Result<Option<TimelinePosition>> {
+        for (branch, _) in self
+            .0
+            .ancestors
+            .iter()
+            .cloned()
+            .chain(std::iter::once((self.0.key.branch_id.clone(), 0)))
+        {
+            let key = TimelineKey {
+                session_id: self.0.key.session_id.clone(),
+                branch_id: branch.clone(),
+            };
+            if let Some(event) = self.0.store.event_by_id(&key, id).await? {
+                return Ok(Some(TimelinePosition {
+                    branch_id: branch,
+                    sequence: event.sequence,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
     /// One filtered page of `branch`, which may be an ancestor.
     #[service(skip)]
     pub async fn stored_context_page_in(

@@ -1,5 +1,7 @@
 use crate::{BoxFuture, BranchRecord, Result, SessionConfig, TimelineTrace};
-use dim_agent_types::{AgentEvent, ContextCompactionResult, EventKind, RecoverySnapshot};
+use dim_agent_types::{
+    AgentEvent, ContextCompactionResult, EventKind, RecoverySnapshot, TimelinePosition,
+};
 use std::{ops::RangeInclusive, sync::Arc};
 
 /// Storage address of one Timeline inside an Agent's shared store.
@@ -13,7 +15,14 @@ pub struct TimelineKey {
 #[derive(Debug, Clone, Default)]
 pub struct PolicyFacts {
     pub through: u64,
-    pub events: Vec<Arc<AgentEvent>>,
+    /// Root first, then sequence: the branch chain's order.
+    pub events: Vec<PolicyEvent>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PolicyEvent {
+    pub position: TimelinePosition,
+    pub event: Arc<AgentEvent>,
 }
 
 impl PolicyFacts {
@@ -24,10 +33,18 @@ impl PolicyFacts {
             events: context
                 .events
                 .iter()
-                .filter(|event| policy_event(event))
-                .cloned()
+                .zip(context.positions.iter())
+                .filter(|(event, _)| policy_event(event))
+                .map(|(event, position)| PolicyEvent {
+                    position: position.clone(),
+                    event: event.clone(),
+                })
                 .collect(),
         }
+    }
+    /// The facts' events without their positions.
+    pub fn arcs(&self) -> Vec<Arc<AgentEvent>> {
+        self.events.iter().map(|fact| fact.event.clone()).collect()
     }
 }
 
@@ -418,7 +435,13 @@ pub trait TimelineStore: Send + Sync + 'static {
                             })
                             || consumed.iter().any(|id| record.event.id == *id)
                     })
-                    .map(|record| record.event)
+                    .map(|record| PolicyEvent {
+                        position: TimelinePosition {
+                            branch_id: key.branch_id.clone(),
+                            sequence: record.event.sequence,
+                        },
+                        event: record.event,
+                    })
                     .collect(),
             })
         })
