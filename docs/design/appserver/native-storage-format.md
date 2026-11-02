@@ -194,7 +194,7 @@ Cannot open native store <path>.
 | `timeline_events.body` | `TEXT` | 否 | — | 下节定义的 `Row` JSON，包含事件、引用、before 轨迹及批次终点 |
 | `timeline_events.event_id` | `TEXT` | 是 | 隐式 `NULL` | 普通行保存原事件 ID；输出合并行为空；恢复时核对正文 |
 | `timeline_events.context_render` | `INTEGER` | 否 | `0` | 0/1 冗余开关：渲染器是否消费这行（v31，[#708](#708-v31-格式决定)） |
-| `timeline_events.context_state` | `INTEGER` | 否 | `0` | 0/1 冗余开关：checkpoint 折叠是否消费这行（v31，[#708](#708-v31-格式决定)） |
+| `timeline_events.context_state` | `INTEGER` | 否 | `0` | 0/1 冗余开关：checkpoint 折叠是否消费这行（v31，[#708](#708-v31-格式决定)）；扩展事件取事件上的 `context_state` |
 | `timeline_snapshots.session_id` | `TEXT` | 否 | — | 联合主键第 1 列；与 branch_id、sequence 一起外键到事件锚点 |
 | `timeline_snapshots.branch_id` | `TEXT` | 否 | — | 联合主键第 2 列 |
 | `timeline_snapshots.sequence` | `INTEGER` | 否 | — | 联合主键第 4 列，`CHECK(sequence > 0)`；已提交 completed 压缩事件序号 |
@@ -564,8 +564,9 @@ ProjectionCheckpoint = {
 
 [#708](https://github.com/arcships/dim/issues/708) 的读取边界：`timeline_events` 增加两个 0/1 冗余开关，从 v30 原地升级。
 
-- **新增结构**：`context_render`、`context_state` 两列（`INTEGER NOT NULL DEFAULT 0`）和 `timeline_events_render`、`timeline_events_state`、`timeline_events_positions` 三个部分索引。事件正文、wire 结构和快照结构不变。
-- **填充**：两列是事件 key 的纯函数（`dim_agent_types::context_flags`）。升级事务内加列后按 `CONTEXT_RENDER_KEYS`、`CONTEXT_STATE_KEYS` 回填；提交前库不可用，提交后整体生效。写入、fork、离线导入同步填这两列。
+- **新增结构**：`context_render`、`context_state` 两列（`INTEGER NOT NULL DEFAULT 0`）和 `timeline_events_render`、`timeline_events_state`、`timeline_events_positions` 三个部分索引。
+- **填充**：核心事件的两列是其 key 的纯函数（`dim_agent_types::context_flags`）；扩展事件的两列取事件自己的值——信封多两个可选布尔 `context_render`、`context_state`，缺省 false，为 false 时不写，由写事件的插件给出，核心不推算。CORE 事件的 wire 结构不变，扩展事件的 payload 契约不变。
+- **回填**：升级事务内加列后按 `CONTEXT_RENDER_KEYS`、`CONTEXT_STATE_KEYS` 填核心事件；已有的扩展事件没有这两个字段，保持 0。提交前库不可用，提交后整体生效。写入、fork、离线导入都按事件自己的值填这两列。
 - **升级**：空库创建 v31；精确匹配且标记相符的 v30 库在现有启动准入事务内执行上述步骤，重建标记表并写入 31。更早的受支持格式先执行已有步骤。失败回滚，旧业务行不变。
 - **单向**：v30 守护进程拒绝 v31 库；不降级。准入仍要求精确 SQL 结构及对应标记。
 - **验证**：`storage_flow.rs` 的 v13 升级测试抽查 `step/text` 为 `(1,1)`、`model/call` 为 `(0,0)`；`context_flow` 的流式与全量渲染差分测试核对开关筛选后的条目和状态逐条一致。

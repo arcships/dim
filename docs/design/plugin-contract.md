@@ -149,6 +149,9 @@ rejects an opaque append in a core domain (`RESERVED_DOMAINS` in `dim-agent-type
 `approval`, `permission`, `exec`, `turn`, `prompt`, `context`, `model`, `step`, `branch`,
 `collaboration`, `session`). An extension writes its own domain, such as its plugin id; `type` and
 `name` are non-empty and contain no `/` or `*` ([ADR 001](../adr/001-harness-foundation.md#events-and-ownership-issue-2)).
+An extension event may also carry `context_render` and `context_state`, two optional booleans the
+writer sets; the core neither derives nor overrides them. They select the row for the context read;
+who consumes it is still open.
 
 The rules for writing facts are not restated here. Commands to owners, handover, `before`, batches,
 the model-context path and which facts belong in the Timeline are

@@ -37,6 +37,9 @@ Rules: [design rules](../architecture/rust-agent/principles.md)、[ADR 002](../a
 | `context_render` | 0/1 | 这行参与渲染 | 写事件的一方按渲染逻辑给出 |
 | `context_state` | 0/1 | 这行参与 checkpoint 状态计算 | 同上 |
 
+核心事件的两个值由 `context_flags(key)` 给出。扩展事件的两个值由写它的插件在事件上给出
+（`context_render`、`context_state` 两个可选布尔，缺省 false），核心不推算、不覆盖；消费方尚未定义。
+
 规则：
 
 1. **冗余而非真相**：真相仍是渲染/checkpoint 逻辑对事件的处理；开关只是为了不解析正文就能筛行。
@@ -75,13 +78,15 @@ Rules: [design rules](../architecture/rust-agent/principles.md)、[ADR 002](../a
 ## 6. 迁移与兼容
 
 - 只加两列和三个部分索引：`WHERE context_render = 1`、`WHERE context_state = 1`，以及策略定位用的 `timeline_events_positions`（`WHERE kind IN ('turn/start', 'context/compaction-start', 'context/compaction')`）。事件正文不变，冻结 fixture 不变。
-- **填充**：两列是事件 key 的纯函数（`context_flags`）。升级在同一事务里加列并按 key 集合回填；事务提交前库不可用，提交后整体生效，不存在部分迁移的状态。不复制正文，不按会话暂存。
+- **填充**：核心事件的两列是其 key 的纯函数（`context_flags`）；扩展事件的两列取事件自己的值，
+  已有的扩展事件没有这两个字段，回填为 0。升级在同一事务里加列并按 key 集合回填；事务提交前库不可用，提交后整体生效，不存在部分迁移的状态。不复制正文，不按会话暂存。
 - **等价性**：开关集合就是渲染/折叠实际消费的集合，由差分测试证明——同一前缀上，过滤读取的 entries 与状态必须与不过滤的结果逐条一致。
 - 旧版本守护进程按精确 SQL 结构拒绝新库。
 
 ## 7. 规则检查
 
-本设计不新增事件、不新增上下文入口，渲染与状态仍走现有机制。
+本设计不新增事件、不新增上下文入口，渲染与状态仍走现有机制。扩展事件的两个开关由生产者写，
+当前没有消费者：读出来不产生消息，也不改 checkpoint 状态。
 
 - **§4 rule 4**：满足。开关随事实提交，可从 Timeline 重建。
 - **§4 rule 5**：满足。开关与事件同批提交，不新增批次。

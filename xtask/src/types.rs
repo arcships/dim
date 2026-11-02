@@ -21,7 +21,7 @@ fn declarations(root: &Path) -> Result<String> {
         )
         .declared(
             "dim_agent_types::EventDraft",
-            "{ type: string; name: string; data: unknown; tags?: string[] }",
+            "{ type: string; name: string; data: unknown; tags?: string[]; context_render?: boolean; context_state?: boolean }",
         )
         .declared(
             "dim_agent_runtime::TimelineIdentity",

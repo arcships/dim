@@ -230,12 +230,12 @@ export interface Dispatcher {
 
 export interface TraceStep {
   handler: string
-  result?: { type: string; name: string; data: unknown; tags?: string[] } | null
+  result?: { type: string; name: string; data: unknown; tags?: string[]; context_render?: boolean; context_state?: boolean } | null
 }
 
 export interface TimelineTrace {
   event_id: string
-  original: { type: string; name: string; data: unknown; tags?: string[] }
+  original: { type: string; name: string; data: unknown; tags?: string[]; context_render?: boolean; context_state?: boolean }
   steps: TraceStep[]
 }
 
@@ -247,7 +247,7 @@ export interface Timeline {
    * other languages write through it like native capabilities (ADR 001).
    * @throws {AgentErrorThrown}
    */
-  append(original: { type: string; name: string; data: unknown; tags?: string[] }): Promise<import('./plugin.js').BranchEvent>
+  append(original: { type: string; name: string; data: unknown; tags?: string[]; context_render?: boolean; context_state?: boolean }): Promise<import('./plugin.js').BranchEvent>
   /**
    * Published sequence: what is durable and visible to the Dispatcher
    * and to readers outside the branch.

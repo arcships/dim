@@ -1096,6 +1096,53 @@ async fn stored_trace_drafts_do_not_persist_producer_ids() {
 /// not merged across it, and a restored Session, whose TimelineTree reads each
 /// branch's history once as it opens, decodes it unchanged.
 #[tokio::test]
+async fn extension_events_store_the_switches_their_producer_sets() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("session", &SessionConfig::default())
+        .await
+        .unwrap();
+    let marked = ExtensionEvent::new("myplugin", "state", serde_json::json!({"open": true}))
+        .unwrap()
+        .with_context_flags(true, true);
+    let unmarked = ExtensionEvent::new("myplugin", "noise", serde_json::json!({})).unwrap();
+    append(
+        &store,
+        key("session", "main"),
+        vec![
+            record(1, EventKind::Extension(marked)),
+            record(2, EventKind::Extension(unmarked)),
+        ],
+    )
+    .await
+    .unwrap();
+    let read = store
+        .read_context(&key("session", "main"), 1, 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        read.iter()
+            .map(|record| record.event.sequence)
+            .collect::<Vec<_>>(),
+        vec![1],
+        "only the event the producer marked is read for the context"
+    );
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    let rows = connection
+        .prepare("SELECT context_render, context_state FROM timeline_events ORDER BY sequence")
+        .unwrap()
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(rows, vec![(1, 1), (0, 0)]);
+}
+
+#[tokio::test]
 async fn extension_events_keep_their_own_rows_and_restore_unchanged() {
     let database = Database::new();
     let db = SqliteStorage::open(database.0.clone()).unwrap();

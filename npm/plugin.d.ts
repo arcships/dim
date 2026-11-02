@@ -140,6 +140,9 @@ export interface AgentEvent {
   type: string;
   name: string;
   data: JsonObject;
+  /** Extension events only: the producer's reading switches. */
+  context_render?: boolean;
+  context_state?: boolean;
 }
 /** Native C5 bridge events retain number | bigint sequences. */
 export type BranchEvent = Omit<AgentEvent, 'sequence' | 'data'> & {

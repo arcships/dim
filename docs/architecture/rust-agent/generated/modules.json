@@ -1488,7 +1488,8 @@
       "parent": "dim_agent_types::events",
       "file": "crates/dim-agent-types/src/events.rs",
       "unexpandedMacros": [
-        "assert_eq"
+        "assert_eq",
+        "serde_json::json"
       ]
     },
     {
@@ -15065,6 +15066,7 @@
       "from": "dim_agent_types::events::context_flag_tests",
       "to": "dim_agent_types::events",
       "references": [
+        "path super::ExtensionEvent::new",
         "use super::context_flags"
       ]
     },

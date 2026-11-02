@@ -1833,6 +1833,7 @@ impl SessionStore {
                         &key,
                         at + 1,
                         forked.event.kind.key(),
+                        forked.event.kind.context_flags(),
                         &Row::Event {
                             record: Box::new(wire),
                         },
@@ -2156,7 +2157,14 @@ fn write_batch(
                     started_at: record.event.create_at,
                     records: vec![wire],
                 };
-                let bytes = insert_event(connection, &batch.key, sequence, kind, &row)?;
+                let bytes = insert_event(
+                    connection,
+                    &batch.key,
+                    sequence,
+                    kind,
+                    record.event.kind.context_flags(),
+                    &row,
+                )?;
                 outputs.insert(
                     batch.key.branch_id.clone(),
                     OutputRow {
@@ -2174,6 +2182,7 @@ fn write_batch(
                     &batch.key,
                     sequence,
                     kind,
+                    record.event.kind.context_flags(),
                     &Row::Event {
                         record: Box::new(wire),
                     },
@@ -2226,6 +2235,7 @@ fn insert_event(
     key: &TimelineKey,
     sequence: u64,
     kind: &str,
+    flags: (bool, bool),
     row: &Row,
 ) -> Result<usize> {
     let body = serde_json::to_string(row).map_err(error)?;
@@ -2242,8 +2252,8 @@ fn insert_event(
                 Row::Event { record } => record.event["id"].as_str(),
                 Row::Output { .. } => None,
             },
-            i64::from(dim_agent_types::context_flags(kind).0),
-            i64::from(dim_agent_types::context_flags(kind).1),
+            i64::from(flags.0),
+            i64::from(flags.1),
         ])
         .map_err(error)?;
     Ok(body.len())

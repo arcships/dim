@@ -746,7 +746,10 @@ match the generator and compiles this example from the actual packed archive.
 ### Extension events
 
 A branch part writes events of its own domain with `timeline.append({type, name, data})`, the
-branch Timeline native capabilities use, and gets the committed event back with its sequence.
+branch Timeline native capabilities use, and gets the committed event back with its sequence. The
+call may also carry `context_render` and `context_state`: two optional booleans that mark the row
+for the context read. They are yours to set; the core does not derive them. A marked row is read
+when context is prepared, and the core currently produces no message or state from it.
 Pick a domain of your own, such as your plugin id; `type` and `name` must be non-empty without `/`
 or `*`. The payload is your contract: the host stores and returns it unchanged and never validates
 it.

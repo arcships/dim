@@ -94,6 +94,33 @@ fn reserved_domains_decode_only_through_their_typed_contract() {
 }
 
 #[test]
+fn an_extension_event_carries_its_own_reading_switches() {
+    let marked = event(json!({
+        "type":"goal","name":"set","data":{},
+        "context_render":true,"context_state":true
+    }));
+    let decoded: AgentEvent = serde_json::from_value(marked.clone()).unwrap();
+    let EventKind::Extension(extension) = &decoded.kind else {
+        panic!("{decoded:?}");
+    };
+    assert_eq!(
+        (extension.context_render(), extension.context_state()),
+        (true, true)
+    );
+    assert_eq!(decoded.kind.context_flags(), (true, true));
+    assert_eq!(serde_json::to_value(&decoded).unwrap(), marked);
+
+    let plain = event(json!({"type":"goal","name":"set","data":{}}));
+    let decoded: AgentEvent = serde_json::from_value(plain.clone()).unwrap();
+    assert_eq!(decoded.kind.context_flags(), (false, false));
+    assert_eq!(serde_json::to_value(&decoded).unwrap(), plain);
+
+    let order = r#"{"id":"e1","sequence":7,"create_at":1,"context_state":true,"type":"goal","name":"set","data":{}}"#;
+    let decoded: AgentEvent = serde_json::from_str(order).unwrap();
+    assert_eq!(decoded.kind.context_flags(), (false, true));
+}
+
+#[test]
 fn the_envelope_needs_a_plain_domain_and_name() {
     for (domain, name) in [
         ("", "x"),
