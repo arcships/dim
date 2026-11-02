@@ -26,6 +26,22 @@ omitted from the menu. The menu only lists slash commands: the view actions for
 picking an earlier message and scrolling to the top or bottom are also omitted;
 `Tab`, `Home` and `End` retain their bindings.
 
+The menu fits the available terminal columns and rows in both modes. Command
+names take priority over descriptions and shortcut labels; a shortcut that
+would crowd out its command name is omitted from the row, without changing
+the binding. On short screens, fewer commands are shown and the window follows
+the selection. Scrollback keeps the command draft visible above the menu and
+omits the menu title and footer when necessary; fullscreen keeps its palette
+query and selection above the composer. Category grouping and ordering do not
+change with terminal size.
+
+When the usual history reservation leaves fewer than eight live rows,
+live controls take priority: either renderer can use up to eight rows for
+the live region, limited by terminal height. Fullscreen reduces the composer's empty padding
+and the palette's query padding before overlapping either input. The draft
+editor scrolls within the remaining rows and keeps its caret visible without
+discarding text. Otherwise the usual history reservation is retained.
+
 ```text
 Commands
   app     /exit        exit
@@ -36,6 +52,18 @@ Commands
 / + Enter          -> /exit (completion only)
 /exit + Enter      -> exit
 /permissions + Enter -> permission controls
+```
+
+```text
+Fullscreen, 8 rows             Scrollback, 8 rows
++- Command Palette -------+
+| >                       |   +- input -----------------+
+| app /exit               |   | > /                     |
++-------------------------+   +-------------------------+
+                              +-------------------------+
++- input -----------------+   | app /exit               |
+|                         |   +-------------------------+
++-------------------------+   AGENT
 ```
 
 ## Run keys and queue
@@ -545,7 +573,8 @@ view rather than to one entry — reload, and add, which creates one — so it n
 the hint lists it whether or not an entry is selected, and Ctrl+R reads the area again after a
 failed read. The first two areas use toggle, reload and edit. The Scheduler area introduces
 add, remove, run and inspect, and the client's kinds are what it writes; a later area adds its
-adapter and the methods its kinds call, and names here the kinds it adds.
+adapter and the methods its kinds call, and names here the kinds it adds. The hint names the run
+kind's operation where an area names one: MCP's hint reads `Ctrl+T test`.
 
 A hint the bottom border cannot hold is drawn as rows above a plain bottom border, wrapped at
 the ` · ` separators; a part wider than a row wraps across rows by display width, so no key or
@@ -564,9 +593,14 @@ stays visible at any width, the remove confirmation included.
   every key but Enter cancels without changing anything. Enter sends the area's delete method
   and reads the area again. `dimcode <area> remove ID` deletes without a prompt, because the id
   typed on the command line is the intent, as `dimcode logout PROVIDER` signs out without one.
-- run sends the area's named operation for the selected entry, reads the area again, and its
-  message reports what the owner answered — a run the owner skipped says why. An operation that
-  takes parameters is the area's own step, not this kind's.
+- run sends the area's named operation for the selected entry. A run whose answer changes what the
+  area lists — the Scheduler's run now joins the job's history and its last outcome — reads the
+  area again and shows the answer as the message; a run the owner skipped says why. A run whose
+  answer changes nothing the area lists shows the answer as a detail, as inspect does, and does
+  not read the area again: MCP's test is the tools a temporary connection found. Whether the owner
+  declares the method mutating does not decide this, since `mcp.test` runs the entry and still
+  writes nothing the area lists. An operation that takes parameters is the area's own step, not
+  this kind's.
 - inspect asks the adapter for the entry's detail: a title and lines, not a view. The panel
   shows it in place of the list, the arrows and PageUp/PageDown scroll it, Esc returns to the
   list with the selection kept, and a second Esc closes the panel. `dimcode <area> inspect ID`
@@ -740,6 +774,92 @@ the run was skipped — and Tab shows the job's history in place of the list:
 history ID` prints the lines the detail shows, and `dimcode scheduled remove ID` deletes without
 the panel's confirmation.
 
+### The MCP area
+
+MCP adds no kind. Its entries are the effective catalog — the servers merged by id with project
+last — grouped `user`, `project` and `plugin` in that order, and by id within a group; an entry's
+label and id are its id. The panel and `dimcode mcp` use toggle, edit, reload, add, remove, run
+and inspect over `mcp.catalog`, `mcp.configuration`, `mcp.update`, `mcp.save`, `mcp.remove`,
+`mcp.set_enabled`, `mcp.test` and `mcp.inspect` ([MCP management](appserver/mcp-management.md)).
+
+A toggle writes the source's enablement at the revision `mcp.catalog` reported immediately before
+it, so the compare-and-swap covers that window; it acts on one id, so a change elsewhere in the
+source is not overwritten. A user entry's enablement is a local record, and a project entry starts
+disabled because only the toggle or `dimcode mcp enable|disable` turns it on. An edit reads
+`mcp.configuration` for the entry's revision and its document, then writes `mcp.update`, never
+`mcp.save`: a save takes a complete configuration, and the read withholds the secrets, so a save
+round trip would erase them.
+
+The edit document is the patch: an omitted field keeps its stored value, a present value replaces
+it, and `env` or `headers` changes only the keys it names. The seed names the command and working
+directory, empty `env` and `headers`, and a configured OAuth's reported fields; it never names a
+stored argument, environment value, header value, bearer token or URL, because those are withheld
+or wholesale-replaced. The document carries no transport, since the stored entry's transport is
+fixed. A stdio patch names the command, the working directory and the environment keys it
+changes:
+
+```json
+{"command": "npx", "cwd": "/work", "env": {"TOKEN": "value"}}
+```
+
+A remote patch does the same for the endpoint and the headers. Both are withheld from the seed,
+so a patch that changes them supplies them: an omitted `url` or `headers` key keeps what is
+stored.
+
+```json
+{"url": "https://mcp.example.com/mcp", "headers": {"X-Key": "value"}}
+```
+
+Add writes `mcp.save` with the catalog's source revision — `userRevision`, or `projectRevision`
+for a source of `project` — and refuses an id the catalog already lists, since a save would replace
+that entry. The create document is one entry with its source and the definition `mcp.save` takes:
+
+```json
+{
+  "id": "example",
+  "source": "user",
+  "configuration": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-everything"],
+    "env": {},
+    "enabled": false
+  }
+}
+```
+
+The two remote forms replace `configuration` with
+`{"type": "http", "url": "https://mcp.example.com/mcp", "headers": {}, "enabled": false}` or the
+same with `"type": "sse"`, and add `"auth": {"type": "bearer", "token": "…"}` for a static
+credential or `"oauth": {"clientId": "…", "callbackPort": 1456, "scopes": "…",
+"authServerMetadataUrl": "…"}` for OAuth; the two exclude each other, and OAuth also excludes an
+`Authorization` header. The editor has no transport picker, so the document shows stdio and the
+document says how to switch.
+
+A run is `mcp.test`: it executes or contacts the stored entry once and writes nothing the area
+lists, so its answer is a detail — the tools a temporary connection found, titled `Tools of <id>` —
+and the area is not read again. An inspect is `mcp.inspect`: the effective entry and its Session
+connections, titled `MCP entry <id>`, and never written back. A plugin entry's configuration has no
+revision, so it offers no write, carries `read-only` and says its plugin owns it; test and inspect
+still serve it. Sign-in, sign-out, the callback and disconnect are a state machine or a
+connection-only action, not a kind, so they stay line commands and verbs.
+
+```text
+╭─ MCP ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   user                                                                                                               │
+│ › docs      enabled                                                                                                  │
+│     user · stdio · signed in                                                                                         │
+│     Executable: npx                                                                                                  │
+│     Stored arguments (hidden): 2                                                                                     │
+│     Working directory: —                                                                                             │
+│     Environment names: DOCS_TOKEN                                                                                    │
+│   project                                                                                                            │
+│   metrics   disabled                                                                                                 │
+│   plugin                                                                                                             │
+│   notes     enabled  read-only                                                                                       │
+╰───── Enter toggle · Ctrl+E edit · Ctrl+R reload · Ctrl+N add · Ctrl+X remove · Ctrl+T test · Tab inspect · Esc close ─╯
+```
+
 ### The command rules area
 
 Command rules (#819): the Permissions panel's Command rules row and `dimcode permissions
@@ -860,6 +980,18 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode scheduled run ID` | Run one job now over `schedule.run_now` and report what the owner returned, or why it skipped the run. |
 | `dimcode scheduled history ID` | Print one job's recent runs over `schedule.history`, newest first, with each run's state and time. |
 | `/scheduled`, `/schedule` | Open the Scheduler panel ([management surfaces](#management-surfaces)): a job per entry with its schedule, next window and last outcome, and the toggle, edit, add, remove, run and inspect kinds; the Scheduler's verb for inspect is history. Jobs are the host's, not the Session's or workspace's; only a new job's default `cwd` comes from the Session. |
+| `dimcode mcp list` | List the effective catalog over `mcp.catalog` ([The MCP area](#the-mcp-area)): each entry's id, source, transport, enablement and authorization, then each source application's errors. |
+| `dimcode mcp add PATH` | Create an entry from the panel's create document, `-` for stdin, over `mcp.save` with the source revision `mcp.catalog` reported; an id the catalog already lists is refused. |
+| `dimcode mcp edit ID` | Open the entry's `mcp.update` patch in `$VISUAL`, `$EDITOR` or the platform default, and write it at the revision `mcp.configuration` reported; unchanged text writes nothing. |
+| `dimcode mcp set ID PATH` | The same write from a file, or from stdin for `-`, with the revision read immediately before the write. |
+| `dimcode mcp remove ID` | Delete one entry over `mcp.remove` at its source revision, without a prompt: the id on the command line is the intent. |
+| `dimcode mcp test ID` | Run the stored entry once over `mcp.test` and print the tools the temporary connection found; nothing is saved. |
+| `dimcode mcp inspect ID` | Print the effective configuration and the Session's connections over `mcp.inspect`, without contacting the server. |
+| `dimcode mcp disconnect ID` | Close the entry's live connections over `mcp.disconnect`; it writes no configuration, and the entry reconnects on next use. |
+| `dimcode mcp login\|logout\|enable\|disable ID` | Keep their behavior: browser or device sign-in, sign-out, and the enablement both `/mcp` clients share. |
+| `/mcp` | Open the MCP panel of the Session's workspace ([management surfaces](#management-surfaces)): an entry per server, grouped `user`, `project` and `plugin`, with the toggle, edit, add, remove, test and inspect kinds. |
+| `/mcp list\|login\|callback\|logout\|disconnect\|enable\|disable` | The line commands, unchanged: `list` prints the catalog and the Session's server states, `disconnect` closes one entry's live connections, and the rest sign in, complete a callback, sign out or toggle. |
+
 | `dimcode permissions list` | List the user's command rules over `permission.rules`: each rule's decision, match and command, then the columns and what deny means. |
 | `dimcode permissions add PATH` | Add one rule from `PATH`, or from stdin for `-`, over `permission.rules` and `permission.set_rules`: an equal rule writes nothing; a conflict re-reads and retries, at most three attempts. |
 | `dimcode permissions remove RULE` | Remove the rule named by `RULE`, which is the whole rule as one quoted `'DECISION MATCH COMMAND'` argument, over `permission.rules` and `permission.set_rules` at the revision just read; a rule that is gone, or a raced write, writes nothing and exits 1. |
@@ -1216,6 +1348,24 @@ provider editor or Session deletion/fork. `dimcode export` is the
 [Timeline export](appserver/timeline-export.md) (ADR 005 D3): every final model
 request is a `model/call` line in it; the request snapshot filters of the
 feature list are not implemented.
+
+## Update dialog
+
+The existing update dialog uses the same actions in fullscreen and scrollback.
+It fits the available columns and rows: long version, command and error text
+wraps, with Up/Down scrolling when needed. The title and action row remain
+visible. If the actions do not fit on one row, show the focused action and its
+index; Left/Right and Tab/BackTab still cycle all actions, Enter confirms and
+Esc closes. Wide terminals retain the existing confirmation layout when it fits.
+
+```text
++- Update available --------+
+| Version 0.12.0-alpha.124  |
+| is available (you have   |
+| > Later 3/3              |
+| Left/Right Tab Enter Esc |
++----------- Up/Down 1-2/7-+
+```
 
 ## Terminal interaction
 
@@ -1899,6 +2049,10 @@ is typed (replacing the chosen label in a single choice) and clearing it uncheck
 while editing, Esc leaves the editor keeping the text and Enter keeps it and moves to
 the next question. Outside the editor, Esc declines the whole call. Display sanitization
 never changes the labels sent to the owner. The composer's draft is preserved.
+
+When the question tabs do not fit on one row, show only the current tab's label
+and its position, including the Confirm tab. Tab/Shift+Tab and Left/Right keep
+their existing switching behavior; tab labels cannot overflow the prompt border.
 
 A pending question does not block commands. While its free-text answer is not being
 edited, `/`, Ctrl+O and Ctrl+P open the command palette over it, drawn where that mode

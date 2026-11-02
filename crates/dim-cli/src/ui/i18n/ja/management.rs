@@ -108,6 +108,89 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "This workspace's hook settings changed since they were read; nothing was written." => {
             "このワークスペースのフック設定は読み取り後に変更されています。今回は何も書き込んでいません。"
         }
+        "MCP" => "MCP",
+        "MCP servers" => "MCP サーバー",
+        "Ctrl+T test" => "Ctrl+T テスト",
+        "sign-in required" => "サインインが必要",
+        "signed in" => "サインイン済み",
+        "sign-in expired" => "サインインの期限切れ",
+        "missing scopes: {scopes}" => "不足スコープ: {scopes}",
+        "Executable: {command}" => "実行ファイル: {command}",
+        "Stored arguments (hidden): {count}" => "保存済み引数（非表示）: {count}",
+        "Working directory: {cwd}" => "作業ディレクトリ: {cwd}",
+        "Environment names: {names}" => "環境変数名: {names}",
+        "Endpoint: {endpoint}" => "エンドポイント: {endpoint}",
+        "Header names: {names}" => "ヘッダー名: {names}",
+        "Bearer token: {state}" => "Bearer トークン: {state}",
+        "OAuth: configured (client ID {id})" => "OAuth: 設定済み (クライアント ID {id})",
+        "OAuth: configured" => "OAuth: 設定済み",
+        "OAuth: not configured" => "OAuth: 未設定",
+        "Metadata URL: {state}" => "メタデータ URL: {state}",
+        "configured" => "設定済み",
+        "Owned by a plugin; change it through Plugins." => {
+            "プラグインが所有しています。プラグインから変更してください。"
+        }
+        "MCP entry {id}" => "MCP エントリ {id}",
+        "Connection {number} · {status}" => "接続 {number} · {status}",
+        "Tools have not been discovered." => "ツールはまだ検出されていません。",
+        "No live session connections." => "有効なセッション接続はありません。",
+        "Tools of {id}" => "{id} のツール",
+        "The server exposes no tools." => "サーバーはツールを公開していません。",
+        "The add document needs an id." => "追加ドキュメントには id が必要です。",
+        "The add document needs a source of user or project." => {
+            "追加ドキュメントの source は user または project です。"
+        }
+        "The add document needs a configuration object." => {
+            "追加ドキュメントには configuration オブジェクトが必要です。"
+        }
+        "{id} is already in mcp list; remove it first or choose another id." => {
+            "{id} はすでに mcp list にあります。先に削除するか別の id を選んでください。"
+        }
+        "{id} is already in mcp list; choose another id, or change it through its plugin." => {
+            "{id} はすでに mcp list にあります。別の id を選ぶか、プラグイン経由で変更してください。"
+        }
+        "This entry's settings changed since they were read; nothing was written." => {
+            "このエントリの設定は読み取り後に変更されました。何も書き込まれていません。"
+        }
+        "The MCP entry changed since it was read; nothing was written." => {
+            "MCP エントリは読み取り後に変更されました。何も書き込まれていません。"
+        }
+        "The MCP entries changed since they were read; nothing was written." => {
+            "MCP エントリは読み取り後に変更されました。何も書き込まれていません。"
+        }
+        "The MCP entry changed since it was read; nothing was removed." => {
+            "MCP エントリは読み取り後に変更されました。何も削除されていません。"
+        }
+        "MCP's documents belong to one entry; this save names none." => {
+            "MCP のドキュメントはエントリごとです。この保存はエントリを指定していません。"
+        }
+        "No MCP server has that id." => "その id の MCP サーバーはありません。",
+        "This workspace has no project MCP source." => {
+            "このワークスペースにはプロジェクトの MCP ソースがありません。"
+        }
+        "Enabled {id} ({source})." => "{id}（{source}）を有効にしました。",
+        "Disabled {id} ({source})." => "{id}（{source}）を無効にしました。",
+        "It runs this workspace's .mcp.json entry, including later edits to it, in active and new sessions." => {
+            "アクティブなセッションと新しいセッションで、このワークスペースの .mcp.json エントリ（以降の編集を含む）を実行します。"
+        }
+        "{id} is not in mcp list; withdrew any stored enablement of it in this workspace." => {
+            "{id} は mcp list にありません。このワークスペースに保存された有効化を取り消しました。"
+        }
+        "The MCP catalog could not be read ({error}); withdrew this workspace's enablement of {id}. A user entry with this ID is unchanged." => {
+            "MCP カタログを読み取れませんでした（{error}）。このワークスペースでの {id} の有効化を取り消しました。同じ ID のユーザーエントリは変更されていません。"
+        }
+        "MCP configuration: {error}" => "MCP 設定: {error}",
+        "The server rejected the stored credential; sign in again with mcp login." => {
+            "サーバーが保存済みの資格情報を拒否しました。mcp login で再度サインインしてください。"
+        }
+        "The server requires additional scopes: {scopes}." => {
+            "サーバーは追加のスコープを要求しています: {scopes}。"
+        }
+        "The server requires authorization; run mcp login ID." => {
+            "サーバーは認証が必要です。mcp login ID を実行してください。"
+        }
+        "The probe ended: {status}." => "プローブが終了しました: {status}。",
+
         "Command rules" => "コマンドルール",
         "user" => "ユーザー",
         "Matches only this command." => "このコマンドだけに一致します。",

@@ -18,6 +18,15 @@ scrollback 与 fullscreen TUI 都按分类分组，分类及分类内的命令�
 菜单不列出运行、排队和 steer 的按键，它们只由按键触发。菜单只列出斜杠命令：选择较早消息、滚动到顶部或底部等视图操作也不列出；
 `Tab`、`Home`、`End` 保留各自的绑定。
 
+两种模式下，菜单都适应终端可用的列数和行数。命令名优先于描述和快捷键标签；快捷键标签会挤占
+命令名时省略标签，但不改变按键绑定。短屏幕少显示一些命令，可见窗口跟随选择。
+Scrollback 保留菜单上方的命令草稿，必要时省略菜单标题和页脚；fullscreen 保留输入框上方的
+命令面板查询行和选中项。分类分组和排序不随终端尺寸变化。
+
+当通常的历史保留空间使实时区域不足八行时，实时控件优先：两种渲染器都可为实时区域使用最多八行，
+但不超过终端高度。Fullscreen 先减少输入框的空白内边距和命令面板查询行的留白，避免两个输入区域
+重叠。草稿编辑器在剩余行数内滚动，保持光标可见且不丢弃文字。其他情况下保留通常的历史空间。
+
 ```text
 Commands
   app     /exit        exit
@@ -28,6 +37,18 @@ Commands
 / + Enter          -> /exit (completion only)
 /exit + Enter      -> exit
 /permissions + Enter -> permission controls
+```
+
+```text
+Fullscreen, 8 rows             Scrollback, 8 rows
++- Command Palette -------+
+| >                       |   +- input -----------------+
+| app /exit               |   | > /                     |
++-------------------------+   +-------------------------+
+                              +-------------------------+
++- input -----------------+   | app /exit               |
+|                         |   +-------------------------+
++-------------------------+   AGENT
 ```
 
 ## 运行按键与排队
@@ -447,13 +468,13 @@ Reset 要求确认后把两个布尔值都写为 false。Off 可保留无效的�
 | run | Ctrl+T | 该领域的具名操作，例如 test、run now 或 start。 |
 | inspect | Tab | 只读的详情视图。 |
 
-Esc 关闭面板。动作键要么是 Ctrl 组合键，要么是筛选从不接收的键，因为筛选会接收所有普通字母。作用于领域本身的种类属于领域的视图而不是某个条目——reload，以及新建条目的 add——所以它不需要选中项：无论是否选中条目，键提示都会列出它，读取失败后 Ctrl+R 会重新读取该领域。最先承载的两个领域用 toggle、reload 和 edit。Scheduler 领域引入 add、remove、run 和 inspect，客户端写的就是这四个种类；之后的领域只需加入自己的适配器以及它所用种类调用的方法，并在此表中写下它新增的种类。
+Esc 关闭面板。动作键要么是 Ctrl 组合键，要么是筛选从不接收的键，因为筛选会接收所有普通字母。作用于领域本身的种类属于领域的视图而不是某个条目——reload，以及新建条目的 add——所以它不需要选中项：无论是否选中条目，键提示都会列出它，读取失败后 Ctrl+R 会重新读取该领域。最先承载的两个领域用 toggle、reload 和 edit。Scheduler 领域引入 add、remove、run 和 inspect，客户端写的就是这四个种类；之后的领域只需加入自己的适配器以及它所用种类调用的方法，并在此表中写下它新增的种类。如果领域给 run 种类起了名字，键提示就用那个名字：MCP 的提示是 `Ctrl+T test`。
 
 底部边框放不下的键提示会画在朴素底边之上的几行里，在 ` · ` 分隔处换行；比一行还宽的部件按显示宽度换行，任何键和动作都不会被截掉。这些行与页脚一样从列表中占用空间，所以任何宽度下每个键都可见，删除确认也不例外。
 
 - add 用外部编辑器打开适配器给出的新建条目文档——所有者的创建形态，填入示例值——并以领域的创建方法写入。文档没有改动时不写入；被拒绝时保留草稿，下次 Ctrl+N 重新打开用户的文本，与 Ctrl+E 对编辑的处理一致。冲突时也同样保留：新建没有 revision，丢弃草稿与过期 revision 的关联只是编辑的规则，不适用于新建。把条目追加到已读到列表的 add（如命令规则领域）改为重试冲突，因为追加不覆盖任何内容。`dimcode <area> add PATH`（`-` 表示 stdin）是不经编辑器的同一次写入。
 - remove 先在键提示里询问：键提示变为 `Remove <label>? Enter confirm · Esc cancel`，除 Enter 外的任何键都取消且什么都不改。Enter 调用领域的删除方法，然后重新读取该领域。`dimcode <area> remove ID` 不提问直接删除，因为命令行上输入的 id 就是意图，与 `dimcode logout PROVIDER` 不提问直接退出一致。
-- run 对所选条目调用领域的具名操作，然后重新读取该领域，消息报告所有者的答复——所有者跳过的一次运行会说明原因。需要参数的操作是该领域自己的步骤，不属于这个种类。
+- run 对所选条目调用领域的具名操作。答复会改变领域所列内容的运行——Scheduler 的立即运行会加入任务的历史和上次结果——重新读取该领域，并把答复作为消息报告；所有者跳过的一次运行会说明原因。答复不改变领域所列内容的运行，像 inspect 一样把答复作为详情显示，且不重新读取该领域：MCP 的 test 是临时连接发现的工具列表。所有者是否把该方法声明为 mutating 并不决定这一点，因为 `mcp.test` 会运行该条目，却仍然不写入领域所列的任何内容。需要参数的操作是该领域自己的步骤，不属于这个种类。
 - inspect 向适配器索取条目的详情：一个标题和若干行，而不是一个视图。面板用它替代列表显示，方向键与 PageUp/PageDown 滚动，Esc 带着保留的选中项回到列表，再按一次 Esc 关闭面板。`dimcode <area> inspect ID` 打印同样的行，或该领域自己的动词，如果它的设计另有规定。
 
 文档按条目分存的领域，其条目为它自己的文档提供 edit：此时 Save 动作携带该条目的 id，适配器保留它与草稿一起读到的 revision。
@@ -545,6 +566,60 @@ Ctrl+T 立即运行所选任务，并报告所有者的答复——`launching`�
 
 `dimcode scheduled add PATH`（`-` 表示 stdin）是不经编辑器的创建；`dimcode scheduled history ID` 打印详情显示的那些行；`dimcode scheduled remove ID` 不经面板的确认直接删除。
 
+### MCP 领域
+
+MCP 不新增种类。它的条目就是生效目录——各服务器按 id 合并，project 最后——按 `user`、`project`、`plugin` 的顺序分组，组内按 id 排列；条目的标签和 id 都是服务器的 id。面板与 `dimcode mcp` 用 toggle、edit、reload、add、remove、run 与 inspect，经 `mcp.catalog`、`mcp.configuration`、`mcp.update`、`mcp.save`、`mcp.remove`、`mcp.set_enabled`、`mcp.test` 与 `mcp.inspect`（[MCP 管理](appserver/mcp-management.md)）。
+
+toggle 以 `mcp.catalog` 紧接写入前报告的 revision 写该来源的启用状态，所以比较并交换只覆盖这段窗口；它只作用于一个 id，不会覆盖来源中别处的改动。用户条目的启用状态是本地记录；项目条目一开始是停用的，只有 toggle 或 `dimcode mcp enable|disable` 会启用它。edit 先读 `mcp.configuration` 取得条目的 revision 与文档，再写 `mcp.update`，绝不用 `mcp.save`：save 接收完整配置，而读取会隐藏机密，往返一次就会把它们抹掉。
+
+编辑文档就是 patch：省略的字段保留已存值，给出的值替换它，`env` 或 `headers` 只改动它点名的键。种子文档给出命令与工作目录、空的 `env` 与 `headers`，以及已配置 OAuth 的已报告字段；它从不给出已存参数、环境变量值、请求头值、Bearer 令牌或 URL，因为这些要么被隐藏，要么整体替换。文档不带 transport，因为已存条目的 transport 是固定的。stdio 的 patch 点名命令、工作目录与要改动的环境变量键：
+
+```json
+{"command": "npx", "cwd": "/work", "env": {"TOKEN": "value"}}
+```
+
+远端条目的 patch 对 endpoint 与请求头做同样的事。两者都不在种子里，所以想改它们的 patch 必须把值给出；省略 `url` 或某个 `headers` 键就保留已存值。
+
+```json
+{"url": "https://mcp.example.com/mcp", "headers": {"X-Key": "value"}}
+```
+
+add 用目录的来源 revision——`userRevision`，来源为 `project` 时用 `projectRevision`——写 `mcp.save`，并拒绝目录中已列出的 id，因为一次 save 会替换该条目。新建文档就是一个条目，带它的来源与 `mcp.save` 接收的定义：
+
+```json
+{
+  "id": "example",
+  "source": "user",
+  "configuration": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-everything"],
+    "env": {},
+    "enabled": false
+  }
+}
+```
+
+两种远程形态把 `configuration` 换成 `{"type": "http", "url": "https://mcp.example.com/mcp", "headers": {}, "enabled": false}`，或把 `"type"` 换成 `"sse"` 的同样内容；静态凭据再加 `"auth": {"type": "bearer", "token": "…"}`，OAuth 则加 `"oauth": {"clientId": "…", "callbackPort": 1456, "scopes": "…", "authServerMetadataUrl": "…"}`；两者互斥，OAuth 还与 `Authorization` 请求头互斥。编辑器没有 transport 选择器，所以文档展示 stdio，并说明如何切换。
+
+run 就是 `mcp.test`：它执行或联系已存条目一次，不写入领域所列的任何内容，所以答复是详情——临时连接发现的工具，标题为 `Tools of <id>`——且不再重新读取领域。inspect 就是 `mcp.inspect`：生效条目与它的会话连接，标题为 `MCP entry <id>`，从不写回。插件条目的配置没有 revision，所以不提供写动作，状态带 `read-only`，详情说明它属于某个插件；test 与 inspect 仍然可用。登录、退出、回调与断开连接是状态机或只作用于连接的动作，不是种类，所以它们仍是行命令与动词。
+
+```text
+╭─ MCP ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   user                                                                                                               │
+│ › docs      enabled                                                                                                  │
+│     user · stdio · signed in                                                                                         │
+│     Executable: npx                                                                                                  │
+│     Stored arguments (hidden): 2                                                                                     │
+│     Working directory: —                                                                                             │
+│     Environment names: DOCS_TOKEN                                                                                    │
+│   project                                                                                                            │
+│   metrics   disabled                                                                                                 │
+│   plugin                                                                                                             │
+│   notes     enabled  read-only                                                                                       │
+╰───── Enter toggle · Ctrl+E edit · Ctrl+R reload · Ctrl+N add · Ctrl+X remove · Ctrl+T test · Tab inspect · Esc close ─╯
+```
+
 ### 命令规则领域
 
 命令规则（#819）：Permissions 面板的 Command rules 行，以及 `dimcode permissions list|add PATH|remove RULE`，管理用户的命令规则（[权限控制](#权限控制)、[命令规则](appserver/permission-command-rules.md)）。所有者用 `permission.rules` 报告规则列表及其 Settings revision，并用 `permission.set_rules` 按该 revision 替换整个列表；revision 过期即为 `permission_rules_conflict`。
@@ -623,6 +698,18 @@ Remove 先在提示栏询问，`Remove deny prefix git push? Enter confirm · Es
 | `dimcode scheduled run ID` | 经 `schedule.run_now` 立即运行单个任务，并报告 owner 返回的内容，或它跳过这次运行的原因。 |
 | `dimcode scheduled history ID` | 经 `schedule.history` 打印单个任务最近的运行，最新的在前，并带上每次运行的状态与时间。 |
 | `/scheduled`、`/schedule` | 打开 Scheduler 面板（[管理界面](#管理界面)）：每个任务一个条目，带计划、下一次窗口与上次结果，以及 toggle、edit、add、remove、run 与 inspect 种类；Scheduler 中 inspect 的动词是 history。任务属于主机，不属于会话或工作区；只有新建任务的默认 `cwd` 来自会话。 |
+| `dimcode mcp list` | 经 `mcp.catalog` 列出生效目录（[MCP 领域](#mcp-领域)）：每个条目的 id、来源、transport、启用状态与授权，然后是各来源 application 的错误。 |
+| `dimcode mcp add PATH` | 以面板的新建文档（`-` 表示 stdin）经 `mcp.save` 创建条目，带 `mcp.catalog` 报告的来源 revision；目录已列出的 id 会被拒绝。 |
+| `dimcode mcp edit ID` | 用 `$VISUAL`、`$EDITOR` 或平台默认编辑器打开条目的 `mcp.update` patch，并以 `mcp.configuration` 报告的 revision 写回；内容没有变化时不写入。 |
+| `dimcode mcp set ID PATH` | 从 `PATH`（`-` 表示 stdin）读取 patch 并写入，用写入前紧邻读到的 revision。 |
+| `dimcode mcp remove ID` | 不经确认，经 `mcp.remove` 以来源 revision 删除单个条目：命令行上的 id 就是意图。 |
+| `dimcode mcp test ID` | 经 `mcp.test` 运行已存条目一次，并打印临时连接发现的工具；不保存任何内容。 |
+| `dimcode mcp inspect ID` | 经 `mcp.inspect` 打印生效配置与会话连接，不联系服务器。 |
+| `dimcode mcp disconnect ID` | 经 `mcp.disconnect` 关闭条目的活动连接；它不写配置，条目下次使用时重新连接。 |
+| `dimcode mcp login\|logout\|enable\|disable ID` | 行为保持不变：浏览器或设备签到、退出，以及两个 `/mcp` 客户端共用的启用/停用。 |
+| `/mcp` | 打开会话所在工作区的 MCP 面板（[管理界面](#管理界面)）：每个服务器一个条目，按 `user`、`project`、`plugin` 分组，带 toggle、edit、add、remove、test 与 inspect 种类。 |
+| `/mcp list\|login\|callback\|logout\|disconnect\|enable\|disable` | 行命令，行为不变：`list` 打印目录与会话的服务器状态，`disconnect` 关闭一个条目的活动连接，其余用于签到、完成回调、退出或切换启用状态。 |
+
 | `dimcode permissions list` | 经 `permission.rules` 列出用户的命令规则：每条规则的决定、匹配方式与命令，然后是列说明以及 deny 的含义。 |
 | `dimcode permissions add PATH` | 从 `PATH`（`-` 表示 stdin）添加一条规则，经 `permission.rules` 与 `permission.set_rules` 写入：规则已存在时不写入；冲突时重新读取并重试，最多三次。 |
 | `dimcode permissions remove RULE` | 删除 `RULE` 指定的规则，`RULE` 是作为单个加引号参数的整条 `'DECISION MATCH COMMAND'`；经刚读到的 revision 调用 `permission.rules` 与 `permission.set_rules`；规则已不存在或写入被并发修改时什么都不写，退出码 1。 |
@@ -833,6 +920,22 @@ current directory; ~ is literal; use an absolute path for another base`。调用
 
 其他目标命令依赖各自的功能。F6 不实现全屏界面、常驻 RPC/ACP 服务、验证/修复循环、Provider
 编辑器或 Session 删除/分叉。`dimcode export` 是 [Timeline 导出](appserver/timeline-export.md)（ADR 005 D3）：每个最终模型请求都是其中的一行 `model/call`；功能清单中请求快照的过滤项尚未实现。
+
+## 更新对话框
+
+既有更新对话框在 fullscreen 和 scrollback 中使用相同的动作，并适应可用列数和行数。
+较长的版本、命令和错误文字换行，必要时用 Up/Down 滚动。标题和动作行保持可见。
+所有动作无法放在同一行时，只显示当前聚焦的动作及其序号；Left/Right 和 Tab/BackTab 仍循环
+切换所有动作，Enter 确认，Esc 关闭。宽屏空间足够时保留既有确认布局。
+
+```text
++- Update available --------+
+| Version 0.12.0-alpha.124  |
+| is available (you have   |
+| > Later 3/3              |
+| Left/Right Tab Enter Esc |
++----------- Up/Down 1-2/7-+
+```
 
 ## 终端交互
 
@@ -1339,6 +1442,9 @@ Session 地址及 `(branchId,requestId,callId)`。
 Confirm 上 Enter 提交。只有 allowCustom 为 true 时显示自定义输入，并与所选标签分开提交。
 自定义行输入非空文字即勾选（单选时替换已选标签），清空则取消；编辑中 Esc 保留文字退出编辑，
 Enter 保留并进入下一题。编辑之外 Esc 拒答整次调用。显示脱敏不改变提交给 owner 的原始标签，composer 草稿保持。
+
+问题标签页无法放在同一行时，只显示当前标签及其位置，包括 Confirm 页。
+Tab/Shift+Tab 和 Left/Right 保留既有切换行为；标签文字不能超出提示框边界。
 
 挂起的问题不阻塞命令。其自定义回答未进入编辑时，`/`、Ctrl+O 和 Ctrl+P 在问题之上打开命令面板，
 画在该模式画命令面板的位置，问题保留标签页、选择和已输入的回答。命令面板开启命令输入状态，

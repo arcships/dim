@@ -92,6 +92,83 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "This workspace's hook settings changed since they were read; nothing was written." => {
             "此工作區的鉤子設定已在讀取後變更；這次沒有寫入。"
         }
+        "MCP" => "MCP",
+        "MCP servers" => "MCP 伺服器",
+        "Ctrl+T test" => "Ctrl+T 測試",
+        "sign-in required" => "需要登入",
+        "signed in" => "已登入",
+        "sign-in expired" => "登入已過期",
+        "missing scopes: {scopes}" => "缺少權限範圍：{scopes}",
+        "Executable: {command}" => "可執行檔：{command}",
+        "Stored arguments (hidden): {count}" => "已存參數（隱藏）：{count}",
+        "Working directory: {cwd}" => "工作目錄：{cwd}",
+        "Environment names: {names}" => "環境變數名稱：{names}",
+        "Endpoint: {endpoint}" => "端點：{endpoint}",
+        "Header names: {names}" => "標頭名稱：{names}",
+        "Bearer token: {state}" => "Bearer 權杖：{state}",
+        "OAuth: configured (client ID {id})" => "OAuth：已設定（用戶端 ID {id}）",
+        "OAuth: configured" => "OAuth：已設定",
+        "OAuth: not configured" => "OAuth：未設定",
+        "Metadata URL: {state}" => "中繼資料 URL：{state}",
+        "configured" => "已設定",
+        "Owned by a plugin; change it through Plugins." => "由外掛提供；請透過外掛修改。",
+        "MCP entry {id}" => "MCP 項目 {id}",
+        "Connection {number} · {status}" => "連線 {number} · {status}",
+        "Tools have not been discovered." => "尚未發現工具。",
+        "No live session connections." => "沒有作用中的工作階段連線。",
+        "Tools of {id}" => "{id} 的工具",
+        "The server exposes no tools." => "伺服器未提供工具。",
+        "The add document needs an id." => "新建文件需要一個 id。",
+        "The add document needs a source of user or project." => {
+            "新建文件的來源必須是 user 或 project。"
+        }
+        "The add document needs a configuration object." => "新建文件需要一個 configuration 物件。",
+        "{id} is already in mcp list; remove it first or choose another id." => {
+            "{id} 已在 mcp list 中；請先移除它或換一個 id。"
+        }
+        "{id} is already in mcp list; choose another id, or change it through its plugin." => {
+            "{id} 已在 mcp list 中；請換一個 id，或透過其外掛變更。"
+        }
+        "This entry's settings changed since they were read; nothing was written." => {
+            "此項目的設定已在讀取後變更；本次沒有寫入。"
+        }
+        "The MCP entry changed since it was read; nothing was written." => {
+            "MCP 項目已在讀取後變更；本次沒有寫入。"
+        }
+        "The MCP entries changed since they were read; nothing was written." => {
+            "MCP 項目已在讀取後變更；本次沒有寫入。"
+        }
+        "The MCP entry changed since it was read; nothing was removed." => {
+            "MCP 項目已在讀取後變更；本次沒有移除。"
+        }
+        "MCP's documents belong to one entry; this save names none." => {
+            "MCP 的文件屬於單一項目；本次儲存沒有指定項目。"
+        }
+        "No MCP server has that id." => "沒有該 id 的 MCP 伺服器。",
+        "This workspace has no project MCP source." => "此工作區沒有專案層級 MCP 來源。",
+        "Enabled {id} ({source})." => "已啟用 {id}（{source}）。",
+        "Disabled {id} ({source})." => "已停用 {id}（{source}）。",
+        "It runs this workspace's .mcp.json entry, including later edits to it, in active and new sessions." => {
+            "它會在目前和新的工作階段中執行此工作區的 .mcp.json 項目，包括之後對該檔案的修改。"
+        }
+        "{id} is not in mcp list; withdrew any stored enablement of it in this workspace." => {
+            "{id} 不在 mcp list 中；已撤銷它在此工作區儲存的啟用狀態。"
+        }
+        "The MCP catalog could not be read ({error}); withdrew this workspace's enablement of {id}. A user entry with this ID is unchanged." => {
+            "無法讀取 MCP 目錄（{error}）；已撤銷此工作區對 {id} 的啟用。同 ID 的使用者項目不受影響。"
+        }
+        "MCP configuration: {error}" => "MCP 設定：{error}",
+        "The server rejected the stored credential; sign in again with mcp login." => {
+            "伺服器拒絕了已儲存的憑證；請用 mcp login 重新登入。"
+        }
+        "The server requires additional scopes: {scopes}." => {
+            "伺服器需要額外的權限範圍：{scopes}。"
+        }
+        "The server requires authorization; run mcp login ID." => {
+            "伺服器需要授權；請執行 mcp login ID。"
+        }
+        "The probe ended: {status}." => "探測結束：{status}。",
+
         "Command rules" => "命令規則",
         "user" => "使用者",
         "Matches only this command." => "僅符合此命令。",

@@ -104,6 +104,87 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "This workspace's hook settings changed since they were read; nothing was written." => {
             "Pengaturan hook ruang kerja ini berubah sejak dibaca; tidak ada yang ditulis."
         }
+        "MCP" => "MCP",
+        "MCP servers" => "server MCP",
+        "Ctrl+T test" => "Ctrl+T uji",
+        "sign-in required" => "perlu masuk",
+        "signed in" => "sudah masuk",
+        "sign-in expired" => "sesi masuk kedaluwarsa",
+        "missing scopes: {scopes}" => "cakupan yang kurang: {scopes}",
+        "Executable: {command}" => "Eksekutabel: {command}",
+        "Stored arguments (hidden): {count}" => "Argumen tersimpan (disembunyikan): {count}",
+        "Working directory: {cwd}" => "Direktori kerja: {cwd}",
+        "Environment names: {names}" => "Nama lingkungan: {names}",
+        "Endpoint: {endpoint}" => "Endpoint: {endpoint}",
+        "Header names: {names}" => "Nama header: {names}",
+        "Bearer token: {state}" => "Token Bearer: {state}",
+        "OAuth: configured (client ID {id})" => "OAuth: terkonfigurasi (ID klien {id})",
+        "OAuth: configured" => "OAuth: terkonfigurasi",
+        "OAuth: not configured" => "OAuth: tidak terkonfigurasi",
+        "Metadata URL: {state}" => "URL metadata: {state}",
+        "configured" => "terkonfigurasi",
+        "Owned by a plugin; change it through Plugins." => "Dimiliki plugin; ubah melalui Plugin.",
+        "MCP entry {id}" => "Entri MCP {id}",
+        "Connection {number} · {status}" => "Koneksi {number} · {status}",
+        "Tools have not been discovered." => "Alat belum ditemukan.",
+        "No live session connections." => "Tidak ada koneksi sesi aktif.",
+        "Tools of {id}" => "Alat {id}",
+        "The server exposes no tools." => "Server tidak menyediakan alat.",
+        "The add document needs an id." => "Dokumen tambah memerlukan id.",
+        "The add document needs a source of user or project." => {
+            "Sumber dokumen tambah harus user atau project."
+        }
+        "The add document needs a configuration object." => {
+            "Dokumen tambah memerlukan objek configuration."
+        }
+        "{id} is already in mcp list; remove it first or choose another id." => {
+            "{id} sudah ada di mcp list; hapus dulu atau pilih id lain."
+        }
+        "{id} is already in mcp list; choose another id, or change it through its plugin." => {
+            "{id} sudah ada di mcp list; pilih id lain atau ubah lewat plugin-nya."
+        }
+        "This entry's settings changed since they were read; nothing was written." => {
+            "Pengaturan entri ini berubah sejak dibaca; tidak ada yang ditulis."
+        }
+        "The MCP entry changed since it was read; nothing was written." => {
+            "Entri MCP berubah sejak dibaca; tidak ada yang ditulis."
+        }
+        "The MCP entries changed since they were read; nothing was written." => {
+            "Entri MCP berubah sejak dibaca; tidak ada yang ditulis."
+        }
+        "The MCP entry changed since it was read; nothing was removed." => {
+            "Entri MCP berubah sejak dibaca; tidak ada yang dihapus."
+        }
+        "MCP's documents belong to one entry; this save names none." => {
+            "Dokumen MCP milik satu entri; penyimpanan ini tidak menyebut entri."
+        }
+        "No MCP server has that id." => "Tidak ada server MCP dengan id itu.",
+        "This workspace has no project MCP source." => {
+            "Workspace ini tidak memiliki sumber MCP proyek."
+        }
+        "Enabled {id} ({source})." => "{id} ({source}) diaktifkan.",
+        "Disabled {id} ({source})." => "{id} ({source}) dinonaktifkan.",
+        "It runs this workspace's .mcp.json entry, including later edits to it, in active and new sessions." => {
+            "Ini menjalankan entri .mcp.json workspace ini, termasuk perubahan berikutnya, di sesi aktif dan baru."
+        }
+        "{id} is not in mcp list; withdrew any stored enablement of it in this workspace." => {
+            "{id} tidak ada di mcp list; pengaktifan tersimpan untuknya di workspace ini ditarik."
+        }
+        "The MCP catalog could not be read ({error}); withdrew this workspace's enablement of {id}. A user entry with this ID is unchanged." => {
+            "Katalog MCP tidak dapat dibaca ({error}); pengaktifan {id} di workspace ini ditarik. Entri pengguna dengan ID ini tidak berubah."
+        }
+        "MCP configuration: {error}" => "Konfigurasi MCP: {error}",
+        "The server rejected the stored credential; sign in again with mcp login." => {
+            "Server menolak kredensial tersimpan; masuk lagi dengan mcp login."
+        }
+        "The server requires additional scopes: {scopes}." => {
+            "Server memerlukan cakupan tambahan: {scopes}."
+        }
+        "The server requires authorization; run mcp login ID." => {
+            "Server memerlukan otorisasi; jalankan mcp login ID."
+        }
+        "The probe ended: {status}." => "Probe berakhir: {status}.",
+
         "Command rules" => "Aturan perintah",
         "user" => "pengguna",
         "Matches only this command." => "Hanya cocok dengan perintah ini.",

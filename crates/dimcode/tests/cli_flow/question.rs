@@ -885,7 +885,7 @@ fn tui_member_questions_stay_read_only_and_a_leader_question_takes_the_prompt() 
 }
 
 /// A pending question does not block commands: `/` and `Ctrl+O` open the
-/// palette over it, `/mcp` prints its report and leaves the question
+/// palette over it, `/mcp list` prints its report and leaves the question
 /// pending (nothing is answered), a command that opens a panel hands the
 /// question back with its answer, and `Esc` in the palette returns to the
 /// question instead of declining it.
@@ -963,7 +963,7 @@ fn tui_commands_run_over_a_pending_question() {
         terminal.write(b"1");
         terminal.until("Review your answers");
 
-        terminal.write(b"/mcp\r");
+        terminal.write(b"/mcp list\r");
         terminal.until("No MCP server is configured.");
 
         terminal.write(b"\x0f");

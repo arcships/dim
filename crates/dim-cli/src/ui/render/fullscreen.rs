@@ -43,8 +43,8 @@ const END_SYNC: &[u8] = b"\x1b[?2026l";
 const CURSOR_SHOW: &[u8] = b"\x1b[?25h";
 const CURSOR_HIDE: &[u8] = b"\x1b[?25l";
 const ERASE_LINE: &[u8] = b"\x1b[2K";
-/// Transcript rows the dock always leaves visible.
-const MIN_VIEW_ROWS: usize = 3;
+/// Transcript rows the dock leaves visible when space permits.
+pub const MIN_VIEW_ROWS: usize = 3;
 /// Rows one wheel notch scrolls.
 const WHEEL_ROWS: isize = 3;
 /// Reports closer than this come from a trackpad's burst, not a notch.
@@ -726,7 +726,10 @@ impl FullScreen {
             .flat_map(|row| wrap_row(row, width))
             .collect();
         let dock = &frame.live[split..];
-        let dock_rows = dock.len().min(rows.saturating_sub(MIN_VIEW_ROWS)).max(1);
+        let dock_rows = dock
+            .len()
+            .min(super::live_row_budget(rows, MIN_VIEW_ROWS))
+            .max(1);
         let dock_skip = dock.len().saturating_sub(dock_rows);
         self.view_rows = rows - dock_rows.min(rows);
         self.load(doc);

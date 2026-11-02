@@ -1041,6 +1041,16 @@ impl AskUserPrompt {
         labels.push(t("Confirm").to_owned());
         let tabs = choices(&labels, self.active_tab, p);
         let counter = format!("{}/{}", self.active_tab + 1, labels.len());
+        if visible_width(&tabs) > inner {
+            let label = truncate_cells(
+                &format!("{SELECTED_MARKER}{}", labels[self.active_tab]),
+                inner.saturating_sub(counter.len() + 1),
+            );
+            return fg(
+                &truncate_cells(&format!("{label} {counter}"), inner),
+                &p.accent,
+            );
+        }
         let used = visible_width(&tabs) + counter.len();
         if inner < used + 2 {
             return tabs;
@@ -1761,6 +1771,19 @@ mod tests {
                 .iter()
                 .all(|row| crate::ui::text::display_width(&strip(row)) <= 48)
         );
+        let mut ask = dinner(false);
+        ask.call.questions[0].header = Some("Dinner selection for the whole team".into());
+        for width in [24, 32, 40] {
+            let rows = ask.render(width, 12, &theme.palette);
+            assert!(rows.iter().all(|row| visible_width(row) <= width));
+            assert!(strip(&rows[1]).contains("1/2"));
+            ask.handle_key(key(KeyCode::Tab));
+            let rows = ask.render(width, 12, &theme.palette);
+            assert!(rows.iter().all(|row| visible_width(row) <= width));
+            assert!(strip(&rows[1]).contains(t("Confirm")));
+            assert!(strip(&rows[1]).contains("2/2"));
+            ask.handle_key(key(KeyCode::BackTab));
+        }
     }
 
     #[test]

@@ -123,7 +123,11 @@ The revision is Settings' opaque revision for the entry's source document
 `mcp.catalog` reports as `userRevision` or `projectRevision`, and the same one every write takes
 as `expectedVersion`. All entries of one source share it, so a write to another entry of that
 source makes the token stale and the next write answers `mcp_settings_conflict`. A client then
-re-reads the entry it is editing and shows the conflict; it does not retry the same write.
+re-reads the entry it is editing and shows the conflict; it does not retry the same write. A
+remove whose `expectedVersion` is stale when it arrives writes nothing. A source change that
+lands while the remove runs, after that check, can still leave the entry withdrawn: it is then
+off, which fails closed, and the reply is the conflict. A remove needs a readable source; a
+disable still withdraws the record without one.
 
 A plugin entry has no Settings source and no revision. The read returns no `revision` for it,
 which is the client's signal that the entry is read-only: `mcp.save`, `mcp.update`, `mcp.remove`
@@ -331,15 +335,17 @@ probe while Mcp is not serving answers `service_reloading`
 - The reply of `mcp.configuration` stops being the bare projection and becomes
   `{revision?, enabled, configuration}`. That is a breaking change on protocol v3 for any client
   that decodes the old reply: the projection is now under `configuration`. This repository's Web
-  settings page changes in the same implementation; the native CLI decodes `mcp.catalog` only and
-  is unaffected; every other client sees the projection replaced by the wrapper.
+  settings page changes in the same implementation; the native CLI adopts this read and patch:
+  `dimcode mcp edit`/`set` and the `/mcp` panel read `mcp.configuration` and write `mcp.update`,
+  and every other native verb keeps its reply; every other client sees the projection replaced by
+  the wrapper.
 - An empty `id` on the entry read answers `mcp_invalid_config`, the code `mcp.save` already
   returns, instead of `invalid_params`.
 - The reply of `mcp.test` stops being `{tools}` and becomes the probe report in §4.5, and a probe
   that fails is a reply rather than an RPC error. That is also a breaking change on protocol v3:
   a client that read `{tools}` must read `tools` under the report and take the outcome from
-  `status`. The Web settings page changes in the same implementation; the native CLI does not call
-  the method; every other client sees the wrapper replace the old reply.
+  `status`. The Web settings page changes in the same implementation; the native CLI adopts the
+  report in `dimcode mcp test`; every other client sees the wrapper replace the old reply.
 - The edit flow is `mcp.configuration` then `mcp.update` with the returned `revision`; creating an
   entry takes the token from `mcp.catalog`'s source revision (D1).
 - A client renders `command`, `cwd` and `endpoint`, the name lists and the counts, and offers

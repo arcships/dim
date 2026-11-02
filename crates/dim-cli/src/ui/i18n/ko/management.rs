@@ -104,6 +104,89 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "This workspace's hook settings changed since they were read; nothing was written." => {
             "이 작업 공간의 훅 설정이 읽은 뒤에 변경되었습니다. 아무것도 쓰지 않았습니다."
         }
+        "MCP" => "MCP",
+        "MCP servers" => "MCP 서버",
+        "Ctrl+T test" => "Ctrl+T 테스트",
+        "sign-in required" => "로그인 필요",
+        "signed in" => "로그인됨",
+        "sign-in expired" => "로그인 만료",
+        "missing scopes: {scopes}" => "누락된 범위: {scopes}",
+        "Executable: {command}" => "실행 파일: {command}",
+        "Stored arguments (hidden): {count}" => "저장된 인수(숨김): {count}",
+        "Working directory: {cwd}" => "작업 디렉터리: {cwd}",
+        "Environment names: {names}" => "환경 변수 이름: {names}",
+        "Endpoint: {endpoint}" => "엔드포인트: {endpoint}",
+        "Header names: {names}" => "헤더 이름: {names}",
+        "Bearer token: {state}" => "Bearer 토큰: {state}",
+        "OAuth: configured (client ID {id})" => "OAuth: 구성됨 (클라이언트 ID {id})",
+        "OAuth: configured" => "OAuth: 구성됨",
+        "OAuth: not configured" => "OAuth: 구성되지 않음",
+        "Metadata URL: {state}" => "메타데이터 URL: {state}",
+        "configured" => "구성됨",
+        "Owned by a plugin; change it through Plugins." => {
+            "플러그인이 소유합니다. 플러그인에서 변경하세요."
+        }
+        "MCP entry {id}" => "MCP 항목 {id}",
+        "Connection {number} · {status}" => "연결 {number} · {status}",
+        "Tools have not been discovered." => "도구가 아직 발견되지 않았습니다.",
+        "No live session connections." => "활성 세션 연결이 없습니다.",
+        "Tools of {id}" => "{id}의 도구",
+        "The server exposes no tools." => "서버가 도구를 제공하지 않습니다.",
+        "The add document needs an id." => "추가 문서에는 id가 필요합니다.",
+        "The add document needs a source of user or project." => {
+            "추가 문서의 source는 user 또는 project여야 합니다."
+        }
+        "The add document needs a configuration object." => {
+            "추가 문서에는 configuration 객체가 필요합니다."
+        }
+        "{id} is already in mcp list; remove it first or choose another id." => {
+            "{id}은(는) 이미 mcp list에 있습니다. 먼저 제거하거나 다른 id를 선택하세요."
+        }
+        "{id} is already in mcp list; choose another id, or change it through its plugin." => {
+            "{id}은(는) 이미 mcp list에 있습니다. 다른 id를 선택하거나 플러그인에서 변경하세요."
+        }
+        "This entry's settings changed since they were read; nothing was written." => {
+            "이 항목의 설정이 읽은 후 변경되었습니다. 아무것도 기록되지 않았습니다."
+        }
+        "The MCP entry changed since it was read; nothing was written." => {
+            "MCP 항목이 읽은 후 변경되었습니다. 아무것도 기록되지 않았습니다."
+        }
+        "The MCP entries changed since they were read; nothing was written." => {
+            "MCP 항목이 읽은 후 변경되었습니다. 아무것도 기록되지 않았습니다."
+        }
+        "The MCP entry changed since it was read; nothing was removed." => {
+            "MCP 항목이 읽은 후 변경되었습니다. 아무것도 제거되지 않았습니다."
+        }
+        "MCP's documents belong to one entry; this save names none." => {
+            "MCP 문서는 항목별입니다. 이 저장은 항목을 지정하지 않았습니다."
+        }
+        "No MCP server has that id." => "해당 id의 MCP 서버가 없습니다.",
+        "This workspace has no project MCP source." => {
+            "이 작업 공간에는 프로젝트 MCP 소스가 없습니다."
+        }
+        "Enabled {id} ({source})." => "{id}({source})을(를) 활성화했습니다.",
+        "Disabled {id} ({source})." => "{id}({source})을(를) 비활성화했습니다.",
+        "It runs this workspace's .mcp.json entry, including later edits to it, in active and new sessions." => {
+            "활성 및 새 세션에서 이후 수정을 포함해 이 작업 공간의 .mcp.json 항목을 실행합니다."
+        }
+        "{id} is not in mcp list; withdrew any stored enablement of it in this workspace." => {
+            "{id}은(는) mcp list에 없습니다. 이 작업 공간에 저장된 활성화를 철회했습니다."
+        }
+        "The MCP catalog could not be read ({error}); withdrew this workspace's enablement of {id}. A user entry with this ID is unchanged." => {
+            "MCP 카탈로그를 읽을 수 없습니다({error}). 이 작업 공간에서 {id}의 활성화를 철회했습니다. 같은 ID의 사용자 항목은 변경되지 않았습니다."
+        }
+        "MCP configuration: {error}" => "MCP 구성: {error}",
+        "The server rejected the stored credential; sign in again with mcp login." => {
+            "서버가 저장된 자격 증명을 거부했습니다. mcp login으로 다시 로그인하세요."
+        }
+        "The server requires additional scopes: {scopes}." => {
+            "서버가 추가 범위를 요구합니다: {scopes}."
+        }
+        "The server requires authorization; run mcp login ID." => {
+            "서버가 인증을 요구합니다. mcp login ID를 실행하세요."
+        }
+        "The probe ended: {status}." => "프로브가 종료되었습니다: {status}.",
+
         "Command rules" => "명령 규칙",
         "user" => "사용자",
         "Matches only this command." => "이 명령만 일치합니다.",

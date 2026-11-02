@@ -3,7 +3,7 @@
 //! catches a browser callback. Commands that print or prompt are in
 //! `mcp_command` (line client) and `session_host` (TUI).
 
-use crate::{Result, args::Options, client::Client, sanitize::safe};
+use crate::{Result, args::Options, client::Client, sanitize::safe_line};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -13,28 +13,34 @@ pub struct Catalog {
     pub user_revision: String,
     pub project_revision: Option<String>,
     pub servers: Vec<Server>,
-    user_application: Application,
-    project_application: Option<Application>,
+    pub user_application: Application,
+    /// The plugin source's application row; a daemon older than that row
+    /// reports none.
+    #[serde(default)]
+    pub plugin_application: Option<Application>,
+    pub project_application: Option<Application>,
 }
 #[derive(Deserialize)]
 pub struct Server {
     pub id: String,
+    /// `user`, `project` or `plugin`.
     pub source: String,
-    enabled: bool,
-    transport: String,
-    auth: Option<Auth>,
+    pub enabled: bool,
+    pub transport: String,
+    pub auth: Option<Auth>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Auth {
-    status: String,
-    missing_scopes: Option<Vec<String>>,
+pub struct Auth {
+    /// `required`, `authorized` or `expired`.
+    pub status: String,
+    pub missing_scopes: Option<Vec<String>>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Application {
-    error: Option<String>,
-    cleanup_error: Option<String>,
+pub struct Application {
+    pub error: Option<String>,
+    pub cleanup_error: Option<String>,
 }
 
 /// What `mcp list` prints: the rows on stdout, then the notes on stderr.
@@ -50,14 +56,14 @@ pub async fn catalog_report(
         rows.push(format!(
             "{:?}\t{}\t{}\t{}\t{}",
             server.id,
-            safe(&server.source),
-            safe(&server.transport),
+            safe_line(&server.source),
+            safe_line(&server.transport),
             if server.enabled {
                 "enabled"
             } else {
                 "disabled"
             },
-            safe(
+            safe_line(
                 match server.auth.as_ref().map(|auth| auth.status.as_str()) {
                     Some("required") => "sign-in required",
                     Some("authorized") => "signed in",
@@ -68,7 +74,10 @@ pub async fn catalog_report(
             )
         ));
         if let Some(scopes) = server.auth.and_then(|auth| auth.missing_scopes) {
-            rows.push(format!("  Missing scopes: {}", safe(&scopes.join(", "))));
+            rows.push(format!(
+                "  Missing scopes: {}",
+                safe_line(&scopes.join(", "))
+            ));
         }
     }
     // The columns describe rows: with no server, the report says so instead.
@@ -81,6 +90,7 @@ pub async fn catalog_report(
     };
     for (source, application) in [
         ("user", Some(catalog.user_application)),
+        ("plugin", catalog.plugin_application),
         ("project", catalog.project_application),
     ] {
         if let Some(application) = application {
@@ -88,7 +98,7 @@ pub async fn catalog_report(
                 .into_iter()
                 .flatten()
             {
-                notes.push(format!("{source} MCP configuration: {}", safe(&error)));
+                notes.push(format!("{source} MCP configuration: {}", safe_line(&error)));
             }
         }
     }
@@ -162,7 +172,7 @@ pub async fn session_report(client: &mut Client, session: &str) -> Result<Vec<St
         .await?;
     let mut lines = Vec::new();
     for server in state.servers {
-        lines.push(format!("{:?}\t{}", server.id, safe(&server.state)));
+        lines.push(format!("{:?}\t{}", server.id, safe_line(&server.state)));
         if server.state == "auth_required" {
             lines.push(format!(
                 "  Sign in with mcp login {:?} or /mcp login {:?}.",
@@ -170,18 +180,18 @@ pub async fn session_report(client: &mut Client, session: &str) -> Result<Vec<St
             ));
         } else if let Some(message) = &server.message {
             // `auth_required` says the same thing through its hint above.
-            lines.push(format!("  {}", safe(message)));
+            lines.push(format!("  {}", safe_line(message)));
         }
         if let Some(rejection) = &server.rejection {
             lines.push(format!(
                 "  Version {} rejected: {}",
-                safe(&rejection.version),
-                safe(&rejection.reason)
+                safe_line(&rejection.version),
+                safe_line(&rejection.reason)
             ));
         }
     }
     if let Some(error) = &state.catalog_error {
-        lines.push(format!("MCP catalog: {}", safe(error)));
+        lines.push(format!("MCP catalog: {}", safe_line(error)));
     }
     Ok(lines)
 }

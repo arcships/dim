@@ -308,6 +308,7 @@ impl HistoryRenderer {
             .map(|checkpoint| checkpoint.state.clone());
         let mut history = Vec::new();
         let mut compaction = None;
+        let mut cut_in_effect: Option<(Option<usize>, u64)> = None;
         for (index, (branch, cut)) in segments.iter().enumerate().skip(first) {
             let mut cursor = if index == first { resume } else { 1 };
             while cursor <= *cut {
@@ -321,18 +322,29 @@ impl HistoryRenderer {
                 let projected = project_batch(&events, state.as_ref(), branch)
                     .map_err(|error| AgentError::fault("History", error))?;
                 history.extend(projected.history);
-                if let Some(event) = &projected.compaction
-                    && let EventKind::ContextCompaction(data) = &event.kind
-                    && let ContextCompactionResult::Completed { retain_from, .. } = &data.outcome
-                {
+                let rank = |branch: &str| segments.iter().position(|(name, _)| name == branch);
+                for event in events.iter() {
+                    let EventKind::ContextCompaction(data) = &event.kind else {
+                        continue;
+                    };
+                    let ContextCompactionResult::Completed { retain_from, .. } = &data.outcome
+                    else {
+                        continue;
+                    };
                     let cut = timeline.event_position(retain_from).await?.ok_or_else(|| {
                         AgentError::fault(
                             "History",
                             "Compaction cut is outside the stream".to_owned(),
                         )
                     })?;
-                    let rank = |branch: &str| segments.iter().position(|(name, _)| name == branch);
                     let at = (rank(&cut.branch_id), cut.sequence);
+                    if cut_in_effect.is_some_and(|previous| at < previous) {
+                        return Err(AgentError::fault(
+                            "History",
+                            "Compaction cut precedes the cut in effect".to_owned(),
+                        ));
+                    }
+                    cut_in_effect = Some(at);
                     let kept = history
                         .iter()
                         .position(|entry| {

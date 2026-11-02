@@ -200,6 +200,37 @@ fn without_origin_column(database: &Path) {
         .unwrap();
 }
 
+/// Every format before v31 has no reading switches on `timeline_events`: the
+/// table is rebuilt at its v30 text, which the format gate compares character
+/// by character, and its other indexes are recreated.
+fn without_switch_columns(database: &Path) {
+    let connection = rusqlite::Connection::open(database).unwrap();
+    let indexes: Vec<String> = connection
+        .prepare(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='timeline_events' \
+             AND name NOT IN ('timeline_events_render', 'timeline_events_state', \
+             'timeline_events_positions') AND sql IS NOT NULL",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             CREATE TEMP TABLE events_rows AS SELECT session_id, branch_id, sequence, last_sequence, kind, body, event_id FROM timeline_events;
+             DROP TABLE timeline_events;
+             CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id));
+             INSERT INTO timeline_events SELECT * FROM events_rows;
+             DROP TABLE events_rows;",
+        )
+        .unwrap();
+    for index in indexes {
+        connection.execute_batch(&index).unwrap();
+    }
+}
+
 fn without_v26_columns(database: &Path) {
     rusqlite::Connection::open(database)
         .unwrap()
@@ -300,7 +331,7 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
 
         assert_eq!(
             live[0],
-            json!({"kind":"header","export":1,"session_id":session,"store_format":30,"sensitive":true})
+            json!({"kind":"header","export":1,"session_id":session,"store_format":31,"sensitive":true})
         );
         let branches: Vec<_> = live.iter().filter(|line| line["kind"] == "branch").collect();
         assert_eq!(branches.len(), 2);
@@ -400,6 +431,7 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             changed(&database, &older, &format!("{catalog} {grants} {output} {dropped} {end_index} DROP TABLE agent_store_format;
                 CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = {version}));
                 INSERT INTO agent_store_format VALUES ({version});"));
+            without_switch_columns(&older);
             if version < 30 {
                 without_origin_column(&older);
             }
@@ -416,8 +448,8 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
 
         for (name, sql) in [
             ("newer.sqlite", "DROP TABLE agent_store_format;
-                CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 31));
-                INSERT INTO agent_store_format VALUES (31);"),
+                CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 32));
+                INSERT INTO agent_store_format VALUES (32);"),
             ("changed.sqlite", "CREATE TABLE extra (id TEXT)"),
         ] {
             let path = directory.join("copies").join(name);

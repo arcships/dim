@@ -14,6 +14,8 @@
 
 pub mod editor;
 pub mod hooks;
+pub mod mcp;
+
 pub mod permissions;
 pub mod scheduler;
 pub mod skills;
@@ -67,6 +69,21 @@ const HOOKS: Methods = Methods {
     ],
 };
 
+const MCP: Methods = Methods {
+    catalog: "mcp.catalog",
+    manages: "MCP servers",
+    kinds: &[
+        (ActionKind::Toggle, "mcp.set_enabled"),
+        (ActionKind::Edit, "mcp.update"),
+        // A reload re-reads every Settings source; the catalog call does it.
+        (ActionKind::Reload, "mcp.catalog"),
+        (ActionKind::Add, "mcp.save"),
+        (ActionKind::Remove, "mcp.remove"),
+        (ActionKind::Run, "mcp.test"),
+        (ActionKind::Inspect, "mcp.inspect"),
+    ],
+};
+
 const SCHEDULED: Methods = Methods {
     catalog: "schedule.list",
     manages: "scheduled jobs",
@@ -97,6 +114,7 @@ fn methods_of(area: Area) -> &'static Methods {
     match area {
         Area::Skills => &SKILLS,
         Area::Hooks => &HOOKS,
+        Area::Mcp => &MCP,
         Area::Scheduled => &SCHEDULED,
         Area::Permissions => &PERMISSIONS,
     }
@@ -317,6 +335,33 @@ pub async fn apply(
                     message,
                     view: catalog.map(|catalog| Box::new(hooks::view(&catalog, &actions))),
                 })
+            }
+        },
+        Area::Mcp => match mcp::apply(client, &request.action, cwd).await {
+            Ok(mcp::Answer::Area { catalog, note }) => {
+                let view = mcp::view(client, cwd, &catalog, &actions).await;
+                ManagementResult::View {
+                    view: Box::new(view),
+                    note,
+                }
+            }
+            Ok(mcp::Answer::Tools { id, tools }) => {
+                ManagementResult::Detail(mcp::tools_detail(&id, &tools))
+            }
+            Ok(mcp::Answer::Detail(detail)) => ManagementResult::Detail(detail),
+            Err(mcp::Failure::ReadFailed { note, error }) => ManagementResult::Applied {
+                note,
+                read_error: error,
+            },
+            Err(mcp::Failure::Refused(message)) => {
+                ManagementResult::Refused(ManagementRefusal::Refused(message))
+            }
+            Err(mcp::Failure::Conflict { message, catalog }) => {
+                let view = match catalog {
+                    Ok(catalog) => Ok(Box::new(mcp::view(client, cwd, &catalog, &actions).await)),
+                    Err(error) => Err(error),
+                };
+                ManagementResult::Refused(ManagementRefusal::Conflict { message, view })
             }
         },
         Area::Scheduled => match scheduler::apply(client, &request.action).await {

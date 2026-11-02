@@ -325,6 +325,21 @@ It does not print commands, environment values, headers or credentials. `mcp ena
 `mcp disable ID`, or `/mcp enable ID` and `/mcp disable ID` in either client, change the entry
 that `mcp list` shows for the workspace.
 
+`dimcode mcp add PATH` (`-` for stdin) creates an entry from the document the panel's create
+template has: its id, its source (`user` or `project`) and the definition `mcp.save` takes.
+`dimcode mcp set ID PATH` (`-` for stdin) and `dimcode mcp edit ID` write the `mcp.update` patch,
+whose omitted fields keep their stored values, at the revision `mcp.configuration` reported; a
+patch like `{"command": "npx", "cwd": "/work", "env": {"TOKEN": "value"}}` changes those fields
+only. A remote entry's patch names the `url` and the `headers` it changes, since the seed
+withholds both: `{"url": "https://mcp.example.com/mcp", "headers": {"X-Key": "value"}}`. An
+omitted `url` or header key keeps the stored one. `dimcode mcp remove ID` deletes one entry at its
+source revision. `dimcode mcp test ID`
+runs the stored entry once and prints the tools the temporary connection found, and `dimcode mcp
+inspect ID` prints the effective configuration and the Session's connections without contacting
+the server. `dimcode mcp disconnect ID` closes the entry's live connections without changing its
+enablement or stored configuration; the entry reconnects on next use. The `/mcp` panel does the
+same on a list: `Enter`, `Ctrl+E`, `Ctrl+N`, `Ctrl+X`, `Ctrl+T` and `Tab`.
+
 ```bash
 dimcode --home /path/to/isolated-home --model-config model.json --cwd /path/to/project mcp list
 # Review the entry in .mcp.json and the code or endpoint it runs, then:
@@ -362,7 +377,7 @@ use hidden pasted input. `--client-secret` prompts with echo disabled; it never 
 secret as an argument. The daemon owns validation, token exchange and credential storage.
 
 ```text
-> /mcp
+> /mcp list
 "docs"  project  http  enabled  sign-in required
   Missing scopes: files:read
 > /mcp login --no-browser --client-secret docs
@@ -383,15 +398,16 @@ Callback URL: _
 ```
 
 Use `mcp login ID --no-browser --client-secret` for the standalone command; flags can also precede ID. Slash-command
-flags precede the ID; its remaining text is the literal ID, including spaces. `/mcp` also
+flags precede the ID; its remaining text is the literal ID, including spaces. `/mcp list` also
 shows the attached Session's server states and a sign-in hint for `auth_required`.
 Invalid callbacks can be pasted again. Ctrl+C, EOF or expiry stops waiting and prints the
 restart command. Expiry exits 1, cancellation exits 130, and a submitted operation that succeeds
 exits 0 even if waiting was interrupted. Once an RPC has been submitted, its reply is drained before another
 interactive command can run. A submitted exchange may complete successfully during that wait.
 Noninteractive input never starts sign-in; slash text in a headless prompt remains model input.
-`mcp logout ID` reports the daemon's `revoked` result. Credentials can be signed out before
-removing their entry through the existing configuration API; the CLI has no entry-removal command.
+`mcp logout ID` reports the daemon's `revoked` result. Sign out before removing an entry:
+`mcp remove ID` deletes the entry, not its stored credentials, and `mcp logout ID` needs the
+entry to still exist.
 
 See the [MCP OAuth contract](../../docs/design/appserver/mcp-oauth.md#13-requirements-raised-to-mechanism-owners).
 
@@ -1078,9 +1094,11 @@ The terminal UI reaches the same Session methods as the line client:
 | Input | Effect |
 | --- | --- |
 | `!command` / `!!command` | Runs through `shell.run` on the line whose conversation is shown, in record or private mode; its progress streams under the composer, `Esc` or `Ctrl+C` sends `shell.stop`. A recorded run comes back as the Session's input event and is drawn as a shell block, also after resume; a private run, or one that could not be recorded, is drawn only here |
-| `/mcp`, `/mcp list` | MCP servers with their authorization, then the Session's server states; a state line carries its reason below it: a failed server's message, `Version VERSION rejected: REASON` for a refused tool-source version, and one `MCP catalog: ERROR` note for the Session. With no server configured, one line says so instead of the column legend. Without a Session it shows the configuration alone, the report `mcp list` prints |
+| `/mcp` | Opens the MCP panel of the Session's workspace ([management surfaces](#management-surfaces)): an entry per server from `mcp.catalog`, grouped `user`, `project` and `plugin`, with its configuration below the list; `Enter` or `Space` toggles, `Ctrl+E` edits the `mcp.update` patch, `Ctrl+N` adds from the create template, `Ctrl+X` removes after a confirmation, `Ctrl+T` tests the stored entry and `Tab` inspects it. A plugin entry offers no write and says its plugin owns it; an entry whose configuration read failed is marked invalid and offers no edit |
+| `/mcp list` | MCP servers with their authorization, then the Session's server states; a state line carries its reason below it: a failed server's message, `Version VERSION rejected: REASON` for a refused tool-source version, and one `MCP catalog: ERROR` note for the Session. With no server configured, one line says so instead of the column legend. Without a Session it shows the configuration alone, the report `mcp list` prints |
 | `/mcp login [--no-browser] ID` | Starts sign-in, opens the browser unless `--no-browser` or SSH, and catches the callback on a loopback listener when the redirect port is free; `/mcp callback URL` completes it with a pasted callback instead. A client secret needs hidden input, so `--client-secret` points to `dimcode mcp login ID --client-secret` |
 | `/mcp logout ID` | Signs out and reports whether the token was revoked |
+| `/mcp disconnect ID` | Closes the entry's live connections without changing its enablement or stored configuration; the entry reconnects on next use |
 | `/mcp enable ID` / `/mcp disable ID` | Turns a server on or off with the request `dimcode mcp enable` / `mcp disable` sends and the same result text. Enabling a project entry runs this workspace's `.mcp.json` entry, including later edits, in active and new sessions; disabling stops it in every session before the call returns. The next `/mcp` lists the new state |
 | `/plugins` (`/plugin`) | Lists every plugin name from `plugin.list` (built-in, default, installed): the candidate in use, its state, whether it is locked, and for the selected one its candidates and any error, wait or refused content. `Enter` turns an off plugin on (`plugin.enable`) or, after a confirmation, turns it off (`plugin.disable`); a locked one says why it cannot be turned off. `r` reloads it (`plugin.reload`), `Ctrl+R` lists again. The list is read again after each change, and a failed call shows the method's message |
 | `/plugins install PATH` | Installs and turns on the plugin directory at `PATH`, relative to the workspace (`plugin.install`), then opens the list with the outcome, including when a restart is required. Git installs, update and remove are `dimcode plugin ...` |
@@ -1216,7 +1234,7 @@ A remove asks first, `Remove LABEL? Enter confirm · Esc cancel`, and any other 
 `dimcode <area> remove ID` takes the id on the command line as the intent and does not ask.
 Inspect replaces the list with the title and lines the owner returned and scrolls them with the
 arrows and PageUp/PageDown; the first `Esc` returns to the list and the next closes the panel.
-The Skills and Hooks panels read and write the Session's workspace, not the directory the
+The Skills, Hooks and MCP panels read and write the Session's workspace, not the directory the
 client started in; the Scheduler's jobs are the host's, and only a new job's `cwd` defaults from
 the Session. A panel holds no area's vocabulary: an area's entries, kinds, documents and detail
 arrive from its adapter.
@@ -1226,6 +1244,7 @@ The areas below use it, over the same kinds:
 - Skills (`/skills`, `dimcode skills ...`) lists and toggles skills.
 - Hooks (`/hooks`, `dimcode hooks ...`) adds the user document's edit.
 - The Scheduler (`/scheduled`, `/schedule`, `dimcode scheduled ...`) introduces add, remove, run and inspect, a job per entry from `schedule.list`, with `schedule.set_enabled`, `schedule.save` for the edit and the create, `schedule.delete`, `schedule.run_now` and `schedule.history`. Its subcommands are `dimcode scheduled list`, `enable ID`, `disable ID`, `edit ID`, `set ID PATH`, `add PATH`, `remove ID`, `run ID` and `history ID`.
+- MCP (`/mcp`, `dimcode mcp ...`) lists the effective catalog with `mcp.set_enabled`, reads each entry's `mcp.configuration` for its detail and its patch, writes `mcp.update`, creates with `mcp.save`, deletes with `mcp.remove`, and shows `mcp.test` and `mcp.inspect` as details. Its subcommands are `dimcode mcp list`, `add PATH`, `edit ID`, `set ID PATH`, `remove ID`, `test ID` and `inspect ID`.
 - Command rules (`/permissions`'s Command rules row, `dimcode permissions ...`) is a rule per entry from `permission.rules` with `Ctrl+R`, `Ctrl+N` and `Ctrl+X`, writing through `permission.set_rules`; its subcommands are `dimcode permissions list`, `add PATH` and `remove 'DECISION MATCH COMMAND'`.
 
 The external editor is `$VISUAL`, then `$EDITOR`, then `vi` (`notepad` on Windows), run on Unix

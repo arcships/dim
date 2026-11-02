@@ -702,11 +702,15 @@ impl McpService {
     ///
     /// A project entry's enablement is the user's record (ADR 003 D3), never
     /// project files. Enabling checks `expected` against the project source and
-    /// that the entry exists there. Disabling or removing first withdraws the
-    /// record without depending on the project file, so an entry the user
-    /// turned off stays off even if the file is unreadable. Disabling or
-    /// removing returns once the publisher has retired the entry's generations
-    /// in every Session.
+    /// that the entry exists there. A disable withdraws the record without
+    /// depending on the project file, so an entry the user turned off stays off
+    /// even if the file is unreadable. A remove needs a readable source, and a
+    /// remove whose `expectedVersion` is stale when it arrives writes nothing.
+    /// A source change that lands while the remove runs, after that check, can
+    /// still leave the record withdrawn: the entry is then off, which fails
+    /// closed, and the reply is the conflict. Disabling or removing returns
+    /// once the publisher has retired the entry's generations in every
+    /// Session.
     pub async fn update(
         &self,
         source: SettingsScope,
@@ -799,14 +803,12 @@ async fn write(
     cancel: &CancellationToken,
 ) -> Result<String> {
     let project = matches!(source, SettingsScope::Project(_));
-    if project && matches!(change, McpChange::SetEnabled(false) | McpChange::Remove) {
+    if project && matches!(change, McpChange::SetEnabled(false)) {
         set_project_enabled(settings, source, &id, false, cancel).await?;
-        if matches!(change, McpChange::SetEnabled(false)) {
-            return Ok(settings
-                .read::<McpSettings>(source, cancel)
-                .await
-                .map_or(expected, |snapshot| snapshot.revision));
-        }
+        return Ok(settings
+            .read::<McpSettings>(source, cancel)
+            .await
+            .map_or(expected, |snapshot| snapshot.revision));
     }
     let snapshot = settings.read::<McpSettings>(source, cancel).await?;
     if snapshot.revision != expected {
@@ -829,6 +831,11 @@ async fn write(
                 .mcp_servers
                 .remove(&id)
                 .ok_or(McpError::UnknownServer)?;
+            // The record goes before the source is rewritten, and only once
+            // the revision matched, so a stale remove withdraws nothing.
+            if project {
+                set_project_enabled(settings, source, &id, false, cancel).await?;
+            }
         }
         McpChange::SetEnabled(value) => {
             let configuration = document

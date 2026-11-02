@@ -4,6 +4,7 @@
 
 use crate::ui::commands::{COMMANDS, Command, Context};
 use crate::ui::i18n::t;
+use crate::ui::render::Overlay;
 use crate::ui::render::panel::{bordered, follow_window};
 use crate::ui::rows::{Columns, Kind, Row, footer, panel_row, title};
 use crate::ui::text::truncate_cells;
@@ -273,49 +274,55 @@ fn panel_title(rows: &[Row]) -> &'static str {
     }
 }
 
-/// The bordered panel for the current query, `width` columns wide including
-/// borders, fixed at `PAGE_SIZE + CHROME_ROWS` rows.
-pub fn render(state: &PaletteState, rows: &[Row], width: usize, p: &Palette) -> Vec<String> {
+/// The bordered panel for the current query, within the available columns
+/// and rows, keeping the selected command visible.
+pub fn render(
+    state: &PaletteState,
+    rows: &[Row],
+    width: usize,
+    max_rows: usize,
+    p: &Palette,
+) -> Vec<String> {
     let inner = width.saturating_sub(4).max(1);
+    let title_visible = max_rows >= 4;
+    let footer_visible = max_rows > CHROME_ROWS;
+    let chrome = 2 + usize::from(title_visible) + usize::from(footer_visible);
+    let page = max_rows.saturating_sub(chrome).clamp(1, PAGE_SIZE);
     let mut content: Vec<String> = Vec::new();
-    content.push(title(t(panel_title(rows)), inner, p));
-    content.extend(list(state, rows, inner, PAGE_SIZE, p));
-    content.push(footer(&position(state, rows), t(HINT), inner, p));
-    bordered(
-        &content,
-        width,
-        Some(PAGE_SIZE + CHROME_ROWS),
-        &p.border,
-        None,
-        None,
-    )
+    if title_visible {
+        content.push(title(t(panel_title(rows)), inner, p));
+    }
+    content.extend(list(state, rows, inner, page, p));
+    if footer_visible {
+        content.push(footer(&position(state, rows), t(HINT), inner, p));
+    }
+    bordered(&content, width, Some(page + chrome), &p.border, None, None)
 }
 
-/// Rows above the list in the fullscreen palette: a gap, the query row and
-/// a gap.
-pub const OVERLAY_QUERY_ROWS: usize = 3;
-
-/// The fullscreen command palette: a box titled
-/// `Command Palette` with its own `> query` row over `page` rows of
-/// commands. The query row is the box's third row.
+/// The fullscreen palette and query cursor within `max_rows`, omitting
+/// query padding when needed to keep a command visible.
 pub fn render_overlay(
     state: &PaletteState,
     rows: &[Row],
     width: usize,
-    page: usize,
+    max_rows: usize,
     p: &Palette,
-) -> Vec<String> {
+) -> Overlay {
     let inner = width.saturating_sub(4).max(1);
-    let mut content = vec![
-        String::new(),
-        format!(
-            "> {}",
-            truncate_cells(&state.query, inner.saturating_sub(2))
-        ),
-        String::new(),
-    ];
+    let padded = max_rows >= 6;
+    let query_rows = if padded { 3 } else { 1 };
+    let page = max_rows.saturating_sub(2 + query_rows).clamp(1, 16);
+    let query = truncate_cells(&state.query, inner.saturating_sub(2));
+    let mut content = Vec::new();
+    if padded {
+        content.push(String::new());
+    }
+    content.push(format!("> {query}"));
+    if padded {
+        content.push(String::new());
+    }
     content.extend(list(state, rows, inner, page, p));
-    content.resize(OVERLAY_QUERY_ROWS + page, String::new());
+    content.resize(query_rows + page, String::new());
     let title = paint(
         t("Command Palette"),
         Paint {
@@ -324,7 +331,13 @@ pub fn render_overlay(
             ..Paint::default()
         },
     );
-    bordered(&content, width, None, &p.border, Some(&title), None)
+    Overlay {
+        rows: bordered(&content, width, None, &p.border, Some(&title), None),
+        cursor: Some((
+            if padded { 2 } else { 1 },
+            (4 + crate::ui::text::display_width(&query)).min(width.saturating_sub(2)) as u16,
+        )),
+    }
 }
 
 /// The visible window of `rows`, `page` rows at most.
@@ -497,7 +510,7 @@ mod tests {
         let rows = rows_for("/", FULLSCREEN, &[]);
         let mut state = PaletteState::default();
         state.set_query("");
-        let panel = render_overlay(&state, &rows, 72, rows.len(), &theme.palette);
+        let panel = render_overlay(&state, &rows, 72, rows.len() + 5, &theme.palette).rows;
         let plain: Vec<String> = panel.iter().map(|r| strip(r)).collect();
         assert!(
             plain[4].starts_with("│       app  /exit "),
@@ -531,7 +544,7 @@ mod tests {
     fn panel_has_a_fixed_height_and_a_position_footer() {
         let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
         let rows = rows_for("/", SCROLLBACK, &[]);
-        let panel = render(&PaletteState::default(), &rows, 80, &theme.palette);
+        let panel = render(&PaletteState::default(), &rows, 80, 18, &theme.palette);
         assert_eq!(panel.len(), PAGE_SIZE + CHROME_ROWS);
         let plain: Vec<String> = panel.iter().map(|r| strip(r)).collect();
         assert!(plain[1].contains("Commands") && plain[1].contains("esc close"));
@@ -576,7 +589,7 @@ mod tests {
         let mut state = PaletteState::default();
         state.step(1, &rows);
         let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
-        let panel = render(&state, &rows, 100, &theme.palette);
+        let panel = render(&state, &rows, 100, 18, &theme.palette);
         let text: Vec<String> = panel.iter().map(|r| strip(r)).collect();
         assert!(text.iter().any(|r| r.contains("2 / 3")), "{text:#?}");
     }

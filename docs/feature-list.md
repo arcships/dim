@@ -200,7 +200,7 @@ The CLI owns terminal and command interactions; the App Server owns host configu
 - `dimcode session`: view, rename, export, delete and clean up Sessions.
 - `dimcode export`: export a Session's whole Timeline, including every final model request ([ADR 005](adr/005-observability.md) D3).
 - `dimcode plugin`: manage plugin installations and marketplaces.
-- `dimcode mcp`: manage MCP services and authorization.
+- `dimcode mcp`: manage MCP servers, their configuration and authorization.
 - `dimcode hooks`: review and manage command Hooks.
 - `dimcode web`: start the Web workspace.
 - `dimcode remote`: manage the Remote service and phone authorization.

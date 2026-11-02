@@ -841,10 +841,11 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
             .await
         }
         Action::McpLogout(id) => mcp_command::sign_out(&mut client, &options, id).await,
+        Action::McpDisconnect(id) => mcp_command::disconnect(&mut client, &options, id).await,
         Action::McpEnable { id, enabled } => {
-            let (rows, notes) =
-                mcp_command::set_enabled(&mut client, &options, id, *enabled).await?;
-            mcp_command::print_report(rows, notes);
+            let state =
+                management::mcp::set_enabled(&mut client, &options.cwd, id, *enabled).await?;
+            mcp_command::print_report(vec![state.sentence()], state.notes);
             Ok(0)
         }
         Action::Management(request) => {

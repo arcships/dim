@@ -118,6 +118,54 @@ pub const STRINGS: &[&str] = &[
     "This daemon lists {area} but cannot run them.",
     "This daemon lists {area} but cannot inspect them.",
     "This workspace's hook settings changed since they were read; nothing was written.",
+    "MCP",
+    "MCP servers",
+    "Ctrl+T test",
+    "sign-in required",
+    "signed in",
+    "sign-in expired",
+    "missing scopes: {scopes}",
+    "Executable: {command}",
+    "Stored arguments (hidden): {count}",
+    "Working directory: {cwd}",
+    "Environment names: {names}",
+    "Endpoint: {endpoint}",
+    "Header names: {names}",
+    "Bearer token: {state}",
+    "OAuth: configured (client ID {id})",
+    "OAuth: configured",
+    "OAuth: not configured",
+    "Metadata URL: {state}",
+    "configured",
+    "Owned by a plugin; change it through Plugins.",
+    "MCP entry {id}",
+    "Connection {number} · {status}",
+    "Tools have not been discovered.",
+    "No live session connections.",
+    "Tools of {id}",
+    "The server exposes no tools.",
+    "The add document needs an id.",
+    "The add document needs a source of user or project.",
+    "The add document needs a configuration object.",
+    "{id} is already in mcp list; remove it first or choose another id.",
+    "{id} is already in mcp list; choose another id, or change it through its plugin.",
+    "This entry's settings changed since they were read; nothing was written.",
+    "The MCP entry changed since it was read; nothing was written.",
+    "The MCP entries changed since they were read; nothing was written.",
+    "The MCP entry changed since it was read; nothing was removed.",
+    "MCP's documents belong to one entry; this save names none.",
+    "No MCP server has that id.",
+    "This workspace has no project MCP source.",
+    "Enabled {id} ({source}).",
+    "Disabled {id} ({source}).",
+    "It runs this workspace's .mcp.json entry, including later edits to it, in active and new sessions.",
+    "{id} is not in mcp list; withdrew any stored enablement of it in this workspace.",
+    "The MCP catalog could not be read ({error}); withdrew this workspace's enablement of {id}. A user entry with this ID is unchanged.",
+    "MCP configuration: {error}",
+    "The server rejected the stored credential; sign in again with mcp login.",
+    "The server requires additional scopes: {scopes}.",
+    "The server requires authorization; run mcp login ID.",
+    "The probe ended: {status}.",
     "Command rules",
     "user",
     "Matches only this command.",
@@ -186,7 +234,7 @@ impl ManagementPanel {
             area,
             list: ListPanel::new(
                 title(area),
-                hint(&[]),
+                hint(area, &[]),
                 "Loading...",
                 "No entries.",
                 "No matching entry.",
@@ -348,7 +396,7 @@ impl ManagementPanel {
         if let Some(entry) = self.selected() {
             kinds.extend(entry.actions.iter().copied());
         }
-        self.list.set_hint(hint(&kinds));
+        self.list.set_hint(hint(self.area, &kinds));
     }
 
     /// The editor has the terminal: the panel takes no key until the draft
@@ -746,26 +794,29 @@ fn title(area: Area) -> &'static str {
     match area {
         Area::Skills => "Skills",
         Area::Hooks => "Hooks",
+        Area::Mcp => "MCP",
         Area::Scheduled => "Scheduler",
         Area::Permissions => "Command rules",
     }
 }
 
-/// One label per kind, in the actions table's order.
-fn label(kind: ActionKind) -> &'static str {
+/// One label per kind, in the actions table's order; an area that names its
+/// run kind's operation uses that word instead of `run`.
+fn label(area: Area, kind: ActionKind) -> &'static str {
     match kind {
         ActionKind::Toggle => "Enter toggle",
         ActionKind::Edit => "Ctrl+E edit",
         ActionKind::Reload => "Ctrl+R reload",
         ActionKind::Add => "Ctrl+N add",
         ActionKind::Remove => "Ctrl+X remove",
+        ActionKind::Run if area == Area::Mcp => "Ctrl+T test",
         ActionKind::Run => "Ctrl+T run",
         ActionKind::Inspect => "Tab inspect",
     }
 }
 
 /// The keys the area and the selected entry offer, as one hint.
-fn hint(kinds: &[ActionKind]) -> String {
+fn hint(area: Area, kinds: &[ActionKind]) -> String {
     let mut parts: Vec<&str> = [
         ActionKind::Toggle,
         ActionKind::Edit,
@@ -777,7 +828,7 @@ fn hint(kinds: &[ActionKind]) -> String {
     ]
     .into_iter()
     .filter(|kind| kinds.contains(kind))
-    .map(label)
+    .map(|kind| label(area, kind))
     .collect();
     parts.push("Esc close");
     parts.join(" · ")
@@ -1833,5 +1884,43 @@ mod tests {
         let text = panel.render(60, 12, &palette()).join("\n");
         assert!(!text.contains("[2J"), "{text}");
         assert!(text.contains("Recent runs of nightly"), "{text}");
+    }
+
+    /// The MCP panel is titled by its area name and names the run kind's
+    /// operation, `test`, in the hint; the run key still sends a run.
+    #[test]
+    fn the_mcp_panel_names_its_run_kind_test() {
+        let view = ManagementView {
+            revision: None,
+            document: None,
+            create: Some(serde_json::json!({})),
+            actions: vec![ActionKind::Reload],
+            groups: vec![ManagementGroup {
+                heading: "user".into(),
+                entries: vec![entry(
+                    "docs",
+                    "docs",
+                    Some(true),
+                    Vec::new(),
+                    vec![ActionKind::Run, ActionKind::Inspect],
+                )],
+            }],
+            issues: Vec::new(),
+        };
+        let mut panel = ManagementPanel::new(Area::Mcp, None);
+        panel.set_result(&view_reply(Area::Mcp, ManagementAction::List, view));
+        let text = shown(&panel, 100, 20).join("\n");
+        assert!(text.contains("MCP"), "the title is the area's: {text}");
+        assert!(
+            text.contains("Ctrl+T test") && !text.contains("Ctrl+T run"),
+            "{text}"
+        );
+        match panel.handle_key(ctrl('t')) {
+            Effect::Management(request) => {
+                assert_eq!(request.area, Area::Mcp);
+                assert_eq!(request.action, ManagementAction::Run { id: "docs".into() });
+            }
+            _ => panic!("expected a run"),
+        }
     }
 }

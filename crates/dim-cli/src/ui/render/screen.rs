@@ -13,7 +13,7 @@ use std::io::{self, Write};
 use ratatui::layout::{Rect, Size};
 use xai_ratatui_inline::{TerminalLike, emit_to_scrollback};
 
-/// History rows kept visible when the live region grows (design §6.1).
+/// History rows kept visible when space permits.
 pub const MIN_HISTORY_ROWS: u16 = 4;
 
 const BEGIN_SYNC: &[u8] = b"\x1b[?2026h";
@@ -133,12 +133,8 @@ impl Screen {
 
     /// How many rows the region takes for `live` rows at `size`.
     pub fn wanted_for(&self, size: (u16, u16), live: usize) -> u16 {
-        let cap = size.1.saturating_sub(MIN_HISTORY_ROWS).max(1);
-        live.clamp(1, cap as usize) as u16
-    }
-
-    fn cap(&self) -> u16 {
-        self.size.1.saturating_sub(MIN_HISTORY_ROWS).max(1)
+        let cap = super::live_row_budget(size.1 as usize, MIN_HISTORY_ROWS as usize);
+        live.clamp(1, cap) as u16
     }
 
     fn viewport_top(&self) -> u16 {
@@ -169,12 +165,7 @@ impl Screen {
     pub fn render(&mut self, frame: &Frame, size: (u16, u16)) -> Vec<u8> {
         let mut out = Vec::new();
         let resized = size != self.size;
-        let cap = if resized {
-            size.1.saturating_sub(MIN_HISTORY_ROWS).max(1)
-        } else {
-            self.cap()
-        };
-        let wanted = frame.live.len().clamp(1, cap as usize) as u16;
+        let wanted = self.wanted_for(size, frame.live.len());
         let tail = visible_tail(frame, wanted);
         let rows_changed = self.painted_differs(frame, wanted);
         let nothing = frame.commits.is_empty()

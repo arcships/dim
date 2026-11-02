@@ -959,12 +959,17 @@ impl Composer {
         }
     }
 
-    /// Rows of the input at `text_width` columns (without prompt/border), the
-    /// cursor (row, column) inside them, and how many rows the draft needs.
-    pub fn render_rows(&mut self, text_width: u16, p: &Palette) -> (Vec<String>, (u16, u16)) {
+    /// Rows of the input at `text_width` columns (without prompt/border),
+    /// bounded by `max_rows`, and the cursor (column, row) inside them.
+    pub fn render_rows(
+        &mut self,
+        text_width: u16,
+        max_rows: usize,
+        p: &Palette,
+    ) -> (Vec<String>, (u16, u16)) {
         let width = text_width.max(1);
         let needed = self.area.desired_height(width).max(1);
-        let height = needed.min(MAX_INPUT_ROWS as u16);
+        let height = needed.min(max_rows.clamp(1, MAX_INPUT_ROWS) as u16);
         let area = Rect::new(0, 0, width, height);
         let mut buffer = Buffer::empty(area);
         (&self.area).render_ref(area, &mut buffer, &mut self.state);
@@ -1025,27 +1030,35 @@ impl Composer {
             .argument
     }
 
-    /// The palette panel when a command is being typed.
-    /// The fullscreen palette box with `page` command rows, and the width
-    /// of its query (the cursor goes after it).
+    /// The fullscreen palette and its query cursor within the row budget.
     pub fn palette_overlay(
         &mut self,
         width: usize,
-        page: usize,
+        max_rows: usize,
         p: &Palette,
-    ) -> Option<(Vec<String>, usize)> {
+    ) -> Option<crate::ui::render::Overlay> {
         let query = self.command_query()?.to_owned();
         self.palette.set_query(&query);
         let rows = self.palette_rows();
-        let box_rows = palette::render_overlay(&self.palette, &rows, width, page, p);
-        Some((box_rows, crate::ui::text::display_width(&query)))
+        Some(palette::render_overlay(
+            &self.palette,
+            &rows,
+            width,
+            max_rows,
+            p,
+        ))
     }
 
-    pub fn palette_panel(&mut self, width: usize, p: &Palette) -> Option<Vec<String>> {
+    pub fn palette_panel(
+        &mut self,
+        width: usize,
+        max_rows: usize,
+        p: &Palette,
+    ) -> Option<Vec<String>> {
         let query = self.command_query()?.to_owned();
         self.palette.set_query(&query);
         let rows = self.palette_rows();
-        Some(palette::render(&self.palette, &rows, width, p))
+        Some(palette::render(&self.palette, &rows, width, max_rows, p))
     }
 }
 
@@ -2064,7 +2077,7 @@ mod tests {
             typed(&mut c, &format!("line {n}"));
             c.handle_key(KeyEvent::new(KeyCode::Enter, Modifiers::SHIFT));
         }
-        let (rows, cursor) = c.render_rows(40, &theme.palette);
+        let (rows, cursor) = c.render_rows(40, MAX_INPUT_ROWS, &theme.palette);
         assert_eq!(rows.len(), MAX_INPUT_ROWS);
         assert!((cursor.1 as usize) < rows.len());
     }

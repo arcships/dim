@@ -95,10 +95,14 @@ impl Columns {
         };
         let category = widest(&|r| Some(display_width(&r.category)));
         let label = widest(&|r| (!r.detail.is_empty()).then(|| display_width(&r.label)));
+        let command = widest(&|r| match r.kind {
+            Kind::Command(command) => Some(display_width(command.name) + 1 + DETAIL_GAP),
+            _ => None,
+        });
         let room = inner.saturating_sub(ROW_INDENT + category + DETAIL_GAP);
         Self {
             category,
-            label: (label + DETAIL_GAP).min((room / 2).max(1)),
+            label: (label + DETAIL_GAP).min((room / 2).max(command).min(room).max(1)),
         }
     }
 
@@ -138,6 +142,10 @@ pub fn panel_row(row: &Row, selected: bool, inner: usize, columns: Columns, p: &
         .key
         .as_deref()
         .map(|key| format!("{}{key}", " ".repeat(DETAIL_GAP)))
+        .filter(|key| {
+            ROW_INDENT + display_width(&category) + display_width(&row.label) + display_width(key)
+                <= inner
+        })
         .unwrap_or_default();
     let room = inner
         .saturating_sub(ROW_INDENT + display_width(&category) + display_width(&key))
@@ -166,10 +174,12 @@ pub fn panel_row(row: &Row, selected: bool, inner: usize, columns: Columns, p: &
             .label
             .saturating_sub(display_width(&label))
             .max(DETAIL_GAP);
-        truncate_cells(
-            &format!("{}{detail}", " ".repeat(gap)),
-            room.saturating_sub(display_width(&label)),
-        )
+        let available = room.saturating_sub(display_width(&label));
+        if available <= gap {
+            String::new()
+        } else {
+            truncate_cells(&format!("{}{detail}", " ".repeat(gap)), available)
+        }
     };
     let used = ROW_INDENT
         + display_width(&category)

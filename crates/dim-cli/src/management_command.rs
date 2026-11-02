@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::Result;
 use crate::args::Options;
 use crate::client::Client;
-use crate::management::{self, editor, hooks, permissions, scheduler, skills};
+use crate::management::{self, editor, hooks, mcp, permissions, scheduler, skills};
 use crate::mcp_command::print_report;
 use crate::model::session::{
     ActionKind, Area, ManagementAction, ManagementRequest, ManagementResult,
@@ -32,6 +32,7 @@ pub async fn run(
     match request.area {
         Area::Skills => run_skills(client, options, request).await,
         Area::Hooks => run_hooks(client, options, request).await,
+        Area::Mcp => run_mcp(client, options, request).await,
         Area::Scheduled => run_scheduled(client, request).await,
         Area::Permissions => run_permissions(client, request).await,
     }
@@ -210,6 +211,24 @@ async fn read(
                 .user_document
                 .ok_or("The daemon reports no hook document to edit.")?;
             Ok((catalog.user_revision, document))
+        }
+        Area::Mcp => {
+            let Some(id) = id else {
+                return Err("mcp edit and set take an entry id.".to_owned().into());
+            };
+            let server = mcp::target(client, &cwd, id).await?;
+            if server.source == "plugin" {
+                return Err("plugin MCP entries change through their plugin".into());
+            }
+            let editable = mcp::editable(client, &cwd, &server).await?;
+            // A plugin entry's read reports no revision; the refusal above
+            // already covers it, and any other missing revision leaves
+            // nothing to write.
+            let revision = editable
+                .revision
+                .ok_or("The daemon reports no revision for this MCP entry to edit.")?;
+            let document = mcp::seed(&editable.configuration)?;
+            Ok((revision, document))
         }
         Area::Scheduled => {
             let Some(id) = id else {
@@ -447,6 +466,88 @@ async fn run_scheduled(client: &mut Client, request: &ManagementRequest) -> Resu
         Err(scheduler::Failure::ReadFailed { note, error }) => {
             // The read that would name the entry failed; what the user typed
             // names it, except where the owner's own answer stands.
+            let line = note.unwrap_or_else(|| management::applied_line(&request.action, None));
+            print_report(vec![safe_line(&line)], vec![error])
+        }
+        Err(error) => return Err(error.to_string().into()),
+    }
+    Ok(0)
+}
+
+/// `mcp ...`: the entries the catalog reports, or one entry's detail and
+/// what the owner answered.
+async fn run_mcp(
+    client: &mut Client,
+    options: &Options,
+    request: &ManagementRequest,
+) -> Result<i32> {
+    management::supported(client, request)?;
+    // A read reports the area exactly as `mcp list` does.
+    if matches!(
+        request.action,
+        ManagementAction::List | ManagementAction::Reload
+    ) {
+        let (rows, notes) = crate::mcp::catalog_report(client, options).await?;
+        print_report(rows, notes);
+        return Ok(0);
+    }
+    match mcp::apply(client, &request.action, &options.cwd).await {
+        // A test's tools are typed: one row per tool, `name\tdescription`,
+        // and the no-tools sentence when the owner found none.
+        Ok(mcp::Answer::Tools { tools, .. }) => {
+            let (lines, notes) = if tools.is_empty() {
+                (
+                    Vec::new(),
+                    vec![
+                        crate::ui::i18n::t("The server exposes no tools.").to_owned(),
+                        "The connection was temporary; no configuration was saved.".to_owned(),
+                    ],
+                )
+            } else {
+                (
+                    tools.iter().map(mcp::tool_row).collect(),
+                    vec![
+                        "Columns: tool, description.".to_owned(),
+                        "The connection was temporary; no configuration was saved.".to_owned(),
+                    ],
+                )
+            };
+            print_report(lines, notes)
+        }
+        // An inspect's detail is printed as the adapter built it.
+        Ok(mcp::Answer::Detail(detail)) => {
+            let lines = detail.lines.iter().map(|line| safe(line)).collect();
+            print_report(
+                lines,
+                vec!["Inspection does not connect or contact the server.".to_owned()],
+            )
+        }
+        Ok(mcp::Answer::Area { note, catalog }) => match (&request.action, note) {
+            // The owner's own answer, made safe: the entry a create made.
+            (_, Some(note)) => print_report(vec![safe_line(&note)], Vec::new()),
+            // A read reports what it read; an action reports its line.
+            (ManagementAction::List | ManagementAction::Reload, None) => {
+                print_report(Vec::new(), Vec::new())
+            }
+            (_, None) => {
+                // The catalog the adapter just re-read names the entry, as
+                // the panel's view does; a remove took its entry out of the
+                // read, so the id the action was sent with names it then.
+                let name = management::named_id(&request.action).and_then(|id| {
+                    catalog
+                        .servers
+                        .iter()
+                        .find(|server| server.id == id)
+                        .map(|server| server.id.as_str())
+                });
+                let line = management::applied_line(&request.action, name);
+                print_report(vec![safe_line(&line)], Vec::new())
+            }
+        },
+        // The action was applied; the report after it failed. The action's own
+        // line stands, made safe, and the read error goes to stderr with the
+        // exit still 0.
+        Err(mcp::Failure::ReadFailed { note, error }) => {
             let line = note.unwrap_or_else(|| management::applied_line(&request.action, None));
             print_report(vec![safe_line(&line)], vec![error])
         }

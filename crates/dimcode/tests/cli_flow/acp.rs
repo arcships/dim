@@ -840,15 +840,27 @@ impl Peer {
 
     fn frame_within(&mut self, patience: Duration) -> Value {
         if self.output.buffer().is_empty() {
+            let deadline = Instant::now() + patience;
             let mut fd = libc::pollfd {
                 fd: self.output.get_ref().as_raw_fd(),
                 events: libc::POLLIN,
                 revents: 0,
             };
-            assert!(
-                unsafe { libc::poll(&mut fd, 1, patience.as_millis() as i32) } > 0,
-                "ACP frame timed out"
-            );
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                match unsafe { libc::poll(&mut fd, 1, remaining.as_millis() as i32) } {
+                    ready if ready > 0 => break,
+                    0 => panic!("ACP frame timed out"),
+                    _ => {
+                        let error = std::io::Error::last_os_error();
+                        assert_eq!(
+                            error.kind(),
+                            std::io::ErrorKind::Interrupted,
+                            "ACP poll failed: {error}"
+                        );
+                    }
+                }
+            }
         }
         let mut line = String::new();
         if self.output.read_line(&mut line).unwrap() == 0 {

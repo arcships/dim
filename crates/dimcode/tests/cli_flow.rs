@@ -21,6 +21,9 @@ mod goal;
 #[path = "cli_flow/hooks.rs"]
 mod hooks;
 
+#[path = "cli_flow/mcp.rs"]
+mod mcp;
+
 #[path = "cli_flow/migration.rs"]
 mod migration;
 #[path = "cli_flow/permission.rs"]
@@ -4447,7 +4450,7 @@ fn tui_mcp_without_a_session_reports_the_catalog_only() {
     });
     let mut terminal = Terminal::launch_tui(home.command());
     terminal.until("Sign in with /login");
-    terminal.write(b"/mcp\r");
+    terminal.write(b"/mcp list\r");
     terminal.until("No MCP server is configured.");
     quiet_done.recv_timeout(PATIENCE).unwrap();
     terminal.signal(libc::SIGKILL);
@@ -5783,7 +5786,7 @@ fn tui_mcp_says_when_no_server_is_configured() {
     });
     let mut terminal = Terminal::launch_tui(home.command());
     terminal.until("test / model");
-    terminal.write(b"/mcp\r");
+    terminal.write(b"/mcp list\r");
     terminal.until("No MCP server is configured.");
     assert!(
         !terminal.transcript.contains("Columns:"),
@@ -5831,7 +5834,7 @@ fn tui_mcp_shows_failure_reasons_rejections_and_the_catalog_error() {
     });
     let mut terminal = Terminal::launch_tui(home.command());
     terminal.until("test / model");
-    terminal.write(b"/mcp\r");
+    terminal.write(b"/mcp list\r");
     terminal.until("connection refused");
     terminal.until("Version v2 rejected: duplicate tool name");
     terminal.until("MCP catalog: project MCP configuration is not active");
@@ -5932,16 +5935,16 @@ fn tui_mcp_enables_and_disables_a_project_server() {
     });
     let mut terminal = Terminal::launch_tui(home.command());
     terminal.until("test / model");
-    terminal.write(b"/mcp\r");
+    terminal.write(b"/mcp list\r");
     terminal.until("disabled");
     terminal.write(b"/mcp enable docs\r");
     terminal.until("Enabled \"docs\" (project).");
     terminal.until(".mcp.json");
-    terminal.write(b"/mcp\r");
+    terminal.write(b"/mcp list\r");
     terminal.until("enabled");
     terminal.write(b"/mcp disable docs\r");
     terminal.until("Disabled \"docs\" (project).");
-    terminal.write(b"/mcp\r");
+    terminal.write(b"/mcp list\r");
     terminal.until("disabled");
     terminal.signal(libc::SIGKILL);
     terminal.wait();

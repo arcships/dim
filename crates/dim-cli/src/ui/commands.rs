@@ -291,7 +291,7 @@ pub const COMMANDS: &[Command] = &[
     slash(
         "mcp",
         "model",
-        "list MCP servers, sign in or out (login|logout ID)",
+        "manage MCP servers, sign in or out (/mcp login ID)",
         &[],
         Needs::Nothing,
     ),

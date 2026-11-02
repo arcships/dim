@@ -110,6 +110,89 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "This workspace's hook settings changed since they were read; nothing was written." => {
             "La configuración de hooks de este espacio de trabajo cambió desde que se leyó; no se escribió nada."
         }
+        "MCP" => "MCP",
+        "MCP servers" => "servidores MCP",
+        "Ctrl+T test" => "Ctrl+T probar",
+        "sign-in required" => "inicio de sesión requerido",
+        "signed in" => "sesión iniciada",
+        "sign-in expired" => "sesión caducada",
+        "missing scopes: {scopes}" => "ámbitos faltantes: {scopes}",
+        "Executable: {command}" => "Ejecutable: {command}",
+        "Stored arguments (hidden): {count}" => "Argumentos guardados (ocultos): {count}",
+        "Working directory: {cwd}" => "Directorio de trabajo: {cwd}",
+        "Environment names: {names}" => "Nombres de entorno: {names}",
+        "Endpoint: {endpoint}" => "Extremo: {endpoint}",
+        "Header names: {names}" => "Nombres de encabezado: {names}",
+        "Bearer token: {state}" => "Token Bearer: {state}",
+        "OAuth: configured (client ID {id})" => "OAuth: configurado (ID de cliente {id})",
+        "OAuth: configured" => "OAuth: configurado",
+        "OAuth: not configured" => "OAuth: no configurado",
+        "Metadata URL: {state}" => "URL de metadatos: {state}",
+        "configured" => "configurado",
+        "Owned by a plugin; change it through Plugins." => {
+            "Propiedad de un plugin; cámbielo desde Plugins."
+        }
+        "MCP entry {id}" => "Entrada MCP {id}",
+        "Connection {number} · {status}" => "Conexión {number} · {status}",
+        "Tools have not been discovered." => "Los recursos aún no se han descubierto.",
+        "No live session connections." => "No hay conexiones de sesión activas.",
+        "Tools of {id}" => "Recursos de {id}",
+        "The server exposes no tools." => "El servidor no expone recursos.",
+        "The add document needs an id." => "El documento de alta necesita un id.",
+        "The add document needs a source of user or project." => {
+            "La fuente del documento de alta debe ser user o project."
+        }
+        "The add document needs a configuration object." => {
+            "El documento de alta necesita un objeto configuration."
+        }
+        "{id} is already in mcp list; remove it first or choose another id." => {
+            "{id} ya está en mcp list; elimínelo primero o elija otro id."
+        }
+        "{id} is already in mcp list; choose another id, or change it through its plugin." => {
+            "{id} ya está en mcp list; elija otro id o cámbielo a través de su plugin."
+        }
+        "This entry's settings changed since they were read; nothing was written." => {
+            "La configuración de esta entrada cambió desde que se leyó; no se escribió nada."
+        }
+        "The MCP entry changed since it was read; nothing was written." => {
+            "La entrada MCP cambió desde que se leyó; no se escribió nada."
+        }
+        "The MCP entries changed since they were read; nothing was written." => {
+            "Las entradas MCP cambiaron desde que se leyeron; no se escribió nada."
+        }
+        "The MCP entry changed since it was read; nothing was removed." => {
+            "La entrada MCP cambió desde que se leyó; no se eliminó nada."
+        }
+        "MCP's documents belong to one entry; this save names none." => {
+            "Los documentos MCP pertenecen a una entrada; este guardado no nombra ninguna."
+        }
+        "No MCP server has that id." => "Ningún servidor MCP tiene ese id.",
+        "This workspace has no project MCP source." => {
+            "Este espacio de trabajo no tiene una fuente MCP de proyecto."
+        }
+        "Enabled {id} ({source})." => "{id} ({source}) activado.",
+        "Disabled {id} ({source})." => "{id} ({source}) desactivado.",
+        "It runs this workspace's .mcp.json entry, including later edits to it, in active and new sessions." => {
+            "Ejecuta la entrada .mcp.json de este espacio de trabajo, incluidas sus ediciones posteriores, en sesiones activas y nuevas."
+        }
+        "{id} is not in mcp list; withdrew any stored enablement of it in this workspace." => {
+            "{id} no está en mcp list; se retiró cualquier activación guardada en este espacio de trabajo."
+        }
+        "The MCP catalog could not be read ({error}); withdrew this workspace's enablement of {id}. A user entry with this ID is unchanged." => {
+            "No se pudo leer el catálogo MCP ({error}); se retiró la activación de {id} en este espacio de trabajo. Una entrada de usuario con este ID no cambia."
+        }
+        "MCP configuration: {error}" => "Configuración MCP: {error}",
+        "The server rejected the stored credential; sign in again with mcp login." => {
+            "El servidor rechazó las credenciales guardadas; vuelve a iniciar sesión con mcp login."
+        }
+        "The server requires additional scopes: {scopes}." => {
+            "El servidor requiere ámbitos adicionales: {scopes}."
+        }
+        "The server requires authorization; run mcp login ID." => {
+            "El servidor requiere autorización; ejecuta mcp login ID."
+        }
+        "The probe ended: {status}." => "La sonda terminó: {status}.",
+
         "Command rules" => "Reglas de comandos",
         "user" => "usuario",
         "Matches only this command." => "Solo coincide con este comando.",
