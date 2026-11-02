@@ -7792,6 +7792,13 @@
     },
     {
       "from": "dim_agent_capabilities::context_policy",
+      "to": "dim_agent_types::checkpoint",
+      "references": [
+        "path TimelinePosition"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_policy",
       "to": "dim_agent_types::content",
       "references": [
         "path Message",
@@ -8691,7 +8698,8 @@
         "path RecoverySnapshot",
         "path TimelinePosition",
         "path checkpoint",
-        "path dim_agent_types::ProjectionCheckpoint"
+        "path dim_agent_types::ProjectionCheckpoint",
+        "path dim_agent_types::TimelinePosition"
       ]
     },
     {
