@@ -575,6 +575,16 @@ impl RuntimeService {
             return Ok(());
         }
         let _guard = self.config.lock().unwrap();
+        let index = Self::index(kind);
+        if matches!(
+            self.states.lock().unwrap()[index],
+            State::Acquiring | State::Provided(None)
+        ) {
+            return Err(format!(
+                "{} is being acquired; change its configuration when that settles",
+                kind.name()
+            ));
+        }
         let path = self.runtimes.lock().unwrap().config_file();
         if let Some(directory) = path.parent() {
             std::fs::create_dir_all(directory)

@@ -277,8 +277,9 @@ $ dimcode runtime config python --source system --auto on
 python  system    3.12.15   off
 ```
 
-`dimcode runtime list` prints one tab-separated row per runtime with the fields the panel shows,
-then the waiting line when there is one. `install` and `config` print the runtime's row after the
+`dimcode runtime list` prints one tab-separated row per runtime with the fields the panel shows.
+Which plugins wait for a runtime is `/plugins`' answer (`dimcode plugin list` in the line client), not
+this command's: one place names it per plugin, and the panel repeats it only for the runtime in view. `install` and `config` print the runtime's row after the
 call, which is `acquiring` or the state it returned to; a failed call prints the error and exits
 non-zero. `--help` lists these forms and never contacts a daemon.
 

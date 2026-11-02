@@ -164,7 +164,7 @@ rutis 的 Python 运行时是一个进程；行 `py:<模块>` 用 `importlib.imp
 | `RuntimeService`（Rust 进程服务） | `list() -> [RuntimeEntry]`；`install(name)`：开启运行时并开始获取；正在获取或正在运行时什么都不做；获取失败后再获取一次；连接 `down` 后重新提供启动命令。用可选依赖读取，所以 RuntimeManager reload 不会让调用方 reload。 |
 | `runtime.list`（管理方法） | `[{name, source, auto, version, status, reason?}]`；`auto` 是正在生效的配置，客户端因此不必自己存一份；`status` 是 `off`、`acquiring`、`failed`，或提供启动命令后连接的 `RuntimeStatus`：`starting`（连接行还没启动时也是）、`ready`，或带原因的 `down`。 |
 | `runtime.install {name}`（管理方法，有修改） | `RuntimeService::install`：重读配置，`source` 变化时通过重启连接行应用（§3.3），并立即回复当前状态；配置无法读取时该调用以 `runtime_configuration` 错误返回。 |
-| `runtime.configure {name, source?, auto?}`（管理方法，有修改） | 原子地写 `<home>/runtimes/config.json`，按运行时、按字段覆盖预置（§2.2），随后按 `runtime.install` 的方式应用；写不出或读不出时该调用以 `runtime_configuration` 错误返回。 |
+| `runtime.configure {name, source?, auto?}`（管理方法，有修改） | 原子地写 `<home>/runtimes/config.json`，按运行时、按字段覆盖预置（§2.2），随后按 `runtime.install` 的方式应用；写不出或读不出时该调用以 `runtime_configuration` 错误返回。该运行时正在获取时拒绝，因为获取过程中它的 plan 不能变（§3.1）。 |
 | 客户端 | 两种终端模式下的 `/runtime`（面板，以及打字的 `/runtime install|source|auto`），以及 `dimcode runtime list`、`install <node|python>` 和 `config NAME [--source …] [--auto …]`（[CLI 命令](../../../zh/design/cli-commands.md#插件运行时)）。 |
 
 ## 6. 发布

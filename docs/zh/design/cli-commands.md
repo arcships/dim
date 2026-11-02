@@ -236,14 +236,15 @@ RuntimeManager 提供插件代码运行的 Node 与 Python 运行时（[RuntimeM
 $ dimcode runtime list
 node    download  24.21.0   ready
 python  system    3.12.15   off       未安装
-4 个插件在等 node：goal、session-title、scheduler、workflow
 $ dimcode runtime install node
 node    download  24.21.0   acquiring
 $ dimcode runtime config python --source system --auto on
 python  system    3.12.15   off
 ```
 
-`dimcode runtime list` 每个运行时打印一行制表符分隔的字段，与面板显示的一致，需要时再加等待那一行。
+`dimcode runtime list` 每个运行时打印一行制表符分隔的字段，与面板显示的一致。哪些插件在等某个运行时是
+`/plugins` 的答案（行客户端里是 `dimcode plugin list`），不是这条命令的职责：按插件列出的地方只有一处，
+面板只就当前查看的那个运行时重复一次。
 `install` 与 `config` 在调用后打印该运行时的行，即 `acquiring` 或它回到的状态；调用失败则打印错误并以
 非零退出。`--help` 列出这些形态，且从不连接守护进程。
 
