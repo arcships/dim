@@ -309,6 +309,7 @@ impl HistoryRenderer {
         let mut history = Vec::new();
         let mut compaction = None;
         let mut cut_in_effect: Option<(Option<usize>, u64)> = None;
+        let mut compaction_cut: Option<dim_agent_types::TimelinePosition> = None;
         for (index, (branch, cut)) in segments.iter().enumerate().skip(first) {
             let mut cursor = if index == first { resume } else { 1 };
             while cursor <= *cut {
@@ -361,6 +362,7 @@ impl HistoryRenderer {
                         ));
                     }
                     cut_in_effect = Some(at);
+                    compaction_cut = Some(cut.clone());
                     let kept = history
                         .iter()
                         .position(|entry| {
@@ -386,6 +388,8 @@ impl HistoryRenderer {
                 .collect(),
             order: policy_order.events,
             compaction,
+            branches: segments.iter().map(|(branch, _)| branch.clone()).collect(),
+            compaction_cut,
         })
     }
 }
@@ -399,6 +403,11 @@ pub struct StreamedContext {
     pub ancestry: Vec<String>,
     pub order: Vec<dim_agent_runtime::PolicyOrderEvent>,
     pub compaction: Option<Arc<AgentEvent>>,
+    /// Root first, the segments the stream read.
+    pub branches: Vec<String>,
+    /// The position of the cut in effect, which need not be an event the
+    /// policy order carries.
+    pub compaction_cut: Option<dim_agent_types::TimelinePosition>,
 }
 
 /// Read the shared prompt/input/output projection using its supported cache.

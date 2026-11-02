@@ -71,6 +71,10 @@ pub(crate) struct PolicyContext {
     compaction: Option<ContextCompactionData>,
     order: Vec<PolicyOrderEvent>,
     full: Option<ContextHistory>,
+    /// Root first: how positions compare across branches.
+    branches: Vec<String>,
+    /// The position of the in-effect cut, when the stream resolved it.
+    compaction_cut: Option<TimelinePosition>,
 }
 
 impl PolicyContext {
@@ -96,11 +100,19 @@ impl PolicyContext {
                 boundary: index + 1 == context.events.len(),
             })
             .collect();
+        let mut branches: Vec<String> = Vec::new();
+        for position in &context.positions {
+            if !branches.contains(&position.branch_id) {
+                branches.push(position.branch_id.clone());
+            }
+        }
         Self {
             configuration,
             compaction,
             order,
             full: Some(context),
+            branches,
+            compaction_cut: None,
         }
     }
 
@@ -117,6 +129,8 @@ impl PolicyContext {
             compaction,
             order: streamed.order.clone(),
             full: None,
+            branches: streamed.branches.clone(),
+            compaction_cut: streamed.compaction_cut.clone(),
         }
     }
 
@@ -148,13 +162,19 @@ impl PolicyContext {
         if let Some(index) = history.iter().position(|entry| entry.event_id == cut) {
             return Ok(index);
         }
-        let mut branches: Vec<&str> = Vec::new();
-        for event in &self.order {
-            if !branches.contains(&event.branch_id.as_str()) {
-                branches.push(&event.branch_id);
-            }
+        let rank = |branch: &str| self.branches.iter().position(|name| name == branch);
+        if let Some(position) = &self.compaction_cut
+            && self.compaction.as_ref().is_some_and(|data| {
+                matches!(&data.outcome,
+                    ContextCompactionResult::Completed { retain_from, .. } if retain_from == cut)
+            })
+        {
+            let at = (rank(&position.branch_id), position.sequence);
+            return Ok(history
+                .iter()
+                .position(|entry| (rank(&entry.position.branch_id), entry.position.sequence) >= at)
+                .unwrap_or(history.len()));
         }
-        let rank = |branch: &str| branches.iter().position(|name| *name == branch);
         let event = self
             .order
             .iter()
