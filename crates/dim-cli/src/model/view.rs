@@ -359,6 +359,9 @@ pub struct ViewSnapshot {
     pub focus: String,
     /// The line opened beside the shown one, while its panel is open.
     pub side: Option<SideLine>,
+    /// The goal in force on the shown line, folded from its events (Goal
+    /// §A.3); none when the line has no goal.
+    pub goal: Option<crate::goal::Goal>,
 }
 
 /// A line the side panel follows (timeline UI §4.7).

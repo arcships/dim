@@ -40,6 +40,9 @@ impl ProductEvent {
             | EventKind::ContextCompactionStart(_)
             | EventKind::ContextCompaction(_) => version >= 3,
             EventKind::BranchEnd(_) | EventKind::BranchEnded(_) => version >= 3,
+            // A fork's opening is where an owner that folds the branch's own
+            // history stops reading the copied facts (Goal A11).
+            EventKind::SessionForked(_) => version >= 3,
             EventKind::InputMessage(_)
             | EventKind::InputApplied(_)
             | EventKind::InputConsumed(_)
@@ -80,7 +83,6 @@ impl ProductEvent {
             | EventKind::ContextBudget(_)
             | EventKind::ModelCall(_)
             | EventKind::BranchResume(_)
-            | EventKind::SessionForked(_)
             // v2/v3 keep their allowlists; extension events reach only a
             // dynamic protocol after host visibility filtering (ADR 001).
             | EventKind::Extension(_) => false,
@@ -262,6 +264,22 @@ pub struct ApprovalResolved {
 mod tests {
     use super::*;
     use dim_agent_types::*;
+
+    /// A fork's opening is where an owner that folds the branch's own history
+    /// stops reading the copied facts (Goal A11): v3 delivers it, v2 keeps
+    /// its list.
+    #[test]
+    fn a_fork_opening_is_a_v3_fact() {
+        let opening = Arc::new(AgentEvent {
+            id: "forked".into(),
+            sequence: 9,
+            create_at: 1,
+            tags: None,
+            kind: EventKind::SessionForked(SessionForkedData {}),
+        });
+        assert!(ProductEvent::new(opening.clone(), 3).is_some());
+        assert!(ProductEvent::new(opening, 2).is_none());
+    }
 
     fn configured(config: Option<ModelConfig>, metadata: Option<RequestMetadata>) -> ProductEvent {
         ProductEvent(Arc::new(AgentEvent {

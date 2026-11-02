@@ -212,6 +212,7 @@ side's preset.
 | `permissionPolicy` | The effective policy |
 | `interactive` | `false` |
 | `collaborationRole` | The default (leader) |
+| `origin` | `internal`: the launch created the Session for its caller's work, so a picker leaves it out of the conversation list ([session classification](session-classification.md#32-which-creation-entry-writes-which-value)) |
 | Protocol version | `PROTOCOL_VERSION` (3): written to the record, and registered with `insert_version` after creation, as `session.create` and Collaboration do. Rpc serves a loaded Session only once its version is registered, and current clients list it. Creation and registration run in one task, so they finish together even if the caller stops waiting |
 | Record | Prepared creation (`AgentIndex::create_session`): project authorization, then the owned record, as for `session.create` |
 

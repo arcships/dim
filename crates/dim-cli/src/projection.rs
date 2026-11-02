@@ -82,6 +82,8 @@ pub struct Projection {
     /// Agent ids a finished `agent.list` read was asked to name, whether or
     /// not it returned them: only a card naming another id reads again.
     agents_read: std::collections::HashSet<String>,
+    /// The shown branch's goal, folded from its own events (Goal §A.3).
+    goal: crate::goal::Fold,
 }
 
 impl Projection {
@@ -212,6 +214,7 @@ impl Projection {
         {
             return;
         }
+        self.goal.apply(event);
         let sequence = event.sequence;
         match &event.content {
             EventContent::Input(data) => {
@@ -615,6 +618,7 @@ impl Projection {
             EventContent::Configuration(_)
             | EventContent::ToolCall(_)
             | EventContent::BranchStart(_)
+            | EventContent::SessionForked(_)
             | EventContent::BranchCreateFailed(_)
             | EventContent::BranchEnded(_)
             | EventContent::PermissionChanged(_)
@@ -780,8 +784,14 @@ impl Projection {
             },
             tasks: self.tasks.clone(),
             ended: self.ended,
+            goal: self.goal.goal(),
             ..ViewSnapshot::default()
         }
+    }
+
+    /// The goal in force on this branch, folded from its events so far.
+    pub fn goal(&self) -> Option<crate::goal::Goal> {
+        self.goal.goal()
     }
 
     pub fn tasks(&self) -> &[TaskView] {

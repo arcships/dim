@@ -183,6 +183,23 @@ fn changed(database: &Path, path: &Path, sql: &str) {
 }
 /// Removes what v26 adds from a copy, so that its schema is the v25 one: an
 /// older daemon's store, which the read-only export still reads.
+/// Every format before v30 has no Session origin column; the table is rebuilt
+/// at its v27 text, which the format gate compares character by character.
+fn without_origin_column(database: &Path) {
+    rusqlite::Connection::open(database)
+        .unwrap()
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             CREATE TEMP TABLE sessions_rows AS SELECT * FROM agent_sessions;
+             DROP TABLE agent_sessions;
+             CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id));
+             CREATE INDEX agent_sessions_by_leader ON agent_sessions(leader_session_id);
+             INSERT INTO agent_sessions(session_id, config, created_at_ms, leader_session_id) SELECT session_id, config, created_at_ms, leader_session_id FROM sessions_rows;
+             DROP TABLE sessions_rows;",
+        )
+        .unwrap();
+}
+
 fn without_v26_columns(database: &Path) {
     rusqlite::Connection::open(database)
         .unwrap()
@@ -283,7 +300,7 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
 
         assert_eq!(
             live[0],
-            json!({"kind":"header","export":1,"session_id":session,"store_format":29,"sensitive":true})
+            json!({"kind":"header","export":1,"session_id":session,"store_format":30,"sensitive":true})
         );
         let branches: Vec<_> = live.iter().filter(|line| line["kind"] == "branch").collect();
         assert_eq!(branches.len(), 2);
@@ -354,6 +371,7 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             (26, "", false),
             (27, "", false),
             (28, "", false),
+            (29, "", false),
         ] {
             let older = directory.join(format!("copies/v{version}.sqlite"));
             let catalog = if version < 23 {
@@ -382,6 +400,9 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             changed(&database, &older, &format!("{catalog} {grants} {output} {dropped} {end_index} DROP TABLE agent_store_format;
                 CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = {version}));
                 INSERT INTO agent_store_format VALUES ({version});"));
+            if version < 30 {
+                without_origin_column(&older);
+            }
             if version < 27 {
                 without_v26_columns(&older);
             }
@@ -395,8 +416,8 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
 
         for (name, sql) in [
             ("newer.sqlite", "DROP TABLE agent_store_format;
-                CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 30));
-                INSERT INTO agent_store_format VALUES (30);"),
+                CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 31));
+                INSERT INTO agent_store_format VALUES (31);"),
             ("changed.sqlite", "CREATE TABLE extra (id TEXT)"),
         ] {
             let path = directory.join("copies").join(name);

@@ -31,8 +31,9 @@ pub struct TimelineContext {
     children: Vec<FiberView>,
     /// Loader row ids the branch profile requires.
     required: Arc<[String]>,
-    /// The required parts its mounters mounted before it published.
-    parts: Vec<FiberView>,
+    /// The required views its scope handed and the required parts its
+    /// mounter mounted before it published.
+    awaited: Vec<FiberView>,
     copies: crate::parts::Copies,
     scope: BranchScope,
     timeline: Timeline,
@@ -152,7 +153,7 @@ impl TimelineContext {
         view: FiberView,
         children: Vec<FiberView>,
         required: Arc<[String]>,
-        parts: Vec<FiberView>,
+        awaited: Vec<FiberView>,
         copies: crate::parts::Copies,
         scope: BranchScope,
         timeline: Timeline,
@@ -169,7 +170,7 @@ impl TimelineContext {
             view,
             children,
             required,
-            parts,
+            awaited,
             copies,
             scope,
             timeline,
@@ -332,12 +333,7 @@ impl TimelineContext {
     pub(crate) fn diagnostics(&self) -> rutis::host::diagnostics::RuntimeDiagnostics {
         let scope = self.view.id;
         let mut snapshot = self.ctx.diagnostics();
-        let rows: std::collections::HashSet<_> = snapshot
-            .plugins
-            .iter()
-            .filter(|p| p.parent == Some(scope))
-            .map(|p| p.id)
-            .collect();
+        let rows: std::collections::HashSet<_> = self.children.iter().map(|view| view.id).collect();
         crate::assembly::retain_scope(&mut snapshot, scope, |plugin| rows.contains(&plugin));
         snapshot
     }
@@ -349,9 +345,10 @@ impl TimelineContext {
     pub(crate) fn required_rows(&self) -> &[String] {
         &self.required
     }
-    /// The required parts its mounters mounted when it opened.
-    pub(crate) fn required_parts(&self) -> &[FiberView] {
-        &self.parts
+    /// The required views its scope handed and the parts its mounter mounted
+    /// when it opened.
+    pub(crate) fn awaited(&self) -> &[FiberView] {
+        &self.awaited
     }
     pub(crate) fn state_cell<S: Clone + Send + Sync + 'static>(&self) -> Option<Arc<StateCell<S>>> {
         self.ctx

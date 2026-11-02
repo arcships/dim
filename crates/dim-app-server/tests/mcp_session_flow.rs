@@ -16,7 +16,10 @@ use dim_agent_capabilities::{
 use dim_agent_runtime::{testing::MinimalHost, *};
 use dim_agent_types::*;
 use dim_app_server::{
-    mcp::{self, McpChange, McpPlugin, McpPublication, McpService, McpSession, McpSourceState},
+    mcp::{
+        self, McpAppError, McpChange, McpPlugin, McpPublication, McpService, McpSession,
+        McpSourceState,
+    },
     settings::{SettingsPlugin, SettingsScope, SettingsService},
 };
 use rutis::Ctx;
@@ -49,6 +52,13 @@ struct Remote {
     images: AtomicBool,
     nullable: AtomicBool,
     broken: AtomicBool,
+    /// 0 none, 1 the declared document, 2 another media type, 3 over the
+    /// document limit.
+    widgets: AtomicUsize,
+    /// Holds a view's call after the server received it, until the request
+    /// ends.
+    app_hold: AtomicBool,
+    app_called: Notify,
 }
 impl Remote {
     fn new() -> Arc<Self> {
@@ -65,6 +75,9 @@ impl Remote {
             images: AtomicBool::new(false),
             nullable: AtomicBool::new(false),
             broken: AtomicBool::new(false),
+            widgets: AtomicUsize::new(0),
+            app_hold: AtomicBool::new(false),
+            app_called: Notify::new(),
         })
     }
 }
@@ -104,7 +117,27 @@ async fn rpc(
             if remote.broken.load(Ordering::SeqCst) {
                 tools.push(json!({"name":"broken","inputSchema":{"type":"object","properties":{"x":{"type":["string","file"]}}}}));
             }
+            if remote.widgets.load(Ordering::SeqCst) != 0 {
+                tools.push(json!({"name":"chart","description":"Render a counter","inputSchema":{"type":"object","properties":{"step":{"type":"integer"}}},"_meta":{"ui":{"resourceUri":"ui://widget/counter.html"}}}));
+                tools.push(json!({"name":"refresh","description":"Refresh the view","inputSchema":{"type":"object"},"_meta":{"ui":{"visibility":["app"]}}}));
+                tools.push(json!({"name":"summary","description":"Summarize","inputSchema":{"type":"object"},"_meta":{"ui":{"visibility":["model"]}}}));
+            }
             json!({"tools":tools})
+        }
+        "resources/read" => {
+            let uri = body["params"]["uri"].as_str().unwrap();
+            let ui = json!({"csp":{"connectDomains":["https://api.example"]},"prefersBorder":true});
+            match remote.widgets.load(Ordering::SeqCst) {
+                2 => {
+                    json!({"contents":[{"uri":uri,"mimeType":"text/html","text":"<p>counter</p>"}]})
+                }
+                3 => {
+                    json!({"contents":[{"uri":uri,"mimeType":"text/html;profile=mcp-app","text":"x".repeat(4*1024*1024+1)}]})
+                }
+                _ => {
+                    json!({"contents":[{"uri":uri,"mimeType":"text/html;profile=mcp-app","text":"<p>counter</p>","_meta":{"ui":ui}}]})
+                }
+            }
         }
         "tools/call" => {
             remote
@@ -112,7 +145,17 @@ async fn rpc(
                 .lock()
                 .unwrap()
                 .push(body["params"]["name"].as_str().unwrap().into());
-            if body["params"]["name"] == "spaces" {
+            if body["params"]["name"] == "chart" {
+                if remote.app_hold.load(Ordering::SeqCst) {
+                    remote.app_called.notify_waiters();
+                    std::future::pending::<()>().await;
+                }
+                json!({"content":[{"type":"text","text":"chart-ok"}],"structuredContent":{"step":2},"_meta":{"widget":"chart"}})
+            } else if body["params"]["name"] == "refresh" {
+                json!({"isError":true,"content":[{"type":"text","text":"refresh failed"}]})
+            } else if body["params"]["name"] == "summary" {
+                json!({"content":[{"type":"text","text":"summary-ok"}]})
+            } else if body["params"]["name"] == "spaces" {
                 json!({"content":[{"type":"text","text":"spaces-ok"}]})
             } else if body["params"]["name"] == "screenshot" {
                 json!({"content":[
@@ -1887,4 +1930,270 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
     })
     .await
     .unwrap();
+}
+
+/// The published names the Session offers the model, from the request the
+/// binding made for a turn.
+async fn offered(env: &Env, session: &Session) -> Vec<ToolDefinition> {
+    env.turn(session, Action::Text).await;
+    env.model
+        .requests
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .tools
+        .as_ref()
+        .unwrap()
+        .as_ref()
+        .clone()
+}
+
+fn arguments(value: Value) -> JsonObject {
+    value.as_object().cloned().unwrap()
+}
+
+fn original(tool: &ToolDefinition) -> Option<&str> {
+    tool.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.mcp_original_tool_name.as_deref())
+}
+
+#[tokio::test]
+async fn a_view_mounts_its_document_and_calls_the_entry_it_came_from() {
+    let env = Env::new().await;
+    env.remote.widgets.store(1, Ordering::SeqCst);
+    let session = env.session(false, PermissionPreset::ReadOnly).await;
+    ready(&session).await;
+    let tools = offered(&env, &session).await;
+    let chart = declared(&tools, "chart").name.clone();
+    assert!(
+        tools.iter().all(|tool| original(tool) != Some("refresh")),
+        "a tool whose visibility excludes the model is published to no model"
+    );
+    let mcp = session.session_service::<McpSession>().unwrap();
+
+    let widget = mcp.widget(&chart).await.unwrap();
+    assert_eq!(widget.server, "docs");
+    assert_eq!(widget.name, "chart");
+    assert_eq!(widget.uri, "ui://widget/counter.html");
+    assert_eq!(widget.mime_type, "text/html;profile=mcp-app");
+    assert_eq!(widget.text.as_deref(), Some("<p>counter</p>"));
+    assert!(widget.blob.is_none());
+    assert_eq!(widget.description.as_deref(), Some("Render a counter"));
+    assert!(
+        widget
+            .input_schema
+            .properties
+            .as_ref()
+            .unwrap()
+            .contains_key("step")
+    );
+    assert_eq!(
+        Value::Object(widget.app.clone().unwrap()),
+        json!({"csp":{"connectDomains":["https://api.example"]},"prefersBorder":true})
+    );
+    let wire = serde_json::to_string(&widget).unwrap();
+    assert!(
+        !wire.contains("127.0.0.1"),
+        "no endpoint reaches a view: {wire}"
+    );
+    assert!(
+        !wire.contains("X-Generation"),
+        "no header reaches a view: {wire}"
+    );
+
+    let plain = declared(&tools, "lookup/item").name.clone();
+    assert_eq!(mcp.widget(&plain).await.unwrap_err(), McpAppError::Absent);
+    assert_eq!(
+        mcp.widget("mcp_nowhere_absent").await.unwrap_err(),
+        McpAppError::Absent
+    );
+
+    let chart_call = mcp
+        .call("docs", "chart", arguments(json!({"step":2})))
+        .await
+        .unwrap();
+    assert_eq!(
+        chart_call.content,
+        ToolContent::Blocks(vec![ContentBlock::Text {
+            text: "chart-ok".into()
+        }])
+    );
+    assert_eq!(
+        chart_call.structured_content,
+        Some(arguments(json!({"step":2})))
+    );
+    assert_eq!(chart_call.meta, Some(arguments(json!({"widget":"chart"}))));
+    assert_eq!(chart_call.is_error, None);
+
+    assert_eq!(
+        mcp.call("docs", "missing", arguments(json!({})))
+            .await
+            .unwrap_err(),
+        McpAppError::Absent
+    );
+    assert_eq!(
+        mcp.call("other", "chart", arguments(json!({})))
+            .await
+            .unwrap_err(),
+        McpAppError::UnknownServer
+    );
+    assert_eq!(
+        mcp.call("docs", "summary", arguments(json!({})))
+            .await
+            .unwrap_err(),
+        McpAppError::NotCallable
+    );
+    assert!(
+        !env.remote
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&"summary".to_string()),
+        "a tool the server declares model-only is never sent"
+    );
+    let failed = mcp
+        .call("docs", "refresh", arguments(json!({})))
+        .await
+        .unwrap();
+    assert_eq!(
+        failed.is_error,
+        Some(true),
+        "the server's own failure is the call's answer"
+    );
+    assert!(
+        env.remote
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&"refresh".to_string())
+    );
+
+    let events = session.history("main", None).await.unwrap();
+    assert!(
+        events.iter().all(|event| !matches!(
+            event.kind,
+            EventKind::ToolCall(_) | EventKind::ToolStart(_) | EventKind::ToolResult(_)
+        )),
+        "a view's call writes no fact"
+    );
+    env.turn(&session, Action::Text).await;
+    let next = env.model.requests.lock().unwrap().last().unwrap().clone();
+    assert!(
+        !serde_json::to_string(&next.messages)
+            .unwrap()
+            .contains("chart-ok"),
+        "a view's result never enters the model context"
+    );
+    env.close().await;
+}
+
+#[tokio::test]
+async fn a_mount_refuses_an_unsupported_document_and_an_unusable_entry() {
+    let env = Env::new().await;
+    env.remote.widgets.store(1, Ordering::SeqCst);
+    let session = env.session(false, PermissionPreset::FullAccess).await;
+    ready(&session).await;
+    let tools = offered(&env, &session).await;
+    let chart = declared(&tools, "chart").name.clone();
+    let mcp = session.session_service::<McpSession>().unwrap();
+
+    env.remote.widgets.store(2, Ordering::SeqCst);
+    assert_eq!(
+        mcp.widget(&chart).await.unwrap_err(),
+        McpAppError::Unsupported
+    );
+    env.remote.widgets.store(3, Ordering::SeqCst);
+    assert_eq!(
+        mcp.widget(&chart).await.unwrap_err(),
+        McpAppError::Unsupported
+    );
+    env.remote.widgets.store(1, Ordering::SeqCst);
+    assert!(mcp.widget(&chart).await.is_ok());
+
+    env.update(SettingsScope::User, "docs", McpChange::SetEnabled(false))
+        .await;
+    adopted(&session, None).await;
+    assert_eq!(
+        mcp.widget(&chart).await.unwrap_err(),
+        McpAppError::Unavailable,
+        "the view learns its entry is disabled, not that its tool name is unknown"
+    );
+    assert_eq!(
+        mcp.call("docs", "chart", arguments(json!({})))
+            .await
+            .unwrap_err(),
+        McpAppError::Unavailable
+    );
+    assert_eq!(
+        mcp.widget("mcp_nowhere_absent").await.unwrap_err(),
+        McpAppError::Absent,
+        "a name the Session never held is absent"
+    );
+    assert!(
+        env.remote.calls.lock().unwrap().is_empty(),
+        "nothing was sent to a disabled entry"
+    );
+    env.close().await;
+}
+
+#[tokio::test]
+async fn a_replaced_connection_generation_re_reads_the_document() {
+    let env = Env::new().await;
+    env.remote.widgets.store(1, Ordering::SeqCst);
+    let session = env.session(false, PermissionPreset::FullAccess).await;
+    let version = ready(&session).await;
+    let tools = offered(&env, &session).await;
+    let chart = declared(&tools, "chart").name.clone();
+    let mcp = session.session_service::<McpSession>().unwrap();
+    assert!(mcp.widget(&chart).await.is_ok());
+
+    env.update(SettingsScope::User, "docs", McpChange::SetEnabled(false))
+        .await;
+    adopted(&session, None).await;
+    assert_eq!(
+        mcp.widget(&chart).await.unwrap_err(),
+        McpAppError::Unavailable
+    );
+
+    env.update(SettingsScope::User, "docs", McpChange::SetEnabled(true))
+        .await;
+    let next = ready(&session).await;
+    assert_ne!(
+        version, next,
+        "a replaced generation is a new discovery for a client's cache"
+    );
+    let widget = mcp.widget(&chart).await.unwrap();
+    assert_eq!(widget.server, "docs");
+    assert_eq!(widget.name, "chart");
+    assert_eq!(widget.text.as_deref(), Some("<p>counter</p>"));
+    env.close().await;
+}
+
+#[tokio::test]
+async fn a_view_call_the_connection_took_but_did_not_answer_is_unknown() {
+    let env = Env::new().await;
+    env.remote.widgets.store(1, Ordering::SeqCst);
+    let session = env.session(false, PermissionPreset::FullAccess).await;
+    ready(&session).await;
+    env.remote.app_hold.store(true, Ordering::SeqCst);
+    let mcp = session.session_service::<McpSession>().unwrap();
+    let worker = tokio::spawn({
+        let mcp = mcp.clone();
+        async move {
+            mcp.call("docs", "chart", arguments(json!({"step":2})))
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(5), env.remote.app_called.notified())
+        .await
+        .expect("the server received the call");
+    session.close().await.unwrap();
+    assert_eq!(
+        worker.await.unwrap().unwrap_err(),
+        McpAppError::Unknown,
+        "the server may have run a call whose answer never arrived"
+    );
+    env.close().await;
 }

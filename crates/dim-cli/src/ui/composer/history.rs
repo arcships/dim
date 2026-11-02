@@ -3,10 +3,16 @@
 //! ten entries per directory, a repeated entry moves to the end). A file that
 //! does not parse is replaced by one holding the appended entry: history is a
 //! recall convenience, and refusing would stop recording for good.
+//!
+//! `append` queues the entry to one writer thread and returns, so the submit
+//! path never waits for the file or its lock; a write that fails is dropped.
+//! `flush` waits for the queue, and the interface calls it on the way out.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::sync::mpsc::{self, Sender};
 
 use crate::ui::atomic;
 
@@ -57,14 +63,64 @@ pub fn load(home: &Path, cwd: &str) -> Vec<String> {
     read(home).buckets.remove(key).unwrap_or_default()
 }
 
-/// Appends `entry` for `cwd` under the history's lock, so concurrent CLIs
-/// keep every entry.
-pub fn append(home: &Path, cwd: &str, entry: &str) -> std::io::Result<()> {
+/// Hands `entry` for `cwd` to the history's writer thread and returns; the
+/// entry is written under the history's lock, and a write that fails is
+/// dropped.
+pub fn append(home: &Path, cwd: &str, entry: &str) {
     let key = cwd.trim();
     if key.is_empty() || entry.is_empty() {
-        return Ok(());
+        return;
     }
-    atomic::update(&path(home), Some(0o600), |current| {
+    let _ = writer().send(Message::Append {
+        home: home.to_owned(),
+        key: key.to_owned(),
+        entry: entry.to_owned(),
+    });
+}
+
+/// Waits until every appended entry has been written or dropped.
+pub fn flush() {
+    let (flushed, done) = mpsc::channel();
+    if writer().send(Message::Flush(flushed)).is_ok() {
+        let _ = done.recv();
+    }
+}
+
+enum Message {
+    Append {
+        home: PathBuf,
+        key: String,
+        entry: String,
+    },
+    Flush(Sender<()>),
+}
+
+/// The one thread that writes this process's history, started on first use.
+fn writer() -> &'static Sender<Message> {
+    static WRITER: OnceLock<Sender<Message>> = OnceLock::new();
+    WRITER.get_or_init(|| {
+        let (sender, queued) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("dim-input-history".into())
+            .spawn(move || {
+                for message in queued {
+                    match message {
+                        Message::Append { home, key, entry } => write(&home, &key, &entry),
+                        Message::Flush(flushed) => {
+                            let _ = flushed.send(());
+                        }
+                    }
+                }
+            })
+            .expect("the input history writer thread starts");
+        sender
+    })
+}
+
+/// Appends `entry` for `key` under the history's lock, so concurrent writers
+/// inside one process and across processes keep every entry.
+fn write(home: &Path, key: &str, entry: &str) {
+    let _ = atomic::update(&path(home), Some(0o600), |current| {
         let mut store = parse(current);
         store.version = 1;
         let list = store.buckets.entry(key.to_owned()).or_default();
@@ -73,7 +129,7 @@ pub fn append(home: &Path, cwd: &str, entry: &str) -> std::io::Result<()> {
         let skip = list.len().saturating_sub(MAX_ENTRIES);
         list.drain(..skip);
         Ok(Some(serde_json::to_vec(&store)?))
-    })
+    });
 }
 
 #[cfg(test)]
@@ -84,10 +140,11 @@ mod tests {
     fn append_dedupes_caps_and_isolates_directories() {
         let dir = tempfile::tempdir().unwrap();
         for n in 0..12 {
-            append(dir.path(), "/work/a", &format!("msg {n}")).unwrap();
+            append(dir.path(), "/work/a", &format!("msg {n}"));
         }
-        append(dir.path(), "/work/a", "msg 5").unwrap();
-        append(dir.path(), "/work/b", "other").unwrap();
+        append(dir.path(), "/work/a", "msg 5");
+        append(dir.path(), "/work/b", "other");
+        flush();
         let a = load(dir.path(), "/work/a");
         assert_eq!(a.len(), 10);
         assert_eq!(a.last().map(String::as_str), Some("msg 5"));
@@ -115,7 +172,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(FILE), "not json").unwrap();
         assert!(load(dir.path(), "/x").is_empty());
-        append(dir.path(), "/x", "ok").unwrap();
+        append(dir.path(), "/x", "ok");
+        flush();
         assert_eq!(load(dir.path(), "/x"), vec!["ok"]);
         let store: Store = serde_json::from_slice(&std::fs::read(path(dir.path())).unwrap())
             .expect("the appended file must parse");
@@ -137,7 +195,8 @@ mod tests {
         let target = linked.join(FILE);
         std::fs::write(&target, "{\"version\":1,\"buckets\":{\"/keep\":[\"a\"]}}").unwrap();
         symlink(&target, path(&home)).unwrap();
-        append(&home, "/work", "entry").unwrap();
+        append(&home, "/work", "entry");
+        flush();
         assert!(std::fs::symlink_metadata(path(&home)).unwrap().is_symlink());
         let store: Store = serde_json::from_slice(&std::fs::read(&target).unwrap()).unwrap();
         assert_eq!(store.buckets["/keep"], vec!["a"]);
@@ -145,7 +204,7 @@ mod tests {
         assert!(!linked.join("input-history.json.lock").exists());
     }
 
-    /// Concurrent CLIs appending to one home keep every entry.
+    /// Concurrent appends to one home keep every entry.
     #[test]
     fn concurrent_appends_keep_every_entry() {
         let dir = tempfile::tempdir().unwrap();
@@ -156,11 +215,12 @@ mod tests {
                     let home = home.clone();
                     scope.spawn(move || {
                         for n in 0..2 {
-                            append(&home, "/work", &format!("w{writer} {n}")).unwrap();
+                            append(&home, "/work", &format!("w{writer} {n}"));
                         }
                     });
                 }
             });
+            flush();
             let mut entries = load(&home, "/work");
             let expected: Vec<String> = (0..4)
                 .flat_map(|writer| (0..2).map(move |n| format!("w{writer} {n}")))
@@ -193,9 +253,10 @@ mod tests {
             let key = format!("key{writer}");
             assert_eq!(crate::ui::config::write(&home, &key, value.into()), None);
             if value < 4 {
-                append(&home, "/work", &format!("entry {writer} {value}")).unwrap();
+                append(&home, "/work", &format!("entry {writer} {value}"));
             }
         }
+        flush();
     }
 
     /// Starts the children of `the_lock_holds_across_processes` and checks

@@ -2,25 +2,18 @@
 
 #[cfg(unix)]
 use std::fs::File;
-use std::fs::{OpenOptions, TryLockError};
+use std::fs::OpenOptions;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
-
-/// How long a writer waits for another one before reporting the file busy.
-const LOCK_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// How long a writer sleeps between attempts on a lock another one holds.
-const LOCK_RETRY: Duration = Duration::from_millis(10);
 
 /// Replacing a file whole, under a cross-process lock.
 ///
 /// Writers queue on an exclusive lock over `<path>.lock`, beside the path the
 /// caller names, so two processes that share a home keep each other's
-/// changes. A writer waits at most two seconds for the lock: past that it
-/// reports that another dimcode is updating the file and leaves it alone. A
-/// lock that cannot be taken at all is reported with its error; the write is
-/// not attempted without one, because a home whose filesystem refuses locks
+/// changes. A writer waits for the lock while another one holds it and writes
+/// once it is released, so contention is never a failed write; a lock that
+/// cannot be taken at all is reported with its error, and the write is not
+/// attempted without one, because a home whose filesystem refuses locks
 /// cannot hold the `dimcode.sqlite` beside the file either.
 ///
 /// The file is resolved first: a `path` that is a symbolic link is followed,
@@ -51,16 +44,6 @@ pub fn update(
     mode: Option<u32>,
     update: impl FnOnce(Option<&[u8]>) -> io::Result<Option<Vec<u8>>>,
 ) -> io::Result<()> {
-    update_within(path, mode, LOCK_TIMEOUT, update)
-}
-
-/// `update` with the wait for the lock as a parameter.
-fn update_within(
-    path: &Path,
-    mode: Option<u32>,
-    timeout: Duration,
-    update: impl FnOnce(Option<&[u8]>) -> io::Result<Option<Vec<u8>>>,
-) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -69,25 +52,12 @@ fn update_within(
         .create(true)
         .truncate(false)
         .open(sibling(path, ".lock"))?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match lock.try_lock() {
-            Ok(()) => break,
-            Err(TryLockError::WouldBlock) if Instant::now() >= deadline => {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    format!("another dimcode is updating {}", path.display()),
-                ));
-            }
-            Err(TryLockError::WouldBlock) => std::thread::sleep(LOCK_RETRY),
-            Err(TryLockError::Error(error)) => {
-                return Err(io::Error::new(
-                    error.kind(),
-                    format!("cannot lock {}: {error}", path.display()),
-                ));
-            }
-        }
-    }
+    lock.lock().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("cannot lock {}: {error}", path.display()),
+        )
+    })?;
     let file = resolve(path)?;
     let current = match std::fs::read(&file) {
         Ok(bytes) => Some(bytes),
@@ -167,11 +137,12 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
-    /// A writer that cannot take the lock within its deadline reports it and
-    /// leaves the file alone, instead of waiting for the holder forever.
+    /// A writer waits while another holds the lock, then writes, instead of
+    /// reporting contention as a failed write.
     #[test]
-    fn a_write_that_cannot_take_the_lock_times_out() {
+    fn a_write_waits_for_a_held_lock_and_then_writes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         std::fs::write(&path, b"{}\n").unwrap();
@@ -182,17 +153,25 @@ mod tests {
             .open(sibling(&path, ".lock"))
             .unwrap();
         held.lock().unwrap();
-        let deadline = Duration::from_millis(100);
-        let started = Instant::now();
-        let error = update_within(&path, None, deadline, |current| {
-            Ok(Some(current.unwrap_or_default().to_vec()))
-        })
-        .unwrap_err();
-        assert!(started.elapsed() >= deadline, "{error}");
-        assert!(
-            error.to_string().contains("another dimcode is updating"),
-            "{error}"
-        );
+        let (wrote, written) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let waiter = path.clone();
+            scope.spawn(move || {
+                update(&waiter, None, |current| {
+                    Ok(Some(current.unwrap_or_default().to_vec()))
+                })
+                .unwrap();
+                wrote.send(()).unwrap();
+            });
+            assert!(
+                written.recv_timeout(Duration::from_millis(100)).is_err(),
+                "a writer must wait for a lock another one holds"
+            );
+            drop(held);
+        });
+        written
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the writer must write once the lock is released");
         assert_eq!(std::fs::read(&path).unwrap(), b"{}\n");
     }
 }

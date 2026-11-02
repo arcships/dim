@@ -12,6 +12,7 @@ mod approvals;
 
 use crate::agents::{AgentIndex, AgentProfile, SessionRestored, UnloadedSessionDeleted};
 use crate::collaboration_model_policy::ModelPolicy;
+use crate::protocol::SessionOrigin;
 use crate::settings::{SettingsScope, SettingsService};
 use dim_agent_capabilities::{
     context_block,
@@ -269,7 +270,13 @@ impl Collaboration {
             .ok_or_else(|| member_create_failed("leader protocol version is absent".into()))?;
         let session = match self
             .index
-            .create_session(&host, config, version, Some(leader_id))
+            .create_session(
+                &host,
+                config,
+                version,
+                Some(leader_id),
+                SessionOrigin::Internal,
+            )
             .await
         {
             Ok(session) => session,

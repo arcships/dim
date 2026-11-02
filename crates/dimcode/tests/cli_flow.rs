@@ -15,6 +15,9 @@ mod context;
 #[path = "cli_flow/exit.rs"]
 mod exit;
 
+#[path = "cli_flow/goal.rs"]
+mod goal;
+
 #[path = "cli_flow/hooks.rs"]
 mod hooks;
 
@@ -26,6 +29,8 @@ mod permission;
 mod question;
 #[path = "cli_flow/server.rs"]
 mod server;
+#[path = "cli_flow/skills.rs"]
+mod skills;
 #[path = "cli_flow/tasks.rs"]
 mod tasks;
 
@@ -7170,7 +7175,7 @@ fn tui_queue_shows_held_messages_and_steers_or_withdraws_them() {
     terminal.write(b"third\r");
     terminal.until("Queue (1)");
     terminal.until("› third");
-    terminal.write(b"\x1b[A");
+    terminal.write(b"\x1b[1;2D");
     terminal.until("third");
     let plain = {
         let mut out = String::new();
@@ -7215,6 +7220,86 @@ fn tui_queue_shows_held_messages_and_steers_or_withdraws_them() {
     terminal.signal(libc::SIGKILL);
     terminal.wait();
     daemon.join().unwrap();
+}
+
+#[test]
+fn tui_ctrl_s_steers_the_draft_while_a_run_is_in_progress() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&[]);
+        wire.created();
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let first = wire.read("session.submit");
+        assert_eq!(first["params"]["text"], "first");
+        wire.reply(&first, json!({"event":{}}));
+        wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":{"id":"in-1","sequence":9,"create_at":1,"type":"input","name":"message","data":{"user":{"content":[{"type":"text","text":"first"}]},"mode":"queue"}}}));
+        wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":{"id":"ap-1","sequence":10,"create_at":1,"type":"input","name":"applied","data":{"input_id":"in-1","mode":"queue"}}}));
+        wire.notice("session.state", json!({"sessionId":"session","branchId":"main","running":true}));
+        let second = wire.read("session.submit");
+        assert_eq!(second["params"]["text"], "second");
+        assert_eq!(second["params"]["mode"], "steer");
+        wire.reply(&second, json!({"event":{}}));
+    });
+    let mut terminal = Terminal::launch_tui(home.command());
+    terminal.until("test / model");
+    terminal.write(b"first\r");
+    terminal.until("first");
+    terminal.until("working…");
+    terminal.write(b"second");
+    terminal.write(b"\x13");
+    daemon.join().unwrap();
+    terminal.signal(libc::SIGKILL);
+    terminal.wait();
+}
+
+#[test]
+fn tui_escape_withdraws_the_queue_before_the_run_stops() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&[]);
+        wire.created();
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let first = wire.read("session.submit");
+        assert_eq!(first["params"]["text"], "first");
+        wire.reply(&first, json!({"event":{}}));
+        wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":{"id":"in-1","sequence":9,"create_at":1,"type":"input","name":"message","data":{"user":{"content":[{"type":"text","text":"first"}]},"mode":"queue"}}}));
+        wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":{"id":"ap-1","sequence":10,"create_at":1,"type":"input","name":"applied","data":{"input_id":"in-1","mode":"queue"}}}));
+        wire.notice("session.state", json!({"sessionId":"session","branchId":"main","running":true}));
+        let queued = wire.read("session.submit");
+        assert_eq!(queued["params"]["text"], "second");
+        assert_eq!(queued["params"]["mode"], "queue");
+        wire.reply(&queued, json!({"event":{}}));
+        wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":{"id":"in-2","sequence":11,"create_at":1,"type":"input","name":"message","data":{"user":{"content":[{"type":"text","text":"second"}]},"mode":"queue"}}}));
+        let withdraw = wire.read("session.input.withdraw");
+        assert_eq!(withdraw["params"]["inputId"], "in-2");
+        assert!(withdraw["params"].get("steer").is_none());
+        wire.reply(&withdraw, json!({"status":"deleted","sequence":12}));
+        let stop = wire.read("session.stop");
+        wire.reply(&stop, json!({"sequence":13}));
+    });
+    let mut terminal = Terminal::launch_tui(home.command());
+    terminal.until("test / model");
+    terminal.write(b"first\r");
+    terminal.until("first");
+    terminal.until("working…");
+    terminal.write(b"second\r");
+    terminal.until("Queue (1)");
+    terminal.write(b"\x1b");
+    daemon.join().unwrap();
+    terminal.signal(libc::SIGKILL);
+    terminal.wait();
 }
 
 #[test]

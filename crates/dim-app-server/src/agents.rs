@@ -1,7 +1,7 @@
 use crate::{
     ServerConfig,
     agent_records::AgentRecords,
-    protocol::AgentInfo,
+    protocol::{AgentInfo, SessionOrigin},
     settings::SettingsService,
     storage::{SessionStore, SqliteStorage},
 };
@@ -976,6 +976,13 @@ impl AgentIndex {
             }),
             (None, true) => Some(crate::storage::TitleFields::default()),
         };
+        let (origin, parent_session_id) = match (&self.session_store, version >= 3) {
+            (Some(store), true) => match store.creation_record(session.id()).await {
+                Ok((origin, parent)) => (Some(origin), parent),
+                Err(_) => (None, None),
+            },
+            _ => (None, None),
+        };
         Ok(crate::protocol::SessionInfo {
             session_id: session.id().to_owned(),
             cwd: session.config().cwd.clone(),
@@ -988,6 +995,8 @@ impl AgentIndex {
             sequence: session.sequence("main")?,
             attached_clients: 0,
             agent_id: (version >= 3).then(|| host.agent_id.clone()),
+            origin,
+            parent_session_id,
             title,
         })
     }
@@ -1074,6 +1083,7 @@ impl AgentIndex {
         config: &SessionConfig,
         version: u32,
         leader: Option<&str>,
+        origin: SessionOrigin,
     ) -> Option<(String, BoxFuture<'static, dim_agent_runtime::Result<()>>)> {
         let store = self.session_store.clone()?;
         let stored = config.clone();
@@ -1082,7 +1092,14 @@ impl AgentIndex {
         Some(self.prepared(config.cwd.clone(), move |id| {
             Box::pin(async move {
                 store
-                    .create_owned_session(&id, &stored, &agent_id, version, leader.as_deref())
+                    .create_owned_session(
+                        &id,
+                        &stored,
+                        &agent_id,
+                        version,
+                        leader.as_deref(),
+                        origin,
+                    )
                     .await
             })
         }))
@@ -1122,8 +1139,12 @@ impl AgentIndex {
         config: SessionConfig,
         version: u32,
         leader: Option<&str>,
+        origin: SessionOrigin,
     ) -> dim_agent_runtime::Result<Session> {
-        match self.prepare_session(host, &config, version, leader).await {
+        match self
+            .prepare_session(host, &config, version, leader, origin)
+            .await
+        {
             Some((id, prepare)) => {
                 let creation = host
                     .agent

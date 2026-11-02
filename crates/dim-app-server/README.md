@@ -103,6 +103,18 @@ additive and protocol v3 is unchanged.
 The [Provider contract](../../docs/design/appserver/provider-management.md) defines
 the methods, typed errors, account ownership and accepted old-v19 rewrite loss. v18 binaries reject the v19 database.
 
+### Skills catalog
+
+On protected local protocol-v3 connections, `skills.catalog({cwd?})` returns the catalog's
+`version`, its `entries` and its `issues`. An entry is `{id, source, name, description,
+filePath, allowedTools, enabled, shadowedBy}`: `source` is `user`, `project` or
+`plugin:<plugin id>`, the root the Skill was found in; `shadowedBy` names the Skill whose
+same name takes precedence. Clients group entries by `source` and never parse `id`.
+`skills.set_enabled({cwd?, id, enabled})` writes the user's disabled set and returns the new
+`version`; `skills.refresh({cwd?})` rescans the user and project roots and returns the
+`version` and the `issues` of the rescan. The three persist in SQLite under native storage;
+legacy `skills.json` is only an import source.
+
 ### MCP configuration management
 
 On protected local protocol-v3 connections, `mcp.catalog({cwd?})` returns the merged catalog,
@@ -350,7 +362,7 @@ The requesting connection hands only its final-response writer to the existing p
 
 ### Process logs
 
-The server writes `tracing` output to stderr, filtered by `RUST_LOG` (errors only by default); a daemon started by the CLI writes it to the private `daemon.log` in its native home. The runtime operations `prompt.load`, `context.prepare`, `model.invoke`, `tool.attach`, `tool.execute`, `shell.run`, `timeline.close` and `session.close` are spans carrying the Session and branch ids and the operation's own ids. Closing one logs its duration as `time.busy` plus `time.idle`, so `RUST_LOG=info` shows operation timing. Span names and fields are log output, not a compatibility contract. Committed facts are read from the Timeline, not from logs ([ADR 005](../../docs/adr/005-observability.md)).
+The server writes `tracing` output to stderr, filtered by `RUST_LOG` (errors only by default); a daemon started by the CLI writes it to the private `daemon.log` in its native home. The filter is read when the process starts; nothing changes it while the server runs, so a different filter needs a new process. The runtime operations `prompt.load`, `context.prepare`, `model.invoke`, `tool.attach`, `tool.execute`, `shell.run`, `timeline.close` and `session.close` are spans carrying the Session and branch ids and the operation's own ids. Closing one logs its duration as `time.busy` plus `time.idle`, so `RUST_LOG=info` shows operation timing. Span names and fields are log output, not a compatibility contract. Committed facts are read from the Timeline, not from logs ([ADR 005](../../docs/adr/005-observability.md)).
 
 ## Temporary MCP bindings
 

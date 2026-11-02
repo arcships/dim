@@ -190,6 +190,13 @@ pub const COMMANDS: &[Command] = &[
         &[],
         Needs::Session,
     ),
+    slash(
+        "goal",
+        "session",
+        "follow or change the shown line's goal",
+        &[],
+        Needs::Session,
+    ),
     action("interrupt", "run", "interrupt the run", "Esc", Needs::Run),
     action(
         "steer",
@@ -283,6 +290,27 @@ pub const COMMANDS: &[Command] = &[
         "model",
         "list plugins, turn them on or off, reload (install PATH)",
         &["plugin"],
+        Needs::Nothing,
+    ),
+    slash(
+        "skills",
+        "model",
+        "list Skills, enable or disable one",
+        &[],
+        Needs::Nothing,
+    ),
+    slash(
+        "hooks",
+        "model",
+        "list hooks, turn a source on or off, edit the user document",
+        &[],
+        Needs::Nothing,
+    ),
+    slash(
+        "reload-skills",
+        "model",
+        "rescan the Skills of this workspace",
+        &[],
         Needs::Nothing,
     ),
     slash(

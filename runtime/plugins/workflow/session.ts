@@ -19,7 +19,7 @@ export default (invalidDefinitionGuidance: string = RECOVERY) => definePlugin({
     ctx.effect(() => { closed = true })
     await ctx.use<GuideEntries>('guideEntries').register('session', { markers: ['dim-workflow'], order: 120, text: ENTRY })
     await ctx.use<ToolRegistry>('toolRegistry').register(
-      { name: 'workflow', description: 'List workflow definitions, start a run, inspect stored stage results, or stop a run.',
+      { name: 'workflow', description: 'List workflow definitions, start a run, inspect stored stage results, or stop a run. A listing marked truncated omits later definitions.',
         source: 'extension', risk: 'workflow',
         inputSchema: { type: 'object', required: ['action'], additionalProperties: false, properties: {
           action: { type: 'string', enum: ['list', 'start', 'status', 'stop'] },
@@ -52,7 +52,7 @@ export default (invalidDefinitionGuidance: string = RECOVERY) => definePlugin({
             : `workflow: ${reply.code}\n${reply.message}`,
           isError: true,
         }
-        return { content: reply.content, structuredContent: reply.structured }
+        return { content: reply.content, ...(reply.structured ? { structuredContent: reply.structured } : {}) }
       },
     )
   },

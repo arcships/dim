@@ -14,6 +14,7 @@
 //! │   Tool details           collapsed           │
 //! │   Mouse                  on                  │
 //! │   Notify when agent ...  on                  │
+//! │   Show ACP sessions      off                 │
 //! │   Permissions                                │
 //! │   File access            Workspace read/write › │
 //! │   Tool approval          Ask ›               │
@@ -36,6 +37,7 @@ pub struct Values {
     pub tools_expanded: bool,
     pub mouse: bool,
     pub notify: bool,
+    pub acp_sessions: bool,
     pub file_access: String,
     pub approvals: String,
 }
@@ -49,18 +51,20 @@ pub enum Setting {
     ToolDetails,
     Mouse,
     Notify,
+    AcpSessions,
     FileAccess,
     Approvals,
     Isolation,
 }
 
-const ROWS: [(Setting, &str); 9] = [
+const ROWS: [(Setting, &str); 10] = [
     (Setting::Theme, "theme"),
     (Setting::Language, "language"),
     (Setting::StartupForm, "startup-form"),
     (Setting::ToolDetails, "tool-details"),
     (Setting::Mouse, "mouse"),
     (Setting::Notify, "notify"),
+    (Setting::AcpSessions, "acp-sessions"),
     (Setting::FileAccess, "file-access"),
     (Setting::Approvals, "approvals"),
     (Setting::Isolation, "isolation"),
@@ -81,7 +85,7 @@ impl Setting {
     fn switch(self) -> bool {
         matches!(
             self,
-            Self::StartupForm | Self::ToolDetails | Self::Mouse | Self::Notify
+            Self::StartupForm | Self::ToolDetails | Self::Mouse | Self::Notify | Self::AcpSessions
         )
     }
 }
@@ -130,6 +134,11 @@ impl SettingsPanel {
                 Setting::Notify,
                 "Notify when agent needs you",
                 on_off(values.notify).to_owned(),
+            ),
+            row(
+                Setting::AcpSessions,
+                "Show ACP sessions",
+                on_off(values.acp_sessions).to_owned(),
             ),
             Item::heading(t("Permissions")),
             row(

@@ -444,6 +444,9 @@ async fn namespace_validation_and_nested_ownership_follow_the_longest_provided_n
         "session.event",
         "session.goal",
         "session.mcp.extra",
+        "session.mcp.app.widget",
+        "session.mcp.app.call",
+        "session.mcp.app",
         "session.create.extra",
     ] {
         let read = format!("{namespace}.read");

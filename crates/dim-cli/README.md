@@ -422,6 +422,53 @@ conflict, and then answers allow. If the write fails it prints `[rule not saved]
 `Allow once? [y/N]` for the same request. See
 [permission controls](../../docs/design/cli-commands.md#permission-controls).
 
+## Goal
+
+`/goal` reads and writes the goal of the line the client shows. The methods, the blocks and the
+rule that reads them are [Goal §A.2–A.3](../../docs/design/plugins/Goal.md#a2-session-methods) and
+[Pursuit](../../docs/design/plugins/Pursuit.md)'s; the client forms are
+[CLI commands § Goal](../../docs/design/cli-commands.md#goal)'s.
+
+| Form | Call |
+| --- | --- |
+| `/goal` | none; the goal in force on the shown line, or that it has none |
+| `/goal OBJECTIVE` | `session.goal.edit` while the goal is active or paused, `session.goal.set` otherwise |
+| `/goal set OBJECTIVE`, `/goal edit OBJECTIVE` | the named method |
+| `/goal pause`, `/goal resume`, `/goal clear` | the method of the same name |
+
+Every call sends the shown line's id as `branchId`: the line client always shows `main`, and the
+terminal UI sends the line whose transcript it displays. An objective that is one of the form words
+is written after `set` or `edit`, so `/goal set pause` sets the objective "pause". A typed objective
+edits a goal that is still being worked toward and starts a new one when there is none, when it has
+no status, or when it completed or blocked: a finished goal is never edited back into work.
+
+The goal shown is the client's fold of that line's own events: the latest live `goal:objective` and
+`goal:status` blocks, with `clear` retiring both, `edit` keeping the judge, a worker's `completed`
+waiting for an evaluator judge, and a deleted input folded out. After a write the client reads the
+line's events through the write before it prints, so the report shows the state that write produced.
+The fold starts over at the line's own opening — its `branch/start`, or the `session/forked` a fork
+writes after the copied facts — so a line opened from another has no goal, and a fork's `main` never
+shows the copied one.
+
+```text
+> /goal Keep the CLI tests green
+Goal set on main · active
+  Keep the CLI tests green
+> /goal pause
+Goal paused on main · paused (user)
+  Keep the CLI tests green
+> /goal
+Goal on main · paused (user)
+  Keep the CLI tests green
+> /goal clear
+Goal cleared on main.
+```
+
+In both terminal UI modes the status area carries `◎ goal active` or `◎ goal paused` while the
+shown line follows a goal, and nothing for a completed, blocked or cleared one. When the daemon
+installs no Goal — its `session.methods` lists no `session.goal.set` — `/goal` prints
+`Goal is not available on this daemon.` and calls nothing.
+
 ## Execution boundary
 
 The sandbox is a setting, and it is off by default. `/permissions > Process isolation` and
@@ -749,13 +796,13 @@ Pickers (`/resume`, `/models`, `/connect`, `/login`, `/approvals`, `/theme`, `/l
                       ╰────────────────────────────────────╯
 ```
 
-Both scrollback and fullscreen palettes list slash commands, grouped by category and sorted alphabetically by canonical English category and command name. Each row shows its category, `/command`, description and any command shortcut. Commands requiring a session are faint and marked `(unavailable)` until one exists. Keyboard-only actions are omitted from both menus; `/keys` lists `Esc` interrupt, `Ctrl+S` steer, and the fullscreen `Home` / `End` scroll and `Tab` message picker bindings.
+Both scrollback and fullscreen palettes list slash commands, grouped by category and sorted alphabetically by canonical English category and command name. Each row shows its category, `/command`, description and any command shortcut. Commands requiring a session are faint and marked `(unavailable)` until one exists. Keyboard-only actions are omitted from both menus; `/keys` lists `Enter` queue and `Ctrl+S` steer while a run is in progress (`Enter` on an empty draft steers too), `Esc` interrupt, and the fullscreen `Home` / `End` scroll and `Tab` message picker bindings.
 
 `/permissions` is the single visible permission entry; `/approvals` and `/approval` are compatibility aliases for the same unified flow. Selecting an incomplete `exit` or `suspend` match only fills the command name; its exact name or alias is required before dispatch. Thus `/` + Enter completes `/exit` without quitting, and another Enter executes the completed command.
 
 Typing ranks the matches: the exact name, a name prefix, an alias prefix, a prefix of a name part (`reload-skills` for `sk`), a name containing the query, a description word starting with it, then three or more letters in order through the name (`stg` for `settings`); a match inside a description word does not count. Equally ranked matches use the category/name order. See the [command menu design](../../docs/design/cli-commands.md#command-menu).
 
-`/settings` gathers the interface settings: theme and language (each opens its picker and comes back), the startup form (`tuiMode`), tool details (`tuiToolDetailsExpanded`: expanded by default in both modes; collapsed shows each tool group as its header, folds thoughts and closes a compaction row's summary, digest and kept input, and `/tools` flips it too), the fullscreen mouse (`tuiMouseMode`: off hands selection and the wheel to the terminal), notifications (`tuiNotifyOnComplete`, on by default), tool approvals and execution settings. Model selection stays in `/model` (`/models`). Switches flip with `Enter`, `←`/`→` or `Space` and are saved to `config.json` at once.
+`/settings` gathers the interface settings: theme and language (each opens its picker and comes back), the startup form (`tuiMode`), tool details (`tuiToolDetailsExpanded`: expanded by default in both modes; collapsed shows each tool group as its header, folds thoughts and closes a compaction row's summary, digest and kept input, and `/tools` flips it too), the fullscreen mouse (`tuiMouseMode`: off hands selection and the wheel to the terminal), notifications (`tuiNotifyOnComplete`, on by default), ACP Sessions in `/resume` (`showAcpSessions`, off by default), tool approvals and execution settings. Model selection stays in `/model` (`/models`). Switches flip with `Enter`, `←`/`→` or `Space` and are saved to `config.json` at once.
 
 Notifications reach a user who switched windows when the run finishes or waits on a permission or a question (each request once): iTerm2 gets `OSC 9`, kitty `OSC 99`, Ghostty, WezTerm and foot `OSC 777`; tmux and any other terminal get a bell, which tmux forwards and terminals turn into a Dock bounce, a taskbar flash or a tab badge.
 
@@ -988,15 +1035,19 @@ The terminal UI reaches the same Session methods as the line client:
 | `/mcp enable ID` / `/mcp disable ID` | Turns a server on or off with the request `dimcode mcp enable` / `mcp disable` sends and the same result text. Enabling a project entry runs this workspace's `.mcp.json` entry, including later edits, in active and new sessions; disabling stops it in every session before the call returns. The next `/mcp` lists the new state |
 | `/plugins` (`/plugin`) | Lists every plugin name from `plugin.list` (built-in, default, installed): the candidate in use, its state, whether it is locked, and for the selected one its candidates and any error, wait or refused content. `Enter` turns an off plugin on (`plugin.enable`) or, after a confirmation, turns it off (`plugin.disable`); a locked one says why it cannot be turned off. `r` reloads it (`plugin.reload`), `Ctrl+R` lists again. The list is read again after each change, and a failed call shows the method's message |
 | `/plugins install PATH` | Installs and turns on the plugin directory at `PATH`, relative to the workspace (`plugin.install`), then opens the list with the outcome, including when a restart is required. Git installs, update and remove are `dimcode plugin ...` |
+| `/skills` | Lists the Skills of the Session's workspace from `skills.catalog`, grouped under the source each was found in (`user`, `project`, `plugin:<id>`), with its state and, for the selected one, its description and file; the catalog's issues follow the entries. `Enter` or `Space` enables or disables the selected Skill (`skills.set_enabled`) and the list is read again; `Ctrl+R` rescans the roots (`skills.refresh`). A daemon without the methods says it cannot manage Skills |
+| `/reload-skills` | Runs the rescan of the Session's workspace with no panel and reports the entry and issue counts it found, plus each issue |
+| `/hooks` | Lists each hook source of the Session's workspace as an entry from `hooks.catalog`, with its state and detail; `Enter` or `Space` enables or disables the Session's project source (`hooks.set_enabled`), `Ctrl+E` opens the user document in `$EDITOR` and writes it with `hooks.save` and the revision the panel read, `Ctrl+R` reads the area again. A plugin source is read-only and offers no write |
 | `/login` | Opens the Dim sign-in panel. It shows the account from `account.status` as a status line; signed out, its entries are browser, enterprise-email or device sign-in through `account.login.*` at the entry's account directory (below), each entering its own flow (`Esc` after a failure returns to the entries); signed in, it shows the account's name and email, its plan, credits, token windows and feature meters from `account.usage` (`Ctrl+R` asks again; a plugin without the method shows why), and its entries open `/models`, open the plan page at the account directory's `/console/subscription` in the browser, or sign out with `account.logout`, after which the panel shows the sign-in entries again. Browser sign-in redirects to `http://localhost:54321/auth/callback` (`--redirect-uri` overrides it), catches the callback on a loopback listener when that port is free and opens the authorization URL (neither over SSH); a callback URL pasted in the panel completes it too; device sign-in shows the code and polls the attempt every second. `Esc` closes the panel and cancels a pending attempt. On success the catalog is refreshed with `provider.refresh` and `/models` opens |
 | `/connect` | Reads safe connection snapshots with `provider.management`. `Test + apply` probes the unsaved draft, then updates only changed fields at the form's original version with `provider.update`; a record whose models are its own has them replaced by the new endpoint's listing in that same write when the edit changes `baseUrl`, `credential` or `headers`, so the catalog follows the new endpoint, while a proxy or timeout edit saves alone and a builtin whose models are the bundled catalog's keeps them; unsupported model listing still permits saving and reports that the key was not tested. Other probe failures keep the draft. `Disconnect` atomically clears credentials and disables the record, and a catalog of the record's own goes with it, because the listing taken with that key is that key's view; the next connect lists the endpoint again. Enable/Disable update only that flag. `Add custom provider` probes a Name, Base URL and API Key draft, then calls `provider.create` with the form's retained UUID and discovered defaults. IDs never derive from names. Failures retain edits; rereads update the safe status/version and require confirmation before retrying. `Ctrl+R` rereads without discarding the draft. Fields and filters use the composer's line editor. A row whose entry carries an `account` descriptor opens the account step instead of the form: signed out, its row says `Sign in` and opening it starts the only flow the descriptor's `loginMethods` list, and signed in, it shows `Signed in` and signs out through `<namespace>.logout`; a daemon that does not advertise the method reports that instead; a row whose namespace is `account` opens the Dim account's `/login` panel instead |
-| `/resume` | Lists saved Sessions across workspaces, 50 at a time through `session.catalog`; moving near the end loads the next page. The filter searches the server after 150 ms, including Sessions not loaded yet. Ctrl+R refreshes; closing, refreshing or replacing a search cancels the pending read when the daemon advertises `session.catalog.cancel`. Older daemons use `session.summaries` and local filtering |
+| `/resume` | Lists saved Sessions across workspaces, 50 at a time through `session.catalog`; moving near the end loads the next page. Each row is labelled by the Session's creation origin — `[Chat]`, `[ACP ]` or `[Agent]` — and reads its title, else its first message, else its id. Sessions Dim created for its own work are not listed; ACP Sessions are listed only while `/settings` → Show ACP sessions is on, and only on a daemon that advertises `session.catalog.origins`. The filter searches the server after 150 ms, including Sessions not loaded yet. Ctrl+R refreshes; closing, refreshing or replacing a search cancels the pending read when the daemon advertises `session.catalog.cancel`. Older daemons use `session.summaries` and local filtering |
 | `/models` | Lists enabled, executable models from `provider.list`/`provider.catalog`; a model whose context window or maximum output no source declares is not offered. Every provider with such a model keeps one muted row after its models, counting them and naming `dimcode models PROVIDER --set-missing-limits`; when the provider has nothing selectable, that row replaces its empty-provider row. A static provider whose catalog holds no models is asked to fill it with `provider.refresh` once per catalog version in a connection when the daemon says its models can be listed, and the picker shows what the catalog then holds, because the Provider owner decides what a catalog holds; a successful refresh records the version it wrote, so a listing that comes back empty is not asked for again, and a write to the record asks once more; the picker re-reads the list when such a refresh returns while it is open, and a reply that arrives after it closed is shown by the next open. A provider that offers nothing selectable keeps a muted row saying why: no models with `dimcode models PROVIDER --refresh` when the daemon says its models can be listed, no models with `provider.models.create` when it cannot, an unreadable catalog, or how many models are unavailable, disabled, or both, and `dimcode models PROVIDER` for the details. An explicit pick sends the saved effort/tier preferences for that exact `{providerId, modelId}` with `session.create` or `session.model.update`, then saves the scoped default with `provider.select`. The adopted model stays in effect even when saving the default fails; the failure is reported as a notice. Unsupported saved preferences are reported and retained for the user to edit or clear; there is no silent fallback. When the daemon advertises `collaboration.model_policy`/`collaboration.set_model_policy`, a "Subagent models" row chooses Agent choice, Inherit requesting branch or a fixed model (from the same model list) for new Collaboration members; it writes only `collaboration.set_model_policy` with the revision it read, and after a revision conflict the next choice rereads before saving ([subagent model policy](../../docs/design/subagent-model-policy.md#5-native-cli-interaction)) |
 | `/lines` | Lists `main` and every line under the line it was opened from, ordered by where it was cut and labelled `after message N`, each with its state (working, waiting, ended itself, ended by an operation, creation failed); while a line is shown the composer's bottom border names its path from `main` (`line main ▸ b-91 · after message 4`); Enter shows the selected line's conversation in place of `main`'s, and the composer, `!command` and the interrupt then address that line; `x`, then `y`, ends the selected line through `session.branch_end`, refused on `main` |
 | `/timeline` | Lists the shown line's user messages, oldest first, numbered, each with the first text of its answer, the newest selected. Typing does not filter: `e`, `q`, `b` and `f` act on the selected message as on a pick. `Enter` jumps: fullscreen picks the message (drawing from it first when it is earlier history), so the pick keys apply; scrollback draws a message it has not drawn yet, and everything after it up to what is drawn, as an earlier-history page, and otherwise says `/tui` can jump to it ([timeline UI §4.6](../../docs/design/timeline-ui.md#46-timeline-jumping-to-a-message)) |
 | `/branch [TEXT]`, `/fork [TEXT]` | As `b` and `f` on a picked message, at the shown line's newest turn end: `/branch` puts `TEXT` in the composer as the new line's opening input; `/fork` asks, then forks `main` there with `TEXT` in the fork's composer |
 | `/usage` | Reports main's context window from `session.context.usage`: estimated input tokens against the window, the output allowance and the compaction threshold; before a model has answered it says so, and a failed call is reported alone. With the reading it appends the cache read share of the last `model/usage` request on `main` (` · last request cached {percent}`), rounded down: `100%` only when every prompt token was a cache read, one decimal between `99%` and `100%`, an integer between `1%` and `99%`, `<1%` for a positive share below one percent, and `0%` for a request that reported no cache reads; the prompt token count includes cache writes, so a request that only writes the cache reads `0%`. The segment appears only once `main`'s history has finished loading, so a page that is not the last never reports its older request; after that it shows the newest request, whether it came from the history or a live event. It is absent when that request reported no cache read count or its counters cannot produce a share (cache reads above prompt tokens, or a zero prompt) |
 | `/compact` | Asks the shown line to compact its context with `session.context.compact`, during a run too. The transcript row shows the work and its outcome; the reply is reported when the method answers — `completed`, `skipped` with its reason, or the method's failure (`compaction_failed`, `compaction_cancelled`). A daemon without the method says it does not support context compaction |
+| `/goal [OBJECTIVE \| set OBJECTIVE \| edit OBJECTIVE \| pause \| resume \| clear]` | Reads and writes the goal of the shown line through `session.goal.*`. The command's first line names the call, the line and the status in force, the objective follows it, and `/goal` alone prints the goal the line's events give; `edited` is the form that found a live goal and changed only its objective, and a typed objective after a finished goal starts a new one. While the shown line follows a goal the status area carries `◎ goal active` or `◎ goal paused`. A daemon whose Session lists no `session.goal.set` says Goal is not available and calls nothing ([Goal](#goal)) |
 | `/effort VALUE` (`/reasoning`), `/fast on\|off`, `/agent ID` | Change the Session's reasoning effort, service tier or agent; without a value they list the choices for the adopted model. `/fast` is listed in the palette only while the adopted model's catalog entry advertises priority/default service tiers |
 | Paste of local file paths | An image the model takes becomes an `[Image #N]` token sent as an image block; another file is inserted as its path, and so is an image the model does not take. At most 20 images, a group all or nothing |
 | `Ctrl+V` | Reads the native clipboard off the interface thread: files, then an image, then text. `Enter` waits until the read is in |
@@ -1080,6 +1131,51 @@ A server whose state becomes `auth_required` is reported once with the `/mcp log
 A draft with images or a stored paste is submitted as ordered `user` content; when a paste
 cannot be stored, nothing is sent and the notice names the paste; the cleared draft is not restored.
 
+### Management surfaces
+
+Skills, Hooks and the other management areas reach the terminal UI through one structure rather
+than one per feature ([management surfaces](../../docs/design/cli-commands.md#management-surfaces)):
+
+- an area adapter (`crates/dim-cli/src/management/`) talks to the daemon over the client
+  connection, turns its owner's reply into one view at that boundary, performs the area's
+  actions, and refuses an area whose methods the daemon does not advertise;
+- the panel (`crates/dim-cli/src/ui/management_panel.rs`) draws every area on the shared list
+  panel, grouped by the source heading the owner reports, and an entry whose owner reports no
+  source goes under the area's own heading; the selected entry's detail, its states and the last
+  outcome are drawn below the list;
+- both surfaces reach the worker through one request and one reply on the session port,
+  `Command::Management(ManagementRequest)` and `Update::Management(ManagementReply)`;
+- `dimcode <area> <verb>` calls the same adapter over its own connection, so a subcommand needs
+  no Session.
+
+The keys are one per action kind in every area: `Enter` or `Space` toggles, `Ctrl+E` opens the
+area's document in the external editor, `Ctrl+R` re-reads the area or asks its owner to rescan,
+and `Esc` closes. An action key is a Ctrl chord, or a key the filter never takes, because the
+filter takes every plain letter. The bottom border names the area's kinds plus the selected
+entry's; reload acts on the area, so it works with no entry selected and retries a failed read.
+The panel reads and writes the Session's workspace, not the directory the client started in.
+
+The external editor is `$VISUAL`, then `$EDITOR`, then `vi` (`notepad` on Windows), run on Unix
+through `sh -c '<editor> "$@"' <editor> <file>` as git does, so a quoted path with a space
+works. Each edit gets its own file, `<home>/edit/<area>-<unique>.json`: created exclusively,
+mode 0600 in a 0700 directory, so a kept draft is never overwritten and two clients editing one
+area never share a file. The terminal UI releases raw mode and the alternate screen while the
+editor runs. A successful write, or an unchanged draft, removes its file. A write the owner
+refuses keeps it and the message names it; a refused editor exit (`:cq`, a non-zero status)
+writes nothing and does the same. `Ctrl+E` opens the user's text again from that file, unless
+the owner's refusal was a conflict: then the area is read again and the next edit opens the
+current document at its new revision. `dimcode <area> set PATH` (`-` for stdin) is the same
+write without an editor.
+
+```text
+/skills ──► Command::Management { area, List } ──► adapter ──► skills.catalog
+                                                      │
+Panel  ◄── Update::Management { area, view } ◄────────┘  groups, entries, states, actions
+
+Enter ────► Command { area, Toggle { id, enabled } } ─► skills.set_enabled ─► skills.catalog
+Ctrl+E ───► external editor ─► Command { area, Save { expectedRevision, document } } ─► hooks.save
+```
+
 ## Accounts
 
 `dimcode login [PROVIDER]`, `dimcode account PROVIDER` and `dimcode logout PROVIDER` work on every Provider whose `provider.management` entry carries an `account` descriptor ([Provider management §3.1](../../docs/design/appserver/provider-management.md#31-read-models)). The descriptor's `namespace` names the methods (`<namespace>.login.begin` for device, `<namespace>.login.browser.begin`, `.login.browser.complete`, `.login.status`, `.login.cancel` and `<namespace>.logout`), and its `loginMethods` say which flow a Provider offers. No Provider id is compared. Without a PROVIDER, `login` lists the described accounts; `--help` lists the forms without starting a daemon.
@@ -1130,7 +1226,7 @@ When the daemon keeps a UI registry (`ui.attach` in `hello`), the interface regi
 
 The default product home is `~/.dimcode`, or `~/.dimcode-alpha` for an alpha build so it never shares state with a release; `DIMCODE_HOME` or `--home PATH` overrides it. Native state and the daemon endpoint/log live in `<home>/rust`. No existing home, auth file or database is automatically migrated. Use an isolated home for development and acceptance.
 
-`<home>/config.json` holds the interface settings and `<home>/input-history.json` the prompt history of each working directory; a write replaces either file whole and never edits it in place. A writer takes an exclusive lock on `<file>.lock` beside the path it was given, then follows that path when it is a symbolic link: the temp file, the rename and the directory sync go beside the resolved file, so a linked `config.json` keeps its link and its target takes the write, and no lock is left in the linked directory. The new bytes go to a synced temp file that is renamed over the file, so two `dimcode` processes sharing a home keep each other's keys and entries, and a reader takes no lock and sees the old file or the new one. A writer waits at most two seconds for another one, then reports that another `dimcode` is updating the file; a lock that cannot be taken at all is reported with its error and the file is left alone, since a home whose filesystem refuses locks cannot hold the `dimcode.sqlite` beside it either. A `config.json` that exists but does not hold a JSON object is left as it is and the parse error is returned, while an `input-history.json` that does not parse is replaced by one holding the submitted entry. The `.lock` file stays beside the named path, and a write that fails before the rename leaves the old file and removes its temp file.
+`<home>/config.json` holds the interface settings and `<home>/input-history.json` the prompt history of each working directory; a write replaces either file whole and never edits it in place. Both are written under an exclusive lock on `<file>.lock` beside the path the writer was given, which then follows that path when it is a symbolic link: the temp file, the rename and the directory sync go beside the resolved file, so a linked `config.json` keeps its link and its target takes the write, and no lock is left in the linked directory. The new bytes go to a synced temp file that is renamed over the file, so two `dimcode` processes sharing a home keep each other's keys and entries, and a reader takes no lock and sees the old file or the new one. `config.json` is written on the thread that changed a setting: a write waits on the lock while another writer holds it and writes once it is released, so contention is never a failed write, and a write that fails (a lock that cannot be taken at all included) is reported to the user and leaves the file alone, since a home whose filesystem refuses locks cannot hold the `dimcode.sqlite` beside it either. `input-history.json` never blocks the interface or a submit: the entry is handed to one writer thread and the submit returns at once, the entry is written under the same lock, and a write that fails is dropped, because history is a recall convenience that is allowed to be lost; the interface waits for the queued entries only as it exits. A `config.json` that exists but does not hold a JSON object is left as it is and the parse error is returned, while an `input-history.json` that does not parse is replaced by one holding the submitted entry. The `.lock` file stays beside the named path, and a write that fails before the rename leaves the old file and removes its temp file.
 
 On Unix, the native directory must be private (`0700`), and the socket must be private and owned by the current user. The CLI validates peer credentials before sending RPC data. On Windows, it uses the existing authenticated `dimcode app-server --connect-pipe` bridge (or `--server PATH --connect-pipe`), which verifies the connected pipe's owner before forwarding any RPC bytes. The client uses v3 protocol capabilities to reject incompatible daemons; it does not remove unknown endpoints or kill another daemon.
 

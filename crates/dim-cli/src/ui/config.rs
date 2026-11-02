@@ -94,6 +94,19 @@ pub fn save_fullscreen(home: &Path, fullscreen: bool) -> Option<String> {
     write(home, TERMINAL_MODE_KEY, mode.into())
 }
 
+/// `config.json` key of the `/resume` "Show ACP sessions" preference (#557).
+const SHOW_ACP_KEY: &str = "showAcpSessions";
+
+/// Whether `/resume` lists ACP-created Sessions; off when nothing was saved.
+pub fn saved_show_acp(home: &Path) -> bool {
+    read(home, SHOW_ACP_KEY).is_some_and(|value| value == true)
+}
+
+/// Saves the "Show ACP sessions" preference; the error text on failure.
+pub fn save_show_acp(home: &Path, show: bool) -> Option<String> {
+    write(home, SHOW_ACP_KEY, show.into())
+}
+
 const PERMISSION_KEY: &str = "permissionPreset";
 
 /// The legacy default for sessions the terminal UI creates or resumes.

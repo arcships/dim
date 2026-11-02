@@ -142,7 +142,7 @@ Goal 从分支的第一条本地 Queue 输入识别这个角色（Prompt 在 `br
 | 选项 | 说明 |
 | --- | --- |
 | 只读或更便宜的评审者 | 需要在第一条输入之前配置分支，以及按分支收窄 Permission；两者都不存在 |
-| CLI `/pursue` | CLI 还没有 `/goal` 命令；`/pursue` 就是带 `judge: "evaluator"` 的 `/goal` |
+| CLI `/pursue` | `/goal` 设置的目标由模型报告完成；`/pursue` 就是带 `judge: "evaluator"` 的 `/goal`，目前没有客户端形式发送它（[CLI 命令 § 目标](../cli-commands.md#目标)） |
 
 ## 11. 消融复核
 

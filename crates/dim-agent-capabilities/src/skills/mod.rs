@@ -89,9 +89,29 @@ pub enum SkillStatus {
     Shadowed { by: String },
 }
 
+/// Where a Skill was found, as the catalog reports it: `user`, `project` or
+/// `plugin:<plugin id>`. Clients group entries by it instead of reading the
+/// id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillSource {
+    User,
+    Project,
+    Plugin(String),
+}
+impl std::fmt::Display for SkillSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::User => f.write_str("user"),
+            Self::Project => f.write_str("project"),
+            Self::Plugin(plugin) => write!(f, "plugin:{plugin}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CatalogEntry {
     pub definition: Arc<SkillDefinition>,
+    pub source: SkillSource,
     pub enabled: bool,
     pub status: SkillStatus,
 }

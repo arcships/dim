@@ -200,6 +200,22 @@ async fn migration_retains_unsafe_objects_and_cleans_interrupted_snapshots() {
     }
     let native = Connection::open(target.join("rust/dimcode.sqlite")).unwrap();
     assert_eq!(native.query_row("SELECT count(*) FROM agent_sessions s LEFT JOIN session_catalog c USING(session_id) WHERE c.session_id IS NULL", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    // #557: an import records no creation provenance, so the catalogs list
+    // what it stored as `unknown` rather than guessing one.
+    assert_eq!(
+        native
+            .query_row(
+                "SELECT count(*) FROM agent_sessions WHERE origin='unknown'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        native
+            .query_row("SELECT count(*) FROM agent_sessions", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+    );
     assert_eq!(native.query_row("SELECT count(*) FROM session_catalog c JOIN timeline_events e ON e.session_id=c.session_id AND e.branch_id='main' AND e.last_sequence=(SELECT sequence FROM timeline_branches WHERE session_id=c.session_id AND branch_id='main') WHERE c.updated_at_ms!=json_extract(e.body,'$.record.event.create_at')", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
     assert_eq!(
         native

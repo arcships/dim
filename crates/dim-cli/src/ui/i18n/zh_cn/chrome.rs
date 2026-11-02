@@ -222,9 +222,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "answer required" => "需要回答",
         "permission required" => "需要授权",
         "esc interrupt" => "Esc 中断",
-        "↑ edit · ctrl+s steer now" => "↑ 编辑 · ctrl+s 立即 steer",
-        "+{count} more · ↑ edit · ctrl+s steer now" => {
-            "还有 {count} 条 · ↑ 编辑 · ctrl+s 立即 steer"
+        "shift+← edit last · ctrl+s steer now" => "shift+← 编辑最后一条 · ctrl+s 立即 steer",
+        "+{count} more · shift+← edit last · ctrl+s steer now" => {
+            "还有 {count} 条 · shift+← 编辑最后一条 · ctrl+s 立即 steer"
         }
         "Queue ({count})" => "队列（{count}）",
         "Thinking…" => "思考中…",
@@ -407,13 +407,14 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Permission needed: {tool}" => "需要授权：{tool}",
         "Question waiting for your answer" => "有问题等你回答",
         "Notify when agent needs you" => "需要你时通知",
+        "Show ACP sessions" => "显示 ACP 会话",
         "show the key bindings" => "显示快捷键",
         "Application keys" => "应用快捷键",
-        "Enter submit · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter 提交 · Shift+Enter 或 Ctrl+J 换行 · ↑↓ 历史"
+        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
+            "Enter 提交或排队 · 草稿为空时 steer 第一条排队消息 · Shift+Enter 或 Ctrl+J 换行 · ↑↓ 历史"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt or clear · Ctrl+S steer queued · ↑ edit queued" => {
-            "Ctrl+O 或 Ctrl+P 命令 · Esc 中断或清空 · Ctrl+S 立即 steer · ↑ 编辑队列消息"
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
+            "Ctrl+O 或 Ctrl+P 命令 · Esc 中断，排队消息回到输入框 · Ctrl+S steer 草稿或第一条排队消息 · Shift+← 编辑最后一条排队消息"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C 清空，连按两次退出 · 草稿为空时 Ctrl+D 退出"
@@ -445,6 +446,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "near the compaction threshold" => "接近压缩阈值",
         "This daemon does not support context compaction" => "此守护进程不支持上下文压缩",
         "compact the context of the shown line" => "压缩当前显示线的上下文",
+        "follow or change the shown line's goal" => "跟随或修改当前显示线的目标",
+        "◎ goal active" => "◎ 目标进行中",
+        "◎ goal paused" => "◎ 目标已暂停",
         "Kept verbatim" => "原文保留",
         "Tool effects" => "工具操作记录",
         "insufficient space: {parts}" => "空间不足：{parts}",
