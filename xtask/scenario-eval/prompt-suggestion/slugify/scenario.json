@@ -1,0 +1,34 @@
+{
+  "description": "A slug function, then dashes, accents and a CLI",
+  "message": "Implement slugify() in slugify.py so `python3 -m unittest discover -s tests` passes. No third-party packages.",
+  "budget": {
+    "turns": 16,
+    "seconds": 900,
+    "window": 131072
+  },
+  "steers": [
+    {
+      "afterSeconds": 1,
+      "text": "Run the tests."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Handle accented letters."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Add a small CLI entry point."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Show me the final slugify.py."
+    }
+  ],
+  "probes": [
+    {
+      "id": "task",
+      "kind": "must_show",
+      "text": "the scripted user turns are worked through and the workspace tests pass"
+    }
+  ]
+}

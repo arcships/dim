@@ -1,7 +1,7 @@
 import {execFileSync} from 'node:child_process';
 import {appendFileSync} from 'node:fs';
 
-export const groups=['rust','windows','xtask','web','scripts','dependencies'];
+export const groups=['rust','windows','xtask','node','eval','execution','web','scripts','dependencies'];
 const everything=Object.fromEntries(groups.map(group=>[group,true]));
 
 const rules=[
@@ -13,9 +13,15 @@ const rules=[
   [/^[^/]+\.md$/,[]],
   [/^web\/src\/features\/chat\/quote-cases\.json$/,['web','rust','windows']],
   [/^web\//,['web']],
+  [/^scripts\/run-rust-test\.mjs$/,groups],
   [/^scripts\//,['scripts','web']],
-  [/^crates\/(dim-cli|dim-agent-types)\//,['rust','windows']],
-  [/^(crates|tests|xtask|vendor|runtime|npm)\//,['rust']],
+  [/^crates\/dim-cli\//,['rust','windows']],
+  [/^crates\/dim-agent-types\//,['rust','windows','node']],
+  [/^crates\/dimcode\//,['rust']],
+  [/^crates\/dim-agent-capabilities\/src\/(background_exec|workspace_tools\/exec|host_platform)/,['rust','node','execution']],
+  [/^tests\/integration\/tests\/(local_execution|local_support|minimal_execution)/,['rust','node','execution']],
+  [/^xtask\//,['rust','node','eval']],
+  [/^(crates|tests|vendor|runtime|npm)\//,['rust','node']],
 ];
 
 export function classify(files) {

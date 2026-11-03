@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+[features]
+eval-tests = []
 [dependencies]
 rusqlite = { version = "0.40.2", features = ["backup"] }
 dim-agent-runtime = { workspace = true, features = ["testing"] }

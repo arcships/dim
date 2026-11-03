@@ -253,6 +253,13 @@ impl ListPanel {
         self.selected = self.selected.min(count.saturating_sub(1));
     }
 
+    /// Replaces one row's detail, as a value read after the list was built.
+    pub fn set_detail(&mut self, id: &str, detail: impl Into<String>) {
+        if let Some(item) = self.items.iter_mut().find(|item| item.id == id) {
+            item.detail = detail.into();
+        }
+    }
+
     /// Rows for the current filter: headings only while nothing is typed.
     fn shown(&self) -> Vec<&Item> {
         let query = self.filter.text().trim().to_lowercase();

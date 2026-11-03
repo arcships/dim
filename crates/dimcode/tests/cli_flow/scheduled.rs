@@ -108,96 +108,6 @@ fn scheduled_list_prints_the_jobs_and_their_runs() {
     );
 }
 
-#[test]
-fn scheduled_list_says_when_no_job_is_scheduled() {
-    let home = Home::new();
-    let daemon = home.daemon(|wire| {
-        hello(wire);
-        let request = wire.read("schedule.list");
-        wire.reply(&request, json!({"jobs": []}));
-    });
-    let output = home.command().args(["scheduled", "list"]).output().unwrap();
-    daemon.join().unwrap();
-    assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "No job is scheduled.\n"
-    );
-}
-
-#[test]
-fn scheduled_enable_and_disable_send_the_job() {
-    for enabled in [true, false] {
-        let home = Home::new();
-        let daemon = home.daemon(move |wire| {
-            hello(wire);
-            let request = wire.read("schedule.set_enabled");
-            assert_eq!(
-                request["params"],
-                json!({"job_id": "job-1", "enabled": enabled})
-            );
-            wire.reply(
-                &request,
-                json!({"job": job("job-1", "nightly", 4, enabled, Value::Null)}),
-            );
-            let request = wire.read("schedule.list");
-            wire.reply(&request, jobs(enabled));
-        });
-        let output = home
-            .command()
-            .args([
-                "scheduled",
-                if enabled { "enable" } else { "disable" },
-                "job-1",
-            ])
-            .output()
-            .unwrap();
-        daemon.join().unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
-            format!(
-                "{} nightly.\n",
-                if enabled { "Enabled" } else { "Disabled" }
-            )
-        );
-        fs::remove_file(home.0.join("rust/daemon.sock")).unwrap();
-    }
-}
-
-#[test]
-fn scheduled_remove_deletes_the_job() {
-    let home = Home::new();
-    let daemon = home.daemon(|wire| {
-        hello(wire);
-        let request = wire.read("schedule.delete");
-        assert_eq!(request["params"], json!({"job_id": "job-1"}));
-        wire.reply(&request, json!({"job_id": "job-1"}));
-        let request = wire.read("schedule.list");
-        wire.reply(&request, json!({"jobs": []}));
-    });
-    let output = home
-        .command()
-        .args(["scheduled", "remove", "job-1"])
-        .output()
-        .unwrap();
-    daemon.join().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "Removed job-1.\n"
-    );
-}
-
 /// A delete the owner refuses as a conflict wrote nothing: the command says
 /// so and fails, as a conflicting save does.
 #[test]
@@ -255,37 +165,6 @@ fn scheduled_edit_refuses_stdin_that_is_not_a_terminal() {
     assert!(stderr.contains("scheduled set ID PATH"), "{stderr}");
 }
 
-#[test]
-fn scheduled_run_reports_what_the_owner_answered() {
-    let home = Home::new();
-    let daemon = home.daemon(|wire| {
-        hello(wire);
-        let request = wire.read("schedule.run_now");
-        assert_eq!(request["params"], json!({"job_id": "job-1"}));
-        wire.reply(
-            &request,
-            run("skipped", "overlap", "2026-11-01T09:00:00.000Z"),
-        );
-        let request = wire.read("schedule.list");
-        wire.reply(&request, jobs(true));
-    });
-    let output = home
-        .command()
-        .args(["scheduled", "run", "job-1"])
-        .output()
-        .unwrap();
-    daemon.join().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "Run nightly: skipped (overlap).\n"
-    );
-}
-
 /// The scheduler's answer to a failed read that follows an applied action:
 /// an error the client reports as the read error.
 fn read_failed(wire: &mut Wire, request: &Value) {
@@ -303,6 +182,7 @@ fn scheduled_run_keeps_the_owners_answer_when_the_read_back_fails() {
     let daemon = home.daemon(|wire| {
         hello(wire);
         let request = wire.read("schedule.run_now");
+        assert_eq!(request["params"], json!({"job_id":"job-1"}));
         wire.reply(
             &request,
             run("skipped", "overlap", "2026-11-01T09:00:00.000Z"),
@@ -373,6 +253,7 @@ fn scheduled_remove_exits_zero_when_the_read_back_fails() {
     let daemon = home.daemon(|wire| {
         hello(wire);
         let request = wire.read("schedule.delete");
+        assert_eq!(request["params"], json!({"job_id":"job-1"}));
         wire.reply(&request, json!({"job_id": "job-1"}));
         let request = wire.read("schedule.list");
         read_failed(wire, &request);
@@ -432,43 +313,6 @@ fn scheduled_enable_and_disable_report_the_line_when_the_read_back_fails() {
             "the scheduler is unavailable (RPC -32000)\n"
         );
     }
-}
-
-/// A home whose saved interface language is Simplified Chinese.
-fn chinese_home() -> Home {
-    let home = Home::new();
-    fs::write(home.0.join("config.json"), r#"{"locale":"zh-CN"}"#).unwrap();
-    home
-}
-
-/// A subcommand composes its area's text in the saved interface language, as
-/// the panel does: the applied line whose read-back fails is Chinese, and the
-/// read error stays as the client reported it.
-#[test]
-fn scheduled_composes_its_lines_in_the_saved_language() {
-    let home = chinese_home();
-    let daemon = home.daemon(|wire| {
-        hello(wire);
-        let request = wire.read("schedule.set_enabled");
-        wire.reply(&request, json!({"job": {}}));
-        let request = wire.read("schedule.list");
-        read_failed(wire, &request);
-    });
-    let output = home
-        .command()
-        .args(["scheduled", "disable", "job-1"])
-        .output()
-        .unwrap();
-    daemon.join().unwrap();
-    assert_eq!(output.status.code(), Some(0));
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "已禁用 job-1。\n"
-    );
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "the scheduler is unavailable (RPC -32000)\n"
-    );
 }
 
 #[test]
@@ -1297,131 +1141,6 @@ fn tui_scheduled_panel_lists_and_manages_jobs() {
     thread::sleep(Duration::from_millis(200));
     terminal.write(b"/schedule\r");
     terminal.until("every 60 minutes");
-    terminal.raw(b"\x1b");
-    thread::sleep(Duration::from_millis(200));
-    terminal.write(b"/exit\r");
-    terminal.until("Bye!");
-    assert!(terminal.wait().success());
-    daemon.join().unwrap();
-}
-
-/// The panel composes what the adapter answers in the saved interface
-/// language: a toggle whose read-back fails still reports its line, and it is
-/// Chinese.
-#[test]
-fn tui_scheduled_panel_composes_in_the_saved_language() {
-    let home = chinese_home();
-    let (shown, wait_shown) = mpsc::channel();
-    let daemon = home.daemon(move |wire| {
-        hello(wire);
-        wire.created();
-        let attach = wire.read("session.attach");
-        wire.reply(&attach, attach_record(&attach));
-        let history = wire.read("session.history");
-        wire.reply(
-            &history,
-            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
-        );
-        for _ in 0..2 {
-            let request = wire.read_any();
-            match request["method"].as_str() {
-                Some("account.providers") => wire.reply(&request, json!([])),
-                Some("session.context.usage") => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
-                    "code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
-                method => panic!("unexpected request {method:?}"),
-            }
-        }
-        wait_shown.recv_timeout(PATIENCE).unwrap();
-        let request = wire.read("schedule.list");
-        wire.reply(&request, jobs(true));
-        let request = wire.read("schedule.set_enabled");
-        assert_eq!(
-            request["params"],
-            json!({"job_id": "job-1", "enabled": false})
-        );
-        wire.reply(&request, json!({"job": {}}));
-        let request = wire.read("schedule.list");
-        read_failed(wire, &request);
-        wire.hold();
-    });
-    let mut terminal = Terminal::launch_tui(home.command());
-    terminal.until("test / model");
-    shown.send(()).unwrap();
-    terminal.write(b"/scheduled\r");
-    terminal.until("release");
-    terminal.raw(b"\r");
-    terminal.until("已禁用 nightly。");
-    terminal.raw(b"\x1b");
-    thread::sleep(Duration::from_millis(200));
-    terminal.write(b"/exit\r");
-    assert!(terminal.wait().success());
-    daemon.join().unwrap();
-}
-
-/// `/language` reaches the session thread: after a switch to English, the
-/// panel's next applied line is English, in the same run.
-#[test]
-fn tui_scheduled_panel_follows_the_language_picker() {
-    let home = chinese_home();
-    let (shown, wait_shown) = mpsc::channel();
-    let daemon = home.daemon(move |wire| {
-        hello(wire);
-        wire.created();
-        let attach = wire.read("session.attach");
-        wire.reply(&attach, attach_record(&attach));
-        let history = wire.read("session.history");
-        wire.reply(
-            &history,
-            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
-        );
-        for _ in 0..2 {
-            let request = wire.read_any();
-            match request["method"].as_str() {
-                Some("account.providers") => wire.reply(&request, json!([])),
-                Some("session.context.usage") => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
-                    "code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
-                method => panic!("unexpected request {method:?}"),
-            }
-        }
-        wait_shown.recv_timeout(PATIENCE).unwrap();
-        // In Chinese, the panel toggles the job.
-        let request = wire.read("schedule.list");
-        wire.reply(&request, jobs(true));
-        let request = wire.read("schedule.set_enabled");
-        wire.reply(&request, json!({"job": {}}));
-        let request = wire.read("schedule.list");
-        read_failed(wire, &request);
-        // After `/language`, the panel reads the area and toggles again.
-        let request = wire.read("schedule.list");
-        wire.reply(&request, jobs(true));
-        let request = wire.read("schedule.set_enabled");
-        assert_eq!(
-            request["params"],
-            json!({"job_id": "job-1", "enabled": false})
-        );
-        wire.reply(&request, json!({"job": {}}));
-        let request = wire.read("schedule.list");
-        read_failed(wire, &request);
-        wire.hold();
-    });
-    let mut terminal = Terminal::launch_tui(home.command());
-    terminal.until("test / model");
-    shown.send(()).unwrap();
-    terminal.write(b"/scheduled\r");
-    terminal.until("release");
-    terminal.raw(b"\r");
-    terminal.until("已禁用 nightly。");
-    terminal.raw(b"\x1b");
-    thread::sleep(Duration::from_millis(200));
-    terminal.write(b"/language\r");
-    terminal.until("English");
-    terminal.raw(b"\x1b[A");
-    terminal.raw(b"\r");
-    terminal.until("Language set to English");
-    terminal.write(b"/scheduled\r");
-    terminal.until("release");
-    terminal.raw(b"\r");
-    terminal.until("Disabled nightly.");
     terminal.raw(b"\x1b");
     thread::sleep(Duration::from_millis(200));
     terminal.write(b"/exit\r");

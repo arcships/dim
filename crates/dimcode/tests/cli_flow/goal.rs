@@ -438,6 +438,8 @@ fn tui_goal_shows_the_state_and_marks_the_status_area() {
         wire.created();
         let attach = wire.read("session.attach");
         wire.reply(&attach, attach_record(&attach));
+        let table = wire.read("session.methods");
+        wire.reply(&table, methods(true));
         let history = wire.read("session.history");
         wire.reply(&history, page(8, vec![]));
         started(wire);
@@ -547,6 +549,8 @@ fn tui_goal_acts_on_the_shown_line_and_a_new_line_has_none() {
         wire.created();
         let attach = wire.read("session.attach");
         wire.reply(&attach, attach_record(&attach));
+        let table = wire.read("session.methods");
+        wire.reply(&table, methods(true));
         let history = wire.read("session.history");
         wire.reply(&history, page(8, vec![]));
         started(wire);
@@ -650,6 +654,8 @@ fn tui_goal_reads_the_line_before_it_picks_set_or_edit() {
         wire.created();
         let attach = wire.read("session.attach");
         wire.reply(&attach, attach_record(&attach));
+        let table = wire.read("session.methods");
+        wire.reply(&table, methods(true));
         let history = wire.read("session.history");
         wire.reply(&history, page(8, vec![]));
 
@@ -738,6 +744,8 @@ fn tui_goal_reports_a_failed_read_and_sends_nothing() {
         wire.created();
         let attach = wire.read("session.attach");
         wire.reply(&attach, attach_record(&attach));
+        let table = wire.read("session.methods");
+        wire.reply(&table, methods(true));
         let history = wire.read("session.history");
         wire.reply(&history, page(8, vec![]));
 

@@ -36,7 +36,7 @@ See [ADR 004](../../adr/004-loader-plugin-management.md).
 
 `SettingsPlugin` 不作为 `SessionScopePlugin` 的 `Deps` 依赖：Session 创建入口传入已校验的配置快照，既有 Session 的设置变更由受影响能力按业务合同更新（如 McpSession 观察目录修订）。普通配置写入不通过 rutis 重载重建 Session。
 
-Session 与分支装配通过 loader 的 `instance_rows` 查询本实例当前的行句柄，不构造全进程的行配置、Schema 与元数据副本；作用域交出的挂载器视图与挂载器挂上的部件另行交给创建。初次读取、必需部件就绪后的读取与最终清理成员读取均使用当前结果，包含加载过程中创建的嵌套实例；每次装配完成后持有自己的行句柄，关闭错误的归属与 mounter 部件清理沿用这些句柄。该查询不改变 loader 的就绪与生命周期规则。
+Session 与分支装配通过 loader 的 `instance_rows` 查询本实例当前的行句柄，不构造全进程的行配置、Schema 与元数据副本；作用域交出的挂载器视图与挂载器挂上的部件另行交给创建。实例创建返回且组行成为 Active 后读取一次，必需行由这份快照筛出；行报告失败的实例在回滚前只在该路径再读一次成员。必需部件就绪后再读取一次作为清理成员，包含加载过程中创建的嵌套实例，发布之后创建的实例不在其中。每次装配完成后持有自己的行句柄，关闭错误的归属与 mounter 部件清理沿用这些句柄。该查询不改变 loader 的就绪与生命周期规则。
 
 当前 `--database PATH` 装载 `SqliteStoragePlugin` 与 `SessionStorePlugin`，共用一个原生数据库，保存 Agent profile、Session 身份与 Timeline；启动只读目录，Session 按使用装载，未指定数据库时使用内存存储。`--home PATH` 使用 `<home>/dimcode.sqlite` 并授权该文件根；FileStorage 默认授权 `session_defaults.cwd`。SQL/JSON 格式见[原生存储格式](../../design/appserver/native-storage-format.md)。
 

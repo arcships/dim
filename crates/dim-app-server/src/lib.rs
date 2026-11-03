@@ -24,6 +24,7 @@ pub mod permission_rules;
 mod pipe_client;
 pub mod plugin_files;
 pub mod plugin_manager;
+pub mod prompt_suggestion_settings;
 pub mod protocol;
 pub mod provider;
 pub mod runtime_manager;
@@ -735,6 +736,14 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             Ok(Box::new(execution_settings::ExecutionSettingsPlugin::new(
                 names,
             )?))
+        })?);
+        dim_agent_runtime::names::register::<
+            dim_agent_capabilities::prompt_suggestion::PromptSuggestionSettingsHost,
+        >(builder.catalog_mut(), None);
+        rows.push(register_part(&mut builtins, builder.catalog(), |names| {
+            Ok(Box::new(
+                prompt_suggestion_settings::PromptSuggestionSettingsPlugin::new(names)?,
+            ))
         })?);
         rows.push(register_part(
             &mut builtins,

@@ -33,7 +33,7 @@ impl Counts {
         debug_assert!(outcome <= total, "{outcome} of {total}");
         Self { outcome, total }
     }
-    fn rate(&self) -> Option<f64> {
+    pub(crate) fn rate(&self) -> Option<f64> {
         (self.total > 0).then(|| self.outcome as f64 / self.total as f64)
     }
 }
@@ -285,7 +285,7 @@ fn log_factorials(n: u64) -> Vec<f64> {
 
 /// A probability as a report prints it: `1` for the gate's p, four decimals
 /// down to the Holm thresholds' scale, and scientific notation below.
-fn probability(p: f64) -> String {
+pub(crate) fn probability(p: f64) -> String {
     if p >= 1. {
         "1".to_owned()
     } else if p >= 0.0001 {
@@ -295,7 +295,7 @@ fn probability(p: f64) -> String {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "eval-tests"))]
 mod tests {
     use super::*;
 

@@ -30,6 +30,8 @@ mod migration;
 mod models;
 #[path = "cli_flow/permission.rs"]
 mod permission;
+#[path = "cli_flow/prompt_suggestion.rs"]
+mod prompt_suggestion;
 #[path = "cli_flow/question.rs"]
 mod question;
 #[path = "cli_flow/scheduled.rs"]
@@ -272,6 +274,43 @@ fn wait(mut child: Child) -> Output {
         thread::sleep(Duration::from_millis(10));
     }
     child.wait_with_output().unwrap()
+}
+
+#[test]
+fn empty_management_lists_explain_the_result() {
+    for (area, method, reply, message) in [
+        (
+            "scheduled",
+            "schedule.list",
+            json!({"jobs":[]}),
+            "No job is scheduled.\n",
+        ),
+        (
+            "skills",
+            "skills.catalog",
+            json!({"version":1,"entries":[],"issues":[]}),
+            "No Skill is configured.\n",
+        ),
+        (
+            "hooks",
+            "hooks.catalog",
+            json!({"userRevision":"user:1","projectsRevision":"user:1",
+                "disableAllHooks":false,"sources":[],"hooks":[]}),
+            "No hook is configured.\n",
+        ),
+    ] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&[method]);
+            let request = wire.read(method);
+            wire.reply(&request, reply);
+        });
+        let output = home.command().args([area, "list"]).output().unwrap();
+        daemon.join().unwrap();
+        assert!(output.status.success(), "{area}: {output:?}");
+        assert!(output.stdout.is_empty(), "{area}: {output:?}");
+        assert_eq!(String::from_utf8(output.stderr).unwrap(), message, "{area}");
+    }
 }
 
 #[test]
@@ -2374,6 +2413,39 @@ fn piped_prompt_runs_once_and_model_failure_has_a_distinct_exit_code() {
     }
 }
 
+/// `text` without its ANSI escape sequences, so a painted row reads as the
+/// text the user sees.
+fn strip_ansi(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            plain.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                let mut previous = '\0';
+                for c in chars.by_ref() {
+                    if c == '\u{07}' || (previous == '\u{1b}' && c == '\\') {
+                        break;
+                    }
+                    previous = c;
+                }
+            }
+            _ => {}
+        }
+    }
+    plain
+}
+
 /// A CLI running on its own pseudo-terminal. Dropping it before the CLI has
 /// exited, as a failed flow does, ends the CLI's whole process group.
 struct Terminal {
@@ -2510,10 +2582,34 @@ impl Terminal {
         self.consumed = consumed;
     }
     fn until(&mut self, expected: &str) {
+        self.wait_for(expected, |tail| {
+            tail.find(expected).map(|index| index + expected.len())
+        });
+    }
+    /// Waits until the row labelled `label` shows `value`: a panel paints a
+    /// row's value in the same write as its label, so the text that follows
+    /// the label is the row's loaded state.
+    fn until_row(&mut self, label: &str, value: &str) {
+        let expected = format!("{label:?} showing {value:?}");
+        self.wait_for(&expected, |tail| {
+            let mut from = 0;
+            while let Some(index) = tail[from..].find(label) {
+                let end = from + index + label.len();
+                if strip_ansi(&tail[end..]).trim_start().starts_with(value) {
+                    return Some(end);
+                }
+                from = end;
+            }
+            None
+        });
+    }
+    /// Reads until `found` names how far into the unconsumed transcript the
+    /// wait is satisfied.
+    fn wait_for(&mut self, expected: &str, found: impl Fn(&str) -> Option<usize>) {
         let deadline = Instant::now() + PATIENCE;
         loop {
-            if let Some(index) = self.transcript[self.consumed..].find(expected) {
-                self.consumed += index + expected.len();
+            if let Some(end) = found(&self.transcript[self.consumed..]) {
+                self.consumed += end;
                 return;
             }
             assert!(
@@ -4895,6 +4991,7 @@ fn tui_at_mentions_pick_files_from_the_working_directory() {
         resolved.join("notes.txt").display(),
         resolved.join("src/main.rs").display()
     );
+    let (submitted, received) = std::sync::mpsc::channel();
     let daemon = home.daemon(move |wire| {
         let hello = wire.read("hello");
         wire.reply(&hello,json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","provider.list"]}));
@@ -4910,6 +5007,7 @@ fn tui_at_mentions_pick_files_from_the_working_directory() {
         let submit = wire.read("session.submit");
         assert_eq!(submit["params"]["text"], expected);
         wire.reply(&submit, json!({"event":{}}));
+        submitted.send(()).unwrap();
         let mut line = String::new();
         while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
             line.clear();
@@ -4929,10 +5027,10 @@ fn tui_at_mentions_pick_files_from_the_working_directory() {
     terminal.until("@src/main.rs");
     terminal.write(b"\t");
     terminal.write(b"\r");
-    let joined = daemon.join();
+    received.recv_timeout(PATIENCE).unwrap();
     terminal.signal(libc::SIGKILL);
     terminal.wait();
-    joined.unwrap();
+    daemon.join().unwrap();
 }
 
 fn catalog_entry(name: &str, enabled: bool, shadowed_by: Option<&str>) -> Value {
@@ -5180,6 +5278,7 @@ fn tui_sends_dropped_files_as_links_and_images_by_model_capability() {
         image.display(),
         notes.display()
     );
+    let (submitted, received) = std::sync::mpsc::channel();
     let daemon = home.daemon(move |wire| {
         let hello = wire.read("hello");
         wire.reply(&hello,json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","provider.list","provider.catalog"]}));
@@ -5200,6 +5299,7 @@ fn tui_sends_dropped_files_as_links_and_images_by_model_capability() {
         assert_eq!(submit["params"]["text"], expected);
         assert!(submit["params"].get("user").is_none());
         wire.reply(&submit, json!({"event":{}}));
+        submitted.send(()).unwrap();
         let mut line = String::new();
         while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
             line.clear();
@@ -5216,10 +5316,10 @@ fn tui_sends_dropped_files_as_links_and_images_by_model_capability() {
     terminal.paste(&dragged);
     terminal.until("[my notes.txt]");
     terminal.write(b"\r");
-    let joined = daemon.join();
+    received.recv_timeout(PATIENCE).unwrap();
     terminal.signal(libc::SIGKILL);
     terminal.wait();
-    joined.unwrap();
+    daemon.join().unwrap();
 }
 
 #[test]

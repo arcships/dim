@@ -314,6 +314,8 @@ async fn migration_validates_dim_account_tokens_before_writing_the_account_file(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn migrated_dim_account_states_are_readable_by_the_account_owner() {
+    use dim_agent_capabilities::file_storage::FileStoragePlugin;
+    use dim_app_server::managed_provider::ManagedProvider;
     use dim_app_server::managed_provider::ManagedProviders;
     use sha2::{Digest, Sha256};
 
@@ -487,6 +489,41 @@ async fn migrated_dim_account_states_are_readable_by_the_account_owner() {
         assert_eq!(snapshot(&source), before);
         plugin.dispose().await.unwrap();
         root.shutdown().await.unwrap();
+        let owner = rutis::Ctx::root().unwrap();
+        let files = owner.plugin(FileStoragePlugin::new(vec![target.canonicalize().unwrap()]));
+        (&files).await.unwrap();
+        let catalog = dim_app_server::catalog();
+        let build = Default::default();
+        let names = dim_agent_runtime::Names::copy(&catalog, &build);
+        let provider = owner.plugin(
+            dim_oauth::DimOAuthPlugin::new(
+                &names,
+                0,
+                dim_oauth::ClientIds {
+                    global: "test-global".into(),
+                    cn: "test-cn".into(),
+                },
+            )
+            .unwrap(),
+        );
+        (&provider).await.unwrap();
+        let account = owner
+            .get::<dyn ManagedProvider>()
+            .unwrap()
+            .status("dimcode-api-oauth")
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{case}: native account reader rejected the target: {error:?}")
+            });
+        assert_eq!(
+            account.account.is_some(),
+            valid && case != "signed_out",
+            "{case}"
+        );
+        owner.shutdown().await.unwrap();
+        if !matches!(case, "authenticated" | "signed_out") {
+            continue;
+        }
         let mut builder = AgentBuilder::new(AgentConfig::default());
         defaults::install(&mut builder);
         defaults::mock_hosts(&mut builder);

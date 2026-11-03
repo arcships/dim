@@ -24,6 +24,9 @@ jobs:
       rust: ${{ steps.groups.outputs.rust }}
       windows: ${{ steps.groups.outputs.windows }}
       xtask: ${{ steps.groups.outputs.xtask }}
+      node: ${{ steps.groups.outputs.node }}
+      eval: ${{ steps.groups.outputs.eval }}
+      execution: ${{ steps.groups.outputs.execution }}
       web: ${{ steps.groups.outputs.web }}
       scripts: ${{ steps.groups.outputs.scripts }}
       dependencies: ${{ steps.groups.outputs.dependencies }}
@@ -94,18 +97,35 @@ jobs:
         with:
           node-version-file: .node-version
           package-manager-cache: false
-      - name: Verify the Rust workspace
+      - name: Build and lint the Rust workspace
         if: needs.changes.outputs.rust == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --workspace --locked
           cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets --locked -- -D warnings
-          cargo test --workspace --locked
+          features=()
+          if [[ '${{ needs.changes.outputs.eval }}' == true ]]; then
+            features+=(--features xtask/eval-tests)
+          fi
+          cargo clippy --workspace --all-targets --locked ${features[@]+"${features[@]}"} -- -D warnings
+          cargo build --workspace --all-targets --locked ${features[@]+"${features[@]}"} --message-format=json > target/test-artifacts.jsonl
+      - name: Run compiled workspace tests
+        if: needs.changes.outputs.rust == 'true'
+        run: |
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl --workspace --test-threads=4
+          cargo test --workspace --doc --locked ${{ needs.changes.outputs.eval == 'true' && '--features xtask/eval-tests' || '' }}
+      - name: Verify wall-clock background handoff
+        if: needs.changes.outputs.execution == 'true'
+        run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl local_execution a_long_foreground_command_moves_to_the_background_after_30_seconds --ignored --exact
       - name: Check crate boundaries and plugin pages
         if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.xtask == 'true'
-        run: cargo run --locked -p xtask -- check
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ '${{ needs.changes.outputs.rust }}' != true ]]; then
+            cargo build --locked -p xtask
+          fi
+          target/debug/xtask check
       - name: Test development and release scripts
         if: needs.changes.outputs.scripts == 'true'
         run: |
@@ -118,7 +138,7 @@ jobs:
           set -euo pipefail
           # The frontend is a separate artifact; building it here type-checks web/.
           node scripts/stage-web.mjs staging/release-web "$(node -p "require('./npm/package.json').version")" "$GITHUB_SHA"
-          node --test 'web/**/*.test.mjs'
+          npm test --prefix web
       - name: Verify actual CLI profiles and terminal launcher
         if: needs.changes.outputs.rust == 'true'
         shell: bash
@@ -134,9 +154,9 @@ jobs:
           (cd runtime && npm install --no-save --ignore-scripts --install-links ./plugins/goal ./plugins/scheduler ./plugins/workflow)
           export DIM_TEST_APP_SERVER="$PWD/target/debug/dim-app-server"
           export DIM_TEST_NPM_WRAPPER="$PWD/npm/bin/dimcode.mjs"
-          cargo test --locked -p dimcode --test cli_flow -- --ignored
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl cli_flow --ignored
       - name: Verify public Node bindings
-        if: needs.changes.outputs.rust == 'true'
+        if: needs.changes.outputs.node == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -145,11 +165,6 @@ jobs:
           export RUTIS_HOST="$PWD/runtime/node_modules/.bin/rutis-host"
           node --test runtime/plugin-sdk.test.mjs
           node --test runtime/plugins/goal/goal.test.mjs
-          # The scheduler and workflow plugin tests stay off: no double of a
-          # test's can receive the plugin definition they register, because
-          # 0.19.3's test tool does not take one (rutis-0.19-upgrade M10). The
-          # Node-backed Rust flows below still load them for real, and `tsc`
-          # checks them; goal has no tsconfig.
           node runtime/node_modules/typescript/bin/tsc -p runtime/plugins/scheduler/tsconfig.json
           node runtime/node_modules/typescript/bin/tsc -p runtime/plugins/workflow/tsconfig.json
           # The Python of `py:` rows: a relocatable CPython, pinned by hash, so the
@@ -167,12 +182,13 @@ jobs:
           export DIM_TEST_JS_RUNTIME="$PWD/runtime/node_modules/@arcships/rutis-runtime"
           export DIM_TEST_RUTIS_SDK="$PWD/runtime/node_modules/@arcships/rutis/src/index.mjs"
           export DIM_TEST_PYTHON="$PWD/runtime/.venv/bin/python"
-          cargo test --locked -p dim-app-server --test transport_flow --test mcp_http_flow node_ -- --ignored
-          cargo test --locked -p dim-session-title --test scheduler_flow -- --ignored
-          cargo test --locked -p dim-migration --test migration_flow node_ -- --ignored
-          # The scenario runner serves the default plugins, whose packages the
-          # CLI profile step above installed.
-          cargo test --locked -p xtask node_ -- --ignored
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow node_ --ignored
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl mcp_http_flow node_ --ignored
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl scheduler_flow --ignored
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl migration_flow node_ --ignored
+          if [[ '${{ needs.changes.outputs.eval }}' == true ]]; then
+            node scripts/run-rust-test.mjs target/test-artifacts.jsonl xtask node_ --ignored
+          fi
   acp-registry:
     needs: changes
     if: github.event_name != 'pull_request' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.scripts == 'true')

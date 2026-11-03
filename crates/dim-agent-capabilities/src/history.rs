@@ -657,47 +657,16 @@ fn replay(
                 }
                 output_open = true;
             }
-            EventKind::Thinking(data) => match output.last_mut() {
-                Some(MessagePart::Thinking { thinking, .. }) => thinking.push_str(&data.delta),
-                _ => output.push(MessagePart::Thinking {
-                    provider_metadata: None,
-                    thinking: data.delta.clone(),
-                    start_time: None,
-                    end_time: None,
-                }),
-            },
-            EventKind::Text(data) => match output.last_mut() {
-                Some(MessagePart::Text { text, .. }) => text.push_str(&data.delta),
-                _ => output.push(MessagePart::Text {
-                    provider_metadata: None,
-                    text: data.delta.clone(),
-                    start_time: None,
-                    end_time: None,
-                }),
-            },
+            EventKind::Thinking(_)
+            | EventKind::Text(_)
+            | EventKind::ToolUse(_)
+            | EventKind::ModelContent(_) => {
+                fold_output_parts(&mut output, &event.kind)?;
+            }
             EventKind::ToolUseStart(data) => {
                 open_tools.push(data.call_id.clone());
-                output.push(MessagePart::ToolUse {
-                    provider_metadata: None,
-                    id: data.call_id.clone(),
-                    name: data.name.clone(),
-                    input: JsonObject::new(),
-                    start_time: None,
-                });
+                fold_output_parts(&mut output, &event.kind)?;
             }
-            EventKind::ToolUse(data) => match output
-                .iter_mut()
-                .find(|part| matches!(part, MessagePart::ToolUse { id, .. } if *id == data.call.id))
-            {
-                Some(MessagePart::ToolUse { input, .. }) => input.clone_from(&data.call.input),
-                _ => {
-                    return Err(format!(
-                        "Tool call {} completes without step/tool-use-start",
-                        data.call.id
-                    ));
-                }
-            },
-            EventKind::ModelContent(data) => output = data.content.clone(),
             EventKind::ModelOutputEnd(data) => {
                 let output = std::mem::take(&mut output);
                 if matches!(data.outcome, ModelOutputOutcome::Completed { .. }) {
@@ -962,6 +931,55 @@ pub fn projection_checkpoint(
 
 pub fn validate_context_boundary(context: &ContextHistory) -> Result<(), String> {
     boundary(&replay(&context.events, initial_state(context), &context.positions)?.state)
+}
+
+/// Folds one streamed output event into the parts history builds for that
+/// output: a delta appends to a trailing part of its own kind, a tool call
+/// starts a `ToolUse` part, and `model/content` replaces them all. Other
+/// kinds leave the parts as they are.
+pub fn fold_output_parts(parts: &mut Vec<MessagePart>, kind: &EventKind) -> Result<(), String> {
+    match kind {
+        EventKind::Thinking(data) => match parts.last_mut() {
+            Some(MessagePart::Thinking { thinking, .. }) => thinking.push_str(&data.delta),
+            _ => parts.push(MessagePart::Thinking {
+                provider_metadata: None,
+                thinking: data.delta.clone(),
+                start_time: None,
+                end_time: None,
+            }),
+        },
+        EventKind::Text(data) => match parts.last_mut() {
+            Some(MessagePart::Text { text, .. }) => text.push_str(&data.delta),
+            _ => parts.push(MessagePart::Text {
+                provider_metadata: None,
+                text: data.delta.clone(),
+                start_time: None,
+                end_time: None,
+            }),
+        },
+        EventKind::ToolUseStart(data) => parts.push(MessagePart::ToolUse {
+            provider_metadata: None,
+            id: data.call_id.clone(),
+            name: data.name.clone(),
+            input: JsonObject::new(),
+            start_time: None,
+        }),
+        EventKind::ToolUse(data) => match parts
+            .iter_mut()
+            .find(|part| matches!(part, MessagePart::ToolUse { id, .. } if *id == data.call.id))
+        {
+            Some(MessagePart::ToolUse { input, .. }) => input.clone_from(&data.call.input),
+            _ => {
+                return Err(format!(
+                    "Tool call {} completes without step/tool-use-start",
+                    data.call.id
+                ));
+            }
+        },
+        EventKind::ModelContent(data) => parts.clone_from(&data.content),
+        _ => {}
+    }
+    Ok(())
 }
 
 /// The event limit one page of a cut check asks for.

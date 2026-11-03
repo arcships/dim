@@ -1,0 +1,38 @@
+{
+  "description": "长会话，中文记录：第一轮整读六个文件，之后每轮一个，131072 窗口",
+  "message": "先运行一次 python3 generate_notes.py，它会生成 notes/01.txt 到 notes/09.txt。然后用 read 工具把 notes/01.txt 到 notes/06.txt 全文读完（不要用 grep、head 或 tail），每个文件报出最后一条记录的跟踪编号。",
+  "budget": {
+    "turns": 16,
+    "seconds": 1800,
+    "window": 131072
+  },
+  "steers": [
+    {
+      "afterSeconds": 1,
+      "text": "用 read 工具把 notes/07.txt 全文读完（不要用 grep、head 或 tail），报出最后一条记录的跟踪编号。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "用 read 工具把 notes/08.txt 全文读完（不要用 grep、head 或 tail），报出最后一条记录的跟踪编号。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "用 read 工具把 notes/09.txt 全文读完（不要用 grep、head 或 tail），报出最后一条记录的跟踪编号。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "数一下这九份记录里一共有多少条跟踪编号，把总数写到 summary.md。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "把每个文件的标题整理成一份目录，加到 summary.md 顶部。"
+    }
+  ],
+  "probes": [
+    {
+      "id": "task",
+      "kind": "must_show",
+      "text": "the scripted user turns are worked through and the notes are read in full"
+    }
+  ]
+}

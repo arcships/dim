@@ -1,0 +1,34 @@
+{
+  "description": "A word counter, then punctuation, empty files and stdin",
+  "message": "Implement count() in wordcount.py so `python3 -m unittest discover -s tests` passes. It counts lowercase words and ignores punctuation.",
+  "budget": {
+    "turns": 16,
+    "seconds": 900,
+    "window": 131072
+  },
+  "steers": [
+    {
+      "afterSeconds": 1,
+      "text": "Run it on fixtures/a.txt."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Words with punctuation should still count as words."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Add a test for empty files."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Read from stdin when no path is given."
+    }
+  ],
+  "probes": [
+    {
+      "id": "task",
+      "kind": "must_show",
+      "text": "the scripted user turns are worked through and the workspace tests pass"
+    }
+  ]
+}

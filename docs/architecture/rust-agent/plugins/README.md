@@ -36,6 +36,7 @@ dependency is not necessarily a plugin with the same name.
 | [ToolRegistry](ToolRegistry.md) | — | ToolRegistry | — |
 | [SessionMethods](SessionMethods.md) | — | SessionMethods | — |
 | [ShellInput](ShellInput.md) | — | ShellInput | — |
+| [PromptSuggestion](PromptSuggestion.md) | — | PromptSuggestion | — |
 | [Attachments](Attachments.md) | — | Attachments | — |
 | [Questions](Questions.md) | — | Questions | — |
 | [BranchTool](BranchTool.md) | — | BranchTool, BranchLine | — |

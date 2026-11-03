@@ -578,6 +578,23 @@ async fn node_workflow_sources_stages_policy_and_report_use_the_real_package() {
         let listed = client.rpc("workflow.list", json!({"cwd":home})).await;
         assert_ok(&listed);
         assert_eq!(listed["result"]["definitions"][0]["valid"], true);
+        for params in [
+            json!({}),
+            json!({"target":"file.ts","unknown":"extra"}),
+            json!({"target":"x".repeat(32 * 1024 + 1)}),
+        ] {
+            let rejected = client
+                .rpc(
+                    "workflow.start",
+                    json!({"name":"review","cwd":home,"params":params}),
+                )
+                .await;
+            assert_eq!(
+                rejected["error"]["data"]["appError"], "invalid_parameters",
+                "{rejected}"
+            );
+            assert_eq!(stored(&home)["runs"], json!([]));
+        }
         let started = client
             .rpc(
                 "workflow.start",
@@ -766,6 +783,33 @@ async fn node_workflow_project_enablement_invalid_sources_and_tool_policy() {
     ready(&mut client).await;
     let document = json!({"schema":"dim.workflow/v1","name":"project","description":"Project source",
         "steps":[{"stage":{"id":"one","prompt":"first contents"}}]});
+    let mut bounded = document.clone();
+    bounded["name"] = json!("bounded");
+    bounded["description"] = json!("");
+    let overhead = serde_json::to_vec(&bounded).unwrap().len();
+    bounded["description"] = json!("x".repeat(1024 * 1024 - overhead));
+    assert_ok(
+        &client
+            .rpc("workflow.save", json!({"source":"user","document":bounded}))
+            .await,
+    );
+    let before = client
+        .rpc("settings.read", json!({"source":"workflow","scope":"user"}))
+        .await;
+    bounded["description"] = json!(format!("{}x", bounded["description"].as_str().unwrap()));
+    let rejected = client
+        .rpc("workflow.save", json!({"source":"user","document":bounded}))
+        .await;
+    assert_eq!(
+        rejected["error"]["data"]["appError"], "invalid_definition",
+        "{rejected}"
+    );
+    let after = client
+        .rpc("settings.read", json!({"source":"workflow","scope":"user"}))
+        .await;
+    assert_ok(&before);
+    assert_ok(&after);
+    assert_eq!(after["result"], before["result"]);
     assert_ok(
         &client
             .rpc(
@@ -1103,6 +1147,34 @@ async fn node_workflow_project_enablement_invalid_sources_and_tool_policy() {
     assert_eq!(
         settings["result"]["document"]["projectEnabled"],
         source["projectEnabled"]
+    );
+    let overflowing = json!({"schema":"dim.workflow/v1","name":"overflowing","description":"Atomic prompt admission",
+        "parameters":[{"name":"value","required":true}],"steps":[{"parallel":[
+            {"id":"safe","prompt":"ordinary"},{"id":"overflow","prompt":"{{params.value}}{{params.value}}"}]}]});
+    assert_ok(
+        &client
+            .rpc(
+                "workflow.save",
+                json!({"source":"user","document":overflowing}),
+            )
+            .await,
+    );
+    let started = client
+        .rpc(
+            "workflow.start",
+            json!({"name":"overflowing","cwd":home,"params":{"value":"x".repeat(32 * 1024)}}),
+        )
+        .await;
+    assert_ok(&started);
+    let refused = settled(&mut client, &started["result"]["run_id"]).await;
+    assert_eq!(refused["state"], "failed", "{refused}");
+    assert!(refused.get("policy_cap").is_none());
+    assert!(
+        refused["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|stage| stage.get("session_id").is_none())
     );
     server.shutdown();
     server.join().await.unwrap();
@@ -2107,23 +2179,32 @@ async fn native_retention(fault: &str) {
             .await,
     );
     let before = std::fs::read(&path).unwrap();
-    std::fs::set_permissions(&output, permissions).unwrap();
+    if fault != "read" {
+        std::fs::set_permissions(&output, permissions.clone()).unwrap();
+    }
 
     if fault == "record" {
         let gate = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        assert_ok(
-            &client
-                .rpc(
-                    "workflowprobe.configure",
-                    json!({"phase":"delete_reply",
-            "host":"127.0.0.1","port":gate.local_addr().unwrap().port()}),
-                )
-                .await,
-        );
-        let (mut release, _) = tokio::time::timeout(Duration::from_secs(75), gate.accept())
-            .await
-            .unwrap()
-            .unwrap();
+        let (mut release, _) = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                assert_ok(
+                    &client
+                        .rpc(
+                            "workflowprobe.configure",
+                            json!({"phase":"delete_reply","tick":60_000,
+                    "host":"127.0.0.1","port":gate.local_addr().unwrap().port()}),
+                        )
+                        .await,
+                );
+                if let Ok(connection) =
+                    tokio::time::timeout(Duration::from_millis(20), gate.accept()).await
+                {
+                    break connection.unwrap();
+                }
+            }
+        })
+        .await
+        .unwrap();
         assert!(
             !output.exists(),
             "the real Session deletion completes before record removal"
@@ -2164,18 +2245,48 @@ async fn native_retention(fault: &str) {
         )
         .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let observed = tokio::time::timeout(Duration::from_secs(75), async {
+        assert_ok(
+            &client
+                .rpc("workflowprobe.configure", json!({"tick":60_000}))
+                .await,
+        );
+        let observed = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let probe = client.rpc("workflowprobe.status", json!({})).await;
                 assert_ok(&probe);
                 if !probe["result"]["readError"].is_null() {
                     break probe;
                 }
+                assert_ok(
+                    &client
+                        .rpc("workflowprobe.configure", json!({"tick":60_000}))
+                        .await,
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         })
         .await
         .unwrap();
+        std::fs::set_permissions(&output, permissions).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                assert_ok(
+                    &client
+                        .rpc("workflowprobe.configure", json!({"tick":60_000}))
+                        .await,
+                );
+                let probe = client.rpc("workflowprobe.status", json!({})).await;
+                assert_ok(&probe);
+                if probe["result"]["readFailures"].as_u64().unwrap()
+                    > observed["result"]["readFailures"].as_u64().unwrap()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("a new maintenance pass observes the unreadable store before deleting");
         let outputs_preserved = output.join("exec.log").exists();
         std::fs::set_permissions(&path, mode).unwrap();
         assert_eq!(observed["result"]["readError"], "io");
@@ -2185,8 +2296,13 @@ async fn native_retention(fault: &str) {
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
-    tokio::time::timeout(Duration::from_secs(75), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while stored(&home)["runs"].as_array().unwrap().len() != 100 {
+            assert_ok(
+                &client
+                    .rpc("workflowprobe.configure", json!({"tick":60_000}))
+                    .await,
+            );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })

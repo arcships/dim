@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && node --test tests/*.mjs && vite build",
+    "build": "vue-tsc --noEmit && vite build",
+    "test": "node --test \"tests/*.mjs\" \"**/*.test.mjs\"",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {

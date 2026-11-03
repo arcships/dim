@@ -1,0 +1,34 @@
+{
+  "description": "批量重命名脚本：计划、冲突与回滚",
+  "message": "读 rename.py 和 tests/test_rename.py，实现 plan() 和 apply()，让测试通过。apply 重命名文件，plan 只计算新名字。",
+  "budget": {
+    "turns": 16,
+    "seconds": 900,
+    "window": 131072
+  },
+  "steers": [
+    {
+      "afterSeconds": 1,
+      "text": "跑一下测试。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "dry-run 模式不要真的改名。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "重名冲突要报错。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "补一个回滚测试。"
+    }
+  ],
+  "probes": [
+    {
+      "id": "task",
+      "kind": "must_show",
+      "text": "the scripted user turns are worked through and the workspace tests pass"
+    }
+  ]
+}

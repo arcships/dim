@@ -36,31 +36,6 @@ const POLL: Duration = Duration::from_secs(1);
 /// them (RuntimeManager §5).
 const RUNTIME_ROWS: [(&str, &str); 2] = [("session-node", "node"), ("py", "python")];
 
-/// Every English key this panel draws through [`t`]; each locale translates
-/// them all.
-#[cfg(test)]
-pub const STRINGS: &[&str] = &[
-    "Plugin runtimes",
-    HINT,
-    HINT_NO_AUTO,
-    ACQUIRING_HINT,
-    FAILED_HINT,
-    "Loading plugin runtimes...",
-    "acquiring",
-    "starting",
-    "down",
-    "failed",
-    "ready",
-    "off",
-    "auto on",
-    "auto off",
-    "1 plugin waits for {runtime}: {names}",
-    "{count} plugins wait for {runtime}: {names}",
-    "show, install or configure the plugin runtimes",
-    "This daemon does not serve plugin runtimes ({version})",
-    "Usage: /runtime [install NAME | source NAME download|system | auto NAME on|off]",
-];
-
 /// The runtime the plugin row waits for, from the rows `plugin.list` names.
 pub fn waited_runtime(item: &PluginItem) -> Option<&'static str> {
     item.waiting_for.iter().find_map(|wait| runtime_row(wait))

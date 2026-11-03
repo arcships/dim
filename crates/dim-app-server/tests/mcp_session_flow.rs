@@ -892,7 +892,10 @@ async fn temporary_mcp_failed_setup_cleans_up_and_an_abandoned_binding_expires()
         .await
         .unwrap();
     let deleted = env.remote.deletes.load(Ordering::SeqCst);
-    tokio::time::timeout(Duration::from_secs(35), async {
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(31)).await;
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(5), async {
         while env.remote.deletes.load(Ordering::SeqCst) == deleted {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

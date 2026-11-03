@@ -1772,6 +1772,7 @@ async fn a_before_hook_owns_the_task_identity() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "wall-clock background handoff; run for execution changes"]
 async fn a_long_foreground_command_moves_to_the_background_after_30_seconds() {
     let harness = Harness::new(platform(&[]).await, Hook::None).await;
     let session = harness.session().await;

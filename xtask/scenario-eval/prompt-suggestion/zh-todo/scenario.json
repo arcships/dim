@@ -1,0 +1,34 @@
+{
+  "description": "JSON 文件存储的待办工具：增删改查与命令行",
+  "message": "读 todo.py 和 tests/test_todo.py，实现 load/save/add/done 和一个简单的命令行，让测试通过。",
+  "budget": {
+    "turns": 16,
+    "seconds": 900,
+    "window": 131072
+  },
+  "steers": [
+    {
+      "afterSeconds": 1,
+      "text": "跑一下测试。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "done 要支持按序号。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "数据文件不存在时要自动创建。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "list 加一个 --all 参数。"
+    }
+  ],
+  "probes": [
+    {
+      "id": "task",
+      "kind": "must_show",
+      "text": "the scripted user turns are worked through and the workspace tests pass"
+    }
+  ]
+}

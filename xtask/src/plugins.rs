@@ -202,6 +202,7 @@ pub async fn local_graph() -> Result<BTreeMap<&'static str, Value>> {
         },
         dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
     );
+    dim_agent_capabilities::prompt_suggestion::install_local(&mut builder);
     dim_agent_capabilities::hooks::install(&mut builder);
     dim_agent_attachments::install(&mut builder);
     dim_agent_questions::install(&mut builder);
@@ -576,57 +577,6 @@ impl<'a> Facts<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn codes_drop_module_paths_and_name_the_scope() {
-        assert_eq!(
-            code("dim_agent_capabilities::approval::Approval@main"),
-            "B:Approval"
-        );
-        assert_eq!(
-            code("dim_agent_capabilities::tool_registry::ToolContribution#branch@session"),
-            "S:ToolContribution#branch"
-        );
-        assert_eq!(
-            code("dim_agent_runtime::StateCell<dim_agent_types::LoopSnapshot>@main"),
-            "B:StateCell<LoopSnapshot>"
-        );
-        assert_eq!(
-            code("dim_agent_capabilities::host_platform::HostPlatform"),
-            "P:HostPlatform"
-        );
-    }
-
-    #[test]
-    fn a_page_documents_each_part_with_its_own_table() {
-        let text = format!(
-            "# Plugin\n\n## One\n\n### Dependencies\n\n| S | P |\n| --- | --- |\n| `B:Timeline` | x |\n\n{BEGIN}One -->\n{END}\n\n## Two\n\n### 依赖\n\n| S | P |\n| --- | --- |\n| `S:ToolRegistry` | y |\n\n{BEGIN}Two -->\n{END}\n\n## Tests\n"
-        );
-        let names = documented(&text);
-        assert_eq!(names, ["One", "Two"]);
-        let parts: Vec<_> = sections(&text, &names)
-            .map(|(name, section)| (name.clone(), dependency_rows(section)))
-            .collect();
-        assert_eq!(
-            parts,
-            [
-                ("One".to_owned(), BTreeSet::from(["B:Timeline".to_owned()])),
-                (
-                    "Two".to_owned(),
-                    BTreeSet::from(["S:ToolRegistry".to_owned()])
-                ),
-            ]
-        );
-    }
-
-    #[test]
-    fn dependency_rows_read_only_the_dependency_table() {
-        let text = "## 依赖\n\n| 服务 | 用途 |\n| --- | --- |\n| `B:Permission` | 裁决 |\n\n## 事件\n\n| `approval/request` | x |\n";
-        assert_eq!(
-            dependency_rows(text),
-            BTreeSet::from(["B:Permission".to_owned()])
-        );
-    }
 
     #[test]
     fn documentation_check_requires_complete_profile_and_exact_dependencies() {

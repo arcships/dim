@@ -1,11 +1,12 @@
 import { createConnection } from 'node:net'
 import { once } from 'node:events'
+import { mock } from 'node:test'
 import { definePlugin, type Context } from '@arcships/rutis'
 import { z } from 'zod'
 import workflow from '@dimcode/workflow'
 import type { FileError, FileLease, ManagementMethods, PluginFiles, Sessions } from '../../npm/plugin.js'
 
-const control = z.object({ phase: z.enum(['before_input', 'reply_write', 'before_launch', 'stage_input', 'stage_history', 'delete_reply']).optional(), host: z.string().optional(), port: z.number().int().optional(), count: z.number().int().min(1).optional(), failReplace: z.literal('workflow/runs.version').optional() })
+const control = z.object({ phase: z.enum(['before_input', 'reply_write', 'before_launch', 'stage_input', 'stage_history', 'delete_reply']).optional(), host: z.string().optional(), port: z.number().int().optional(), count: z.number().int().min(1).optional(), failReplace: z.literal('workflow/runs.version').optional(), tick: z.number().int().nonnegative().optional() })
 
 export default definePlugin({
   name: 'WorkflowPackageProbe',
@@ -13,11 +14,14 @@ export default definePlugin({
   config: workflow.config,
   provides: workflow.provides,
   async apply(ctx, config) {
+    mock.timers.enable({ apis: ['setInterval'] })
+    ctx.effect(() => { mock.timers.reset() })
     const native = ctx.use<Sessions>('sessions')
     let selected: z.infer<typeof control> | undefined
     let phase: string | null = null
     let replacementError: FileError | null = null
     let readError: FileError | null = null
+    let readFailures = 0
     const pause = async (point: z.infer<typeof control>['phase']) => {
       const gate = selected
       if (gate?.phase !== point || gate.host === undefined || gate.port === undefined) return
@@ -59,7 +63,7 @@ export default definePlugin({
             const execute = (file: FileLease) => work({
               async read() {
                 const reply = await file.read()
-                if (!reply.ok) readError = reply.error
+                if (!reply.ok) { readError = reply.error; readFailures += 1 }
                 return reply
               },
               backup: suffix => file.backup(suffix),
@@ -87,8 +91,11 @@ export default definePlugin({
         { name: 'workflowprobe.configure', mutating: true, interruption: 'drain', progress: false },
       ],
       async call => {
-        if (call.method === 'workflowprobe.configure') selected = control.parse(call.params)
-        return { kind: 'value', value: { pid: process.pid, phase, replacementError, readError } }
+        if (call.method === 'workflowprobe.configure') {
+          selected = control.parse(call.params)
+          if (selected.tick !== undefined) mock.timers.tick(selected.tick)
+        }
+        return { kind: 'value', value: { pid: process.pid, phase, replacementError, readError, readFailures } }
       },
     )
     const context: Context = {

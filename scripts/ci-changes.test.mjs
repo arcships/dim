@@ -32,9 +32,21 @@ test('source areas select their groups',()=>{
   assert.deepEqual(classify(['web/src/main.ts']),only('web'));
   assert.deepEqual(classify(['web/src/features/chat/quote-cases.json']),only('web','rust','windows'));
   assert.deepEqual(classify(['scripts/stage-web.mjs']),only('scripts','web'));
-  assert.deepEqual(classify(['crates/dim-app-server/src/lib.rs','runtime/fixtures/session-part.json']),only('rust'));
+  assert.deepEqual(classify(['crates/dim-app-server/src/lib.rs','runtime/fixtures/session-part.json']),only('rust','node'));
   assert.deepEqual(classify(['crates/dim-cli/src/main.rs']),only('rust','windows'));
   assert.deepEqual(classify(['docs/notes.md','crates/dim-cli/src/notes.rs']),only('rust','windows'));
+});
+
+test('bridge, evaluation and wall-clock flows follow their owning paths',()=>{
+  assert.deepEqual(classify(['crates/dim-cli/src/ui/tui.rs']),only('rust','windows'));
+  assert.deepEqual(classify(['crates/dimcode/tests/cli_flow/models.rs']),only('rust'));
+  assert.deepEqual(classify(['crates/dim-agent-types/src/tool.rs']),only('rust','windows','node'));
+  assert.deepEqual(classify(['xtask/src/scenario_eval.rs']),only('rust','node','eval'));
+  assert.deepEqual(classify(['xtask/scenario-eval/case.json']),only('rust','node','eval'));
+  assert.deepEqual(classify(['crates/dim-agent-capabilities/src/workspace_tools/exec.rs']),only('rust','node','execution'));
+  assert.deepEqual(classify(['crates/dim-agent-capabilities/src/host_platform/mod.rs']),only('rust','node','execution'));
+  assert.deepEqual(classify(['tests/integration/tests/local_execution.rs']),only('rust','node','execution'));
+  assert.deepEqual(classify(['scripts/run-rust-test.mjs']),only(...groups));
 });
 
 test('workspace, toolchain, workflow and unknown paths run everything',()=>{
@@ -66,5 +78,5 @@ test('a renamed file keeps the checks of its old path',{skip:!hasGit},(t)=>{
     const [group,value]=line.split('=');
     return [group,value==='true'];
   }));
-  assert.deepEqual(output,only('rust','windows'),'a rename out of crates/dim-cli keeps the windows check');
+  assert.deepEqual(output,only('rust','windows','node'),'a rename keeps the checks of both paths');
 });

@@ -605,7 +605,34 @@ class BaselineFlowTest(unittest.TestCase):
             self.assertNotIn("DIM_EVAL_VERIFIER_PROXY", env)
         with mock.patch.dict(os.environ, {"DIM_EVAL_VERIFIER_PROXY": ""}):
             self.assertFalse(run_l2.verifier_proxy_enabled())
-            self.assertEqual(run_l2.verifier_env(), {})
+            env = run_l2.verifier_env()
+            self.assertNotIn("HTTP_PROXY", env)
+            self.assertNotIn("HTTPS_PROXY", env)
+            self.assertEqual(env["UV_CACHE_DIR"], "/tmp/uv-cache")
+            self.assertEqual(env["UV_HTTP_TIMEOUT"], "300")
+            self.assertEqual(env["UV_CONCURRENT_DOWNLOADS"], "1")
+            self.assertNotIn("UV_INSTALLER_GITHUB_BASE_URL", env)
+            self.assertNotIn("UV_INSTALL_DIR", env)
+            self.assertNotIn("PATH", env)
+
+    def test_verifier_cache_is_used_only_when_populated(self) -> None:
+        """A missing cache must fall back to the network, not fail every verifier."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            with mock.patch.object(run_l2, "EVAL_CACHE", cache):
+                env = run_l2.verifier_env()
+                self.assertNotIn("UV_PYTHON_INSTALL_DIR", env)
+                self.assertNotIn("CURL_HOME", env)
+
+            python_bin = cache / "python" / "cpython-3.13.9-linux-x86_64-gnu" / "bin"
+            python_bin.mkdir(parents=True)
+            (python_bin / "python3.13").write_text("")
+            (cache / "curl-home").mkdir()
+            (cache / "curl-home" / ".curlrc").write_text("http1.1\n")
+            with mock.patch.object(run_l2, "EVAL_CACHE", cache):
+                env = run_l2.verifier_env()
+                self.assertEqual(env["UV_PYTHON_INSTALL_DIR"], "/opt/eval-cache/python")
+                self.assertEqual(env["CURL_HOME"], "/opt/eval-cache/curl-home")
 
     def test_verifier_no_proxy_can_add_container_service_names(self) -> None:
         proxy = "http://proxy.invalid:3128"
