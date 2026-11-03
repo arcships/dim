@@ -110,7 +110,7 @@ Rows follow the sections of the [feature list](../feature-list.md), which descri
 
 | Capability | CLI | Web | Source |
 | --- | --- | --- | --- |
-| New, resume, Session list | done; project/all switch: none. `/resume` labels each row by creation origin and hides ACP Sessions unless the preference says otherwise | done (grouped by directory) | [Session classification](appserver/session-classification.md) |
+| New, resume, Session list | done; project/all switch: none. `/resume` labels each row by creation origin and hides ACP Sessions unless the preference says otherwise | done (grouped by directory); archived subset: designed, browser-local ([Web workspace §4.4](web-workspace.md#44-session-archive)) | [Session classification](appserver/session-classification.md) |
 | Export conversation | done in the line client and `dimcode session export`; inside the terminal UIs: none | — | [CLI commands](cli-commands.md) |
 | `/timeline` and message actions | done in the TUI; it also replaces `/history`'s paging | — | [Timeline UI §4.6](timeline-ui.md#46-timeline-jumping-to-a-message) |
 | Titles | automatic: done (optional SessionTitle package); manual rename: designed | — | [SessionTitle](plugins/SessionTitle.md) |
