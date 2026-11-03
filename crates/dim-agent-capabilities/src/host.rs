@@ -609,6 +609,30 @@ pub struct AuxiliaryError {
     pub code: AuxiliaryErrorCode,
     pub message: String,
 }
+impl From<HostError> for AuxiliaryError {
+    /// A closed owner or a cancelled call is `cancelled`; every other host
+    /// failure is `failed`. The caller's request errors keep their own code.
+    fn from(error: HostError) -> Self {
+        match error {
+            HostError::Cancelled(message) => Self {
+                code: AuxiliaryErrorCode::Cancelled,
+                message,
+            },
+            HostError::Failed {
+                kind: HostErrorKind::OwnerClosed,
+                message,
+                ..
+            } => Self {
+                code: AuxiliaryErrorCode::Cancelled,
+                message,
+            },
+            error => Self {
+                code: AuxiliaryErrorCode::Failed,
+                message: error.to_string(),
+            },
+        }
+    }
+}
 /// The caller chooses the model; the owner of credentials never falls back
 /// to another one and never returns the connection.
 pub trait CompleteAuxiliary: Send + Sync + 'static {

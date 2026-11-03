@@ -352,6 +352,19 @@
       ]
     },
     {
+      "id": "dim_agent_capabilities::auxiliary_model",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities",
+      "file": "crates/dim-agent-capabilities/src/auxiliary_model.rs",
+      "unexpandedMacros": [
+        "format",
+        "json",
+        "tokio::pin",
+        "tokio::select",
+        "tracing::info"
+      ]
+    },
+    {
       "id": "dim_agent_capabilities::branch_input",
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities",
@@ -2323,13 +2336,7 @@
       "crate": "dim_app_server",
       "parent": "dim_app_server::provider",
       "file": "crates/dim-app-server/src/provider/auxiliary.rs",
-      "unexpandedMacros": [
-        "format",
-        "json",
-        "tokio::pin",
-        "tokio::select",
-        "tracing::info"
-      ]
+      "unexpandedMacros": []
     },
     {
       "id": "dim_app_server::provider::drivers",
@@ -6809,6 +6816,13 @@
     },
     {
       "from": "dim_agent_capabilities",
+      "to": "dim_agent_capabilities::auxiliary_model",
+      "references": [
+        "mod auxiliary_model"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities",
       "to": "dim_agent_capabilities::branch_input",
       "references": [
         "mod branch_input"
@@ -7647,6 +7661,73 @@
         "use dim_agent_types::ApprovalRespondData",
         "use dim_agent_types::BranchSource",
         "use dim_agent_types::EventKind"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::auxiliary_model",
+      "to": "dim_agent_capabilities::host",
+      "references": [
+        "path AuxiliaryError",
+        "path AuxiliaryError::from",
+        "path AuxiliaryErrorCode::Cancelled",
+        "path AuxiliaryErrorCode::Failed",
+        "path AuxiliaryErrorCode::InvalidRequest",
+        "path AuxiliaryErrorCode::ModelUnavailable",
+        "path AuxiliaryModelHost",
+        "path AuxiliaryReply",
+        "path AuxiliaryRequest",
+        "path CompleteAuxiliary",
+        "path HostError",
+        "path HostError::failed",
+        "path ModelChunk::MessageStop",
+        "path ModelChunk::Text",
+        "path ModelChunk::Usage",
+        "path ModelHost",
+        "path ModelStopReason::ToolUse",
+        "path ModelStream",
+        "path ResolveModelConnection",
+        "use crate::host::AuxiliaryError",
+        "use crate::host::AuxiliaryErrorCode",
+        "use crate::host::AuxiliaryModelHost",
+        "use crate::host::AuxiliaryReply",
+        "use crate::host::AuxiliaryRequest",
+        "use crate::host::CompleteAuxiliary",
+        "use crate::host::HostError",
+        "use crate::host::ModelChunk",
+        "use crate::host::ModelHost",
+        "use crate::host::ModelStopReason",
+        "use crate::host::ModelStream",
+        "use crate::host::ResolveModelConnection"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::auxiliary_model",
+      "to": "dim_agent_capabilities::model_provider::recovery",
+      "references": [
+        "path invoke_with_recovery",
+        "use crate::model_provider::invoke_with_recovery"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::auxiliary_model",
+      "to": "dim_agent_types::model",
+      "references": [
+        "path ModelCapabilitySnapshot",
+        "path ModelConfig",
+        "path ModelRequest::new",
+        "path SystemPrompt::Text",
+        "use dim_agent_types::ModelCapabilitySnapshot",
+        "use dim_agent_types::ModelConfig",
+        "use dim_agent_types::ModelRequest",
+        "use dim_agent_types::SystemPrompt"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::auxiliary_model",
+      "to": "dim_agent_types::profile",
+      "references": [
+        "path ModelId",
+        "use dim_agent_types::ModelId"
       ]
     },
     {
@@ -21550,9 +21631,15 @@
     },
     {
       "from": "dim_app_server::provider",
+      "to": "dim_agent_capabilities::auxiliary_model",
+      "references": [
+        "path dim_agent_capabilities::auxiliary_model::provide"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider",
       "to": "dim_agent_capabilities::host",
       "references": [
-        "path AuxiliaryModelHost",
         "path AwsCredentials",
         "path BedrockAuth::Bearer",
         "path BedrockAuth::SigV4",
@@ -21887,36 +21974,27 @@
     },
     {
       "from": "dim_app_server::provider::auxiliary",
-      "to": "dim_agent_capabilities::host",
+      "to": "dim_agent_capabilities::auxiliary_model",
       "references": [
-        "path AuxiliaryError",
-        "path AuxiliaryErrorCode::Cancelled",
-        "path AuxiliaryErrorCode::Failed",
-        "path AuxiliaryErrorCode::InvalidRequest",
-        "path AuxiliaryErrorCode::ModelUnavailable",
-        "path AuxiliaryReply",
-        "path AuxiliaryRequest",
-        "path CompleteAuxiliary",
-        "path HostError",
-        "path HostError::Cancelled",
-        "path HostError::Failed",
-        "path HostError::failed",
-        "path HostErrorKind::OwnerClosed",
-        "path ModelChunk::MessageStop",
-        "path ModelChunk::Text",
-        "path ModelChunk::Usage",
-        "path ModelHost",
-        "path ModelStopReason::ToolUse",
-        "path ModelStream",
-        "path ResolveModelConnection::resolve"
+        "path AuxiliaryTarget",
+        "path auxiliary_model::check",
+        "path auxiliary_model::complete",
+        "path auxiliary_model::record",
+        "use dim_agent_capabilities::auxiliary_model",
+        "use dim_agent_capabilities::auxiliary_model::AuxiliaryTarget"
       ]
     },
     {
       "from": "dim_app_server::provider::auxiliary",
-      "to": "dim_agent_capabilities::model_provider::recovery",
+      "to": "dim_agent_capabilities::host",
       "references": [
-        "path invoke_with_recovery",
-        "use dim_agent_capabilities::model_provider::invoke_with_recovery"
+        "path AuxiliaryError",
+        "path AuxiliaryErrorCode::ModelUnavailable",
+        "path AuxiliaryReply",
+        "path AuxiliaryRequest",
+        "path CompleteAuxiliary",
+        "path HostError::failed",
+        "path ModelHost"
       ]
     },
     {
@@ -21924,11 +22002,7 @@
       "to": "dim_agent_types::model",
       "references": [
         "path ModelPreferences::default",
-        "path ModelRequest::new",
-        "path SystemPrompt::Text",
         "path model",
-        "use dim_agent_types::ModelRequest",
-        "use dim_agent_types::SystemPrompt",
         "use super::ModelPreferences"
       ]
     },

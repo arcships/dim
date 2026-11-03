@@ -2493,11 +2493,7 @@ impl DynPlugin for ProviderPlugin {
                 owner: service.clone(),
                 host,
             });
-            ctx.provide(AuxiliaryModelHost(auxiliary.clone()))?;
-            ctx.provide_at(
-                rutis_bridge::session::host_key("auxiliaryModel"),
-                auxiliary as Arc<dyn rutis_bridge::session::HostDispatch>,
-            )?;
+            dim_agent_capabilities::auxiliary_model::provide(ctx, auxiliary)?;
             management::provide(ctx, &methods, service.clone())?;
             ctx.provide_as::<ProviderService>(service)?;
             Ok(Effect::Done)

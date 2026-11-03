@@ -1,6 +1,7 @@
 pub mod adapters;
 pub mod agent_loop;
 pub mod approval;
+pub mod auxiliary_model;
 pub(crate) mod branch_input;
 pub mod context_block;
 pub mod context_methods;
