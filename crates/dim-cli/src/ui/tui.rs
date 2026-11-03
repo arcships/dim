@@ -9782,6 +9782,7 @@ mod tests {
                 provider_id: "relay".into(),
                 model_id: "reasoner".into(),
                 model_preferences: None,
+                capability_snapshot: None,
             }));
             press(&mut app, KeyCode::Char(' '));
             let answer = selection(&app);
@@ -9836,6 +9837,7 @@ mod tests {
                         provider_id: "relay".into(),
                         model_id: "other".into(),
                         model_preferences: None,
+                        capability_snapshot: None,
                     }));
                 }
                 let before = sent.borrow().len();

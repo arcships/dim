@@ -10,6 +10,7 @@ mod new_api;
 mod preferences;
 mod remote;
 mod secrets;
+mod startup;
 mod view;
 pub use dim_agent_types::ModelPreferences;
 pub use editing::{ConnectionInput, CreateProvider, ProbeProvider, ProbeResult, ProviderPatch};
@@ -21,6 +22,7 @@ pub use legacy::{
 pub use models::PreferencesPatch;
 use secrets::StaticCredential;
 pub use secrets::{ProviderSecret, ProviderSecretHost, ResolveProviderSecret};
+pub use startup::{StartupInput, StartupSelection};
 pub use view::{ManagementProvider, ManagementView, ModelsListed};
 
 use crate::{
@@ -516,6 +518,23 @@ pub struct ProviderCatalog {
     pub version: u32,
 }
 impl ProviderCatalog {
+    fn apply_startup_limits(&mut self, context: Option<u64>, output: Option<u64>) {
+        for model in &mut self.models {
+            if let Some(limit) = context {
+                model.capabilities.context_window = Some(limit);
+            }
+            if let Some(limit) = output {
+                model.capabilities.max_output_tokens = Some(limit);
+            }
+            model.missing_limits = model.capabilities.missing_limits();
+            if model.unavailable_reason.as_deref() == Some("limits_undeclared")
+                && model.missing_limits.is_empty()
+            {
+                model.unavailable_reason = None;
+            }
+        }
+    }
+
     fn selectable(&self, id: &str) -> Option<&ProviderModel> {
         self.models.iter().find(|model| {
             model.id == id
@@ -1122,6 +1141,7 @@ pub struct ProviderService {
     stop: CancellationToken,
     tasks: TaskTracker,
     admission: Mutex<()>,
+    startup: Mutex<startup::StartupBindings>,
 }
 fn failure(error: impl std::fmt::Display) -> HostError {
     HostError::failed(error.to_string())
@@ -1844,6 +1864,18 @@ impl ProviderService {
         preferences: ModelPreferences,
         cancel: &CancellationToken,
     ) -> Result<ModelSelection, HostError> {
+        self.configuration_with_limits(explicit, cwd, preferences, (None, None), cancel)
+            .await
+    }
+
+    async fn configuration_with_limits(
+        self: &Arc<Self>,
+        explicit: Option<ModelId>,
+        cwd: Option<&Path>,
+        preferences: ModelPreferences,
+        limits: (Option<u64>, Option<u64>),
+        cancel: &CancellationToken,
+    ) -> Result<ModelSelection, HostError> {
         self.check(cancel)?;
         let explicit_target = explicit.is_some();
         let mut candidates = vec![];
@@ -1872,12 +1904,13 @@ impl ProviderService {
             );
         }
         for (id, model_id) in candidates {
-            let catalog = match self.catalog_for(id.clone(), cancel).await {
+            let mut catalog = match self.catalog_for(id.clone(), cancel).await {
                 Ok(Some(c)) => c,
                 Ok(None) => continue,
                 Err(_) if !explicit_target => continue,
                 Err(e) => return Err(e),
             };
+            catalog.apply_startup_limits(limits.0, limits.1);
             let model = match model_id {
                 Some(ref m) => catalog.selectable(m),
                 None => catalog
@@ -1930,16 +1963,44 @@ impl ProviderService {
         cancel: &CancellationToken,
     ) -> Result<ModelSelection, HostError> {
         self.check(cancel)?;
-        let catalog = self
-            .catalog_for(current.provider_id.clone(), cancel)
-            .await?
-            .ok_or_else(|| failure("Provider is unavailable"))?;
-        let model = catalog
-            .selectable(&current.model_id)
-            .ok_or_else(|| failure("Model is unavailable"))?;
-        let protocol = model
-            .endpoint
-            .ok_or_else(|| failure("Missing model protocol"))?;
+        let source = current
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.startup.as_ref())
+            .and_then(|startup| startup.connection.as_ref());
+        let (protocol, declared, snapshot) = if let Some(source) = source {
+            self.startup_connection(source)?;
+            (
+                source.api_format,
+                ModelConfig::default(),
+                current
+                    .capability_snapshot
+                    .clone()
+                    .ok_or_else(|| failure("Model capabilities are not adopted"))?,
+            )
+        } else {
+            let catalog = self
+                .catalog_for(current.provider_id.clone(), cancel)
+                .await?
+                .ok_or_else(|| failure("Provider is unavailable"))?;
+            let model = catalog
+                .selectable(&current.model_id)
+                .ok_or_else(|| failure("Model is unavailable"))?;
+            (
+                model
+                    .endpoint
+                    .ok_or_else(|| failure("Missing model protocol"))?,
+                model.config.clone(),
+                capability_snapshot(
+                    model,
+                    ModelId {
+                        provider_id: current.provider_id.clone(),
+                        model_id: current.model_id.clone(),
+                    },
+                )
+                .map_err(|error| failure(error.to_string()))?,
+            )
+        };
         if current
             .metadata
             .as_ref()
@@ -1951,17 +2012,7 @@ impl ProviderService {
                 "Model route changed; select the model again",
             ));
         }
-        let snapshot = capability_snapshot(
-            model,
-            ModelId {
-                provider_id: current.provider_id.clone(),
-                model_id: current.model_id.clone(),
-            },
-        )
-        .map_err(|error| failure(error.to_string()))?;
-        // A clear carries what an explicit adoption of the same model would,
-        // so the declared configuration includes the catalog's own defaults.
-        let declared = preferences::catalog_defaults(&model.config, &snapshot, protocol);
+        let declared = preferences::catalog_defaults(&declared, &snapshot, protocol);
         let mut base = current.config.clone().unwrap_or_default();
         if update.clears_reasoning() {
             preferences::restore_reasoning(&mut base, &declared, protocol);
@@ -2010,6 +2061,23 @@ impl ResolveModelConnection for ProductResolver {
                 })?
                 .validate_for(&request.provider_id, &request.model_id)
                 .map_err(|message| HostError::classified(HostErrorKind::InvalidRequest, message))?;
+            if let Some(source) = request
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.startup.as_ref())
+                .and_then(|startup| startup.connection.as_ref())
+            {
+                if source.id != request.provider_id {
+                    return Err(failure(
+                        "Temporary model connection identity does not match request",
+                    ));
+                }
+                return Ok(ResolvedModelConnection {
+                    connection: ModelConnection::Http(self.0.startup_connection(source)?),
+                    recovery: None,
+                    failure_policy: None,
+                });
+            }
             if !self
                 .0
                 .oauth
@@ -2398,6 +2466,7 @@ fn oauth_rejection(error: &HostError, phase: CredentialRecoveryPhase) -> Credent
 
 pub struct ProviderPlugin {
     db: Key<SqliteStorage>,
+    index: Key<crate::agents::AgentIndex>,
     oauth: Key<ManagedProviders>,
     codex: Key<OpenAICodexOAuthService>,
     grok: Key<GrokOAuthService>,
@@ -2418,6 +2487,7 @@ impl ProviderPlugin {
     fn keyed(names: &Names<'_>, secret_host: bool) -> rutis::Result<Self> {
         Ok(Self {
             db: names.key()?,
+            index: names.key()?,
             oauth: names.key()?,
             codex: names.key()?,
             grok: names.key()?,
@@ -2434,6 +2504,7 @@ impl DynPlugin for ProviderPlugin {
     fn injects(&self) -> Vec<TypeKey> {
         let mut keys = vec![
             self.db.erase(),
+            self.index.erase(),
             self.oauth.erase(),
             self.codex.erase(),
             self.grok.erase(),
@@ -2446,6 +2517,7 @@ impl DynPlugin for ProviderPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let db = ctx.require_at(&self.db)?;
+            let index = ctx.require_at(&self.index)?;
             let oauth = ctx.require_at(&self.oauth)?;
             let codex = ctx.require_at(&self.codex)?;
             let grok = ctx.require_at(&self.grok)?;
@@ -2471,6 +2543,7 @@ impl DynPlugin for ProviderPlugin {
                     stop: CancellationToken::new(),
                     tasks: TaskTracker::new(),
                     admission: Mutex::new(()),
+                    startup: Mutex::new(startup::StartupBindings::default()),
                 });
             let owner = service.clone();
             ctx.effect(move || async move {
@@ -2480,7 +2553,20 @@ impl DynPlugin for ProviderPlugin {
                     owner.tasks.close();
                 }
                 owner.tasks.wait().await;
+                *owner.startup.lock().unwrap() = startup::StartupBindings::default();
                 Ok(())
+            })?;
+            let restored = service.clone();
+            ctx.on::<crate::agents::SessionRestored>(move |event, _| {
+                if let Some((_, session)) = index.session(&event.session_id) {
+                    restored.restore_startup(session);
+                }
+                async { Ok(None) }
+            })?;
+            let deleted = service.clone();
+            ctx.on::<crate::agents::UnloadedSessionDeleted>(move |event, _| {
+                deleted.forget_startup(&event.session_id);
+                async { Ok(None) }
             })?;
             service.seed_bundled().await.map_err(|error| {
                 rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))

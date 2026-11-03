@@ -61,12 +61,18 @@ pub fn window_facts(
     Arc::new(WindowFacts {
         context_window: context_window as f64,
         output_tokens,
+        auto_compact_window: request
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.startup.as_ref())
+            .and_then(|startup| startup.auto_compact_window),
     })
 }
 
 struct WindowFacts {
     context_window: f64,
     output_tokens: f64,
+    auto_compact_window: Option<u64>,
 }
 impl ContextModel for WindowFacts {
     fn context_window(&self) -> f64 {
@@ -77,10 +83,13 @@ impl ContextModel for WindowFacts {
     }
     fn threshold_tokens(&self) -> f64 {
         let budget = (self.context_window - self.output_tokens).max(0.);
-        budget
+        let threshold = budget
             - (RESERVE_RATIO * budget)
                 .max(RESERVE_MIN_TOKENS)
-                .min(RESERVE_MAX_RATIO * budget)
+                .min(RESERVE_MAX_RATIO * budget);
+        self.auto_compact_window.map_or(threshold, |window| {
+            threshold.min((window as f64 - self.output_tokens).max(0.))
+        })
     }
     fn count_tokens(&self, request: &ModelRequest) -> f64 {
         let mut bytes = size(&request.system) + size(&request.tools);

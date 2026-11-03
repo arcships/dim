@@ -59,6 +59,14 @@ or `set-cookie`, ends in `token`, `key` or `auth`, or contains `apikey`,
 `authorization` or `secret`; configured connection headers that do not match are
 recorded verbatim.
 
+[Temporary startup connections](provider-management.md#session-local-startup-connections)
+treat every header value as private, regardless of its name. Aimux binds a
+per-request recorder that redacts all input, request and response header values
+before handing them to the existing recorder. Inherited member and summary
+requests carry the same source declaration and the same protection. Wire bodies,
+timing and outcomes remain recorded; ordinary Provider recording is unchanged.
+The JSONL schema and the process-wide switch do not change.
+
 ## Reading it
 
 - `latency_ms` is the time from sending the request to receiving the response

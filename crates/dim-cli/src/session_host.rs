@@ -411,7 +411,7 @@ async fn run(
         ..Default::default()
     })));
     if let Err(error) = worker.open().await {
-        if worker.options.resume.is_some() {
+        if worker.options.resume.is_some() || worker.options.startup.is_some() {
             let _ = updates.send(Update::Failed(error.to_string()));
             return;
         }
@@ -493,6 +493,8 @@ struct Created {
 struct Attached {
     #[serde(default)]
     model: Option<ModelId>,
+    #[serde(default)]
+    capability_snapshot: Option<Box<dim_agent_types::ModelCapabilitySnapshot>>,
     /// The adopted configuration's preferences; absent when it carries none.
     #[serde(default)]
     model_preferences: Option<dim_agent_types::ModelPreferences>,
@@ -700,6 +702,9 @@ impl Worker {
     /// Creates or resumes the session the process was started for.
     async fn open(&mut self) -> crate::Result<()> {
         if let Some(id) = self.options.resume.clone() {
+            if self.options.ui_identity.is_none() {
+                adopt_startup(&mut self.client, &self.options, &id).await?;
+            }
             let kind = if self.options.created_session {
                 SwitchKind::New
             } else {
@@ -709,17 +714,18 @@ impl Worker {
         }
         let attached_session = self.invalidate_projection();
         let mut params = self.create_params();
-        let mut preferences = None;
+        let mut preferences = self.options.creation_preferences(None);
         let mut target = None;
         if let (Some(provider), Some(model)) =
             (self.options.provider.clone(), self.options.model.clone())
         {
-            params["model"] = json!({"provider": provider, "modelId": model});
-            preferences = saved_model_preferences(&mut self.client, &provider, &model).await?;
-            if let Some(preferences) = &preferences {
-                params["modelPreferences"] = preferences.clone();
-            }
+            preferences = self.options.creation_preferences(
+                saved_model_preferences(&mut self.client, &provider, &model).await?,
+            );
             target = Some((provider, model));
+        }
+        if let Some(preferences) = &preferences {
+            params["modelPreferences"] = preferences.clone();
         }
         let created: Created = match self.client.typed("session.create", params).await {
             Ok(created) => created,
@@ -728,7 +734,9 @@ impl Worker {
                     &mut self.client,
                     target.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
                     error,
-                    preferences.as_ref(),
+                    preferences
+                        .as_ref()
+                        .filter(|_| self.options.effort.is_none()),
                 )
                 .await);
             }
@@ -747,17 +755,22 @@ impl Worker {
     async fn start_session(&mut self) -> crate::Result<()> {
         let attached_session = self.invalidate_projection();
         let mut params = self.create_params();
-        let mut preferences = None;
+        let mut preferences = self.options.creation_preferences(None);
         let mut target = None;
         let result = async {
             if let Some(model) = &self.model {
-                params["model"] = json!({"provider": model.provider_id, "modelId": model.model_id});
-                let (provider, model) = (model.provider_id.clone(), model.model_id.clone());
-                preferences = saved_model_preferences(&mut self.client, &provider, &model).await?;
-                if let Some(preferences) = &preferences {
-                    params["modelPreferences"] = preferences.clone();
+                params["model"] = json!({"modelId": model.model_id});
+                if params["startup"].get("connection").is_none() {
+                    params["model"]["provider"] = json!(model.provider_id);
+                    let (provider, model) = (model.provider_id.clone(), model.model_id.clone());
+                    preferences = self.options.creation_preferences(
+                        saved_model_preferences(&mut self.client, &provider, &model).await?,
+                    );
+                    target = Some((provider, model));
                 }
-                target = Some((provider, model));
+            }
+            if let Some(preferences) = &preferences {
+                params["modelPreferences"] = preferences.clone();
             }
             match self.client.typed::<Created>("session.create", params).await {
                 Ok(created) => Ok(created),
@@ -765,7 +778,9 @@ impl Worker {
                     &mut self.client,
                     target.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
                     error,
-                    preferences.as_ref(),
+                    preferences
+                        .as_ref()
+                        .filter(|_| self.options.effort.is_none()),
                 )
                 .await),
             }
@@ -794,6 +809,7 @@ impl Worker {
     /// scope sends it.
     fn create_params(&self) -> serde_json::Value {
         let mut params = json!({"cwd": self.options.cwd.to_string_lossy()});
+        self.options.creation_startup(&mut params);
         if let Some(policy) = permission::creation_policy(&self.options) {
             params["permissionPolicy"] = policy;
         }
@@ -835,6 +851,7 @@ impl Worker {
         let configuration = Configuration {
             provider_id: model.provider_id.clone(),
             model_id: model.model_id.clone(),
+            capability_snapshot: attached.capability_snapshot,
             model_preferences,
         };
         self.session_title = stored_title(attached.title.as_deref()).map(str::to_owned);
@@ -1010,7 +1027,11 @@ impl Worker {
             && matches!(command, Command::Submit(..) | Command::SubmitDraft(..))
             && let Err(error) = self.start_session().await
         {
-            self.send(Update::Notice(no_session(&error)));
+            self.send(Update::Notice(if self.options.startup.is_some() {
+                error.to_string()
+            } else {
+                no_session(&error)
+            }));
             return Ok(());
         }
         match command {
@@ -3157,6 +3178,7 @@ impl Worker {
             let configuration = Configuration {
                 provider_id: model.provider_id.clone(),
                 model_id: model.model_id.clone(),
+                capability_snapshot: None,
                 model_preferences: None,
             };
             self.model = Some(configuration.clone());
@@ -3196,6 +3218,14 @@ impl Worker {
             let configuration = Configuration {
                 provider_id: updated.model.provider_id.clone(),
                 model_id: updated.model.model_id.clone(),
+                capability_snapshot: self
+                    .model
+                    .as_ref()
+                    .filter(|shown| {
+                        shown.provider_id == updated.model.provider_id
+                            && shown.model_id == updated.model.model_id
+                    })
+                    .and_then(|shown| shown.capability_snapshot.clone()),
                 model_preferences,
             };
             self.model = Some(configuration.clone());
@@ -4004,6 +4034,35 @@ fn effort_choices(
         .clone()
         .filter(|effort| efforts.iter().any(|option| option == effort));
     (efforts, default)
+}
+
+pub(crate) async fn adopt_startup(
+    client: &mut Client,
+    options: &Options,
+    session_id: &str,
+) -> crate::Result<()> {
+    let Some(startup) = &options.startup else {
+        return Ok(());
+    };
+    let mut params = json!({"sessionId":session_id,"branchId":"main","startup":startup});
+    if let Some(model) = &options.model {
+        params["modelId"] = json!(model);
+    }
+    let mut saved = None;
+    if let (Some(provider), Some(model)) = (&options.provider, &options.model) {
+        params["providerId"] = json!(provider);
+        saved = saved_model_preferences(client, provider, model).await?;
+    }
+    if let Some(preferences) = options.creation_preferences(saved) {
+        params["modelPreferences"] = preferences;
+    }
+    client
+        .rpc("session.model.update", params)
+        .await
+        .map_err(|error| {
+            format!("Cannot adopt startup configuration for resumed Session: {error}")
+        })?;
+    Ok(())
 }
 
 pub(crate) async fn saved_model_preferences(

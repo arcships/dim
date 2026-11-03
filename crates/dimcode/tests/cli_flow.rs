@@ -40,6 +40,8 @@ mod server;
 mod session_management;
 #[path = "cli_flow/skills.rs"]
 mod skills;
+#[path = "cli_flow/startup.rs"]
+mod startup;
 #[path = "cli_flow/tasks.rs"]
 mod tasks;
 #[path = "cli_flow/title.rs"]
@@ -278,9 +280,19 @@ fn wait(mut child: Child) -> Output {
 fn help_and_version_do_not_create_product_state() {
     let home = Home::new();
     fs::remove_dir_all(home.0.join("rust")).unwrap();
-    for flag in ["--help", "--version"] {
-        let output = home.command().arg(flag).output().unwrap();
+    for flag in ["--help", "-h", "--version"] {
+        let output = home
+            .command()
+            .env("DIM_EFFORT_LEVEL", " invalid ")
+            .arg(flag)
+            .output()
+            .unwrap();
         assert!(output.status.success());
+        if flag != "--version" {
+            let help = String::from_utf8(output.stdout).unwrap();
+            assert!(help.contains("--effort LEVEL"));
+            assert!(help.contains("DIM_EFFORT_LEVEL"));
+        }
     }
     assert!(!home.0.join("rust").exists());
 }
@@ -3818,35 +3830,114 @@ fn interactive_configuration_commands_route_and_recover_without_submitting_comma
 
 #[test]
 fn explicit_model_selection_uses_protocol_field_names_from_tui_and_line_client() {
-    for tui in [true, false] {
-        let home = Home::new();
-        let daemon = home.daemon(|wire| {
+    for (tui, leaf) in [(true, true), (true, false), (false, false)] {
+        for (environment, argument, expected) in [
+            (None, None, "high"),
+            (Some("low"), None, "low"),
+            (Some("low"), Some("medium"), "medium"),
+        ] {
+            let home = Home::new();
+            let daemon = home.daemon(move |wire| {
             let hello = wire.read("hello");
-            wire.reply(&hello,json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","provider.list","provider.management","ui.leaf.2"]}));
+            let mut features = vec!["session.create", "session.history", "provider.list", "provider.management"];
+            if leaf {
+                features.push("ui.leaf.2");
+            }
+            wire.reply(&hello,json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":3,"daemonProfile":{"kind":"product"},"features":features}));
             let management = wire.read("provider.management");
             assert_eq!(management["params"], json!({"providerId":"fixture"}));
             wire.reply(&management, json!({"providers":[{"providerId":"fixture","source":"custom","displayName":"Fixture","enabled":true,"version":1,"connection":null,"preferences":{"fixture-model":{"reasoningEffort":"high","serviceTier":"priority"}}}],"errors":[]}));
             let create = wire.read("session.create");
             assert_eq!(create["params"]["model"], json!({"provider":"fixture","modelId":"fixture-model"}));
-            assert_eq!(create["params"]["modelPreferences"], json!({"reasoningEffort":"high","serviceTier":"priority"}));
+            assert_eq!(create["params"]["startup"], json!({}));
+            assert_eq!(create["params"]["modelPreferences"], json!({"reasoningEffort":expected,"serviceTier":"priority"}));
             wire.send(json!({"jsonrpc":"2.0","id":create["id"],"error":{"code":-32000,"message":"fixture stops here","data":{"appError":"provider_failed"}}}));
         });
-        let mut command = home.command();
-        command.args(["--provider", "fixture", "--model", "fixture-model"]);
-        if tui {
-            let mut terminal = Terminal::launch_tui(command);
-            terminal.until("fixture stops here");
-            assert!(!terminal.wait().success());
-            daemon.join().unwrap();
-        } else {
-            command
-                .args(["--prompt", "hello"])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            let output = wait(command.spawn().unwrap());
-            daemon.join().unwrap();
-            assert!(!output.status.success());
+            let mut command = home.command();
+            command.args(["--provider", "fixture", "--model", "fixture-model"]);
+            command.env_remove("DIM_EFFORT_LEVEL");
+            if let Some(effort) = environment {
+                command.env("DIM_EFFORT_LEVEL", effort);
+            }
+            if let Some(effort) = argument {
+                command.args(["--effort", effort]);
+            }
+            if tui {
+                let mut terminal = Terminal::launch_tui(command);
+                terminal.until("fixture stops here");
+                if !leaf {
+                    terminal.signal(libc::SIGKILL);
+                }
+                assert!(!terminal.wait().success());
+                daemon.join().unwrap();
+            } else {
+                command
+                    .args(["--prompt", "hello"])
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                let output = wait(command.spawn().unwrap());
+                daemon.join().unwrap();
+                assert!(!output.status.success());
+            }
         }
+    }
+}
+
+#[test]
+fn startup_effort_on_the_default_model_reports_rejection_without_clearing_saved_preferences() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        let hello = wire.read("hello");
+        wire.reply(&hello, json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),
+            "protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history"]}));
+        let create = wire.read("session.create");
+        assert!(create["params"].get("model").is_none());
+        assert_eq!(create["params"]["modelPreferences"], json!({"reasoningEffort":"medium"}));
+        wire.send(json!({"jsonrpc":"2.0","id":create["id"],"error":{"code":-32000,
+            "message":"Reasoning effort is not supported by this model","data":{"appError":"provider_failed"}}}));
+    });
+    let output = home
+        .command()
+        .env_remove("DIM_EFFORT_LEVEL")
+        .args(["exec", "--effort", "medium", "-p", "hello"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("Reasoning effort is not supported by this model"),
+        "{error}"
+    );
+    assert!(!error.contains("--clear-preferences"), "{error}");
+}
+
+#[test]
+fn invalid_startup_effort_fails_without_starting_a_daemon() {
+    let home = Home::new();
+    fs::remove_dir_all(home.0.join("rust")).unwrap();
+    for (args, expected) in [
+        (vec!["--effort", ""], "must be a nonempty effort name"),
+        (vec!["--effort", " high "], "without surrounding whitespace"),
+        (
+            vec!["--effort", "high", "--effort", "low"],
+            "Supply --effort only once",
+        ),
+        (
+            vec!["models", "fixture", "--effort", "high"],
+            "Commands cannot be combined with chat options",
+        ),
+    ] {
+        let output = home
+            .command()
+            .env_remove("DIM_EFFORT_LEVEL")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(expected), "{error}");
+        assert!(!home.0.join("rust").exists());
     }
 }
 

@@ -365,6 +365,8 @@ pub struct UpdateModel {
     pub model_id: Option<String>,
     #[serde(default)]
     pub model_preferences: ModelPreferenceUpdate,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub startup: Option<crate::provider::StartupInput>,
 }
 
 /// One field of a Session preference update: a value sets it and
@@ -515,6 +517,8 @@ pub struct Create {
     pub model: Option<ModelSelection>,
     #[serde(default)]
     pub model_preferences: crate::provider::ModelPreferences,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub startup: Option<crate::provider::StartupInput>,
     #[serde(default, deserialize_with = "optional_non_null")]
     pub system_prompt: Option<String>,
     #[serde(default, deserialize_with = "optional_non_null")]
@@ -1067,6 +1071,8 @@ pub struct PingResult {
 pub struct CreateResult {
     pub session_id: String,
     pub model: ModelId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability_snapshot: Option<Box<dim_agent_types::ModelCapabilitySnapshot>>,
     /// The preferences the Session's adopted configuration sends, derived from
     /// it; only on this reply, not on `session.summaries` items, and absent
     /// when it carries none.
@@ -1150,6 +1156,8 @@ pub struct SessionInfo {
 pub struct AttachResult {
     #[serde(flatten)]
     pub session: SessionInfo,
+    #[serde(rename = "capabilitySnapshot", skip_serializing_if = "Option::is_none")]
+    pub capability_snapshot: Option<Box<dim_agent_types::ModelCapabilitySnapshot>>,
     #[serde(rename = "modelPreferences", skip_serializing_if = "Option::is_none")]
     pub model_preferences: Option<dim_agent_types::ModelPreferences>,
 }

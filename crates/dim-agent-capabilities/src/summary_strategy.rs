@@ -591,6 +591,15 @@ fn summary_request(
     request.capability_snapshot = input.request.capability_snapshot.clone();
     request.system = Some(Arc::new(SystemPrompt::Text(system_prompt.to_owned())));
     request.config = Some(config);
+    request.metadata = input
+        .request
+        .metadata
+        .as_ref()
+        .map(|metadata| RequestMetadata {
+            startup: metadata.startup.clone(),
+            extensions: metadata.extensions.clone(),
+            ..Default::default()
+        });
     request
 }
 
