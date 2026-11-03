@@ -81,9 +81,9 @@ The body is final text. It is generated from the counts only; no external conten
 ### 2.4 Adoption
 
 - The Session part registers the source; the initial configuration adopts it at branch open.
-- The branch part follows `input/message` on the branch's Dispatcher and acts only on an operator input (`user` content). For each one it spawns a tracked task that asks Prompt to adopt the source through `ConfigureControl::configure(targets([SOURCE]))`; the handler returns without waiting. The tasks are closed with the branch.
-- The branch part does not listen to attach/detach directly; idle churn produces no block. The next operator input reads the current snapshot.
-- The state block is written after the operator's input, so the first request of that turn may carry it or the next request may; the design accepts this one-request lag unless a request-boundary check is added. Prompt refuses an adoption after the branch closes, so no write follows close.
+- The branch part follows `turn/start` on the branch's Dispatcher. For each delivered event it spawns a tracked task that asks Prompt to adopt the source through `ConfigureControl::configure(targets([SOURCE]))`; the handler returns without waiting. The tasks are closed with the branch.
+- The branch part does not listen to attach/detach directly; idle churn produces no block. The next turn start reads the current snapshot.
+- The state block is written during the turn, before or after that turn's first request; the design accepts this one-request lag unless a request-boundary check is added. Prompt refuses an adoption after the branch closes, so no write follows close.
 
 ## 3. Events and state
 
@@ -98,7 +98,7 @@ A restored branch loads the source at `branch/resume`; the body is the current c
 | `P:SessionClientsHost` | The App Server read-only counts |
 | `S:SessionIdentity` | The Session id the source reads |
 | `S:PromptRegistry` | Register the source |
-| `B:Dispatcher` | Follow the operator's input |
+| `B:Dispatcher` | Follow turn starts |
 | `B:dyn ConfigureControl` | Adopt the source |
 
 The feature is installed only by an assembly that provides `SessionClientsHost` (the App Server daemon profile). A native/direct profile installs neither the host nor the parts; the model sees no presence block.
@@ -117,7 +117,7 @@ The feature is installed only by an assembly that provides `SessionClientsHost` 
 
 ## 6. Noise and identity
 
-- One block per operator input at most, and only when the count changed.
+- One block per turn at most, and only when the count changed.
 - Per-branch local copies are expected: every open line has its own branch part and its own block.
 - No client roster, labels, ids, times or departure history in the model body. Management/UI may read more through its own surface.
 - No token, device id or device name. The remote channel is named only as `remote`.
@@ -165,14 +165,14 @@ No client change is required for the count. Line view is [ClientView](ClientView
 
 | Scenario | Expected |
 | --- | --- |
-| Two TUI leaves attach the same Session | At the next operator input: `2 clients attached: 2 tui.`; no attach blocks |
+| Two TUI leaves attach the same Session | At the next turn start: `2 clients attached: 2 tui.`; no attach blocks |
 | A TUI leaf's underlying connection also attaches | It is one `tui`, not `tui` + `cli` |
 | A line client attaches | `cli` |
 | Web attaches | `web` |
 | ACP attaches | `acp` |
 | A paired remote device attaches | `remote`; no device id/name |
 | A leaf is `starting` | Not counted until it attaches |
-| One of two clients leaves while idle | No block; the next operator input says one |
+| One of two clients leaves while idle | No block; the next turn start says one |
 | Last client leaves | `No client is attached.` |
 | No provider | No block, no error |
 | Restore | Current count, not an old count |

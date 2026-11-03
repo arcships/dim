@@ -67,7 +67,7 @@ Current prompt sources are Session-wide in practice. `targets()` fixes `PromptSc
 
 | Fact | Trigger | Boundary |
 | --- | --- | --- |
-| Clients | operator input (`input/message` with user content); branch open | One snapshot per operator input, not per attach/detach |
+| Clients | `turn/start`; branch open | One snapshot per turn, not per attach/detach |
 | Settings | the owner's change signal (`settings.changed` for a Settings source); operator input; branch open | Adopt before the next request; coalesce |
 | Client view | operator input; branch open | Only if promoted to the model; a boolean, not per-switch |
 | Existing environment, date, instructions | PromptSources' check, including [#986](https://github.com/arcships/dim/issues/986)'s request-boundary direction | Unchanged |
@@ -195,9 +195,9 @@ The format follows [design rules §4 rule 8](../architecture/rust-agent/principl
 
 | Scenario | Expected |
 | --- | --- |
-| Two TUIs attach the same Session | The model sees one presence block at the next operator input with 2 tui; not two attach blocks |
-| A TUI leaves while idle | No block; the next operator input shows 1 tui |
-| The last client leaves | The next operator input says no client is attached |
+| Two TUIs attach the same Session | The model sees one presence block at the next turn start with 2 tui; not two attach blocks |
+| A TUI leaves while idle | No block; the next turn start shows 1 tui |
+| The last client leaves | The next turn start says no client is attached |
 | Web, ACP or a remote device attaches | The channel count names it; no device id/name/token |
 | No provider | No source, no block, no error |
 | Settings change from another client | The next request after the change carries the new execution state; no reload |
