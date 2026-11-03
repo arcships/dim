@@ -2,7 +2,7 @@
 
 进程级 `AimuxPlugin` 提供 `ModelHost`，支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、Gemini GenerateContent 和 Chat 兼容端点。调用传入最终请求、一次性 `HttpModelConnection` 与取消信号；连接不序列化到 Timeline。请求、工具名与返回结果的转换约定见 [架构约定](../../docs/architecture/README.md)。
 
-`ConfiguredModelsPlugin` 管理开发配置的共享 `AimuxModels` 和 `ProviderConnectionResolver`，每次请求读取凭据环境变量。Session 的 `ConfiguredModelPlugin` 依赖模型表、SessionConfig、SessionIdentity、ToolRegistry，提供 `PrepareModelHost`。`defaults::install_with_process_model` 将分支 ModelProvider 接到进程模型服务；模型调用仍使用原有任务。
+`ConfiguredModelsPlugin` 管理开发配置的共享 `AimuxModels` 和 `ProviderConnectionResolver`，每次请求读取凭据环境变量；它依赖 `ModelHost`，并用共享运行提供 `auxiliaryModel` 操作（`AuxiliaryModelHost` 与具名 `auxiliaryModel` 绑定）。Session 的 `ConfiguredModelPlugin` 依赖模型表、SessionConfig、SessionIdentity、ToolRegistry，提供 `PrepareModelHost`。`defaults::install_with_process_model` 将分支 ModelProvider 接到进程模型服务；模型调用仍使用原有任务。
 
 ## 工具结果中的图像
 

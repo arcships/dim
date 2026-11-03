@@ -144,7 +144,7 @@ loader 的 `create_instance` 仍先等待行 settled；异步 apply 一直不返
 | `ManagedProviderMethodsPlugin` | `account` 管理命名空间（`account.providers/status/recover/logout`、`account.login.*`、`account.usage`）；随产品 home 装配 | 向 `ManagementMethods` 注册 `account` | `ManagedProviders`、`ManagementMethods` |
 | `ProviderPlugin` | catalog、连接与选择管理、账号变更后的非秘密 binding | `ProviderService`、`ProviderConnectionResolver`、`ModelSelectionHost` | `SqliteStorage`、`ManagedProviders`、Codex/Grok 账号服务；可选秘密宿主 |
 | `AimuxPlugin`（进程级） | 共享 HTTP 资源、请求/流转换及取消桥接 | `ModelHost`：接收最终请求、已解析连接与取消信号的 request 对象 | 无业务服务依赖；不注入 Provider、ToolRegistry 或 Session |
-| `ConfiguredModelsPlugin` | `--model-config` 的开发模型目录与 resolver | 开发目录与 resolver | — |
+| `ConfiguredModelsPlugin` | `--model-config` 的开发模型目录、resolver 与 `auxiliaryModel` 操作 | 开发目录与 resolver、`AuxiliaryModelHost` 与具名 `auxiliaryModel` 绑定 | `ModelHost` |
 | `McpPublication` | Source selection, including project enablement from the user's record, and retirement across Session-owned instances; no root reconciliation | `Publication` | `SettingsService` |
 | `McpPlugin` | MCP 目录、连接租约与项目条目的用户启用记录；不拥有已配置行 | `McpService` | `SettingsService`、`Publication` |
 | `HostPlatformPlugin` | 平台与 exec shell 设置 | `HostPlatform` | `When<FileStorage>` |

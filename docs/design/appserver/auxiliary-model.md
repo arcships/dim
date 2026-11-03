@@ -2,7 +2,8 @@
 
 Status: implemented (S4 native operation and named binding). Roadmap item S4 ([#53](https://github.com/arcships/dim/issues/53)).
 Overview: [Appendix B.2 Provider row](../overview.md#b2-app-server-process-plugins). Scope:
-[ADR 002](../../adr/002-plugin-scope.md) (process, inside the existing Provider plugin).
+[ADR 002](../../adr/002-plugin-scope.md) (process, provided by Provider and, in the
+model-config profile, by ConfiguredModels).
 
 ## 1. Summary
 
@@ -63,8 +64,8 @@ and use the shared run in `dim-agent-capabilities`; neither names a consumer.
 
 ## 3. Data and state
 
-None. Provider stores nothing new, caches nothing, and tracks no in-flight call beyond its
-existing task tracking.
+None. Provider stores nothing new and caches nothing; its existing admission and task
+tracking own an in-flight call. ConfiguredModels has no admission and tracks no task.
 
 ## 4. Interfaces
 
@@ -239,8 +240,9 @@ takes it as a request parameter. It is decided with the `/settings` design, not 
    `complete({model, request})`; reply fields and thrown error codes cross unchanged. Invalid
    requests and unknown models send no HTTP request, and no call writes Session history. With
    a model request held at the HTTP endpoint, closing its caller resolves the cancellation
-   reference and closes the HTTP stream while Provider remains loaded. Without Provider,
-   native Session creation still succeeds and only the foreign namespace remains unavailable.
+   reference and closes the HTTP stream while Provider remains loaded. Without an
+   auxiliary-model owner, native Session creation still succeeds and only the foreign
+   namespace remains unavailable.
 8. The model-config profile provides and runs the operation from its own catalog and the
    connection its provider names: a call sends the request to the configured model with
    `maxTokens` clamped to the model's `max_output_tokens`; an undeclared model is

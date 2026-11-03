@@ -2,7 +2,7 @@
 
 状态：已实现（S4 原生操作及具名绑定）。路线图项 S4（[#53](https://github.com/arcships/dim/issues/53)）。
 总体设计：[附录 B.2 Provider 行](../overview.md#b2-app-server-进程插件)。作用域：
-[ADR 002](../../adr/002-plugin-scope.md)（进程级，放在现有的 Provider 插件内）。
+[ADR 002](../../adr/002-plugin-scope.md)（进程级，由 Provider 以及 model-config 配置中的 ConfiguredModels 提供）。
 
 ## 1. 摘要
 
@@ -56,7 +56,7 @@ S4 完成标准里只有一个使用者：SessionTitle（P4），它需要在自
 
 ## 3. 数据与状态
 
-无。Provider 不新增存储、不缓存，除现有任务跟踪外不记录进行中的调用。
+无。Provider 不新增存储、不缓存；进行中的调用由它现有的准入与任务跟踪管理。ConfiguredModels 没有准入，也不跟踪任务。
 
 ## 4. 接口
 
@@ -211,7 +211,7 @@ Provider 通过 `ProviderService` 解析模型、通过 `ProductResolver` 解析
 7. 真实 Node Session 部分按名称注入进程服务，经 `complete({model, request})` 发起 HTTP 调用；
    回复字段和抛出的错误码保持不变。非法请求、未知模型不发送 HTTP 请求，调用不写 Session 历史。
    将模型请求停在 HTTP 端点后，关闭调用方会完成取消引用，在 Provider 保持装载时关闭 HTTP 流。
-   没有 Provider 时，原生 Session 仍能创建，只有外来命名空间不可用。
+   没有 auxiliaryModel 的所有者时，原生 Session 仍能创建，只有外来命名空间不可用。
 8. model-config 配置用其目录及 provider 声明的连接提供并运行该操作：调用把请求发往配置的模型，
    `maxTokens` 截到模型的 `max_output_tokens`；未声明的模型返回 `model_unavailable` 且不发请求；
    Session 部分和 Session 的自动标题在该配置中都能到达它。
