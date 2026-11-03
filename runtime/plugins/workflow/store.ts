@@ -5,10 +5,8 @@ import { definitionSchema, issues, logEntries, logMessageBytes, resultBytes, sta
 
 const id = z.string().min(1)
 const timestamp = z.iso.datetime({ precision: 3 })
-const policy = z.strictObject({
+const policy = z.object({
   preset: z.enum(['read-only', 'workspace-write', 'full-access']),
-  fileAccess: z.enum(['read-only', 'workspace-read-write', 'unrestricted']).optional(),
-  toolApproval: z.enum(['ask', 'bypass']).optional(),
   allowedTools: z.array(z.string()), disallowedTools: z.array(z.string()),
 }) satisfies z.ZodType<PermissionPolicy>
 const address = z.strictObject({ session_id: id, branch_id: id })

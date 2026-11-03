@@ -528,7 +528,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         let legacy = config.file_roots[index].join("host-isolation.json");
         if legacy.is_file() {
             eprintln!(
-                "Ignoring {}: command isolation is a user setting in /permissions > Process isolation; delete the file.",
+                "Ignoring {}: command isolation is a user setting in /settings > Process isolation; delete the file.",
                 legacy.display()
             );
         }

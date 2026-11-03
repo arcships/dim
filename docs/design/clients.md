@@ -134,7 +134,7 @@ Rows follow the sections of the [feature list](../feature-list.md), which descri
 | Open links, tool groups, `/tools` | done | done (rendering) | |
 | Streaming output, run status, terminal status and progress | done | done | |
 | File change feedback | done | done | |
-| Tool approvals | done (`/permissions` sets File access and Tool approval and manages command rules; `/approvals` and `/approval` are aliases) | done | [ADR 003](../adr/003-approval-scope.md) |
+| Tool approvals | done (`/permissions` selects the preset and manages command rules; `/approvals` and `/approval` are aliases) | done | [ADR 003](../adr/003-approval-scope.md) |
 | Member tool-approval forwarding and original-action review | done | done | [Member approval](subagent-tool-approval.md), [shared client requirements](#member-tool-approval) |
 | User questions (`ask_user`) | done (line client and terminal UIs) | none | [Questions](plugins/Questions.md) (implemented in #269, #336, #351) |
 | Todo status | out | out | [overview](overview.md) §1 |

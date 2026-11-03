@@ -21,7 +21,7 @@ The TUI registers 36 commands and several interaction flows that the web workspa
 | P3 | Background task output and stop | `/tasks` | Not offered | `session.exec.output`, `session.exec.stop` | Planned |
 | P3 | Workflow status and stop | Workflow view | Not offered | `workflow.status`, `workflow.stop` | Planned |
 | P3 | Session agent switch | `/agent` | Default agent in Settings only | `agent.list`, `session.agent.update` | Planned |
-| P3 | Session permission controls | `/permissions` | Independent file access and tool approval, with process isolation linked to its existing settings; see [Web workspace §4](web-workspace.md#4-frontend) | `session.permission.get`, `session.permission.update`, `permission/changed` | Implemented |
+| P3 | Session permission controls | `/permissions` | Permission preset picker, with process isolation linked to its existing settings; see [Web workspace §4](web-workspace.md#4-frontend) | `session.permission.get`, `session.permission.update`, `permission/changed` | Implemented |
 | P3 | Hooks settings | `/hooks` | No page | `hooks.catalog`, `hooks.save`, `hooks.set_enabled` | Needs a Settings allowlist change |
 | P3 | Jump to a message | `/timeline` | Implemented as dim-agent's message rail on the timeline (`/timeline` is not offered: dim-agent has no such command) | None | Implemented |
 | P3 | Session MCP state | `/mcp` | Global MCP settings only | `session.mcp`, `session.mcp.state` | Planned |

@@ -1,37 +1,24 @@
 <script setup lang="ts">
-import { computed, ref } from "vue"
+import { ref } from "vue"
 import { RouterLink } from "vue-router"
 import { useI18n } from "vue-i18n"
 import { Check, Shield } from "lucide-vue-next"
 import ConfirmDialog from "../../components/ConfirmDialog.vue"
-import type { FileAccess, PermissionChange, PermissionPolicy, ToolApproval } from "../../rpc/protocol"
+import type { PermissionPolicy, PermissionPreset } from "../../rpc/protocol"
 
-/** Independent Session permission controls; process isolation stays in its existing settings. */
+/** Session permission preset; process isolation stays in Settings. */
 const props = defineProps<{ policy: PermissionPolicy | undefined }>()
-const emit = defineEmits<{ select: [change: PermissionChange] }>()
+const emit = defineEmits<{ select: [preset: PermissionPreset] }>()
 const { t } = useI18n()
 const details = ref<HTMLDetailsElement>()
 const confirm = ref<InstanceType<typeof ConfirmDialog>>()
 
-const FILES: FileAccess[] = ["read-only", "workspace-read-write", "unrestricted"]
-const TOOLS: ToolApproval[] = ["ask", "bypass"]
-const fileAccess = computed(() => {
-  const policy = props.policy
-  if (policy === undefined) return undefined
-  return policy.fileAccess ?? ({ "read-only": "read-only", "workspace-write": "workspace-read-write", "full-access": "unrestricted" } as const)[policy.preset]
-})
-const toolApproval = computed(() => props.policy?.toolApproval ?? (props.policy?.preset === "full-access" ? "bypass" : undefined))
-const toolLabel = computed(() => toolApproval.value === undefined ? t("composer.permission.legacy") : t(`composer.permission.tool.${toolApproval.value}`))
+const PRESETS: PermissionPreset[] = ["read-only", "workspace-write", "full-access"]
 
-async function choose(change: PermissionChange): Promise<void> {
-  if (props.policy === undefined) return
-  const widensFiles = change.field === "fileAccess" && change.value === "unrestricted" && fileAccess.value !== "unrestricted"
-  const bypassesTools = change.field === "toolApproval" && change.value === "bypass" && toolApproval.value !== "bypass"
-  if (widensFiles || bypassesTools) {
-    const message = widensFiles ? "composer.permission.unrestrictedConfirm" : "composer.permission.bypassConfirm"
-    if (!await confirm.value?.open(t(message))) return
-  }
-  emit("select", change)
+async function choose(preset: PermissionPreset): Promise<void> {
+  if (props.policy === undefined || preset === props.policy.preset) return
+  if (preset === "full-access" && !await confirm.value?.open(t("composer.permission.fullAccessConfirm"))) return
+  emit("select", preset)
 }
 
 function open(): void {
@@ -45,27 +32,19 @@ defineExpose({ open })
   <details ref="details" class="composer-popover permission-menu">
     <summary class="ui-button permission-trigger" data-variant="ghost" data-size="sm" :aria-label="t('composer.permission.label')">
       <Shield :size="14" aria-hidden="true" />
-      <span class="permission-trigger-label">{{ policy && fileAccess ? `${t(`composer.permission.file.${fileAccess}`)} · ${toolLabel}` : t("composer.permission.label") }}</span>
+      <span class="permission-trigger-label">{{ policy ? t(`composer.permission.preset.${policy.preset}`) : t("composer.permission.label") }}</span>
     </summary>
     <div class="composer-popover-content ui-popover permission-content" data-width="lg">
       <fieldset class="permission-group" :disabled="!policy">
-        <legend>{{ t("composer.permission.fileAccess") }}</legend>
-        <button v-for="value in FILES" :key="value" type="button" class="ui-menu-item permission-option" :aria-pressed="value === fileAccess" @click="choose({ field: 'fileAccess', value })">
-          <span class="permission-option-text"><span>{{ t(`composer.permission.file.${value}`) }}</span><small>{{ t(`composer.permission.fileDescription.${value}`) }}</small></span>
-          <Check v-if="value === fileAccess" :size="14" aria-hidden="true" />
-        </button>
-      </fieldset>
-      <fieldset class="permission-group" :disabled="!policy">
-        <legend>{{ t("composer.permission.toolApproval") }}</legend>
-        <p v-if="policy && toolApproval === undefined" class="permission-note">{{ t(`composer.permission.legacy.${policy.preset}`) }}</p>
-        <button v-for="value in TOOLS" :key="value" type="button" class="ui-menu-item permission-option" :aria-pressed="value === toolApproval" @click="choose({ field: 'toolApproval', value })">
-          <span class="permission-option-text"><span>{{ t(`composer.permission.tool.${value}`) }}</span><small>{{ t(`composer.permission.toolDescription.${value}`) }}</small></span>
-          <Check v-if="value === toolApproval" :size="14" aria-hidden="true" />
+        <legend>{{ t("composer.permission.label") }}</legend>
+        <button v-for="preset in PRESETS" :key="preset" type="button" class="ui-menu-item permission-option" :aria-pressed="preset === policy?.preset" @click="choose(preset)">
+          <span class="permission-option-text"><span>{{ t(`composer.permission.preset.${preset}`) }}</span><small>{{ t(`composer.permission.description.${preset}`) }}</small></span>
+          <Check v-if="preset === policy?.preset" :size="14" aria-hidden="true" />
         </button>
       </fieldset>
       <p v-if="policy?.allowedTools.length" class="permission-note">{{ t("composer.permission.allowedTools") }}: {{ policy.allowedTools.join(', ') }}</p>
       <p v-if="policy?.disallowedTools.length" class="permission-note">{{ t("composer.permission.disallowedTools") }}: {{ policy.disallowedTools.join(', ') }}</p>
-      <p class="permission-note">{{ t("composer.permission.independent") }}</p>
+      <p class="permission-note">{{ t("composer.permission.isolation") }}</p>
       <RouterLink class="ui-menu-item" :to="{ name: 'settings-permissions' }">{{ t("composer.permission.processIsolation") }}</RouterLink>
     </div>
     <ConfirmDialog ref="confirm" />

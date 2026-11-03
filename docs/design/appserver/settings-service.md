@@ -325,7 +325,7 @@ impl SettingsService {
   `ExecutionSettingsHost` port, which is an in-process read contract and not a management method
   ([ADR 011](../../adr/011-execution-settings.md) D1). The visible choices map to these existing
   booleans as defined by [process isolation](../host-platform-isolation.md#process-isolation);
-  File access and Tool approval do not write this source.
+  Permission presets and tool lists do not write this source.
 - The file and native paths are shared with `BusinessDocument`, keyed by source name instead of
   `D::NAMESPACE`. CAS, the gate, leases, the unsynced case and `publish` stay as they are.
 - `SettingsError` gains `UnknownSource`, `UserOnlyField(pointer)`, `InvalidScope` and

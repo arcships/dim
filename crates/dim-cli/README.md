@@ -488,29 +488,27 @@ See the [MCP OAuth contract](../../docs/design/appserver/mcp-oauth.md#13-require
 ## Permission presets and approvals
 
 The App Server decides each tool call; the CLI selects settings and never decides a call itself.
-`/permissions` opens three independent controls, also available under `/settings`, and the
-Command rules area:
+`/permissions` selects a preset and opens the Command rules area:
 
 ```text
 Permissions
-  File access         Read only / Workspace read/write / Unrestricted
-  Tool approval       Ask / Bypass
-  Process isolation   Off / Sandboxed · No network / Sandboxed · Network allowed
+  Read only           Read files; deny writes and process commands
+  Workspace write     Write inside the workspace; ask outside it
+  Full access         No path limits; tools run without asking
   Command rules       List, add and remove the user's command rules
+
+Settings
+  Permission          Workspace write >
+  Process isolation   >
 ```
 
 The Command rules row opens the management panel of `Area::Permissions`: one entry per rule,
 whose id and label are the rule's value (`DECISION MATCH COMMAND`), with `Ctrl+R` reload, `Ctrl+N`
-add and `Ctrl+X` remove. A rule has a decision, not an on/off state. Esc returns to the Permissions
-panel.
+add and `Ctrl+X` remove. Esc returns to the Permissions panel.
 
-Choosing File access writes only `fileAccess`; choosing Tool approval writes only `toolApproval`.
-The UI preserves the branch's legacy preset and tool lists, and saves the chosen field alone in
-`config.json` for new sessions, keeping other configuration keys. Ask asks about all tools except
-explicitly allowed tools and commands; Bypass skips only tool questions, not file restrictions,
-deny rules or process isolation. The picker identifies legacy risk-based behavior until an
-explicit tool-approval choice is made. Existing `permissionPreset` configuration and `--permission`
-remain compatibility seeds, with this behavior when the independent fields are omitted:
+Choosing a preset preserves the tool lists and saves `permission` in `config.json` for later
+terminal Sessions. The CLI reads the legacy `permissionPreset` only when `permission` is absent;
+`--permission` takes precedence. Process isolation stays in Settings.
 
 | Preset | Reads | File writes | Commands, network, unclassified tools |
 | --- | --- | --- | --- |
@@ -518,8 +516,9 @@ remain compatibility seeds, with this behavior when the independent fields are o
 | `workspace-write` (product default) | run | run inside the workspace; ask outside | ask |
 | `full-access` | run | run | run |
 
-Every outside file write asks for that call, even when its tool is explicitly
-allowed; no path grant is remembered. The server resolves symlinks and new-file
+Under workspace-write, an outside write without a matching Session grant asks for that call,
+even when its tool is explicitly allowed. Approval does not automatically save a grant.
+The server resolves symlinks and new-file
 parents before checking the [workspace boundary](../../docs/architecture/rust-agent/plugins/Permission.md#workspace-write-targets).
 
 `--permission read-only|workspace-write|full-access` works with `dimcode`, `tui`, `exec` and
@@ -530,9 +529,8 @@ shows the preset; `exec` prints it to stderr only when the flag is given. A live
 `main`, from any client, prints `[permission] main branch preset: ...`.
 
 At the line-mode idle prompt, `/permissions` (aliases `/approvals` and `/approval`) shows the
-independent controls, the legacy preset seed and the user's command rules. It accepts
-`file-access read-only|workspace-read-write|unrestricted` and `tool-approval ask|bypass` for the
-active main branch. `/approvals PRESET` still switches the legacy seed; `full-access` asks `[y/N]` and only `y`/`yes`
+preset, tool exceptions and the user's command rules. `/permissions PRESET` changes the active
+main branch's preset; `full-access` asks `[y/N]` and only `y`/`yes`
 confirms. `/approvals allow|deny exact|prefix COMMAND` adds a rule and `/approvals remove N`
 removes rule N of the list printed last; both print the new numbered list. A preset or rule list
 that changed since it was shown is reported and nothing is written. Child branches and native members created later from the changed branch inherit its current policy;
@@ -616,8 +614,7 @@ installs no Goal — its `session.methods` lists no `session.goal.set` — `/goa
 
 ## Execution boundary
 
-The sandbox is a setting, and it is off by default. `/permissions > Process isolation` and
-`/settings > Process isolation` open the same picker: Off, Sandboxed · No network, or
+The sandbox is a setting, and it is off by default. `/settings > Process isolation` opens the picker: Off, Sandboxed · No network, or
 Sandboxed · Network allowed. Save, Reset and Reload reuse the existing user-scope execution settings
 and their revision conflict checks. The stored `sandbox` and `network` switches both start off;
 Network applies only while Sandbox is on. The setting
@@ -968,7 +965,7 @@ Opening `/` selects `/new`; pressing Enter starts a new session. `/permissions` 
 
 Typing ranks the matches: the exact name, a name prefix, an alias prefix, a prefix of a name part (`reload-skills` for `sk`), a name containing the query, a description word starting with it, then three or more letters in order through the name (`stg` for `settings`); a match inside a description word does not count. Equally ranked matches keep the fixed task order.
 
-`/settings` gathers the interface settings: theme and language (each opens its picker and comes back), the startup form (`tuiMode`), tool details (`tuiToolDetails`: `collapsed`, `summary`, `expanded`), thinking details (`tuiThinkingDetailsExpanded`), the fullscreen mouse (`tuiMouseMode`: off hands selection and the wheel to the terminal), notifications (`tuiNotifyOnComplete`, on by default), ACP Sessions in `/resume` (`showAcpSessions`, off by default), tool approvals and execution settings. Tool and thinking details are independent and both default to collapsed in both modes. The old `tuiToolDetailsExpanded` boolean is read when no valid three-state preference exists; new changes save to `tuiToolDetails` without replacing the legacy key's format. Collapsed tool groups retain their header and member cards; summary shows one row per call; expanded shows full details. Compaction bodies show only in expanded. `/tools` cycles the three forms without changing thinking. Model selection stays in `/model` (`/models`). Settings change with `Enter`, `←`/`→` or `Space` and save to `config.json` at once. See the [transcript detail settings contract](../../docs/design/cli-commands.md#transcript-detail-settings).
+`/settings` gathers the interface settings: theme and language (each opens its picker and comes back), the startup form (`tuiMode`), tool details (`tuiToolDetails`: `collapsed`, `summary`, `expanded`), thinking details (`tuiThinkingDetailsExpanded`), the fullscreen mouse (`tuiMouseMode`: off hands selection and the wheel to the terminal), notifications (`tuiNotifyOnComplete`, on by default), ACP Sessions in `/resume` (`showAcpSessions`, off by default), the permission preset and execution settings. Tool and thinking details are independent and both default to collapsed in both modes. The old `tuiToolDetailsExpanded` boolean is read when no valid three-state preference exists; new changes save to `tuiToolDetails` without replacing the legacy key's format. Collapsed tool groups retain their header and member cards; summary shows one row per call; expanded shows full details. Compaction bodies show only in expanded. `/tools` cycles the three forms without changing thinking. Model selection stays in `/model` (`/models`). Settings change with `Enter`, `←`/`→` or `Space` and save to `config.json` at once. See the [transcript detail settings contract](../../docs/design/cli-commands.md#transcript-detail-settings).
 
 Notifications reach a user who switched windows when the run finishes or waits on a permission or a question (each request once): iTerm2 gets `OSC 9`, kitty `OSC 99`, Ghostty, WezTerm and foot `OSC 777`; tmux and any other terminal get a bell, which tmux forwards and terminals turn into a Dock bounce, a taskbar flash or a tab badge.
 

@@ -239,7 +239,7 @@ pub enum Command {
     Rename(Option<String>),
     /// `/goal`: show, set, edit, pause, resume or clear the shown line's goal.
     Goal(crate::goal::Request),
-    SetPermission(crate::permission::Change),
+    SetPermission(dim_agent_types::PermissionPreset),
     /// List the providers of the `/connect` panel.
     ListProviders,
     /// Change one provider.
@@ -1084,7 +1084,7 @@ pub enum Update {
     /// A transient status-line message.
     Toast(String),
     Permissions(Result<dim_agent_types::PermissionPolicy, String>),
-    PermissionSelected(crate::permission::Change),
+    PermissionSelected(dim_agent_types::PermissionPreset),
     Providers(Result<Vec<ProviderEntry>, String>),
     /// What a provider change came to.
     ProviderResult {

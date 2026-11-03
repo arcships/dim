@@ -116,7 +116,7 @@ spike 改变了三处设计：服务由谁提供（第 5 条）、生命周期�
 { "agent?": "string",                                  // Agent id；缺省：默认 Agent
   "cwd": "string",                                     // 绝对路径
   "model?": { "providerId": "string", "modelId": "string" },
-  "policy?": { /* PermissionPolicy，含可选 fileAccess/toolApproval */ },
+  "policy?": { /* PermissionPolicy */ },
   "starter?": { "sessionId": "string", "branchId": "string" } }
 // 回复
 { "sessionId": "string", "policy": { /* 生效的 PermissionPolicy */ } }
@@ -124,14 +124,9 @@ spike 改变了三处设计：服务由谁提供（第 5 条）、生命周期�
 
 **策略。** 启动方的当前策略是启动方分支的 `PermissionState`：Permission 已分发的状态，由 Session 配置的策略加上该分支及其祖先上的 `permission/changed` 事实折叠而成。Agents 在持有启动方租约时读取一次。
 
-策略形状和省略覆盖字段的语义属于
-[Permission 合同](../../../architecture/rust-agent/plugins/Permission.md#policy-contract)。
-下方预设上限描述没有显式覆盖的旧策略。支持覆盖的上限必须在文件范围和工具准入两个维度都不比任一输入更宽；
-只比较预设不够。尤其不能把缺少的工具覆盖补成显式 Ask，因为这可能解除旧风险拒绝，不是安全的默认操作。
-启动不能丢弃显式限制覆盖，也不能静默放宽启动方的生效上限。
-若一方保留旧 read-only 工具规则而另一方指定显式 Ask，启动在创建 Session 前返回 `rejected`。
-策略无法同时表达旧风险拒绝和对旧策略自动允许的读取逐次 Ask；只保留任一方都会放宽另一方。
-调用方必须先在旧策略一侧选择显式工具策略。旧 read-only 与 Bypass 组合可保留旧工具规则，因为它不比任一输入更宽。
+策略形状属于 [Permission 合同](../../../architecture/rust-agent/plugins/Permission.md#policy-contract)。
+按 [ADR 018](../../../adr/018-permission-is-the-preset.md)，cap 只比较预设和工具列表，
+已删除的覆盖字段在策略对象边界读取时忽略。
 
 ```
                          有启动方？

@@ -143,7 +143,7 @@ pub enum Effect {
         projection_id: u64,
         run_id: String,
     },
-    SetPermission(crate::permission::Change),
+    SetPermission(dim_agent_types::PermissionPreset),
     /// Paint with this theme without saving it.
     ThemePreview(String),
     /// Keep this theme and save it.

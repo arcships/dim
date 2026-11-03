@@ -101,7 +101,7 @@ CLI 要求协议 v3，以及 `session.create` 和 `session.history` 两项功能
 | 打开链接、工具分组、`/tools` | 已实现 | 已实现（渲染） | |
 | 流式输出、运行状态、终端状态与进度 | 已实现 | 已实现 | |
 | 文件改动反馈 | 已实现 | 已实现 | |
-| 工具审批 | 已实现（`/permissions` 设置 File access 与 Tool approval 并管理命令规则；`/approvals` 与 `/approval` 是别名） | 已实现 | [ADR 003](../adr/003-approval-scope.md) |
+| 工具审批 | 已实现（`/permissions` 选择权限预设并管理命令规则；`/approvals` 与 `/approval` 是别名） | 已实现 | [ADR 003](../adr/003-approval-scope.md) |
 | 用户提问（`ask_user`） | 已实现（行模式客户端与终端界面） | 无 | [Questions](plugins/Questions.md)（由 #269、#336、#351 实现） |
 | 待办状态 | 不做 | 不做 | [总体设计](overview.md) §1 |
 | 后台任务：命令与成员（详情、停止单个、全部停止） | 已实现 | — | [后台任务列表](../../design/background-task-list.md)、[输出](../../design/background-task-output.md)、[成员会话](../../design/member-conversation.md) |

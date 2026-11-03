@@ -230,11 +230,11 @@ flowchart LR
 
 运行不放宽权限（E2）。**已确认准入流程（A17）：** 首阶段经既有 sessions.launch 传入工具调用的 {sessionId,branchId} starter 和定义可选 policy；管理启动不带 starter，S2 使用宿主上限和现有只读默认。Agents 解析实时上限并返回有效 policy，在任何阶段输入前持久化为 Run.policy_cap；此字段仅在首个启动回复尚未确认时缺失。后续阶段显式传入已存 policy、不带 starter，由 Agents 再按当前宿主默认上限收窄；起始方关闭不会放宽权限或妨碍已拥有工作继续。首次 policy 确认前禁止回退。
 
-`Run.policy_cap` 在持久化、重载及后续 launch 请求中保留完整公开 `PermissionPolicy`，
-包括可选 `fileAccess` 和 `toolApproval`。inner-v2 解码器接受这些可选字段，不填默认值；
-旧记录保留省略状态及含义。此可加字段支持不改变内部文档版本，也不迁移记录。
-Workflow 不重建覆盖字段或另行计算 cap；不兼容的权限交集按
-[S2 §6.1](../../../design/appserver/sessions-service.md#61-launch) 经既有阶段 launch 错误路径失败。
+`Run.policy_cap` 在持久化、重载及后续 launch 请求中保留公开 `PermissionPolicy` 的预设和工具列表。
+按 [ADR 018](../../../adr/018-permission-is-the-preset.md)，inner-v2 解码器忽略策略对象中
+已删除的 `fileAccess` 和 `toolApproval`，读取不重写记录，再次保存时不写入这两个键。
+外层运行文档仍严格校验。Workflow 不另行计算 cap，后续启动由
+[S2 §6.1](../../../design/appserver/sessions-service.md#61-launch) 收窄权限。
 
 首步骤为并行组时，先取得并持久化定义中第一个阶段的 launch 回复，再准入同组其他阶段，仍遵守既有并发限制。定义的 policy 在定义边界转换一次为现有 PermissionPolicy 形状，由 S2 正常收窄，不另写权限比较实现。按已确认 A17 在首阶段准入时捕获上限，不增加权限查询方法、辅助 Session 或 core 能力。
 

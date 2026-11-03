@@ -17,42 +17,24 @@ pub enum FileAccess {
     Unrestricted,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ToolApproval {
-    Ask,
-    Bypass,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct PermissionPolicy {
     #[serde(default)]
     pub preset: PermissionPreset,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub file_access: Option<FileAccess>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_approval: Option<ToolApproval>,
     #[serde(default)]
     pub allowed_tools: Vec<String>,
     #[serde(default)]
     pub disallowed_tools: Vec<String>,
 }
 
-impl PermissionPolicy {
-    pub fn file_access(&self) -> FileAccess {
-        self.file_access.unwrap_or(match self.preset {
+impl PermissionPreset {
+    pub fn file_access(self) -> FileAccess {
+        match self {
             PermissionPreset::ReadOnly => FileAccess::ReadOnly,
             PermissionPreset::WorkspaceWrite => FileAccess::WorkspaceReadWrite,
             PermissionPreset::FullAccess => FileAccess::Unrestricted,
-        })
-    }
-
-    pub fn tool_approval(&self) -> ToolApproval {
-        self.tool_approval.unwrap_or(match self.preset {
-            PermissionPreset::FullAccess => ToolApproval::Bypass,
-            _ => ToolApproval::Ask,
-        })
+        }
     }
 }
 

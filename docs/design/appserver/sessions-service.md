@@ -158,7 +158,7 @@ are the contract's ([A.1](../contracts/session-access.md#a1-the-sessions-service
 { "agent?": "string",                                  // Agent id; absent: the default Agent
   "cwd": "string",                                     // absolute
   "model?": { "providerId": "string", "modelId": "string" },
-  "policy?": { /* PermissionPolicy, including optional fileAccess/toolApproval */ },
+  "policy?": { /* PermissionPolicy */ },
   "starter?": { "sessionId": "string", "branchId": "string" } }
 // reply
 { "sessionId": "string", "policy": { /* the effective PermissionPolicy */ } }
@@ -168,18 +168,10 @@ are the contract's ([A.1](../contracts/session-access.md#a1-the-sessions-service
 state, folded from the Session's configured policy and the `permission/changed` facts on that branch and its
 ancestors. Agents reads it once, while it holds a lease on the starter.
 
-The policy shape and omitted-override semantics belong to the
+The policy shape belongs to the
 [Permission contract](../../architecture/rust-agent/plugins/Permission.md#policy-contract).
-The preset cap below describes legacy policies with no explicit overrides. An override-aware
-cap must remain no more permissive than either input in both file scope and tool admission;
-comparing presets alone is insufficient. In particular, turning an absent tool override into
-explicit Ask can lift a legacy risk denial, so it is not a safe defaulting operation. Launch must
-not discard an explicit restrictive override or silently widen the starter's effective bound.
-If either input retains legacy read-only tool rules while the other specifies explicit Ask,
-launch returns `rejected` before creating a Session. The policy cannot express both the legacy
-risk denials and Ask for legacy-auto-allowed reads; retaining either alone would widen the other.
-The caller must first select an explicit tool policy on the legacy side. Legacy read-only with
-Bypass can retain the legacy tool rules, which are no wider than either input.
+Under [ADR 018](../../adr/018-permission-is-the-preset.md), cap compares presets and tool lists;
+removed override keys are ignored when the policy object is read.
 
 ```
                          starter given?

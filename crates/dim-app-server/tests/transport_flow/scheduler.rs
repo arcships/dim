@@ -1175,6 +1175,8 @@ async fn node_scheduler_shared_policy_vectors_reach_native_save_launch_and_reuse
                 assert_ok(&settings);
                 let mut document = settings["result"]["document"].clone();
                 document["jobs"][0]["policy_cap"] = vector["requested"].clone();
+                document["jobs"][0]["policy_cap"]["fileAccess"] = json!("read-only");
+                document["jobs"][0]["policy_cap"]["toolApproval"] = json!("ask");
                 document["jobs"][0]["created_by"] = json!({"tool":{"session_id":starter["result"]["sessionId"],"branch_id":"main"}});
                 document["jobs"][0]["revision"] = json!(2);
                 assert_ok(

@@ -125,7 +125,7 @@ impl Drop for Probes {
 fn writable() -> PermissionPolicy {
     PermissionPolicy {
         preset: PermissionPreset::WorkspaceWrite,
-        tool_approval: Some(ToolApproval::Bypass),
+        allowed_tools: vec!["write".into()],
         ..Default::default()
     }
 }
@@ -226,7 +226,7 @@ async fn concurrent_discovery_is_shared_caller_cancellation_is_local_and_cache_i
         .update(
             version,
             PermissionPolicy {
-                file_access: Some(FileAccess::ReadOnly),
+                preset: PermissionPreset::ReadOnly,
                 ..writable()
             },
         )
@@ -300,7 +300,7 @@ async fn a_policy_tightened_during_git_discovery_decides_the_waiting_call() {
         .update(
             0,
             PermissionPolicy {
-                file_access: Some(FileAccess::ReadOnly),
+                preset: PermissionPreset::ReadOnly,
                 ..writable()
             },
         )

@@ -232,7 +232,7 @@ pub const COMMANDS: &[Command] = &[
     slash(
         "permissions",
         "model",
-        "configure file access, tool approval and process isolation, and manage command rules",
+        "choose the permission preset and manage command rules",
         &["approvals", "approval"],
         Needs::Nothing,
     ),

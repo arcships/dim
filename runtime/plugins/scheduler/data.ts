@@ -9,10 +9,9 @@ export class ScheduleError extends Error {
 
 export const id = z.string().min(1)
 export const preset = z.enum(['read-only', 'workspace-write', 'full-access'])
-const fileAccess = z.enum(['read-only', 'workspace-read-write', 'unrestricted'])
-export const policy = z.strictObject({ preset, fileAccess: fileAccess.optional(),
-  toolApproval: z.enum(['ask', 'bypass']).optional(),
-  allowedTools: z.array(z.string()), disallowedTools: z.array(z.string()) }) satisfies z.ZodType<PermissionPolicy>
+export const policy = z.object({
+  preset, allowedTools: z.array(z.string()), disallowedTools: z.array(z.string()),
+}) satisfies z.ZodType<PermissionPolicy>
 export const timestamp = z.iso.datetime({ precision: 3 }).max(24)
 export const address = z.strictObject({ session_id: id, branch_id: id })
 const cronField = '[0-9*/,-]+'
@@ -46,37 +45,17 @@ export type JobPatch = z.infer<typeof managementJob>
 /** The same conservative policy cap used by S2; lists are sets. */
 export function cap(requested: PermissionPolicy, bound: PermissionPolicy) {
   const ranks = preset.options
-  const legacyReadOnly = [requested, bound].some(value => approval(value) === 'legacy-read-only')
-  if (legacyReadOnly && [requested, bound].some(value => value.toolApproval === 'ask')) {
-    throw new ScheduleError('schedule_invalid', 'Explicit Ask cannot be capped by legacy read-only tool rules')
-  }
   const disallowedTools = [...new Set([...requested.disallowedTools, ...bound.disallowedTools])]
+  const allows = (value: PermissionPolicy, name: string) =>
+    value.preset === 'full-access' || value.allowedTools.includes(name)
   const allowedTools = [...new Set([...requested.allowedTools, ...bound.allowedTools])].filter(name =>
-    (approval(requested) === 'bypass' || requested.allowedTools.includes(name))
-    && (approval(bound) === 'bypass' || bound.allowedTools.includes(name)) && !disallowedTools.includes(name))
-  return { preset: ranks[Math.min(ranks.indexOf(requested.preset), ranks.indexOf(bound.preset))],
-    ...(requested.fileAccess !== undefined || bound.fileAccess !== undefined ? {
-      fileAccess: fileAccess.options[Math.min(fileRank(requested), fileRank(bound))],
-    } : {}),
-    ...(!legacyReadOnly && (requested.toolApproval !== undefined || bound.toolApproval !== undefined) ? {
-      toolApproval: approval(requested) === 'bypass' && approval(bound) === 'bypass' ? 'bypass' as const : 'ask' as const,
-    } : {}), allowedTools, disallowedTools } satisfies PermissionPolicy
-}
-
-function fileRank(value: PermissionPolicy): number {
-  return value.fileAccess === undefined ? preset.options.indexOf(value.preset) : fileAccess.options.indexOf(value.fileAccess)
-}
-
-function approval(value: PermissionPolicy) {
-  return value.toolApproval ?? (value.preset === 'full-access' ? 'bypass' : value.preset === 'read-only' ? 'legacy-read-only' : 'ask')
+    allows(requested, name) && allows(bound, name) && !disallowedTools.includes(name))
+  return { preset: ranks[Math.min(ranks.indexOf(requested.preset), ranks.indexOf(bound.preset))], allowedTools, disallowedTools } satisfies PermissionPolicy
 }
 
 export function within(actual: PermissionPolicy, bound: PermissionPolicy): boolean {
-  let capped: PermissionPolicy
-  try { capped = cap(actual, bound) }
-  catch (error) { if (error instanceof ScheduleError) return false; throw error }
+  const capped = cap(actual, bound)
   return actual.preset === capped.preset
-    && fileRank(actual) === fileRank(capped) && approval(actual) === approval(capped)
     && [actual.allowedTools, actual.disallowedTools].every((names, index) => {
       const result = index === 0 ? capped.allowedTools : capped.disallowedTools
       return new Set(names).size === result.length && names.every(name => result.includes(name))

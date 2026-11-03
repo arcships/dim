@@ -15,7 +15,7 @@ SessionStore 为 Session 保存不可变文件。调用方为某个 Session 交�
 - **FileStorage。** S5a 只新增一个操作 `create_directory`。共享不需要建链接的操作。
 - **格式。** 原生存储升级到 15 版，新增两张表；v13 存储在启动时原地升级。
 - **接口。** Attachments 通过进程服务 `sessionFiles` 使用它。
-- **读取。** 模型像读其他文件一样用 `read` 读取这些文件：所有权无需授权即可满足文件范围，但不绕过 Tool approval Ask（§11）。
+- **读取。** 模型像读其他文件一样用 `read` 读取这些文件：所有权无需授权即可满足文件范围，但不绕过工具准入（§11）。
 
 不新增 Timeline 事件，不新增插件，不改运行时、rutis 或 Session 门面。
 
@@ -345,7 +345,7 @@ Attachments（[A.2](../plugins/Attachments.md#a2-attachmentput)）在 `Deps` 中
 
 ### 11.1 读取 Session 文件
 
-**决定：模型读取 Session 文件与读取任何文件相同。Session 自有文件是固定事实之一，所以读取通过文件范围检查且不记录授权。工具审批独立，显式 Ask 仍可对读取询问。**
+**决定：模型读取 Session 文件与读取任何文件相同。Session 自有文件是固定事实之一，所以读取通过文件范围检查且不记录授权。工具准入遵循预设与工具列表。**
 [Permission 合同](../../../architecture/rust-agent/plugins/Permission.md#policy-contract)拥有两个闸门与旧行为；
 所有权不是显式工具允许。[ADR 014](../../../adr/014-file-access-facts.md) 根据工作区、系统目录、Session 自有文件和授权决定文件读写；[ADR 013](../../../adr/013-command-output-ownership.md) 增加第二张所有权表，所以 `owns` 也回答命令输出。
 
@@ -359,8 +359,7 @@ Attachments（[A.2](../plugins/Attachments.md#a2-attachmentput)）在 `Deps` 中
    Read only or Workspace read/write, inside facts -----> pass file scope
    Read only or Workspace read/write, outside facts ----> scope Ask
    Unrestricted ----------------------------------------> pass file scope
-   tool gate -------------------------------------------> Ask unless allowed or bypassed;
-                                                         legacy risk behavior if override absent
+   tool gate -------------------------------------------> preset risk rules and tool lists
    scope Ask + tool Ask --------------------------------> one approval (exec denies and exits 3)
    |
    v
@@ -369,9 +368,9 @@ Attachments（[A.2](../plugins/Attachments.md#a2-attachmentput)）在 `Deps` 中
 
 准入合同由 [permission.rs](../../../../crates/dim-agent-capabilities/src/permission.rs) 的 `decide`、[file_access.rs](../../../../crates/dim-agent-capabilities/src/file_access.rs) 和 [approval.rs](../../../../crates/dim-agent-capabilities/src/approval.rs) 的 `admit` 拥有：
 
-- **自有文件不需要范围询问。** `SessionFiles.owns` 读出本 Session 的附件行和 ADR 013 的输出行，所以 `put` 返回的路径和登记的输出路径在事实中 `owned` 为真。在 `read-only` 和 `workspace-read-write` 文件访问下它位于事实之内。读取不记录授权；除非工具已允许，显式 Tool approval Ask 仍会询问。§11.2 的两条性质对 `owns` 读出的行成立。
+- **自有文件不需要范围询问。** `SessionFiles.owns` 读出本 Session 的附件行和 ADR 013 的输出行，所以 `put` 返回的路径和登记的输出路径在事实中 `owned` 为真。在 `read-only` 和 `workspace-read-write` 文件访问下它位于事实之内。读取不记录授权；工具准入仍遵循预设和工具列表。§11.2 的两条性质对 `owns` 读出的行成立。
 - **事实之外的读取需要询问。** 解析后的路径既不是工作区、系统目录、Session 自有文件，也没有授权覆盖时，Read only 和 Workspace read/write 文件访问下需要范围询问（[ADR 014 D2/D4](../../../adr/014-file-access-facts.md#d2-read-and-write)）。CLI 提供 `Allow for this session`，为解析后的路径写入 read 授权；`exec` 以普通拒绝作答、停止回合并以 3 退出。Unrestricted 通过读取范围检查，不回答工具闸门。路径检查在工具列表和 `allowedTools` 之前，显式允许的工具不能绕过路径事实。`grep` 或 `glob` 没有 `path` 时搜索 Session cwd，也就是工作区。
-- **授权。** 覆盖解析后路径的 read 或 write 授权满足读取范围，不能回答显式 Tool approval Ask，也不能把 read 授权变成写入权限。策略变更（`session.permission.update`，写成 `permission/changed`）包含策略值，从不包含路径。FileStorage 根和记住的决定都不授予读取权限。
+- **授权。** 覆盖解析后路径的 read 或 write 授权满足读取范围，不能绕过工具准入，也不能把 read 授权变成写入权限。策略变更（`session.permission.update`，写成 `permission/changed`）包含策略值，从不包含路径。FileStorage 根和记住的决定都不授予读取权限。
 - **FileStorage 根不授予任何东西。** 把数据库目录登记为 FileStorage 根（§3.1），只是让 SessionStore 能通过 FileStorage 在那里写入。`read` 从不查询 FileStorage 根；Session 自有事实来自 `sessionFiles.owns`，不是文件根授权。
 - **不是新情况。** WorkspaceTools 已经把超长的 `read` 结果和 `exec` 输出写到 `<数据库目录>/command-output/<sessionId>/`，并把路径交给模型（[read.rs](../../../../crates/dim-agent-capabilities/src/workspace_tools/files/read.rs) 的 `offload`）。在产品配置下，这两个目录都紧挨着 `dimcode.sqlite`。ADR 013 在结果把路径交给模型之前，把这些路径和持久 shell 的 `.dim/exec/<sessionId>/<branchId>/` 日志登记进 `session_output_owners`。登记是可信部件之间的防护，不是读取规则：`read` 仍然不为这些路径询问。
 

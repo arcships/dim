@@ -15,7 +15,7 @@ or `deny`). Permission reads the list each time it decides a call of a tool that
 (`risk: "execute_process"`) with a string `command` input. Nothing is cached, nothing reloads and
 nothing subscribes.
 
-- A matching `deny` rule denies the call, under every preset and explicit tool-approval choice.
+- A matching `deny` rule denies the call, under every preset.
 - A matching `allow` rule only answers the question Approval would otherwise ask: it turns `Ask`
   into `Allow`. It never turns a policy `Deny` into `Allow` or bypasses file checks.
 - `allow` matches only a simple command (no shell separators, redirection or substitution).
@@ -27,9 +27,9 @@ Rules are written in two ways, both through the same owner: the client managemen
 `approval.respond allow`. Approval's events and methods are unchanged.
 
 Command rules add no Timeline event or policy field and change no Timeline, Dispatcher, rutis,
-Settings or assembly mechanism. The independent policy fields are owned by the
+Settings or assembly mechanism. The policy is owned by the
 [Permission contract](../../architecture/rust-agent/plugins/Permission.md#policy-contract)
-([ADR 017](../../adr/017-independent-permission-controls.md)), not this rules source.
+([ADR 018](../../adr/018-permission-is-the-preset.md)), not this rules source.
 
 ### 1.1 What this does not do
 
@@ -207,7 +207,7 @@ paths or scripts; those are denied only by presets or OS isolation.
        a deny rule matches a segment               -> Deny "Command denied by command rule `<command>` (<match>)"
   3. file-scope gate, for file calls               -> Deny | Ask, or continue
   4. call.name in allowedTools                     -> Allow
-  5. explicit toolApproval, otherwise legacy risk  -> Allow | Ask | Deny
+  5. preset risk rules  -> Allow | Ask | Deny
   6. tool result is Ask and an allow rule matches the
      simple command                                -> Allow
 ```
@@ -215,16 +215,14 @@ paths or scripts; those are denied only by presets or OS isolation.
 File-scope and tool questions are combined into one call-specific approval. A command allow
 answers only the tool question; the file gate and isolation are not command-rule policy.
 
-| Legacy preset (no explicit tool override) | `execute_process` | With a matching allow rule | With a matching deny rule |
+| Preset | `execute_process` | With a matching allow rule | With a matching deny rule |
 | --- | --- | --- | --- |
 | read-only | Deny | Deny | Deny |
 | workspace-write | Ask | Allow | Deny |
 | full-access | Allow | Allow | Deny |
 
-An allow rule cannot lift a legacy risk denial. With explicit `toolApproval: "ask"`, commands
-ask regardless of the seed preset and a matching allow answers that question. With explicit
-`"bypass"`, commands need no tool question but deny rules still win. Neither changes file access
-or process isolation. A read failure fails closed because a deny rule may exist.
+An allow rule cannot lift a preset denial or file check. Deny rules apply under every preset.
+Read failures deny because a deny rule may exist.
 
 ### 5.3 Admission
 
@@ -287,7 +285,7 @@ denials do today, for example
   deferred (§10).
 - Rules are host security settings: never in the Timeline, never restored or widened by replay or
   fork, and not writable from a paired device (management methods are local only).
-- Allow rules cannot lift a policy denial or file check; deny rules apply under every tool-approval choice; read failures deny.
+- Allow rules cannot lift a policy denial or file check; deny rules apply under every preset; read failures deny.
 - Matching is deliberately conservative for `allow` and over-inclusive for `deny`; §5.1 states its
   limits. It is not isolation.
 
@@ -295,7 +293,7 @@ denials do today, for example
 
 | Part | Relationship |
 | --- | --- |
-| Permission | Supplement: `decide` takes the call and reads rules for command calls; Session dependency `CommandRulesHost`. Rules add no policy fields and change no policy versions or methods; independent controls follow Permission's own contract |
+| Permission | Supplement: `decide` takes the call and reads rules for command calls; Session dependency `CommandRulesHost`. Rules add no policy fields and change no policy versions or methods; presets follow Permission's own contract |
 | Approval | Passes the call to `decide` at both existing sites and propagates a cancelled read. Events, `approval.respond`, replay and recovery unchanged |
 | ToolExecutor, WorkspaceTools, ShellTools | Unchanged; `exec` and `execute` already declare `execute_process` and take `command` |
 | Settings | Unchanged; one new source `permission` (user file, native row). Its `settings.changed` event is emitted as for any source; F2 does not listen |

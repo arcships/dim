@@ -408,8 +408,6 @@ async fn run(
             .options
             .permission
             .unwrap_or(dim_agent_types::PermissionPreset::WorkspaceWrite),
-        file_access: worker.options.file_access,
-        tool_approval: worker.options.tool_approval,
         ..Default::default()
     })));
     if let Err(error) = worker.open().await {
@@ -1231,8 +1229,6 @@ impl Worker {
                             .options
                             .permission
                             .unwrap_or(dim_agent_types::PermissionPreset::WorkspaceWrite),
-                        file_access: self.options.file_access,
-                        tool_approval: self.options.tool_approval,
                         ..Default::default()
                     })));
                     self.send(Update::Context(None));
@@ -1479,32 +1475,18 @@ impl Worker {
             }
             Command::SetPermission(change) => {
                 let result = if self.session_id.is_empty() {
-                    let mut policy = dim_agent_types::PermissionPolicy {
-                        preset: self
-                            .options
-                            .permission
-                            .unwrap_or(dim_agent_types::PermissionPreset::WorkspaceWrite),
-                        file_access: self.options.file_access,
-                        tool_approval: self.options.tool_approval,
+                    Ok(dim_agent_types::PermissionPolicy {
+                        preset: change,
                         ..Default::default()
-                    };
-                    change.apply(&mut policy);
-                    Ok(policy)
+                    })
                 } else {
                     let session_id = self.session_id.clone();
-                    permission::select_control(&mut self.client, &session_id, change)
+                    permission::select_preset(&mut self.client, &session_id, change)
                         .await
                         .map_err(|error| error.to_string())
                 };
                 if result.is_ok() {
-                    match change {
-                        permission::Change::FileAccess(value) => {
-                            self.options.file_access = Some(value)
-                        }
-                        permission::Change::ToolApproval(value) => {
-                            self.options.tool_approval = Some(value)
-                        }
-                    }
+                    self.options.permission = Some(change);
                     self.send(Update::PermissionSelected(change));
                 }
                 self.send(Update::Permissions(result));

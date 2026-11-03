@@ -10,7 +10,7 @@ import ComposerPanel from "./ComposerPanel.vue"
 import QueuedInputs from "./QueuedInputs.vue"
 import QuestionPrompt from "./QuestionPrompt.vue"
 import TimelineView from "./TimelineView.vue"
-import { MAIN_BRANCH, type ContextUsage, type DraftAttachments, type ModelId, type PermissionChange } from "../../rpc/protocol"
+import { MAIN_BRANCH, type ContextUsage, type DraftAttachments, type ModelId, type PermissionPreset } from "../../rpc/protocol"
 import { goalCall, goalObjective, parseGoalRequest, type Goal, type GoalStatus } from "../../goal"
 import { useChatStore } from "../../stores/chat"
 import { useConnectionStore } from "../../stores/connection"
@@ -209,9 +209,9 @@ async function effort(words: string): Promise<void> {
   }
 }
 
-async function setPermission(change: PermissionChange): Promise<void> {
+async function setPermission(preset: PermissionPreset): Promise<void> {
   try {
-    const outcome = await chat.setPermission(props.sessionId, change)
+    const outcome = await chat.setPermission(props.sessionId, preset)
     if (outcome === "conflict") toast.push({ tone: "info", title: t("permission.conflict") })
   } catch (cause) {
     failure(cause)

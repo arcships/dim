@@ -19,7 +19,6 @@ use crate::model::shell::ShellRun;
 use crate::model::view::{
     CompactionState, LineState, LineView, RowKind, SideLine, TaskTarget, ViewRow, ViewSnapshot,
 };
-use crate::permission::{file_label, tool_label, tool_policy_label};
 use crate::ui::Env;
 use crate::ui::approvals_panel::ApprovalsPanel;
 use crate::ui::commands::{COMMANDS, Context as CommandContext, Needs};
@@ -129,6 +128,15 @@ enum Jump {
 
 /// The card id of fullscreen's load-more row: no line or delegation id.
 const LOAD_MORE: &str = "\u{1}load-more";
+
+/// The preset as the status line names it.
+fn permission_label(preset: dim_agent_types::PermissionPreset) -> &'static str {
+    match preset {
+        dim_agent_types::PermissionPreset::ReadOnly => "Read only",
+        dim_agent_types::PermissionPreset::WorkspaceWrite => "Workspace write",
+        dim_agent_types::PermissionPreset::FullAccess => "Full access",
+    }
+}
 
 fn apply_jump(full: &mut FullScreen, app: &App, jump: Jump) {
     match jump {
@@ -1855,17 +1863,14 @@ impl App {
                 }
                 Err(error) => self.notices.push(error),
             },
-            Update::PermissionSelected(change) => {
-                let (key, value) = change.config();
-                let label = match change {
-                    crate::permission::Change::FileAccess(value) => {
-                        format!("File access: {}", file_label(value))
-                    }
-                    crate::permission::Change::ToolApproval(value) => {
-                        format!("Tool approval: {}", tool_label(value))
-                    }
-                };
-                let message = crate::ui::config::write(&self.home, key, value).map_or_else(
+            Update::PermissionSelected(preset) => {
+                let label = format!("Permission: {}", crate::permission::name(preset));
+                let message = crate::ui::config::write(
+                    &self.home,
+                    "permission",
+                    serde_json::json!(crate::permission::name(preset)),
+                )
+                .map_or_else(
                     || format!("{label} (also for new sessions)"),
                     |error| format!("{label} applied, but default could not be saved: {error}"),
                 );
@@ -3046,11 +3051,11 @@ impl App {
             }
             Effect::Setting(setting) => {
                 let from_permissions = setting == Setting::Isolation
-                    && self.settings_return.is_none()
                     && matches!(self.prompt, Some(Prompt::Approvals(_)));
+                let settings_return = self.settings_return;
                 self.setting(setting);
                 if from_permissions {
-                    self.settings_return = None;
+                    self.settings_return = settings_return;
                     self.permissions_return = true;
                 }
             }
@@ -3066,9 +3071,9 @@ impl App {
                     self.set_notice(error);
                 }
             }
-            Effect::SetPermission(change) => {
+            Effect::SetPermission(preset) => {
                 self.prompt = None;
-                self.host.send(Command::SetPermission(change));
+                self.host.send(Command::SetPermission(preset));
             }
             Effect::Provider(action) => self.host.send(Command::Provider(action)),
             Effect::Plugin(action) => self.host.send(Command::Plugin(action)),
@@ -3331,8 +3336,7 @@ impl App {
             mouse: self.mouse,
             notify: self.notify,
             acp_sessions: crate::ui::config::saved_show_acp(&self.home),
-            file_access: file_label(self.permission_policy.file_access()).to_owned(),
-            approvals: tool_policy_label(&self.permission_policy).to_owned(),
+            permission: crate::permission::name(self.permission_policy.preset).to_owned(),
         };
         self.open_prompt(Prompt::Settings(SettingsPanel::new(&values, select)));
     }
@@ -3351,12 +3355,8 @@ impl App {
                     &self.home,
                 ))));
             }
-            Setting::FileAccess => {
-                let panel = ApprovalsPanel::file(&self.permission_policy);
-                self.open_prompt(Prompt::Approvals(panel));
-            }
-            Setting::Approvals => {
-                let panel = ApprovalsPanel::tool(&self.permission_policy);
+            Setting::Permission => {
+                let panel = ApprovalsPanel::new(&self.permission_policy);
                 self.open_prompt(Prompt::Approvals(panel));
             }
             Setting::Isolation => {
@@ -5470,9 +5470,8 @@ impl App {
         if let Some(goal) = self.goal_label() {
             parts.push(fg(goal, &p.muted));
         }
-        if self.permission_policy.tool_approval() == dim_agent_types::ToolApproval::Bypass {
-            let mode = tool_policy_label(&self.permission_policy);
-            parts.push(fg(&format!("\u{23f5}\u{23f5} {mode}"), &p.muted));
+        if self.permission_policy.preset == dim_agent_types::PermissionPreset::FullAccess {
+            parts.push(fg("\u{23f5}\u{23f5} Full access", &p.muted));
         }
         if let Some(context) = self.context_label() {
             let color = if self.context_near() {
@@ -5487,13 +5486,7 @@ impl App {
 
     fn status_line(&self, cols: usize) -> String {
         let slot = self.slot();
-        let approval = if self.permission_policy.tool_approval.is_none()
-            && self.permission_policy.tool_approval() == dim_agent_types::ToolApproval::Ask
-        {
-            "Ask (legacy)"
-        } else {
-            tool_policy_label(&self.permission_policy)
-        };
+        let approval = permission_label(self.permission_policy.preset);
         let mut left = format!("{}AGENT  \u{23f5}\u{23f5} {}", " ".repeat(MARGIN), approval);
         if let Some(goal) = self.goal_label() {
             left.push_str("  ");
@@ -7350,8 +7343,9 @@ mod tests {
             let settings = screen(&mut drawn);
             assert!(settings.contains("Settings"), "{settings}");
             assert!(settings.contains("Process isolation"), "{settings}");
-            assert!(settings.contains("File access"), "{settings}");
-            assert!(settings.contains("Tool approval"), "{settings}");
+            assert!(settings.contains("Permission"), "{settings}");
+            assert!(!settings.contains("File access"), "{settings}");
+            assert!(!settings.contains("Tool approval"), "{settings}");
             assert!(!settings.contains("Execution"), "{settings}");
             assert!(!settings.contains("Model"), "{settings}");
             drawn.key(KeyCode::Esc);
@@ -7445,6 +7439,81 @@ mod tests {
     #[test]
     fn process_isolation_select_and_save() {
         use crate::model::session::ExecutionSnapshot;
+        for (command, steps, via_permissions) in [
+            ("settings", 10, false),
+            ("permissions", 4, false),
+            ("settings", 8, true),
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let theme = test_theme();
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut app = App::new(
+                Box::new(Recorder(sent.clone())),
+                MarkdownRenderer::new(&theme),
+                theme.palette.clone(),
+                home.path().to_path_buf(),
+                "/work".into(),
+            );
+            let key =
+                |code| InputEvent::Key(crate::ui::terminal::KeyEvent::new(code, Modifiers::NONE));
+            app.run_command(command, "");
+            for _ in 0..steps {
+                app.handle_input(key(KeyCode::Down));
+            }
+            app.handle_input(key(KeyCode::Enter));
+            if via_permissions {
+                for _ in 0..4 {
+                    app.handle_input(key(KeyCode::Down));
+                }
+                app.handle_input(key(KeyCode::Enter));
+            }
+            assert!(matches!(sent.borrow().last(), Some(Command::ReadIsolation)));
+            app.apply(Update::Isolation(Ok(ExecutionSnapshot {
+                revision: "r1".into(),
+                sandbox: false,
+                network: false,
+            })));
+            app.handle_input(key(KeyCode::Down));
+            app.handle_input(key(KeyCode::Enter));
+            app.handle_input(key(KeyCode::Down));
+            app.handle_input(key(KeyCode::Down));
+            app.handle_input(key(KeyCode::Enter));
+            assert!(matches!(
+                sent.borrow().last(),
+                Some(Command::SaveIsolation {
+                    expected_revision,
+                    sandbox: true,
+                    network: false,
+                }) if expected_revision == "r1"
+            ));
+            app.apply(Update::Isolation(Ok(ExecutionSnapshot {
+                revision: "r2".into(),
+                sandbox: true,
+                network: false,
+            })));
+            app.handle_input(key(KeyCode::Esc));
+            let rendered = app.frame((112, 40));
+            let frame = rendered
+                .overlay
+                .as_ref()
+                .map_or(&rendered.live, |overlay| &overlay.rows)
+                .join("\n");
+            let parent = if command == "permissions" || via_permissions {
+                "Command rules"
+            } else {
+                "Settings"
+            };
+            assert!(frame.contains(parent), "{frame}");
+            if via_permissions {
+                app.handle_input(key(KeyCode::Esc));
+                assert!(matches!(app.prompt, Some(Prompt::Settings(_))));
+            }
+        }
+    }
+
+    #[test]
+    fn a_permission_choice_applies_the_preset_and_keeps_it_for_new_sessions() {
+        use dim_agent_types::{PermissionPolicy, PermissionPreset};
         let home = tempfile::tempdir().unwrap();
         let theme = test_theme();
         let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -7456,237 +7525,42 @@ mod tests {
             "/work".into(),
         );
         let key = |code| InputEvent::Key(crate::ui::terminal::KeyEvent::new(code, Modifiers::NONE));
-        app.run_command("settings", "");
-        for _ in 0..10 {
-            app.handle_input(key(KeyCode::Down));
-        }
-        app.handle_input(key(KeyCode::Enter));
-        assert!(matches!(sent.borrow().last(), Some(Command::ReadIsolation)));
-        app.apply(Update::Isolation(Ok(ExecutionSnapshot {
-            revision: "r1".into(),
-            sandbox: false,
-            network: false,
+        app.apply(Update::Permissions(Ok(PermissionPolicy {
+            preset: PermissionPreset::ReadOnly,
+            allowed_tools: vec!["read".into()],
+            disallowed_tools: vec!["blocked".into()],
         })));
-        app.handle_input(key(KeyCode::Down));
-        app.handle_input(key(KeyCode::Enter));
-        app.handle_input(key(KeyCode::Down));
+        app.run_command("permissions", "");
+        let rendered = app.frame((112, 40));
+        let frame = rendered
+            .overlay
+            .as_ref()
+            .map_or(&rendered.live, |overlay| &overlay.rows)
+            .join("\n");
+        for line in [
+            "Read only",
+            "Workspace write",
+            "Full access",
+            "The preset fixes the path boundary",
+        ] {
+            assert!(frame.contains(line), "{line} is missing: {frame}");
+        }
+        assert!(!frame.contains("File access"), "{frame}");
         app.handle_input(key(KeyCode::Down));
         app.handle_input(key(KeyCode::Enter));
         assert!(matches!(
             sent.borrow().last(),
-            Some(Command::SaveIsolation {
-                expected_revision,
-                sandbox: true,
-                network: false,
-            }) if expected_revision == "r1"
+            Some(Command::SetPermission(PermissionPreset::WorkspaceWrite))
         ));
+        app.apply(Update::PermissionSelected(PermissionPreset::WorkspaceWrite));
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(home.path().join("config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved, serde_json::json!({"permission":"workspace-write"}));
+        assert_eq!(app.permission_policy.disallowed_tools, ["blocked"]);
     }
 
-    #[test]
-    fn permission_controls_refresh_the_full_policy_and_keep_their_own_fields() {
-        use crate::permission::Change;
-        use dim_agent_types::{FileAccess, PermissionPolicy, PermissionPreset, ToolApproval};
-        for fullscreen in [false, true] {
-            let home = tempfile::tempdir().unwrap();
-            let theme = test_theme();
-            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-            let mut app = App::new(
-                Box::new(Recorder(sent.clone())),
-                MarkdownRenderer::new(&theme),
-                theme.palette.clone(),
-                home.path().to_path_buf(),
-                "/work".into(),
-            );
-            app.fullscreen = fullscreen;
-            let key =
-                |code| InputEvent::Key(crate::ui::terminal::KeyEvent::new(code, Modifiers::NONE));
-            for alias in ["permissions", "approvals", "approval"] {
-                app.run_command(alias, "");
-                app.handle_input(key(KeyCode::Tab));
-                app.handle_input(key(KeyCode::BackTab));
-                app.handle_input(key(KeyCode::Tab));
-                app.handle_input(key(KeyCode::Enter));
-                let rendered = app.frame((64, 40));
-                let frame = rendered
-                    .overlay
-                    .as_ref()
-                    .map_or(&rendered.live, |overlay| &overlay.rows)
-                    .join("\n");
-                assert!(frame.find("Bypass").unwrap() < frame.find("Hint:").unwrap());
-                assert_eq!(frame.matches("Hint:").count(), 1);
-                app.handle_input(key(KeyCode::Enter));
-                assert!(matches!(
-                    sent.borrow().last(),
-                    Some(Command::SetPermission(Change::ToolApproval(
-                        ToolApproval::Ask
-                    )))
-                ));
-            }
-            app.run_command("permissions", "");
-            app.apply(Update::Permissions(Ok(PermissionPolicy {
-                preset: PermissionPreset::ReadOnly,
-                file_access: Some(FileAccess::Unrestricted),
-                tool_approval: Some(ToolApproval::Bypass),
-                allowed_tools: vec!["read".into()],
-                disallowed_tools: vec!["blocked".into()],
-            })));
-            app.handle_input(key(KeyCode::Enter));
-            for width in [40, 64, 112] {
-                let rendered = app.frame((width, 40));
-                let lines: Vec<_> = rendered
-                    .overlay
-                    .as_ref()
-                    .map_or(&rendered.live, |overlay| &overlay.rows)
-                    .iter()
-                    .map(|line| crate::ui::render::panel::strip_escapes(line))
-                    .collect();
-                let hint = lines
-                    .iter()
-                    .position(|line| line.contains("Hint:"))
-                    .unwrap();
-                assert!(
-                    lines[..hint]
-                        .iter()
-                        .any(|line| line.contains("Unrestricted"))
-                );
-                assert!(lines[hint - 1].trim().trim_matches('│').trim().is_empty());
-                let text = lines
-                    .iter()
-                    .map(|line| line.trim().trim_matches('│').trim())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                assert!(text.contains("Read only: no writes."));
-                assert!(text.contains("writes inside; asks outside."));
-                assert!(text.contains("System and session files stay protected."));
-                assert!(text.contains("Tool approval still applies."));
-            }
-            app.handle_input(key(KeyCode::Up));
-            app.handle_input(key(KeyCode::Enter));
-            assert!(matches!(
-                sent.borrow().last(),
-                Some(Command::SetPermission(Change::FileAccess(
-                    FileAccess::WorkspaceReadWrite
-                )))
-            ));
-            assert_eq!(app.permission_policy.preset, PermissionPreset::ReadOnly);
-            assert_eq!(
-                app.permission_policy.tool_approval,
-                Some(ToolApproval::Bypass)
-            );
-            assert_eq!(app.permission_policy.disallowed_tools, ["blocked"]);
-            std::fs::write(
-                home.path().join("config.json"),
-                r#"{"permissionPreset":"read-only","toolApproval":"bypass","kept":true}"#,
-            )
-            .unwrap();
-            app.apply(Update::PermissionSelected(Change::FileAccess(
-                FileAccess::WorkspaceReadWrite,
-            )));
-            let saved: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(home.path().join("config.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(
-                saved,
-                serde_json::json!({"permissionPreset":"read-only","toolApproval":"bypass","fileAccess":"workspace-read-write","kept":true})
-            );
-            app.apply(Update::PermissionSelected(Change::ToolApproval(
-                ToolApproval::Ask,
-            )));
-            let saved: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(home.path().join("config.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(
-                saved,
-                serde_json::json!({"permissionPreset":"read-only","toolApproval":"ask","fileAccess":"workspace-read-write","kept":true})
-            );
-            app.open_settings(Setting::Approvals);
-            app.apply(Update::Permissions(Ok(PermissionPolicy {
-                preset: PermissionPreset::ReadOnly,
-                file_access: Some(FileAccess::ReadOnly),
-                tool_approval: Some(ToolApproval::Ask),
-                ..Default::default()
-            })));
-            let rendered = app.frame((112, 40));
-            let frame = rendered
-                .overlay
-                .as_ref()
-                .map_or(&rendered.live, |overlay| &overlay.rows)
-                .join("\n");
-            assert!(frame.contains("Read only") && !frame.contains("Unrestricted"));
-            assert!(frame.contains("Ask") && !frame.contains("Bypass"));
-            app.handle_input(key(KeyCode::Enter));
-            let rendered = app.frame((112, 40));
-            let frame = rendered
-                .overlay
-                .as_ref()
-                .map_or(&rendered.live, |overlay| &overlay.rows)
-                .join("\n");
-            assert!(
-                frame.contains("Bypass"),
-                "Settings retains the Tool approval selection"
-            );
-            app.handle_input(key(KeyCode::Esc));
-            app.handle_input(key(KeyCode::Esc));
-            app.apply(Update::Snapshot(Box::new(ViewSnapshot {
-                session_id: "s1".into(),
-                approvals: vec![crate::model::view::ApprovalView {
-                    member: None,
-                    request_id: "pending-exec".into(),
-                    branch_id: "main".into(),
-                    reason: "shell command".into(),
-                    tool_name: "exec".into(),
-                    tool_input: serde_json::json!({"command":"npm test"}),
-                    always: None,
-                }],
-                ..Default::default()
-            })));
-            app.handle_input(key(KeyCode::BackTab));
-            app.handle_input(key(KeyCode::Enter));
-            assert!(matches!(app.prompt, Some(Prompt::Approvals(_))));
-            app.handle_input(key(KeyCode::Down));
-            app.handle_input(key(KeyCode::Down));
-            app.handle_input(key(KeyCode::Enter));
-            app.apply(Update::Isolation(Ok(
-                crate::model::session::ExecutionSnapshot {
-                    revision: "r1".into(),
-                    sandbox: false,
-                    network: false,
-                },
-            )));
-            let rendered = app.frame((112, 34));
-            let frame = rendered
-                .overlay
-                .as_ref()
-                .map_or(&rendered.live, |overlay| &overlay.rows)
-                .join("\n");
-            assert!(frame.contains("commands use your OS permissions, not file-tool limits."));
-            assert!(frame.find("Reload").unwrap() < frame.find("Hint:").unwrap());
-            app.handle_input(key(KeyCode::Esc));
-            assert!(matches!(app.prompt, Some(Prompt::Approvals(_))));
-            app.handle_input(key(KeyCode::Esc));
-            let rendered = app.frame((112, 40));
-            let frame = rendered
-                .overlay
-                .as_ref()
-                .map_or(&rendered.live, |overlay| &overlay.rows)
-                .join("\n");
-            assert!(
-                frame.contains("npm test"),
-                "The pending approval returns without another snapshot"
-            );
-            app.handle_input(key(KeyCode::Enter));
-            assert!(matches!(
-                sent.borrow().last(),
-                Some(Command::Approval { request_id, .. }) if request_id == "pending-exec"
-            ));
-        }
-    }
-
-    /// A picked message opens a line of the shown line with the submitted
-    /// text, and forks only `main`, after a confirmation, carrying the text
-    /// into the fork (timeline UI §4.2, §4.3).
     #[test]
     fn a_picked_message_opens_a_line_or_forks_main() {
         let home = tempfile::tempdir().unwrap();

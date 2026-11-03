@@ -9,9 +9,7 @@ use dim_agent_capabilities::{
     workspace_tools::WorkspaceToolsConfig,
 };
 use dim_agent_runtime::{Session, SessionConfig};
-use dim_agent_types::{
-    ApprovalCallData, FileAccess, InputMode, PermissionPolicy, PermissionPreset, ToolApproval,
-};
+use dim_agent_types::{ApprovalCallData, InputMode, PermissionPolicy, PermissionPreset};
 use dim_app_server::storage::SessionStore;
 use std::path::{Path, PathBuf};
 
@@ -119,7 +117,9 @@ async fn host(work: &Work) -> RunningServer {
                 ),
                 permission_policy: PermissionPolicy {
                     preset: PermissionPreset::WorkspaceWrite,
-                    tool_approval: Some(ToolApproval::Bypass),
+                    allowed_tools: ["read", "write", "edit", "glob", "grep", "exec"]
+                        .map(String::from)
+                        .to_vec(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -295,9 +295,7 @@ async fn ordinary_exec_worktrees_admit_files_and_share_current_branch_policy() {
         Decision::Allow
     );
     let policy = PermissionPolicy {
-        preset: PermissionPreset::WorkspaceWrite,
-        file_access: Some(FileAccess::ReadOnly),
-        tool_approval: Some(ToolApproval::Bypass),
+        preset: PermissionPreset::ReadOnly,
         ..Default::default()
     };
     child.update(0, policy.clone()).await.unwrap();
@@ -322,22 +320,6 @@ async fn ordinary_exec_worktrees_admit_files_and_share_current_branch_policy() {
         verdict(&session, &tree.join("leader.txt"), true).await,
         Decision::Allow
     );
-    let permission = session.service::<Permission>("main").unwrap();
-    permission
-        .update(
-            0,
-            PermissionPolicy {
-                preset: PermissionPreset::WorkspaceWrite,
-                tool_approval: Some(ToolApproval::Ask),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert!(matches!(
-        verdict(&session, &tree.join("ask.txt"), true).await,
-        Decision::Ask { .. }
-    ));
     assert_eq!(store.worktree_usages(directory).await.unwrap().len(), 1);
     server.shutdown();
     server.join().await.unwrap();

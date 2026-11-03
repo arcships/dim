@@ -200,18 +200,12 @@ function readPreset(value: unknown, at: string): PermissionPreset {
 
 function readPermissionPolicy(value: unknown, at: string): PermissionPolicy {
   const policy = obj(value, at)
-  const fileAccess = optStr(policy, "fileAccess", at)
-  const toolApproval = optStr(policy, "toolApproval", at)
-  if (fileAccess !== undefined && fileAccess !== "read-only" && fileAccess !== "workspace-read-write" && fileAccess !== "unrestricted") fail(`${at}.fileAccess`, "a file access policy")
-  if (toolApproval !== undefined && toolApproval !== "ask" && toolApproval !== "bypass") fail(`${at}.toolApproval`, "a tool approval policy")
   const list = (key: string) => arr(policy[key], `${at}.${key}`).map((item, index) => {
     if (typeof item !== "string") fail(`${at}.${key}[${index}]`, "a string")
     return item
   })
   return {
     preset: readPreset(policy.preset, `${at}.preset`),
-    ...(fileAccess === undefined ? {} : { fileAccess }),
-    ...(toolApproval === undefined ? {} : { toolApproval }),
     allowedTools: list("allowedTools"),
     disallowedTools: list("disallowedTools"),
   }

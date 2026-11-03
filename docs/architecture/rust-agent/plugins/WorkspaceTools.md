@@ -93,7 +93,7 @@ tool-result code is preserved, with instructions to fix the file and retry.
 Exec takes no input that selects a boundary. The user's `Process isolation` control in
 `/permissions` or `/settings` selects the existing `sandbox` and `network` settings
 ([process isolation](../../../design/host-platform-isolation.md#process-isolation));
-File access and Tool approval do not change them. The model cannot supply extra roots or widen the boundary. A call
+Permission presets and tool lists do not change them. The model cannot supply extra roots or widen the boundary. A call
 that still sends `sandbox` is rejected as `exec_invalid_request`, and the background handoff
 keeps the boundary the process started with
 ([HostPlatform](HostPlatform.md#events-and-lifetime)).

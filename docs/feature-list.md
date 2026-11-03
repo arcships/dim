@@ -123,8 +123,7 @@ The CLI owns terminal and command interactions; the App Server owns host configu
 - `/agent`: switch Agent mode.
 - `/goal`: switch Goal mode; set, edit, pause, resume and clear a goal.
 - Goal continuation: continue toward an explicit goal and record completion or blockage.
-- `/approvals`: manage tool approvals and permission rules.
-- `/approval`: set the session's tool approval to ask or full access. Ask is workspace-write. The choice is remembered for new sessions.
+- `/permissions`: select the session's permission preset and manage command rules; `/approvals` and `/approval` are aliases. The preset is remembered for new sessions.
 - Permission policies: read-only, workspace-write and full access.
 - Sandbox: configure file, network and process access; availability depends on the platform and runtime environment.
 - Command rules: configure allowed commands and the execution Shell.

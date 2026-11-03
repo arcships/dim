@@ -975,28 +975,7 @@ impl<'a> Narrative<'a> {
                         origin: index,
                         anchor: index,
                         kind: Kind::Permission {
-                            mode: if data.policy.file_access.is_none()
-                                && data.policy.tool_approval.is_none()
-                            {
-                                preset(&data.policy.preset).into()
-                            } else {
-                                let files = match data.policy.file_access() {
-                                    FileAccess::ReadOnly => "read-only",
-                                    FileAccess::WorkspaceReadWrite => "workspace-read-write",
-                                    FileAccess::Unrestricted => "unrestricted",
-                                };
-                                let tools = match data.policy.tool_approval {
-                                    Some(ToolApproval::Ask) => "ask",
-                                    Some(ToolApproval::Bypass) => "bypass",
-                                    None => preset(&data.policy.preset),
-                                };
-                                let legacy = if data.policy.tool_approval.is_none() {
-                                    "legacy:"
-                                } else {
-                                    ""
-                                };
-                                format!("files={files}, tools={legacy}{tools}")
-                            },
+                            mode: preset(&data.policy.preset).into(),
                         },
                     });
                     owners.push(open_turn);

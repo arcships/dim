@@ -294,13 +294,12 @@ Policy calculation uses S2 §6.1's existing conservative `cap(x, bound)`, not a
 new ordering of complete policies:
 
 - Presets use `read-only < workspace-write < full-access`; take the lower preset.
-- Preserve optional `fileAccess` and `toolApproval` from the public
-  `PermissionPolicy` contract. File scopes intersect by their effective minimum;
-  tool approval intersects as defined by [S2 §6.1](../appserver/sessions-service.md#61-launch).
-  Omitted overrides retain legacy behavior, not explicit Ask defaults.
+- The preset is the whole policy dimension ([ADR 018](../../adr/018-permission-is-the-preset.md)):
+  a job or bound that stores the removed `fileAccess`/`toolApproval` keys loads with them ignored,
+  so nothing compares or caps them.
 - Disallowed names are the union of both lists.
 - Allowed names come from the union of both lists, retaining only a name that
-  each side allows unconditionally (effective Bypass or explicitly listed), then
+  each side allows unconditionally (full-access preset or explicitly listed), then
   removing disallowed names.
 
 `Job.policy` is only a preset. When present, its requested full policy is
@@ -311,14 +310,7 @@ policy is `cap(requested, policy_cap)`. An explicit job preset above the new cap
 **preset** is `schedule_invalid`; otherwise the cap supplies/intersects the tool
 lists. Do not reject a read-only preset merely because the bound adds explicit
 denials: the job cannot express those lists and the effective policy inherits
-them. An unrepresentable legacy read-only/explicit Ask intersection returns
-`schedule_invalid` before the Settings CAS, without changing the job or its
-origin/cap. This also applies to the management read-only default. A configured
-job with such an intersection fails its run before launch/input, rather than
-claiming an unknown launch reply. The old-to-new authority transition is also
-computed before the CAS; an unrepresentable old configured policy requires
-correction through trusted Settings, not a partially committed authorizing save.
-Saving never widens the bound.
+them. Saving never widens the bound.
 
 Every launch, including the first reuse launch, passes that complete saved
 effective policy as `LaunchRequest.policy`; never omit it. S2 applies
@@ -327,18 +319,14 @@ widen the job’s saved authority.
 
 For a reused Session's complete actual policy `x`, define
 `within(x, bound) = equal(cap(x, bound), x)`, where `equal` compares presets and
-both effective independent dimensions, and compares each tool list as a set
-(order and duplicates do not matter). Legacy read-only tool rules are distinct
-from explicit Ask; an unrepresentable intersection is not within. Require
+each tool list as a set (order and duplicates do not matter). Require
 `within(x, savedEffective)` and `within(x, currentStarterOrHostBound)` before
 input. This is S2 cap-stability, a conservative check rather than pointwise
-permission equivalence; it may reject equivalent policies with different
-explicit grant metadata. Do not rewrite the reused Session's policy to pass it.
+permission equivalence. Do not rewrite the reused Session's policy to pass it.
 
 The TypeScript package implements this pure calculation against the shared
 [policy-cap fixtures](../../../tests/fixtures/permission-policy-cap.json).
-The fixture has `cap` vectors, `reject` vectors for unrepresentable intersections
-in both argument orders, and separate `reuse` vectors with `x`,
+The fixture has `cap` vectors and separate `reuse` vectors with `x`,
 `savedEffective`, `liveBound`, `withinSaved` and `withinLive`. Cap vectors marked
 `job-save-and-launch` use a preset-only job request; `launch-only` vectors exercise
 full-policy launch inputs and do not widen `Job.policy`. The public S2 flow checks
@@ -515,11 +503,12 @@ records; no separate ownership store or scheduler state document is introduced.
 | `Run.session_origin` | Persist atomically with `session_id` and `policy`: `launch` only from this run's successful S2 launch reply, `reuse` only from the existing target after its live-policy check. These three fields are either all absent or all present. | A.7 may delete only an identity with an actual `launch` record; another run's `reuse` record does not confer ownership. |
 | `Run.policy` | Store the returned launch policy, or the current target policy read and accepted under §1.3 for reuse, before calling `sessions.input`. No default from `Job.policy`/`policy_cap`. | History exposes the authority observed for this run; it is not a grant or a promise that later Permission changes cannot narrow it. |
 
-`Run.policy` is the existing native `PermissionPolicy` value (`preset`, optional
-`fileAccess`/`toolApproval`, `allowedTools`, `disallowedTools`), copied from `launch(...).value.policy` or
+`Run.policy` is the existing native `PermissionPolicy` value (`preset`, `allowedTools`,
+`disallowedTools`), copied from `launch(...).value.policy` or
 `sessionPermissions.permission(...).policy`; do not reduce it to a preset or
 reconstruct omitted tool rules. Both this record and `Job.policy_cap` accept and
-preserve the optional fields at save and reload. They remain optional without
+preserve the tool lists at save and reload, and read a stored document that still
+names the removed dimension keys by ignoring them. They remain optional without
 defaults in the Settings schema and inner-v1 decoder; legacy records retain
 their omission and the inner document version remains 1. No migration or
 reinterpretation of old records occurs.

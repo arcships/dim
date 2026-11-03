@@ -25,7 +25,7 @@ history quotes it and history never changes.
   in place at startup.
 - **Interface.** Attachments reaches the store through the process service `sessionFiles`.
 - **Reading.** The model reads a file with `read`, like any file: ownership satisfies file
-  scope without a grant, but does not bypass Tool approval Ask (§11).
+  scope without a grant, but does not bypass tool admission (§11).
 
 No Timeline event, no new plugin, no change to the runtime, rutis or the Session facade.
 
@@ -493,9 +493,9 @@ history, as moving a workspace breaks paths into it.
 
 **Decision: the model reads a Session file the way it reads any file. A Session-owned artifact
 is one of the fixed facts, so its read passes file scope without recording a grant. Tool approval
-is independent: explicit Ask can still ask for that read.** The
+follows the preset and tool lists.** The
 [Permission contract](../../architecture/rust-agent/plugins/Permission.md#policy-contract) owns
-the two gates and legacy behavior; ownership is not an explicit tool allow.
+the two gates; ownership is not an explicit tool allow.
 [ADR 014](../../adr/014-file-access-facts.md) decides file reads and writes from the workspace,
 system roots, Session-owned artifacts and grants; [ADR 013](../../adr/013-command-output-ownership.md)
 adds the second ownership table, so `owns` also answers for command output and a read of it is
@@ -511,8 +511,7 @@ allowed under `read-only` and `workspace-write` without an approval.
    Read only or Workspace read/write, inside facts -----> pass file scope
    Read only or Workspace read/write, outside facts ----> scope Ask
    Unrestricted ----------------------------------------> pass file scope
-   tool gate -------------------------------------------> Ask unless allowed or bypassed;
-                                                         legacy risk behavior if override absent
+   tool gate -------------------------------------------> preset risk rules and tool lists
    scope Ask + tool Ask --------------------------------> one approval (exec denies and exits 3)
    |
    v
@@ -526,8 +525,8 @@ The admission contract, owned by [permission.rs](../../../crates/dim-agent-capab
 - **An owned artifact needs no scope prompt.** `SessionFiles.owns` reports the Session's attachment
   rows and ADR 013's output rows, so the facts' `owned` field is true for a path a `put`
   returned or a producer registered. Under `read-only` and `workspace-read-write` file access
-  it is inside the facts. Reading it records no grant; explicit Tool approval Ask still asks
-  unless the tool is allowed. §11.2's two properties hold for the rows `owns` reads.
+  it is inside the facts. Reading it records no grant; tool admission still follows the preset
+  and tool lists. §11.2's two properties hold for the rows `owns` reads.
 - **Reads outside the facts ask.** A read whose resolved path is not the workspace, a system
   root, a Session-owned artifact or a grant asks under Read only and Workspace read/write file access
   ([ADR 014 D2/D4](../../adr/014-file-access-facts.md#d2-read-and-write)). The CLI offers "Allow
@@ -537,7 +536,7 @@ The admission contract, owned by [permission.rs](../../../crates/dim-agent-capab
   path fact. A `grep` or `glob` without a `path` searches the Session cwd, which is the
   workspace.
 - **A grant.** A read grant or write grant satisfies read scope for the resolved path; it cannot
-  answer explicit Tool approval Ask or turn a read grant into write authority. A policy change
+  bypass tool admission or turn a read grant into write authority. A policy change
   (`session.permission.update`, written as `permission/changed`) holds policy values, never a
   path. The FileStorage root and remembered decisions confer no read authority.
 - **The FileStorage root confers nothing.** Registering the database directory as a FileStorage
@@ -672,7 +671,7 @@ None to the runtime or rutis. Supplements and requirements to other owners:
 | App Server assembly (`serve` in lib.rs) | Register the database directory as a FileStorage root when it is not one, and pass its index to `SessionStorePlugin` (§3.1) | A few lines in S5a's implementation, appended after the assembly lane's work like other registrations |
 | Attachments (P2 design refinement) | Map `sessionFiles` `storage` to an `attachment.put` code. Attachments lists none today; SessionTitle maps SessionStore `storage` to `storage_failed` | Decided: `storage_failed`, recorded in [#66](https://github.com/arcships/dim/issues/66); applied in P2's design review |
 | S5c | Delete owner rows inside the delete transaction, after closing the Session and before `agent_sessions`; copy owner rows inside the fork transaction; schedule a sweep after a delete | Contract for S5c (§5.2, §5.3) |
-| The item that first scopes file access by path (F5 [#76](https://github.com/arcships/dim/issues/76) for processes; [ADR 014](../../adr/014-file-access-facts.md) for in-process file tools) | §11.2: a Session's owned files need no scope approval; ownership decides, never the Session-files directory as a whole, the database directory or the product home. Tool approval remains independent | S5a needed none. ADR 014 reads `sessionFiles.owns` for reads and writes; §11.1 admits a file-tool read by path |
+| The item that first scopes file access by path (F5 [#76](https://github.com/arcships/dim/issues/76) for processes; [ADR 014](../../adr/014-file-access-facts.md) for in-process file tools) | §11.2: a Session's owned files need no scope approval; ownership decides, never the Session-files directory as a whole, the database directory or the product home. Tool admission still follows the preset and tool lists | S5a needed none. ADR 014 reads `sessionFiles.owns` for reads and writes; §11.1 admits a file-tool read by path |
 
 ## 16. Acceptance (flow tests)
 

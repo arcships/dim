@@ -99,8 +99,6 @@ fn controls_reject_ambiguous_or_unknown_payloads() {
         json!({"type":"exec","name":"ended","data":{"task_id":"t","status":"running","result":{"content":"output"}}}),
         json!({"type":"exec","name":"started","data":{"turn_id":"t","request_id":"r","call_id":"c","task_id":"e","description":"command"}}),
         json!({"type":"permission","name":"changed","data":{"policy":{"preset":"allow-all"}}}),
-        json!({"type":"permission","name":"changed","data":{"policy":{"toolApproval":"auto"}}}),
-        json!({"type":"permission","name":"changed","data":{"policy":{"fileAccess":"workspace-write"}}}),
         json!({"type":"step","name":"tool-use-start","data":{"turn_id":"t","request_id":"r","call_id":"c"}}),
         json!({"type":"step","name":"tool-result","data":{"turn_id":"t","request_id":"r","call_event_id":null,"results":[]}}),
     ] {
@@ -115,8 +113,6 @@ fn controls_reject_ambiguous_or_unknown_payloads() {
 fn native_product_events_round_trip_without_a_v1_view() {
     for payload in [
         json!({"type":"permission","name":"changed","data":{"policy":{"preset":"workspace-write","allowedTools":["read"],"disallowedTools":["exec"]}}}),
-        json!({"type":"permission","name":"changed","data":{"policy":{"preset":"workspace-write","fileAccess":"read-only","toolApproval":"bypass","allowedTools":[],"disallowedTools":["exec"]}}}),
-        json!({"type":"permission","name":"changed","data":{"policy":{"preset":"full-access","fileAccess":"workspace-read-write","toolApproval":"ask","allowedTools":["read"],"disallowedTools":[]}}}),
         json!({"type":"exec","name":"started","data":{"turn_id":"t","request_id":"r","call_id":"c","task_id":"exec-id","description":"cargo test","output_path":"/tmp/output.log"}}),
         json!({"type":"exec","name":"ended","data":{"task_id":"exec-id","status":"completed","result":{"content":"Output path: /tmp/output.log"}}}),
         json!({"type":"exec","name":"ended","data":{"task_id":"exec-id","status":"failed","result":{"content":"exit code 1"}}}),
@@ -146,4 +142,21 @@ fn native_product_events_round_trip_without_a_v1_view() {
     let decoded: ModelConfiguration = serde_json::from_value(legacy.clone()).unwrap();
     assert!(decoded.tool_sources.is_empty());
     assert_eq!(serde_json::to_value(decoded).unwrap(), legacy);
+}
+
+#[test]
+fn permission_history_ignores_removed_policy_keys_and_keeps_the_envelope_strict() {
+    let policy = json!({"preset":"full-access","allowedTools":["read"],"disallowedTools":["exec"]});
+    let mut legacy = policy.clone();
+    legacy["fileAccess"] = json!("read-only");
+    legacy["toolApproval"] = json!("ask");
+    let value = json!({"type":"permission","name":"changed","data":{"policy":legacy}});
+    let draft: EventDraft = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(draft).unwrap()["data"]["policy"],
+        policy
+    );
+    let mut invalid = value;
+    invalid["data"]["unknown"] = json!(true);
+    assert!(serde_json::from_value::<EventDraft>(invalid).is_err());
 }

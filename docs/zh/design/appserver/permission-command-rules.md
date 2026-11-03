@@ -23,8 +23,8 @@
 `approval.respond allow`。Approval 的事件和方法不变。
 
 命令规则不新增 Timeline 事件或策略字段，也不改变 Timeline、Dispatcher、rutis、Settings 或装配机制。
-独立策略字段属于 [Permission 合同](../../../architecture/rust-agent/plugins/Permission.md#policy-contract)
-（[ADR 017](../../../adr/017-independent-permission-controls.md)），不属于此规则来源。
+策略属于 [Permission 合同](../../../architecture/rust-agent/plugins/Permission.md#policy-contract)
+（[ADR 018](../../../adr/018-permission-is-the-preset.md)），不属于此规则来源。
 
 ### 1.1 不做什么
 
@@ -191,21 +191,19 @@ WorkspaceTools 的 `exec` 和 ShellTools 的 `execute`，两者都已接收 `com
        某条 deny 规则命中某一段                    -> Deny "Command denied by command rule `<command>` (<match>)"
   3. 文件调用的文件范围闸门                        -> Deny | Ask，或继续
   4. call.name 在 allowedTools 中                   -> Allow
-  5. 显式 toolApproval，否则使用旧风险判定          -> Allow | Ask | Deny
+  5. 预设风险规则          -> Allow | Ask | Deny
   6. 工具结果为 Ask 且 allow 规则命中该简单命令      -> Allow
 ```
 
 文件范围和工具询问合并为一次针对本次调用的审批。命令 allow 只回答工具问题；文件闸门和隔离不属于命令规则策略。
 
-| 旧预设（无显式工具覆盖） | `execute_process` | 命中 allow 规则 | 命中 deny 规则 |
+| 预设 | `execute_process` | 命中 allow 规则 | 命中 deny 规则 |
 | --- | --- | --- | --- |
 | read-only | Deny | Deny | Deny |
 | workspace-write | Ask | Allow | Deny |
 | full-access | Allow | Allow | Deny |
 
-allow 规则不能解除旧风险拒绝。显式 `toolApproval: "ask"` 下，无论种子预设为何，命令都询问，
-匹配的 allow 回答此问题。显式 `"bypass"` 下命令无需工具询问，但 deny 规则仍优先。
-两者都不改变文件访问或进程隔离。读取失败按关闭处理，因为可能存在 deny 规则。
+allow 规则不能解除预设拒绝或文件检查，deny 规则在所有预设下均优先。读取失败按关闭处理，因为可能存在 deny 规则。
 
 ### 5.3 准入
 
@@ -271,7 +269,7 @@ allow 规则不能解除旧风险拒绝。显式 `toolApproval: "ask"` 下，无
 
 | 部分 | 关系 |
 | --- | --- |
-| Permission | 补充：`decide` 接收调用，对命令调用读取规则；Session 依赖 `CommandRulesHost`。规则不增加策略字段，不改变策略版本或方法；独立控件遵循 Permission 自身的合同 |
+| Permission | 补充：`decide` 接收调用，对命令调用读取规则；Session 依赖 `CommandRulesHost`。规则不增加策略字段，不改变策略版本或方法；预设遵循 Permission 自身的合同 |
 | Approval | 在现有两处把调用传给 `decide`，并传递被取消的读取。事件、`approval.respond`、重放和恢复不变 |
 | ToolExecutor、WorkspaceTools、ShellTools | 不变；`exec` 与 `execute` 已声明 `execute_process` 并接收 `command` |
 | Settings | 不变；新增一个来源 `permission`（用户文件、原生行）。它的 `settings.changed` 与任何来源一样照常发出；F2 不监听 |

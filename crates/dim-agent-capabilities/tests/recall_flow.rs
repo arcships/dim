@@ -1455,14 +1455,6 @@ fn a_permission_change_and_an_interrupt_are_lines_of_their_own() {
     recorded.push(consumed(&input));
     recorded.at(4, 5);
     let changed = recorded.push(permission(PermissionPreset::FullAccess));
-    let separate = recorded.push(EventKind::PermissionChanged(PermissionChangedData {
-        policy: PermissionPolicy {
-            preset: PermissionPreset::FullAccess,
-            file_access: Some(FileAccess::WorkspaceReadWrite),
-            tool_approval: Some(ToolApproval::Ask),
-            ..Default::default()
-        },
-    }));
     recorded.at(4, 6);
     let stopped = recorded.push(interrupted());
     recorded.push(turn_ends(
@@ -1480,9 +1472,6 @@ fn a_permission_change_and_an_interrupt_are_lines_of_their_own() {
             "2026-10-17 (UTC)",
             &format!("04:00 {input} user: go"),
             &format!("04:05 {changed} permission mode changed to full-access"),
-            &format!(
-                "04:05 {separate} permission mode changed to files=workspace-read-write, tools=ask"
-            ),
             &format!("04:06 {stopped} the user interrupted the turn"),
             &format!("End of turn. Open one: open={input}."),
         ]

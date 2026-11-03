@@ -601,10 +601,6 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
         if options.permission.is_none() {
             options.permission = ui::config::saved_permission(&options.home)
                 .and_then(|preset| permission::parse_preset(&preset).ok());
-            options.file_access = ui::config::read(&options.home, "fileAccess")
-                .and_then(|value| serde_json::from_value(value).ok());
-            options.tool_approval = ui::config::read(&options.home, "toolApproval")
-                .and_then(|value| serde_json::from_value(value).ok());
         }
         return open_tui_leaf(root, &options).await;
     }

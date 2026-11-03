@@ -5,7 +5,7 @@ import { Projection, type TimelineRow } from "../projection"
 import { Lines, type LineView } from "../lines"
 import { ConnectionLost, RpcError } from "../rpc/client"
 import type { Goal, GoalCall } from "../goal"
-import { MAIN_BRANCH, type ApprovalDecision, type ApprovalRequest, type DraftAttachments, type FileCandidate, type ModelId, type Notification, type PendingQuestion, type PermissionChange, type PermissionPolicy, type QueuedInput, type QuestionAnswer, type SessionEvent, type UserInput, type WithdrawResult } from "../rpc/protocol"
+import { MAIN_BRANCH, type ApprovalDecision, type ApprovalRequest, type DraftAttachments, type FileCandidate, type ModelId, type Notification, type PendingQuestion, type PermissionPreset, type PermissionPolicy, type QueuedInput, type QuestionAnswer, type SessionEvent, type UserInput, type WithdrawResult } from "../rpc/protocol"
 import { readRevision, readRules } from "../rpc/general-settings"
 import { ProtocolError, readAck, readAttachmentPath, readBranchCreate, readCompactResult, readConfigurationOutcome, readContextUsage, readFileCandidates, readForkedSessionId, readHistory, readModelUpdate, readMemberApproval, readPermissionState, readPermissionVersion, readSessionMethods, readWithdrawResult } from "../rpc/read"
 import { useConnectionStore } from "./connection"
@@ -591,13 +591,13 @@ export const useChatStore = defineStore("chat", () => {
       .then((state) => state.policy, () => undefined)
   }
 
-  /** Changes one explicit permission dimension, preserving all other fields; a conflict refreshes the policy without retrying. */
-  async function setPermission(sessionId: string, change: PermissionChange): Promise<PermissionOutcome> {
+  /** Changes the preset, preserving tool exceptions; a conflict refreshes without retrying. */
+  async function setPermission(sessionId: string, preset: PermissionPreset): Promise<PermissionOutcome> {
     const state = await client().call("session.permission.get", { sessionId, branchId: MAIN_BRANCH }, readPermissionState)
     const view = views[sessionId]
     if (view !== undefined) view.permission = state.policy
-    if (state.policy[change.field] === change.value) return "unchanged"
-    const policy = { ...state.policy, [change.field]: change.value }
+    if (state.policy.preset === preset) return "unchanged"
+    const policy = { ...state.policy, preset }
     try {
       await client().call("session.permission.update", {
         sessionId,

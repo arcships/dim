@@ -263,11 +263,9 @@ flowchart LR
 权限计算采用 S2 §6.1 既有的保守 `cap(x, bound)`，不新建完整策略的排序：
 
 - 预设采用 `read-only < workspace-write < full-access`，取较低者。
-- 保留公开 `PermissionPolicy` 的可选 `fileAccess` 和 `toolApproval`；文件范围取有效最小值，
-  工具审批按 [S2 §6.1](../../../design/appserver/sessions-service.md#61-launch) 求交。
-  省略覆盖字段保持旧语义，不补为显式 Ask。
+- 预设就是整个策略维度（[ADR 018](../../../adr/018-permission-is-the-preset.md)）：保存了已删除的 `fileAccess` 和 `toolApproval` 键的 job 或 bound 读取时忽略它们，因此不比较、不 cap。
 - disallowed 取两侧列表的并集。
-- allowed 从两侧列表并集取候选，只保留两侧均无条件允许的名称（该侧有效审批为 Bypass
+- allowed 从两侧列表并集取候选，只保留两侧均无条件允许的名称（该侧预设为 full-access
   或明确列入 allowed），再移除 disallowed 名称。
 
 `Job.policy` 只表示预设。存在时，请求的完整策略是
@@ -276,26 +274,19 @@ flowchart LR
 保存后的有效策略为 `cap(requested, policy_cap)`。显式任务预设高于新上限的**预设**时返回
 schedule_invalid，否则工具列表由 cap 补入拒绝项并求授权交集。不能仅因上限含显式拒绝项
 就拒绝 read-only 预设：任务无法表达这些列表，而有效策略会继承拒绝项。
-旧 read-only 工具规则与显式 Ask 的交集无法表示时，在 Settings CAS 前返回
-`schedule_invalid`，不改变任务及来源/上限；管理入口的只读默认同样适用。
-直接配置了这种交集的任务在 launch/input 前结算为失败，不误报启动回复未知。
-旧 → 新权限转换也在 CAS 前计算；旧配置策略无法表示时，须通过可信 Settings 修正，
-不允许授权保存部分提交。保存不放宽上限。
+保存不放宽上限。
 
 每次 launch（包括首次 reuse）都必须把保存的完整有效策略传为 `LaunchRequest.policy`，
 不得省略。S2 按 `cap(savedEffective, liveBound)` 收窄，因此当前 starter 或宿主权限
 放宽也不能扩大任务保存的权限。
 
 对复用 Session 的完整实际策略 x，定义 `within(x,bound)=equal(cap(x,bound),x)`；
-equal 比较预设及两个有效独立维度，并把每个工具列表视为集合，忽略顺序和重复。
-旧 read-only 工具规则与显式 Ask 不等价，无法表示的交集视为不在上限内。输入前必须同时满足
+equal 比较预设，并把每个工具列表视为集合，忽略顺序和重复。输入前必须同时满足
 `within(x,savedEffective)` 与 `within(x,currentStarterOrHostBound)`。
-这是 S2 的保守 cap 稳定检查，不是逐工具权限等价判定；显式授权元数据不同的等价策略
-也可能被拒绝。不得为通过检查而改写被复用 Session 的权限。
+这是 S2 的保守 cap 稳定检查，不是逐工具权限等价判定。不得为通过检查而改写被复用 Session 的权限。
 
 TypeScript 包按共享[权限 cap 样例](../../../../tests/fixtures/permission-policy-cap.json)
-实现该纯计算。样例分为 cap 向量、覆盖两个参数顺序的不可表示交集 reject 向量，
-以及独立 reuse 向量，后者包含 x、savedEffective、
+实现该纯计算。样例分为 cap 向量和独立 reuse 向量，后者包含 x、savedEffective、
 liveBound、withinSaved、withinLive。标记 job-save-and-launch 的 cap 向量使用仅含
 预设的任务请求；launch-only 向量验证完整策略的 launch 输入，不扩大 Job.policy。
 公开 S2 流程通过真实 launch 检查原生 cap、两个独立复用比较以及 Session 配置和
@@ -465,7 +456,7 @@ Settings 在外部边界统一应用默认值并校验文档。非法文档返�
 | `Run.session_origin` | 与 `session_id`、`policy` 原子保存：本次运行成功 S2 launch 回复才记为 `launch`，既有目标通过实时权限检查后记为 `reuse`。三个字段一起存在或一起缺失。 | A.7 只可删除有实际 `launch` 记录的身份；其他运行的 `reuse` 记录不产生所有权。 |
 | `Run.policy` | 输入前保存 launch 返回的实际权限，或 §1.3 检查并接受的 reuse 目标当前权限；不从 Job.policy/policy_cap 填默认值。 | 历史展示本次观察到的权限，不授予权限，也不保证后续 Permission 变化不会收窄它。 |
 
-`Run.policy` 直接保存既有原生 PermissionPolicy（preset、可选 fileAccess/toolApproval、
+`Run.policy` 直接保存既有原生 PermissionPolicy（preset、工具名单，
 allowedTools、disallowedTools），取自 launch(...).value.policy 或
 sessionPermissions.permission(...).policy，不缩减成 preset，也不重建缺失的工具规则。
 它和 `Job.policy_cap` 在保存及重载时均保留可选字段。Settings schema 与 inner-v1 解码器

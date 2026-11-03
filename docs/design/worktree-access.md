@@ -110,8 +110,8 @@ Resolved target
 - Session 关闭或部件卸载后释放内存视图。恢复、重新装载或新 Session 从空视图开始；
   持久记录不能直接填成已授权范围，后续首次使用重新核验。fork 不复制内存确认或使用关联。
 
-File access 从工作区读写改成只读后，已确认 worktree 的写入同样被拒绝；显式 Tool approval
-Ask 仍可要求每次工具批准。工作区扩展不改变系统路径、Session-owned 文件或显式拒绝的
+权限预设从 `workspace-write` 改成 `read-only` 后，已确认 worktree 的写入同样被拒绝。
+工具准入遵循预设和工具列表。工作区扩展不改变系统路径、Session-owned 文件或显式拒绝的
 优先级，完整优先级由 [Permission 的文件事实契约](../architecture/rust-agent/plugins/Permission.md#file-access-facts)
 拥有。worktree 不是 Session-owned 输出文件。
 
@@ -152,8 +152,7 @@ Session 关闭保留关联。Session 删除解除它的使用关联，目录记�
 命令审批、网络开关与 [HostPlatform 隔离契约](host-platform-isolation.md) 继续独立生效。
 
 ```text
-File access: Workspace read/write
-Tool approval: Legacy
+Permission: workspace-write
 
 write /repo-wt/src/a.rs   -> Recognize root -> No outside-workspace prompt
 write /repo-wt/tests/b.rs -> Known root     -> No Git probe

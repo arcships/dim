@@ -172,7 +172,6 @@ async fn workspace_write_asks_for_each_external_mutation() {
                 preset: PermissionPreset::WorkspaceWrite,
                 allowed_tools: vec!["write".into(), "edit".into()],
                 disallowed_tools: vec![],
-                ..Default::default()
             },
         )
         .await
@@ -468,7 +467,7 @@ async fn a_turn_reads_writes_and_runs_an_approved_command_with_real_tools() {
         .collect();
     assert!(exec.len() > 1 && exec.iter().all(|description| *description == exec[0]));
     assert_eq!(
-        exec[0].contains("Process isolation in /permissions")
+        exec[0].contains("Process isolation in /settings")
             && !exec[0].contains("host-isolation.json"),
         cfg!(unix),
         "{}",

@@ -100,15 +100,9 @@ export type FileCandidate = { relativePath: string; absolutePath: string; dir: b
 /** The session permission presets, named as the server's `PermissionPreset` serializes them. */
 export type PermissionPreset = "read-only" | "workspace-write" | "full-access"
 
-export type FileAccess = "read-only" | "workspace-read-write" | "unrestricted"
-export type ToolApproval = "ask" | "bypass"
-export type PermissionChange = { field: "fileAccess"; value: FileAccess } | { field: "toolApproval"; value: ToolApproval }
-
-/** The policy of `main`, including independent overrides and explicit tool exceptions. */
+/** The preset and explicit tool exceptions of `main`. */
 export type PermissionPolicy = {
   preset: PermissionPreset
-  fileAccess?: FileAccess
-  toolApproval?: ToolApproval
   allowedTools: string[]
   disallowedTools: string[]
 }

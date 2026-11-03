@@ -290,7 +290,7 @@ impl SettingsService {
   和任何本地管理客户端使用 `settings.read`/`settings.update`；所有者的读取方通过
   `ExecutionSettingsHost` 端口取得文档，那是进程内读取契约，不是管理方法
   （[ADR 011](../../../adr/011-execution-settings.md) D1）。可见选项到现有布尔值的映射由
-  [进程隔离](../../../design/host-platform-isolation.md#process-isolation)定义；File access 和 Tool approval
+  [进程隔离](../../../design/host-platform-isolation.md#process-isolation)定义；权限预设和工具列表
   不写入此来源。
 - 文件和原生路径与 `BusinessDocument` 共用，按来源名而不是 `D::NAMESPACE` 取键。CAS、gate、
   lease、unsynced 情形和 `publish` 保持不变。

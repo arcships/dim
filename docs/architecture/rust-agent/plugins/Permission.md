@@ -18,35 +18,25 @@ cache or event.
 
 ### Policy contract
 
-[ADR 017](../../../adr/017-independent-permission-controls.md) extends the public policy
-additively. `preset` remains the legacy compatibility seed; `allowedTools` and `disallowedTools`
-retain their tool-name lists. The independent optional fields are:
+The policy is the preset and two tool-name lists:
 
-| Field | Values | When omitted |
-| --- | --- | --- |
-| `fileAccess` | `read-only`, `workspace-read-write`, `unrestricted` | Keep the preset's exact file behavior |
-| `toolApproval` | `ask`, `bypass` | Keep the preset's exact risk-based behavior |
+| Field | Values |
+| --- | --- |
+| `preset` | `read-only`, `workspace-write`, `full-access` |
+| `allowedTools` | tool names that run without the preset's question |
+| `disallowedTools` | tool names that always deny; a deny wins over any allow |
 
-An explicit file override changes no tool-risk rule; an explicit tool override changes no file
-rule. With explicit `ask`, every call asks unless an explicit tool allow or matching simple-command
-allow answers the tool question. Explicit `bypass` skips that question only. A tool disallow or
-command deny still wins. Neither tool choice bypasses file checks or changes process isolation.
-File-scope Ask and tool Ask produce one approval for the same call, not sequential questions;
-the existing Approval recheck still applies before execution.
+`preset` answers both what may run and what is asked first, and it is the policy of record
+([ADR 018](../../../adr/018-permission-is-the-preset.md)): `read-only` denies writes and
+process/network/unclassified risks, `workspace-write` allows workspace writes and Session tools,
+asking for the rest, and `full-access` runs every call without asking. Tool lists refine that,
+one name at a time; they never lift an explicit deny, a file check or process isolation.
 
-Omission is not an explicit Ask. Legacy `read-only` denies process/network/unknown risks and
-allows read/Session risks; `workspace-write` allows read/Session risks and workspace writes,
-asking for the other risks; `full-access` allows risks. Existing tool-list exceptions remain.
-Clients may show these as legacy tool exceptions, but must not silently replace the policy with
-an explicit override or imply that a legacy Ask label asks on every call. Explicit `ask` or
-`bypass` replaces only this risk behavior, including legacy risk denials, not explicit denies.
-
-Session configuration and `permission/changed {policy}` carry the same extended type. Existing
-policy versions, dispatch, ancestry and restoration rules are unchanged. Missing overrides remain
-absent when serialized; old Timeline/database records and frozen fixtures are not rewritten.
-New clients preserve all untouched policy fields when updating one dimension. The ability to
-read old policies does not imply that older servers accept the new fields; failed updates must
-not fall back to a wider preset.
+The type ignores keys it does not name. Policies written while ADR 017's `fileAccess` and
+`toolApproval` existed still load, with those keys dropped: nothing compares or migrates them, and
+a record that ran under a stricter override admits by its preset. Session configuration and
+`permission/changed {policy}` carry the same type; versions, dispatch, ancestry and restoration
+rules are unchanged. A client updating the preset sends the tool lists it read, unchanged.
 
 ### Dependencies
 
@@ -128,10 +118,10 @@ call's mode (`read` for `read`, `grep` and `glob`; `write` for `write` and
 targets, so cwd, `~`, `..` and symlinks are settled before the query; a
 `grep` or `glob` without a path targets the Session cwd. A composition without
 HostPlatform cannot expand `~` or join a relative target and keeps the fallback
-rules below. The path check runs before the tool lists and `allowedTools`, so an
+rules below. The path check runs before tool allows, so an
 allowed tool does not bypass a path fact; a resolution failure refuses the call.
 
-Effective file access is the explicit `fileAccess`, or the legacy preset's corresponding scope:
+File access follows the preset:
 `read-only` → Read only, `workspace-write` → Workspace read/write, `full-access` → Unrestricted.
 The fixed facts themselves do not depend on tool approval or sandbox state.
 
@@ -141,10 +131,8 @@ The fixed facts themselves do not depend on tool approval or sandbox state.
 | Workspace read/write | The same read facts pass; others ask | Workspace or matching write grant passes; system roots and Session-owned artifacts denied; other targets ask |
 | Unrestricted | Passes without a facts query | Passes without a facts query |
 
-Passing file scope does not answer an explicit tool Ask. Tool allows, command allows and Bypass
-cannot answer a file-scope question or lift a file denial. A read grant never permits a write.
-For policies with no file override, retain the exact legacy file behavior, including existing
-tool-list interactions; do not reinterpret old history as an explicit Read only selection.
+Tool allows and command allows cannot answer a file-scope question or lift a file denial.
+A read grant never permits a write.
 Without the facts service a read has the legacy unrestricted read-scope fallback, then the tool
 gate applies; workspace writes use the fallback below.
 
@@ -235,7 +223,7 @@ the reason and a Session-scoped grant action for file tools:
   existing HostPlatform dependency. The bound handler's `resolve_write`
   prepares the actual call at its external path boundary before admission; it
   reads metadata and performs no file mutation or process execution.
-- ADR 002 D4–D5: policy gains the optional language-neutral fields defined above under ADR 017;
+- ADR 002 D4–D5: the language-neutral policy is a preset and tool lists under ADR 018;
   approval request/reply formats stay unchanged. No structural configuration changes.
 - §4 rule 8: no new Timeline, Dispatcher, loader or rutis mechanism is required.
 

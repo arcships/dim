@@ -313,27 +313,14 @@ test('job preset saves and launched policies follow the shared cap contract', as
     await until(() => h.runs().find(value => value.run_id === run.run_id)?.state === 'completed', vector.name)
     assert.deepEqual(h.launches.at(-1).policy, vector.capped, vector.name)
   }
-  for (const vector of vectors.reject.filter(vector => vector.usage === 'job-save-and-launch')) {
-    h.policies.set('a', vector.bound)
-    const before = copy(h.document), writes = h.updates.length
-    for (const request of [
-      { action: 'create', job: { ...seed, policy: vector.requested.preset } },
-      { action: 'update', job_id: h.document.jobs.at(-1).id, job: { policy: vector.requested.preset } },
-    ]) {
-      const reply = await h.tool(request)
-      assert.equal(reply.isError, true, vector.name)
-      assert.match(reply.content, /schedule_invalid/)
-    }
-    assert.deepEqual(h.document, before)
-    assert.equal(h.updates.length, writes, 'unrepresentable caps fail before the Settings CAS')
-  }
   const invalid = h.document.jobs.at(-1)
-  invalid.policy = 'read-only'
+  invalid.policy = 'full-access'
+  invalid.policy_cap = policy('read-only')
   h.policies.set('a', policy('full-access'))
   const before = copy(h.document), writes = h.updates.length
   const reply = await h.tool({ action: 'update', job_id: invalid.id, job: { policy: 'workspace-write' } })
   assert.equal(reply.isError, true)
-  assert.deepEqual(h.document, before, 'an unrepresentable old transition also fails before commit')
+  assert.deepEqual(h.document, before, 'a configured preset above its cap fails before commit')
   assert.equal(h.updates.length, writes)
   const launches = h.launches.length, inputs = h.inputs.filter(input => input.mode === 'queue').length
   const run = await h.call('run_now', { job_id: invalid.id })
@@ -361,7 +348,7 @@ test('tool scope and schema are enforced before the process owner sees a save', 
 test('reuse checks every shared full-policy vector and both independent saved/live bounds before input', async t => {
   const h = await host(t)
   const cases = [
-    ...[...vectors.cap, ...vectors.reject].flatMap(vector => [
+    ...vectors.cap.flatMap(vector => [
       { name: `${vector.name} saved`, x: vector.requested, savedEffective: vector.bound,
         liveBound: policy('full-access'), permitted: vector.within ?? false },
       { name: `${vector.name} live`, x: vector.requested, savedEffective: vector.requested,
@@ -572,7 +559,7 @@ test('a reused policy reply received after the deadline is recorded without gran
 
 test('reload resumes accepted history without duplicate input, deadline reset or terminal report replay', async t => {
   const h = await host(t, { mode: 'running' })
-  const explicit = { ...policy('full-access'), fileAccess: 'read-only', toolApproval: 'bypass' }
+  const explicit = policy('full-access')
   h.policies.set('a', explicit)
   const job = JSON.parse((await h.tool({ action: 'create', job: seed })).content).job
   assert.deepEqual(job.policy_cap, explicit)

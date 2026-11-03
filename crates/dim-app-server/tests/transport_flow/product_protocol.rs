@@ -1851,8 +1851,15 @@ async fn local_product_operations_use_real_tools_and_survive_rpc_reload() {
     assert_ok(&client.rpc("session.idle", branch.clone()).await);
     let policy = client.rpc("session.permission.get", branch.clone()).await;
     assert_ok(&policy);
-    let changed = client.rpc("session.permission.update", json!({"sessionId":sid,"branchId":"main","expectedVersion":policy["result"]["version"],"policy":{"preset":"read-only","allowedTools":[],"disallowedTools":[]}})).await;
+    let invalid = client.rpc("session.permission.update", json!({"sessionId":sid,"branchId":"main","expectedVersion":policy["result"]["version"],"unknown":true,"policy":{"preset":"read-only"}})).await;
+    assert_eq!(invalid["error"]["code"], -32602);
+    let changed = client.rpc("session.permission.update", json!({"sessionId":sid,"branchId":"main","expectedVersion":policy["result"]["version"],"policy":{"preset":"read-only","fileAccess":"unrestricted","toolApproval":"bypass","unknown":true,"allowedTools":[],"disallowedTools":[]}})).await;
     assert_ok(&changed);
+    let current = client.rpc("session.permission.get", branch.clone()).await;
+    assert_eq!(
+        current["result"]["policy"],
+        json!({"preset":"read-only","allowedTools":[],"disallowedTools":[]})
+    );
     assert_eq!(client.rpc("session.permission.update", json!({"sessionId":sid,"branchId":"main","expectedVersion":policy["result"]["version"],"policy":policy["result"]["policy"]})).await["error"]["data"]["appError"], "permission_conflict");
     async fn project_rule(session: &dim_agent_runtime::Session) -> (String, String) {
         let context = session

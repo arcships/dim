@@ -216,7 +216,7 @@ async function fixture(t, options = {}) {
 }
 
 test('tool and management run sequential/parallel steps with a frozen definition and first-launch policy', async t => {
-  const launchPolicy = { preset: 'full-access', fileAccess: 'read-only', toolApproval: 'ask',
+  const launchPolicy = { preset: 'full-access',
     allowedTools: ['read'], disallowedTools: ['execute_process'] }
   const f = await fixture(t, { launchPolicy })
   const saved = await f.method('save', { source: 'user', document: definition('review', [
@@ -494,7 +494,7 @@ test('status and stop bound model text while preserving full stored results for 
 })
 
 test('startup recovery records lost stages and delivers reports without contacting their old Sessions', async t => {
-  const launchPolicy = { preset: 'workspace-write', fileAccess: 'read-only', toolApproval: 'bypass',
+  const launchPolicy = { preset: 'workspace-write',
     allowedTools: [], disallowedTools: ['blocked'] }
   const source = await fixture(t, { launchPolicy })
   await source.method('save', { source: 'user', document: definition('recover', [{ stage: { id: 'one', prompt: 'done' } }]) })

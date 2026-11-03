@@ -33,7 +33,7 @@ pub const EXEC_SHELL_UNAVAILABLE: &str = "EXEC_SHELL_UNAVAILABLE";
 
 #[cfg(windows)]
 const WINDOWS_SANDBOX_UNAVAILABLE: &str =
-    "The sandbox has no backend on Windows; select Off in /permissions > Process isolation";
+    "The sandbox has no backend on Windows; select Off in /settings > Process isolation";
 
 /// The declaration line for the tools that start processes; `None` where the
 /// platform has no sandbox backend. It is static because declarations are read
@@ -41,11 +41,11 @@ const WINDOWS_SANDBOX_UNAVAILABLE: &str =
 /// default gives each process tree a writable TMPDIR.
 pub(crate) const ISOLATION_SUMMARY: Option<&str> = if cfg!(target_os = "macos") {
     Some(
-        "Isolation: the user selects Process isolation in /permissions. When sandboxed, commands can write only inside the session workspace and $TMPDIR, read only there and in system directories, and have no network access unless Network allowed is selected. You cannot change the boundary; retrying or an approval does not lift it.",
+        "Isolation: the user selects Process isolation in /settings. When sandboxed, commands can write only inside the session workspace and $TMPDIR, read only there and in system directories, and have no network access unless Network allowed is selected. You cannot change the boundary; retrying or an approval does not lift it.",
     )
 } else if cfg!(unix) {
     Some(
-        "Isolation: the user selects Process isolation in /permissions. When sandboxed, commands can write only inside the session workspace, read only there and in system directories, and have no network access unless Network allowed is selected. You cannot change the boundary; retrying or an approval does not lift it.",
+        "Isolation: the user selects Process isolation in /settings. When sandboxed, commands can write only inside the session workspace, read only there and in system directories, and have no network access unless Network allowed is selected. You cannot change the boundary; retrying or an approval does not lift it.",
     )
 } else {
     None
@@ -283,7 +283,7 @@ impl Isolation {
         DENIALS.iter().any(|denial| lower.contains(denial)).then(
             || {
                 format!(
-                    "This command ran under the sandbox the user turned on, which may have caused the failure. It blocks network access and file access outside {reach}. Retrying or an approval does not lift it. Ask the user to change Process isolation in /permissions."
+                    "This command ran under the sandbox the user turned on, which may have caused the failure. It blocks network access and file access outside {reach}. Retrying or an approval does not lift it. Ask the user to change Process isolation in /settings."
                 )
             },
         )

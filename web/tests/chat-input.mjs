@@ -136,70 +136,51 @@ async function permissionSession(t, policy) {
   return { root, chat, server, option }
 }
 
-test("permission controls narrow and widen only the selected dimension, retaining explicit exceptions", async (t) => {
-  const initial = { preset: "read-only", fileAccess: "unrestricted", toolApproval: "bypass", allowedTools: ["read"], disallowedTools: ["exec"] }
+test("permission presets preserve tool exceptions and confirm full access", async (t) => {
+  const initial = { preset: "workspace-write", allowedTools: ["read"], disallowedTools: ["exec"] }
   const { root, chat, server, option } = await permissionSession(t, initial)
   const confirmation = () => all(root).find((element) => element.type === "dialog" && element.props.open)
-  assert.equal(option("composer.permission.file.unrestricted").props["aria-pressed"], true)
-  assert.equal(option("composer.permission.tool.bypass").props["aria-pressed"], true)
+  assert.equal(option("composer.permission.preset.workspace-write").props["aria-pressed"], true)
   assert.match(text(root), /composer.permission.allowedTools: read/)
   assert.match(text(root), /composer.permission.disallowedTools: exec/)
-  await click(option("composer.permission.file.read-only")); await flush()
-  assert.deepEqual(server.policy, { ...initial, fileAccess: "read-only" })
+  await click(option("composer.permission.preset.workspace-write")); await flush()
+  assert.equal(server.updates.length, 0)
+  await click(option("composer.permission.preset.read-only")); await flush()
+  assert.deepEqual(server.policy, { ...initial, preset: "read-only" })
   assert.deepEqual(chat.views.session.permission, server.policy)
-  assert.equal(option("composer.permission.file.read-only").props["aria-pressed"], true)
-  assert.equal(option("composer.permission.tool.bypass").props["aria-pressed"], true)
-  const cancelled = click(option("composer.permission.file.unrestricted"))
+  assert.equal(option("composer.permission.preset.read-only").props["aria-pressed"], true)
+  const cancelled = click(option("composer.permission.preset.full-access"))
   await flush()
   await click(button(confirmation(), "cancel")); await cancelled; await flush()
   assert.equal(server.updates.length, 1)
-  const widening = click(option("composer.permission.file.unrestricted"))
+  const widening = click(option("composer.permission.preset.full-access"))
   await flush()
   await click(button(confirmation(), "confirm")); await widening; await flush()
-  assert.deepEqual(server.policy, initial)
-  await click(option("composer.permission.file.read-only")); await flush()
-  await click(option("composer.permission.tool.ask")); await flush()
-  assert.deepEqual(server.policy, { ...initial, fileAccess: "read-only", toolApproval: "ask" })
-  const bypassing = click(option("composer.permission.tool.bypass"))
-  await flush()
-  await click(button(confirmation(), "confirm")); await bypassing; await flush()
-  assert.deepEqual(server.policy, { ...initial, fileAccess: "read-only" })
+  assert.deepEqual(server.policy, { ...initial, preset: "full-access" })
   assert(server.updates.every((update) => update.sessionId === "session" && update.branchId === "main"))
 })
 
-test("legacy policies stay distinct from Ask; live changes, conflicts and unsupported updates never widen silently", async (t) => {
-  for (const preset of ["read-only", "workspace-write"]) {
-    const initial = { preset, allowedTools: [], disallowedTools: ["exec"] }
-    const { root, chat, server, option } = await permissionSession(t, initial)
-    assert.match(text(root), new RegExp(`composer.permission.legacy.${preset}`))
-    assert.equal(option("composer.permission.tool.ask").props["aria-pressed"], false)
-    await click(option("composer.permission.file.read-only")); await flush()
-    assert.deepEqual(server.policy, { ...initial, fileAccess: "read-only" })
-    assert.equal(Object.hasOwn(server.policy, "toolApproval"), false)
-    await click(option("composer.permission.tool.ask")); await flush()
-    assert.deepEqual(server.policy, { ...initial, fileAccess: "read-only", toolApproval: "ask" })
-    const remote = { ...initial, fileAccess: "unrestricted", toolApproval: "ask" }
-    chat.receive(readNotification("session.event", { sessionId: "session", branchId: "main", event: { id: "remote", sequence: 1, create_at: 1, type: "permission", name: "changed", data: { policy: remote } } }))
-    await new Promise((resolve) => setTimeout(resolve, 20)); await flush()
-    assert.deepEqual(chat.views.session.permission, remote)
-    assert.equal(option("composer.permission.file.unrestricted").props["aria-pressed"], true)
-    server.policy = { ...initial, fileAccess: "read-only", toolApproval: "ask" }
-    const concurrent = { ...initial, fileAccess: "unrestricted", toolApproval: "bypass", allowedTools: ["read"] }
-    server.failure = () => {
-      server.policy = concurrent
-      server.version++
-      return new RpcError(-32000, "changed elsewhere", "permission_conflict")
-    }
-    const beforeConflict = server.updates.length
-    assert.equal(await chat.setPermission("session", { field: "fileAccess", value: "workspace-read-write" }), "conflict")
-    assert.equal(server.updates.length, beforeConflict + 1, "a conflict refreshes without retrying the write")
-    assert.deepEqual(chat.views.session.permission, concurrent)
-    server.failure = () => new RpcError(-32602, "unknown fileAccess", undefined)
-    const before = server.updates.length
-    await assert.rejects(chat.setPermission("session", { field: "fileAccess", value: "workspace-read-write" }), /unknown fileAccess/)
-    assert.equal(server.updates.length, before + 1, "an unsupported override must not fall back to a preset write")
-    assert.deepEqual(chat.views.session.permission, server.policy)
+test("permission changes refresh live presets and conflicts without retrying or changing tool lists", async (t) => {
+  const initial = { preset: "read-only", allowedTools: [], disallowedTools: ["exec"] }
+  const { chat, server, option } = await permissionSession(t, initial)
+  const remote = { ...initial, preset: "full-access" }
+  chat.receive(readNotification("session.event", { sessionId: "session", branchId: "main", event: { id: "remote", sequence: 1, create_at: 1, type: "permission", name: "changed", data: { policy: remote } } }))
+  await new Promise((resolve) => setTimeout(resolve, 20)); await flush()
+  assert.deepEqual(chat.views.session.permission, remote)
+  assert.equal(option("composer.permission.preset.full-access").props["aria-pressed"], true)
+  const concurrent = { ...initial, allowedTools: ["read"] }
+  server.failure = () => {
+    server.policy = concurrent
+    server.version++
+    return new RpcError(-32000, "changed elsewhere", "permission_conflict")
   }
+  assert.equal(await chat.setPermission("session", "workspace-write"), "conflict")
+  assert.equal(server.updates.length, 1, "a conflict refreshes without retrying the write")
+  assert.deepEqual(chat.views.session.permission, concurrent)
+  server.failure = () => new RpcError(-32602, "invalid policy", undefined)
+  await assert.rejects(chat.setPermission("session", "workspace-write"), /invalid policy/)
+  assert.equal(server.updates.length, 2)
+  assert.deepEqual(chat.views.session.permission, server.policy)
 })
 
 for (const branchId of ["main", "worker"]) {

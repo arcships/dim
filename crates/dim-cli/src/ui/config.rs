@@ -107,11 +107,13 @@ pub fn save_show_acp(home: &Path, show: bool) -> Option<String> {
     write(home, SHOW_ACP_KEY, show.into())
 }
 
-const PERMISSION_KEY: &str = "permissionPreset";
+const PERMISSION_KEY: &str = "permission";
 
-/// The legacy default for sessions the terminal UI creates or resumes.
+/// The saved default for sessions the terminal UI creates or resumes.
 pub fn saved_permission(home: &Path) -> Option<String> {
-    read(home, PERMISSION_KEY).and_then(|value| value.as_str().map(str::to_owned))
+    read(home, PERMISSION_KEY)
+        .or_else(|| read(home, "permissionPreset"))
+        .and_then(|value| value.as_str().map(str::to_owned))
 }
 
 fn path(home: &Path) -> PathBuf {

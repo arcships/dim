@@ -1,56 +1,37 @@
-//! Independent permission controls, sharing the Settings pickers.
+//! The permission preset, sharing the Settings pickers.
 //!
 //! ```text
 //! Permissions
-//! > File access          Workspace read/write ›
-//!   Tool approval        Ask ›
-//!   Process isolation    ›
-//!   Command rules        ›
+//! > Read only        reads only; writes and commands are refused
+//!   Workspace write  writes inside the workspace; asks outside it
+//!   Full access      no path limits; tools run without asking
+//!   Command rules    ›
+//!   Process isolation  Settings ›
 //! ```
+//!
+//! Permission is the preset (ADR 018). Process isolation stays in Settings.
 
-use dim_agent_types::{FileAccess, PermissionPolicy, PermissionPreset, ToolApproval};
+use dim_agent_types::{PermissionPolicy, PermissionPreset};
 
 use crate::model::session::Area;
-use crate::permission::{Change, file_label, tool_policy_label};
+use crate::permission::PRESETS;
 use crate::ui::list_panel::{Event, Item, ListPanel};
 use crate::ui::prompts::Effect;
-use crate::ui::settings_panel::Setting;
-use crate::ui::terminal::{KeyCode, KeyEvent};
+use crate::ui::terminal::KeyEvent;
 use crate::ui::theme::Palette;
 
-#[derive(Clone, Copy)]
-enum Page {
-    Permissions,
-    File,
-    Tool,
-}
+const HINT: &str = "↑↓/Tab move · Enter apply · Esc close";
 
 pub struct ApprovalsPanel {
     list: ListPanel,
     policy: PermissionPolicy,
-    page: Page,
-    standalone: bool,
 }
 
 impl ApprovalsPanel {
     pub fn new(policy: &PermissionPolicy) -> Self {
-        Self::open(policy, Page::Permissions, false)
-    }
-
-    pub fn file(policy: &PermissionPolicy) -> Self {
-        Self::open(policy, Page::File, true)
-    }
-
-    pub fn tool(policy: &PermissionPolicy) -> Self {
-        Self::open(policy, Page::Tool, true)
-    }
-
-    fn open(policy: &PermissionPolicy, page: Page, standalone: bool) -> Self {
         let mut panel = Self {
-            list: ListPanel::new("Permissions", "", "", "", "", false).without_filter(),
+            list: ListPanel::new("Permissions", HINT, "", "", "", false).without_filter(),
             policy: policy.clone(),
-            page,
-            standalone,
         };
         panel.refresh();
         panel
@@ -62,152 +43,50 @@ impl ApprovalsPanel {
     }
 
     fn refresh(&mut self) {
-        let badge = |current| if current { "current" } else { "" };
-        let mut notes = Vec::new();
-        let (title, items, selected) = match self.page {
-            Page::Permissions => (
-                "Permissions",
-                vec![
-                    Item::new(
-                        "file",
-                        "File access",
-                        format!("{} ›", file_label(self.policy.file_access())),
-                    ),
-                    Item::new(
-                        "tool",
-                        "Tool approval",
-                        format!("{} ›", tool_policy_label(&self.policy)),
-                    ),
-                    Item::new("isolation", "Process isolation", "›"),
-                    Item::new("rules", "Command rules", "›"),
-                ],
-                None,
-            ),
-            Page::File => {
-                let choices = [
-                    FileAccess::ReadOnly,
-                    FileAccess::WorkspaceReadWrite,
-                    FileAccess::Unrestricted,
-                ];
-                let current = self.policy.file_access();
-                notes = vec![
-                    "Read only: no writes.".into(),
-                    "Workspace read/write: writes inside; asks outside. System and session files stay protected.".into(),
-                    "Unrestricted: no path limits. Tool approval still applies.".into(),
-                ];
-                let items = choices
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, value)| {
-                        Item::new(
-                            index.to_string(),
-                            file_label(value),
-                            badge(value == current),
-                        )
-                    })
-                    .collect();
-                (
-                    "File access",
-                    items,
-                    Some(
-                        choices
-                            .iter()
-                            .position(|value| *value == current)
-                            .unwrap()
-                            .to_string(),
-                    ),
+        let current = self.policy.preset;
+        let items = PRESETS
+            .into_iter()
+            .map(|preset| {
+                Item::new(
+                    preset_name(preset),
+                    preset_label(preset),
+                    if preset == current { "current" } else { "" },
                 )
-            }
-            Page::Tool => {
-                let current = self.policy.tool_approval();
-                notes = vec![
-                    "Ask: confirm tools unless explicitly allowed.".into(),
-                    "Bypass: skip tool prompts, not file limits, deny rules or isolation.".into(),
-                ];
-                if self.policy.tool_approval.is_none() {
-                    notes.push(
-                        match self.policy.preset {
-                            PermissionPreset::ReadOnly => {
-                                "Legacy defaults: allow reads; deny writes/commands."
-                            }
-                            PermissionPreset::WorkspaceWrite => {
-                                "Legacy defaults: allow reads/writes; ask for commands."
-                            }
-                            PermissionPreset::FullAccess => "Legacy default: bypass tool approval.",
-                        }
-                        .into(),
-                    );
-                }
-                let items = vec![
-                    Item::new(
-                        "ask",
-                        "Ask",
-                        badge(self.policy.tool_approval == Some(ToolApproval::Ask)),
-                    ),
-                    Item::new("bypass", "Bypass", badge(current == ToolApproval::Bypass)),
-                ];
-                (
-                    "Tool approval",
-                    items,
-                    Some(
-                        if current == ToolApproval::Ask {
-                            "ask"
-                        } else {
-                            "bypass"
-                        }
-                        .into(),
-                    ),
-                )
-            }
-        };
-        self.list = ListPanel::new(
-            title,
-            "↑↓/Tab move · Enter apply · Esc back",
-            "",
-            "",
-            "",
-            false,
-        )
-        .without_filter()
-        .with_notes(notes);
-        self.list.set_items(Ok(items), selected.as_deref());
+            })
+            .chain([
+                Item::new("rules", "Command rules", "›"),
+                Item::new("isolation", "Process isolation", "Settings ›"),
+            ])
+            .collect::<Vec<_>>();
+        let notes = PRESETS
+            .into_iter()
+            .map(|preset| format!("{}: {}", preset_label(preset), consequence(preset)))
+            .chain(std::iter::once(
+                "The preset fixes the path boundary.".to_owned(),
+            ))
+            .collect();
+        self.list = ListPanel::new("Permissions", HINT, "", "", "", false)
+            .without_filter()
+            .with_notes(notes);
+        self.list.set_items(Ok(items), Some(preset_name(current)));
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
-        if key.code == KeyCode::Esc && !self.standalone && !matches!(self.page, Page::Permissions) {
-            self.page = Page::Permissions;
-            self.refresh();
-            return Effect::None;
-        }
         match self.list.handle_key(key) {
             Event::Close => Effect::Close,
-            Event::Pick(id) => match self.page {
-                Page::Permissions => {
-                    match id.as_str() {
-                        "file" => self.page = Page::File,
-                        "tool" => self.page = Page::Tool,
-                        "isolation" => return Effect::Setting(Setting::Isolation),
-                        "rules" => {
-                            return Effect::OpenArea {
-                                area: Area::Permissions,
-                                note: None,
-                            };
-                        }
-                        _ => return Effect::None,
-                    }
-                    self.refresh();
-                    Effect::None
-                }
-                Page::File => Effect::SetPermission(Change::FileAccess(match id.as_str() {
-                    "0" => FileAccess::ReadOnly,
-                    "1" => FileAccess::WorkspaceReadWrite,
-                    _ => FileAccess::Unrestricted,
-                })),
-                Page::Tool => Effect::SetPermission(Change::ToolApproval(if id == "ask" {
-                    ToolApproval::Ask
-                } else {
-                    ToolApproval::Bypass
-                })),
+            Event::Pick(id) => match id.as_str() {
+                "rules" => Effect::OpenArea {
+                    area: Area::Permissions,
+                    note: None,
+                },
+                "isolation" => Effect::Setting(crate::ui::settings_panel::Setting::Isolation),
+                name => match PRESETS
+                    .into_iter()
+                    .find(|preset| preset_name(*preset) == name)
+                {
+                    Some(preset) => Effect::SetPermission(preset),
+                    None => Effect::None,
+                },
             },
             Event::None | Event::Refresh => Effect::None,
         }
@@ -215,5 +94,25 @@ impl ApprovalsPanel {
 
     pub fn render(&self, width: usize, rows: usize, palette: &Palette) -> Vec<String> {
         self.list.render(width, rows, palette)
+    }
+}
+
+fn preset_name(preset: PermissionPreset) -> &'static str {
+    crate::permission::name(preset)
+}
+
+fn preset_label(preset: PermissionPreset) -> &'static str {
+    match preset {
+        PermissionPreset::ReadOnly => "Read only",
+        PermissionPreset::WorkspaceWrite => "Workspace write",
+        PermissionPreset::FullAccess => "Full access",
+    }
+}
+
+fn consequence(preset: PermissionPreset) -> &'static str {
+    match preset {
+        PermissionPreset::ReadOnly => "reads only; writes and commands are refused",
+        PermissionPreset::WorkspaceWrite => "writes inside the workspace; asks outside it",
+        PermissionPreset::FullAccess => "no path limits; tools run without asking",
     }
 }

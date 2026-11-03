@@ -251,7 +251,7 @@ Goal cleared on main.
  ╭──────────────────────────────────────────────────────────────────────────────╮
  │ › _                                                                          │
  ╰────────────────────────────── ⑂ main ▸ child work · after message 0 ─────────╯
-  AGENT  ⏵⏵ Ask (legacy)  ◎ goal active  1.8K / 256K              provider/model
+  AGENT  ⏵⏵ Workspace write  ◎ goal active  1.8K / 256K              provider/model
 ```
 
 fullscreen 把同一元素画在输入框的下边框，位于运行状态旁：
@@ -259,7 +259,7 @@ fullscreen 把同一元素画在输入框的下边框，位于运行状态旁：
 ```text
  ╭──────────────────────────────────────────────────────────────────────────────╮
  │ › _                                                                          │
- ╰──── ◎ goal paused   ⏵⏵ Bypass   1.8K / 256K ───── ● main · after message 4 ─╯
+ ╰──── ◎ goal paused   Full access   1.8K / 256K ───── ● main · after message 4 ─╯
 ```
 
 ## 提供方账号
@@ -438,17 +438,16 @@ python  system    3.12.15   off
 
 ## 进程隔离设置
 
-`/settings` 和 `/permissions` 提供同一个 `Process isolation` 控件，替代旧 `Execution` 面板和
-独立 Sandbox 入口，不保留重复开关；没有原生 `dimcode isolation`、`/isolation` 命令或策略文件。
-选项与布尔值的映射属于[进程隔离设计](../../design/host-platform-isolation.md#process-isolation)，
-不属于 Permission。File access 和 Tool approval 都不改变它。
+`/settings` 在 Permissions 分组提供 `Process isolation` 控件，替代旧 `Execution` 面板和独立 Sandbox 入口，
+不保留重复开关；没有原生 `dimcode isolation`、`/isolation` 命令或策略文件。选项与布尔值的映射属于
+[进程隔离设计](../../design/host-platform-isolation.md#process-isolation)，不属于 Permission。
+`/permissions` 只链接到这里，不再承载这个控件。
 
 ```text
-Settings                         Process isolation
-  File access          >       > Off
-  Tool approval        >         Sandboxed · No network
-  Process isolation    >         Sandboxed · Network allowed
-                                 Applies to new processes and persistent shells.
+Settings
+  Permission           Workspace write >
+  Process isolation    >
+  Applies to new processes and persistent shells.
 ```
 
 打开控件时经 [`settings.read`](appserver/settings-service.md) 读取
@@ -759,16 +758,22 @@ run 就是 `mcp.test`：它执行或联系已存条目一次，不写入领域�
 
 命令规则（#819）：Permissions 面板的 Command rules 行，以及 `dimcode permissions list|add PATH|remove RULE`，管理用户的命令规则（[权限控制](#权限控制)、[命令规则](appserver/permission-command-rules.md)）。所有者用 `permission.rules` 报告规则列表及其 Settings revision，并用 `permission.set_rules` 按该 revision 替换整个列表；revision 过期即为 `permission_rules_conflict`。
 
-该行追加在 Process isolation 之后，现有行因此保持原位置。它打开本领域的面板，Esc 返回 Permissions 面板；它上面的三个控件保留各自的页面。
+该行追加在三个权限档之后，现有行因此保持原位置。它打开本领域的面板，Esc 返回 Permissions 面板。
 
 ```text
 ╭─ Permissions ─────────────────────────────────────────────────╮
 │ >                                                             │
-│   File access          Workspace read/write                 › │
-│   Tool approval        Ask (legacy tool exceptions)         › │
-│   Process isolation                                         › │
+│   Read only            reads only; writes and commands are    │
+│                        refused                                │
+│   Workspace write      writes inside the workspace; asks      │
+│                        outside it                             │
+│   Full access          no path limits; tools run without      │
+│                        asking                                 │
 │   Command rules                                             › │
-╰──── ↑↓/Tab move · Enter apply · Esc back ─────────────────────╯
+│   Process isolation                                Settings › │
+│                                                               │
+│   The preset fixes the path boundary.                         │
+╰──── ↑↓/Tab move · Enter apply · Esc close ────────────────────╯
 
 ╭─ Command rules ───────────────────────────────────────────────╮
 │ >                                                             │
@@ -866,8 +871,8 @@ Remove 先在提示栏询问，`Remove deny prefix git push? Enter confirm · Es
 | `!command` / `!!command` | 以 record/private 模式调用 Session 现有的 `shell.run`，模型回合进行中也可用。 |
 | `--permission read-only\|workspace-write\|full-access` | 为 `dimcode`、`tui`、`exec` 和 `exec resume` 选择新建或恢复的 Session 的预设（[权限控制](#权限控制)）。 |
 | `/goal [OBJECTIVE \| set OBJECTIVE \| edit OBJECTIVE \| pause \| resume \| clear]` | 在行客户端和两种终端 UI 模式下读取并写入当前显示线的目标（[目标](#目标)）。 |
-| `/permissions` | 打开 Permissions 面板：独立的 File access、Tool approval 与 Process isolation 控件，以及列出、添加、删除用户命令规则的 Command rules 行（[权限控制](#权限控制)）。 |
-| `/approvals`、`/approval` | `/permissions` 的兼容别名，仍支持旧预设参数。 |
+| `/permissions` | 打开 Permissions 面板：三个预设以及各自允许什么、链接到 Settings 进程隔离控件的行，以及列出、添加、删除用户命令规则的 Command rules 行（[权限控制](#权限控制)）。 |
+| `/approvals`、`/approval` | `/permissions` 的兼容别名，支持相同的预设参数。 |
 
 `dimcode hooks` 只写用户的 Hook 文档，而且只经 edit 这一种类：`dimcode hooks edit`、
 `dimcode hooks set PATH` 以及 `/hooks` 里的 Ctrl+E 都调用守护进程所服务 home 的 Settings
@@ -1226,24 +1231,32 @@ Ctrl+C 提示 CLI 正在等待结果，并持续消费后续中断直到操作�
 ## 权限控制
 
 Permission 拥有由 `session.create {permissionPolicy}` 初始化、经带版本的
-`session.permission.get/update` 更新的分支策略。独立可选字段及旧语义属于
-[Permission 合同](../../architecture/rust-agent/plugins/Permission.md#policy-contract)，由
-[ADR 017](../../adr/017-independent-permission-controls.md) 扩展。命令规则仍使用
+`session.permission.get/update` 更新的分支策略。策略就是预设与工具名单，见
+[Permission 合同](../../architecture/rust-agent/plugins/Permission.md#policy-contract)；
+预设决定路径边界，进程隔离留在 Settings（[ADR 018](../../adr/018-permission-is-the-preset.md)）。命令规则仍使用
 `permission.rules`/`permission.set_rules`（[F2](appserver/permission-command-rules.md)）；文件授权仍使用
 `session.grants.add/remove`（[ADR 012](../../adr/012-session-grants.md)）。
 
-| TUI 控件 | 选项 | 策略字段或所有者 |
+| TUI 控件 | 选项 | 所有者 |
 | --- | --- | --- |
-| File access | Read only / Workspace read/write / Unrestricted | `fileAccess` |
-| Tool approval | Ask / Bypass | `toolApproval` |
-| Process isolation | Off / Sandboxed · No network / Sandboxed · Network allowed | 现有 `execution` 设置，不属于 Permission |
+| Permission | Read only / Workspace write / Full access | `preset` |
+| Path scope | 由预设和 Session grant 决定 | [文件访问事实](../../adr/014-file-access-facts.md) |
+| Process isolation | Off / Sandboxed · No network / Sandboxed · Network allowed | `execution` 设置，不属于 Permission |
 
-Ask 表示每次工具调用都需要同意，除非工具或命令规则显式允许；Bypass 只跳过工具询问。
-两者都不回答文件范围问题、不解除显式拒绝，也不改变沙箱。File access 使用现有固定事实作为独立闸门：
-Read only 即使对已允许的工具也拒绝写入；read 授权从不允许写入。同时需要范围和工具同意的调用只审批一次。
-新 TUI 不把选项标为 Full access 或 Auto；Auto 留给未来真正的自动决策系统。
+```text
+/permissions
+  > Read only        reads only; writes and commands are refused
+    Workspace write  writes inside the workspace; asks outside it
+    Full access      no path limits; tools run without asking
+    Command rules    >
+    Process isolation  Settings >
+  The preset fixes the path boundary.
+```
 
-为兼容，未带显式覆盖的策略在工具列表与命令规则之后保留以下旧行为，文件检查仍优先：
+`↑↓` 移动，`Enter` 应用高亮的那一档，`Esc` 关闭。没有第二个策略控件：预设同时回答"什么能运行"和
+"什么先询问"，所以客户端不把文件范围或进程隔离当作权限维度。
+
+各预设按风险判定，在 `disallowedTools` 和 deny 规则之后，文件检查仍优先：
 
 | 预设 | 哪些会运行（Permission 现有的判定，在 `disallowedTools` 与 deny 规则之后） |
 | --- | --- |
@@ -1260,19 +1273,16 @@ deny 规则在任何预设下都生效。allow 规则只把简单命令的询问
 `exec resume`，放在命令前后都可以。其他取值、重复给出或用在其他命令上，都是守护进程启动前的
 参数错误。
 
-终端 UI 在产品 home 的 `config.json` 中把独立 `fileAccess` 和 `toolApproval` 选择与旧
-`permissionPreset` 一起保存。缺少的新字段仍保持缺少；加载旧配置不会把预设转换成显式 Ask，
-也不放宽原有风险拒绝。这是后续 Session 的 CLI 偏好，不是所有客户端共享的守护进程默认值。
-没有活动 Session 的主屏上，`/permissions` 无需登录或创建 Session 即可保存所选字段。
-第一条消息使用记住的选择创建 Session，同一客户端进程内亦如此。有活动 Session 时，只有带版本的
-`main` 策略更新成功后才记住选择。改变一个字段保留另一个字段、旧种子和工具列表。
-Process isolation 则使用现有宿主设置来源。
+终端 UI 在产品 home 的 `config.json` 中以 `permission` 保存所选预设，并继续读取旧的
+`permissionPreset`。这是后续 Session 的 CLI 偏好，不是所有客户端共享的守护进程默认值。
+没有活动 Session 的主屏上，`/permissions` 无需登录或创建 Session 即可保存所选预设。
+第一条消息用它创建 Session，同一客户端进程内亦如此。有活动 Session 时，只有带版本的
+`main` 策略更新成功后才记住选择。改变预设保留工具列表。
 
 ```text
-Home > /permissions > File access > Read only
-  -> remember fileAccess (no Session or login required)
-  -> first message -> session.create {permissionPolicy: {preset: <legacy seed>,
-                                                       fileAccess: "read-only", ...}}
+Home > /permissions > Read only
+  -> remember permission (no Session or login required)
+  -> first message -> session.create {permissionPolicy: {preset: "read-only", ...}}
 ```
 
 ```text
@@ -1290,9 +1300,8 @@ $ dimcode exec resume <session-id> --permission read-only -p 'Summarize'
   attach -> history -> submit -> idle -> detach
 ```
 
-使用旧参数创建的新 Session 收到不带显式覆盖的 `{preset}`；该次运行的参数优先于记住的 CLI 选择。
-新成员继承发起分支的当前策略（见分支语义）。恢复时仅更新预设只改变旧种子，保留所有其他策略字段，
-包括显式覆盖与工具列表；显式覆盖仍优先于种子。通知必须显示其生效值，不能暗示改预设已替换显式控件。
+使用 `--permission` 创建的新 Session 收到 `{preset}`；该次运行的参数优先于记住的 CLI 选择。
+新成员继承发起分支的当前策略（见分支语义）。恢复时更新预设并保留工具列表，通知显示当前预设。
 更新发生在 attach 之前，所以本次调用提交的回合不会在旧预设下运行。没有参数或记住的选择时，
 `session.create` 省略策略，恢复的 Session 保持自己的策略。应用记住的选择时显式发送，不重新解释历史。
 守护进程没有声明 `session.permission.update` 时，恢复参数在 attach 之前失败。此处可重试冲突，因为
@@ -1300,33 +1309,31 @@ $ dimcode exec resume <session-id> --permission read-only -p 'Summarize'
 
 生效的控件值显示在标识 Session 的位置。守护进程声明了 `session.permission.get` 时，交互启动读取策略；
 `exec` 只在给出 `--permission` 时把它打印到 stderr，其他情况下现有诊断输出不变。实时到达 `main`
-的 `permission/changed` 事件，无论来自本客户端还是配对设备等其他客户端，都打印一条带独立值与旧工具例外的记录。
+的 `permission/changed` 事件，无论来自本客户端还是配对设备等其他客户端，都报告当前预设。
 
-总览和 Settings 使用 `Ask (legacy tool exceptions)`；紧凑 TUI scrollback 状态使用
-`Ask (legacy)`，为设置保存通知留出 80 列内的空间。它表示相同的旧策略，不是显式 Ask，也不是另一选项。
+总览、Settings 和紧凑 TUI scrollback 状态显示当前预设。
 
 ```text
 $ dimcode --permission read-only
 dimcode · model: provider/model
 local files: /workspace/project
 session: <session-id>
-File access: Read only
-Tool approval: Ask (legacy tool exceptions)
+permission: read-only
 
 > Fix the build
 Assistant: ...
-[permission] main: File access = Workspace read/write  <- 由其他客户端修改
+[permission] main branch preset: workspace-write  <- 由其他客户端修改
 ```
 
-滚动回显客户端在编辑器下方画一行状态行：代理标记与工具审批方式（旧策略下为 `Ask (legacy)`）、目标标记、
+滚动回显客户端在编辑器下方画一行状态行：代理标记与当前权限预设、目标标记、
 上下文对窗口的占用，以及一个显示当前状态的槽位——通知、需要回答或审批、`esc interrupt` 或后台任务数。
 模型（放得下时连同推理强度）靠右对齐；整行按终端宽度截断。
 
 ### 无头执行
 
-`exec` 保持其合同：审批请求得到普通拒绝，回合停止并收尾，退出码为 3。没有显式覆盖的旧策略中，
+`exec` 保持其合同：审批请求得到普通拒绝，回合停止并收尾，退出码为 3。
 `full-access` 不询问但显式拒绝仍生效；`read-only` 拒绝写入和命令；`workspace-write` 对命令询问并以 3
-退出。显式 Ask 也会对原本在范围内的读取询问；Bypass 仍保留文件范围审批。没有自动审批回答者。
+退出。没有自动审批回答者。
 参数是明确的旧策略选择，因此 `exec` 不要求确认。
 
 ### 分支语义
@@ -1362,45 +1369,35 @@ Session 创建配置 --> main 当前策略 --分支点--> 子分支策略
 ### `/permissions`
 
 `/permissions` 是两种 TUI 模式下可见的菜单入口；`/approvals` 和 `/approval` 作为兼容别名打开同一组
-控件，不另设预设选择器。控件作用于 `main`；每次字段选择使用当前完整策略与版本，只写所选维度。
-保存失败既不改变记住的选择，也不回退到旧预设。
+预设选择器。选择作用于 `main`，每次更新使用当前完整策略与版本，保留工具列表。
+保存失败既不改变记住的选择，也不回退到其他预设。
 
-Process isolation 打开执行设置。Command rules 行打开[命令规则领域](#命令规则领域)的管理面板，在那里列出、添加和删除规则；Esc 返回本面板，该行上面的三个控件保留各自的页面。终端 UI 中 `/permissions` 后面的参数改为打开该面板，而不是被忽略；面板打开时就带着一行说明参数在哪里生效——行内提示符与 `dimcode permissions`——这行一直显示在面板的答复之上，直到用户在这里按下第一个键，无论首次读取要多久；紧凑语法属于行内提示符。
+Process isolation 行链接到 Settings 的进程隔离控件；Esc 返回本面板。
+Command rules 行打开[命令规则领域](#命令规则领域)的管理面板，在那里列出、添加和删除规则；Esc 返回本面板。终端 UI 中 `/permissions` 后面的参数改为打开该面板，而不是被忽略；面板打开时就带着一行说明参数在哪里生效——行内提示符与 `dimcode permissions`——这行一直显示在面板的答复之上，直到用户在这里按下第一个键，无论首次读取要多久；紧凑语法属于行内提示符。
 
 ```text
 Permissions (main branch)
-> File access          Workspace read/write >
-  Tool approval        Ask                  >
-  Process isolation    Off                  >
+> Read only        reads only; writes and commands are refused
+  Workspace write  writes inside the workspace; asks outside it
+  Full access      no path limits; tools run without asking
   Command rules                             >
+  Process isolation                 Settings >
 
-File access                         Tool approval
-  Read only                       > Ask
-> Workspace read/write              Bypass
-  Unrestricted
+The preset fixes the path boundary.
 
-Hint: Read only: no writes.          Hint: Ask before tool calls.
-      Tool approval still applies.        File restrictions still apply.
-
-↑↓/Tab move · Enter apply · Esc back
+↑↓/Tab move · Enter apply · Esc close
 ```
 
-fullscreen 与 scrollback 中，三个控件都在所有选项与操作下方显示简短说明，中间空一行。
-说明块以 `Hint:` 开头，各段另起一行，按词边界折行，续行对齐前缀后的内容；说明不是可选行，错误独立显示。
+每一行都写明该预设允许什么、会询问什么，所以不需要第二个菜单。仅打开面板不写入；`Enter` 通过带版本的更新
+写入预设，工具列表保持不变。说明指出预设决定路径边界，并指向 Settings 的进程隔离设置。
 
-旧策略没有显式工具覆盖时，在适用处显示 `Ask (legacy tool exceptions)`，解释已有自动允许与风险拒绝，
-不能假装已启用显式 Ask。仅打开面板不写入；显式选择 Ask 才替换旧工具风险行为，单选 File access 不会。
-扩大文件访问或选择 Bypass 时说明显式拒绝仍有效、进程隔离不变，不声称每次调用都会运行。
 审批提示不提供组合式放宽快捷入口。
 
-行模式提示符下，无参数命令打印生效的独立控件与支持时的编号命令规则。预设参数只是兼容操作，
-不是 TUI 标签。打印的规则与 revision 保留给 `remove`。
+行模式提示符下，无参数命令打印生效的预设与支持时的编号命令规则。打印的规则与 revision 保留给 `remove`。
 
 ```text
 > /permissions
-File access (main branch): Workspace read/write
-Tool approval (main branch): Ask (legacy tool exceptions)
-Process isolation: Off
+permission: workspace-write
 Command rules (user scope, every Session):
   1  allow  exact   cargo test -p dim-cli
   2  deny   prefix  git push
@@ -1417,7 +1414,7 @@ Command rules (user scope, every Session):
 | 形式 | 调用 | 冲突 |
 | --- | --- | --- |
 | `/permissions` | 对 `main` 调用 `session.permission.get`；`permission.rules`；现有 execution 设置读取 | 无 |
-| File access / Tool approval 选择 | `get` 后 `update`，保留未修改的策略字段 | 每次重试前重新读取；从不替换另一维度或工具列表 |
+| 面板中选择预设 | `get` 后 `update`，保留工具列表 | 每次重试前重新读取；从不替换工具列表 |
 | `/permissions PRESET`（旧操作） | `get`；`full-access` 需要 `[y/N]` 确认，回车、其他回答、EOF 和 Ctrl+C 都表示否；然后用读取的版本和其余不变的策略 `update` | `permission_conflict`：重新读取，打印当前策略，不写入；由用户重新决定 |
 | `/permissions allow\|deny exact\|prefix COMMAND` | `permission.rules`；除非已有相同规则，否则 `set_rules(revision, rules + rule)`，然后打印新列表 | 重新读取并重试，最多 3 次：添加不取决于其他规则 |
 | `/permissions remove N` | `set_rules(列表的修订号, 去掉第 N 条后的列表)`，然后打印新列表 | `permission_rules_conflict`：重新读取，打印当前列表，不删除 |
@@ -1474,7 +1471,7 @@ CLI 报告规则的结果，不发送回答。Ctrl+C 之后不再发起新的写
 
 对于带 `path` 的 `read`、`write` 和 `edit` 调用，文件范围询问还提供 `Allow for this session`
 （ADR 012）。Read only 或 Workspace read/write 文件访问下，外部读取需要范围同意。
-仅因显式 Tool approval Ask 而询问的范围内调用不需要文件授权。
+仅因预设的工具规则而询问的范围内调用不需要文件授权。
 CLI 把工具给出的路径原样发给 `session.grants.add {sessionId, path, kind: "file", mode}`：`read` 的
 mode 是 `read`，其余是 `write`。守护进程按 Session 工作区解析 `~`、相对路径、`..` 和符号链接并保存
 规范路径；尚不存在的文件按父目录和最终名称解析。CLI 不在本地决定路径或 kind。
@@ -1488,12 +1485,12 @@ mode 是 `read`，其余是 `write`。守护进程按 Session 工作区解析 `~
 `Allow for this session` 先写入授权，再回答 `approval.respond allow`；重新判定会看到该授权。写入失败时 CLI
 显示 `Grant not saved: <error>`，仍按用户要求本次允许，失败的存储写入不会阻塞回合。非交互运行
 （`exec`）把事实之外的读取以普通拒绝结束，并以 3 退出；不增加新的错误路径。该提示不列出也不删除授权；
-撤销尚无客户端入口。授权只回答文件范围，不回答显式 Tool approval Ask；当前答复仍对本次调用表示同意。
+撤销尚无客户端入口。授权只回答文件范围，不回答预设的工具规则；当前答复仍对本次调用表示同意。
 write 授权也允许读取，read 授权从不允许写入，分叉不继承源的授权。
 
 ### 决定
 
-1. **记住的 CLI 选择不是宿主默认值。** 独立选择与旧配置一起保存，由 CLI 显式发送。
+1. **记住的 CLI 选择不是宿主默认值。** 预设选择保存在 CLI 配置中，由 CLI 显式发送。
    Web、ACP、配对设备和自动化共同遵守的默认值属于守护进程用户 Settings：需求 R1。
    不得重新解释旧配置或已有策略来模拟此类默认值。
 2. **不提供 `--allowed-tools`/`--disallowed-tools`。** 工具名属于守护进程配置，协议没有可用于校验的
@@ -1504,11 +1501,10 @@ write 授权也允许读取，read 授权从不允许写入，分叉不继承源
    普通行。循环切换需要编辑器返回动作结果和独立交互设计。`/permissions` 已覆盖切换。
 5. **`/permissions` 也能添加规则。** F2 §8 把添加列为面板的一部分；在产品存储下，规则位于用户无法当作
    文件编辑的数据库行中，没有 `add` 就无法从 CLI 创建 deny 规则。
-6. **只在结果不取决于读取内容时重试。** 启动预设、独立字段赋值和添加规则可在重新读取并保留未修改字段后
+6. **只在结果不取决于读取内容时重试。** 启动预设和添加规则可在重新读取并保留未修改字段后
    重试。旧面板预设切换和按编号删除报告冲突，因为用户根据所见内容选择。Execution Settings 保持读取时
    revision 的保存合同。
-7. **保留旧放宽预设确认。** 交互式旧 `full-access` 参数仍需确认；启动参数本身明确且可无头使用。
-   新控件说明各自独立的效果，不提供该组合 TUI 选项。
+7. **行模式完全访问需要确认。** 交互式 `full-access` 参数需确认；启动参数本身明确且可无头使用。
 
 ### 范围之外
 
@@ -1520,9 +1516,7 @@ write 授权也允许读取，read 授权从不允许写入，分叉不继承源
 | `--allowed-tools`/`--disallowed-tools` | 一个工具目录读取接口，用于在参数边界校验名字（决定 2） |
 | 回合运行中使用 `/permissions` | 只涉及 CLI：运行中的回合读取普通行并回答审批；面板调用需要加入它的多路复用循环 |
 
-本次改动中，ACP、Hooks 和 Web 的权限选择仍是仅使用旧预设的客户端。其现有预设控件不选择显式
-File access 或 Tool approval，省略的覆盖字段保持旧风险判定。扩展这些 UI 属于独立工作，不在这里
-另做一套 TUI 控件；Web 现有 execution 设置仍属于宿主设置。
+ACP、Hooks 和 Web 使用同一预设策略合同；进程隔离属于 execution Settings。
 
 ### 规则检查
 
@@ -1533,13 +1527,13 @@ File access 或 Tool approval，省略的覆盖字段保持旧风险判定。扩
 | §4 第 1 条（指令事件） | 策略修改经 Permission 现有的 `session.permission.update`，由它写 `permission/changed`；规则经其所有者的类型化写操作 |
 | §4 第 2 条（交接） | 不变 |
 | §4 第 3 条（before 回调） | 不使用 |
-| §4 第 4 条（核心不带业务含义） | Timeline 和 Dispatcher 不变；独立策略语义属于 Permission，不属于 CLI |
+| §4 第 4 条（核心不带业务含义） | Timeline 和 Dispatcher 不变；策略语义属于 Permission，不属于 CLI |
 | §4 第 5 条（批次） | 规则写入和审批回答是两个所有者各自的写入，由客户端按 F2 §5.4 规定的顺序执行 |
 | §4 第 6 条（上下文） | 模型只看到现有的结果和拒绝 |
 | §4 第 7 条（只经公开接口） | 只用公开方法和通知；CLI 从公开事件流读取 `permission/changed` |
 | §4 第 8 条（基础设施不变） | 不改；下文向 App Server 所有者而非基础设施提出两项需求 |
 | §4 第 9 条（只有需要的事实进 Timeline） | 没有新事件；规则不进 Timeline |
-| ADR 002 D1 至 D5 | 没有新部件、接线或依赖；增量策略字段遵循 ADR 017，CLI 偏好是本地业务配置 |
+| ADR 002 D1 至 D5 | 没有新部件、接线或依赖；预设策略遵循 ADR 018，CLI 偏好是本地业务配置 |
 | ADR 003 | 预设和规则只管 agent 工具调用；`!command` 不受影响；规则只有用户作用域，没有项目文件能放宽它们；重放、恢复和分叉不授予新权限 |
 
 ### 向机制所有者提出的需求
@@ -1681,8 +1675,8 @@ Ctrl+C 保持 TUI 既有中断/退出规则；实际中断时，先停止问题�
 是行模式的 `/permissions` 命令，审批提示留在 `session.rs`；两者只负责展示结果。`question/mod.rs` 存放
 任何客户端处理问题都需要的部分，不读终端、不做输出：`ask_user` 的输入规则、由事件推导出的等待中调用、
 `session.question.respond` 的参数以及回复的含义。`question/line.rs` 是行模式的问题提示，由
-`session.rs` 把通知和回复交给它。对话格式化属于 CLI。独立控件使用 Permission 的增量策略合同
-（ADR 017）与现有 execution Settings 合同；不需要改变核心生命周期、存储迁移或运行时注册。
+`session.rs` 把通知和回复交给它。对话格式化属于 CLI。预设控件使用 Permission 的策略合同
+（ADR 018）与现有 execution Settings 合同；不需要改变核心生命周期、存储迁移或运行时注册。
 
 复用 `cli_flow.rs` 及其真实守护进程配置夹具，覆盖 `exec` 和恢复、stdout/stderr 分离、公开 JSON 通知的
 保留、回合/审批失败和停止收尾、固定水位的多页导出、两种格式、拒绝已存在文件以及交互命令拦截。覆盖
@@ -1698,12 +1692,10 @@ Unix 文件私密性。只使用隔离的 home。实现需要通过相关的 CLI
 --permission` 修改恢复的分支；"总是"写入精确规则，之后相同的调用不再询问，直到 `/permissions remove`
 删除该规则。
 
-独立控件验收场景：显式 Ask 对范围内读取询问；工具允许只回答工具问题；Bypass 仍对范围外文件询问；
-Read only 即使工具已允许也拒绝写入；同时需要范围和工具同意时只询问一次；read 授权不能允许写入；
-Bypass 下显式拒绝仍优先；旧策略和配置保留精确旧行为，不静默写入。验证每次选择只改自己的字段、
-策略成功更新后才记住、Session 创建前也可使用，冲突或不支持服务器时不放宽。两种 TUI 的菜单只显示
-`/permissions`，两个别名可用，Process isolation 没有重复 Execution/Sandbox 入口。复用进程流程验证
-布尔映射、CAS 失败、后端不可用原因，以及切换隔离前启动的进程保持原边界。这些是要求，不表示实现或验证已完成。
+预设验收覆盖文件边界、工具与命令规则、Session grant 和一次审批。只读即使工具已允许也拒绝写入；
+完全访问仍遵守明确拒绝。保存的预设须跨进程重启生效，`permission` 优先于旧 `permissionPreset`，
+`--permission` 优先于二者。验证两种 TUI 的菜单只显示 `/permissions`，两个别名可用，进程隔离留在 Settings。
+复用进程流程验证布尔映射、CAS 失败、后端不可用及已启动进程保留原边界。
 
 问题由脚本化守护进程流程（`cli_flow/question.rs`）覆盖：单选和多选、自填文本、拒绝回答、无效输入行、
 处理器会拒绝的输入和其他工具不会触发询问、与审批双向的延后、等待中的 shell 结果、重复使用的调用 id、

@@ -503,8 +503,7 @@ fn tui_goal_shows_the_state_and_marks_the_status_area() {
     command.arg("--scrollback");
     sized(&mut command, 100, 32);
     let mut terminal = Terminal::launch_tui(command);
-    // The scrollback status line names the approval mode in force.
-    terminal.until("⏵⏵ Ask (legacy)");
+    terminal.until("⏵⏵ Workspace write");
     terminal.until("test / model");
 
     terminal.write(b"/goal Ship it\r");

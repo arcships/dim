@@ -288,17 +288,14 @@ Managed `providers.record` is `{kind:"managed", account, models, modelConfigOver
 
 静态目录的 record 为 `{kind, displayName, driverKind, auth, credentialAuthority, baseUrl, network, headers, credential, models, remoteModels, endpointTypes, modelConfigOverrides, disabledModelIds, enabled, definitionFingerprint, version, userModels?, modelPreferences?, endpointOverrides?}`。可选的 `userModels`、`modelPreferences`、`endpointOverrides` 沿 #329 格式决定保存用户模型、偏好和端点覆盖，缺失表示无对应配置。`kind` 为 `builtin` 或 `custom`；models 和覆盖均为完整 `ModelEntry`；`definitionFingerprint` 是 bundled 定义的 SHA-256，自定义记录为 null。`credentialAuthority` 为 `static`、`openai_codex` 或 `grok`，缺省仅解释为静态来源；后两者只允许对应内置 Provider 的固定非秘密绑定，credential 必须为空。`credential` 可保存静态凭据或不透明秘密引用，但不写回引用解析结果；`network` 保存逐连接代理与超时，只读 `provider.list` 不返回代理 URL；`provider.management` 只返回去除 user info 的 `proxyUrl`，代理认证仍不返回，展示值不得自动写回。`remoteModels` 标记已取得的独立模型快照，避免 bundled 升级覆盖；`endpointTypes` 保存显式协议映射，派生路由不落盘。凭据和 header 值只由 resolver 使用，管理面仅返回非秘密摘要。写入及读取边界校验模型、地址和请求头，外层 SQL 版本须与 record.version 一致；seed、编辑和删除规则见[Provider合同](../../../crates/dim-app-server/README.md)。
 
-`agents.profile` 是 `AgentProfile`：`{name, description, systemPrompt, tools?, model?}`；`model` 若存在为 `{providerId, modelId}`。`agent_sessions.config` 是 `SessionConfig`：`{permissionPolicy, cwd, model, systemPrompt, tools?, collaborationRole, interactive?}`；两者的 `tools` 是字符串数组形式的挂载列表，没有挂载列表时省略（[Session 访问 A.3](../contracts/session-access.md#a3-sessionconfig-fields)，格式决定见 [#364 v19 格式决定](#364-v19-格式决定)）；其中 `model` 是 `ModelSelection {providerId, modelId, config?, metadata?}`，创建时固定完整模型参数，省略参数的身份记录仍可读取。`permissionPolicy` 为 `{preset, allowedTools, disallowedTools, fileAccess?, toolApproval?}`（兼容规则见下段），`collaborationRole` 为 `leader` 或 `member`。可选字段 `interactive`（布尔，缺省 `true`）由[路线图](../roadmap.md) C2 加入，已实现，格式决定如下：保持 v13，不升级到 v14，这是配置 JSON 中增量的可选字段；缺少它的已存储记录表示 `true`，因为该字段出现之前创建的每个 Session 都是客户端 Session；只写入 `false`，交互式记录不含该字段，与该字段出现之前写入的记录格式相同；这一省略规则写在 `SessionConfig` 的 serde 定义上，原生存储是它唯一的序列化方，在其他地方暴露 `SessionConfig` 须另行决定；旧版守护进程忽略该字段，会把非交互记录读成交互式，这一点可以接受。字段合同见 [Session 访问 A.3](../contracts/session-access.md#a3-sessionconfig-fields)。`timeline_branches.info` 是 `BranchRecord`：`main` 为 `{id:"main"}`，子分支为 `{id, parent, branch_point, create_anchor}`；后两项是父分支的本地序号。运行时的 `TimelineInfo` 是它加上 `source`，该字段不落盘。JSON 字段名按各类型的 serde 定义，不能由 SQL 列名的拼写推断。
+`agents.profile` 是 `AgentProfile`：`{name, description, systemPrompt, tools?, model?}`；`model` 若存在为 `{providerId, modelId}`。`agent_sessions.config` 是 `SessionConfig`：`{permissionPolicy, cwd, model, systemPrompt, tools?, collaborationRole, interactive?}`；两者的 `tools` 是字符串数组形式的挂载列表，没有挂载列表时省略（[Session 访问 A.3](../contracts/session-access.md#a3-sessionconfig-fields)，格式决定见 [#364 v19 格式决定](#364-v19-格式决定)）；其中 `model` 是 `ModelSelection {providerId, modelId, config?, metadata?}`，创建时固定完整模型参数，省略参数的身份记录仍可读取。`permissionPolicy` 为 `{preset, allowedTools, disallowedTools}`（兼容规则见下段），`collaborationRole` 为 `leader` 或 `member`。可选字段 `interactive`（布尔，缺省 `true`）由[路线图](../roadmap.md) C2 加入，已实现，格式决定如下：保持 v13，不升级到 v14，这是配置 JSON 中增量的可选字段；缺少它的已存储记录表示 `true`，因为该字段出现之前创建的每个 Session 都是客户端 Session；只写入 `false`，交互式记录不含该字段，与该字段出现之前写入的记录格式相同；这一省略规则写在 `SessionConfig` 的 serde 定义上，原生存储是它唯一的序列化方，在其他地方暴露 `SessionConfig` 须另行决定；旧版守护进程忽略该字段，会把非交互记录读成交互式，这一点可以接受。字段合同见 [Session 访问 A.3](../contracts/session-access.md#a3-sessionconfig-fields)。`timeline_branches.info` 是 `BranchRecord`：`main` 为 `{id:"main"}`，子分支为 `{id, parent, branch_point, create_anchor}`；后两项是父分支的本地序号。运行时的 `TimelineInfo` 是它加上 `source`，该字段不落盘。JSON 字段名按各类型的 serde 定义，不能由 SQL 列名的拼写推断。
 
-`PermissionPolicy` 的增量可选字段沿用当前 v28 SQL schema 和格式标记，不重写旧记录。
-`fileAccess` 的值为 `read-only`、`workspace-read-write` 或 `unrestricted`，`toolApproval` 的值为
-`ask` 或 `bypass`；省略时序列化仍不写入，分别保留 `preset` 原有的文件行为和风险判定，不补成显式 Ask。
-同一扩展类型也用于 `permission/changed {policy}` 的持久化正文；每次更新保留未修改的覆盖字段和工具列表。
-字段语义属于 [Permission 合同](../../architecture/rust-agent/plugins/Permission.md#policy-contract)
-（[ADR 017](../../adr/017-independent-permission-controls.md)）。新二进制可读取旧策略不表示反向兼容：
-旧二进制拒绝含显式 `fileAccess` 或 `toolApproval` 的策略，包括 Session 配置和事件正文。
-写入这些字段后的数据库不支持降级；相同的 v28 标记并不保证旧二进制能恢复这些记录，也没有删除字段或
-转换为预设的降级路径。不得通过丢弃覆盖字段来恢复读取，因为这会改变权限决策。
+`PermissionPolicy` 的格式决定见 [ADR 018](../../adr/018-permission-is-the-preset.md)。
+SQL schema 和格式标记不变，读取不重写记录。策略对象中的未知键被忽略，包括已删除的
+`fileAccess` 和 `toolApproval`；保存时只写入预设和工具列表。Session 配置与
+`permission/changed {policy}` 的正文采用同一策略类型，外层记录仍严格校验。
+旧记录按保存的预设执行，包括曾受更严格覆盖字段限制的记录；不映射旧字段、不添加提示。
+字段语义属于 [Permission 合同](../../architecture/rust-agent/plugins/Permission.md#policy-contract)。
 
 `context/configured` 的 `ModelConfiguration` 分别固定模型与工具部分：模型使用上述参数，`tools` 为已采用声明，可选 `toolSources` 为 `{key,version}[]` 的来源版本；没有来源时省略。模型更新保留已采用的工具部分，工具采用保留模型部分，完整合同见[App Server合同](../../../crates/dim-app-server/README.md)。
 

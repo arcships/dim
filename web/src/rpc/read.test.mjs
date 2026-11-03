@@ -15,7 +15,14 @@ registerHooks({
   },
 })
 
-const { ProtocolError, readAccountProviders, readBranchCreate, readHistory, readMemberApproval, readNotification, readProviderCatalog } = await import("./read.ts")
+const { ProtocolError, readAccountProviders, readBranchCreate, readHistory, readMemberApproval, readNotification, readPermissionState, readProviderCatalog } = await import("./read.ts")
+
+test("permission replies ignore removed policy keys and still validate presets and tool lists", () => {
+  const policy = { preset: "full-access", allowedTools: ["read"], disallowedTools: ["exec"] }
+  assert.deepEqual(readPermissionState({ version: 7, policy: { ...policy, fileAccess: "read-only", toolApproval: "ask" } }), { version: 7, policy })
+  assert.throws(() => readPermissionState({ version: 7, policy: { ...policy, preset: "invalid" } }), ProtocolError)
+  assert.throws(() => readPermissionState({ version: 7, policy: { ...policy, disallowedTools: [false] } }), ProtocolError)
+})
 
 test("model discovery reads managed providers and distinguishes missing catalogs from failures", () => {
   assert.deepEqual(readAccountProviders([

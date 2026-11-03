@@ -139,14 +139,6 @@ export const settings: SourceDeclaration = {
                     "full-access"
                   ]
                 },
-                "fileAccess": {
-                  "type": "string",
-                  "enum": ["read-only", "workspace-read-write", "unrestricted"]
-                },
-                "toolApproval": {
-                  "type": "string",
-                  "enum": ["ask", "bypass"]
-                },
                 "allowedTools": {
                   "type": "array",
                   "items": {
@@ -165,7 +157,6 @@ export const settings: SourceDeclaration = {
                 "allowedTools",
                 "disallowedTools"
               ],
-              "additionalProperties": false
             },
             "created_by": {
               "anyOf": [

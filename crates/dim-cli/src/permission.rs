@@ -21,7 +21,7 @@ use crate::{
 };
 use dim_agent_types::{
     ApprovalCallData, COMMAND_SEPARATORS, CommandMatch, CommandRule, CommandRuleDecision,
-    FileAccess, PermissionChangedData, PermissionPolicy, PermissionPreset, ToolApproval,
+    PermissionChangedData, PermissionPolicy, PermissionPreset,
 };
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -34,73 +34,14 @@ pub const PRESETS: [PermissionPreset; 3] = [
 pub const PRESET_METHODS: [&str; 2] = ["session.permission.get", "session.permission.update"];
 pub const RULE_METHODS: [&str; 2] = ["permission.rules", "permission.set_rules"];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Change {
-    FileAccess(FileAccess),
-    ToolApproval(ToolApproval),
-}
-
-impl Change {
-    pub fn apply(self, policy: &mut PermissionPolicy) -> bool {
-        match self {
-            Self::FileAccess(value) => policy.file_access.replace(value) != Some(value),
-            Self::ToolApproval(value) => policy.tool_approval.replace(value) != Some(value),
-        }
-    }
-
-    pub fn config(self) -> (&'static str, Value) {
-        match self {
-            Self::FileAccess(value) => ("fileAccess", json!(value)),
-            Self::ToolApproval(value) => ("toolApproval", json!(value)),
-        }
-    }
-}
-
-pub fn file_label(value: FileAccess) -> &'static str {
-    match value {
-        FileAccess::ReadOnly => "Read only",
-        FileAccess::WorkspaceReadWrite => "Workspace read/write",
-        FileAccess::Unrestricted => "Unrestricted",
-    }
-}
-
-pub fn tool_label(value: ToolApproval) -> &'static str {
-    match value {
-        ToolApproval::Ask => "Ask",
-        ToolApproval::Bypass => "Bypass",
-    }
-}
-
-pub fn tool_policy_label(policy: &PermissionPolicy) -> &'static str {
-    if policy.tool_approval.is_none() && policy.preset != PermissionPreset::FullAccess {
-        "Ask (legacy tool exceptions)"
-    } else {
-        tool_label(policy.tool_approval())
-    }
-}
-
 pub fn creation_policy(options: &crate::args::Options) -> Option<Value> {
-    if options.permission.is_none()
-        && options.file_access.is_none()
-        && options.tool_approval.is_none()
-    {
-        return None;
-    }
-    let mut policy =
-        json!({"preset": options.permission.unwrap_or(PermissionPreset::WorkspaceWrite)});
-    if let Some(value) = options.file_access {
-        policy["fileAccess"] = json!(value);
-    }
-    if let Some(value) = options.tool_approval {
-        policy["toolApproval"] = json!(value);
-    }
-    Some(policy)
+    options.permission.map(|preset| json!({"preset": preset}))
 }
 
-pub async fn select_control(
+pub async fn select_preset(
     client: &mut Client,
     session_id: &str,
-    change: Change,
+    preset: PermissionPreset,
 ) -> Result<PermissionPolicy> {
     #[derive(Deserialize)]
     struct Updated {
@@ -109,9 +50,10 @@ pub async fn select_control(
     }
     let mut state = read(client, session_id).await?;
     for _ in 0..ATTEMPTS {
-        if !change.apply(&mut state.policy) {
+        if state.policy.preset == preset {
             return Ok(state.policy);
         }
+        state.policy.preset = preset;
         match client.typed::<Updated>(
             "session.permission.update",
             json!({"sessionId":session_id,"branchId":"main","expectedVersion":state.version,"policy":state.policy}),

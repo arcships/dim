@@ -94,8 +94,7 @@ sandbox off, the original spec comes back with neither value.
 A missing port or an unreadable source fails preparation as `isolation_config_invalid` before any
 payload starts; it never runs unsandboxed. Sandbox on without a backend fails as
 `isolation_unavailable`: always on Windows, and on Linux when bubblewrap is not on the captured
-`PATH`, whose reason says to install bubblewrap or select Off in `/permissions > Process isolation`
-(also available in `/settings > Process isolation`).
+`PATH`, whose reason says to install bubblewrap or select Off in `/settings > Process isolation`.
 `HostPlatform::sandbox_backend()` reports the same decision before a process starts: `Available`,
 or `Unavailable` with that reason. On Linux it uses the same captured-`PATH` bubblewrap resolution
 as preparation. The App Server's `ExecutionBackend` part exposes it as `host.execution.backend`;
@@ -107,12 +106,12 @@ There is no policy file, no tier and no fallback. Ordinary user ShellInput does 
 operation. No process, task, lock, watcher or Timeline fact is added by preparation.
 
 The crate-local `ISOLATION_SUMMARY` is the static declaration line, `None` on Windows; on macOS it
-also names `$TMPDIR` as writable. It says the user decides in `/permissions > Process isolation` whether
+also names `$TMPDIR` as writable. It says the user decides in `/settings > Process isolation` whether
 commands run sandboxed, what the sandbox blocks, and that the model cannot change it. The exec and
 persistent-shell execute declarations add it after their environment line. It does not read the
 switches: declarations are read once, while each process start reads them.
 `Isolation::failure_hint(output)` returns a note when the output shows a typical denial; it names
-`Process isolation` in `/permissions` and distinguishes the sandbox from Tool approval.
+`Process isolation` in `/settings` and distinguishes the sandbox from permission presets.
 
 For a persistent shell, background PIDs enter through the
 existing PTY marker. `PtyProcessTree::job_pid` uses portable-pty's foreground-group handle and

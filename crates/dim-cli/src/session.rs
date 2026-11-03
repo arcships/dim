@@ -310,11 +310,6 @@ pub async fn chat(
     match policy {
         Some(Ok(policy)) => {
             display.record(&format!("permission: {}", permission::name(policy.preset)))?;
-            display.record(&format!(
-                "File access: {}; Tool approval: {}",
-                permission::file_label(policy.file_access()),
-                permission::tool_policy_label(&policy)
-            ))?;
         }
         Some(Err(error)) => display.record(&format!("permission: unavailable ({error})"))?,
         None => {}
@@ -1217,10 +1212,8 @@ fn render(notice: Message, session_id: &str, display: &mut Display) -> Result<()
                     && sequence > display.cursor.max(display.permission_seen)
                 {
                     display.record(&format!(
-                        "[permission] main branch preset: {}; File access: {}; Tool approval: {}",
-                        permission::name(policy.preset),
-                        permission::file_label(policy.file_access()),
-                        permission::tool_policy_label(&policy)
+                        "[permission] main branch preset: {}",
+                        permission::name(policy.preset)
                     ))?;
                     display.permission_seen = sequence;
                 }
