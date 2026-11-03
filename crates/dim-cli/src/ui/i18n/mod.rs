@@ -263,6 +263,27 @@ mod tests {
         }
     }
 
+    /// The prompt-suggestion row, the line a failed change reports and the
+    /// line the pause is announced with exist in every locale, and the failed
+    /// change keeps the error it carries.
+    #[test]
+    fn every_locale_translates_the_prompt_suggestion_strings() {
+        for (code, lookup) in tables() {
+            for key in [
+                "Prompt suggestion",
+                "Prompt suggestion: {error}",
+                "Suggestions are paused in this session because offers went unused. Turn them off and on in /settings to resume.",
+            ] {
+                assert!(lookup(key).is_some(), "{code} lacks {key:?}");
+            }
+            let text = lookup("Prompt suggestion: {error}").expect("translated line");
+            assert!(
+                text.contains("{error}"),
+                "{code} drops the error placeholder: {text:?}"
+            );
+        }
+    }
+
     /// `/goal`'s palette row and the goal element of the status area exist in
     /// every locale.
     #[test]

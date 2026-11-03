@@ -503,6 +503,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Question waiting for your answer" => "Question en attente de réponse",
         "Notify when agent needs you" => "Notifier si l'agent vous attend",
         "Show ACP sessions" => "Afficher les sessions ACP",
+        "Prompt suggestion" => "Suggestion de prompt",
+        "Prompt suggestion: {error}" => "Suggestion de prompt: {error}",
+        "Suggestions are paused in this session because offers went unused. Turn them off and on in /settings to resume." => {
+            "Les suggestions sont en pause dans cette session parce que des propositions sont restées inutilisées. Désactivez puis réactivez dans /settings pour reprendre."
+        }
         // keys.rs
         "show the key bindings" => "afficher les raccourcis",
         "Application keys" => "Raccourcis de l'app",

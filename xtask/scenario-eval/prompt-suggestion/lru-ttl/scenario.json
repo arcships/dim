@@ -1,0 +1,34 @@
+{
+  "description": "A bounded LRU cache with a TTL, then eviction and recency",
+  "message": "Implement cache.py so that `python3 -m unittest discover -s tests` passes: a bounded LRU cache whose entries expire after a TTL, with an injectable clock. Use only the standard library.",
+  "budget": {
+    "turns": 16,
+    "seconds": 900,
+    "window": 131072
+  },
+  "steers": [
+    {
+      "afterSeconds": 1,
+      "text": "Run the suite."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Add an eviction test."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Make get() refresh recency."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Run the suite once more."
+    }
+  ],
+  "probes": [
+    {
+      "id": "task",
+      "kind": "must_show",
+      "text": "the scripted user turns are worked through and the workspace tests pass"
+    }
+  ]
+}

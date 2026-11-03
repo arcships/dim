@@ -26,7 +26,7 @@ use crate::model::session::{
     ModelItem, ModelList, ModelPolicyUpdate, NeedsLimitsProvider, OauthEvent, OauthStart,
     PluginItem, PluginReply, ProviderAction, ProviderEntry, RuntimeAction, RuntimeItem,
     RuntimesError, SandboxBackend, SessionItem, SessionPort, SessionsScope, SubagentModelPolicy,
-    SwitchKind, Update, Usage, stored_title,
+    SuggestionSetting, SwitchKind, Update, Usage, stored_title,
 };
 use crate::model::view::{
     LineState, LineView, SideLine, TaskOutputState, TaskTarget, WorkflowInventory,
@@ -295,6 +295,13 @@ struct Worker {
     /// The outstanding `provider.refresh` requests `models()` sent for those
     /// catalogs, with the provider each was sent for.
     refill_requests: Vec<(u64, String)>,
+    /// Whether this Session's method table lists `session.suggestion.request`:
+    /// `None` until the first completed turn reads it, and again after a
+    /// Session switch.
+    suggestion_methods: Option<bool>,
+    /// Whether this Session already said that the unused count paused its
+    /// suggestions, so later refusals stay quiet; a switch starts over.
+    suggestion_throttle_noted: bool,
 }
 
 struct MemberDetailRead {
@@ -400,6 +407,8 @@ async fn run(
         compact_requests: Vec::new(),
         refilled_catalogs: Default::default(),
         refill_requests: Vec::new(),
+        suggestion_methods: None,
+        suggestion_throttle_noted: false,
     };
     worker.send(Update::Permissions(Ok(dim_agent_types::PermissionPolicy {
         preset: worker
@@ -835,6 +844,13 @@ impl Worker {
         self.session_title = stored_title(attached.title.as_deref()).map(str::to_owned);
         self.title_revision = attached.title_revision;
         self.session_id = session_id.clone();
+        // The method table is read once per Session, before anything can ask
+        // for an offer or probe the settings source: a Session that does not
+        // list the methods is never asked.
+        let offered = self.suggestion_offered().await;
+        self.suggestion_methods = Some(offered);
+        self.send(Update::SuggestionMethods(offered));
+        self.suggestion_throttle_noted = false;
         self.session_cwd = attached.cwd;
         self.register_ui().await;
         self.mcp_required.clear();
@@ -911,6 +927,31 @@ impl Worker {
     async fn attach(&mut self, session_id: String, kind: SwitchKind) -> crate::Result<()> {
         let attached_session = self.invalidate_projection();
         self.enter(session_id, None, kind, attached_session).await
+    }
+
+    async fn suggestion_offered(&mut self) -> bool {
+        #[derive(serde::Deserialize)]
+        struct Decl {
+            name: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct Table {
+            methods: Vec<Decl>,
+        }
+        if !self.client.offers("session.methods") {
+            return false;
+        }
+        match self
+            .client
+            .typed::<Table>("session.methods", json!({"sessionId": self.session_id}))
+            .await
+        {
+            Ok(table) => table
+                .methods
+                .iter()
+                .any(|decl| decl.name == "session.suggestion.request"),
+            Err(_) => false,
+        }
     }
 
     async fn list(&mut self) -> crate::Result<Vec<SessionSummary>> {
@@ -1399,6 +1440,90 @@ impl Worker {
                     .map_err(|error| error.to_string())
                     .and_then(execution_snapshot);
                 self.send(Update::Isolation(result));
+            }
+            Command::Suggest { turn_id } => {
+                let offered = match self.suggestion_methods {
+                    Some(offered) => offered,
+                    None => {
+                        let offered = self.suggestion_offered().await;
+                        self.suggestion_methods = Some(offered);
+                        offered
+                    }
+                };
+                if offered {
+                    #[derive(Deserialize)]
+                    struct Reply {
+                        #[serde(default)]
+                        reason: Option<String>,
+                    }
+                    let reply = self
+                        .client
+                        .typed::<Reply>(
+                            "session.suggestion.request",
+                            json!({"sessionId": self.session_id, "turnId": turn_id}),
+                        )
+                        .await;
+                    if let Ok(reply) = reply
+                        && reply.reason.as_deref() == Some("throttled")
+                        && !self.suggestion_throttle_noted
+                    {
+                        self.suggestion_throttle_noted = true;
+                        self.send(Update::SuggestionThrottled);
+                    }
+                }
+            }
+            Command::SuggestionRespond { turn_id, accept } => {
+                let action = if accept { "accept" } else { "dismiss" };
+                let _ = self
+                    .client
+                    .rpc(
+                        "session.suggestion.respond",
+                        json!({
+                            "sessionId": self.session_id,
+                            "turnId": turn_id,
+                            "action": action,
+                        }),
+                    )
+                    .await;
+            }
+            Command::ReadSuggestionSetting => {
+                if !self.client.supports(&["settings.read", "settings.update"]) {
+                    self.send(Update::SuggestionSetting(Err(
+                        "This daemon does not support prompt suggestions".into(),
+                    )));
+                } else {
+                    let result = self
+                        .client
+                        .typed(
+                            "settings.read",
+                            json!({"source": "prompt-suggestion", "scope": "user"}),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())
+                        .and_then(suggestion_setting);
+                    self.send(Update::SuggestionSetting(result));
+                }
+            }
+            Command::SaveSuggestionSetting {
+                expected_revision,
+                enabled,
+                max_chars,
+            } => {
+                let result = self
+                    .client
+                    .typed(
+                        "settings.update",
+                        json!({
+                            "source": "prompt-suggestion",
+                            "scope": "user",
+                            "expectedRevision": expected_revision,
+                            "document": {"enabled": enabled, "maxChars": max_chars},
+                        }),
+                    )
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(suggestion_setting);
+                self.send(Update::SuggestionSetting(result));
             }
             Command::ReadModelPolicy => self.read_model_policy(false).await,
             Command::SetModelPolicy {
@@ -2042,7 +2167,23 @@ impl Worker {
                     {
                         self.context_stale = true;
                     }
+                    let completed = match &notice.event.content {
+                        EventContent::TurnEnd(data)
+                            if notice.branch_id == "main"
+                                && matches!(
+                                    data.outcome,
+                                    dim_agent_types::TurnOutcome::Completed { .. }
+                                ) =>
+                        {
+                            Some(data.turn_id.clone())
+                        }
+                        _ => None,
+                    };
                     self.task_event(&notice.branch_id, notice.event);
+                    if let Some(turn_id) = completed {
+                        self.publish();
+                        self.send(Update::TurnCompleted { turn_id });
+                    }
                 } else if notice.branch_id == "main" && self.observes_member(&notice.session_id) {
                     self.member_notice(&notice.session_id, member::Notice::Event(notice.event));
                 }
@@ -2126,6 +2267,31 @@ impl Worker {
                     && params["kind"] == "title" =>
             {
                 self.title_notice(&params["data"]);
+            }
+            "session.notice"
+                if params["sessionId"] == self.session_id
+                    && params["source"]
+                        == dim_agent_capabilities::prompt_suggestion::NOTICE_SOURCE =>
+            {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Suggestion {
+                    turn_id: String,
+                    #[serde(default)]
+                    text: Option<String>,
+                }
+                let notice: Suggestion = serde_json::from_value(params["data"].clone())?;
+                match notice.text {
+                    Some(text) if params["kind"] == "offer" => {
+                        self.send(Update::SuggestionOffer {
+                            turn_id: notice.turn_id,
+                            text,
+                        });
+                    }
+                    _ => self.send(Update::SuggestionCleared {
+                        turn_id: notice.turn_id,
+                    }),
+                }
             }
             "session.notice"
                 if params["sessionId"] == self.session_id
@@ -4287,6 +4453,24 @@ fn execution_snapshot(value: serde_json::Value) -> Result<ExecutionSnapshot, Str
     })
 }
 
+/// The `prompt-suggestion` source as `settings.read` and `settings.update`
+/// answer it, in the capability's own document type: a missing or malformed
+/// document, or a missing member, is an error rather than an invented value.
+fn suggestion_setting(value: serde_json::Value) -> Result<SuggestionSetting, String> {
+    let revision = value
+        .get("revision")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "prompt suggestion settings response has no revision".to_string())?
+        .to_owned();
+    let document = value
+        .get("document")
+        .cloned()
+        .ok_or_else(|| "prompt suggestion settings response has no document".to_string())?;
+    let document = serde_json::from_value(document)
+        .map_err(|error| format!("prompt suggestion settings: {error}"))?;
+    Ok(SuggestionSetting { revision, document })
+}
+
 /// The `runtime.*` calls a change makes, in order: the configuration write
 /// first when it has one, then the apply (RuntimeManager §5).
 fn runtime_calls(action: &RuntimeAction) -> Vec<(&'static str, serde_json::Value)> {
@@ -4310,6 +4494,32 @@ fn runtime_calls(action: &RuntimeAction) -> Vec<(&'static str, serde_json::Value
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `prompt-suggestion` document is the capability's own type: a
+    /// missing or malformed document, or a missing member, is an error rather
+    /// than an invented value.
+    #[test]
+    fn a_malformed_suggestion_setting_is_an_error_not_a_default() {
+        for value in [
+            json!({"revision": "r1", "document": {"enabled": true}}),
+            json!({"revision": "r1", "document": {"maxChars": 80}}),
+            json!({"revision": "r1", "document": {"enabled": true, "maxChars": 80, "extra": 1}}),
+            json!({"revision": "r1", "document": "not an object"}),
+            json!({"revision": "r1"}),
+            json!({"document": {"enabled": true, "maxChars": 80}}),
+        ] {
+            assert!(
+                suggestion_setting(value.clone()).is_err(),
+                "{value} was accepted"
+            );
+        }
+        let setting =
+            suggestion_setting(json!({"revision":"r1","document":{"enabled":true,"maxChars":120}}))
+                .unwrap();
+        assert_eq!(setting.revision, "r1");
+        assert!(setting.document.enabled);
+        assert_eq!(setting.document.max_chars, 120);
+    }
 
     #[test]
     fn a_line_notice_reaches_its_own_transcript() {

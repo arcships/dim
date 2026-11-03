@@ -1,0 +1,14 @@
+[
+  {
+    "turnId": "t1",
+    "estimatedInputTokens": 900.0,
+    "thresholdTokens": 1000.0,
+    "nextMessage": "run the tests"
+  },
+  {
+    "turnId": "t2",
+    "estimatedInputTokens": 950.0,
+    "thresholdTokens": 1000.0,
+    "nextMessage": "fix the failing case"
+  }
+]

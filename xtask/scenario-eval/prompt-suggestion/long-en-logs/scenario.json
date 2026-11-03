@@ -1,0 +1,38 @@
+{
+  "description": "Long session, English logs: six full reads in the first turn, then one per turn, on the 131,072-token window",
+  "message": "Run `python3 generate_logs.py` once; it writes logs/01.log through logs/10.log. Then use the read tool to read logs/01.log through logs/06.log in full, one call per file, and report the last line of each.",
+  "budget": {
+    "turns": 16,
+    "seconds": 1800,
+    "window": 131072
+  },
+  "steers": [
+    {
+      "afterSeconds": 1,
+      "text": "Use the read tool to read logs/07.log in full (do not use grep, head or tail) and report its last line."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Use the read tool to read logs/08.log in full (do not use grep, head or tail) and report its last line."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Use the read tool to read logs/09.log in full (do not use grep, head or tail) and report its last line."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Use the read tool to read logs/10.log in full (do not use grep, head or tail) and report its last line."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Count the error lines across the ten logs and write the count to summary.md."
+    }
+  ],
+  "probes": [
+    {
+      "id": "task",
+      "kind": "must_show",
+      "text": "the scripted user turns are worked through and the logs are read in full"
+    }
+  ]
+}

@@ -202,6 +202,7 @@ pub async fn local_graph() -> Result<BTreeMap<&'static str, Value>> {
         },
         dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
     );
+    dim_agent_capabilities::prompt_suggestion::install_local(&mut builder);
     dim_agent_capabilities::hooks::install(&mut builder);
     dim_agent_attachments::install(&mut builder);
     dim_agent_questions::install(&mut builder);

@@ -14,6 +14,7 @@
 | [ShellInput](ShellInput.md) | — | `shell.*` 方法、命令执行 | — | P1 |
 | [Attachments](Attachments.md) | — | `attachment.put`、Session 文件 | — | P1 |
 | [SessionTitle](SessionTitle.md) | — | 观察首条用户输入的采纳、`session.rename` | — | P1 |
+| [PromptSuggestion](PromptSuggestion.md) | App Server 中的 `PromptSuggestionSettings`：`prompt-suggestion` Settings 来源 | 观察完成轮次的事件、`session.suggestion.request` 与 `session.suggestion.respond`、在途请求与正在显示的提示；没有事件 | — | P1；[#943](https://github.com/arcships/dim/issues/943) |
 | [Goal](Goal.md) | — | `goal_update` 工具、`session.goal.*` | 由 `goal:objective` 与 `goal:status` 块折叠出的目标状态、续跑 | P2 |
 | [Pursuit](Pursuit.md)（Goal 的评审裁判模式） | — | `session.goal.set` 的 `judge` | 由评审分支决定的完成请求；结论输入与 Goal 的结局 | M2；#422 |
 | [Web](Web.md) | — | `web_search`、`web_fetch` 工具 | — | P2；可选包 |
@@ -39,6 +40,6 @@
 
 | 作用域 | 部分 |
 | --- | --- |
-| 进程部件 | daemon 内的 Provider（管理补充提案）、Scheduler、Workflow、ExternalAgent、Modality、PluginManager、RuntimeManager、RemoteGateway、Skills（安装）；接入方宿主进程内的 AcpGateway |
-| Session 部件 | Questions、ShellInput、Attachments、SessionTitle、Goal、Web、Recall、Hooks、Scheduler、Workflow、PromptSources、Prompt（条目表） |
+| 进程部件 | daemon 内的 Provider（管理补充提案）、Scheduler、Workflow、ExternalAgent、Modality、PluginManager、RuntimeManager、RemoteGateway、Skills（安装）、PromptSuggestion（Settings 来源）；接入方宿主进程内的 AcpGateway |
+| Session 部件 | Questions、ShellInput、Attachments、SessionTitle、PromptSuggestion、Goal、Web、Recall、Hooks、Scheduler、Workflow、PromptSources、Prompt（条目表） |
 | 分支部件 | Goal（含 Pursuit）、Hooks、Prompt |

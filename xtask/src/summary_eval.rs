@@ -1292,6 +1292,9 @@ pub(crate) struct Completion {
     pub completion_tokens: Option<f64>,
     /// The bytes of reasoning deltas the stream carried.
     pub thinking_bytes: usize,
+    /// The usage the stream last reported: the prompt, cached and completion
+    /// tokens one call counted.
+    pub usage: Option<dim_agent_types::Usage>,
 }
 
 pub(crate) async fn complete_detailed(
@@ -1316,14 +1319,14 @@ pub(crate) async fn complete_detailed(
 async fn collected(mut stream: ModelStream) -> std::result::Result<Completion, HostError> {
     let mut text = String::new();
     let mut stop = None;
-    let mut completion_tokens = None;
+    let mut usage = None;
     let mut thinking_bytes = 0;
     while let Some(chunk) = stream.next().await {
         match chunk? {
             ModelChunk::Text(delta) => text.push_str(&delta),
             ModelChunk::Thinking(delta) => thinking_bytes += delta.len(),
             ModelChunk::MessageStop { reason, .. } => stop = Some(reason),
-            ModelChunk::Usage(usage) => completion_tokens = Some(usage.completion_tokens),
+            ModelChunk::Usage(reported) => usage = Some(reported),
             _ => {}
         }
     }
@@ -1331,8 +1334,9 @@ async fn collected(mut stream: ModelStream) -> std::result::Result<Completion, H
     Ok(Completion {
         text,
         stop,
-        completion_tokens,
+        completion_tokens: usage.as_ref().map(|usage| usage.completion_tokens),
         thinking_bytes,
+        usage,
     })
 }
 

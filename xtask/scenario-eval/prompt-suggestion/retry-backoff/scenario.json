@@ -1,0 +1,34 @@
+{
+  "description": "A retry helper with exponential backoff, then a cap, jitter and giving up",
+  "message": "Implement retry() in retry.py so `python3 -m unittest discover -s tests` passes: exponential backoff, and AttemptsExceeded after max_tries.",
+  "budget": {
+    "turns": 16,
+    "seconds": 900,
+    "window": 131072
+  },
+  "steers": [
+    {
+      "afterSeconds": 1,
+      "text": "Run the tests."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Cap the backoff delay."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Add jitter to the delay."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Run the tests once more."
+    }
+  ],
+  "probes": [
+    {
+      "id": "task",
+      "kind": "must_show",
+      "text": "the scripted user turns are worked through and the workspace tests pass"
+    }
+  ]
+}

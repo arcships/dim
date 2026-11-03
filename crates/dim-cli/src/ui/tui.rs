@@ -11,7 +11,7 @@ use crate::management::{self, editor};
 use crate::model::session::{
     Area, Command, CompactReply, ContextReading, DIM_OAUTH_ID, DraftPart, ManagementAction,
     ManagementRefusal, ManagementRequest, ManagementResult, RenameReply, SessionPort, SubmitMode,
-    SwitchKind, Update,
+    SuggestionSetting, SwitchKind, Update,
 };
 #[cfg(test)]
 use crate::model::shell::Outcome as ShellOutcome;
@@ -558,7 +558,7 @@ fn run_terminal(
                     }
                     KeyCode::Char('e') if key.mods.0 == 0 => {
                         if let Some(text) = full.focused_text(&app) {
-                            app.composer.set_draft(&text);
+                            app.set_draft(&text);
                         }
                         full.clear_focus();
                         full.follow();
@@ -998,6 +998,23 @@ struct App {
     /// Queued messages withdrawn for the draft, by input id, until the host
     /// confirms each withdrawal; a confirmed one goes into the draft.
     recovering: Vec<(String, String)>,
+    /// The message the Session offered for the turn its composer belongs to.
+    suggestion: Option<Suggestion>,
+    /// The `prompt-suggestion` switch as last read or written; none until a
+    /// read answers.
+    suggestion_setting: Option<SuggestionSetting>,
+    /// Whether this Session's method table lists the suggestion methods:
+    /// without them, `/settings` neither probes the source nor shows the row.
+    suggestion_methods: bool,
+    /// A flip asked for before the switch was known: the read that answers
+    /// it sends the flip.
+    suggestion_flip: bool,
+}
+
+/// An offer the Session made for the message the user would send next.
+struct Suggestion {
+    turn_id: String,
+    text: String,
 }
 
 /// A management area's draft of one document: the text the editor was
@@ -1288,6 +1305,10 @@ impl App {
             management_edits: Vec::new(),
             management_named: None,
             recovering: Vec::new(),
+            suggestion: None,
+            suggestion_setting: None,
+            suggestion_methods: false,
+            suggestion_flip: false,
         }
     }
 
@@ -1366,7 +1387,7 @@ impl App {
         if !self.composer.is_empty() {
             self.palette_stash = Some(self.composer.text().to_owned());
         }
-        self.composer.set_draft("/");
+        self.set_draft("/");
     }
 
     /// Shows `prompt` in the prompt slot, keeping a pending question aside
@@ -1409,6 +1430,76 @@ impl App {
 
     fn running(&self) -> bool {
         self.failure.is_none() && self.snapshot.as_ref().is_some_and(|s| s.running)
+    }
+
+    /// Whether the user's attention is free for an offer: an empty composer,
+    /// no prompt or panel, no question or approval waiting and no goal
+    /// driving the Session.
+    fn suggestion_wanted(&self) -> bool {
+        self.failure.is_none()
+            && self.prompt.is_none()
+            && self.composer.is_empty()
+            && self.snapshot.as_ref().is_none_or(|snapshot| {
+                snapshot.questions.is_empty()
+                    && snapshot.approvals.is_empty()
+                    && snapshot
+                        .goal
+                        .as_ref()
+                        .is_none_or(|goal| goal.status != crate::goal::Status::Active)
+            })
+    }
+
+    /// A `turn/end` with `Completed` reached this interface: ask the Session
+    /// for the message the user would send next, when nothing else has the
+    /// user's attention.
+    fn turn_completed(&mut self, turn_id: &str) {
+        if self.suggestion_wanted() {
+            self.host.send(Command::Suggest {
+                turn_id: turn_id.to_owned(),
+            });
+        }
+    }
+
+    /// Takes the offer into the draft, unsent.
+    fn accept_suggestion(&mut self) {
+        let Some(suggestion) = self.suggestion.take() else {
+            return;
+        };
+        self.set_draft(&suggestion.text);
+        self.host.send(Command::SuggestionRespond {
+            turn_id: suggestion.turn_id,
+            accept: true,
+        });
+    }
+
+    /// Hides the offer and reports that it was not taken.
+    fn dismiss_suggestion(&mut self) {
+        let Some(suggestion) = self.suggestion.take() else {
+            return;
+        };
+        self.host.send(Command::SuggestionRespond {
+            turn_id: suggestion.turn_id,
+            accept: false,
+        });
+    }
+
+    /// Puts `text` in the composer as an edit, which dismisses an offer.
+    fn set_draft(&mut self, text: &str) {
+        self.dismiss_suggestion();
+        self.composer.set_draft(text);
+    }
+
+    /// Writes the `prompt-suggestion` switch the panel flipped, keeping the
+    /// length limit the last read reported.
+    fn save_suggestion_flip(&mut self) {
+        let Some(setting) = self.suggestion_setting.clone() else {
+            return;
+        };
+        self.host.send(Command::SaveSuggestionSetting {
+            expected_revision: setting.revision,
+            enabled: !setting.document.enabled,
+            max_chars: setting.document.max_chars,
+        });
     }
 
     /// What the command palette weighs availability against.
@@ -1482,9 +1573,9 @@ impl App {
         let (_, text) = self.recovering.remove(at);
         let draft = self.composer.text();
         if draft.trim().is_empty() {
-            self.composer.set_draft(&text);
+            self.set_draft(&text);
         } else {
-            self.composer.set_draft(&format!("{draft}\n{text}"));
+            self.set_draft(&format!("{draft}\n{text}"));
         }
     }
 
@@ -2183,6 +2274,53 @@ impl App {
                     panel.set_backend(result);
                 }
             }
+            Update::SuggestionMethods(offered) => {
+                self.suggestion_methods = offered;
+                if let Some(Prompt::Settings(panel)) = &self.prompt {
+                    self.open_settings(panel.selected());
+                }
+            }
+            Update::SuggestionSetting(result) => match result {
+                Ok(setting) => {
+                    self.suggestion_setting = Some(setting.clone());
+                    if let Some(Prompt::Settings(panel)) = &mut self.prompt {
+                        panel.set_prompt_suggestion(setting.document.enabled);
+                    }
+                    if std::mem::take(&mut self.suggestion_flip) {
+                        self.save_suggestion_flip();
+                    }
+                }
+                Err(error) => {
+                    self.suggestion_flip = false;
+                    self.suggestion_setting = None;
+                    if let Some(Prompt::Settings(panel)) = &mut self.prompt {
+                        panel.set_prompt_suggestion_unavailable();
+                    }
+                    self.set_notice(tf("Prompt suggestion: {error}", &[("error", &error)]));
+                }
+            },
+            Update::TurnCompleted { turn_id } => self.turn_completed(&turn_id),
+            Update::SuggestionOffer { turn_id, text } => {
+                self.suggestion = Some(Suggestion { turn_id, text });
+            }
+            Update::SuggestionCleared { turn_id } => {
+                if self
+                    .suggestion
+                    .as_ref()
+                    .is_some_and(|suggestion| suggestion.turn_id == turn_id)
+                {
+                    self.suggestion = None;
+                }
+            }
+            Update::SuggestionThrottled => {
+                self.notices.push(
+                    t(
+                        "Suggestions are paused in this session because offers went unused. \
+                       Turn them off and on in /settings to resume.",
+                    )
+                    .to_owned(),
+                );
+            }
             Update::ModelPolicy(update) => {
                 if let Some(Prompt::Models(panel)) = &mut self.prompt
                     && let Some(notice) = panel.set_policy(update)
@@ -2249,7 +2387,7 @@ impl App {
             && self.composer.is_empty()
             && let Some(draft) = self.palette_stash.take()
         {
-            self.composer.set_draft(&draft);
+            self.set_draft(&draft);
         }
         outcome
     }
@@ -2389,6 +2527,25 @@ impl App {
             (key, SubmitMode::Queue)
         };
         let ctrl = key.mods.contains(Modifiers::CTRL);
+        if self.suggestion.is_some()
+            && self.composer.is_empty()
+            && self.prompt.is_none()
+            && key.mods.0 == 0
+        {
+            let accept = match key.code {
+                KeyCode::Right => true,
+                KeyCode::Tab => {
+                    !self.fullscreen
+                        && !self.composer.palette_open()
+                        && !self.composer.mention_open()
+                }
+                _ => false,
+            };
+            if accept {
+                self.accept_suggestion();
+                return Outcome::Continue;
+            }
+        }
         match key.code {
             KeyCode::Char('o' | 'p') if ctrl && !self.composer.palette_open() => {
                 self.open_palette();
@@ -2430,6 +2587,8 @@ impl App {
                     self.interrupt();
                 } else if self.composer.shell().is_some() {
                     self.composer.clear();
+                } else if self.suggestion.is_some() {
+                    self.dismiss_suggestion();
                 }
                 return Outcome::Continue;
             }
@@ -2507,6 +2666,9 @@ impl App {
             ComposerOutcome::Rejected(reason) => self.set_notice(reason),
             ComposerOutcome::Handled | ComposerOutcome::Pass => {}
         }
+        if self.suggestion.is_some() && !self.composer.is_empty() {
+            self.dismiss_suggestion();
+        }
         Outcome::Continue
     }
 
@@ -2514,6 +2676,7 @@ impl App {
     /// dragged onto it: local files and directories it names are inserted
     /// as `[name]` tokens, except into a shell command.
     fn paste(&mut self, text: String) {
+        self.dismiss_suggestion();
         let base = std::path::Path::new(&self.cwd_key);
         let paths = match self.composer.shell() {
             Some(_) => None,
@@ -2775,7 +2938,7 @@ impl App {
     fn draft_line(&mut self, at: u64, text: &str) {
         if let Some(draft) = self.line_at(at) {
             self.line_draft = Some(draft);
-            self.composer.set_draft(text);
+            self.set_draft(text);
         }
     }
 
@@ -3302,7 +3465,12 @@ impl App {
     fn settings(&mut self, args: &str) {
         let mut words = args.split_whitespace();
         match (words.next(), words.next(), words.next()) {
-            (None, _, _) => self.open_settings(Setting::Theme),
+            (None, _, _) => {
+                if self.suggestion_methods {
+                    self.host.send(Command::ReadSuggestionSetting);
+                }
+                self.open_settings(Setting::Theme);
+            }
             (Some("recording"), None, None) => {
                 self.host.send(Command::Recording(String::new()));
             }
@@ -3336,6 +3504,11 @@ impl App {
             mouse: self.mouse,
             notify: self.notify,
             acp_sessions: crate::ui::config::saved_show_acp(&self.home),
+            prompt_suggestion_supported: self.suggestion_methods,
+            prompt_suggestion: self
+                .suggestion_setting
+                .as_ref()
+                .map(|setting| setting.document.enabled),
             permission: crate::permission::name(self.permission_policy.preset).to_owned(),
         };
         self.open_prompt(Prompt::Settings(SettingsPanel::new(&values, select)));
@@ -3424,6 +3597,16 @@ impl App {
                     self.set_notice(error);
                 }
                 self.settings_return = None;
+                self.open_settings(setting);
+            }
+            Setting::PromptSuggestion => {
+                self.settings_return = None;
+                if self.suggestion_setting.is_some() {
+                    self.save_suggestion_flip();
+                } else {
+                    self.suggestion_flip = true;
+                    self.host.send(Command::ReadSuggestionSetting);
+                }
                 self.open_settings(setting);
             }
         }
@@ -3888,7 +4071,7 @@ impl App {
                 Outcome::Continue
             }
             "branch" if args.is_empty() => {
-                self.composer.set_draft("/branch ");
+                self.set_draft("/branch ");
                 Outcome::Continue
             }
             "branch" => {
@@ -4368,15 +4551,23 @@ impl App {
             && self.composer.palette_open()
             && (self.prompt.is_none() || command_entry);
         let (cursor_row, cursor_col) = if self.composer.is_empty() || palette_overlay {
-            let placeholder = match shell {
-                Some(_) => t(SHELL_PLACEHOLDER),
-                None if self.fullscreen => "",
-                None => t(COMPOSER_PLACEHOLDER),
+            let offer = self
+                .suggestion
+                .as_ref()
+                .filter(|_| shell.is_none() && self.prompt.is_none() && !palette_overlay)
+                .filter(|_| cols >= 20)
+                .map(|suggestion| truncate_cells(&suggestion.text, text_width))
+                .filter(|text| !text.is_empty());
+            let placeholder = match offer {
+                Some(text) => text,
+                None if shell.is_some() => t(SHELL_PLACEHOLDER).to_owned(),
+                None if self.fullscreen => String::new(),
+                None => t(COMPOSER_PLACEHOLDER).to_owned(),
             };
             rows.push(format!(
                 "{}{}",
                 fg(prompt, prompt_color),
-                fg(placeholder, &p.muted)
+                fg(&placeholder, &p.muted)
             ));
             (0, prompt_width)
         } else {
@@ -4993,6 +5184,7 @@ impl App {
         };
         self.composer.clear();
         self.line_draft = None;
+        self.suggestion = None;
         if let Some(text) = self.fork_draft.take()
             && kind == SwitchKind::Forked
         {
@@ -5022,7 +5214,7 @@ impl App {
         let (text, cut) = (snapshot.rows[index].text.clone(), snapshot.rows[index].cut);
         match action {
             TimelineAction::Jump => self.jump_to(index),
-            TimelineAction::Edit => self.composer.set_draft(&text),
+            TimelineAction::Edit => self.set_draft(&text),
             TimelineAction::Quote => {
                 if !self.composer.quote(&text) && self.composer.shell().is_some() {
                     self.set_notice(t("Leave shell mode to quote a message"));
@@ -7434,6 +7626,125 @@ mod tests {
                 assert!(rows.iter().any(|row| strip_escapes(row).contains("…")));
             }
         }
+    }
+
+    #[test]
+    fn the_offer_truncates_to_the_composer_and_hides_below_twenty_columns() {
+        let home = tempfile::tempdir().unwrap();
+        let theme = test_theme();
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut app = App::new(
+            Box::new(Recorder(sent)),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        app.apply(Update::SuggestionOffer {
+            turn_id: "turn".into(),
+            text: "run the tests and commit the change".into(),
+        });
+        let live = |app: &mut App, cols: u16, rows: u16| {
+            crate::ui::render::panel::strip_escapes(&app.frame((cols, rows)).live.join("\n"))
+        };
+        assert!(live(&mut app, 80, 24).contains("run the tests and commit the change"));
+        assert!(live(&mut app, 30, 24).contains("run the tests and co…"));
+        let narrow = live(&mut app, 19, 24);
+        assert!(!narrow.contains("run the tests"), "{narrow}");
+        assert!(narrow.contains("Ask anythi"), "{narrow}");
+    }
+
+    #[test]
+    fn the_prompt_suggestion_row_shows_the_daemons_value_and_writes_the_flip() {
+        let home = tempfile::tempdir().unwrap();
+        let theme = test_theme();
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut app = App::new(
+            Box::new(Recorder(sent.clone())),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        let key = |code| InputEvent::Key(crate::ui::terminal::KeyEvent::new(code, Modifiers::NONE));
+        app.apply(Update::SuggestionMethods(true));
+        app.run_command("settings", "");
+        assert!(matches!(
+            sent.borrow().first(),
+            Some(Command::ReadSuggestionSetting)
+        ));
+        app.apply(Update::SuggestionSetting(Ok(SuggestionSetting {
+            revision: "r1".into(),
+            document: dim_agent_capabilities::prompt_suggestion::PromptSuggestionSettings {
+                enabled: false,
+                max_chars: 80,
+            },
+        })));
+        let row = |app: &mut App| {
+            let live =
+                crate::ui::render::panel::strip_escapes(&app.frame((100, 40)).live.join("\n"));
+            let line = live
+                .lines()
+                .find(|line| line.contains("Prompt suggestion"))
+                .expect("the switch's row")
+                .to_owned();
+            line.split("Prompt suggestion")
+                .nth(1)
+                .expect("the row's value")
+                .trim_start()
+                .to_owned()
+        };
+        assert!(row(&mut app).starts_with("off"));
+        for _ in 0..8 {
+            app.handle_input(key(KeyCode::Down));
+        }
+        app.handle_input(key(KeyCode::Enter));
+        assert!(matches!(
+            sent.borrow().last(),
+            Some(Command::SaveSuggestionSetting {
+                expected_revision,
+                enabled: true,
+                max_chars: 80,
+            }) if expected_revision == "r1"
+        ));
+        app.apply(Update::SuggestionSetting(Ok(SuggestionSetting {
+            revision: "r2".into(),
+            document: dim_agent_capabilities::prompt_suggestion::PromptSuggestionSettings {
+                enabled: true,
+                max_chars: 80,
+            },
+        })));
+        assert!(row(&mut app).starts_with("on"));
+    }
+
+    /// A read that fails shows that the source is unavailable rather than a
+    /// value the client invented.
+    #[test]
+    fn a_failed_suggestion_read_shows_no_value() {
+        let home = tempfile::tempdir().unwrap();
+        let theme = test_theme();
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut app = App::new(
+            Box::new(Recorder(sent)),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        app.apply(Update::SuggestionMethods(true));
+        app.run_command("settings", "");
+        app.apply(Update::SuggestionSetting(Err(
+            "prompt suggestion settings: missing field `maxChars`".into(),
+        )));
+        let live = crate::ui::render::panel::strip_escapes(&app.frame((100, 40)).live.join("\n"));
+        let row = live
+            .lines()
+            .find(|line| line.contains("Prompt suggestion"))
+            .expect("the switch's row");
+        assert!(
+            row.contains(t("Not available")),
+            "the row shows a value: {row}"
+        );
     }
 
     #[test]

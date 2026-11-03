@@ -30,6 +30,8 @@ mod migration;
 mod models;
 #[path = "cli_flow/permission.rs"]
 mod permission;
+#[path = "cli_flow/prompt_suggestion.rs"]
+mod prompt_suggestion;
 #[path = "cli_flow/question.rs"]
 mod question;
 #[path = "cli_flow/scheduled.rs"]
@@ -2374,6 +2376,39 @@ fn piped_prompt_runs_once_and_model_failure_has_a_distinct_exit_code() {
     }
 }
 
+/// `text` without its ANSI escape sequences, so a painted row reads as the
+/// text the user sees.
+fn strip_ansi(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            plain.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                let mut previous = '\0';
+                for c in chars.by_ref() {
+                    if c == '\u{07}' || (previous == '\u{1b}' && c == '\\') {
+                        break;
+                    }
+                    previous = c;
+                }
+            }
+            _ => {}
+        }
+    }
+    plain
+}
+
 /// A CLI running on its own pseudo-terminal. Dropping it before the CLI has
 /// exited, as a failed flow does, ends the CLI's whole process group.
 struct Terminal {
@@ -2510,10 +2545,34 @@ impl Terminal {
         self.consumed = consumed;
     }
     fn until(&mut self, expected: &str) {
+        self.wait_for(expected, |tail| {
+            tail.find(expected).map(|index| index + expected.len())
+        });
+    }
+    /// Waits until the row labelled `label` shows `value`: a panel paints a
+    /// row's value in the same write as its label, so the text that follows
+    /// the label is the row's loaded state.
+    fn until_row(&mut self, label: &str, value: &str) {
+        let expected = format!("{label:?} showing {value:?}");
+        self.wait_for(&expected, |tail| {
+            let mut from = 0;
+            while let Some(index) = tail[from..].find(label) {
+                let end = from + index + label.len();
+                if strip_ansi(&tail[end..]).trim_start().starts_with(value) {
+                    return Some(end);
+                }
+                from = end;
+            }
+            None
+        });
+    }
+    /// Reads until `found` names how far into the unconsumed transcript the
+    /// wait is satisfied.
+    fn wait_for(&mut self, expected: &str, found: impl Fn(&str) -> Option<usize>) {
         let deadline = Instant::now() + PATIENCE;
         loop {
-            if let Some(index) = self.transcript[self.consumed..].find(expected) {
-                self.consumed += index + expected.len();
+            if let Some(end) = found(&self.transcript[self.consumed..]) {
+                self.consumed += end;
                 return;
             }
             assert!(

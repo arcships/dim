@@ -1,0 +1,34 @@
+{
+  "description": "把 CSV 渲染成 Markdown 表格：中文宽度、空单元格、对齐参数",
+  "message": "读 table.py 和 tests/test_table.py，实现 render()，让测试通过。",
+  "budget": {
+    "turns": 16,
+    "seconds": 900,
+    "window": 131072
+  },
+  "steers": [
+    {
+      "afterSeconds": 1,
+      "text": "跑一下测试。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "对齐宽度要按中文显示宽度算。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "空单元格要保留。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "加一个 --right-align 参数。"
+    }
+  ],
+  "probes": [
+    {
+      "id": "task",
+      "kind": "must_show",
+      "text": "the scripted user turns are worked through and the workspace tests pass"
+    }
+  ]
+}

@@ -1316,28 +1316,28 @@ struct ScenarioFile {
 }
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Call {
-    method: String,
+pub(crate) struct Call {
+    pub(crate) method: String,
     /// The method's parameters without the Session id, which the runner
     /// resolves.
     #[serde(default)]
-    params: Value,
+    pub(crate) params: Value,
 }
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Steer {
+pub(crate) struct Steer {
     #[serde(default)]
-    after_seconds: Option<f64>,
+    pub(crate) after_seconds: Option<f64>,
     #[serde(default)]
-    when_tool_call: Option<String>,
-    text: String,
+    pub(crate) when_tool_call: Option<String>,
+    pub(crate) text: String,
 }
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Budget {
-    turns: u32,
-    seconds: f64,
-    window: u64,
+pub(crate) struct Budget {
+    pub(crate) turns: u32,
+    pub(crate) seconds: f64,
+    pub(crate) window: u64,
 }
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1364,18 +1364,18 @@ impl ProbeKind {
 /// A scenario as the runner runs it: its directory (its workspace is
 /// `workspace/` beside the file), the script and the probes.
 #[derive(Clone)]
-struct Scenario {
-    id: String,
-    description: String,
-    directory: PathBuf,
-    message: String,
-    calls: Vec<Call>,
-    steers: Vec<Steer>,
-    budget: Budget,
+pub(crate) struct Scenario {
+    pub(crate) id: String,
+    pub(crate) description: String,
+    pub(crate) directory: PathBuf,
+    pub(crate) message: String,
+    pub(crate) calls: Vec<Call>,
+    pub(crate) steers: Vec<Steer>,
+    pub(crate) budget: Budget,
     probes: Vec<Probe>,
 }
 
-fn read_scenarios(directory: &Path) -> Result<Vec<Scenario>> {
+pub(crate) fn read_scenarios(directory: &Path) -> Result<Vec<Scenario>> {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(directory)
         .map_err(|error| format!("--scenarios {}: {error}", directory.display()))?
         .collect::<std::result::Result<Vec<_>, _>>()?
@@ -1929,7 +1929,7 @@ fn turns_in_export(export: &str) -> (u32, Option<String>) {
     (turns, failed)
 }
 
-async fn selection(
+pub(crate) async fn selection(
     server: &RunningServer,
     target: &ModelId,
     cwd: &Path,
@@ -2231,7 +2231,7 @@ async fn drive(
 /// (Questions §3.1), so a decline that arrives before the handler ran is
 /// `question_not_pending`: the client keeps its prompt until the call's
 /// `step/tool-result` arrives and lets the user answer again (§3.2, A12).
-struct Decline {
+pub(crate) struct Decline {
     branch: String,
     request: String,
     call: String,
@@ -2244,7 +2244,7 @@ struct Decline {
 /// Session does not wait for yet, and drops the calls a `step/tool-result`
 /// settled. A decline for a call the Session did not take stays with the run
 /// until [`retry_declines`] answers it.
-async fn decline_question(
+pub(crate) async fn decline_question(
     client: &mut Client,
     session: &str,
     declines: &mut Vec<Decline>,
@@ -2314,7 +2314,7 @@ async fn decline_question(
 /// keeps delivering other notices does not multiply the requests. The caller
 /// owns the count, so a run that ends on a reply still holds the resends it
 /// sent before it.
-async fn retry_declines(
+pub(crate) async fn retry_declines(
     client: &mut Client,
     session: &str,
     declines: &mut Vec<Decline>,
@@ -3277,9 +3277,9 @@ fn report(instrument: &Instrument, scenarios: &[Scenario], records: &[RunRecord]
 
 /// One run's private endpoint directory, short enough for Unix socket addresses.
 /// Dropping it removes only that run's endpoints.
-struct Sockets(PathBuf);
+pub(crate) struct Sockets(pub(crate) PathBuf);
 impl Sockets {
-    fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let directory = std::env::temp_dir().join(format!(
             "dim-scenario-eval-{}-{}",
@@ -3298,7 +3298,7 @@ impl Drop for Sockets {
 
 /// Creates `path` private to the user: the App Server serves its local
 /// endpoint only from a 0700 directory.
-fn private_directory(path: &Path) -> Result<()> {
+pub(crate) fn private_directory(path: &Path) -> Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -3317,7 +3317,7 @@ fn private_directory(path: &Path) -> Result<()> {
 
 /// Copies a directory tree. Only files and directories are copied; anything
 /// else in a scenario's workspace is an error naming the path.
-fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+pub(crate) fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;

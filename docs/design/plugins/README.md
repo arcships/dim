@@ -14,6 +14,7 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [ShellInput](ShellInput.md) | — | `shell.*` methods, command runs | — | P1 |
 | [Attachments](Attachments.md) | — | `attachment.put`, Session files | — | P1 |
 | [SessionTitle](SessionTitle.md) | — | observes adoption of the first user input, `session.rename` | — | P1 |
+| [PromptSuggestion](PromptSuggestion.md) | `PromptSuggestionSettings` in App Server: the `prompt-suggestion` Settings source | observes the completed turn's events, `session.suggestion.request` and `session.suggestion.respond`, the offer in flight and the shown offer; no events | — | P1; [#943](https://github.com/arcships/dim/issues/943) |
 | [Goal](Goal.md) | — | `goal_update` tool, `session.goal.*` | goal state folded from `goal:objective` and `goal:status` blocks, continuation | P2 |
 | [Pursuit](Pursuit.md) (evaluator judge mode of Goal) | — | `judge` on `session.goal.set` | completion requests decided by evaluator branches; conclusion inputs and Goal's outcomes | M2; #422 |
 | [Web](Web.md) | — | `web_search`, `web_fetch` tools | — | P2; optional package |
@@ -40,6 +41,6 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 
 | Scope | Parts |
 | --- | --- |
-| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation) in the daemon; AcpGateway in its client host process |
-| Session parts | Questions, ShellInput, Attachments, SessionTitle, Goal, Web, Recall, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table) |
+| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source) in the daemon; AcpGateway in its client host process |
+| Session parts | Questions, ShellInput, Attachments, SessionTitle, PromptSuggestion, Goal, Web, Recall, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table) |
 | Branch parts | Goal (with Pursuit), Hooks, Prompt |

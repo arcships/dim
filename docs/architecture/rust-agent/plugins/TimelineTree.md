@@ -62,7 +62,7 @@ Session close, and closing is not deletion of persisted history.
 | 作用域 | Session |
 | 注入 | `S:GuideEntries`、`S:SessionIdentity`、`S:TimelineFactory`、`S:dyn TimelineStore` |
 | 提供 | `S:TimelineTree`、`S:TreeCommands`、`S:dyn HostDispatch#treeCommands`、`S:dyn TimelineTreeControl` |
-| 被注入于 | `BranchLine`、`BranchTool`、`InputMethods`、`Recall`、`ShellInput`、`TreeTimeline`、`Wait`、`WorkspaceTools` |
+| 被注入于 | `BranchLine`、`BranchTool`、`InputMethods`、`PromptSuggestion`、`Recall`、`ShellInput`、`TreeTimeline`、`Wait`、`WorkspaceTools` |
 <!-- /generated -->
 
 ## TreeTimeline
