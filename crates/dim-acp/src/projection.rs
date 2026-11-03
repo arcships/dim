@@ -72,6 +72,24 @@ fn chunk(kind: &str, text: String, updates: &mut Vec<Value>) {
     }
 }
 
+/// The marker a loaded Skill's block starts with, after the operator's own
+/// text: the gateway shows that block as one line, as every client does.
+const SKILL_BLOCK: &str = "<dim-skill name=\"";
+
+fn loaded_skill(index: usize, text: &str) -> Option<String> {
+    if index == 0 {
+        return None;
+    }
+    let rest = text.strip_prefix(SKILL_BLOCK)?;
+    let name = rest.split('"').next()?;
+    (!name.is_empty()).then(|| {
+        name.replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&amp;", "&")
+    })
+}
+
 fn preview(content: &ToolContent) -> String {
     let text = match content {
         ToolContent::Text(text) => text.clone(),
@@ -137,9 +155,16 @@ impl Projection {
                 let user = self.inputs.remove(&data.input_id);
                 let silent = self.silent_inputs.remove(&data.input_id);
                 if !silent && let Some(user) = user {
-                    for content in user.content {
+                    for (index, content) in user.content.into_iter().enumerate() {
                         match content {
-                            ContentBlock::Text { text } => chunk("user_message_chunk", text, &mut updates),
+                            ContentBlock::Text { text } => match loaded_skill(index, &text) {
+                                Some(name) => chunk(
+                                    "user_message_chunk",
+                                    format!("\nSkill loaded: {name}"),
+                                    &mut updates,
+                                ),
+                                None => chunk("user_message_chunk", text, &mut updates),
+                            },
                             ContentBlock::Image { source } => {
                                 if let Some(data) = source.data {
                                     updates.push(json!({"sessionUpdate":"user_message_chunk","content":{"type":"image","mimeType":source.media_type,"data":data}}));
@@ -252,5 +277,57 @@ impl Projection {
             }
         }
         updates
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(value: Value) -> Event {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn replay(blocks: Value) -> Vec<Value> {
+        let mut projection = Projection::default();
+        assert!(
+            projection
+                .event(&event(json!({
+                    "id":"input-1","sequence":9,"create_at":1,
+                    "type":"input","name":"message",
+                    "data":{"user":{"content":blocks}},
+                })))
+                .is_empty()
+        );
+        projection.event(&event(json!({
+            "id":"consumed-1","sequence":10,"create_at":2,
+            "type":"input","name":"consumed",
+            "data":{"input_id":"input-1"},
+        })))
+    }
+
+    #[test]
+    fn a_loaded_skill_replays_as_one_line() {
+        let updates = replay(json!([
+            {"type":"text","text":"Explain the change"},
+            {"type":"text","text":"<dim-skill name=\"commit\">\n# Commit\nwrite it\n</dim-skill>"},
+        ]));
+        let texts: Vec<&str> = updates
+            .iter()
+            .map(|update| update["content"]["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(texts, ["Explain the change", "\nSkill loaded: commit"]);
+    }
+
+    #[test]
+    fn a_skill_marker_in_the_first_block_stays_text() {
+        let updates = replay(json!([
+            {"type":"text","text":"<dim-skill name=\"commit\">typed by hand"},
+        ]));
+        let texts: Vec<&str> = updates
+            .iter()
+            .map(|update| update["content"]["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(texts, ["<dim-skill name=\"commit\">typed by hand"]);
     }
 }
