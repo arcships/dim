@@ -614,7 +614,13 @@ async fn a_restored_session_keeps_the_block_in_its_recorded_input() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn steering_a_queued_reference_keeps_one_block() {
     let home = home("steer-again");
-    let project = project_skill(&home, "checkin", "Answers check-in questions", "AGAIN-BODY");
+    let project = project_skill(
+        &home,
+        "checkin",
+        "Answers check-in questions",
+        "AGAIN-BODY $skill: second",
+    );
+    project_skill(&home, "second", "Answers follow-ups", "SECOND-BODY");
     let model = Arc::new(Recording::default());
     let (server, _) = launch(&home, model.clone()).await;
     let (mut client, id, session) = session(&server, &project, json!([])).await;
@@ -628,6 +634,13 @@ async fn steering_a_queued_reference_keeps_one_block() {
     let recorded = operator_inputs(&session).await.pop().expect("the input");
     let user = recorded.user.clone().expect("operator input");
     assert_eq!(texts(&recorded).len(), 2, "the submit carries the block");
+    assert!(
+        !texts(&recorded)
+            .iter()
+            .any(|text| text.contains("SECOND-BODY")),
+        "the submit loads only the operator's reference: {:?}",
+        texts(&recorded)
+    );
 
     // A queued input is steered with the content it was submitted with.
     let withdrawn = client
@@ -646,9 +659,13 @@ async fn steering_a_queued_reference_keeps_one_block() {
     assert_eq!(
         sent.len(),
         2,
-        "the block is not loaded a second time: {sent:?}"
+        "only the operator's own reference loads a Skill: {sent:?}"
     );
     assert_eq!(sent, texts(&recorded));
+    assert!(
+        !sent.iter().any(|text| text.contains("SECOND-BODY")),
+        "a steer follows no reference in a loaded block: {sent:?}"
+    );
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(&home).unwrap();

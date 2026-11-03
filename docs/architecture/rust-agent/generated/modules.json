@@ -974,6 +974,16 @@
       ]
     },
     {
+      "id": "dim_agent_capabilities::skills::session::tests",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::skills::session",
+      "file": "crates/dim-agent-capabilities/src/skills/session.rs",
+      "unexpandedMacros": [
+        "assert_eq",
+        "vec"
+      ]
+    },
+    {
       "id": "dim_agent_capabilities::steer",
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities",
@@ -11949,6 +11959,13 @@
       "to": "dim_agent_capabilities::skills::content",
       "references": [
         "path super::content::Contents::new"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::skills::session",
+      "to": "dim_agent_capabilities::skills::session::tests",
+      "references": [
+        "mod tests"
       ]
     },
     {
