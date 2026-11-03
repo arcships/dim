@@ -16,6 +16,7 @@
 //! │   Mouse                  on                  │
 //! │   Notify when agent ...  on                  │
 //! │   Show ACP sessions      off                 │
+//! │   Prompt suggestion      off                 │
 //! │   Permissions                                │
 //! │   Permission             Workspace write ›   │
 //! │   Process isolation      ›                   │
@@ -40,6 +41,12 @@ pub struct Values {
     pub mouse: bool,
     pub notify: bool,
     pub acp_sessions: bool,
+    /// Whether the daemon lists the suggestion methods: without them the row
+    /// is absent.
+    pub prompt_suggestion_supported: bool,
+    /// `Some` is the switch as the daemon reported it; `None` is a read that
+    /// has not happened or failed, which the row shows rather than a value.
+    pub prompt_suggestion: Option<bool>,
     pub permission: String,
 }
 
@@ -54,11 +61,12 @@ pub enum Setting {
     Mouse,
     Notify,
     AcpSessions,
+    PromptSuggestion,
     Permission,
     Isolation,
 }
 
-const ROWS: [(Setting, &str); 10] = [
+const ROWS: [(Setting, &str); 11] = [
     (Setting::Theme, "theme"),
     (Setting::Language, "language"),
     (Setting::StartupForm, "startup-form"),
@@ -67,6 +75,7 @@ const ROWS: [(Setting, &str); 10] = [
     (Setting::Mouse, "mouse"),
     (Setting::Notify, "notify"),
     (Setting::AcpSessions, "acp-sessions"),
+    (Setting::PromptSuggestion, "prompt-suggestion"),
     (Setting::Permission, "permission"),
     (Setting::Isolation, "isolation"),
 ];
@@ -92,6 +101,7 @@ impl Setting {
                 | Self::Mouse
                 | Self::Notify
                 | Self::AcpSessions
+                | Self::PromptSuggestion
         )
     }
 }
@@ -107,7 +117,7 @@ impl SettingsPanel {
         let row = |setting: Setting, label: &'static str, value: String| {
             Item::new(setting.id(), t(label), value)
         };
-        let items = vec![
+        let mut items = vec![
             Item::heading(t("Interface")),
             row(Setting::Theme, "Theme", link(&values.theme)),
             row(Setting::Language, "Language", link(&values.language)),
@@ -151,10 +161,22 @@ impl SettingsPanel {
                 "Show ACP sessions",
                 on_off(values.acp_sessions).to_owned(),
             ),
+        ];
+        if values.prompt_suggestion_supported {
+            items.push(row(
+                Setting::PromptSuggestion,
+                "Prompt suggestion",
+                match values.prompt_suggestion {
+                    Some(on) => on_off(on).to_owned(),
+                    None => t("Not available").to_owned(),
+                },
+            ));
+        }
+        items.extend([
             Item::heading(t("Permissions")),
             row(Setting::Permission, "Permission", link(&values.permission)),
             row(Setting::Isolation, "Process isolation", link("")),
-        ];
+        ]);
         let mut list = ListPanel::new(
             "Settings",
             "↑↓ move · Enter select · ←→/Space change · Esc close",
@@ -171,6 +193,18 @@ impl SettingsPanel {
     /// A paste goes into the filter.
     pub fn paste(&mut self, text: &str) {
         self.list.paste(text);
+    }
+
+    /// Shows a value that was read after the panel opened.
+    pub fn set_prompt_suggestion(&mut self, enabled: bool) {
+        let value = if enabled { t("on") } else { t("off") };
+        self.list.set_detail(Setting::PromptSuggestion.id(), value);
+    }
+
+    /// Shows that the source could not be read, rather than a value.
+    pub fn set_prompt_suggestion_unavailable(&mut self) {
+        self.list
+            .set_detail(Setting::PromptSuggestion.id(), t("Not available"));
     }
 
     pub fn selected(&self) -> Setting {

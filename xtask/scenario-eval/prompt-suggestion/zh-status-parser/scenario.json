@@ -1,0 +1,34 @@
+{
+  "description": "解析 git status --porcelain 的输出，处理重命名与未跟踪目录",
+  "message": "读 status.py 和 tests/test_status.py，实现 parse()，让测试通过；fixtures/status.txt 是一份真实输出。",
+  "budget": {
+    "turns": 16,
+    "seconds": 900,
+    "window": 131072
+  },
+  "steers": [
+    {
+      "afterSeconds": 1,
+      "text": "用 fixtures/status.txt 试一下。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "重命名条目要拆成两个路径。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "未跟踪目录要单独处理。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "加一个统计各状态的函数。"
+    }
+  ],
+  "probes": [
+    {
+      "id": "task",
+      "kind": "must_show",
+      "text": "the scripted user turns are worked through and the workspace tests pass"
+    }
+  ]
+}

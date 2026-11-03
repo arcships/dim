@@ -1,0 +1,34 @@
+{
+  "description": "一段中文 Markdown 清理器：行尾空格、连续空行、标题前空行",
+  "message": "读 cleanup.py 和 tests/test_cleanup.py，实现 cleanup()，让 `python3 -m unittest discover -s tests` 通过。只用标准库。",
+  "budget": {
+    "turns": 16,
+    "seconds": 900,
+    "window": 131072
+  },
+  "steers": [
+    {
+      "afterSeconds": 1,
+      "text": "先跑一遍测试。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "给连续空行的规则补一个测试。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "标题前面缺空行时也补一个。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "看一下 note.md 清理后的结果。"
+    }
+  ],
+  "probes": [
+    {
+      "id": "task",
+      "kind": "must_show",
+      "text": "the scripted user turns are worked through and the workspace tests pass"
+    }
+  ]
+}

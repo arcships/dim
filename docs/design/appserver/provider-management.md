@@ -82,12 +82,19 @@ still require catalog declarations. Current availability, disablement
 and route checks still apply; no capacity is written back to the catalog.
 A bare model ID first uses the effective Provider if it offers that exact ID;
 otherwise exactly one available Provider must offer it. Ambiguity is an error.
+An individual catalog failure does not exclude healthy Providers from that
+search; cancellation still stops it. An explicitly named Provider retains its
+own error rather than falling back to another Provider.
 
 Provider retains credentials and all header values only in memory, under an
 opaque source UUID. The adopted non-secret declaration contains that UUID,
 protocol, normalized base URL, authentication kind and sorted header names.
 URL user info, query and fragment are rejected. Source lookup requires the whole
 declaration to match and never falls back to another Provider or account.
+Header names use the HTTP case-insensitive grammar. Header values trim leading
+and trailing space and tab before HTTP validation; internal whitespace and
+colons are preserved. Duplicate canonical names and generated-auth conflicts
+are rejected, matching the CLI's text-to-map admission.
 Failed admission/creation releases unclaimed bindings. Sessions sharing a source
 retain it independently; final business close releases it after requests settle.
 Idle unload retains ownership; restore reinstates its close observer, and deletion

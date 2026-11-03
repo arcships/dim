@@ -463,6 +463,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Question waiting for your answer" => "답변 대기 중인 질문",
         "Notify when agent needs you" => "에이전트 요청 시 알림",
         "Show ACP sessions" => "ACP 세션 표시",
+        "Prompt suggestion" => "프롬프트 제안",
+        "Prompt suggestion: {error}" => "프롬프트 제안: {error}",
+        "Suggestions are paused in this session because offers went unused. Turn them off and on in /settings to resume." => {
+            "이 세션에서는 제안이 사용되지 않아 프롬프트 제안이 일시 중지되었습니다. /settings에서 끄고 다시 켜면 재개됩니다."
+        }
         // keys.rs
         "show the key bindings" => "단축키 보기",
         "Application keys" => "앱 단축키",

@@ -37,6 +37,7 @@ enum Limited {
     Available,
     /// A second model whose limits are undeclared, so it cannot be used.
     Unavailable,
+    ProviderUnavailable,
 }
 
 /// A signed-in managed account whose first credential the relay rejects.
@@ -82,6 +83,9 @@ impl ManagedProvider for Provider {
     fn status(&self, provider: &str) -> ManagedFuture<AccountSnapshot> {
         ready(match provider {
             "fail" => Err(ManagedError::InvalidStore),
+            _ if *self.0.limited.lock().unwrap() == Limited::ProviderUnavailable => {
+                Err(ManagedError::Transient)
+            }
             _ => Ok(self.0.account.lock().unwrap().clone()),
         })
     }
@@ -164,6 +168,7 @@ impl ManagedProvider for Provider {
         }];
         match *self.0.limited.lock().unwrap() {
             Limited::Absent => {}
+            Limited::ProviderUnavailable => return ready(Err(ManagedError::Transient)),
             Limited::Available => {
                 let entry: ModelEntry = serde_json::from_value(json!({"modelId":"limited-model",
                     "displayName":"Limited model","status":"active",
@@ -685,6 +690,59 @@ async fn an_injected_managed_provider_serves_accounts_and_recovers_credentials()
         ]
     );
     assert_eq!(fixture.recovered.load(Ordering::SeqCst), 3);
+    let default_provider = uuid::Uuid::new_v4().to_string();
+    assert_ok(&client.rpc("provider.create", json!({"providerId":default_provider,
+        "displayName":"Default provider","enabled":true,
+        "connection":{"driverKind":"openai-compatible","baseUrl":"http://127.0.0.1:1/v1","auth":{"type":"anonymous"}},
+        "models":[{"modelId":"default-model","displayName":"Default model","status":"active",
+            "capabilities":dim_agent_types::CatalogCapabilities::with_limits(32000,128)}]})).await);
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"cwd":home,"providerId":default_provider,"modelId":"default-model"}),
+            )
+            .await,
+    );
+    *fixture.limited.lock().unwrap() = Limited::ProviderUnavailable;
+    let unavailable = client
+        .rpc("provider.catalog", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert!(unavailable.get("error").is_some(), "{unavailable}");
+    for duplicate in [false, true] {
+        let provider_id = uuid::Uuid::new_v4().to_string();
+        assert_ok(&client.rpc("provider.create", json!({"providerId":provider_id,
+            "displayName":"Healthy provider","enabled":true,
+            "connection":{"driverKind":"openai-compatible","baseUrl":"http://127.0.0.1:1/v1","auth":{"type":"anonymous"}},
+            "models":[{"modelId":"reachable-model","displayName":"Reachable model","status":"active",
+                "capabilities":dim_agent_types::CatalogCapabilities::with_limits(32000,128)}]})).await);
+        let found = client
+            .rpc(
+                "session.create",
+                json!({"cwd":home,"model":{"modelId":"reachable-model"},"startup":{}}),
+            )
+            .await;
+        if duplicate {
+            assert!(
+                found["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("ambiguous"),
+                "{found}"
+            );
+        } else {
+            assert_ok(&found);
+            assert_eq!(found["result"]["model"]["providerId"], provider_id);
+        }
+    }
+    let explicit = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,"model":{"provider":"managed-fixture","modelId":"fixture-model"},"startup":{}}),
+        )
+        .await;
+    assert!(explicit.get("error").is_some(), "{explicit}");
+    *fixture.limited.lock().unwrap() = Limited::Unavailable;
     {
         let mut account = fixture.account.lock().unwrap();
         account.generation += 1;

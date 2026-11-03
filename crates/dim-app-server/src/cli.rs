@@ -507,6 +507,7 @@ pub fn run_with(
                         }),
                 );
             }
+            dim_agent_capabilities::prompt_suggestion::install(&mut builder);
             collaboration::install(&mut builder);
             dim_agent_questions::install(&mut builder);
             install(&mut builder);

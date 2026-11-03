@@ -1149,7 +1149,7 @@ impl Connection {
                 }
                 let mut startup_admission = None;
                 let model = if let Some(startup) = p.startup {
-                    if self.entry != Entry::Local || !rpc.index.selects_models() {
+                    if self.entry != Entry::Local || rpc.config.product_home.is_none() {
                         return Err(RpcError::invalid(
                             "Model startup requires the protected-local product entry",
                         ));
@@ -1285,15 +1285,10 @@ impl Connection {
     }
     async fn create(&self, rpc: &RpcService, params: Create) -> Result<Reply, RpcError> {
         if (params.startup.is_some() || params.model_from_session.is_some())
-            && (self.entry != Entry::Local || !rpc.index.selects_models())
+            && (self.entry != Entry::Local || rpc.config.product_home.is_none())
         {
             return Err(RpcError::invalid(
                 "Model startup requires the protected-local product entry",
-            ));
-        }
-        if params.model_from_session.is_some() && rpc.config.product_home.is_none() {
-            return Err(RpcError::invalid(
-                "modelFromSession requires the product provider",
             ));
         }
         if params.model_from_session.is_some()
@@ -1360,7 +1355,11 @@ impl Connection {
                     .metadata
                     .map(|metadata| dim_agent_types::RequestMetadata {
                         startup: metadata.startup,
-                        extensions: metadata.extensions,
+                        extensions: {
+                            let mut extensions = metadata.extensions;
+                            extensions.remove("requestId");
+                            extensions
+                        },
                         ..Default::default()
                     }),
             };
@@ -1503,12 +1502,6 @@ impl Connection {
                 provider_id: session.config().model.provider_id.clone(),
                 model_id: session.config().model.model_id.clone(),
             },
-            capability_snapshot: session
-                .config()
-                .model
-                .capability_snapshot
-                .clone()
-                .map(Box::new),
             model_preferences: crate::provider::adopted_selection_preferences(
                 session.config().model.config.as_ref(),
                 session.config().model.metadata.as_ref(),

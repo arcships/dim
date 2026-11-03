@@ -150,7 +150,12 @@ fn tui_home_remembers_permissions_without_login_and_applies_them_to_the_first_me
         for fullscreen in [false, true] {
             let home = Home::new();
             let daemon = home.daemon(move |wire| {
-                wire.hello(if initial_setup { &[] } else { &PRESET_METHODS });
+                let mut features = Vec::new();
+                if !initial_setup {
+                    features.extend(PRESET_METHODS);
+                    features.push("session.create.modelFromSession");
+                }
+                wire.hello(&features);
                 if initial_setup {
                     let create = wire.read("session.create");
                     fail(wire, &create, "provider_failed");
@@ -177,6 +182,9 @@ fn tui_home_remembers_permissions_without_login_and_applies_them_to_the_first_me
                     create["params"]["permissionPolicy"],
                     json!({"preset":"full-access"})
                 );
+                if !initial_setup {
+                    assert_eq!(create["params"]["modelFromSession"], "session");
+                }
                 wire.reply(
                     &create,
                     json!({"sessionId":"session","sequence":8,"model":{"providerId":"test","modelId":"model"}}),

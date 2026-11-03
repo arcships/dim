@@ -129,7 +129,7 @@ async fn start(home: &Path) -> RunningServer {
 
 fn startup(base: &str, format: &str, credential: &str) -> Value {
     json!({"connection":{"baseUrl":base,"apiFormat":format,"apiKey":credential,
-        "headers":{"X-Marker":format!("private:marker:{credential}")}},
+        "headers":{"X-Marker":format!(" \tprivate:marker:{credential}\t ")}},
         "contextWindow":64000,"maxOutputTokens":2048,"autoCompactWindow":48000})
 }
 
@@ -334,10 +334,6 @@ async fn temporary_startup_connections_execute_all_formats_without_sharing_or_pe
         assert_eq!(body.pointer(effort_pointer), Some(&json!("low")), "{body}");
         let attached = client.rpc("session.attach", json!({"sessionId":sid})).await;
         assert_ok(&attached);
-        assert_eq!(
-            attached["result"]["capabilitySnapshot"],
-            created["result"]["capabilitySnapshot"]
-        );
         assert_eq!(
             attached["result"]["capabilitySnapshot"]["capabilities"]["contextWindow"],
             64000
@@ -608,11 +604,15 @@ async fn startup_admission_rejects_unsafe_connections_and_ambiguous_models_witho
         .await;
     assert_ok(&inherited);
     assert_eq!(inherited["result"]["model"], declared["result"]["model"]);
-    assert_eq!(
-        inherited["result"]["capabilitySnapshot"],
-        declared["result"]["capabilitySnapshot"]
-    );
     let inherited_id = inherited["result"]["sessionId"].as_str().unwrap();
+    let attached = client
+        .rpc("session.attach", json!({"sessionId":inherited_id}))
+        .await;
+    assert_ok(&attached);
+    assert_eq!(
+        attached["result"]["capabilitySnapshot"],
+        serde_json::to_value(snapshot).unwrap()
+    );
     submit(&mut client, inherited_id, "main").await;
     assert_eq!(seen.lock().unwrap().len(), 3);
     let catalog_after = client
@@ -927,6 +927,32 @@ async fn forks_and_new_sessions_retain_the_adopted_connection_after_the_source_c
             )
             .await,
     );
+    let adopted = source
+        .get::<PromptSnapshot>("main")
+        .unwrap()
+        .unwrap()
+        .configuration
+        .unwrap();
+    let mut metadata = adopted.metadata.unwrap();
+    metadata
+        .extensions
+        .insert("requestId".into(), json!("source-call"));
+    source
+        .configure(
+            dim_agent_runtime::ConfigureUpdate {
+                model: Some(dim_agent_types::ModelSelection {
+                    provider_id: adopted.provider_id,
+                    model_id: adopted.model_id,
+                    capability_snapshot: adopted.capability_snapshot,
+                    config: adopted.config,
+                    metadata: Some(metadata),
+                }),
+                ..Default::default()
+            },
+            "main",
+        )
+        .await
+        .unwrap();
     for extra in [
         json!({"model":{}}),
         json!({"startup":{}}),
@@ -977,10 +1003,13 @@ async fn forks_and_new_sessions_retain_the_adopted_connection_after_the_source_c
     assert_eq!(copy.provider_id, adopted.provider_id);
     assert_eq!(copy.config, adopted.config);
     assert_eq!(copy.capability_snapshot, adopted.capability_snapshot);
+    let copied_metadata = copy.metadata.as_ref().unwrap();
+    assert!(!copied_metadata.extensions.contains_key("requestId"));
     assert_eq!(
-        copy.metadata.as_ref().unwrap().startup,
-        adopted.metadata.unwrap().startup
+        copied_metadata.extensions["providerProtocol"],
+        json!("openai-compatible")
     );
+    assert_eq!(copied_metadata.startup, adopted.metadata.unwrap().startup);
     let mut forks = Vec::new();
     for (cut, credential) in [(first_cut, "first-secret"), (later_cut, "later-secret")] {
         let fork = client

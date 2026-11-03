@@ -509,6 +509,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Question waiting for your answer" => "Frage wartet auf Antwort",
         "Notify when agent needs you" => "Benachrichtigen, wenn Agent Eingabe braucht",
         "Show ACP sessions" => "ACP-Sitzungen anzeigen",
+        "Prompt suggestion" => "Prompthinweis",
+        "Prompt suggestion: {error}" => "Prompthinweis: {error}",
+        "Suggestions are paused in this session because offers went unused. Turn them off and on in /settings to resume." => {
+            "Prompthinweise sind in dieser Sitzung pausiert, weil Vorschläge ungenutzt blieben. Zum Fortsetzen in /settings aus- und wieder einschalten."
+        }
         // keys.rs
         "show the key bindings" => "Tastenbelegung anzeigen",
         "Application keys" => "Anwendungstasten",

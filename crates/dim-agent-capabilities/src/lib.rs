@@ -27,6 +27,7 @@ pub mod prompt_guide;
 pub mod prompt_registry;
 pub mod prompt_sources;
 pub mod prompt_state;
+pub mod prompt_suggestion;
 pub mod recall;
 pub mod session_broadcast;
 pub mod session_grants;

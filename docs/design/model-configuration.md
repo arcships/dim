@@ -152,7 +152,7 @@ Session shows the current model and values after any update. The event data
 spells the field `model_preferences` and the two replies spell it
 `modelPreferences`; each keeps its layer's naming and the inner fields match.
 The CLI draws the effort from that field and keeps no preference state of its
-own. The two replies also carry the adopted declaration as `capabilitySnapshot`,
+own. The attach reply also carries the adopted declaration as `capabilitySnapshot`,
 so temporary connections support preference commands before their first input
 without requiring a saved Provider catalog. Other internal model settings remain
 private. Advertised choices are display data; Provider validates each update.

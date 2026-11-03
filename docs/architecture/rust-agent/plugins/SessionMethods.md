@@ -51,5 +51,5 @@ registers from TypeScript rows, including a namespace registered already.
 | 作用域 | Session |
 | 注入 | — |
 | 提供 | `S:SessionMethods`、`S:dyn HostDispatch#sessionMethods` |
-| 被注入于 | `Attachments`、`InputMethods`、`Questions`、`ShellInput`、`WorkspaceTools` |
+| 被注入于 | `Attachments`、`InputMethods`、`PromptSuggestion`、`Questions`、`ShellInput`、`WorkspaceTools` |
 <!-- /generated -->

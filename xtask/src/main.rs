@@ -3,6 +3,7 @@ mod app_server;
 mod catalog;
 mod modules;
 mod plugins;
+mod prompt_eval;
 mod rule;
 mod scenario_eval;
 mod summary_eval;
@@ -54,6 +55,7 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         Some("context-breakdown") => context_breakdown().await?,
         Some("summary-eval") => summary_eval::run().await?,
         Some("scenario-eval") => scenario_eval::run().await?,
+        Some("prompt-eval") => prompt_eval::run().await?,
         Some("check") => {
             boundaries(false)?;
             catalog::check(&root()).await?;

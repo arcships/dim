@@ -890,6 +890,17 @@ async fn a_configured_profile_shows_the_effort_it_sends() {
         let mut server = launch_configured(&directory, &configuration).await;
         let mut client = connect(&server).await;
 
+        let rejected = client
+            .rpc("session.create", json!({"cwd":directory,"startup":{}}))
+            .await;
+        assert_eq!(rejected["error"]["code"], -32602, "{rejected}");
+        assert!(
+            rejected["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("product"),
+            "{rejected}"
+        );
         let created = client
             .rpc(
                 "session.create",
@@ -904,6 +915,20 @@ async fn a_configured_profile_shows_the_effort_it_sends() {
             "{created}"
         );
         let session_id = created["result"]["sessionId"].clone();
+        let rejected = client
+            .rpc(
+                "session.model.update",
+                json!({"sessionId":session_id,"branchId":"main","startup":{}}),
+            )
+            .await;
+        assert_eq!(rejected["error"]["code"], -32602, "{rejected}");
+        assert!(
+            rejected["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("product"),
+            "{rejected}"
+        );
         let attached = client
             .rpc("session.attach", json!({"sessionId":session_id}))
             .await;

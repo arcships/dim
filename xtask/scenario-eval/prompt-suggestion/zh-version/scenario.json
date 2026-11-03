@@ -1,0 +1,34 @@
+{
+  "description": "语义化版本比较：预发布、v 前缀与排序",
+  "message": "读 version.py 和 tests/test_version.py，实现 parse() 和 compare()，让测试通过。",
+  "budget": {
+    "turns": 16,
+    "seconds": 900,
+    "window": 131072
+  },
+  "steers": [
+    {
+      "afterSeconds": 1,
+      "text": "跑一下测试。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "预发布版本要比正式版小。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "支持带 v 前缀。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "补一个排序函数。"
+    }
+  ],
+  "probes": [
+    {
+      "id": "task",
+      "kind": "must_show",
+      "text": "the scripted user turns are worked through and the workspace tests pass"
+    }
+  ]
+}

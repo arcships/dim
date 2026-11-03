@@ -45,6 +45,15 @@ pub struct ExecutionSnapshot {
     pub network: bool,
 }
 
+/// The `prompt-suggestion` source as `settings.read` and `settings.update`
+/// answer it: the revision the next write expects, and the capability's own
+/// document, so the client keeps no second copy of the members.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SuggestionSetting {
+    pub revision: String,
+    pub document: dim_agent_capabilities::prompt_suggestion::PromptSuggestionSettings,
+}
+
 /// The host's answer to `host.execution.backend`; the Execution panel shows
 /// the reason when the platform has no sandbox backend.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -224,6 +233,25 @@ pub enum Command {
         network: bool,
     },
     ResetIsolation(String),
+    /// Ask the Session for the message the user would send next, after the
+    /// turn completed in this interface.
+    Suggest {
+        turn_id: String,
+    },
+    /// Report what became of the offer for `turn_id`; accepting inserts the
+    /// text locally and sends nothing.
+    SuggestionRespond {
+        turn_id: String,
+        accept: bool,
+    },
+    /// Read the `prompt-suggestion` switch.
+    ReadSuggestionSetting,
+    /// Write the `prompt-suggestion` switch.
+    SaveSuggestionSetting {
+        expected_revision: String,
+        enabled: bool,
+        max_chars: u32,
+    },
     ClearModelPreferences {
         provider_id: String,
         model_id: String,
@@ -1081,6 +1109,28 @@ pub enum Update {
     /// Read once with the switches; a failed read adds no line and leaves the
     /// switches usable.
     IsolationBackend(Result<SandboxBackend, String>),
+    /// Whether the Session's method table lists `session.suggestion.request`:
+    /// without it the interface neither asks for an offer nor shows the row.
+    SuggestionMethods(bool),
+    /// The `prompt-suggestion` switch, as last read or written.
+    SuggestionSetting(Result<SuggestionSetting, String>),
+    /// A turn completed on `main`: the interface may ask for the next
+    /// message when nothing else has its attention.
+    TurnCompleted {
+        turn_id: String,
+    },
+    /// The Session offered the message the user would send next.
+    SuggestionOffer {
+        turn_id: String,
+        text: String,
+    },
+    /// The offer for `turn_id` is withdrawn.
+    SuggestionCleared {
+        turn_id: String,
+    },
+    /// The Session paused suggestions for the rest of it after the unused
+    /// count reached its limit: said once per Session.
+    SuggestionThrottled,
     /// A transient status-line message.
     Toast(String),
     Permissions(Result<dim_agent_types::PermissionPolicy, String>),

@@ -1,0 +1,38 @@
+{
+  "description": "Long session, English logs and Chinese records: six full reads in the first turn, then one per turn, on the 131,072-token window",
+  "message": "Run `python3 generate_mixed.py` once; it writes English service logs under logs/ and Chinese records under notes/. Then use the read tool to read logs/01.log, notes/02.txt, logs/03.log, notes/04.txt, logs/05.log and notes/06.txt in full, one call per file, and summarize each file in two lines.",
+  "budget": {
+    "turns": 16,
+    "seconds": 1800,
+    "window": 131072
+  },
+  "steers": [
+    {
+      "afterSeconds": 1,
+      "text": "用 read 工具把 notes/08.txt 全文读完（不要用 grep、head 或 tail），用中文报出最后一条记录的跟踪编号和评审组。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Use the read tool to read logs/07.log in full (do not use grep, head or tail) and report its last line."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "用 read 工具把 notes/10.txt 全文读完（不要用 grep、head 或 tail），用中文报出最后一条记录的跟踪编号和评审组。"
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Use the read tool to read logs/09.log in full (do not use grep, head or tail) and report its last line."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Write a short table of contents for everything read so far into summary.md."
+    }
+  ],
+  "probes": [
+    {
+      "id": "task",
+      "kind": "must_show",
+      "text": "the scripted user turns are worked through and every file is read in full"
+    }
+  ]
+}

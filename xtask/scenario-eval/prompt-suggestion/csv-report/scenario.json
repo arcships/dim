@@ -1,0 +1,34 @@
+{
+  "description": "A CSV sales report, then regions, JSON output and rounding",
+  "message": "Implement summarize() in report.py so the script prints totals by region and `python3 -m unittest discover -s tests` passes.",
+  "budget": {
+    "turns": 16,
+    "seconds": 900,
+    "window": 131072
+  },
+  "steers": [
+    {
+      "afterSeconds": 1,
+      "text": "Run the script."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Add a --json flag."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Round the totals to two decimals."
+    },
+    {
+      "afterSeconds": 1,
+      "text": "Sort the regions in the output."
+    }
+  ],
+  "probes": [
+    {
+      "id": "task",
+      "kind": "must_show",
+      "text": "the scripted user turns are worked through and the workspace tests pass"
+    }
+  ]
+}

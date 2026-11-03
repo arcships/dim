@@ -1073,8 +1073,6 @@ pub struct PingResult {
 pub struct CreateResult {
     pub session_id: String,
     pub model: ModelId,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub capability_snapshot: Option<Box<dim_agent_types::ModelCapabilitySnapshot>>,
     /// The preferences the Session's adopted configuration sends, derived from
     /// it; only on this reply, not on `session.summaries` items, and absent
     /// when it carries none.

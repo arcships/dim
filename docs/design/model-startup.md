@@ -43,6 +43,12 @@ credential variables set is an error; neither is required for an anonymous gatew
 or one using explicit custom authentication headers. A custom address never
 receives credentials from a saved Dim account or another Provider implicitly.
 
+The CLI parses `DIM_CUSTOM_HEADERS` text into a header map; protected-local
+Provider admission accepts that map. Both boundaries use the same HTTP header
+name/value grammar, lowercase names, trim only surrounding space and tab from
+values, preserve embedded colons and other valid content, and reject repeated
+names and conflicts with generated authentication.
+
 An explicit CLI value is applied once at startup. Later in-Session configuration
 commands can replace it. Empty values, invalid URLs, headers and token counts
 fail before Session creation. Missing capacity or reasoning declarations are
@@ -58,6 +64,15 @@ write `provider.preferences.update` or `provider.select`. Resume reconfiguration
 follows the explicit adoption contract below; startup options must not be
 silently ignored.
 
+`--model-config` uses the existing nonproduct model resolver, not the product
+Provider catalog. Its ordinary creation and preference-update paths do not
+support reasoning preference validation. Reject `--effort` / `DIM_EFFORT_LEVEL`
+before daemon launch for both creation and resume, directing the user to the
+API-key model's generation settings in the configuration file. Likewise reject
+automatic-compaction and capacity startup controls with `--model-config` rather
+than ignoring them or reporting a Provider reload. Ordinary configured-model
+selection without these controls retains its existing behavior.
+
 ## Session ownership and security
 
 Direct startup has a Session-owned connection binding. The CLI validates its
@@ -65,6 +80,12 @@ external input and passes it through the protected-local Session boundary to
 Provider; it does not mutate the daemon's environment or generate a plaintext
 configuration file containing secrets. An already running daemon accepts the
 same boundary, so the current invocation's configuration is not lost.
+
+Daemon spawning always strips the ten Session startup environment variables,
+including for management invocations that do not parse them. This changes only
+the spawned daemon's environment, not the current CLI process or its hosted
+workers. Other environment references used by legacy model configurations are
+preserved.
 
 Provider validates the protocol, connection and model declarations and produces
 the existing complete model selection. Connection resources and credentials are
@@ -103,6 +124,21 @@ Resuming without overrides keeps the recorded adopted configuration; a missing
 connection requires explicit rebinding. Resuming with explicit overrides adopts
 them through the existing configuration path before accepting the first input.
 It does not rewrite existing branch history or reconfigure existing members.
+
+When a daemon does not advertise `session.create.modelFromSession`, a new
+Session may use the ordinary configured-model fallback only for a saved
+Provider. Read the public management listing to establish that membership;
+never infer a temporary source from the spelling of its identity or query that
+identity as a saved Provider. If it cannot be copied, explain how to restart a
+daemon supporting adopted-model copying and rebind the temporary connection,
+or select a configured Provider model.
+
+Automatic title generation still uses the auxiliary model path's catalog
+`ModelId`, which carries no startup connection binding. A temporary direct
+Session may therefore have no generated title; manual `/rename` remains
+available. The TUI's image/service-tier hints also still use the catalog and may
+be incomplete for temporary sources. This does not remove the adopted
+capability declaration used by `/effort` and `/fast` preference commands.
 
 ```text
 CLI flags + DIM_* -> protected-local Session creation

@@ -63,7 +63,10 @@ fn direct_startup_reaches_each_creation_entry_without_persisting_secrets() {
                     ("DIM_BASE_URL", "https://gateway.example/prefix"),
                     ("DIM_API_FORMAT", format),
                     ("DIM_AUTH_TOKEN", "secret-token"),
-                    ("DIM_CUSTOM_HEADERS", "X-Gateway: secret:header:value\n"),
+                    (
+                        "DIM_CUSTOM_HEADERS",
+                        "X-GaTeWaY:\t secret:header:value \t\n",
+                    ),
                     ("DIM_MODEL", "environment-model"),
                     ("DIM_EFFORT_LEVEL", "low"),
                     ("DIM_AUTO_COMPACT_WINDOW", "1m"),
@@ -560,17 +563,24 @@ fn invalid_startup_inputs_fail_before_daemon_creation_without_echoing_values() {
 
 #[test]
 fn launching_a_daemon_does_not_retain_the_sessions_startup_environment() {
-    for credential in ["DIM_API_KEY", "DIM_AUTH_TOKEN"] {
+    for (credential, management, configured) in [
+        ("DIM_API_KEY", false, false),
+        ("DIM_AUTH_TOKEN", false, false),
+        ("DIM_API_KEY", true, false),
+        ("DIM_AUTH_TOKEN", true, false),
+        ("DIM_API_KEY", false, true),
+    ] {
         let home = Home::new();
         let server = home.0.join("server.sh");
         let leaked = home.0.join("leaked-names");
         let retained = home.0.join("retained-env");
         fs::write(&server, format!(
-            "#!/bin/sh\nfor name in {}; do\n  if printenv \"$name\" >/dev/null; then printf '%s\\n' \"$name\" >> '{}'; fi\ndone\nprintf '%s' \"$DIM_STARTUP_TEST_CONTROL\" > '{}'\nexit 1\n",
+            "#!/bin/sh\nfor name in {}; do\n  if printenv \"$name\" >/dev/null; then printf '%s\\n' \"$name\" >> '{}'; fi\ndone\nprintf '%s' \"$LEGACY_API_KEY\" > '{}'\nexit 1\n",
             STARTUP_ENV.join(" "), leaked.display(), retained.display()
         )).unwrap();
         fs::set_permissions(&server, fs::Permissions::from_mode(0o700)).unwrap();
-        let output = command(&home)
+        let mut command = command(&home);
+        command
             .envs([
                 ("DIM_MODEL", "model"),
                 ("DIM_EFFORT_LEVEL", "high"),
@@ -580,12 +590,30 @@ fn launching_a_daemon_does_not_retain_the_sessions_startup_environment() {
                 ("DIM_MAX_CONTEXT_TOKENS", "256000"),
                 ("DIM_MAX_OUTPUT_TOKENS", "16000"),
                 ("DIM_AUTO_COMPACT_WINDOW", "128k"),
-                ("DIM_STARTUP_TEST_CONTROL", "retained"),
+                ("LEGACY_API_KEY", "retained"),
             ])
             .env(credential, "spawn-secret")
-            .args(["exec", "--server", server.to_str().unwrap(), "-p", "Hello"])
-            .output()
+            .args(["--server", server.to_str().unwrap()]);
+        if configured {
+            for name in STARTUP_ENV {
+                command.env_remove(name);
+            }
+            let config = home.0.join("model.json");
+            fs::write(
+                &config,
+                r#"{"providers":[{"id":"fixture","apiKeyEnv":"LEGACY_API_KEY"}]}"#,
+            )
             .unwrap();
+            command
+                .env("DIM_MODEL", "model")
+                .args(["--model-config", config.to_str().unwrap()]);
+        }
+        if management {
+            command.args(["models", "fixture"]);
+        } else {
+            command.args(["exec", "-p", "Hello"]);
+        }
+        let output = command.output().unwrap();
         assert!(!output.status.success());
         assert_eq!(fs::read_to_string(retained).unwrap(), "retained");
         assert!(
@@ -675,4 +703,146 @@ fn configured_model_selection_preserves_legacy_creation() {
     daemon.join().unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("startup fixture rejection"));
+}
+
+#[test]
+fn model_config_rejects_unsupported_effort_before_create_or_resume() {
+    for resume in [false, true] {
+        for environment in [false, true] {
+            let home = Home::new();
+            fs::remove_dir_all(home.0.join("rust")).unwrap();
+            let config = home.0.join("model.json");
+            fs::write(&config, "{}").unwrap();
+            let mut command = command(&home);
+            command.args(["--model-config", config.to_str().unwrap()]);
+            if environment {
+                command.env("DIM_EFFORT_LEVEL", "high");
+            } else {
+                command.args(["--effort", "high"]);
+            }
+            if resume {
+                command.args(["--resume", "session"]);
+            }
+            let output = command.args(["exec", "-p", "Hello"]).output().unwrap();
+            assert!(!output.status.success());
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains("catalog with capability declarations"),
+                "{error}"
+            );
+            assert!(
+                error.contains("configure the API-key model's generation settings"),
+                "{error}"
+            );
+            assert!(!error.contains("reloading"), "{error}");
+            assert!(!home.0.join("rust").exists());
+        }
+    }
+}
+
+#[test]
+fn model_config_rejects_product_only_controls_before_starting_a_daemon() {
+    for resume in [false, true] {
+        for (args, env) in [
+            (vec!["--autocompact", "auto"], vec![]),
+            (vec!["--autocompact", "128k"], vec![]),
+            (vec![], vec![("DIM_AUTO_COMPACT_WINDOW", "auto")]),
+            (vec![], vec![("DIM_MAX_CONTEXT_TOKENS", "256000")]),
+            (vec![], vec![("DIM_MAX_OUTPUT_TOKENS", "16000")]),
+        ] {
+            let home = Home::new();
+            fs::remove_dir_all(home.0.join("rust")).unwrap();
+            let config = home.0.join("model.json");
+            fs::write(&config, "{}").unwrap();
+            let mut command = command(&home);
+            command
+                .args(["--model-config", config.to_str().unwrap()])
+                .args(args)
+                .envs(env);
+            if resume {
+                command.args(["--resume", "session"]);
+            }
+            let output = command.args(["exec", "-p", "Hello"]).output().unwrap();
+            assert!(!output.status.success());
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(error.contains("require the product Provider"), "{error}");
+            assert!(
+                error.contains("cannot be used with --model-config"),
+                "{error}"
+            );
+            assert!(!error.contains("reloading"), "{error}");
+            assert!(!home.0.join("rust").exists());
+        }
+    }
+}
+
+#[test]
+fn old_daemon_home_creation_rejects_temporary_sources_and_keeps_configured_fallback() {
+    for configured in [false, true] {
+        let home = Home::new();
+        let provider = if configured {
+            "9f556780-8461-4cda-8108-22560729b8ba"
+        } else {
+            "temporary-source"
+        };
+        let daemon = home.daemon(move |wire| {
+            let mut line = String::new();
+            while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                line.clear();
+                let result = match request["method"].as_str().unwrap() {
+                    "hello" => json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),
+                        "protocolVersion":3,"daemonProfile":{"kind":"product"},
+                        "features":["session.create","session.history","provider.list","provider.management"]}),
+                    "session.attach" => {
+                        let mut record = attach_record(&request);
+                        record["model"] = json!({"providerId":provider,"modelId":"model"});
+                        record
+                    }
+                    "session.history" => json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+                    "session.idle" => json!({"sequence":8}),
+                    "account.providers" => json!([]),
+                    "provider.management" => {
+                        assert_eq!(request["params"], json!({}), "Do not query a temporary identity as a saved Provider");
+                        let providers = if configured { json!([{"providerId":provider,"source":"user",
+                            "displayName":"Configured","preferences":{"model":{"reasoningEffort":"low","serviceTier":"priority"}}}]) } else { json!([]) };
+                        json!({"providers":providers,"errors":[]})
+                    }
+                    "session.create" => {
+                        assert!(configured, "A temporary source must not reach legacy creation");
+                        assert_eq!(request["params"]["model"], json!({"provider":provider,"modelId":"model"}));
+                        assert_eq!(request["params"]["modelPreferences"], json!({"reasoningEffort":"low","serviceTier":"priority"}));
+                        assert!(request["params"].get("startup").is_none());
+                        assert!(request["params"].get("modelFromSession").is_none());
+                        reject(wire, &request);
+                        continue;
+                    }
+                    "provider.select" | "provider.preferences.update" => panic!("Startup must not mutate shared preferences"),
+                    _ => json!({}),
+                };
+                wire.reply(&request, result);
+            }
+        });
+        let mut command = command(&home);
+        command.args(["--resume", "session"]);
+        let mut terminal = Terminal::launch_tui(command);
+        terminal.until(&format!("{provider} / model"));
+        terminal.write(b"/new\r");
+        terminal.until("new session");
+        terminal.write(b"hello\r");
+        if configured {
+            terminal.until("startup fixture rejection");
+        } else {
+            terminal.until("Restart the daemon");
+            terminal.until("DIM_BASE_URL and DIM_API_FORMAT");
+            assert!(
+                !terminal
+                    .transcript
+                    .contains("Provider management entry is missing")
+            );
+        }
+        terminal.signal(libc::SIGKILL);
+        terminal.wait();
+        daemon.join().unwrap();
+    }
 }

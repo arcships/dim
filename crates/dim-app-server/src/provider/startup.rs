@@ -130,9 +130,10 @@ impl StartupConnectionInput {
                 .map_err(|_| failure("Invalid startup header name"))?
                 .as_str()
                 .to_owned();
-            reqwest::header::HeaderValue::from_str(&value)
+            let value = value.trim_matches([' ', '\t']);
+            reqwest::header::HeaderValue::from_str(value)
                 .map_err(|_| failure("Invalid startup header value"))?;
-            if headers.insert(name, value).is_some() {
+            if headers.insert(name, value.to_owned()).is_some() {
                 return Err(failure("Duplicate startup header name"));
             }
         }
@@ -474,21 +475,31 @@ impl ProviderService {
         limits: (Option<u64>, Option<u64>),
         cancel: &CancellationToken,
     ) -> Result<ModelId, HostError> {
-        if let Ok(effective) = self
+        let effective = self
             .configuration_with_limits(None, Some(cwd), ModelPreferences::default(), limits, cancel)
-            .await
-            && self
+            .await;
+        self.check(cancel)?;
+        if let Err(error @ HostError::Cancelled(_)) = effective {
+            return Err(error);
+        }
+        if let Ok(effective) = effective {
+            let catalog = self
                 .catalog_for(effective.provider_id.clone(), cancel)
-                .await?
-                .is_some_and(|mut catalog| {
+                .await;
+            self.check(cancel)?;
+            match catalog {
+                Err(error @ HostError::Cancelled(_)) => return Err(error),
+                Ok(Some(mut catalog)) => {
                     catalog.apply_startup_limits(limits.0, limits.1);
-                    catalog.selectable(model_id).is_some()
-                })
-        {
-            return Ok(ModelId {
-                provider_id: effective.provider_id,
-                model_id: model_id.into(),
-            });
+                    if catalog.selectable(model_id).is_some() {
+                        return Ok(ModelId {
+                            provider_id: effective.provider_id,
+                            model_id: model_id.into(),
+                        });
+                    }
+                }
+                _ => {}
+            }
         }
         let mut matches = Vec::new();
         let mut providers: HashSet<_> = self
@@ -507,14 +518,15 @@ impl ProviderService {
                 .map(|provider| provider.provider_id),
         );
         for provider_id in providers {
-            if self
-                .catalog_for(provider_id.clone(), cancel)
-                .await?
-                .is_some_and(|mut catalog| {
-                    catalog.apply_startup_limits(limits.0, limits.1);
-                    catalog.selectable(model_id).is_some()
-                })
-            {
+            let catalog = self.catalog_for(provider_id.clone(), cancel).await;
+            self.check(cancel)?;
+            let mut catalog = match catalog {
+                Ok(Some(catalog)) => catalog,
+                Err(error @ HostError::Cancelled(_)) => return Err(error),
+                _ => continue,
+            };
+            catalog.apply_startup_limits(limits.0, limits.1);
+            if catalog.selectable(model_id).is_some() {
                 matches.push(ModelId {
                     provider_id,
                     model_id: model_id.into(),

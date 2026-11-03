@@ -499,6 +499,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Question waiting for your answer" => "Pertanyaan menunggu jawaban",
         "Notify when agent needs you" => "Beri tahu saat agen butuh Anda",
         "Show ACP sessions" => "Tampilkan sesi ACP",
+        "Prompt suggestion" => "Saran prompt",
+        "Prompt suggestion: {error}" => "Saran prompt: {error}",
+        "Suggestions are paused in this session because offers went unused. Turn them off and on in /settings to resume." => {
+            "Saran dijeda di sesi ini karena ada tawaran yang tidak dipakai. Matikan lalu nyalakan lagi di /settings untuk melanjutkan."
+        }
         // keys.rs
         "show the key bindings" => "lihat pintasan tombol",
         "Application keys" => "Tombol aplikasi",

@@ -432,6 +432,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Question waiting for your answer" => "有问题等你回答",
         "Notify when agent needs you" => "需要你时通知",
         "Show ACP sessions" => "显示 ACP 会话",
+        "Prompt suggestion" => "提示建议",
+        "Prompt suggestion: {error}" => "提示建议：{error}",
+        "Suggestions are paused in this session because offers went unused. Turn them off and on in /settings to resume." => {
+            "本会话因提示建议未被采用而暂停。在 /settings 中关闭再开启即可恢复。"
+        }
         "show the key bindings" => "显示快捷键",
         "Application keys" => "应用快捷键",
         "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {

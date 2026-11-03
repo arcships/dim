@@ -159,6 +159,9 @@ Model startup:\n\
     up to 9007199254740991; output cannot exceed context.\n\
   --autocompact overrides DIM_AUTO_COMPACT_WINDOW: auto or a positive count,\n\
     optionally suffixed k/m (1000/1000000). This is not the model capacity.\n\
+  Effort, autocompact and capacity startup controls require the product Provider\n\
+    and cannot be used with --model-config; set API-key generation settings\n\
+    in that configuration file instead.\n\
   Startup overrides apply before the first input, including on resume, without\n\
     changing saved Providers, preferences, defaults or the daemon environment.\n\
     Explicit overrides force complete configuration inheritance for new work.\n\
@@ -1455,7 +1458,14 @@ impl Options {
                 serde_json::json!(tokens)
             };
         }
-        if (self.model.is_some() && (self.model_config.is_none() || self.resume.is_some()))
+        if self.model_config.is_some() {
+            if self.effort.is_some() {
+                return Err("--effort / DIM_EFFORT_LEVEL require a product Provider catalog with capability declarations and cannot be used with --model-config; configure the API-key model's generation settings in --model-config instead".into());
+            }
+            if startup.as_object().is_some_and(|o| !o.is_empty()) {
+                return Err("--autocompact / DIM_AUTO_COMPACT_WINDOW, DIM_MAX_CONTEXT_TOKENS and DIM_MAX_OUTPUT_TOKENS require the product Provider and cannot be used with --model-config; omit these startup controls or use a product Provider".into());
+            }
+        } else if self.model.is_some()
             || self.effort.is_some()
             || startup.as_object().is_some_and(|o| !o.is_empty())
         {
