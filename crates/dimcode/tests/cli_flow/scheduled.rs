@@ -66,13 +66,31 @@ fn newer_jobs() -> Value {
 #[test]
 fn scheduled_list_prints_the_jobs_and_their_runs() {
     let home = Home::new();
+    let launch = {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            home.0
+                .join(std::ffi::OsString::from_vec(b"launch-\xff".to_vec()))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            home.0.join("launch")
+        }
+    };
+    fs::create_dir(&launch).unwrap();
     let daemon = home.daemon(|wire| {
         hello(wire);
         let request = wire.read("schedule.list");
         assert_eq!(request["params"], json!({}));
         wire.reply(&request, jobs(true));
     });
-    let output = home.command().args(["scheduled", "list"]).output().unwrap();
+    let output = home
+        .command()
+        .current_dir(&launch)
+        .args(["scheduled", "list"])
+        .output()
+        .unwrap();
     daemon.join().unwrap();
     assert!(
         output.status.success(),

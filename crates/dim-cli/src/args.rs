@@ -1,6 +1,6 @@
 use crate::{Result, export::Format, permission};
 use dim_agent_types::PermissionPreset;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What `--server` must name, shared by every error about the value it
 /// supplies.
@@ -345,6 +345,35 @@ pub struct UiIdentity {
     pub token: String,
 }
 
+/// The workspace every request names: the launch directory, resolved once as
+/// a UTF-8 string. A `Path` cannot stand in for it, so no request can carry a
+/// path serde refuses or one a lossy conversion would alter; the client's own
+/// file system work asks for [`Workspace::path`] instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Workspace(String);
+
+impl Workspace {
+    /// The workspace `path` names. A path that is not valid UTF-8 names none:
+    /// the refusal shows it with the invalid bytes replaced.
+    fn resolve(path: &Path) -> Result<Self> {
+        match path.to_str() {
+            Some(text) => Ok(Self(text.to_owned())),
+            None => {
+                Err(format!("The workspace path {} must be valid UTF-8", path.display()).into())
+            }
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The same workspace, for the client's own file system work.
+    pub fn path(&self) -> &Path {
+        Path::new(&self.0)
+    }
+}
+
 #[derive(Clone)]
 pub struct Options {
     pub action: Action,
@@ -354,7 +383,13 @@ pub struct Options {
     pub resume: Option<String>,
     pub home: PathBuf,
     pub home_explicit: bool,
-    pub cwd: PathBuf,
+    /// The launch directory: where the daemon starts and what the client's
+    /// own file system work resolves against. Requests carry [`Self::workspace`]
+    /// instead.
+    cwd: PathBuf,
+    /// The workspace the command names in its requests, resolved once the
+    /// options are complete; `None` for a command that names none.
+    workspace: Option<Workspace>,
     pub server: Option<PathBuf>,
     pub model_config: Option<PathBuf>,
     pub provider: Option<String>,
@@ -399,6 +434,7 @@ impl Options {
             home: default_home(),
             home_explicit: false,
             cwd: std::env::current_dir()?,
+            workspace: None,
             server: None,
             model_config: None,
             provider: None,
@@ -1468,6 +1504,89 @@ fn startup_env(name: &str) -> Result<Option<String>> {
     }
 }
 
+impl Options {
+    /// The launch directory, for the client's own file system work.
+    pub fn launch_dir(&self) -> &Path {
+        &self.cwd
+    }
+
+    /// Resolves the workspace every request this command sends names, once
+    /// the options are complete. A prompt from `-p` is here at parse; one
+    /// read from stdin arrives before this step, so a Chat that resumes a
+    /// Session and runs headless is still known to name none. A command that
+    /// names one is refused here, before the daemon is contacted, when the
+    /// path is not valid UTF-8.
+    pub fn resolve_workspace(&mut self) -> Result<()> {
+        self.workspace = self
+            .names_workspace()
+            .then(|| Workspace::resolve(&self.cwd))
+            .transpose()?;
+        Ok(())
+    }
+
+    /// The workspace every request this command sends names, resolved once
+    /// the options were complete. Only a command that names one reaches a
+    /// request.
+    pub fn workspace(&self) -> &Workspace {
+        self.workspace
+            .as_ref()
+            .expect("a command that names the workspace resolved it")
+    }
+
+    /// The workspace a request names, for a command that names one.
+    pub fn named_workspace(&self) -> Option<&str> {
+        self.workspace.as_ref().map(Workspace::as_str)
+    }
+
+    /// Whether this command names the workspace in a request it sends. Such a
+    /// command resolves it once its options are complete, so a path that is
+    /// not valid UTF-8 is refused before the daemon is contacted.
+    fn names_workspace(&self) -> bool {
+        match &self.action {
+            // A Chat that resumes a Session and runs headless names none: it
+            // attaches, reads history and submits, and the composer never
+            // runs. A new Chat or Session still does, and so does an
+            // interactive one.
+            Action::Chat => self.resume.is_none() || self.prompt.is_none(),
+            Action::Tui => true,
+            Action::Exec => self.resume.is_none(),
+            Action::McpList
+            | Action::McpLogin(_)
+            | Action::McpLogout(_)
+            | Action::McpEnable { .. }
+            | Action::McpDisconnect(_) => true,
+            Action::Management(request) => request.area.names_workspace(),
+            Action::ManagementEdit { area, .. }
+            | Action::ManagementSet { area, .. }
+            | Action::ManagementAdd { area, .. }
+            | Action::ManagementStart { area, .. } => area.names_workspace(),
+            Action::Migration(_)
+            | Action::Acp { .. }
+            | Action::Export { .. }
+            | Action::SessionRename { .. }
+            | Action::SessionDelete { .. }
+            | Action::SessionCleanup { .. }
+            | Action::Timeline { .. }
+            | Action::DaemonVacuum { .. }
+            | Action::Login(_)
+            | Action::Account(_)
+            | Action::Logout(_)
+            | Action::Models(_)
+            | Action::Recording { .. }
+            | Action::Plugin { .. }
+            | Action::RuntimeList
+            | Action::RuntimeInstall(_)
+            | Action::RuntimeConfig { .. }
+            | Action::DaemonStop
+            | Action::Web { .. }
+            | Action::WebInstall
+            | Action::DefaultTerminalMode { .. }
+            | Action::Help
+            | Action::Version => false,
+        }
+    }
+}
+
 /// A model limit as `--set-limits` and `--set-missing-limits` take it: a
 /// positive integer a listed model's capacity can hold as a JSON number.
 fn parse_limit(flag: &str, value: &str) -> Result<u64> {
@@ -1522,4 +1641,105 @@ pub fn default_home() -> PathBuf {
                 .map(|home| PathBuf::from(home).join(directory))
                 .unwrap_or_default()
         })
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    /// Every parse that reaches a request takes the same step the CLI takes:
+    /// a piped prompt, when the row has one, then `resolve_workspace`.
+    #[test]
+    fn parsed_commands_resolve_only_workspaces_their_requests_name() {
+        let home = tempfile::tempdir().unwrap();
+        let directory = home.path().canonicalize().unwrap();
+        let directory = directory.to_str().unwrap();
+        let document = home.path().join("job.json");
+        std::fs::write(&document, "{}").unwrap();
+        let document = document.to_str().unwrap();
+        // Each row is its arguments, the prompt a pipe would carry, and
+        // whether its requests name the workspace.
+        let cases = [
+            (vec!["scheduled", "list"], None, false),
+            (vec!["scheduled", "enable", "job-1"], None, false),
+            (vec!["scheduled", "disable", "job-1"], None, false),
+            (vec!["scheduled", "edit", "job-1"], None, false),
+            (vec!["scheduled", "set", "job-1", document], None, false),
+            (vec!["scheduled", "add", document], None, false),
+            (vec!["scheduled", "remove", "job-1"], None, false),
+            (vec!["scheduled", "run", "job-1"], None, false),
+            (vec!["scheduled", "history", "job-1"], None, false),
+            (
+                vec!["exec", "resume", "session", "-p", "continue"],
+                None,
+                false,
+            ),
+            (
+                vec!["exec", "--resume", "session", "-p", "continue"],
+                None,
+                false,
+            ),
+            (vec!["--resume", "session", "-p", "continue"], None, false),
+            (vec!["--resume", "session"], Some("continue"), false),
+            (vec!["--version"], None, false),
+            (vec!["--resume", "session"], None, true),
+            (vec!["-p", "start"], None, true),
+            (vec!["exec", "-p", "start"], None, true),
+            (vec!["tui"], None, true),
+            (vec!["mcp", "list"], None, true),
+            (vec!["mcp", "login", "docs"], None, true),
+            (vec!["mcp", "logout", "docs"], None, true),
+            (vec!["mcp", "enable", "docs"], None, true),
+            (vec!["mcp", "disconnect", "docs"], None, true),
+            (vec!["mcp", "edit", "docs"], None, true),
+            (vec!["skills", "list"], None, true),
+            (vec!["hooks", "list"], None, true),
+            (vec!["hooks", "set", document], None, true),
+            (vec!["workflow", "list"], None, true),
+            (vec!["workflow", "start", "job"], None, true),
+        ];
+        for (arguments, piped, names_workspace) in cases {
+            let args = ["--home", directory, "--cwd", directory]
+                .into_iter()
+                .chain(arguments.iter().copied())
+                .map(str::to_owned);
+            let mut options =
+                Options::parse(args).unwrap_or_else(|error| panic!("{arguments:?}: {error}"));
+            // What `prepare` does with a prompt on stdin before it resolves
+            // the workspace.
+            if let Some(prompt) = piped {
+                assert!(options.prompt.is_none(), "{arguments:?}");
+                options.prompt = Some(prompt.to_owned());
+            }
+            options
+                .resolve_workspace()
+                .unwrap_or_else(|error| panic!("{arguments:?}: {error}"));
+            assert_eq!(
+                options.named_workspace(),
+                names_workspace.then_some(directory),
+                "{arguments:?}"
+            );
+            assert_eq!(options.launch_dir(), Path::new(directory));
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_workspace_that_is_not_utf8_is_refused() {
+        #[cfg(unix)]
+        let path = {
+            use std::os::unix::ffi::OsStrExt;
+            PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/dim-\xff-work"))
+        };
+        #[cfg(windows)]
+        let path = {
+            use std::os::windows::ffi::OsStringExt;
+            PathBuf::from(std::ffi::OsString::from_wide(&[0xd800]))
+        };
+        let error = Workspace::resolve(&path).unwrap_err();
+        assert!(
+            error.to_string().ends_with("must be valid UTF-8"),
+            "{error}"
+        );
+    }
 }

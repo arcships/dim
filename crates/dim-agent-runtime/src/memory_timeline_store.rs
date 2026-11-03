@@ -197,6 +197,7 @@ impl TimelineStore for MemoryTimelineStore {
         &'a self,
         key: &'a TimelineKey,
         query: &'a TimelineQuery,
+        from: u64,
         through: u64,
     ) -> BoxFuture<'a, Result<TimelineQueryPage>> {
         Box::pin(async move {
@@ -217,7 +218,7 @@ impl TimelineStore for MemoryTimelineStore {
                 .events;
             let mut matched: Vec<&StoredEvent> = events
                 .iter()
-                .filter(|record| record.event.sequence <= through)
+                .filter(|record| record.event.sequence >= from && record.event.sequence <= through)
                 .filter(|record| {
                     let event = &record.event;
                     (query.kinds.is_empty()

@@ -26,32 +26,36 @@ contract between stores, not an interface for a capability.
 ### D1. One bounded query over events
 
 The Timeline exposes one read for capabilities: the scope (this branch, or the branch chain —
-each ancestor up to its cut, root first, then this branch to its head), the position (a sequence
-range, or a cursor with the sequence it may read through), the accepted event kinds plus the
-envelope's two context flags, one equality predicate over a data field, the order, and a limit
-that is nonzero by type. It returns decoded events and the next cursor.
+each ancestor up to its cut, root first, then this branch to its head), the accepted event kinds
+plus the envelope's two
+context flags, one event id, one equality predicate over a data field, where the read begins
+(an event id or a sequence), the order and its direction, and the page: how many matching events
+it skips and how many it returns, the second nonzero by type. It returns
+decoded events, each with its chain position.
 
 A kind or field path the store does not know matches no rows; it is not an error. A capability
 that needs a different selection extends this query; it does not add a method.
 
 ### D2. Fixed semantics
 
-A cursor names a position, not a number alone: in a chain read it carries the branch of the last
-fully read event together with that event's sequence, and is opaque to the caller. The same
-sequence number on a parent and on its child are different positions. A cursor always ends an
-atomic batch, so the query never splits one, and the limit is a target that the final batch may
-exceed. Results are ordered by chain
-position, then sequence. Positions past the published head and cursors that do not end a batch
-are rejected as invalid input.
+The elements combine: an event is returned when it satisfies all of them, flags named together
+are alternatives, and an absent selection constrains nothing. Results are ordered by chain
+position, then sequence, in the requested direction.
 
-The existing reads do not all share this convention: the context page accepts a cursor inside a
-batch and returns the row it names. The query has one convention. A consumer that still uses its
-own read keeps that read's behavior until it migrates, and the migration states which convention
-it adopts.
+Paging is skipping, not a cursor: the caller repeats the query with a larger skip, and a page
+shorter than the count is what says the selection is exhausted. A page therefore does not align
+with an atomic batch — it may end inside one, and the next page carries the rest, which a
+consumer folding in order handles. A read is taken at what is published when it runs, so a consumer
+that folds several pages drops what it has already folded.
+
+The existing reads do not share this convention: the context page accepts a cursor inside a batch
+and returns the row it names, and the history read has no page. A consumer that still uses its own
+read keeps that read's behavior until it migrates, and the migration states which convention it
+adopts.
 
 ### D3. The query addresses the event contract, not the storage
 
-Addressable: the session, the branch, the sequence, the kind, the event id, the two context
+Addressable: the session, the branch, the sequence (only as where a read begins), the kind, the event id, the two context
 flags, and paths inside the event's data. Not addressable: table names, column names, index
 names, the content table, batch metadata, and any other storage layout. SQL text is not a
 capability interface.
@@ -73,13 +77,14 @@ is derived state — and keep typed reads of their own.
 
 - A new capability read adds no service method, and the runtime stops defining context pages,
   policy windows and recall pages.
-- Every read has a bound, so an unbounded read has no interface. A consumer that folds a whole
-  prefix folds it from bounded pages.
+- A read names a selection, not a slice of the store, so a store executes the selection where the
+  events are kept and a read costs what its page covers. A consumer that folds a whole prefix
+  folds it from pages; an unbounded read has no interface.
 - Rust and other languages see the same query; the generated declarations describe it once.
 - A selection the query cannot express is a decision to extend the query here, not a method to
   add. No consumer keeps a private read past its migration.
-- While a consumer still uses its old read, both shapes exist and must agree on ordering, batch
-  boundaries and cursor meaning — or the difference is stated where the migration is tracked.
+- While a consumer still uses its old read, both shapes exist and must agree on ordering and on
+  where a page ends — or the difference is stated where the migration is tracked.
 
 ## Non-goals
 
@@ -106,13 +111,13 @@ ADR.
 | §4 rule 5 | Unchanged: appends and their batch contract. |
 | §4 rule 6 | Unchanged: context enters only through adopted inputs and tool results. |
 | §4 rule 7 | Callers keep reading through the Session and branch facades; the query is a public service and speaks only public event data. |
-| §4 rule 8 | Requirement raised to the Timeline's owner: one bounded query, its cursor and ordering semantics, and the derived-index rule. |
+| §4 rule 8 | Requirement raised to the Timeline's owner: one bounded query, its paging (skip and count) and ordering semantics, and the derived-index rule. |
 | §4 rule 9 | No new fact. |
 | ADR 002 D2, D3, D5 | No wiring part, no dependency crossing, and the query is language-neutral data. |
 
 ## Requirements raised to mechanism owners
 
-The Timeline service owner (runtime) provides the query, its scope, cursor and ordering
+The Timeline service owner (runtime) provides the query, its scope, paging (skip and count) and ordering
 semantics, and the derived-index rule. The storage owners (SQLite and the in-memory store)
 implement the same semantics. The plugin contract describes the query as a public service, and
 the owner of each consumer-shaped read replaces it with the query.

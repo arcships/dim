@@ -261,11 +261,14 @@ impl TimelineStore for Probe {
         &'a self,
         key: &'a TimelineKey,
         query: &'a dim_agent_runtime::TimelineQuery,
+        from: u64,
         through: u64,
     ) -> BoxFuture<'a, Result<dim_agent_runtime::TimelineQueryPage>> {
-        self.timed(Op::Other, self.inner.query(key, query, through), |page| {
-            page.events.len()
-        })
+        self.timed(
+            Op::Other,
+            self.inner.query(key, query, from, through),
+            |page| page.events.len(),
+        )
     }
 }
 /// Wall time covered by at least one of `spans`, in ms.

@@ -91,9 +91,10 @@ impl TimelineStore for Reads {
         &'a self,
         key: &'a TimelineKey,
         query: &'a dim_agent_runtime::TimelineQuery,
+        from: u64,
         through: u64,
     ) -> BoxFuture<'a, Result<dim_agent_runtime::TimelineQueryPage>> {
-        self.memory.query(key, query, through)
+        self.memory.query(key, query, from, through)
     }
 }
 
@@ -763,6 +764,9 @@ async fn last_event_reads_a_cut_inside_an_atomic_batch() {
 fn branch_query(scope: dim_agent_runtime::TimelineQueryScope) -> dim_agent_runtime::TimelineQuery {
     dim_agent_runtime::TimelineQuery {
         scope,
+        from_event: None,
+        from_sequence: None,
+        order_by: Default::default(),
         direction: Default::default(),
         kinds: vec![],
         flags: vec![],
@@ -1424,12 +1428,83 @@ async fn a_chain_read_on_an_empty_branch_returns_its_ancestor_facts() {
     );
 }
 
+/// A read begins where the caller last was, named by a sequence or by an event
+/// id, and the event it names is part of the read.
+#[tokio::test]
+async fn a_read_begins_at_the_sequence_or_event_it_names() {
+    use dim_agent_runtime::TimelineQueryScope::{Branch, Chain};
+
+    let (main, child) = chain_created_at(5, 5, 3).await;
+
+    let mut by_sequence = branch_query(Branch);
+    by_sequence.from_sequence = Some(4);
+    let page = main.query(by_sequence).await.unwrap();
+    assert_eq!(
+        queried(&page.events),
+        ["main-4", "main-5"],
+        "a sequence start includes the event at it"
+    );
+
+    let mut by_event = branch_query(Branch);
+    by_event.from_event = Some("main-4".into());
+    let page = main.query(by_event).await.unwrap();
+    assert_eq!(
+        queried(&page.events),
+        ["main-4", "main-5"],
+        "an event start resolves to its position"
+    );
+
+    let mut chain = branch_query(Chain);
+    chain.from_event = Some("main-4".into());
+    let page = child.query(chain).await.unwrap();
+    assert_eq!(
+        query_pairs(&page),
+        [
+            ("main", 4),
+            ("main", 5),
+            ("child", 1),
+            ("child", 2),
+            ("child", 3),
+        ],
+        "a chain read begins at the event it names and carries on"
+    );
+
+    let mut descending = branch_query(Branch);
+    descending.direction = dim_agent_runtime::TimelineQueryDirection::Descending;
+    descending.from_sequence = Some(5);
+    let page = main.query(descending).await.unwrap();
+    assert_eq!(
+        queried(&page.events),
+        ["main-5", "main-4", "main-3", "main-2", "main-1"],
+        "a descending read begins at the sequence and goes back"
+    );
+
+    let mut absent = branch_query(Branch);
+    absent.from_event = Some("absent".into());
+    let page = main.query(absent).await.unwrap();
+    assert!(
+        page.events.is_empty(),
+        "a read that begins at no event selects nothing"
+    );
+
+    let mut both = branch_query(Branch);
+    both.from_event = Some("main-4".into());
+    both.from_sequence = Some(4);
+    assert!(
+        matches!(main.query(both).await, Err(AgentError::InvalidInput(_))),
+        "a read begins at one event, not two"
+    );
+}
+
 #[test]
 fn the_query_crosses_languages_with_its_serde_shape() {
     use dim_agent_runtime::{TimelineQueryPredicate, TimelineQueryScope};
 
     let query = dim_agent_runtime::TimelineQuery {
         scope: TimelineQueryScope::Chain,
+        from_event: None,
+        from_sequence: None,
+        order_by: Default::default(),
         direction: dim_agent_runtime::TimelineQueryDirection::Descending,
         kinds: vec!["input/message".into()],
         flags: vec![

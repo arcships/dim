@@ -1336,6 +1336,7 @@
         "format",
         "matches",
         "thread_local",
+        "unreachable",
         "vec"
       ]
     },
@@ -2861,6 +2862,18 @@
         "format",
         "matches",
         "serde_json::json"
+      ]
+    },
+    {
+      "id": "dim_cli::args::workspace_tests",
+      "crate": "dim_cli",
+      "parent": "dim_cli::args",
+      "file": "crates/dim-cli/src/args.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "panic",
+        "vec"
       ]
     },
     {
@@ -14760,6 +14773,7 @@
       "references": [
         "path TimelineQuery",
         "path TimelineQueryDirection::Ascending",
+        "path TimelineQueryDirection::Descending",
         "path TimelineQueryReply",
         "path TimelineQueryScope::Branch",
         "path TimelineQueryScope::Chain",
@@ -25474,6 +25488,13 @@
     },
     {
       "from": "dim_cli::args",
+      "to": "dim_cli::args::workspace_tests",
+      "references": [
+        "mod workspace_tests"
+      ]
+    },
+    {
+      "from": "dim_cli::args",
       "to": "dim_cli::attachments",
       "references": [
         "path crate::attachments::MAX_IMAGES"
@@ -25531,6 +25552,14 @@
       "to": "dim_cli::update",
       "references": [
         "path crate::update::channel"
+      ]
+    },
+    {
+      "from": "dim_cli::args::workspace_tests",
+      "to": "dim_cli::args",
+      "references": [
+        "path Options::parse",
+        "path Workspace::resolve"
       ]
     },
     {
@@ -29355,6 +29384,13 @@
         "path EventContent::BranchCreate",
         "path EventContent::BranchCreateFailed",
         "path EventContent::BranchStart"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::tests",
+      "to": "dim_cli::args",
+      "references": [
+        "path crate::args::Options::parse"
       ]
     },
     {

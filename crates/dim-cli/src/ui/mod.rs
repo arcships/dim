@@ -11,8 +11,8 @@ use std::path::PathBuf;
 pub struct Env {
     /// Product home for saved settings and input history.
     pub home: PathBuf,
-    /// The workspace the session works in.
-    pub workspace: PathBuf,
+    /// The workspace the session works in, as every request names it.
+    pub workspace: String,
     /// Start in the fullscreen interface instead of scrollback.
     pub fullscreen: bool,
 }

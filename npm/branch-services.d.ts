@@ -234,6 +234,12 @@ export type TimelineQueryScope =
   | /** The branch chain: each ancestor up to its cut, root first, then the queried branch. */ "chain"
 
 /**
+ * The key a read orders by; a chain read orders by chain position first, so
+ * `sequence` is the sequence within an event's own branch.
+ */
+export type TimelineQueryOrderBy = "sequence"
+
+/**
  * The end a page is taken from. A reply is always ordered by chain position
  * and then sequence, in this direction; the offset counts from that end.
  */
@@ -267,9 +273,18 @@ export interface TimelineQueryPredicate {
 export interface TimelineQuery {
   scope: TimelineQueryScope
   /**
-   * The end a page is taken from; ascending is the default. A reply is
-   * ordered by chain position and then sequence in this direction.
+   * The event the read begins at, named by its id; the event is included.
+   * At most one of this and `from_sequence` may be given.
    */
+  from_event?: string | null
+  /**
+   * The sequence the read begins at; the event at it is included. At most
+   * one of this and `from_event` may be given.
+   */
+  from_sequence?: number | bigint | null
+  /** The key the reply is ordered by, with chain position first. */
+  order_by?: TimelineQueryOrderBy
+  /** The end a page is taken from; ascending is the default. */
   direction?: TimelineQueryDirection
   /** Event kinds (`domain/name`) the read accepts; empty accepts every kind. */
   kinds?: string[]

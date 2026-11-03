@@ -465,6 +465,7 @@ pub trait TimelineStore: Send + Sync + 'static {
         &'a self,
         key: &'a TimelineKey,
         query: &'a TimelineQuery,
+        from: u64,
         through: u64,
     ) -> BoxFuture<'a, Result<TimelineQueryPage>>;
     /// Decodes all segments in one read scope, sharing content across branches.

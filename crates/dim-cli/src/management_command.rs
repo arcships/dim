@@ -243,7 +243,6 @@ async fn read(
             action: ManagementAction::List,
         },
     )?;
-    let cwd = options.cwd.to_string_lossy();
     match area {
         Area::Skills => Err("A Skill has no document to edit.".to_owned().into()),
         Area::Models { provider_id } => {
@@ -262,7 +261,7 @@ async fn read(
             Ok((version.to_string(), models::edit_template(&provider, model)))
         }
         Area::Hooks => {
-            let catalog = hooks::catalog(client, &cwd).await?;
+            let catalog = hooks::catalog(client, options.workspace().as_str()).await?;
             let document = catalog
                 .user_document
                 .ok_or("The daemon reports no hook document to edit.")?;
@@ -272,11 +271,11 @@ async fn read(
             let Some(id) = id else {
                 return Err("mcp edit and set take an entry id.".to_owned().into());
             };
-            let server = mcp::target(client, &cwd, id).await?;
+            let server = mcp::target(client, options.workspace().as_str(), id).await?;
             if server.source == "plugin" {
                 return Err("plugin MCP entries change through their plugin".into());
             }
-            let editable = mcp::editable(client, &cwd, &server).await?;
+            let editable = mcp::editable(client, options.workspace().as_str(), &server).await?;
             // A plugin entry's read reports no revision; the refusal above
             // already covers it, and any other missing revision leaves
             // nothing to write.
@@ -304,7 +303,7 @@ async fn read(
                     .to_owned()
                     .into());
             };
-            let listing = workflow::read(client, &options.cwd).await?;
+            let listing = workflow::read(client, options.workspace().as_str()).await?;
             let entry = listing
                 .find(id)
                 .ok_or_else(|| format!("No workflow definition is named {id}."))?;
@@ -312,7 +311,7 @@ async fn read(
                 "project" => {
                     return Err(format!(
                         "A project definition is a file; edit {}.",
-                        workflow::project_path(&options.cwd, &entry.name).display()
+                        workflow::project_path(options.workspace().path(), &entry.name).display()
                     )
                     .into());
                 }
@@ -363,7 +362,7 @@ async fn write(client: &mut Client, options: &Options, draft: &Draft) -> Result<
             document,
         },
     };
-    match management::apply(client, &request, &options.cwd, None).await {
+    match management::apply(client, &request, options.named_workspace(), None).await {
         ManagementResult::Refused(error) => {
             Err(format!("{error} Your text is kept in {}.", draft.kept).into())
         }
@@ -406,7 +405,7 @@ async fn create(
         area,
         action: ManagementAction::Add { document },
     };
-    match management::apply(client, &request, &options.cwd, None).await {
+    match management::apply(client, &request, options.named_workspace(), None).await {
         ManagementResult::View { note, .. } => {
             // The note names the entry the owner saved: made safe, as every
             // line the Scheduler prints is.
@@ -442,7 +441,7 @@ async fn run_skills(
     request: &ManagementRequest,
 ) -> Result<i32> {
     management::supported(client, request)?;
-    let catalog = match skills::apply(client, &request.action, &options.cwd).await {
+    let catalog = match skills::apply(client, &request.action, options.workspace().as_str()).await {
         skills::Outcome::Catalog(catalog) => catalog,
         // A toggle or a rescan was applied, so the command did what it was
         // asked; only the report after it failed, and the action's own line
@@ -475,7 +474,7 @@ async fn run_hooks(
     request: &ManagementRequest,
 ) -> Result<i32> {
     management::supported(client, request)?;
-    let catalog = match hooks::apply(client, &request.action, &options.cwd).await {
+    let catalog = match hooks::apply(client, &request.action, options.workspace().as_str()).await {
         Ok(catalog) => catalog,
         // A toggle was applied; only the report after it failed. Its line
         // names the workspace, not anything the missing read would carry.
@@ -483,12 +482,12 @@ async fn run_hooks(
             let ManagementAction::Toggle { enabled, .. } = &request.action else {
                 return Err(error.into());
             };
-            let cwd = options.cwd.to_string_lossy();
+            let cwd = options.workspace().as_str();
             print_report(
                 vec![format!(
                     "{} project hooks for {}.",
                     if *enabled { "Enabled" } else { "Disabled" },
-                    safe_line(&cwd)
+                    safe_line(cwd)
                 )],
                 vec![toggle_note(*enabled).to_owned(), error],
             );
@@ -498,12 +497,12 @@ async fn run_hooks(
     };
     match &request.action {
         ManagementAction::Toggle { enabled, .. } => {
-            let cwd = options.cwd.to_string_lossy();
+            let cwd = options.workspace().as_str();
             print_report(
                 vec![format!(
                     "{} project hooks for {}.",
                     if *enabled { "Enabled" } else { "Disabled" },
-                    safe_line(&cwd)
+                    safe_line(cwd)
                 )],
                 vec![toggle_note(*enabled).to_owned()],
             );
@@ -604,7 +603,7 @@ async fn run_workflow(
     request: &ManagementRequest,
 ) -> Result<i32> {
     management::supported(client, request)?;
-    match workflow::apply(client, &request.action, &options.cwd, None).await {
+    match workflow::apply(client, &request.action, options.workspace().as_str(), None).await {
         Ok(workflow::Answer::Detail(detail)) => {
             // The owner names definitions and states reasons: what it wrote
             // is made safe before it reaches the terminal.
@@ -659,7 +658,7 @@ async fn run_mcp(
         print_report(rows, notes);
         return Ok(0);
     }
-    match mcp::apply(client, &request.action, &options.cwd).await {
+    match mcp::apply(client, &request.action, options.workspace().as_str()).await {
         // A test's tools are typed: one row per tool, `name\tdescription`,
         // and the no-tools sentence when the owner found none.
         Ok(mcp::Answer::Tools { tools, .. }) => {

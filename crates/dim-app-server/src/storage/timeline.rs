@@ -3720,6 +3720,7 @@ impl TimelineStore for SqliteTimelineStore {
         &'a self,
         key: &'a TimelineKey,
         query: &'a TimelineQuery,
+        from: u64,
         through: u64,
     ) -> BoxFuture<'a, Result<TimelineQueryPage>> {
         Box::pin(async move {
@@ -3731,6 +3732,7 @@ impl TimelineStore for SqliteTimelineStore {
             }
             if query.event_id.is_some()
                 && let Some(record) = self.query_event_by_id(key, query).await?
+                && record.event.sequence >= from
                 && record.event.sequence <= through
                 && matches_selection(query, &record.event)
             {
@@ -3753,7 +3755,7 @@ impl TimelineStore for SqliteTimelineStore {
             let offset = usize::try_from(query.offset).unwrap_or(usize::MAX);
             let limit = usize::try_from(query.limit.get()).unwrap_or(usize::MAX);
             let rows = u64::try_from(offset.saturating_add(limit)).unwrap_or(u64::MAX);
-            let records = self.query_page(key, query, 1..=through, rows).await?;
+            let records = self.query_page(key, query, from..=through, rows).await?;
             let skipped = records.len().min(offset);
             let page: Vec<StoredEvent> = records.into_iter().skip(skipped).take(limit).collect();
             Ok(TimelineQueryPage {

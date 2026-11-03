@@ -253,7 +253,7 @@ fn run_terminal(
         ),
         None => detected.clone(),
     };
-    let cwd_key = surroundings.workspace.to_string_lossy().into_owned();
+    let cwd_key = surroundings.workspace.clone();
     let mut app = App::new(
         host,
         MarkdownRenderer::new(&theme),

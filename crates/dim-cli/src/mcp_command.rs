@@ -306,9 +306,13 @@ pub async fn command(
         "enable" | "disable"
             if !id.is_empty() && !id.split_whitespace().any(|word| word.starts_with("--")) =>
         {
-            let state =
-                crate::management::mcp::set_enabled(client, &options.cwd, id, action == "enable")
-                    .await?;
+            let state = crate::management::mcp::set_enabled(
+                client,
+                options.workspace().as_str(),
+                id,
+                action == "enable",
+            )
+            .await?;
             print_report(vec![state.sentence()], state.notes);
             Ok(())
         }

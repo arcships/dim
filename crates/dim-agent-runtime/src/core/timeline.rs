@@ -769,6 +769,64 @@ impl Timeline {
                 .chain(std::iter::once((self.0.key.branch_id.clone(), published)))
                 .collect(),
         };
+        let anchor = match (&query.from_event, query.from_sequence) {
+            (None, None) => None,
+            (None, Some(sequence)) => Some((
+                match query.scope {
+                    TimelineQueryScope::Branch => None,
+                    TimelineQueryScope::Chain => Some(self.0.key.branch_id.clone()),
+                },
+                sequence,
+            )),
+            (Some(event_id), None) => {
+                let mut found = None;
+                for (branch, clip) in &clips {
+                    let key = TimelineKey {
+                        session_id: self.0.key.session_id.clone(),
+                        branch_id: branch.clone(),
+                    };
+                    let probe = TimelineQuery {
+                        scope: TimelineQueryScope::Branch,
+                        from_event: None,
+                        from_sequence: None,
+                        order_by: query.order_by,
+                        direction: TimelineQueryDirection::Ascending,
+                        kinds: Vec::new(),
+                        flags: Vec::new(),
+                        event_id: Some(event_id.clone()),
+                        predicate: None,
+                        limit: std::num::NonZeroU64::new(1).expect("one is nonzero"),
+                        offset: 0,
+                    };
+                    let page = self.0.store.query(&key, &probe, 1, *clip).await?;
+                    if let Some(position) = page.positions.first() {
+                        found = Some((Some(branch.clone()), position.sequence));
+                        break;
+                    }
+                }
+                found
+            }
+            (Some(_), Some(_)) => unreachable!("validate rejects two anchors"),
+        };
+        if query.from_event.is_some() && anchor.is_none() {
+            return Ok(TimelineQueryReply {
+                events: Vec::new(),
+                positions: Vec::new(),
+            });
+        }
+        let anchor_index = match &anchor {
+            Some((Some(branch), _)) => Some(
+                clips
+                    .iter()
+                    .position(|(name, _)| name == branch)
+                    .ok_or_else(|| {
+                        AgentError::InvalidInput(format!(
+                            "query start names branch {branch}, which the scope does not cover"
+                        ))
+                    })?,
+            ),
+            _ => None,
+        };
         let order: Vec<usize> = match query.direction {
             TimelineQueryDirection::Ascending => (0..clips.len()).collect(),
             Descending => (0..clips.len()).rev().collect(),
@@ -782,6 +840,39 @@ impl Timeline {
                 break;
             }
             let (branch, clip) = &clips[index];
+            let from = match (&anchor, anchor_index, query.direction) {
+                (None, _, _) => 1,
+                (
+                    Some((Some(_), sequence)),
+                    Some(start_index),
+                    TimelineQueryDirection::Ascending,
+                ) => {
+                    if index < start_index {
+                        continue;
+                    }
+                    if index == start_index { *sequence } else { 1 }
+                }
+                (Some((Some(_), _)), Some(start_index), TimelineQueryDirection::Descending) => {
+                    if index > start_index {
+                        continue;
+                    }
+                    1
+                }
+                (Some((None, sequence)), _, TimelineQueryDirection::Ascending) => *sequence,
+                (Some((None, _)), _, TimelineQueryDirection::Descending) => 1,
+                (Some(_), None, _) => 1,
+            };
+            let bound = match (&anchor, anchor_index, query.direction) {
+                (
+                    Some((Some(_), sequence)),
+                    Some(start_index),
+                    TimelineQueryDirection::Descending,
+                ) if index == start_index => (*clip).min(*sequence),
+                (Some((None, sequence)), _, TimelineQueryDirection::Descending) => {
+                    (*clip).min(*sequence)
+                }
+                _ => *clip,
+            };
             let key = TimelineKey {
                 session_id: self.0.key.session_id.clone(),
                 branch_id: branch.clone(),
@@ -793,6 +884,9 @@ impl Timeline {
                     &key,
                     &TimelineQuery {
                         scope: TimelineQueryScope::Branch,
+                        from_event: None,
+                        from_sequence: None,
+                        order_by: query.order_by,
                         direction: query.direction,
                         kinds: query.kinds.clone(),
                         flags: query.flags.clone(),
@@ -806,7 +900,8 @@ impl Timeline {
                         .expect("a read keeps one event of its limit"),
                         offset: skip,
                     },
-                    *clip,
+                    from,
+                    bound,
                 )
                 .await?;
             let reached = page.skipped + page.events.len() as u64;

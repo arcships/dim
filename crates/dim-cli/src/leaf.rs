@@ -157,7 +157,7 @@ impl DynPlugin for LeafTui {
                 .ok_or_else(|| failed("Tui was loaded twice"))?;
             let env = ui::Env {
                 home: self.options.home.clone(),
-                workspace: self.options.cwd.clone(),
+                workspace: self.options.workspace().as_str().to_owned(),
                 fullscreen: self
                     .options
                     .fullscreen

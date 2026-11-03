@@ -154,12 +154,13 @@ impl dim_agent_runtime::TimelineStore for CountingTimelineStore {
         &'a self,
         key: &'a dim_agent_runtime::TimelineKey,
         query: &'a dim_agent_runtime::TimelineQuery,
+        from: u64,
         through: u64,
     ) -> dim_agent_runtime::BoxFuture<
         'a,
         dim_agent_runtime::Result<dim_agent_runtime::TimelineQueryPage>,
     > {
-        self.memory.query(key, query, through)
+        self.memory.query(key, query, from, through)
     }
 }
 

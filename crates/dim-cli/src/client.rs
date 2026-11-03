@@ -326,7 +326,7 @@ pub async fn connect_inner(options: &Options, start: bool) -> Result<Option<Clie
         }
     }
     command
-        .current_dir(&options.cwd)
+        .current_dir(options.launch_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log);

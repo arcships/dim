@@ -11,7 +11,6 @@
 //! Settings source, so it has no document and offers no write.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -343,11 +342,10 @@ impl Enabled {
 /// refused before the write, since its source has no Settings document.
 pub async fn set_enabled(
     client: &mut Client,
-    cwd: &Path,
+    cwd: &str,
     id: &str,
     enabled: bool,
 ) -> crate::Result<Enabled> {
-    let cwd = cwd.to_string_lossy();
     let catalog: Catalog = match client.typed("mcp.catalog", json!({"cwd": cwd})).await {
         Ok(catalog) => catalog,
         Err(error) if !enabled && error.downcast_ref::<crate::client::RpcError>().is_some() => {
@@ -555,16 +553,15 @@ async fn refused(client: &mut Client, cwd: &str, error: &crate::Error, kind: Con
 pub async fn apply(
     client: &mut Client,
     action: &ManagementAction,
-    cwd: &Path,
+    cwd: &str,
 ) -> Result<Answer, Failure> {
-    let cwd = cwd.to_string_lossy().into_owned();
     let mut note = None;
     match action {
         ManagementAction::List | ManagementAction::Reload => {}
         ManagementAction::Toggle { id, enabled } => {
-            match set_enabled(client, Path::new(&cwd), id, *enabled).await {
+            match set_enabled(client, cwd, id, *enabled).await {
                 Ok(state) => note = Some(state.note()),
-                Err(error) => return Err(refused(client, &cwd, &error, Conflict::Toggle).await),
+                Err(error) => return Err(refused(client, cwd, &error, Conflict::Toggle).await),
             }
         }
         ManagementAction::Save {
@@ -579,7 +576,7 @@ pub async fn apply(
             };
             let patch: Patch = serde_json::from_value(document.clone())
                 .map_err(|error| Failure::Refused(format!("mcp.update: {error}")))?;
-            let catalog = catalog(client, &cwd).await.map_err(Failure::Refused)?;
+            let catalog = catalog(client, cwd).await.map_err(Failure::Refused)?;
             let server = catalog
                 .servers
                 .iter()
@@ -603,7 +600,7 @@ pub async fn apply(
                 )
                 .await;
             if let Err(error) = written {
-                return Err(refused(client, &cwd, &error, Conflict::Edit).await);
+                return Err(refused(client, cwd, &error, Conflict::Edit).await);
             }
         }
         ManagementAction::Add { document } => {
@@ -624,7 +621,7 @@ pub async fn apply(
                     t("The add document needs a configuration object.").to_owned(),
                 ));
             }
-            let catalog = catalog(client, &cwd).await.map_err(Failure::Refused)?;
+            let catalog = catalog(client, cwd).await.map_err(Failure::Refused)?;
             if let Some(existing) = catalog.servers.iter().find(|server| server.id == entry.id) {
                 // A plugin entry is removed through its plugin, so the only
                 // step left is another id.
@@ -661,12 +658,12 @@ pub async fn apply(
                 )
                 .await;
             if let Err(error) = written {
-                return Err(refused(client, &cwd, &error, Conflict::Add).await);
+                return Err(refused(client, cwd, &error, Conflict::Add).await);
             }
             note = Some(tf("Added {id}.", &[("id", &safe_line(&entry.id))]));
         }
         ManagementAction::Remove { id } => {
-            let catalog = catalog(client, &cwd).await.map_err(Failure::Refused)?;
+            let catalog = catalog(client, cwd).await.map_err(Failure::Refused)?;
             let server = catalog
                 .servers
                 .iter()
@@ -694,7 +691,7 @@ pub async fn apply(
                 )
                 .await;
             if let Err(error) = written {
-                return Err(refused(client, &cwd, &error, Conflict::Remove).await);
+                return Err(refused(client, cwd, &error, Conflict::Remove).await);
             }
         }
         // A test executes the stored entry and writes nothing the area
@@ -706,11 +703,11 @@ pub async fn apply(
                     t("An MCP server's test takes no input document.").to_owned(),
                 ));
             }
-            return test(client, &cwd, id).await;
+            return test(client, cwd, id).await;
         }
-        ManagementAction::Inspect { id } => return inspect(client, &cwd, id).await,
+        ManagementAction::Inspect { id } => return inspect(client, cwd, id).await,
     }
-    match catalog(client, &cwd).await {
+    match catalog(client, cwd).await {
         Ok(catalog) => Ok(Answer::Area { catalog, note }),
         // A read applied nothing, so its failure is the answer itself, not a
         // report that follows a write.
@@ -903,11 +900,10 @@ async fn inspect(client: &mut Client, cwd: &str, id: &str) -> Result<Answer, Fai
 /// each with the kinds its source allows.
 pub(super) async fn view(
     client: &mut Client,
-    cwd: &Path,
+    cwd: &str,
     catalog: &Catalog,
     available: &[ActionKind],
 ) -> ManagementView {
-    let cwd = cwd.to_string_lossy().into_owned();
     // A daemon older than `mcp.configuration` lists what its catalog carries:
     // no entry detail and no edit, and no entry is invalid for the read it
     // cannot serve.
@@ -924,7 +920,7 @@ pub(super) async fn view(
             let mut lines = Vec::new();
             let mut document = None;
             let edition = if configurations {
-                Some(editable(client, &cwd, server).await)
+                Some(editable(client, cwd, server).await)
             } else {
                 None
             };

@@ -4,8 +4,6 @@
 //! Skills reports the root an entry was found in as its `source`; the panel
 //! groups by it and never reads the id, which names an absolute project path.
 
-use std::path::Path;
-
 use serde::Deserialize;
 use serde_json::json;
 
@@ -63,8 +61,8 @@ pub enum Outcome {
 /// `skills.refresh` that succeeded rescanned the roots even when the read
 /// after it fails. A kind this area has no method for is refused by
 /// `management::supported` before the adapter runs.
-pub async fn apply(client: &mut Client, action: &ManagementAction, cwd: &Path) -> Outcome {
-    let params = json!({"cwd": cwd.to_string_lossy()});
+pub async fn apply(client: &mut Client, action: &ManagementAction, cwd: &str) -> Outcome {
+    let params = json!({"cwd": cwd});
     let applied = match action {
         // Both are reads: `skills.catalog` is the only method they call.
         ManagementAction::List | ManagementAction::Inspect { .. } => false,
@@ -90,7 +88,7 @@ pub async fn apply(client: &mut Client, action: &ManagementAction, cwd: &Path) -
         | ManagementAction::Remove { .. }
         | ManagementAction::Run { .. } => false,
     };
-    match catalog(client, &cwd.to_string_lossy()).await {
+    match catalog(client, cwd).await {
         Ok(catalog) => Outcome::Catalog(catalog),
         Err(error) if applied => Outcome::ReadFailed(error),
         Err(error) => Outcome::Refused(error),

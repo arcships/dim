@@ -121,7 +121,7 @@ async fn run_tui_with_connection(
 ) -> Result<i32> {
     let env = ui::Env {
         home: options.home.clone(),
-        workspace: options.cwd.clone(),
+        workspace: options.workspace().as_str().to_owned(),
         fullscreen: options
             .fullscreen
             .unwrap_or_else(|| ui::config::saved_fullscreen(&options.home)),
@@ -173,7 +173,7 @@ async fn open_tui_leaf(root: &rutis::Ctx, options: &Options) -> Result<i32> {
         session_host::adopt_startup(&mut client, options, id).await?;
         id.clone()
     } else {
-        let mut params = serde_json::json!({ "cwd": options.cwd });
+        let mut params = serde_json::json!({ "cwd": options.workspace().as_str() });
         options.creation_startup(&mut params);
         let mut preferences = options.creation_preferences(None);
         let mut target = None;
@@ -505,6 +505,10 @@ fn prepare() -> Result<Option<Options>> {
             options.prompt = Some(prompt);
         }
     }
+    // The last step before the daemon is contacted: with a prompt from stdin
+    // taken, a Chat that resumes a Session headlessly is known to name no
+    // workspace.
+    options.resolve_workspace()?;
     Ok(Some(options))
 }
 
@@ -843,8 +847,13 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
         Action::McpLogout(id) => mcp_command::sign_out(&mut client, &options, id).await,
         Action::McpDisconnect(id) => mcp_command::disconnect(&mut client, &options, id).await,
         Action::McpEnable { id, enabled } => {
-            let state =
-                management::mcp::set_enabled(&mut client, &options.cwd, id, *enabled).await?;
+            let state = management::mcp::set_enabled(
+                &mut client,
+                options.workspace().as_str(),
+                id,
+                *enabled,
+            )
+            .await?;
             mcp_command::print_report(vec![state.sentence()], state.notes);
             Ok(0)
         }

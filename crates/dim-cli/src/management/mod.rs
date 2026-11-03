@@ -23,8 +23,6 @@ pub mod scheduler;
 pub mod skills;
 pub mod workflow;
 
-use std::path::Path;
-
 use crate::client::Client;
 use crate::model::session::{
     ActionKind, Area, ManagementAction, ManagementEntry, ManagementGroup, ManagementRefusal,
@@ -337,11 +335,20 @@ pub fn use_language(code: &str) {
     }
 }
 
-/// Applies `request` to its area and reports what it came to.
+/// The workspace a request for `area` names. Only an area that names one is
+/// reached by a command whose options resolved it, so a request path never
+/// runs without it.
+fn named(workspace: Option<&str>) -> &str {
+    workspace.expect("a request for this area names the workspace")
+}
+
+/// Applies `request` to its area and reports what it came to. `workspace` is
+/// the resolved workspace a request for its area names, and `None` for an
+/// area that names none.
 pub async fn apply(
     client: &mut Client,
     request: &ManagementRequest,
-    cwd: &Path,
+    workspace: Option<&str>,
     line: Option<&SessionLine>,
 ) -> ManagementResult {
     if let Err(error) = supported(client, request) {
@@ -349,7 +356,7 @@ pub async fn apply(
     }
     let actions = actions(client, &request.area);
     match &request.area {
-        Area::Skills => match skills::apply(client, &request.action, cwd).await {
+        Area::Skills => match skills::apply(client, &request.action, named(workspace)).await {
             skills::Outcome::Catalog(catalog) => ManagementResult::View {
                 view: Box::new(skills::view(&catalog, &actions)),
                 note: None,
@@ -362,7 +369,7 @@ pub async fn apply(
                 ManagementResult::Refused(ManagementRefusal::Refused(message))
             }
         },
-        Area::Hooks => match hooks::apply(client, &request.action, cwd).await {
+        Area::Hooks => match hooks::apply(client, &request.action, named(workspace)).await {
             Ok(catalog) => ManagementResult::View {
                 view: Box::new(hooks::view(&catalog, &actions)),
                 note: None,
@@ -381,29 +388,33 @@ pub async fn apply(
                 })
             }
         },
-        Area::Workflow => match workflow::apply(client, &request.action, cwd, line).await {
-            Ok(workflow::Answer::Definitions { listing, note }) => ManagementResult::View {
-                view: Box::new(workflow::view(&listing, &actions, cwd)),
-                note,
-            },
-            Ok(workflow::Answer::Detail(detail)) => ManagementResult::Detail(detail),
-            Err(workflow::Failure::ReadFailed { note, error }) => ManagementResult::Applied {
-                note,
-                read_error: error,
-            },
-            Err(workflow::Failure::Refused(message)) => {
-                ManagementResult::Refused(ManagementRefusal::Refused(message))
+        Area::Workflow => {
+            match workflow::apply(client, &request.action, named(workspace), line).await {
+                Ok(workflow::Answer::Definitions { listing, note }) => ManagementResult::View {
+                    view: Box::new(workflow::view(&listing, &actions, named(workspace))),
+                    note,
+                },
+                Ok(workflow::Answer::Detail(detail)) => ManagementResult::Detail(detail),
+                Err(workflow::Failure::ReadFailed { note, error }) => ManagementResult::Applied {
+                    note,
+                    read_error: error,
+                },
+                Err(workflow::Failure::Refused(message)) => {
+                    ManagementResult::Refused(ManagementRefusal::Refused(message))
+                }
+                Err(workflow::Failure::Conflict { message, listing }) => {
+                    ManagementResult::Refused(ManagementRefusal::Conflict {
+                        message,
+                        view: listing.map(|listing| {
+                            Box::new(workflow::view(&listing, &actions, named(workspace)))
+                        }),
+                    })
+                }
             }
-            Err(workflow::Failure::Conflict { message, listing }) => {
-                ManagementResult::Refused(ManagementRefusal::Conflict {
-                    message,
-                    view: listing.map(|listing| Box::new(workflow::view(&listing, &actions, cwd))),
-                })
-            }
-        },
-        Area::Mcp => match mcp::apply(client, &request.action, cwd).await {
+        }
+        Area::Mcp => match mcp::apply(client, &request.action, named(workspace)).await {
             Ok(mcp::Answer::Area { catalog, note }) => {
-                let view = mcp::view(client, cwd, &catalog, &actions).await;
+                let view = mcp::view(client, named(workspace), &catalog, &actions).await;
                 ManagementResult::View {
                     view: Box::new(view),
                     note,
@@ -422,7 +433,9 @@ pub async fn apply(
             }
             Err(mcp::Failure::Conflict { message, catalog }) => {
                 let view = match catalog {
-                    Ok(catalog) => Ok(Box::new(mcp::view(client, cwd, &catalog, &actions).await)),
+                    Ok(catalog) => Ok(Box::new(
+                        mcp::view(client, named(workspace), &catalog, &actions).await,
+                    )),
                     Err(error) => Err(error),
                 };
                 ManagementResult::Refused(ManagementRefusal::Conflict { message, view })
@@ -430,7 +443,7 @@ pub async fn apply(
         },
         Area::Scheduled => match scheduler::apply(client, &request.action).await {
             Ok(scheduler::Answer::Jobs { catalog, note }) => ManagementResult::View {
-                view: Box::new(scheduler::view(&catalog, &actions, cwd)),
+                view: Box::new(scheduler::view(&catalog, &actions, workspace)),
                 note,
             },
             Ok(scheduler::Answer::Detail(detail)) => ManagementResult::Detail(detail),
@@ -444,7 +457,8 @@ pub async fn apply(
             Err(scheduler::Failure::Conflict { message, catalog }) => {
                 ManagementResult::Refused(ManagementRefusal::Conflict {
                     message,
-                    view: catalog.map(|catalog| Box::new(scheduler::view(&catalog, &actions, cwd))),
+                    view: catalog
+                        .map(|catalog| Box::new(scheduler::view(&catalog, &actions, workspace))),
                 })
             }
         },

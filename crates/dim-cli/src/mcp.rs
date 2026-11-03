@@ -49,7 +49,7 @@ pub async fn catalog_report(
     options: &Options,
 ) -> Result<(Vec<String>, Vec<String>)> {
     let catalog: Catalog = client
-        .typed("mcp.catalog", json!({"cwd":options.cwd}))
+        .typed("mcp.catalog", json!({"cwd": options.workspace().as_str()}))
         .await?;
     let mut rows = Vec::new();
     for server in catalog.servers {
@@ -107,14 +107,14 @@ pub async fn catalog_report(
 
 pub async fn target(client: &mut Client, options: &Options, id: &str) -> Result<Value> {
     let catalog: Catalog = client
-        .typed("mcp.catalog", json!({"cwd":options.cwd}))
+        .typed("mcp.catalog", json!({"cwd": options.workspace().as_str()}))
         .await?;
     let server = catalog
         .servers
         .into_iter()
         .find(|server| server.id == id)
         .ok_or("No matching MCP server; inspect mcp list")?;
-    Ok(json!({"id":id,"source":server.source,"cwd":options.cwd}))
+    Ok(json!({"id":id,"source":server.source,"cwd":options.workspace().as_str()}))
 }
 
 pub fn error(error: crate::Error) -> crate::Error {

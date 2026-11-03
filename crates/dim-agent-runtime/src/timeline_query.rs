@@ -36,6 +36,15 @@ pub enum TimelineQueryDirection {
     Descending,
 }
 
+/// The key a read orders by; a chain read orders by chain position first, so
+/// `sequence` is the sequence within an event's own branch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TimelineQueryOrderBy {
+    #[default]
+    Sequence,
+}
+
 /// One of the envelope's two context flags a query may name. Naming either
 /// returns the events that carry at least one named flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,8 +136,18 @@ impl TimelineQueryPredicate {
 #[serde(deny_unknown_fields)]
 pub struct TimelineQuery {
     pub scope: TimelineQueryScope,
-    /// The end a page is taken from; ascending is the default. A reply is
-    /// ordered by chain position and then sequence in this direction.
+    /// The event the read begins at, named by its id; the event is included.
+    /// At most one of this and `from_sequence` may be given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_event: Option<String>,
+    /// The sequence the read begins at; the event at it is included. At most
+    /// one of this and `from_event` may be given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_sequence: Option<u64>,
+    /// The key the reply is ordered by, with chain position first.
+    #[serde(default)]
+    pub order_by: TimelineQueryOrderBy,
+    /// The end a page is taken from; ascending is the default.
     #[serde(default)]
     pub direction: TimelineQueryDirection,
     /// Event kinds (`domain/name`) the read accepts; empty accepts every kind.
@@ -161,6 +180,16 @@ impl TimelineQuery {
     pub fn validate(&self) -> Result<()> {
         if let Some(predicate) = &self.predicate {
             predicate.validate()?;
+        }
+        if self.from_event.is_some() && self.from_sequence.is_some() {
+            return Err(AgentError::InvalidInput(
+                "a read begins at an event id or a sequence, not both".into(),
+            ));
+        }
+        if self.from_sequence == Some(0) {
+            return Err(AgentError::InvalidInput(
+                "timeline sequences start at 1".into(),
+            ));
         }
         Ok(())
     }

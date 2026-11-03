@@ -6,8 +6,6 @@
 //! turned on or off for this workspace alone; a plugin's source belongs to
 //! its plugin.
 
-use std::path::Path;
-
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -100,9 +98,8 @@ async fn conflict(client: &mut Client, cwd: &str, message: &'static str) -> Fail
 pub async fn apply(
     client: &mut Client,
     action: &ManagementAction,
-    cwd: &Path,
+    cwd: &str,
 ) -> Result<Catalog, Failure> {
-    let cwd = cwd.to_string_lossy().into_owned();
     let mut applied = false;
     match action {
         ManagementAction::List | ManagementAction::Reload => {}
@@ -112,7 +109,7 @@ pub async fn apply(
                     "Only this workspace's {PROJECT} hooks can be turned on or off here."
                 )));
             }
-            let current = catalog(client, &cwd).await.map_err(Failure::Refused)?;
+            let current = catalog(client, cwd).await.map_err(Failure::Refused)?;
             let toggled = client
                 .rpc(
                     "hooks.set_enabled",
@@ -132,7 +129,7 @@ pub async fn apply(
                 return Err(
                     conflict(
                         client,
-                        &cwd,
+                        cwd,
                         "This workspace's hook settings changed since they were read; nothing was written.",
                     )
                     .await,
@@ -160,7 +157,7 @@ pub async fn apply(
                 }
                 return Err(conflict(
                     client,
-                    &cwd,
+                    cwd,
                     "The user document changed since it was read; nothing was written.",
                 )
                 .await);
@@ -171,7 +168,7 @@ pub async fn apply(
         // `management::supported` before the adapter runs.
         _ => {}
     }
-    catalog(client, &cwd).await.map_err(|error| {
+    catalog(client, cwd).await.map_err(|error| {
         if applied {
             Failure::ReadFailed(error)
         } else {

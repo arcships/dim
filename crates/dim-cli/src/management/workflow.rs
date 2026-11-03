@@ -206,18 +206,17 @@ impl Run {
 pub async fn apply(
     client: &mut Client,
     action: &ManagementAction,
-    cwd: &Path,
+    cwd: &str,
     line: Option<&super::SessionLine>,
 ) -> Result<Answer, Failure> {
-    let cwd = cwd.to_string_lossy().into_owned();
     let mut note = None;
     match action {
         ManagementAction::List | ManagementAction::Reload => {}
         ManagementAction::Toggle { id, enabled } => {
-            toggle(client, id, *enabled, &cwd).await?;
+            toggle(client, id, *enabled, cwd).await?;
         }
         ManagementAction::Add { document } => {
-            let (source, name) = add(client, document, &cwd).await?;
+            let (source, name) = add(client, document, cwd).await?;
             note = Some(if source == "project" {
                 tf(
                     "Saved {name}. It stays disabled until you enable it.",
@@ -239,17 +238,17 @@ pub async fn apply(
             };
             // The save's name is the shared line's: the surface composes
             // "Saved {name}." from the read that follows, which holds it.
-            save(client, id, expected_revision, document, &cwd).await?;
+            save(client, id, expected_revision, document, cwd).await?;
         }
         ManagementAction::Run { id, document, seed } => {
             let (name, run_id) =
-                start(client, id, document.as_ref(), seed.as_ref(), &cwd, line).await?;
+                start(client, id, document.as_ref(), seed.as_ref(), cwd, line).await?;
             note = Some(tf(
                 "Started {name}: {run_id}.",
                 &[("name", &name), ("run_id", &run_id)],
             ));
         }
-        ManagementAction::Inspect { id } => return inspect(client, id, &cwd).await,
+        ManagementAction::Inspect { id } => return inspect(client, id, cwd).await,
         // `management::supported` refuses a kind this area does not offer
         // before the adapter runs.
         ManagementAction::Remove { .. } => {
@@ -259,7 +258,7 @@ pub async fn apply(
         }
     }
     let applied = !matches!(action, ManagementAction::List | ManagementAction::Reload);
-    match read(client, Path::new(&cwd)).await {
+    match read(client, cwd).await {
         Ok(listing) => Ok(Answer::Definitions { listing, note }),
         Err(error) if applied => Err(Failure::ReadFailed { note, error }),
         Err(error) => Err(Failure::Refused(error)),
@@ -268,8 +267,8 @@ pub async fn apply(
 
 /// The definitions as their owner reports them, with the user document when
 /// the daemon serves its read.
-pub async fn read(client: &mut Client, cwd: &Path) -> Result<Listing, String> {
-    let catalog = catalog(client, &cwd.to_string_lossy()).await?;
+pub async fn read(client: &mut Client, cwd: &str) -> Result<Listing, String> {
+    let catalog = catalog(client, cwd).await?;
     let settings = if client.supports(&["settings.read"]) {
         Some(
             client
@@ -521,7 +520,7 @@ async fn start(
 async fn conflict(client: &mut Client, cwd: &str, message: &str) -> Failure {
     Failure::Conflict {
         message: message.to_owned(),
-        listing: read(client, Path::new(cwd)).await.map(Box::new),
+        listing: read(client, cwd).await.map(Box::new),
     }
 }
 
@@ -599,7 +598,7 @@ fn name_of(id: &str) -> &str {
 }
 
 /// The definitions as entries, with the kinds the daemon can serve.
-pub(super) fn view(listing: &Listing, available: &[ActionKind], cwd: &Path) -> ManagementView {
+pub(super) fn view(listing: &Listing, available: &[ActionKind], cwd: &str) -> ManagementView {
     let mut groups = Groups::default();
     for entry in &listing.entries {
         let mut states = Vec::new();
@@ -621,7 +620,7 @@ pub(super) fn view(listing: &Listing, available: &[ActionKind], cwd: &Path) -> M
             ManagementEntry {
                 id: id_of(entry),
                 label: entry.name.clone(),
-                detail: detail_lines(entry, cwd),
+                detail: detail_lines(entry, Path::new(cwd)),
                 enabled: Some(entry.enabled),
                 states,
                 actions: kinds(entry)

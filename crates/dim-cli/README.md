@@ -319,7 +319,15 @@ printf '%s\n' 'Explain this project' | target/debug/dimcode \
 
 The configuration references credentials by environment-variable name. The shared daemon inherits the environment when it starts; changing the client's environment does not update an existing daemon. Use a separate home for a different explicit model configuration. The client matches the server's explicit product/configured/mock profile and the SHA-256 of the exact configured file bytes; it rejects a mock daemon or a different configuration without deleting the endpoint or stopping that daemon. A configured real model uses production workspace tools, not mock tools.
 
-`--cwd PATH` selects the workspace. `--model ID` overrides `DIM_MODEL` for a new
+`--cwd PATH` selects the workspace: the client resolves it once as UTF-8, and a
+command that names the workspace in a request refuses a path that is not valid
+UTF-8 before it connects to the daemon, showing the path with its invalid bytes
+replaced. A command that names no workspace, such as `--version`, `--help`,
+`account`, `daemon`, `models`, `scheduled`, `exec resume ID`, or a chat that
+resumes a Session on a prompt (`--resume ID -p TEXT`, or a prompt on stdin),
+keeps working in such a directory.
+
+`--model ID` overrides `DIM_MODEL` for a new
 or resumed Session. `--provider ID` optionally selects a configured Provider;
 without it, the server resolves the effective Provider or a unique available
 match. A Provider alone is invalid. Explicit pairs send their saved effort/tier

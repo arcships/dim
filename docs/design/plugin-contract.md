@@ -206,31 +206,37 @@ A part reads facts through its branch's `timeline` service with one bounded quer
 | Element | What it says |
 | --- | --- |
 | Scope | This branch, or the branch chain: each ancestor up to its cut, root first, then this branch to its head |
-| Position | A sequence range whose ends are inclusive, or a cursor. A range's end may be left out, and so may a cursor's through: absent, the read covers each branch's own coverage — an ancestor to its cut, the read branch to its published head — and a descending cursor read with no through runs down to the first sequence. A bound taken from above must end an atomic batch and is clamped to the branch's cut, so it never hides an ancestor fact: a range's end, and a cursor's through in an ascending read. A bound taken from below may fall inside one: a range's start, and a cursor's through in a descending read |
 | Kinds and flags | The event kinds it accepts (`domain/name`), and the envelope's context flags (§5.1) it selects on |
 | Event id | An equality on the event id: one id selects that event, so a caller reads one event or looks up its position without paging |
 | Predicate | One equality against one JSON scalar. The path is a sequence of field names inside the event's data joined by dots, with no array indexing and no wildcards |
-| Direction and order | The caller chooses the end a page is taken from: ascending (oldest first) or descending (newest first). A reply is always ordered by chain position, then sequence, ascending, so a consumer folds a page directly; the direction decides only which end of the remaining range the page comes from |
-| Limit | Nonzero by type, so no read is unbounded. It counts events, not storage rows: a row may carry several events, so a page ends at an atomic batch boundary and may return more events than the limit. The reply's cursor is what tells the caller to continue; a page shorter than the limit is returned only when the scope is exhausted |
+| From | Where the read begins, named by an event id or by a sequence; the event it names is part of the read. A branch read takes it on that branch; a chain read begins in the segment it names and carries on, skipping the segments before it |
+| Order | The key the reply is ordered by — the sequence — and the direction: ascending (oldest first) or descending (newest first). A chain read orders by chain position first |
+| Page | How many matching events the read skips, and how many it returns; the second is nonzero by type, so no read is unbounded. Both count events, not storage rows |
 
 The elements combine: an event is selected when it satisfies all of them, and flags named together
 are alternatives, so an event is accepted when it carries at least one of them — the context read
 selects the rows that carry `context_render` or `context_state`. A selection that names no kind
-accepts every kind, one with no event id accepts every event, and a flag it does not name constrains
-nothing: no omission is an error. The limit applies to every read, so a caller that wants everything
-in its scope pages the result from the cursor.
+accepts every kind, one with no event id accepts every event, one that names no start begins at the
+first event of its scope, and a flag it does not name constrains nothing: no omission is an error.
+
+Paging is skipping: a caller repeats the query with a larger skip, and a page shorter than the
+count is what says the selection is exhausted. A page does not align with an atomic batch — it may
+end inside one and the next page carries the rest, which a consumer folding in order handles. A
+read is taken at what is published when it runs, so a consumer that folds several pages drops what
+it has already folded.
 
 The path's spelling is fixed here and not in a binding: there is one form, the one above, and the
 storage translates that form. A binding writes this path syntax and invents no other.
 
-The cursor is opaque. It names a position, not a number: it carries the branch together with a
-sequence, so the same sequence on a parent and on its child are different positions. The cursor
-names an atomic batch boundary: an ascending page does not end inside an atomic batch, and a
-descending page does not start inside one. After an ascending page the cursor continues strictly
-after the last event returned; after a descending page, strictly before the oldest event returned.
-The reply is the events, each with its chain position — its branch and sequence — and the next
-cursor; the next cursor is absent once the scope is exhausted, so absence means no more, not start
-over.
+The selection is what the query is for. Its elements describe events, not a slice of the store, so
+the store executes them where the events are kept and returns the page those events form. A read
+never returns a fact above the coverage of the branch it reads: an ancestor to its cut, this branch
+to what is published, which the service bounds and no caller states. A
+selection the store can execute from an index costs the page; one it cannot — an equality on a field
+it holds no index for, a flag set with no index of its own, or any selection in a store that filters
+in memory — costs the scoped range and proves the end of the scope the same way. A
+chain page reaches one segment after another, so it costs what it reaches. The reply carries each
+event's chain position with it, so a caller reads where an event sits without asking again.
 
 The query returns facts; it does not fold, project or aggregate them. What a part folds from facts
 is its own state and stays with it ([ADR 002](../adr/002-plugin-scope.md) D1). A part that needs a
@@ -238,14 +244,11 @@ whole prefix reads pages and folds them itself.
 
 | Input | Result |
 | --- | --- |
-| A position past the published head | Invalid input. The head is the scope's: a branch read compares against that branch's published head, a chain read against its coverage, the largest ancestor cut or the read branch's head, so a read branch with little local history still reaches its ancestors, and only a bound past every branch's coverage is invalid |
-| A range end, or a cursor's through in an ascending read, inside an atomic batch | Invalid input |
-| A cursor that does not name an atomic batch boundary | Invalid input |
-| A cursor that names a branch the read's scope does not cover | Invalid input |
 | A kind or a data path the store does not know | No rows; not an error |
 
-The query addresses the event contract, not the storage: the session, the branch, the sequence,
-the kind, the event id, the two context flags and paths inside the event's data. Table, column and
+The query addresses the event contract, not the storage: the session, the branch, the kind, the
+event id, the two context flags and paths inside the event's data. The reply carries each event's
+position, but the request does not select on one. Table, column and
 index names, the content table, batch metadata and every other part of the stored layout are not
 addressable, and SQL is not a capability interface
 ([ADR 019](../adr/019-event-query.md) D3).
@@ -257,11 +260,11 @@ snapshots are derived state; neither is an event, and each keeps a typed read of
 A read shaped for one consumer is compatibility, not a contract: it exists only while that
 consumer moves to this query, and it is removed after. A selection the query cannot express is a
 decision to extend the query, never a method to add. While a consumer still uses its own read, the
-two shapes must agree on ordering, batch boundaries and cursor meaning, or the difference is stated
+two shapes must agree on ordering and on where a page ends, or the difference is stated
 where that consumer's move is followed ([ADR 019](../adr/019-event-query.md) D2, D5).
 
 The request and reply are serde data of the `timeline` name
-([How Dim uses rutis §3.2](rutis-usage.md#32-shape)), so the spelling of a scope or a position
+([How Dim uses rutis §3.2](rutis-usage.md#32-shape)), so the spelling of a scope or an order
 belongs to a binding: its Rust form is [appendix A](rutis-usage.md#appendix-a-rust-binding), and the
 generated declarations are where the other languages read its shape. This section states the query,
 not the rest of its spelling.

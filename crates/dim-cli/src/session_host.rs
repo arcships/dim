@@ -678,6 +678,16 @@ struct CancelNotice {
     branch_id: String,
 }
 
+/// `session.create` parameters: the workspace and, when one is chosen, the
+/// permission preset, which the Session's branches and members inherit.
+fn creation_params(options: &Options) -> serde_json::Value {
+    let mut params = json!({"cwd": options.workspace().as_str()});
+    if let Some(policy) = permission::creation_policy(options) {
+        params["permissionPolicy"] = policy;
+    }
+    params
+}
+
 impl Worker {
     async fn cancel_catalog(&mut self) -> crate::Result<()> {
         if let Some((request, _, _, _)) = self.catalog_request.take()
@@ -691,11 +701,10 @@ impl Worker {
     }
 
     /// The catalog `cwd` for `scope`: one workspace, the repository's set, or
-    /// none. A path that is not UTF-8 goes out as its lossy string, the one
-    /// the summaries fallback filters with.
+    /// none.
     fn scope_cwd(&self, scope: &SessionsScope) -> Option<serde_json::Value> {
         match scope {
-            SessionsScope::Workspace => Some(json!(self.options.cwd.to_string_lossy())),
+            SessionsScope::Workspace => Some(json!(self.options.workspace().as_str())),
             SessionsScope::Repository(workspaces) => Some(json!(workspaces)),
             SessionsScope::All => None,
         }
@@ -715,7 +724,7 @@ impl Worker {
             return self.attach(id, kind).await;
         }
         let attached_session = self.invalidate_projection();
-        let mut params = self.create_params();
+        let mut params = creation_params(&self.options);
         self.options.creation_startup(&mut params);
         let mut preferences = self.options.creation_preferences(None);
         let mut target = None;
@@ -757,7 +766,7 @@ impl Worker {
     /// the status line shows.
     async fn start_session(&mut self) -> crate::Result<()> {
         let attached_session = self.invalidate_projection();
-        let mut params = self.create_params();
+        let mut params = creation_params(&self.options);
         let mut preferences = None;
         let mut target = None;
         let result = async {
@@ -801,18 +810,6 @@ impl Worker {
                 Err(error)
             }
         }
-    }
-
-    /// `session.create` parameters: the workspace and, when one is chosen,
-    /// the permission preset, which the Session's branches and members inherit.
-    /// A path that is not UTF-8 goes out as its lossy string, as the catalog
-    /// scope sends it.
-    fn create_params(&self) -> serde_json::Value {
-        let mut params = json!({"cwd": self.options.cwd.to_string_lossy()});
-        if let Some(policy) = permission::creation_policy(&self.options) {
-            params["permissionPolicy"] = policy;
-        }
-        params
     }
 
     async fn enter(
@@ -1286,7 +1283,7 @@ impl Worker {
                     || !self.client.offers("session.catalog");
                 if usable {
                     let updates = self.updates.clone();
-                    let workspace = self.options.cwd.clone();
+                    let workspace = self.options.workspace().as_str().to_owned();
                     tokio::spawn(async move {
                         let workspaces = repository_workspaces(&workspace).await;
                         if workspaces.len() > 1 {
@@ -1662,8 +1659,7 @@ impl Worker {
                 let cwd = self
                     .session_cwd
                     .as_deref()
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|| self.options.cwd.clone());
+                    .unwrap_or(self.options.workspace().as_str());
                 // A run a panel starts reports to the line the transcript
                 // shows, the line a submit goes to. Home has no Session yet,
                 // so it has no line to report to.
@@ -1672,7 +1668,8 @@ impl Worker {
                     branch_id: self.focus.clone(),
                 });
                 let result =
-                    crate::management::apply(&mut self.client, &request, &cwd, line.as_ref()).await;
+                    crate::management::apply(&mut self.client, &request, Some(cwd), line.as_ref())
+                        .await;
                 self.send(Update::Management(ManagementReply { request, result }));
             }
             Command::SetLocale(language) => crate::management::use_language(language),
@@ -2422,7 +2419,7 @@ impl Worker {
                 }
                 let state = crate::management::mcp::set_enabled(
                     &mut self.client,
-                    &self.options.cwd,
+                    self.options.workspace().as_str(),
                     id,
                     command == "enable",
                 )
@@ -3604,9 +3601,9 @@ impl Worker {
                 };
                 if !paged {
                     sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
-                    let workspace = self.options.cwd.to_string_lossy();
+                    let workspace = self.options.workspace().as_str();
                     sessions.retain(|session| match &scope {
-                        SessionsScope::Workspace => session.cwd == workspace.as_ref(),
+                        SessionsScope::Workspace => session.cwd == workspace,
                         SessionsScope::Repository(workspaces) => workspaces.contains(&session.cwd),
                         SessionsScope::All => true,
                     });
@@ -4274,13 +4271,15 @@ fn compact_reply(result: Result<serde_json::Value, client::RpcError>) -> Option<
 /// and the same relative directory in every worktree of its git repository.
 /// Both reads share one two-second bound; a git that fails or does not answer
 /// leaves the set empty, and the picker keeps its two other scopes.
-async fn repository_workspaces(workspace: &std::path::Path) -> Vec<String> {
+async fn repository_workspaces(workspace: &str) -> Vec<String> {
     let read = async {
-        let root = git_output(workspace, &["rev-parse", "--show-toplevel"]).await?;
+        let path = std::path::Path::new(workspace);
+        let root = git_output(path, &["rev-parse", "--show-toplevel"]).await?;
+        let root = String::from_utf8(root).ok()?;
         let root = std::path::PathBuf::from(root.trim());
         let root = std::fs::canonicalize(&root).unwrap_or(root);
-        let relative = workspace.strip_prefix(&root).ok()?;
-        let list = git_output(workspace, &["worktree", "list", "--porcelain", "-z"]).await?;
+        let relative = path.strip_prefix(&root).ok()?;
+        let list = git_output(path, &["worktree", "list", "--porcelain", "-z"]).await?;
         Some(worktree_workspaces(&list, relative, workspace))
     };
     tokio::time::timeout(std::time::Duration::from_secs(2), read)
@@ -4291,7 +4290,7 @@ async fn repository_workspaces(workspace: &std::path::Path) -> Vec<String> {
 }
 
 /// One git read from the workspace; a failed read is no answer.
-async fn git_output(workspace: &std::path::Path, args: &[&str]) -> Option<String> {
+async fn git_output(workspace: &std::path::Path, args: &[&str]) -> Option<Vec<u8>> {
     let output = tokio::process::Command::new("git")
         .current_dir(workspace)
         .args(args)
@@ -4301,37 +4300,32 @@ async fn git_output(workspace: &std::path::Path, args: &[&str]) -> Option<String
         .output()
         .await
         .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    output.status.success().then_some(output.stdout)
 }
 
 /// The listed worktrees, each joined with the workspace's relative directory.
-fn worktree_workspaces(
-    list: &str,
-    relative: &std::path::Path,
-    workspace: &std::path::Path,
-) -> Vec<String> {
-    let mut workspaces = vec![workspace.to_string_lossy().into_owned()];
-    let mut entry: Option<&str> = None;
+fn worktree_workspaces(list: &[u8], relative: &std::path::Path, workspace: &str) -> Vec<String> {
+    let mut workspaces = vec![workspace.to_owned()];
+    let mut entry: Option<&[u8]> = None;
     let mut bare = false;
-    for field in list.split('\0') {
+    for field in list.split(|byte| *byte == 0) {
         if field.is_empty() {
-            if let Some(path) = entry.take()
+            if let Some(path) = entry.take().and_then(|path| std::str::from_utf8(path).ok())
                 && !bare
             {
                 let path = std::path::Path::new(path);
                 let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-                let workspace = path.join(relative).to_string_lossy().into_owned();
-                if !workspaces.contains(&workspace) {
-                    workspaces.push(workspace);
+                let joined = path.join(relative);
+                if let Some(joined) = joined.to_str()
+                    && !workspaces.iter().any(|workspace| workspace == joined)
+                {
+                    workspaces.push(joined.to_owned());
                 }
             }
             bare = false;
-        } else if let Some(path) = field.strip_prefix("worktree ") {
+        } else if let Some(path) = field.strip_prefix(b"worktree ") {
             entry = Some(path);
-        } else if field == "bare" {
+        } else if field == b"bare" {
             bare = true;
         }
     }
@@ -4453,5 +4447,25 @@ mod tests {
         for (action, calls) in cases {
             assert_eq!(runtime_calls(&action), calls, "{action:?}");
         }
+    }
+
+    /// The TUI creates a Session in the resolved workspace: the request
+    /// carries exactly the directory the client resolved, never a rendering
+    /// of it whose invalid bytes another path replaced.
+    #[test]
+    fn a_session_is_created_in_the_resolved_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = std::fs::canonicalize(root.path()).unwrap();
+        let mut options = crate::args::Options::parse(
+            ["tui", "--cwd", directory.to_str().unwrap()]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .unwrap();
+        options.resolve_workspace().unwrap();
+        assert_eq!(
+            creation_params(&options)["cwd"],
+            directory.to_str().unwrap()
+        );
     }
 }

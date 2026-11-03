@@ -1869,6 +1869,19 @@ fn noninteractive_outside_read_is_denied_by_the_ordinary_approval_answer() {
 #[test]
 fn resume_advances_filtered_history_positions_and_does_not_reprint_old_output() {
     let home = Home::new();
+    let launch = {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            home.0
+                .join(std::ffi::OsString::from_vec(b"launch-\xff".to_vec()))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            home.0.join("launch")
+        }
+    };
+    fs::create_dir(&launch).unwrap();
     let daemon = home.daemon(|wire| {
         let hello = wire.read("hello");
         wire.reply(&hello,json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","provider.list"]}));
@@ -1888,6 +1901,7 @@ fn resume_advances_filtered_history_positions_and_does_not_reprint_old_output() 
     });
     let output = wait(
         home.command()
+            .current_dir(&launch)
             .args(["exec", "resume", "session", "--prompt", "continue"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1901,6 +1915,26 @@ fn resume_advances_filtered_history_positions_and_does_not_reprint_old_output() 
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(String::from_utf8(output.stdout).unwrap(), "new output\n");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn exec_refuses_a_non_utf8_workspace_before_connecting() {
+    use std::os::unix::ffi::OsStringExt;
+    let home = Home::new();
+    let launch = home
+        .0
+        .join(std::ffi::OsString::from_vec(b"launch-\xff".to_vec()));
+    fs::create_dir(&launch).unwrap();
+    let output = home
+        .command()
+        .current_dir(&launch)
+        .args(["exec", "-p", "start"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("must be valid UTF-8"));
+    assert!(!home.0.join("rust/daemon.sock").exists());
 }
 
 #[test]

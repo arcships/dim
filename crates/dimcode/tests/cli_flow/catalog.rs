@@ -613,6 +613,17 @@ fn tui_resume_cycles_through_the_repository_worktrees() {
     let mine = workspace.clone();
     let marker = scratch.path().join("worktree-read");
     let path = gated_git(scratch.path(), &marker);
+    let git = scratch.path().join("git");
+    let script = std::fs::read_to_string(&git).unwrap();
+    assert!(script.contains("    status=$?\n"));
+    std::fs::write(
+        &git,
+        script.replace(
+            "    status=$?\n",
+            "    status=$?\n    printf 'worktree /tmp/dim-invalid-\\377\\000\\000'\n",
+        ),
+    )
+    .unwrap();
     let daemon = home.daemon(move |wire| {
         wire.hello(&["session.catalog", "session.catalog.workspaces"]);
         wire.created();
