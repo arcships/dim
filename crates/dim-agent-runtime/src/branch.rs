@@ -165,6 +165,26 @@ impl Branch {
         let through = self.published(Some(through))?;
         self.0.timeline().context(through).await
     }
+    /// The cut of the latest completed compaction at or below `through` on this
+    /// branch, when it is one of its own events.
+    pub async fn compaction_cut(&self, through: u64) -> Result<Option<u64>> {
+        let through = self.published(Some(through))?;
+        self.0.timeline().compaction_cut(through).await
+    }
+    /// One page of the rows the context projection consumes after `after`; the
+    /// cursor may fall inside an atomic batch and the event limit is a target.
+    pub async fn context_page(
+        &self,
+        after: u64,
+        limit: usize,
+        through: u64,
+    ) -> Result<Vec<Arc<AgentEvent>>> {
+        let through = self.published(Some(through))?;
+        self.0
+            .timeline()
+            .stored_context_page(after, limit, through)
+            .await
+    }
     pub async fn trace(&self, sequence: u64) -> Result<Option<TimelineTrace>> {
         self.published(Some(sequence))?;
         self.0.timeline().trace(sequence).await

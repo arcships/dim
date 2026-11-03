@@ -908,6 +908,30 @@ impl Timeline {
         Ok(None)
     }
 
+    /// The cut of the latest completed compaction at or below `through`, when
+    /// it is one of this branch's own events before the fact that names it. A
+    /// completed compaction's cut is a validated context boundary, so a read
+    /// may start there. A stored reference that names another branch's event or
+    /// a later one is ignored: a read then replays from the segment start
+    /// instead of folding a tail that never covered `through`.
+    #[service(skip)]
+    pub async fn compaction_cut(&self, through: u64) -> Result<Option<u64>> {
+        let through = self.through(Some(through))?;
+        let Some(cut) = self
+            .0
+            .store
+            .last_compaction_cut(&self.0.key, through)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(position) = self.event_position(&cut.retain_from).await? else {
+            return Ok(None);
+        };
+        let usable = position.branch_id == self.0.key.branch_id && position.sequence < cut.sequence;
+        Ok(usable.then_some(position.sequence))
+    }
+
     /// One filtered page of `branch`, which may be an ancestor.
     #[service(skip)]
     pub async fn stored_context_page_in(

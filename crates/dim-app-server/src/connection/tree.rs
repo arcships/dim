@@ -279,12 +279,14 @@ impl Connection {
         {
             return Err(RpcError::invalid("Branch tool is not enabled"));
         }
-        let prefix = session
-            .context(&params.parent_branch_id, params.at)
-            .await
-            .map_err(RpcError::from)?;
-        dim_agent_capabilities::history::validate_context_boundary(&prefix)
-            .map_err(RpcError::invalid)?;
+        let boundary = dim_agent_capabilities::history::validate_context_boundary_in(
+            &session,
+            &params.parent_branch_id,
+            params.at,
+        )
+        .await
+        .map_err(RpcError::from)?;
+        boundary.map_err(RpcError::invalid)?;
         // A blocked prompt creates no branch (Hooks A.6.2). A branch's first
         // input is built from the prompt alone, so the checks' contexts are
         // dropped.

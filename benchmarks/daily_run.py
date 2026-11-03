@@ -498,14 +498,26 @@ def fetch_results(host: str, remote_results: str, run_id: str, out: Path) -> str
     # nothing else. run_id is unique per run so there should be nothing here to
     # delete; this is the second line of defence, and the failure it guards is
     # silent — a leftover trial reads as a real one and lands in the score.
-    try:
-        run(["rsync", "-az", "--delete", f"{host}:{remote_results}/{run_id}/",
-             f"{out}/harbor/"])
-    except SystemExit as error:
-        # `run` reports a non-zero command by raising SystemExit, which is how
-        # every other caller here means "stop". This one does not.
-        print(f"[daily] could not fetch the job from {host}: {error}")
-        return f"fetch failed: {error}"
+    command = ["rsync", "-az", "--delete", f"{host}:{remote_results}/{run_id}/",
+               f"{out}/harbor/"]
+    print(f"[daily] $ {' '.join(command)}", flush=True)
+    fetched = subprocess.run(
+        command, check=False, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    # Exit 23 is rsync's partial transfer: files the harness user cannot read,
+    # namely the agent logs task containers write as root. The job summary is
+    # what scoring reads, so as long as it arrived the run is scorable and the
+    # unreadable files stay on the eval machine. Treating 23 as failure made
+    # every run with a root-owned timeline unscorable after it had already spent
+    # its hours.
+    if fetched.returncode == 23 and (out / "harbor" / "result.json").is_file():
+        print("[daily] some files were unreadable (rsync exit 23); "
+              "continuing with the readable job", flush=True)
+    elif fetched.returncode != 0:
+        if fetched.stdout:
+            sys.stderr.write(fetched.stdout)
+        return f"fetch failed: command failed ({fetched.returncode}): {' '.join(command)}"
     # Written beside the job by run_l2, which is the only process that can ask
     # the endpoint what it served. Absent when the identity check was skipped, so
     # a failure here is reported rather than fatal.

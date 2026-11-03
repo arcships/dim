@@ -12,9 +12,9 @@ use crate::protocol::SessionOrigin;
 use dim_agent_capabilities::host::SessionFilesHost;
 use dim_agent_runtime::Names;
 use dim_agent_runtime::{
-    AgentError, BoxFuture, BranchRecord, PolicyEvent, PolicyFacts, PolicyOrder, PolicyOrderEvent,
-    PolicyWindow, PublishCallback, Result, SessionConfig, StoredBranch, StoredEvent, TimelineKey,
-    TimelineStore, TimelineTrace, panic_message,
+    AgentError, BoxFuture, BranchRecord, CompactionCut, PolicyEvent, PolicyFacts, PolicyOrder,
+    PolicyOrderEvent, PolicyWindow, PublishCallback, Result, SessionConfig, StoredBranch,
+    StoredEvent, TimelineKey, TimelineStore, TimelineTrace, panic_message,
 };
 use dim_agent_types::{
     AgentEvent, BranchCreateAt, ContextCompactionResult, EventKind, ModelRequest, RecoverySnapshot,
@@ -3592,6 +3592,38 @@ impl TimelineStore for SqliteTimelineStore {
             let mut rows = rows.expect("a finished read fetched its rows");
             let records = rows.records(&(from..=through), false)?;
             Ok(records)
+        })
+    }
+    fn last_compaction_cut<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        through: u64,
+    ) -> BoxFuture<'a, Result<Option<CompactionCut>>> {
+        Box::pin(async move {
+            let key = key.clone();
+            self.db
+                .run(move |connection| {
+                    connection
+                        .query_row(
+                            "SELECT json_extract(body, '$.record.event.data.retain_from'), sequence \
+                             FROM timeline_events \
+                             WHERE session_id=?1 AND branch_id=?2 AND kind='context/compaction' \
+                             AND sequence<=?3 \
+                             AND json_extract(body, '$.record.event.data.status')='completed' \
+                             AND json_extract(body, '$.record.event.data.retain_from') IS NOT NULL \
+                             ORDER BY sequence DESC LIMIT 1",
+                            params![key.session_id, key.branch_id, sql_sequence(through)?],
+                            |row| {
+                                Ok(CompactionCut {
+                                    retain_from: row.get(0)?,
+                                    sequence: read_sequence(row, 1)?,
+                                })
+                            },
+                        )
+                        .optional()
+                        .map_err(error)
+                })
+                .await
         })
     }
     fn read_segments<'a>(

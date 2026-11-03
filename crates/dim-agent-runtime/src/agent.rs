@@ -524,6 +524,22 @@ impl Session {
     pub async fn context(&self, branch: &str, through: u64) -> Result<ContextHistory> {
         self.published(branch)?.context(through).await
     }
+    /// See [`Branch::compaction_cut`].
+    pub async fn compaction_cut(&self, branch: &str, through: u64) -> Result<Option<u64>> {
+        self.published(branch)?.compaction_cut(through).await
+    }
+    /// See [`Branch::context_page`].
+    pub async fn context_page(
+        &self,
+        branch: &str,
+        after: u64,
+        limit: usize,
+        through: u64,
+    ) -> Result<Vec<Arc<AgentEvent>>> {
+        self.published(branch)?
+            .context_page(after, limit, through)
+            .await
+    }
     pub async fn history(
         &self,
         branch: &str,

@@ -1439,16 +1439,19 @@ impl AgentIndex {
                 "a member conversation cannot be forked".into(),
             ));
         }
-        let prefix = async {
-            session.local_page("main", at, 1, at).await?;
-            session.context("main", at).await
+        let checked = async {
+            let boundary =
+                dim_agent_capabilities::history::validate_context_boundary_in(session, "main", at)
+                    .await?;
+            let prefix = session.context("main", at).await?;
+            Ok::<_, AgentError>((boundary, prefix))
         }
         .await;
         if session.is_closing() {
             return Err(AgentError::Closed(source.into()));
         }
-        let prefix = prefix?;
-        dim_agent_capabilities::history::validate_context_boundary(&prefix)
+        let (boundary, prefix) = checked?;
+        boundary
             .and_then(|()| rest_point(&prefix.events))
             .map_err(AgentError::InvalidInput)?;
         let version = self

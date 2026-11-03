@@ -413,6 +413,33 @@ class DailyFlowTest(unittest.TestCase):
         self.assertIsNone(manifest["l2"])
         self.assertEqual(manifest["l2_exit_code"], 124)
 
+    def test_fetch_tolerates_unreadable_agent_logs(self) -> None:
+        """rsync exit 23 with the job summary present is a partial fetch.
+
+        Task containers write their agent logs as root; the harness user cannot
+        read them, and rsync reports 23 after transferring everything else.
+        Scoring reads result.json, so the run is still scorable and the
+        unreadable files stay on the eval machine.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "harbor").mkdir()
+            (out / "harbor" / "result.json").write_text("{}")
+            partial = subprocess.CompletedProcess([], 23, stdout="Permission denied\n")
+            with mock.patch("subprocess.run", return_value=partial):
+                self.assertIsNone(
+                    daily_run.fetch_results("host", "/remote", "run", out))
+
+    def test_fetch_fails_when_rsync_left_no_job(self) -> None:
+        """Exit 23 without result.json is still a failed fetch: there is
+        nothing to score, and calling it a partial transfer would hide that."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            partial = subprocess.CompletedProcess([], 23, stdout="Permission denied\n")
+            with mock.patch("subprocess.run", return_value=partial):
+                error = daily_run.fetch_results("host", "/remote", "run", out)
+            self.assertIn("fetch failed", error)
+
     def test_a_fetch_that_fails_is_recorded_not_raised(self) -> None:
         """The fetch reports instead of raising, and the reason is the manifest.
 
