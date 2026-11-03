@@ -1,0 +1,121 @@
+mod local_support;
+
+use dim_agent_capabilities::execution_settings::{
+    ExecutionSettings, ExecutionSettingsError, ExecutionSettingsSource,
+};
+use dim_agent_runtime::Session;
+use local_support::*;
+use rutis::host::BoxFuture;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
+
+/// A mutable execution-settings source: the test changes it as another client
+/// would.
+struct Execution(Mutex<ExecutionSettings>);
+impl ExecutionSettingsSource for Execution {
+    fn read(
+        &self,
+        _: CancellationToken,
+    ) -> BoxFuture<'_, Result<ExecutionSettings, ExecutionSettingsError>> {
+        Box::pin(async move { Ok(*self.0.lock().unwrap()) })
+    }
+}
+impl Execution {
+    fn set(&self, settings: ExecutionSettings) {
+        *self.0.lock().unwrap() = settings;
+    }
+}
+
+async fn until_block(session: &Session, needle: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let found = inputs(session)
+                .await
+                .iter()
+                .flat_map(|input| &input.blocks)
+                .any(|block| {
+                    let dim_agent_types::InputBlock::Raw { text, .. } = block;
+                    text.contains(needle)
+                });
+            if found {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("execution settings were adopted");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn execution_state_is_adopted_and_unchanged_values_do_not_duplicate() {
+    let dirs = Dirs::new();
+    let cwd = dirs.dir("work");
+    let execution = Arc::new(Execution(Mutex::new(ExecutionSettings::default())));
+    let env = env(
+        &dirs,
+        Options {
+            execution: Some(execution.clone()),
+            ..Options::default()
+        },
+    )
+    .await;
+    let session = env.session(&cwd, "").await.unwrap();
+
+    run(&session, "hello").await;
+    let text = request_text(requests(&session).await.last().unwrap());
+    assert!(
+        text.contains(
+            "<dim-state source=\"dim/settings/execution\">Execution sandbox: off. New processes run with the host's normal access.</dim-state>"
+        ),
+        "{text}"
+    );
+
+    execution.set(ExecutionSettings {
+        sandbox: true,
+        network: false,
+    });
+    run(&session, "sandbox").await;
+    until_block(&session, "Execution sandbox: on; network: off.").await;
+    run(&session, "after").await;
+    let text = request_text(requests(&session).await.last().unwrap());
+    assert!(
+        text.contains(
+            "<dim-state source=\"dim/settings/execution\">Execution sandbox: on; network: off. New processes only; a running shell keeps its original boundary.</dim-state>"
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("Execution sandbox: on; network: off.").count(),
+        1,
+        "an unchanged value must not write another block:\n{text}"
+    );
+
+    execution.set(ExecutionSettings {
+        sandbox: true,
+        network: true,
+    });
+    run(&session, "network").await;
+    until_block(&session, "Execution sandbox: on; network: on.").await;
+    run(&session, "after-network").await;
+    let text = request_text(requests(&session).await.last().unwrap());
+    assert!(
+        text.contains("Execution sandbox: on; network: on."),
+        "{text}"
+    );
+
+    execution.set(ExecutionSettings::default());
+    run(&session, "off").await;
+    until_block(&session, "Execution sandbox: off.").await;
+    run(&session, "after-off").await;
+    let text = request_text(requests(&session).await.last().unwrap());
+    assert!(
+        text.contains(
+            "<dim-state source=\"dim/settings/execution\">Execution sandbox: off. New processes run with the host's normal access.</dim-state>"
+        ),
+        "{text}"
+    );
+
+    env.agent.close().await.unwrap();
+}

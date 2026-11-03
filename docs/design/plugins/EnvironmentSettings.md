@@ -129,7 +129,7 @@ The feature is installed only where `ExecutionSettingsHost` is provided. A fixed
 | §1 Parts bounded | Session part registers the source; branch part adopts; the value owner is the App Server's execution settings. |
 | §4 rule 1 Command events | The design changes no setting; it reads one. Writes are [AgentSettings](AgentSettings.md). |
 | §4 rule 2 Handover | No handover. |
-| §4 rule 3 Before callbacks | None. Bus and Dispatcher handlers signal a task and return. |
+| §4 rule 3 Before callbacks | None. Bus and Dispatcher handlers spawn a tracked adoption and return. |
 | §4 rule 4 Core carries no business meaning | The body is the capability's projection of a public port; no core branch. |
 | §4 rule 5 Batch | No new facts. |
 | §4 rule 6 Context from consumed events | The block is an adopted input; no second path. |
