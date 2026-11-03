@@ -220,25 +220,7 @@ pub enum ModelConnection {
     Http(HttpModelConnection),
     Bedrock(BedrockModelConnection),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ModelProtocol {
-    #[serde(rename = "openai-chat")]
-    OpenaiChat,
-    #[serde(rename = "openai-compatible")]
-    OpenaiCompatible,
-    #[serde(rename = "openai-responses")]
-    OpenaiResponses,
-    #[serde(rename = "xai")]
-    Xai,
-    #[serde(rename = "xai-responses")]
-    XaiResponses,
-    #[serde(rename = "anthropic")]
-    Anthropic,
-    #[serde(rename = "gemini")]
-    Gemini,
-    #[serde(rename = "bedrock")]
-    Bedrock,
-}
+pub use dim_agent_types::ModelProtocol;
 /// The reasoning-effort mapping of the model catalog, applied to a copied
 /// configuration: the configuration's own reasoning fields are reset, then the
 /// model's declaration for this protocol is set (ContextCompaction §13.2).

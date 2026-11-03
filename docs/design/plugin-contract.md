@@ -195,7 +195,7 @@ Public bus events:
 | `settings/{source}` | Settings | `{source, scope, revision}` | A business source changed |
 | `settings/projects` | App Server Settings | `{root, cwd}` | A project root was authorized |
 | `skills/catalog` | SkillsCatalog | catalog version | The Skill catalog advanced |
-| `agent/session-restored`, `agent/unloaded-session-deleted` | Agents | ids | Host-internal, consumed by Collaboration |
+| `agent/session-restored`, `agent/unloaded-session-deleted` | Agents | ids | Host-internal, consumed by Collaboration and Provider; [Session loading](appserver/session-deletion-and-fork.md#65-opening-the-fork) |
 
 *Today:* the events are implemented as listed, and TypeScript rows listen to them directly.
 

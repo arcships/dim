@@ -16,6 +16,12 @@ configuration. The configuration and interfaces below were approved in
 
 ## 1. Behavior
 
+An adopted selection with startup metadata ([model startup](model-startup.md)) takes
+priority over this Settings policy for every newly created native member. Its
+presence forces inheritance of the complete requesting-branch selection, even under
+`agent` or `fixed` and a conflicting named Agent model. It neither reads nor writes
+the saved policy. Without startup metadata the table below is unchanged.
+
 | Policy | Model for a new native member |
 | --- | --- |
 | `agent` (default) | Existing behavior: use the temporary/named Agent's profile model, or its existing host/workspace default when the profile has none |
@@ -57,7 +63,7 @@ Do not use `leader.config().model` or `session.summaries` as the adopted leader 
 they describe creation configuration rather than a subsequent F3 adoption.
 The inherited selection consists only of the existing `ModelSelection` fields:
 provider/model IDs, capability snapshot, model config and Provider-owned selection
-metadata. Do not copy request/session identity fields (`session_id`, `run_id`,
+metadata, including startup policy and its durable connection source. Do not copy request/session identity fields (`session_id`, `run_id`,
 `trace_id`, `turn_id`) from `RequestMetadata`; the member's request producer supplies
 its own identity.
 The member keeps its own prompts, tools and existing permission/workspace behavior.
@@ -73,6 +79,14 @@ mismatched present route stamp therefore fails the member's first request and
 produces the existing failed `collaboration/result`, rather than
 `member_create_failed`. An absent legacy stamp retains its existing unchecked-route
 risk. The Provider contract in §7 explicitly covers this adopted-selection copy.
+For a startup connection, successful native Session creation is immediately followed
+by retaining that source for the member through Provider, before publishing the
+Collaboration relation. This checks the existing binding, not a new model selection
+or connection binding. An unavailable Provider or source fails creation with
+`member_create_failed` and removes the newly created Session and unused owned Agent.
+Provider owns source lifetime, including idle unload and final-owner release; a
+leader's close must not revoke a source still owned by a member. Collaboration uses
+the target host's optional in-process Provider service, without a hard dependency.
 
 ## 3. User configuration and management
 
@@ -150,13 +164,14 @@ it is not treated as an absent source or a reason to skip policy.
 
 While the Dispatcher consumes `collaboration/request` in a configured host, capture
 the requesting branch's `PromptSnapshot.configuration` through the existing public state read,
-before spawning delivery. Serial dispatch has applied earlier events and cannot
+before spawning delivery (also in hosts without the Settings policy source, because
+startup inheritance belongs to the captured selection). Serial dispatch has applied earlier events and cannot
 apply a later `context/configured` until this handler returns. Pass this captured
 selection within Collaboration to the existing creation task; do not sample it
 after an asynchronous Settings read. A missing capture only fails `inherit`;
 `agent`/`fixed` do not acquire a new Prompt dependency or wait for an unused snapshot.
 
-For each new Collaboration member, read one Settings snapshot in that existing
+For each new Collaboration member without startup metadata, read one Settings snapshot in that existing
 owned request task. Settings is outside the Timeline and has no sequence-atomic
 snapshot with Prompt. Do not cache policy or subscribe to changes. Resolve
 `agent`/`fixed` through the existing profile paths; `inherit` uses the selection
@@ -241,6 +256,11 @@ cancellation and conflict writing only `collaboration.set_model_policy`. Restart
 invalid persisted sources, owner reload, child-branch requests and stale-route
 inheritance rely on the existing Settings, reload, Prompt and Provider flows and have no
 dedicated policy test.
+The public Collaboration flow additionally covers startup taking priority over a
+missing fixed model and a temporary Agent's conflicting model, preserving full
+options and metadata without request identities or policy writes. Its child branch
+retains the parent-cut selection after main adopts another model; no branch-copy
+mechanism change is required.
 Native transcript cards still follow their separate integration dependency on
 [#324](https://github.com/arcships/dim/pull/324).
 

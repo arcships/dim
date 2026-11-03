@@ -319,7 +319,75 @@ printf '%s\n' 'Explain this project' | target/debug/dimcode \
 
 The configuration references credentials by environment-variable name. The shared daemon inherits the environment when it starts; changing the client's environment does not update an existing daemon. Use a separate home for a different explicit model configuration. The client matches the server's explicit product/configured/mock profile and the SHA-256 of the exact configured file bytes; it rejects a mock daemon or a different configuration without deleting the endpoint or stopping that daemon. A configured real model uses production workspace tools, not mock tools.
 
-`--cwd PATH` selects the workspace: the client resolves it once as UTF-8, and a command that names the workspace in a request refuses a path that is not valid UTF-8 before it connects to the daemon, showing the path with its invalid bytes replaced. A command that names no workspace, such as `--version`, `--help`, `account`, `daemon`, `models`, `scheduled`, `exec resume ID`, or a chat that resumes a Session on a prompt (`--resume ID -p TEXT`, or a prompt on stdin), keeps working in such a directory. `--provider ID --model ID` selects a different configured model for a new session and sends the saved effort/tier preferences for that exact pair, in both the TUI and line client. The server validates the selection; unsupported saved preferences are reported and retained.
+`--cwd PATH` selects the workspace: the client resolves it once as UTF-8, and a
+command that names the workspace in a request refuses a path that is not valid
+UTF-8 before it connects to the daemon, showing the path with its invalid bytes
+replaced. A command that names no workspace, such as `--version`, `--help`,
+`account`, `daemon`, `models`, `scheduled`, `exec resume ID`, or a chat that
+resumes a Session on a prompt (`--resume ID -p TEXT`, or a prompt on stdin),
+keeps working in such a directory.
+
+`--model ID` overrides `DIM_MODEL` for a new
+or resumed Session. `--provider ID` optionally selects a configured Provider;
+without it, the server resolves the effective Provider or a unique available
+match. A Provider alone is invalid. Explicit pairs send their saved effort/tier
+preferences in both TUI and line clients; unsupported preferences are reported
+and retained.
+
+`--effort LEVEL` overrides `DIM_EFFORT_LEVEL`, then the selected model's saved
+effort, without changing its saved service tier or writing preferences. Provider
+validates LEVEL against declared capabilities, not a vendor-specific CLI list.
+`--autocompact auto|TOKENS` overrides `DIM_AUTO_COMPACT_WINDOW`; positive counts
+accept `k`/`m` suffixes (1000/1000000). This window is separate from model capacity.
+
+`DIM_BASE_URL` and `DIM_API_FORMAT` together select a Session-owned direct
+connection, including with an already-running daemon. Formats are `anthropic`,
+`openai-chat`, `openai-responses`, `openai-compatible`, `gemini`, `xai` and
+`xai-responses`. Direct mode conflicts with `--provider` and `--model-config`;
+new Sessions require an explicit model ID, while resume can keep the adopted ID.
+`DIM_API_KEY` uses the protocol's native authentication (`x-api-key` for
+Anthropic, `x-goog-api-key` for Gemini, Bearer otherwise); `DIM_AUTH_TOKEN` uses
+Bearer for every format. They are mutually exclusive and optional for anonymous
+gateways. `DIM_CUSTOM_HEADERS` takes newline-separated `Name: Value` entries,
+split at the first colon. Invalid names/values, case-insensitive duplicates and
+conflicts with generated authentication fail without printing values. Credentials
+and headers without direct mode are errors, not silently ignored inputs.
+
+`DIM_MAX_CONTEXT_TOKENS` and `DIM_MAX_OUTPUT_TOKENS` declare positive JS-safe
+integer capacities; output cannot exceed context. Empty or invalid startup
+inputs fail before Session creation. Overrides pass through `session.create` or,
+on resume, `session.model.update` before the first input. They do not write
+Provider records, defaults, daemon environment or secret configuration files.
+When launching a daemon for a parsed startup override, the CLI removes these
+startup `DIM_*` variables from that child environment; the running client keeps
+its parsed Session options and unrelated environment variables are unchanged.
+Explicit startup choices force new branches and members to inherit the adopted
+configuration. Resume without overrides retains the recorded configuration.
+On daemons advertising `session.create.modelFromSession`, `/new` starts its first
+message with the previous Session's currently adopted main model, preferences,
+capacities and temporary connection. Launch overrides are not replayed. Selecting
+a configured model at home instead uses that model and its saved preferences.
+
+```text
+flags + DIM_* -> session.create / resumed session.model.update -> first input
+                (Session-local; no saved Provider mutation)
+current main -> /new -> first input -> new Session with adopted model
+```
+
+```sh
+dimcode exec --model model-id --effort high --autocompact 128k -p 'Hello'
+DIM_BASE_URL=https://gateway.example/prefix DIM_API_FORMAT=openai-chat \
+  DIM_MODEL=model-id dimcode exec -p 'Hello'
+dimcode exec resume SESSION_ID --effort low --autocompact auto -p 'Continue'
+```
+
+Startup environment is read only for Session execution, never help, version or
+management commands. `dimcode --help` and `dimcode -h` list the inputs without
+starting a daemon. The existing `--model-config` flow remains available; its
+daemon-launch environment behavior above does not apply to Session-local direct
+startup. Selecting a new Session's model in that legacy file profile keeps its
+existing creation contract; product startup overrides require the product
+Provider entry. See [Model startup](../../docs/design/model-startup.md).
 
 ## MCP servers
 

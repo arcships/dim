@@ -418,6 +418,12 @@ Agents creates F with its existing prepared creation: the prepare step is Sessio
 `create_owned_session`. The runtime then validates F's rows and builds F. A failure rolls F back, its owner rows
 included ([Session files §5.3](session-files.md#53-delete-s5c)); the source is untouched.
 
+After publication and protocol-version registration, Agents delivers its existing
+`agent/session-restored` notification for F before returning it, while S remains
+acquired. This notification covers loading copied history as well as reloading
+an existing ID. Owners resolve F through the Session directory and retain
+resources from its adopted branch state, not its creation configuration.
+
 TimelineTree opens a root branch that already has events with `branch/resume`
 ([timeline_tree.rs](../../../crates/dim-agent-capabilities/src/timeline_tree.rs) `restore`). F's `main` therefore
 continues with `branch/resume` after the copied facts. Before that, the fork transaction itself writes one fact of its

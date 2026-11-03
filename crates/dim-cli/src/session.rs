@@ -233,16 +233,17 @@ pub async fn chat(
         id.clone()
     } else {
         let mut params = json!({"cwd": options.workspace().as_str()});
-        let mut preferences = None;
+        options.creation_startup(&mut params);
+        let mut preferences = options.creation_preferences(None);
         let mut target = None;
         if let (Some(provider), Some(model)) = (&options.provider, &options.model) {
-            params["model"] = json!({"provider":provider,"modelId":model});
-            preferences =
-                crate::session_host::saved_model_preferences(client, provider, model).await?;
-            if let Some(preferences) = &preferences {
-                params["modelPreferences"] = preferences.clone();
-            }
+            preferences = options.creation_preferences(
+                crate::session_host::saved_model_preferences(client, provider, model).await?,
+            );
             target = Some((provider.clone(), model.clone()));
+        }
+        if let Some(preferences) = &preferences {
+            params["modelPreferences"] = preferences.clone();
         }
         if let Some(preset) = options.permission {
             params["permissionPolicy"] = json!({"preset":preset});
@@ -254,7 +255,7 @@ pub async fn chat(
                     client,
                     target.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
                     error,
-                    preferences.as_ref(),
+                    preferences.as_ref().filter(|_| options.effort.is_none()),
                 )
                 .await;
                 return Err(format!("Cannot create session: {error}. Configure a provider or use --model-config PATH with an API-key environment reference").into());
@@ -316,6 +317,9 @@ pub async fn chat(
     client
         .rpc("session.attach", json!({"sessionId":session_id}))
         .await?;
+    if options.resume.is_some() {
+        crate::session_host::adopt_startup(client, options, &session_id).await?;
+    }
     let mut questions = Questions::default();
     let result = async {
         display.muted = !interactive;

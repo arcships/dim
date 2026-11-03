@@ -539,12 +539,16 @@ The `--models` profile resolves the same facts from its model file: `AimuxModels
 the request names, by provider and model id, and the request's capability snapshot stays unset, so
 images are sent while the capability is unknown.
 
-**No window cap of compaction's own.** The window facts are the model's catalog values with
-their overrides, and compaction applies no window limit of its own: `B`, the threshold,
-`0.5 × B`, `0.25 × B` and `S` all scale with the declared window. A model whose useful window
-is smaller than its declared one is declared smaller — in its catalog entry, which Provider
-owns, or through the user's existing `contextWindow` override. Compaction never decides that
-through a constant of its own.
+**Capacity and startup trigger window.** The window facts are the model's catalog values
+with their overrides: `B`, `0.5 × B`, `0.25 × B` and `S` scale with the declared capacity.
+An adopted [startup](../model-startup.md) `auto_compact_window = W` caps only
+`threshold_tokens` at `max(0, W − output_tokens)`: the effective threshold is the
+minimum of that cap and `B − reserve` above. The output allowance remains reserved;
+the smaller trigger window neither reduces actual capacity nor changes chunking,
+retention, regrowth or manual compaction. Provider validates that W is positive and
+does not exceed adopted capacity. Without W, including startup `auto`, the threshold
+is unchanged. Compaction has no constant capacity cap of its own; a different actual
+capacity is declared by Provider or the existing `contextWindow` override.
 
 ### 5.2 ProductSummaryStrategy
 
@@ -1285,7 +1289,7 @@ Internal Rust changes:
 | Half-finished compaction | Never resumed; settled as `cancelled` (§5.8) |
 | Summarizer reasoning (#170) | `off` (§13.2). The evaluation ([research note](../research/summary-eval.md)) passes `off` on the OpenAI-compatible class, with no other arm's `F` more than `δ` above it, so the value is a strategy constant and `compaction.json` is removed. Decided on the class that ran; provisional for OpenAI Responses and Anthropic budget thinking (§13.4 Coverage), evaluated under [#565](https://github.com/arcships/dim/issues/565) |
 | Target summary length (#170) | No instruction (§13.3). Every phase-2 arm passed; the no-instruction arm's cut-offs and failures were no higher than any target arm's, so none is kept. The planning size uses α = 0.5 and β = 0.10 |
-| Window limits | None of compaction's own: the window facts are the model's catalog values with their overrides, and `B`, the threshold, `0.5 × B`, `0.25 × B` and `S` scale with the declared window. A smaller useful window is declared smaller in the catalog (Provider) or by the `contextWindow` override (§5.1) |
+| Window limits | The window facts are the model's catalog values with their overrides; `B`, `0.5 × B`, `0.25 × B` and `S` scale with capacity. Startup may separately cap the automatic trigger window while reserving the existing output allowance (§5.1) |
 | The `0.5 × B` bound | The tail budget is `min(0.25 × B, 0.5 × B − resident)` with the replacement planned at `replacement_size` (§13.3's `S` at the provisional α = 0.5, β = 0.10); when no kept tail fits, the limit is the cut that replaces everything; a completed result still above the bound is re-planned once at the replacement's actual size before anything is committed, and only that re-plan's outcome is written; the mark is measured from the written result's total, so a result above the bound always carries it (§5.3). The `0.5` share is provisional (#428) |
 | Insufficient space | A descriptive `insufficientSpace` object present exactly when a completed compaction's total exceeds `0.5 × B`, naming the resident parts that cover the excess, largest first, and never the kept tail; no decision reads it (§4.3, §5.3) |
 | Regrowth | Automatic threshold compaction needs `0.25 × B` of entries after the latest compaction attempt's `through`, decided in the context's branch-aware order: `through` maps to the writing branch's last committed event at or before it, so a forked child regrows from its own history; recovery is exempt and runs once per request (§5.6, §5.3) |
@@ -1542,6 +1546,15 @@ change to chunking, the cut-off rule, retention or the trigger.
 
 - The value applies to every summarizer request of a compaction, fixed when the strategy is
   built. `maxTokens = output_tokens` is unchanged in every case.
+- Automatic and manual summaries carry the branch's adopted provider/model,
+  capability snapshot and selection metadata, including the durable startup connection
+  source. They copy model options before applying the strategy's reasoning rule:
+  startup does not override the default `off` or an explicitly configured strategy
+  value. They drop the conversation's session/run/trace/turn request identities
+  and its `requestId` model-call identity while retaining routing extensions; a
+  producer supplies a fresh identity for each summary call. Provider resolves the source without selecting
+  a saved default or borrowing another connection's credentials. Summary prompts,
+  output allowance, chunking and cut-off handling remain the strategy's.
 - `off` and `low` apply where the model allows it. Where Provider's mapping rejects the effort for
   this model and protocol (no reasoning support, no reasoning-off declaration for the protocol,
   `low` not among the model's effort options, Bedrock, the local development connection), the
@@ -2064,4 +2077,3 @@ symbol, a command, an error — is kept verbatim ([model-facing prompts
 §7](../model-prompts.md#7-language)). The prompt asks for it; a change to that sentence is judged
 like the rest of the prompt. The prompt itself and every other text on this page stay English in
 one copy.
-

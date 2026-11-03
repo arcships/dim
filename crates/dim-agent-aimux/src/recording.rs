@@ -2,10 +2,108 @@
 //! `model-log` Settings source. Dim calls providers directly, so it also binds
 //! the recorder to each request and closes the recording when the stream ends.
 use aimux_core::recording::{
-    JsonlRecorder, OutcomeRecord, OutcomeStatus, Recorder, RecordingContext, RecordingError,
-    init_recording, recorder,
+    HttpExchange, JsonlRecorder, OutcomeRecord, OutcomeStatus, ProviderRecord, Recorder,
+    RecordingContext, RecordingError, ResponseRecord, init_recording, recorder,
 };
 use std::{path::Path, sync::Arc};
+
+struct StartupRecorder(Arc<dyn Recorder>);
+
+fn redact_headers(headers: &mut [(String, String)]) {
+    for (_, value) in headers {
+        *value = "[REDACTED]".into();
+    }
+}
+
+fn redact_option_headers(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (name, value) in fields {
+                if name.eq_ignore_ascii_case("headers") {
+                    if let Some(headers) = value.as_object_mut() {
+                        for value in headers.values_mut() {
+                            *value = "[REDACTED]".into();
+                        }
+                    }
+                } else {
+                    redact_option_headers(value);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_option_headers(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+impl Recorder for StartupRecorder {
+    fn record_input(
+        &self,
+        call_id: &str,
+        options: &aimux_core::options::CallOptions,
+        provider: &str,
+        model_id: &str,
+    ) {
+        let mut options = options.clone();
+        if let Some(headers) = &mut options.headers {
+            for value in headers.values_mut() {
+                *value = "[REDACTED]".into();
+            }
+        }
+        if let Some(providers) = &mut options.provider_options {
+            for value in providers.values_mut() {
+                redact_option_headers(value);
+            }
+        }
+        self.0.record_input(call_id, &options, provider, model_id);
+    }
+    fn record_session(&self, call_id: &str, session_id: &str, step: u32) {
+        self.0.record_session(call_id, session_id, step);
+    }
+    fn record_provider(&self, call_id: &str, snapshot: &ProviderRecord) {
+        let mut snapshot = snapshot.clone();
+        if let Some(options) = &mut snapshot.provider_options {
+            redact_option_headers(options);
+        }
+        self.0.record_provider(call_id, &snapshot);
+    }
+    fn record_exchange(&self, call_id: &str, exchange: &HttpExchange) {
+        let mut exchange = exchange.clone();
+        redact_headers(&mut exchange.request.headers);
+        if let Some(response) = &mut exchange.response {
+            redact_headers(&mut response.headers);
+        }
+        self.0.record_exchange(call_id, &exchange);
+    }
+    fn record_exchange_update(
+        &self,
+        call_id: &str,
+        attempt: u32,
+        exchange_index: u32,
+        response: &ResponseRecord,
+        error: Option<String>,
+    ) {
+        let mut response = response.clone();
+        redact_headers(&mut response.headers);
+        self.0
+            .record_exchange_update(call_id, attempt, exchange_index, &response, error);
+    }
+    fn record_outcome(&self, call_id: &str, outcome: &OutcomeRecord) {
+        self.0.record_outcome(call_id, outcome);
+    }
+    fn record_transport_closed(&self, call_id: &str) {
+        self.0.record_transport_closed(call_id);
+    }
+    fn flush(&self) {
+        self.0.flush();
+    }
+    fn try_flush(&self) -> Result<(), RecordingError> {
+        self.0.try_flush()
+    }
+}
 
 /// One request's recorder and correlation id. The request carries the context;
 /// this keeps what the stream's terminal needs.
@@ -84,8 +182,12 @@ impl Drop for Pending {
 pub(crate) fn capture(
     call_id: String,
     options: &mut aimux_core::options::CallOptions,
+    startup: bool,
 ) -> Option<Capture> {
-    let recorder = recorder()?;
+    let mut recorder = recorder()?;
+    if startup {
+        recorder = Arc::new(StartupRecorder(recorder));
+    }
     options.call_id = Some(call_id.clone());
     options.recording_context = Some(RecordingContext::new(call_id.clone(), recorder.clone()));
     Some(Capture { recorder, call_id })

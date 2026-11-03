@@ -681,7 +681,9 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             },
         )?);
         rows.push(register_part(&mut builtins, builder.catalog(), |names| {
-            Ok(Box::new(provider::ProviderPlugin::new(names)?))
+            Ok(Box::new(provider::ProviderPlugin::with_session_lifecycle(
+                names,
+            )?))
         })?);
         rows.push(register_part(&mut builtins, builder.catalog(), |names| {
             Ok(Box::new(modality::ModalityPlugin::new(names)?))

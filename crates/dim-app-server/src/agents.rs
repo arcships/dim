@@ -79,7 +79,8 @@ pub struct AgentHost {
     pub(crate) ctx: Ctx,
 }
 
-/// A new loaded incarnation of a stored Session, before its caller receives it.
+/// A Session loaded from stored history, including a newly materialized fork,
+/// before its caller receives it.
 /// Listeners resolve the Session through [`AgentIndex::session`]; an event
 /// carries ids, never a handle.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1466,8 +1467,18 @@ impl AgentIndex {
             .host
             .agent
             .create_prepared_session(id.clone(), config, prepare);
-        self.admit(&id, &usage.host.agent_id, version, creation)
-            .await
+        let fork = self
+            .admit(&id, &usage.host.agent_id, version, creation)
+            .await?;
+        self.ctx
+            .get()
+            .expect("AgentsPlugin apply sets its context")
+            .parallel(SessionRestored {
+                agent_id: usage.host.agent_id.clone(),
+                session_id: id,
+            })
+            .await?;
+        Ok(fork)
     }
     /// `agent.create`: one more Agent, a peer of every other. A requested
     /// profile comes from outside the process and may only select provided

@@ -411,8 +411,11 @@ that root, no provider or working-directory fallback is supplied. See the
 [public binding](../../docs/design/process-typescript.md#52-public-pluginfiles-binding).
 The embedding host must provision each consumer's parent directories before
 enabling it: `withLock` returns `io` for a missing parent and does not create it.
+A host without a product home names its plugin root in `ServerConfig.plugin_files`. The `dimcode` development profile (`--model-config`) uses its `--home` directory, so the root and its `scheduler/` directory are provisioned there.
 
 A plugin declares `inject: ['pluginFiles']` and opens a fresh scope during each `apply`. Register `scope.close()` with `ctx.effect` immediately after opening, then register business cleanup. The host chooses the authorized product root; the plugin supplies relative file paths only. This is a trusted-plugin API, not a sandbox for untrusted Node code.
+
+A Rust process plugin uses the typed `PluginFileTransactions` service (`names.key::<PluginFileTransactions>()`) instead. `transact(name, change)` runs `change` on the inner text under the file's lock. `change` receives `None` for a missing file and returns the replacement text (`None` keeps the file as it is) together with its own result. The host writes and checks the same `{version: 1, text}` envelope. An envelope that is not version 1 fails with `InvalidData` before `change` runs, and its bytes stay unchanged.
 
 Import `PluginFiles`, `FileScope`, `FileLease` and `FileResult` with
 `import type { PluginFiles } from 'dimcode/plugin'`. The

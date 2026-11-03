@@ -22,7 +22,7 @@ use rutis::{Ctx, Error};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock, RwLock, Weak,
         atomic::{AtomicU64, Ordering},
@@ -1147,55 +1147,100 @@ impl Connection {
                 if p.branch_id != "main" {
                     return Err(RpcError::invalid("Model updates only support main"));
                 }
-                let model = match (p.provider_id, p.model_id) {
-                    (Some(provider_id), Some(model_id)) => {
-                        if provider_id.trim().is_empty() || model_id.trim().is_empty() {
-                            return Err(RpcError::invalid("Model target must not be empty"));
-                        }
-                        rpc.model_selection(
-                            Some(dim_agent_types::ModelId {
-                                provider_id,
-                                model_id,
-                            }),
-                            Some(PathBuf::from(&session.config().cwd)),
-                            p.model_preferences.values(),
-                        )
-                        .await?
+                let mut startup_admission = None;
+                let model = if let Some(startup) = p.startup {
+                    if self.entry != Entry::Local || rpc.config.product_home.is_none() {
+                        return Err(RpcError::invalid(
+                            "Model startup requires the protected-local product entry",
+                        ));
                     }
-                    (None, None) => {
-                        if p.model_preferences.is_empty() {
-                            return Err(RpcError::invalid("Supply at least one model preference"));
+                    if p.model_preferences.clears_reasoning()
+                        || p.model_preferences.clears_service_tier()
+                    {
+                        return Err(RpcError::invalid(
+                            "Startup preferences accept set values only",
+                        ));
+                    }
+                    let state = session
+                        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&p.branch_id)?
+                        .ok_or_else(RpcError::reloading)?;
+                    let current = state
+                        .configuration
+                        .ok_or_else(|| RpcError::invalid("No model configuration is adopted"))?;
+                    let provider = rpc
+                        .ctx
+                        .get::<crate::provider::ProviderService>()
+                        .ok_or_else(RpcError::reloading)?;
+                    let admission = provider
+                        .startup_configuration(
+                            crate::protocol::ModelSelection {
+                                provider: p.provider_id,
+                                model_id: p.model_id,
+                            },
+                            Path::new(&session.config().cwd),
+                            p.model_preferences.values(),
+                            startup,
+                            Some(&current),
+                            &rpc.unloading,
+                        )
+                        .await
+                        .map_err(provider_error)?;
+                    let model = admission.model.clone();
+                    startup_admission = Some(admission);
+                    model
+                } else {
+                    match (p.provider_id, p.model_id) {
+                        (Some(provider_id), Some(model_id)) => {
+                            if provider_id.trim().is_empty() || model_id.trim().is_empty() {
+                                return Err(RpcError::invalid("Model target must not be empty"));
+                            }
+                            rpc.model_selection(
+                                Some(dim_agent_types::ModelId {
+                                    provider_id,
+                                    model_id,
+                                }),
+                                Some(PathBuf::from(&session.config().cwd)),
+                                p.model_preferences.values(),
+                            )
+                            .await?
                         }
-                        if rpc.config.product_home.is_none() {
-                            return Err(provider_error(
-                                dim_agent_capabilities::host::HostError::failed(
-                                    "Model preferences require a catalog with capability declarations; configure the API-key model's generation settings in --model-config",
-                                ),
-                            ));
-                        }
-                        let state = session
-                            .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(
-                                &p.branch_id,
-                            )?
-                            .ok_or_else(RpcError::reloading)?;
-                        let current = state.configuration.ok_or_else(|| {
+                        (None, None) => {
+                            if p.model_preferences.is_empty() {
+                                return Err(RpcError::invalid(
+                                    "Supply at least one model preference",
+                                ));
+                            }
+                            if rpc.config.product_home.is_none() {
+                                return Err(provider_error(
+                                    dim_agent_capabilities::host::HostError::failed(
+                                        "Model preferences require a catalog with capability declarations; configure the API-key model's generation settings in --model-config",
+                                    ),
+                                ));
+                            }
+                            let state = session
+                                .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(
+                                    &p.branch_id,
+                                )?
+                                .ok_or_else(RpcError::reloading)?;
+                            let current = state.configuration.ok_or_else(|| {
                             RpcError::invalid(
                                 "No model configuration is adopted; supply providerId and modelId",
                             )
                         })?;
-                        let provider = rpc
-                            .ctx
-                            .get::<crate::provider::ProviderService>()
-                            .ok_or_else(RpcError::reloading)?;
-                        provider
-                            .apply_preferences(&current, &p.model_preferences, &rpc.unloading)
-                            .await
-                            .map_err(provider_error)?
-                    }
-                    _ => {
-                        return Err(RpcError::invalid(
-                            "providerId and modelId must appear together",
-                        ));
+                            let provider = rpc
+                                .ctx
+                                .get::<crate::provider::ProviderService>()
+                                .ok_or_else(RpcError::reloading)?;
+                            provider
+                                .apply_preferences(&current, &p.model_preferences, &rpc.unloading)
+                                .await
+                                .map_err(provider_error)?
+                        }
+                        _ => {
+                            return Err(RpcError::invalid(
+                                "providerId and modelId must appear together",
+                            ));
+                        }
                     }
                 };
                 let id = dim_agent_types::ModelId {
@@ -1205,16 +1250,21 @@ impl Connection {
                 let outcome = session
                     .configure(
                         dim_agent_runtime::ConfigureUpdate {
-                            model: Some(model),
+                            model: Some(model.clone()),
                             ..Default::default()
                         },
                         &p.branch_id,
                     )
                     .await?;
-                Reply::ModelUpdate(ModelUpdateResult {
-                    model: id,
-                    outcome: configuration_outcome(outcome)?,
-                })
+                let outcome = configuration_outcome(outcome)?;
+                if startup_admission.is_some() {
+                    rpc.ctx
+                        .get::<crate::provider::ProviderService>()
+                        .ok_or_else(RpcError::reloading)?
+                        .retain_startup(session, &model)
+                        .map_err(provider_error)?;
+                }
+                Reply::ModelUpdate(ModelUpdateResult { model: id, outcome })
             }
             Call::PromptRefresh(p) => {
                 if p.branch_id != "main" {
@@ -1234,6 +1284,28 @@ impl Connection {
         })
     }
     async fn create(&self, rpc: &RpcService, params: Create) -> Result<Reply, RpcError> {
+        if (params.startup.is_some() || params.model_from_session.is_some())
+            && (self.entry != Entry::Local || rpc.config.product_home.is_none())
+        {
+            return Err(RpcError::invalid(
+                "Model startup requires the protected-local product entry",
+            ));
+        }
+        if params.model_from_session.is_some()
+            && (params.model.is_some()
+                || params.startup.is_some()
+                || params.model_preferences.is_some())
+        {
+            return Err(RpcError::invalid(
+                "modelFromSession cannot be combined with model, startup or modelPreferences",
+            ));
+        }
+        let source = if let Some(id) = &params.model_from_session {
+            self.authorize(rpc, id)?;
+            Some(rpc.index.acquire(id).await?)
+        } else {
+            None
+        };
         let cwd = session_cwd(&params.cwd).await?;
         if params
             .tools
@@ -1261,12 +1333,78 @@ impl Connection {
         })?;
         let mut config = crate::agents::session_config(&host.profile, &rpc.config.session_defaults);
         config.cwd = cwd.clone();
-        if !rpc.index.selects_models() && params.model_preferences != Default::default() {
+        let mut startup_admission = None;
+        let preferences = params.model_preferences.unwrap_or_default();
+        if !rpc.index.selects_models() && preferences != Default::default() {
             return Err(RpcError::invalid(
                 "Model preferences require the product provider",
             ));
         }
-        if rpc.index.selects_models() {
+        if let Some(source) = &source {
+            let adopted = source
+                .session
+                .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>("main")?
+                .and_then(|state| state.configuration.clone())
+                .ok_or_else(|| RpcError::invalid("Source Session has no adopted model"))?;
+            config.model = dim_agent_types::ModelSelection {
+                provider_id: adopted.provider_id,
+                model_id: adopted.model_id,
+                capability_snapshot: adopted.capability_snapshot,
+                config: adopted.config,
+                metadata: adopted
+                    .metadata
+                    .map(|metadata| dim_agent_types::RequestMetadata {
+                        startup: metadata.startup,
+                        extensions: {
+                            let mut extensions = metadata.extensions;
+                            extensions.remove("requestId");
+                            extensions
+                        },
+                        ..Default::default()
+                    }),
+            };
+            if let Some(connection) = config
+                .model
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.startup.as_ref())
+                .and_then(|startup| startup.connection.as_ref())
+            {
+                rpc.ctx
+                    .get::<crate::provider::ProviderService>()
+                    .ok_or_else(RpcError::reloading)?
+                    .startup_connection(connection)
+                    .map_err(provider_error)?;
+            }
+        } else if let Some(startup) = params.startup {
+            let provider = rpc
+                .ctx
+                .get::<crate::provider::ProviderService>()
+                .ok_or_else(RpcError::reloading)?;
+            let target = params.model.unwrap_or_else(|| {
+                host.profile
+                    .model
+                    .clone()
+                    .map(|model| crate::protocol::ModelSelection {
+                        provider: Some(model.provider_id),
+                        model_id: Some(model.model_id),
+                    })
+                    .unwrap_or_default()
+            });
+            let admission = provider
+                .startup_configuration(
+                    target,
+                    Path::new(&cwd),
+                    preferences,
+                    startup,
+                    None,
+                    &rpc.unloading,
+                )
+                .await
+                .map_err(provider_error)?;
+            config.model = admission.model.clone();
+            startup_admission = Some(admission);
+        } else if rpc.index.selects_models() {
             if params
                 .model
                 .as_ref()
@@ -1295,7 +1433,7 @@ impl Connection {
                         })
                         .or_else(|| host.profile.model.clone()),
                     Some(cwd.into()),
-                    params.model_preferences,
+                    preferences,
                 )
                 .await?;
         } else if let Some(model) = params.model {
@@ -1339,6 +1477,24 @@ impl Connection {
             .create_session(&host, config, self.protocol_version(), None, origin)
             .await
             .map_err(RpcError::from)?;
+        if startup_admission.is_some() || source.is_some() {
+            let retained = rpc
+                .ctx
+                .get::<crate::provider::ProviderService>()
+                .ok_or_else(RpcError::reloading)
+                .and_then(|provider| {
+                    provider
+                        .retain_startup(&session, &session.config().model)
+                        .map_err(provider_error)
+                });
+            if let Err(error) = retained {
+                rpc.index
+                    .delete(session.id())
+                    .await
+                    .map_err(RpcError::from)?;
+                return Err(error);
+            }
+        }
         rpc.index.retain_versions();
         Ok(Reply::Create(CreateResult {
             session_id: session.id().to_owned(),

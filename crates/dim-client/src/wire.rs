@@ -20,6 +20,9 @@ pub struct Event {
 pub struct Configuration {
     pub provider_id: String,
     pub model_id: String,
+    /// The adopted model's capability declaration, including temporary routes.
+    #[serde(default)]
+    pub capability_snapshot: Option<Box<ModelCapabilitySnapshot>>,
     /// The effective preferences the adopted configuration sends; absent when
     /// it carries none.
     #[serde(default)]

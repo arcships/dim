@@ -325,7 +325,12 @@ pub(crate) fn convert(
         .and_then(Value::as_str)
         .map(str::to_owned)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let recording = crate::recording::capture(call_id, &mut options);
+    let startup = request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.startup.as_ref())
+        .is_some_and(|startup| startup.connection.is_some());
+    let recording = crate::recording::capture(call_id, &mut options, startup);
     Ok(PreparedRequest {
         options,
         tool_names,

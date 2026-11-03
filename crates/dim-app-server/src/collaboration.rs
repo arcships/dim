@@ -188,7 +188,12 @@ impl Collaboration {
         permission: PermissionPolicy,
     ) -> Result<Peer, Failure> {
         let (leader_host, leader) = self.index.session(leader_id).ok_or(Refusal::Closed)?;
+        let startup = adopted
+            .as_ref()
+            .and_then(|model| model.metadata.as_ref())
+            .is_some_and(|metadata| metadata.startup.is_some());
         let policy = match &self.settings {
+            _ if startup => ModelPolicy::Inherit {},
             Some(settings) => {
                 settings
                     .read::<ModelPolicy>(SettingsScope::User, &self.stop)
@@ -287,6 +292,33 @@ impl Collaboration {
                 return Err(member_create_failed(error.to_string()));
             }
         };
+        if session
+            .config()
+            .model
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.startup.as_ref())
+            .is_some_and(|startup| startup.connection.is_some())
+        {
+            let retained = host
+                .ctx
+                .get::<crate::provider::ProviderService>()
+                .ok_or_else(|| "startup connection provider is unavailable".to_owned())
+                .and_then(|provider| {
+                    provider
+                        .retain_startup(&session, &session.config().model)
+                        .map_err(|error| error.to_string())
+                });
+            if let Err(error) = retained {
+                if let Err(cleanup) = self.index.delete(session.id()).await {
+                    tracing::error!(%cleanup, "Member Session cleanup failed");
+                }
+                if owned {
+                    self.index.release_owned(&host.agent_id).await;
+                }
+                return Err(member_create_failed(error));
+            }
+        }
         self.directory.relations.lock().unwrap().insert(
             session.id().to_owned(),
             Relation {
@@ -1384,7 +1416,7 @@ impl CollaborationSession {
             EventKind::CollaborationRequest(CollaborationRequestData {
                 target: CollaborationTarget::Agent { .. } | CollaborationTarget::Temporary { .. },
                 ..
-            }) if self.collaboration.settings.is_some() => self.adopted_model(branch_id),
+            }) => self.adopted_model(branch_id),
             _ => None,
         };
         let permission = match &event.kind {
@@ -1565,6 +1597,7 @@ impl CollaborationSession {
                 run_id: None,
                 trace_id: None,
                 turn_id: None,
+                startup: metadata.startup,
                 extensions: metadata.extensions,
             }),
         })

@@ -4,6 +4,7 @@ This index is navigation. Delivery status lives in issues, not here.
 
 - [CLI feature list](feature-list.md)
 - [Model preferences and Agent configuration](design/model-configuration.md)
+- [Model startup](design/model-startup.md): temporary model, effort and multi-protocol connections with branch/member/compaction inheritance
 - [Overall design for undesigned features](design/overview.md)（[中文](zh/design/overview.md)）
 - [Plugin designs index](design/plugins/README.md)（[中文](zh/design/plugins/README.md)）
 - [AcpGateway implementation contract](design/acp-gateway-implementation.md)（中文，#436）：protocol mapping, client-host plugin wiring, lifecycle and unsupported features
