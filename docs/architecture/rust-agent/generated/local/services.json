@@ -2509,6 +2509,11 @@
         "generation": 1,
         "injects": [
           {
+            "service": "dim_agent_capabilities::input_queue::SubmitChecks@session",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_capabilities::prompt_registry::PromptRegistry@session",
             "scope": null,
             "status": "Ready"
@@ -2545,6 +2550,12 @@
           }
         ],
         "resolved": [
+          {
+            "service": "dim_agent_capabilities::input_queue::SubmitChecks@session",
+            "scope": null,
+            "provider": 39,
+            "generation": 1
+          },
           {
             "service": "dim_agent_capabilities::prompt_registry::PromptRegistry@session",
             "scope": null,
@@ -2589,6 +2600,12 @@
           }
         ],
         "reads": [
+          {
+            "service": "dim_agent_capabilities::input_queue::SubmitChecks@session",
+            "provider": 39,
+            "declared": true,
+            "external": true
+          },
           {
             "service": "dim_agent_capabilities::prompt_registry::PromptRegistry@session",
             "provider": 42,

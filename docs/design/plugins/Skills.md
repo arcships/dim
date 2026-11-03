@@ -11,6 +11,7 @@ package is previewed, installed into the user scope, updated and removed. Skill 
 precedence, enablement, the Session view and the `skill` tool are the Skills capability's
 existing contract ([Skills](../../architecture/rust-agent/plugins/Skills.md)); plugin packages
 that carry Skills are PluginManager's ([PluginManager §3.7](PluginManager.md#37-content-registration)).
+How an operator's `$skill:` reference loads a Skill with the same input is §9.
 
 ## 1. Scope and non-goals
 
@@ -429,3 +430,47 @@ document written before this field existed still loads.
 Rendered verification follows the Web workspace's acceptance for the Skills page: desktop and
 compact layouts, preview with conflicts and shadows, cancelled and accepted overwrite, a failed
 acquisition with retry, stale preview, update and confirmed removal, and a draft kept on failure.
+
+## 9. References load with the operator's input
+
+An operator names a Skill with `$skill: <name>` in the input. That reference loads the Skill
+deterministically, before the model is asked, with the same input: no new input, no model round
+trip, and no AgentLoop change. The design is:
+
+- **The mechanism is `SubmitChecks`.** The Skills Session part registers the check `skills` with
+  the Session's `submitChecks` ([Hooks A.6.2](Hooks.md#a62-submit-check-at-the-operator-input-entries)),
+  the table Hooks' `UserPromptSubmit` uses. `session.submit` and the steer of
+  `session.input.withdraw` call it before writing, and the blocks it returns are appended to the
+  operator input's `user` content after the operator's own content, so the block is part of the
+  input that drives the request and is recorded in the Timeline. The check is named `skills`, so
+  its blocks follow `hooks`' in name order. `session.branch_create` returns no blocks: a
+  branch's first input is built from the prompt alone.
+- **The marker is plain text.** A reference is `$skill:`, optional spaces, then the run of
+  non-whitespace characters that follows, matched exactly against the enabled Skill names. Plain
+  text keeps the composer free of atomic tokens and needs no argument syntax; `/` is the only
+  trigger, and `@` stays the file picker. A Skill whose name contains whitespace cannot be
+  referenced, and the palette does not list it.
+- **Lookup is the `skill` tool's view.** The check reads `SessionSkills::current()`: the enabled
+  Skills of the Session's current view. A disabled or unknown name adds nothing, and a view
+  error, a stopped part or a reloading part adds nothing: an error is no opinion. Each Skill is
+  resolved once, in the order of its first reference. References are read from the operator's own
+  content only: a block a submit check added, a loaded Skill's instructions or a hook context,
+  never adds one, so a steer of a queued input loads the same Skills as its submit.
+- **One block per Skill.** The block is `<dim-skill name="{name}">`, the exact text the `skill`
+  tool returns, and `</dim-skill>`. The name is escaped with the attribute escaping every
+  `<dim-…>` marker uses, and one function renders the loaded text for both the tool result and
+  the block, so the two paths cannot drift. The block is a text block of the input's `user`
+  content, never a raw block, so the input stays operator input.
+- **The model-facing text says which path loaded the Skill.** The instructions state that a
+  `$skill: name` marker followed in the same message by a `<dim-skill name="name">` block means
+  the Skill is already loaded: follow it, and do not call `skill` for it. A marker without such
+  a block is loaded with the tool, as today. Every other rule stays.
+- **Consumers see the block where hook contexts appear.** SessionTitle's title text and Recall
+  read the input's `user` content, so they see the added block after the operator's text,
+  exactly as they see a `UserPromptSubmit` context (Hooks A.6.2). That is accepted.
+- **Clients show one line.** A text block of an operator input's `user` content that is not the
+  first block and starts with `<dim-skill name="` is shown as one line naming the loaded Skill,
+  never as its text ([clients](../clients.md)). The ACP gateway applies the same rule when it
+  replays an input to the editor on `session/load` and on a history read. A prefill for edit or
+  fork takes the operator's text only, so resending does not load the Skill twice. Export keeps
+  the raw record.

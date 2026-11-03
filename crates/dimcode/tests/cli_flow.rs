@@ -5132,6 +5132,183 @@ fn tui_at_mentions_pick_files_from_the_working_directory() {
     daemon.join().unwrap();
 }
 
+fn catalog_entry(name: &str, enabled: bool, shadowed_by: Option<&str>) -> Value {
+    json!({
+        "id": format!("user:{name}"),
+        "source": "user",
+        "name": name,
+        "description": format!("About {name}"),
+        "filePath": format!("/home/.agents/skills/{name}/SKILL.md"),
+        "enabled": enabled,
+        "shadowedBy": shadowed_by,
+    })
+}
+
+#[test]
+fn tui_skill_rows_come_from_the_catalog_and_complete_without_sending() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let daemon = home.daemon(|wire| {
+            wire.hello(&["skills.catalog"]);
+            wire.created();
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let history = wire.read("session.history");
+            wire.reply(
+                &history,
+                json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+            );
+            let catalog = wire.read("skills.catalog");
+            wire.reply(
+                &catalog,
+                json!({
+                    "entries": [
+                        catalog_entry("commit", true, None),
+                        catalog_entry("deploy", false, None),
+                        catalog_entry("shadowed", true, Some("user:shadowed")),
+                    ],
+                    "issues": [],
+                }),
+            );
+            wire.no_context();
+            let providers = wire.read("account.providers");
+            wire.reply(&providers, json!([]));
+            wire.hold();
+        });
+        let mut command = home.command();
+        if fullscreen {
+            command.arg("--fullscreen");
+        }
+        let mut terminal = Terminal::launch_tui(command);
+        terminal.until("test / model");
+
+        // The enabled Skill is listed and its row completes the marker into
+        // the draft; no message is sent.
+        terminal.write(b"/comm");
+        terminal.until("$commit");
+        terminal.raw(b"\r");
+        terminal.until("$skill: commit ");
+        terminal.write(b"\x03");
+
+        // A disabled or shadowed Skill is not offered: Tab completes nothing.
+        terminal.write(b"/dep");
+        terminal.raw(b"\t");
+        terminal.write(b"x");
+        terminal.until("depx");
+        terminal.write(b"\x03");
+        terminal.write(b"/sha");
+        terminal.raw(b"\t");
+        terminal.write(b"x");
+        terminal.until("shax");
+        terminal.write(b"\x03");
+
+        terminal.write(b"/exit\r");
+        terminal.until("Bye!");
+        assert!(terminal.wait().success());
+        daemon.join().unwrap();
+    }
+}
+
+#[test]
+fn reloading_skills_changes_the_palette_rows() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["skills.catalog", "skills.refresh"]);
+        wire.created();
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        let catalog = wire.read("skills.catalog");
+        wire.reply(
+            &catalog,
+            json!({"entries":[catalog_entry("commit", true, None)],"issues":[]}),
+        );
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+
+        // `/reload-skills` rescans, then reads the area: its view and the
+        // palette come from that one read.
+        let refresh = wire.read("skills.refresh");
+        assert_eq!(refresh["params"]["cwd"], json!("/workspace"));
+        wire.reply(&refresh, json!({}));
+        let rescan = json!({
+            "entries": [
+                catalog_entry("commit", true, None),
+                catalog_entry("release", true, None),
+            ],
+            "issues": [],
+        });
+        let panel = wire.read("skills.catalog");
+        wire.reply(&panel, rescan);
+        wire.hold();
+    });
+    let mut terminal = Terminal::launch_tui(home.command());
+    terminal.until("test / model");
+
+    // Before the rescan only the command matches; the new Skill is not known.
+    terminal.write(b"/rel");
+    terminal.until("/reload-skills");
+    assert!(!terminal.transcript.contains("$release"));
+    terminal.write(b"\x03");
+
+    terminal.write(b"/reload-skills\r");
+    // The palette feed takes the rescan's list.
+    terminal.write(b"/rel");
+    terminal.until("$release");
+    terminal.write(b"\x03");
+
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+#[test]
+fn a_daemon_without_skill_catalog_keeps_a_working_command_palette() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["skills.catalog"]);
+        wire.created();
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        let catalog = wire.read("skills.catalog");
+        wire.send(json!({"jsonrpc":"2.0","id":catalog["id"],"error":{
+            "code":-32601,"message":"Unknown method: skills.catalog",
+            "data":{"appError":"unknown_method"}}}));
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        wire.hold();
+    });
+    let mut terminal = Terminal::launch_tui(home.command());
+    terminal.until("test / model");
+
+    // The failed read shows no error and leaves the command rows untouched.
+    terminal.write(b"/ren");
+    terminal.until("/rename");
+    terminal.raw(b"\t");
+    terminal.write(b"x");
+    terminal.until("/rename x");
+    terminal.write(b"\x03");
+    assert!(!terminal.transcript.contains("$skill"));
+    assert!(!terminal.transcript.contains("Unknown method"));
+
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
 #[test]
 fn tui_palette_tab_only_completes_and_enter_still_runs() {
     for fullscreen in [false, true] {

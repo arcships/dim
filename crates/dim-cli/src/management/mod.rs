@@ -342,6 +342,13 @@ fn named(workspace: Option<&str>) -> &str {
     workspace.expect("a request for this area names the workspace")
 }
 
+/// What applying a management action came to, and the Skills entries it read:
+/// the palette lists the same entries the panel's view was built from.
+pub struct Applied {
+    pub result: ManagementResult,
+    pub skills: Option<Vec<skills::Entry>>,
+}
+
 /// Applies `request` to its area and reports what it came to. `workspace` is
 /// the resolved workspace a request for its area names, and `None` for an
 /// area that names none.
@@ -350,17 +357,24 @@ pub async fn apply(
     request: &ManagementRequest,
     workspace: Option<&str>,
     line: Option<&SessionLine>,
-) -> ManagementResult {
+) -> Applied {
     if let Err(error) = supported(client, request) {
-        return ManagementResult::Refused(ManagementRefusal::Refused(error));
+        return Applied {
+            result: ManagementResult::Refused(ManagementRefusal::Refused(error)),
+            skills: None,
+        };
     }
     let actions = actions(client, &request.area);
-    match &request.area {
+    let mut entries = None;
+    let result = match &request.area {
         Area::Skills => match skills::apply(client, &request.action, named(workspace)).await {
-            skills::Outcome::Catalog(catalog) => ManagementResult::View {
-                view: Box::new(skills::view(&catalog, &actions)),
-                note: None,
-            },
+            skills::Outcome::Catalog(catalog) => {
+                entries = Some(catalog.entries.clone());
+                ManagementResult::View {
+                    view: Box::new(skills::view(&catalog, &actions)),
+                    note: None,
+                }
+            }
             skills::Outcome::ReadFailed(error) => ManagementResult::Applied {
                 note: None,
                 read_error: error,
@@ -499,6 +513,10 @@ pub async fn apply(
                 })
             }
         },
+    };
+    Applied {
+        result,
+        skills: entries,
     }
 }
 

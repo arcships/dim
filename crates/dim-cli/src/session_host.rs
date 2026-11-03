@@ -902,9 +902,29 @@ impl Worker {
             self.send(Update::Permissions(policy));
         }
         self.send(Update::Switched { session_id, kind });
+        self.refresh_skills().await;
         self.context_stale = true;
         self.publish();
         Ok(())
+    }
+
+    /// Reads the Session's Skills for the command palette. A daemon without
+    /// `skills.catalog`, or a failed read, leaves the palette with commands
+    /// only: no error, and the next event asks again.
+    async fn refresh_skills(&mut self) {
+        let Some(cwd) = self.session_cwd.clone() else {
+            self.send(Update::Skills(Vec::new()));
+            return;
+        };
+        if !self.client.supports(&["skills.catalog"]) {
+            self.send(Update::Skills(Vec::new()));
+            return;
+        }
+        let entries = crate::management::skills::catalog(&mut self.client, &cwd)
+            .await
+            .map(|catalog| catalog.entries)
+            .unwrap_or_default();
+        self.send(Update::Skills(entries));
     }
 
     /// Whether the model takes image input, from its catalog entry:
@@ -1294,6 +1314,7 @@ impl Worker {
                         session_id: String::new(),
                         kind: SwitchKind::New,
                     });
+                    self.send(Update::Skills(Vec::new()));
                 }
             }
             Command::Resume(session_id) => {
@@ -1791,10 +1812,18 @@ impl Worker {
                     session_id: self.session_id.clone(),
                     branch_id: self.focus.clone(),
                 });
-                let result =
+                let applied =
                     crate::management::apply(&mut self.client, &request, Some(cwd), line.as_ref())
                         .await;
-                self.send(Update::Management(ManagementReply { request, result }));
+                self.send(Update::Management(ManagementReply {
+                    request,
+                    result: applied.result,
+                }));
+                // The palette lists the same entries the panel's view was
+                // built from.
+                if let Some(entries) = applied.skills {
+                    self.send(Update::Skills(entries));
+                }
             }
             Command::SetLocale(language) => crate::management::use_language(language),
             Command::Configure(text) => {

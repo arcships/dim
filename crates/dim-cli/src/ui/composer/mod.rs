@@ -207,7 +207,6 @@ impl Composer {
     }
 
     /// Skills the palette offers as `$skill:` mentions.
-    #[allow(dead_code)]
     pub fn set_skills(&mut self, skills: Vec<palette::Skill>) {
         self.skills = skills;
     }
@@ -2084,6 +2083,25 @@ mod tests {
             }
         );
         assert!(c.is_empty());
+    }
+
+    /// Enter on a Skill row fills its marker and sends nothing; Tab fills
+    /// the same marker.
+    #[test]
+    fn a_skill_row_fills_the_marker_without_sending() {
+        for code in [KeyCode::Enter, KeyCode::Tab] {
+            let mut c = Composer::new(Vec::new());
+            c.set_skills(vec![palette::Skill {
+                name: "commit".into(),
+                description: "Writes commit messages".into(),
+                display_name: None,
+                display_description: None,
+            }]);
+            typed(&mut c, "/comm");
+            assert_eq!(c.handle_key(key(code)), Outcome::Handled);
+            assert_eq!(c.text(), "$skill: commit ", "{code:?}");
+            assert!(!c.palette_open());
+        }
     }
 
     #[test]

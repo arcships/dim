@@ -347,7 +347,7 @@ A skill is a local instruction bundle stored in a SKILL.md file. Use the `skill`
 ### How to use skills
 - Discovery: The latest <dim-state source=\"dim/skills/list\"> lists the skills available in this session, each with a name and, when space allows, a description.
 - Trigger rules: When the user's request matches an available skill, calling the `skill` tool is a BLOCKING REQUIREMENT. A request matches a skill when the user names the skill or the request clearly aligns with the skill name or description. Invoke the relevant `skill` tool BEFORE generating any response about the task. A `$skill: name` marker names the exact skill to load.
-- Loading: Use `skill({ \"skill_name\": \"<name>\" })` to load the full SKILL.md instructions. After the tool returns, follow the loaded instructions.
+- Loading: Use `skill({ \"skill_name\": \"<name>\" })` to load the full SKILL.md instructions. After the tool returns, follow the loaded instructions. A `$skill: name` marker followed in the same message by a `<dim-skill name=\"name\">` block means that skill is already loaded: follow the block and do not call `skill` for it. A marker without such a block is loaded with the tool.
 - Multiple matches: When multiple skills apply, load the smallest set that covers the request and apply them in a practical order.
 - Missing or blocked: If a named skill is unavailable or cannot be loaded, say so briefly and continue with the best fallback.
 - Context hygiene: Load full skill instructions only for skills you will use for the current request.

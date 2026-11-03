@@ -138,3 +138,24 @@ test("member approvals preserve the original action and retire by branch and rou
   })
   assert.equal(readNotification("session.notice", { sessionId: "leader", source: "AnotherOwner", kind: "memberApprovalEnded", data: {} }), undefined)
 })
+
+test("a loaded Skill block is read as a note, not as the operator's message", () => {
+  const block = '<dim-skill name="checkin">\nSkill: checkin\nDescription: D\nFile: /x/SKILL.md\n\nInstructions:\nBODY\n</dim-skill>'
+  const loaded = page(event("input", "message", {
+    user: { content: [
+      { type: "text", text: "check the build" },
+      { type: "text", text: block },
+    ] },
+    mode: "queue",
+  }))
+  assert.equal(loaded.events[0].content.text, "check the build")
+  assert.deepEqual(loaded.events[0].content.skills, ["checkin"])
+  assert.equal(loaded.events[0].content.user.content.length, 2, "the raw content is kept")
+
+  const typed = page(event("input", "message", {
+    user: { content: [{ type: "text", text: '<dim-skill name="mine">as typed' }] },
+    mode: "queue",
+  }, 2))
+  assert.equal(typed.events[0].content.text, '<dim-skill name="mine">as typed')
+  assert.equal(typed.events[0].content.skills, undefined)
+})

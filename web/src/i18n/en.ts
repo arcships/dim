@@ -157,6 +157,7 @@ const en = {
   "message.branch": "Branch from here",
   "message.collapse": "Collapse message",
   "message.copy": "Copy entire message",
+  "message.skillLoaded": "Skill loaded: {name}",
   "message.expand": "Show full message",
   "message.quote": "Quote in the composer",
   "newThread.pathLabel": "Absolute directory path",

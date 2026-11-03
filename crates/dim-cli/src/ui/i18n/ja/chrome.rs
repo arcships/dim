@@ -334,6 +334,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "esc close" => "esc 閉じる",
         "Suggestions" => "候補",
         "Skills" => "スキル",
+        "Skill loaded: {name}" => "スキル読み込み：{name}",
         "Commands" => "コマンド",
         "Command Palette" => "コマンドパレット",
         "No matches" => "一致なし",

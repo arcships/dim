@@ -362,6 +362,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "esc close" => "esc schließen",
         "Suggestions" => "Vorschläge",
         "Skills" => "Skills",
+        "Skill loaded: {name}" => "Skill geladen: {name}",
         "Commands" => "Befehle",
         "Command Palette" => "Befehlspalette",
         "No matches" => "Keine Treffer",

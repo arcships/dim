@@ -132,6 +132,17 @@
       ]
     },
     {
+      "id": "dim_acp::projection::tests",
+      "crate": "dim_acp",
+      "parent": "dim_acp::projection",
+      "file": "crates/dim-acp/src/projection.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "json"
+      ]
+    },
+    {
       "id": "dim_acp::rpc",
       "crate": "dim_acp",
       "parent": "dim_acp",
@@ -1002,6 +1013,16 @@
         "serde_json::json",
         "tokio::pin",
         "tokio::select",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_agent_capabilities::skills::session::tests",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::skills::session",
+      "file": "crates/dim-agent-capabilities/src/skills/session.rs",
+      "unexpandedMacros": [
+        "assert_eq",
         "vec"
       ]
     },
@@ -6020,6 +6041,13 @@
     },
     {
       "from": "dim_acp::projection",
+      "to": "dim_acp::projection::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_acp::projection",
       "to": "dim_agent_types::content",
       "references": [
         "path ContentBlock::Image",
@@ -6079,6 +6107,20 @@
         "use dim_client::wire::Event",
         "use dim_client::wire::EventContent",
         "use dim_client::wire::Progress"
+      ]
+    },
+    {
+      "from": "dim_acp::projection::tests",
+      "to": "dim_acp::projection",
+      "references": [
+        "path Projection::default"
+      ]
+    },
+    {
+      "from": "dim_acp::projection::tests",
+      "to": "dim_client::wire",
+      "references": [
+        "path Event"
       ]
     },
     {
@@ -12247,6 +12289,8 @@
       "from": "dim_agent_capabilities::skills::session",
       "to": "dim_agent_capabilities::context_block",
       "references": [
+        "path crate::context_block::attr",
+        "path crate::context_block::element",
         "path crate::context_block::text"
       ]
     },
@@ -12262,6 +12306,23 @@
         "use crate::host::HostFuture",
         "use crate::host::LoadPrompt",
         "use crate::host::ToolExecutionContext"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::skills::session",
+      "to": "dim_agent_capabilities::input_queue",
+      "references": [
+        "path CheckSubmission",
+        "path SubmitCheckReply",
+        "path SubmitCheckReply::Proceed",
+        "path SubmitCheckRequest",
+        "path SubmitChecks",
+        "path SubmitEntry::Branch",
+        "use crate::input_queue::CheckSubmission",
+        "use crate::input_queue::SubmitCheckReply",
+        "use crate::input_queue::SubmitCheckRequest",
+        "use crate::input_queue::SubmitChecks",
+        "use crate::input_queue::SubmitEntry"
       ]
     },
     {
@@ -12286,11 +12347,13 @@
       "from": "dim_agent_capabilities::skills::session",
       "to": "dim_agent_capabilities::skills",
       "references": [
+        "path SkillDefinition",
         "path SkillSummary",
         "path SkillView",
         "path SkillsError",
         "path super::INSTRUCTIONS",
         "path super::SkillsConfig",
+        "use super::SkillDefinition",
         "use super::SkillSummary",
         "use super::SkillView",
         "use super::SkillsError"
@@ -12312,6 +12375,13 @@
       "to": "dim_agent_capabilities::skills::content",
       "references": [
         "path super::content::Contents::new"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::skills::session",
+      "to": "dim_agent_capabilities::skills::session::tests",
+      "references": [
+        "mod tests"
       ]
     },
     {
@@ -12379,6 +12449,8 @@
       "from": "dim_agent_capabilities::skills::session",
       "to": "dim_agent_types::content",
       "references": [
+        "path ContentBlock",
+        "path ContentBlock::Text",
         "path content"
       ]
     },
@@ -26885,6 +26957,7 @@
       "to": "dim_cli::management::skills",
       "references": [
         "mod skills",
+        "path skills::Entry",
         "path skills::Outcome::Catalog",
         "path skills::Outcome::ReadFailed",
         "path skills::Outcome::Refused",
@@ -28008,6 +28081,13 @@
     },
     {
       "from": "dim_cli::model::session",
+      "to": "dim_cli::management::skills",
+      "references": [
+        "path crate::management::skills::Entry"
+      ]
+    },
+    {
+      "from": "dim_cli::model::session",
       "to": "dim_cli::model::shell",
       "references": [
         "path ShellResult",
@@ -28631,6 +28711,13 @@
     },
     {
       "from": "dim_cli::projection",
+      "to": "dim_cli::ui::i18n",
+      "references": [
+        "path crate::ui::i18n::tf"
+      ]
+    },
+    {
+      "from": "dim_cli::projection",
       "to": "dim_cli::wire",
       "references": [
         "path WorkflowRun",
@@ -28718,6 +28805,7 @@
       "from": "dim_cli::projection::tests",
       "to": "dim_cli::ui::i18n",
       "references": [
+        "path crate::ui::i18n::Locale::En",
         "path crate::ui::i18n::Locale::ZhCn",
         "path crate::ui::i18n::active",
         "path crate::ui::i18n::set"
@@ -29264,6 +29352,13 @@
     },
     {
       "from": "dim_cli::session_host",
+      "to": "dim_cli::management::skills",
+      "references": [
+        "path crate::management::skills::catalog"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host",
       "to": "dim_cli::mcp",
       "references": [
         "path mcp::Started",
@@ -29443,6 +29538,7 @@
         "path Update::ShellDone",
         "path Update::ShellProgress",
         "path Update::Shutdown",
+        "path Update::Skills",
         "path Update::Snapshot",
         "path Update::SuggestionCleared",
         "path Update::SuggestionMethods",
@@ -36023,6 +36119,7 @@
         "path Update::ShellDone",
         "path Update::ShellProgress",
         "path Update::Shutdown",
+        "path Update::Skills",
         "path Update::Snapshot",
         "path Update::SuggestionCleared",
         "path Update::SuggestionMethods",
@@ -36174,6 +36271,13 @@
         "path history::flush",
         "path history::load",
         "use crate::ui::composer::history"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::tui",
+      "to": "dim_cli::ui::composer::palette",
+      "references": [
+        "path crate::ui::composer::palette::Skill"
       ]
     },
     {
@@ -36921,6 +37025,7 @@
         "path Update::Plugins",
         "path Update::Ready",
         "path Update::Runtimes",
+        "path Update::Skills",
         "path Update::Snapshot",
         "path Update::SuggestionMethods",
         "path Update::SuggestionOffer",
@@ -38826,6 +38931,10 @@
     {
       "module": "dim_agent_capabilities::skills::catalog",
       "path": "Clone::clone"
+    },
+    {
+      "module": "dim_agent_capabilities::skills::session",
+      "path": "char::is_whitespace"
     },
     {
       "module": "dim_agent_capabilities::workspace_tools::files",

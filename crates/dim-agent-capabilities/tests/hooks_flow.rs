@@ -3745,3 +3745,85 @@ async fn a_hooks_unload_drops_a_pending_pre_tool_use_advice() {
     wait_gone(prompted_pid(&pid_file)).await;
     env.close().await;
 }
+
+/// A.6.2 with Skills: a `UserPromptSubmit` hook sees the operator's text
+/// only, and its context comes before the referenced Skill's block, which
+/// is appended after it in name order (`skills` after `hooks`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prompt_submit_hook_precedes_a_referenced_skill() {
+    let env = Env::new().await;
+    let skills = env.path("work/.agents/skills/checkin");
+    std::fs::create_dir_all(&skills).unwrap();
+    std::fs::write(
+        skills.join("SKILL.md"),
+        "---\nname: checkin\ndescription: Answers check-in questions\n---\n\nCHECKIN-BODY\n",
+    )
+    .unwrap();
+    let stdin_path = env.path("prompt-stdin.json");
+    let script = env.path("prompt-stdin.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ncat > '{}'\nprintf '{{\"hookSpecificOutput\":{{\"additionalContext\":\"hook context\"}}}}'\n",
+            stdin_path.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    env.sources.set(document(serde_json::json!({
+        "UserPromptSubmit": [command(serde_json::json!({
+            "type": "command", "command": script.to_str().unwrap(),
+        }))],
+    })));
+    let session = env.session().await;
+    let reply = withdraw(
+        &session,
+        serde_json::json!({"sessionId": session.id(), "branchId": "main",
+            "inputId": "unknown", "steer": {"content": [
+                {"type": "text", "text": "$skill: checkin keep my words"}]}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply["status"], "notHeld", "{reply}");
+    let steer = reply["steer"]["inputId"].as_str().unwrap();
+    let event = session
+        .local("main", ..)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|event| event.id == steer)
+        .expect("the operator's input was written");
+    let EventKind::InputMessage(data) = &event.kind else {
+        panic!("the input is an input message");
+    };
+    let user = data
+        .user
+        .as_ref()
+        .expect("the input keeps its user content");
+    assert_eq!(
+        user.content.len(),
+        3,
+        "the operator's text, the hook's context, then the Skill block: {user:?}"
+    );
+    let ContentBlock::Text { text: operator } = &user.content[0] else {
+        panic!("the operator's block is text");
+    };
+    assert_eq!(operator, "$skill: checkin keep my words");
+    let ContentBlock::Text { text: hook } = &user.content[1] else {
+        panic!("the hook's context is a text block");
+    };
+    assert!(hook.starts_with("<dim-hooks"), "{hook}");
+    assert!(hook.contains("hook context"), "{hook}");
+    let ContentBlock::Text { text: skill } = &user.content[2] else {
+        panic!("the Skill block is a text block");
+    };
+    assert!(skill.starts_with("<dim-skill name=\"checkin\">"), "{skill}");
+    assert!(skill.contains("CHECKIN-BODY"), "{skill}");
+    let seen: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&stdin_path).unwrap()).unwrap();
+    assert_eq!(
+        seen["prompt"], "$skill: checkin keep my words",
+        "the hook sees the operator's text only"
+    );
+    env.close().await;
+}

@@ -111,14 +111,14 @@ export type PermissionPolicy = {
 export type PermissionState = { version: number; policy: PermissionPolicy }
 
 /** A message the server holds in the queue of a running branch. */
-export type QueuedInput = { id: string; text: string; user: UserInput }
+export type QueuedInput = { id: string; text: string; skills?: string[]; user: UserInput }
 
 /** `session.input.withdraw`: the queued input was removed, or the server had already adopted it. */
 export type WithdrawResult = { status: "deleted" } | { status: "notHeld" }
 
 /** The Timeline facts the projection folds; every other kind is `other`. */
 export type EventContent =
-  | { kind: "input"; text?: string; user?: UserInput; blocks: RawBlock[] }
+  | { kind: "input"; text?: string; user?: UserInput; skills?: string[]; blocks: RawBlock[] }
   | { kind: "source-input"; text: string; mode?: string; blocks: RawBlock[] }
   | { kind: "input-applied"; inputId: string }
   | { kind: "input-deleted"; inputId: string }

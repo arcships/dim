@@ -308,6 +308,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "esc close" => "esc 關閉",
         "Suggestions" => "建議",
         "Skills" => "技能",
+        "Skill loaded: {name}" => "已載入技能：{name}",
         "Commands" => "指令",
         "Command Palette" => "命令面板",
         "No matches" => "無相符項目",

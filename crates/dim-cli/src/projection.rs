@@ -688,7 +688,7 @@ impl Projection {
         let index = self.push(format!("user-{sequence}"), kind, text);
         let row = self.row(index);
         row.cut = Some(submitted.saturating_sub(1));
-        row.display = image_text(&user.content);
+        row.display = user_display(&user.content);
         row.pending = kind == RowKind::UserMessage;
         self.input_rows.insert(input_id.to_owned(), index);
     }
@@ -775,7 +775,7 @@ impl Projection {
                     .map(|(id, _, user)| QueuedInput {
                         id: id.clone(),
                         text: text_of(&user.content),
-                        display: image_text(&user.content),
+                        display: user_display(&user.content),
                     })
                     .collect()
             } else {
@@ -1302,10 +1302,15 @@ fn element_body(text: &str, close: &str) -> String {
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
+/// The marker a loaded Skill block starts with (Skills §9).
+const SKILL_BLOCK: &str = "<dim-skill name=\"";
+
 fn text_of(blocks: &[ContentBlock]) -> String {
     blocks
         .iter()
-        .filter_map(|block| match block {
+        .enumerate()
+        .filter(|(index, block)| loaded_skill(*index, block).is_none())
+        .filter_map(|(_, block)| match block {
             ContentBlock::Text { text } => Some(text.as_str()),
             ContentBlock::Image { .. } => None,
         })
@@ -1313,26 +1318,56 @@ fn text_of(blocks: &[ContentBlock]) -> String {
         .join("\n")
 }
 
-fn image_text(blocks: &[ContentBlock]) -> Option<String> {
-    if !blocks
-        .iter()
-        .any(|block| matches!(block, ContentBlock::Image { .. }))
-    {
+/// The Skill a loaded block names: a text block after the first that starts
+/// with the marker carries a Skill's instructions, which are shown as one
+/// line instead.
+fn loaded_skill(index: usize, block: &ContentBlock) -> Option<String> {
+    if index == 0 {
         return None;
     }
+    let ContentBlock::Text { text } = block else {
+        return None;
+    };
+    let rest = text.strip_prefix(SKILL_BLOCK)?;
+    let name = rest.split('"').next()?;
+    (!name.is_empty()).then(|| {
+        name.replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&amp;", "&")
+    })
+}
+
+/// The presentation of an operator message: its text with an image marker per
+/// image and one line per loaded Skill; `None` when its text is the message.
+fn user_display(blocks: &[ContentBlock]) -> Option<String> {
     let mut images = 0;
-    let text = blocks
-        .iter()
-        .map(|block| match block {
-            ContentBlock::Text { text } => text.clone(),
+    let mut skills = Vec::new();
+    let mut lines = Vec::new();
+    for (index, block) in blocks.iter().enumerate() {
+        match block {
+            ContentBlock::Text { text } => match loaded_skill(index, block) {
+                Some(name) => skills.push(name),
+                None => lines.push(text.clone()),
+            },
             ContentBlock::Image { .. } => {
                 images += 1;
-                crate::images::marker(images, "")
+                lines.push(crate::images::marker(images, ""));
             }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    Some(text)
+        }
+    }
+    if images == 0 && skills.is_empty() {
+        return None;
+    }
+    let mut display = lines.join("\n");
+    for skill in skills {
+        let line = crate::ui::i18n::tf("Skill loaded: {name}", &[("name", &skill)]);
+        if !display.is_empty() {
+            display.push('\n');
+        }
+        display.push_str(&line);
+    }
+    Some(display)
 }
 
 #[cfg(test)]
@@ -1810,6 +1845,105 @@ mod tests {
         );
         assert_eq!(replay.snapshot().rows[1].text, "Compare\nwith");
         assert_eq!(replay.snapshot().rows[1].display.as_deref(), Some(expected));
+        crate::ui::i18n::set(previous);
+    }
+
+    /// A loaded Skill block (Skills §9) is one line under the operator's
+    /// message, never its instructions; the editable text stays the
+    /// operator's own words.
+    #[test]
+    fn a_loaded_skill_shows_as_one_line_under_the_message() {
+        let previous = crate::ui::i18n::active();
+        crate::ui::i18n::set(crate::ui::i18n::Locale::En);
+        let image = serde_json::json!({
+            "type": "image",
+            "source": {"type": "url", "mediaType": "image/png", "url": "https://invalid.example/image.png"},
+        });
+        let block = |name: &str| {
+            serde_json::json!({
+                "type": "text",
+                "text": format!(
+                    "<dim-skill name=\"{name}\">\nSkill: {name}\nDescription: D\nFile: /tmp/{name}/SKILL.md\n\nInstructions:\nBODY-{name}\n</dim-skill>"
+                ),
+            })
+        };
+        let input = |sequence: u64, id: &str, content: serde_json::Value| {
+            serde_json::json!({
+                "id": id, "sequence": sequence, "create_at": sequence,
+                "type": "input", "name": "message",
+                "data": {"user": {"content": content}, "mode": "queue"},
+            })
+        };
+        let applied = |sequence: u64, id: &str| {
+            serde_json::json!({
+                "id": format!("applied-{id}"), "sequence": sequence, "create_at": sequence,
+                "type": "input", "name": "applied", "data": {"input_id": id},
+            })
+        };
+        let mut projection = Projection::default();
+        apply(
+            &mut projection,
+            &[
+                input(
+                    1,
+                    "one",
+                    serde_json::json!([
+                        {"type": "text", "text": "one $skill: checkin please"},
+                        block("checkin"),
+                    ]),
+                ),
+                applied(2, "one"),
+                input(
+                    3,
+                    "two",
+                    serde_json::json!([
+                        {"type": "text", "text": "two"},
+                        block("alpha"),
+                        block("beta"),
+                    ]),
+                ),
+                applied(4, "two"),
+                input(
+                    5,
+                    "typed",
+                    serde_json::json!([
+                        {"type": "text", "text": "<dim-skill name=\"mine\">as typed"},
+                    ]),
+                ),
+                applied(6, "typed"),
+                input(
+                    7,
+                    "images",
+                    serde_json::json!([
+                        {"type": "text", "text": "look"},
+                        image,
+                        block("checkin"),
+                    ]),
+                ),
+                applied(8, "images"),
+            ],
+        );
+        let rows = projection.snapshot().rows;
+        assert_eq!(rows[0].text, "one $skill: checkin please");
+        assert_eq!(
+            rows[0].display.as_deref(),
+            Some("one $skill: checkin please\nSkill loaded: checkin")
+        );
+        assert_eq!(rows[1].text, "two");
+        assert_eq!(
+            rows[1].display.as_deref(),
+            Some("two\nSkill loaded: alpha\nSkill loaded: beta")
+        );
+        assert_eq!(
+            rows[2].text, "<dim-skill name=\"mine\">as typed",
+            "a first block is the operator's own text, shown as typed"
+        );
+        assert_eq!(rows[2].display, None);
+        assert_eq!(rows[3].text, "look");
+        assert_eq!(
+            rows[3].display.as_deref(),
+            Some("look\n[Image #1]\nSkill loaded: checkin")
+        );
         crate::ui::i18n::set(previous);
     }
 

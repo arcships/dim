@@ -15,7 +15,7 @@ use crate::model::session::{
 use crate::ui::i18n::t;
 
 /// One entry of `skills.catalog`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
     pub id: String,

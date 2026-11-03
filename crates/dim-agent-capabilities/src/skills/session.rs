@@ -1,6 +1,9 @@
-use super::{CatalogChanged, SkillSummary, SkillView, SkillsCatalog, SkillsError};
+use super::{CatalogChanged, SkillDefinition, SkillSummary, SkillView, SkillsCatalog, SkillsError};
 use crate::{
     host::{HostError, HostFuture, LoadPrompt, ToolExecutionContext},
+    input_queue::{
+        CheckSubmission, SubmitCheckReply, SubmitCheckRequest, SubmitChecks, SubmitEntry,
+    },
     prompt_registry::{PromptRegistry, targets},
     prompt_sources::sha256_version,
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry},
@@ -129,6 +132,7 @@ pub struct SkillsPlugin {
     lifecycle: Key<SessionLifecycle>,
     prompts: Key<PromptRegistry>,
     tools: Key<ToolRegistry>,
+    checks: Key<SubmitChecks>,
     skills: Key<SessionSkills>,
     /// The assembly's [`super::SkillsConfig`], when the assembly installed
     /// the capability ([`super::install_with_config`]): the install call
@@ -148,6 +152,7 @@ impl SkillsPlugin {
             lifecycle: names.key()?,
             prompts: names.key()?,
             tools: names.key()?,
+            checks: names.key()?,
             skills: names.key()?,
             factory: names
                 .registered::<super::SkillsConfig>()
@@ -168,6 +173,7 @@ impl DynPlugin for SkillsPlugin {
             self.lifecycle.erase(),
             self.prompts.erase(),
             self.tools.erase(),
+            self.checks.erase(),
         ];
         keys.extend(self.factory.iter().map(Key::erase));
         keys
@@ -267,9 +273,18 @@ impl DynPlugin for SkillsPlugin {
                     definition: skill_definition(),
                     handler: Arc::new(SkillTool {
                         skills: skills.clone(),
-                        stopped: lifecycle,
+                        stopped: lifecycle.clone(),
                     }),
                 },
+            )?;
+            let checks = ctx.require_at(&self.checks)?;
+            checks.register(
+                ctx,
+                "skills",
+                Arc::new(SkillSubmitCheck {
+                    skills: skills.clone(),
+                    stopped: lifecycle,
+                }),
             )?;
             for source in [INSTRUCTIONS_SOURCE, LIST] {
                 prompts.register(ctx, source, skills.clone())?;
@@ -297,6 +312,151 @@ fn skill_definition() -> ToolDefinition {
                 "required": ["skill_name"]
             }),
         )
+    }
+}
+
+/// The text a loaded Skill carries: the `skill` tool's result and the block a
+/// referenced Skill adds to the operator's input share it.
+fn skill_text(skill: &SkillDefinition) -> String {
+    let mut parts = vec![
+        format!("Skill: {}", skill.name),
+        format!("Description: {}", skill.description),
+        format!("File: {}", skill.file_path.display()),
+    ];
+    if !skill.allowed_tools.is_empty() {
+        parts.push(format!("Allowed tools: {}", skill.allowed_tools.join(", ")));
+    }
+    parts.extend(["".into(), "Instructions:".into(), skill.body.clone()]);
+    parts.join("\n")
+}
+
+/// The `skills` submit check (Hooks A.6.2): an operator's `$skill: <name>`
+/// references load those Skills with the same input, before the model sees
+/// it.
+struct SkillSubmitCheck {
+    skills: Arc<SessionSkills>,
+    /// The part's lifetime: a stopped or reloading part adds nothing.
+    stopped: CancellationToken,
+}
+impl CheckSubmission for SkillSubmitCheck {
+    fn check(
+        &self,
+        request: SubmitCheckRequest,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, SubmitCheckReply> {
+        Box::pin(async move {
+            let interrupted = || HostError::Cancelled("the entry's call was interrupted".into());
+            if cancel.is_cancelled() {
+                return Err(interrupted());
+            }
+            let nothing = SubmitCheckReply::Proceed { blocks: Vec::new() };
+            // A branch's first input is built from its prompt alone.
+            if request.entry == SubmitEntry::Branch {
+                return Ok(nothing);
+            }
+            let Some(user) = request.user.as_ref() else {
+                return Ok(nothing);
+            };
+            let names = referenced(&user.content);
+            if names.is_empty() {
+                return Ok(nothing);
+            }
+            // A stopped part, or an unavailable view, has no opinion.
+            if self.stopped.is_cancelled() {
+                return Ok(nothing);
+            }
+            let Ok(view) = self.skills.current() else {
+                return Ok(nothing);
+            };
+            // A steer of a queued input carries the block the input already
+            // loaded: its reference must not load the Skill a second time.
+            let already: std::collections::BTreeSet<String> = user
+                .content
+                .iter()
+                .enumerate()
+                .filter_map(|(index, block)| existing_skill(index, block))
+                .collect();
+            let mut seen = std::collections::BTreeSet::new();
+            let mut blocks = Vec::new();
+            for name in names {
+                if cancel.is_cancelled() {
+                    return Err(interrupted());
+                }
+                if !seen.insert(name.clone())
+                    || already.contains(&crate::context_block::attr(&name))
+                {
+                    continue;
+                }
+                let Some(skill) = view.skills.get(&name) else {
+                    continue;
+                };
+                blocks.push(crate::context_block::element(
+                    "dim-skill",
+                    &[("name", skill.name.as_str())],
+                    &skill_text(skill),
+                ));
+            }
+            Ok(SubmitCheckReply::Proceed { blocks })
+        })
+    }
+}
+
+/// Whether a text block after the first was added by a submit check: a loaded
+/// Skill block, or a hook's `UserPromptSubmit` context. The first block is
+/// always the operator's own.
+fn submit_check_block(index: usize, block: &ContentBlock) -> bool {
+    if index == 0 {
+        return false;
+    }
+    let ContentBlock::Text { text } = block else {
+        return false;
+    };
+    text.starts_with("<dim-skill name=\"") || text.starts_with("<dim-hooks kind=\"prompt-submit\">")
+}
+
+/// The Skill name an existing block already loaded, as its attribute holds
+/// it: a text block after the first that starts with the marker.
+fn existing_skill(index: usize, block: &ContentBlock) -> Option<String> {
+    if index == 0 {
+        return None;
+    }
+    let ContentBlock::Text { text } = block else {
+        return None;
+    };
+    let rest = text.strip_prefix("<dim-skill name=\"")?;
+    let name = rest.split('"').next()?;
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// The Skill names the operator's own text references, in order. A block a
+/// submit check added is not operator text, so a steer follows no reference
+/// inside it.
+fn referenced(content: &[ContentBlock]) -> Vec<String> {
+    let mut names = Vec::new();
+    for (index, block) in content.iter().enumerate() {
+        if submit_check_block(index, block) {
+            continue;
+        }
+        let ContentBlock::Text { text } = block else {
+            continue;
+        };
+        references(text, &mut names);
+    }
+    names
+}
+
+/// Pushes the Skill names `text` references: `$skill:`, optional spaces, then
+/// the run of non-whitespace characters that follows, matched exactly.
+fn references(text: &str, names: &mut Vec<String>) {
+    let mut from = 0;
+    while let Some(at) = text[from..].find("$skill:") {
+        let after = from + at + "$skill:".len();
+        let rest = text[after..].trim_start();
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        if end > 0 {
+            names.push(rest[..end].to_owned());
+        }
+        from = after + (text[after..].len() - rest.len()) + end;
     }
 }
 
@@ -334,16 +494,7 @@ impl ToolHandler for SkillTool {
                 }
                 None => return Ok(failure(format!("Unknown skill: {name}"))),
             };
-            let mut parts = vec![
-                format!("Skill: {}", skill.name),
-                format!("Description: {}", skill.description),
-                format!("File: {}", skill.file_path.display()),
-            ];
-            if !skill.allowed_tools.is_empty() {
-                parts.push(format!("Allowed tools: {}", skill.allowed_tools.join(", ")));
-            }
-            parts.extend(["".into(), "Instructions:".into(), skill.body.clone()]);
-            let content = parts.join("\n");
+            let content = skill_text(&skill);
             let structured = serde_json::json!({
                 "success": true,
                 "name": skill.name,
@@ -447,5 +598,27 @@ impl DynPlugin for SkillsBranchPlugin {
             ctx.provide_at(self.branch.clone(), Arc::new(SkillsBranch { skills }))?;
             Ok(Effect::Done)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovery_reads_the_operator_text_only() {
+        let content = vec![
+            ContentBlock::Text {
+                text: "$skill: checkin hello".into(),
+            },
+            ContentBlock::Text {
+                text: "<dim-hooks kind=\"prompt-submit\">\n$skill: second\n</dim-hooks>".into(),
+            },
+            ContentBlock::Text {
+                text: "<dim-skill name=\"checkin\">\nInstructions:\n$skill: second\n</dim-skill>"
+                    .into(),
+            },
+        ];
+        assert_eq!(referenced(&content), vec!["checkin"]);
     }
 }
