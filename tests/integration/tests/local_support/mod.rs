@@ -4,6 +4,7 @@
 
 use dim_agent_capabilities::{
     defaults,
+    environment_clients::{SessionClientsHost, SessionClientsSource},
     execution_settings::{ExecutionSettings, ExecutionSettingsHost},
     history::HistoryRenderer,
     host::*,
@@ -384,6 +385,8 @@ pub struct Options {
     /// capability, as a host whose profile takes them by name does: the
     /// catalog plugin registers them either way.
     pub require_without_install: bool,
+    /// A client-presence source, provided at the root when present.
+    pub clients: Option<Arc<dyn SessionClientsSource>>,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -396,6 +399,7 @@ impl Default for Options {
             probe: None,
             instructions: None,
             require_without_install: false,
+            clients: None,
         }
     }
 }
@@ -433,6 +437,9 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
         Arc::new(move || today.lock().unwrap().clone()),
         std::time::Duration::from_millis(10),
     );
+    if options.clients.is_some() {
+        dim_agent_capabilities::environment_clients::install(&mut builder);
+    }
     if options.require_without_install {
         for part in ["Skills", "SkillsBranch"] {
             builder.require_part(part);
@@ -462,9 +469,13 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
         );
     }
     builder.plugin(|names| Ok(Box::new(SkillsCatalogPlugin::new(names)?)));
+    let clients = options.clients.clone();
     let agent = MinimalHost::start_with(&builder, move |root, _| {
         root.provide_as::<HostPlatform>(Arc::new(host))?;
         root.provide_as::<SkillSettingsHost>(Arc::new(SkillSettingsHost(settings)))?;
+        if let Some(clients) = clients {
+            root.provide_as::<SessionClientsHost>(Arc::new(SessionClientsHost(clients)))?;
+        }
         Ok(())
     })
     .await
