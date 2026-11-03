@@ -1,4 +1,5 @@
 //! Native aimux model hosts for the Agent runtime.
+mod auxiliary;
 pub mod config;
 mod driver;
 mod models;

@@ -98,7 +98,7 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 | `sessionPermissions` | 进程 | Agents | 是 | 标记了 `#[rutis::service]` |
 | `sessionMetadata` | 进程 | SessionStore | 是 | SessionTitle 是标题的唯一写入方 |
 | `settings` | 进程 | Settings | 是 | 业务配置 |
-| `auxiliaryModel` | 进程 | App Server | 是 | 辅助模型请求 |
+| `auxiliaryModel` | 进程 | 该配置中模型选择的所有者 | 是 | 辅助模型请求 |
 | `pluginFiles` | 进程 | 宿主 | 是，当宿主提供根目录时 | 进程部件自己的文件 |
 | `workflowFiles` | 进程 | App Server | 是 | 标记了 `#[rutis::service]` |
 | `collaborationMembers:<kind>` | 进程 | 成员提供者 | 已设计，未实现 | [ExternalAgent](plugins/ExternalAgent.md)；实现时向 Collaboration 登记（rutis 使用 R6） |

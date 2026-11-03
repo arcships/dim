@@ -6,11 +6,17 @@
 
 ## 1. 摘要
 
-Provider 只新增一个服务 `auxiliaryModel`，它只有一个异步方法 `complete(model, request)`。
-它在任何 Session 之外发起一次非流式模型调用：在 Provider 内部为给定模型解析连接，调用现有的
-`ModelHost`，返回文本。它不写任何 Timeline，凭据不离开 Provider。
+`auxiliaryModel` 服务只有一个异步方法 `complete(model, request)`。它在任何 Session 之外发起
+一次非流式模型调用：由模型选择的所有者解析给定模型的连接，调用现有的 `ModelHost`，返回文本。
+它不写任何 Timeline，凭据不离开该所有者。
 
-用哪个模型由调用方决定，这个选择保存在调用方自己的业务配置里。Provider 不保存任何按调用方
+谁提供它由一条规则决定：模型选择的所有者提供这个操作。产品配置里是 Provider，用它自己的目录
+和凭据；model-config 配置里是 ConfiguredModels（`--model-config` 文件），用配置的目录和其
+provider 声明的 `apiKeyEnv` 连接。绑定和运行是共享的能力代码
+（`dim_agent_capabilities::auxiliary_model`），两个所有者用同一份实现。mock 配置不选择模型，
+因此不提供这个操作。
+
+用哪个模型由调用方决定，这个选择保存在调用方自己的业务配置里。这个操作不保存任何按调用方
 区分的策略：没有用途 key，没有用途存储，也不新增管理方法。
 
 S4 完成标准里只有一个使用者：SessionTitle（P4），它需要在自己的 Session 之外调用模型，又拿
@@ -34,21 +40,19 @@ S4 完成标准里只有一个使用者：SessionTitle（P4），它需要在自
 ```
  进程作用域
  +----------------------------------------------------------------+
- |  Provider（现有插件）                                          |
- |   ProviderService：目录、默认选择（不变）                      |
- |   ProductResolver：连接与凭据（不变）                          |
- |   AuxiliaryModel --使用--> ProviderService、ProductResolver、  |
- |                            ModelHost                           |
- +-------------------------^--------------------^-----------------+
-       Aimux：ModelHost ---'                    |
+ |  Provider（产品）或 ConfiguredModels（model-config）           |
+ |   目录、凭据与默认选择（不变）                                 |
+ |   AuxiliaryModel --使用--> 共享的 auxiliary_model::complete、  |
+ |                             Aimux ModelHost                    |
+ +----------------------------------------------^-----------------+
                                                 | complete(model, request)
  Session 作用域                                 |
-   SessionTitle（Deps：auxiliaryModel）---------'
+   SessionTitle（Deps：AuxiliaryModelHost） ----'
      model = 其 Settings 来源 `session-title` 的 model，否则为 Session 的模型
 ```
 
-依赖指向核心：Provider 新增对 Aimux `ModelHost` 的硬依赖（两者都是核心，在产品配置中总是同时
-存在）。Provider 不点名任何使用者。
+依赖指向核心：两个所有者都新增对 Aimux `ModelHost` 的硬依赖，并使用 `dim-agent-capabilities`
+中共享的运行；两者都不点名任何使用者。
 
 ## 3. 数据与状态
 
@@ -58,7 +62,8 @@ S4 完成标准里只有一个使用者：SessionTitle（P4），它需要在自
 
 ### 4.1 语言中立（ADR 002 D5）
 
-`auxiliaryModel`，进程作用域，无实例 key，由 Provider 提供。
+`auxiliaryModel`，进程作用域，无实例 key，由该配置中模型选择的所有者提供（产品配置为
+Provider，model-config 配置为 ConfiguredModels）。
 
 | 方法 | 模式 | 请求 | 回复 |
 | --- | --- | --- | --- |
@@ -93,20 +98,24 @@ pub trait CompleteAuxiliary: Send + Sync + 'static {
 pub struct AuxiliaryModelHost(pub Arc<dyn CompleteAuxiliary>);
 ```
 
-Provider 的 `apply` 提供 `AuxiliaryModelHost`；其 `Deps` 增加 `Arc<ModelHost>`。
+`auxiliary_model::provide` 把所有者的操作同时绑定为 `AuxiliaryModelHost` 和具名绑定。每个
+所有者的 `apply` 用各自的 `CompleteAuxiliary` 实现调用它；其 `Deps` 增加 `Arc<ModelHost>`。
 
 ### 4.3 具名绑定
 
-同一个 Provider 所有的操作在 `host_key("auxiliaryModel")` 实现 `HostDispatch`，进程 catalog
-登记此共享名称。普通 C4 行注入 `auxiliaryModel`，调用 `complete({model, request})`。SDK 在
+所有者提供的同一个操作经上述共享的 `provide` 在 `host_key("auxiliaryModel")` 实现
+`HostDispatch`，进程 catalog 登记此共享名称。普通 C4 行注入 `auxiliaryModel`，调用
+`complete({model, request})`；Rust 的 SessionTitle 部分改为注入 `AuxiliaryModelHost`，两者
+到达同一个所有者操作。SDK 在
 [`dimcode/plugin`](../../../../npm/plugin.d.ts) 中将其声明为 `AuxiliaryModel`。这是既有操作的绑定，
 不新增插件或另一套模型执行器。
 
 调用接收一个含 `model` 和 `request` 的数据对象。在此边界解码原生请求一次；未知字段、非法消息
 数据或参数形状以 `invalid_request` 拒绝。可选的 `system` 和 `maxOutputTokens` 可以缺省或为 null。
 回复沿用原生 `AuxiliaryReply` 序列化，字段用 camelCase，停止原因用 snake_case；没有 usage 时
-省略该字段。失败拒绝为带既有 `code` 和 `message` 的 Error，不增加回复信封。调用使用 Provider
-现有的准入、任务跟踪和清理；凭据和连接句柄仍留在 Provider 内。
+省略该字段。失败拒绝为带既有 `code` 和 `message` 的 Error，不增加回复信封。Provider 的调用
+使用它的准入、任务跟踪和清理；ConfiguredModels 随进程存在，没有准入，调用以自己的结果或
+调用方的取消结束。凭据和连接句柄仍留在所有者内。
 
 可选的第二个参数 `cancelled: () => Promise<void>` 沿用 C5 的函数引用机制，绑定原生取消 token。
 返回的 Promise 完成或失败（含其语言运行时消失）时，取消原操作，并等待原操作结算后返回。使用者在
@@ -115,17 +124,20 @@ Provider 的 `apply` 提供 `AuxiliaryModelHost`；其 `Deps` 增加 `Arc<ModelH
 ## 5. 流程
 
 ```
- 使用者            AuxiliaryModel（Provider）  ProviderService       ModelHost（Aimux）
+ 使用者            AuxiliaryModel（所有者）    目录/连接             ModelHost（Aimux）
     | complete(model, req)  |                       |                       |
     |---------------------->| 检查请求              |                       |
-    |                       | configuration(Some(model)) ->| 可选？         |
-    |                       |<-- ModelSelection | model_unavailable         |
+    |                       | 解析模型与默认值 ->| 可选？                  |
+    |                       |<-- 模型配置 | model_unavailable              |
     |                       | 构造 ModelRequest（system、messages、max_tokens、无工具）
-    |                       | ProductResolver.resolve -> 连接（凭据留在这里）
+    |                       | 解析连接（凭据留在这里）
     |                       | invoke(request, connection, cancel) --------->|
     |                       |<------------ 块：Text、Usage、MessageStop     |
     |<-- {text, stopReason, usage}                                          |
 ```
+
+Provider 通过 `ProviderService` 解析模型、通过 `ProductResolver` 解析连接；ConfiguredModels
+则从 `--model-config` 文件及其 provider 声明的环境变量解析两者。
 
 失败处理与 Session 请求用同一套策略，放在一个共用函数里
 （`dim-agent-capabilities::model_provider::invoke_with_recovery`，ModelProvider 也用它），
@@ -149,9 +161,9 @@ Provider 的 `apply` 提供 `AuxiliaryModelHost`；其 `Deps` 增加 `Arc<ModelH
 
 ## 7. 安全
 
-- 凭据不离开 Provider：`ResolvedModelConnection` 在 `complete` 内部构造和使用，从不返回或序列化。
+- 凭据不离开所有者：`ResolvedModelConnection` 在 `complete` 内部构造和使用，从不返回或序列化。
   使用者只看到文本、停止原因和用量。
-- 错误消息不含秘密：`failed` 使用现有 `HostError` 的消息，它不包含凭据值；Provider 从不把连接
+- 错误消息不含秘密：`failed` 使用现有 `HostError` 的消息，它不包含凭据值；所有者从不把连接
   格式化进消息。
 - 进程日志：`complete` 记录一条 `tracing` 事件（target 为 `auxiliary.complete`），含 provider id、model id、
   结果、耗时和 token 用量，从不包含请求或回复内容。使用者自行记录自己的结果日志。辅助
@@ -162,24 +174,24 @@ Provider 的 `apply` 提供 `AuxiliaryModelHost`；其 `Deps` 增加 `Arc<ModelH
 | 部件 | 关系 |
 | --- | --- |
 | 默认选择（`provider.select`） | 不变。`complete` 不使用它 |
-| SessionTitle（P4） | 注入 `auxiliaryModel`，调用 `complete({model, request})`；`model` 取其 Settings 来源 `session-title` 中可选的 `model`，否则取前缀中最新 `context/configured` 的模型。没有 Provider 时，必需依赖让此可选行保持 Pending；原生 Session 不依赖该行。SessionTitle 自身的 Ready 决策和实现仍单独处理 |
+| SessionTitle（P4） | Rust 部分（`dim-session-title`）要求 `AuxiliaryModelHost` 并调用 `complete`；`model` 取其 Settings 来源 `session-title` 中可选的 `model`，否则取前缀中最新 `context/configured` 的模型。没有提供该操作的所有者时，必需依赖让该部分保持 Pending；原生 Session 不依赖该行。具名 `auxiliaryModel` HostDispatch 绑定仍供 TypeScript Session 部分使用。SessionTitle 自身的 Ready 决策和实现仍单独处理 |
 | 压缩宿主（F1） | 不使用本服务。实现 `ResolveContextModel`；如何选模型、如何读上下文窗口由 F1 设计 |
 | Collaboration | S4 不带来变化。成员模型 = profile 的模型，否则为默认选择；如果以后需要单独的成员默认值，那是 Collaboration 自己的设置 |
 | Modality | 把每个类别的默认模型保存在自己的 Settings 来源 `modality` 中，并显式传入模型。非对话型连接解析是另一项 Provider 补充，不在 S4 内 |
-| Workflow | `stage.model` > profile 模型 > Agents 默认选择已经覆盖模型选择；Provider 中没有阶段默认值 |
-| `--models` API key 配置（ConfiguredModels，没有 Provider 插件） | 不提供 `auxiliaryModel`；需要它的 SessionTitle 行保持 Pending |
+| Workflow | `stage.model` > profile 模型 > Agents 默认选择已经覆盖模型选择；该操作没有阶段默认值 |
+| `--model-config` 配置（ConfiguredModels，没有 Provider 插件） | 用配置的目录及其 provider 声明的连接提供 `auxiliaryModel`，走同一份共享运行；SessionTitle 的必需依赖在该配置中同样满足 |
 
 ## 9. 规则检查
 
 | 规则 | 回答 |
 | --- | --- |
-| 原则 §3（依赖方向） | Provider（核心）只依赖 Aimux（核心）；使用者依赖 Provider；Provider 不点名使用者。 |
+| 原则 §3（依赖方向） | 每个所有者（核心）只依赖能力代码和 Aimux（核心）；使用者依赖该操作；没有任何所有者点名使用者。 |
 | §4 规则 3（before 回调） | 不使用。 |
 | §4 规则 8（基础设施不变） | 不改 Timeline、Dispatcher、事件格式、rutis 或装配；使用 `ModelHost`、`ProductResolver` 和现有目录。不向 rutis 提需求。 |
 | §4 规则 9（只有需要的事实进 Timeline） | 辅助调用不写事件。 |
-| ADR 002 D2（无接线模块） | 不新增插件；服务放在模型与凭据的所有者中。 |
+| ADR 002 D2（无接线模块） | 不新增插件；共享运行是能力代码，由现有的模型选择所有者提供。 |
 | ADR 002 D3（依赖） | 核心不硬依赖可选插件；SessionTitle（可选）可以依赖本服务。 |
-| ADR 002 D4（配置） | Provider 不新增配置；每个使用者的模型选择是它自己的业务配置。 |
+| ADR 002 D4（配置） | 该操作不新增配置；每个使用者的模型选择是它自己的业务配置。 |
 | ADR 002 D5（语言中立契约） | §4.1 是契约；§4.2 是一种绑定。 |
 
 ## 10. 开放问题
@@ -200,3 +212,6 @@ Provider 的 `apply` 提供 `AuxiliaryModelHost`；其 `Deps` 增加 `Arc<ModelH
    回复字段和抛出的错误码保持不变。非法请求、未知模型不发送 HTTP 请求，调用不写 Session 历史。
    将模型请求停在 HTTP 端点后，关闭调用方会完成取消引用，在 Provider 保持装载时关闭 HTTP 流。
    没有 Provider 时，原生 Session 仍能创建，只有外来命名空间不可用。
+8. model-config 配置用其目录及 provider 声明的连接提供并运行该操作：调用把请求发往配置的模型，
+   `maxTokens` 截到模型的 `max_output_tokens`；未声明的模型返回 `model_unavailable` 且不发请求；
+   Session 部分和 Session 的自动标题在该配置中都能到达它。

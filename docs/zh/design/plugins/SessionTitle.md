@@ -10,7 +10,7 @@ SessionTitle 是一个 Session 插件，为交互式 leader Session 提供经 Se
 `dimcode` 产品 profile 经 AgentBuilder 安装插件；App Server 仅提供通用 CLI profile 回调和既有所有者服务。
 生成契约由独立插件 crate 公开，DimOAuth 从该 crate 引用契约。进程行通过既有部件注册表注册 Settings 来源和
 Session 部分，每个 Session 挂载一份副本。其可用性不依赖 `--defaults`、打包的 TypeScript 包、
-Node/Python 安装或语言运行时获取。辅助调用和标题元数据仍分别归 Provider 与存储所有者管理。
+Node/Python 安装或语言运行时获取。辅助调用和标题元数据仍分别归该配置的模型选择所有者与存储所有者管理。
 
 内置插件保留 `session-title` 标识、Settings 文档和元数据格式。由 PluginManager 的来源选择
 负责原默认包向内置实现的过渡，保留显式禁用和已安装替代实现的选择。
@@ -30,7 +30,7 @@ App Server 测试不依赖 SessionTitle，仅覆盖通用宿主行为。验证�
 | 历史 | 使用已实现的进程 sessions.history，不读取私有 TimelineTree，也不使用分支（C5）绑定。 |
 | 配置 | 沿用具名 Settings 和原行来源声明，仅用户作用域（A.3/A12）。每次决定读取 settings.read({source:"session-title",scope:"user"})，直接使用已校验并补默认值的文档。 |
 | 元数据/通知 | S5b #60/#96 定义进程服务 `sessionMetadata`（`read` 与 `setTitle`，都是异步）、它的错误 `conflict`/`not_found`/`storage`、交接点，以及 v3 列表字段 `title`/`titleSource`/`titleRevision`（[标题元数据](../appserver/session-title-metadata.md)）；A.2 复述该合同。每次提交后 SessionStore 调用 `session_broadcast::notify`，Rpc 把记录以 `session.notice {sessionId, source, kind, data}` 转发给已附加的 v3 客户端（C6 #49/#85，[Session 广播通知](../appserver/session-notices.md)）。名称、模式、交接和错误遵循 S5b。 |
-| 辅助请求 | Provider 已实现 AuxiliaryModelHost 及具名 `auxiliaryModel.complete` HostDispatch/catalog 绑定。通过普通 C4 依赖注入；凭据仍归 Provider（[S4 §4.3](../appserver/auxiliary-model.md#43-具名绑定)）。 |
+| 辅助请求 | 该配置中模型选择的所有者已实现 AuxiliaryModelHost 及具名 `auxiliaryModel.complete` HostDispatch/catalog 绑定：产品配置里是 Provider，model-config 配置里是 ConfiguredModels。通过普通 C4 依赖注入；凭据仍归该所有者（[S4 §4.3](../appserver/auxiliary-model.md#43-具名绑定)）。 |
 | 策略 | A1–A12 定义首版实现。附录 D 要求公开流程验收；文档 CI 不表示运行时验收。 |
 
 C7 #50 已确认无需新增机制（#86）。S4 自行持有凭据/连接解析。所需提供者缺失沿用既有 Pending 规则，包括 rename 在内整个 Session 部分
@@ -56,7 +56,7 @@ atLeast 与 through，直接使用原生 HistoryPage/AgentEvent。S2 稳定目�
 
 固定快照止于返回的 T，不承诺恰好止于 N。第一条被采用的操作者输入提供文本；model=null
 时，从该快照最新 ContextConfiguredData.settings 读取 providerId/modelId。没有被采用的
-模型时使用 §3.3 的文本兜底，不改用 Provider 当前默认模型。
+模型时使用 §3.3 的文本兜底，不改用该配置当前默认模型。
 
 setTitle 交接前取消则不写入。交接点就是 setTitle 调用本身：此后由 SessionStore 完成自己的
 原子操作，回复丢失不授权重复或撤销（[S5b §6](../appserver/session-title-metadata.md#6-交接取消与了结)）。不增加回滚或协调机制。
@@ -68,7 +68,7 @@ setTitle 交接前取消则不写入。交接点就是 setTitle 调用本身：�
 ```mermaid
 flowchart LR
   subgraph PROC["进程"]
-    AUX["AuxiliaryModel（Provider）"]
+    AUX["AuxiliaryModel（模型选择所有者）"]
     META["SessionStore 标题元数据"]
     Settings["Settings 来源 session-title"]
     Rpc["Rpc"]
@@ -96,7 +96,7 @@ flowchart LR
 | `session-title` | 进程 | Settings 和部件注册表 | 注册 Settings 来源及 Session 部分 |
 | `SessionTitle` | Session | Session 服务 `sessionIdentity`、`sessionConfig`、`sessionLifecycle` 和 `sessionMethods`；进程 sessions 历史、Settings、标题元数据 `sessionMetadata`（S5b）和必需的 `auxiliaryModel`（提供者缺失使整行 Pending）；按需读取可选的 `sessionTitleGenerator` | 把 session.rename 注册到 sessionMethods |
 
-依赖位于 Session 或外层进程。C4/S2/Settings 已提供观察、前缀读取和配置；S5b 提供标题元数据，C6 提供通知；Provider 提供具名辅助模型操作。插件的行在其 apply 中登记来源。真实提供者重载会取消该行工作（ADR 002 D3），S2 索引重载不会。业务数据更新不重载插件（D4）。
+依赖位于 Session 或外层进程。C4/S2/Settings 已提供观察、前缀读取和配置；S5b 提供标题元数据，C6 提供通知；该配置的模型选择所有者提供具名辅助模型操作。插件的行在其 apply 中登记来源。真实提供者重载会取消该行工作（ADR 002 D3），S2 索引重载不会。业务数据更新不重载插件（D4）。
 
 ## 2. 数据与状态
 
@@ -188,7 +188,7 @@ SessionTitle 拥有分流与降级策略。显式配置的标题模型直接走 
 DimOAuth 自己判断 providerId 是否适用，并拥有专用接口、账号鉴权、刷新和上游错误分类；
 其[运行时契约](../../../../crates/dim-oauth/docs/runtime-contract.md#session-title-generation)定义账号请求。
 SessionTitle 不接触凭据或 issuer，DimOAuth 不写 Session 元数据、不决定降级。
-Provider、AuxiliaryModel、模型执行、Timeline 和 Dispatcher 不增加标题分流策略，也没有额外接线插件。
+模型选择所有者、AuxiliaryModel、模型执行、Timeline 和 Dispatcher 不增加标题分流策略，也没有额外接线插件。
 
 ## 4. 时序与冲突
 
@@ -278,7 +278,7 @@ SessionTitle 使用这些已交付合同。
 
 **#4：无。** 观察沿用 Session 服务和 Session 通道；历史、Settings、`sessionMetadata` 和辅助模型均为进程服务。SessionTitle 不注入分支服务。
 
-**Provider（S4）：具名 `auxiliaryModel` 绑定——已交付。** Provider 将既有的 `AuxiliaryModelHost` 操作绑定为可供 C4 注入的服务（[S4 §4.3](../appserver/auxiliary-model.md#43-具名绑定)）。没有 Provider 时，普通的必需依赖让 SessionTitle 行保持 Pending。不需要 core 新机制。
+**模型选择所有者（S4）：具名 `auxiliaryModel` 绑定。** Provider（产品）与 ConfiguredModels（model-config）将既有的 `AuxiliaryModelHost` 操作绑定为可供 C4 注入的服务（[S4 §4.3](../appserver/auxiliary-model.md#43-具名绑定)）。配置中没有这样的所有者时，普通的必需依赖让 SessionTitle 行保持 Pending。不需要 core 新机制。
 
 **DimOAuth：**实现 §3.3 定义的可选生成服务；账号请求和结算由其运行时契约定义，不需要修改 Provider 或 Core 机制。
 
@@ -301,7 +301,7 @@ SessionTitle 使用这些已交付合同。
 | SessionStore `sessionMetadata`（S5b） | `read` | 异步 | `{sessionId}` | `{revision, title: {text, source: "auto" \| "manual"} \| null}`；错误 `not_found`、`storage`（[S5b §4](../appserver/session-title-metadata.md#4-操作)） |
 | SessionStore `sessionMetadata`（S5b） | `setTitle` | 异步 | `{sessionId, expectedRevision, title: {text, source} \| null}` | `{revision}`；错误 `conflict`、`not_found`、`storage`。调用即交接；提交后 SessionStore 发出标题通知 |
 | SessionStore（S5b） | 标题通知 | Session 广播通知（C6 记录，§9） | — | 在该 Session 的广播频道上发出 `{source: "SessionStore", kind: "title", data: {title, titleSource, titleRevision}}`；没有序号，不重放 |
-| Provider `AuxiliaryModel` | `complete` | 异步 | `{model: {providerId, modelId}, request: {system, messages: [{role: "user", content: 文本}]}}`，可选 `cancelled: () => Promise<void>`（[S4 §4.3](../appserver/auxiliary-model.md#43-具名绑定)） | `{text, stopReason, usage}`；以既有错误码/message 拒绝。超时或 closing 时完成取消引用，并等待原调用结算 |
+| `AuxiliaryModel`（该配置的模型选择所有者） | `complete` | 异步 | `{model: {providerId, modelId}, request: {system, messages: [{role: "user", content: 文本}]}}`，可选 `cancelled: () => Promise<void>`（[S4 §4.3](../appserver/auxiliary-model.md#43-具名绑定)） | `{text, stopReason, usage}`；以既有错误码/message 拒绝。超时或 closing 时完成取消引用，并等待原调用结算 |
 
 ### A.3 配置
 
@@ -312,7 +312,7 @@ Settings 来源 `session-title`，一个文档：`enabled: bool` 默认 `true`�
 原生后端使用既有 Settings 记录 `user/session-title`，不新增第二份文件或存储
 （[Settings §3–4](../appserver/settings-service.md#3-数据与状态)）。Schema 拒绝未知成员；`model`
 可以为 null，否则必须是含非空 `providerId`、`modelId` 字符串且无其他成员的对象。文档缺失时
-由 Settings 边界补齐上述默认值。此来源不保存凭据或 Provider 连接配置。
+由 Settings 边界补齐上述默认值。此来源不保存凭据或模型连接配置。
 
 摘录和标题的字符限制按 Unicode 码点计算。辅助请求不传 `maxOutputTokens`，使用 S4
 既有的模型上限；30 s 预算仍由 SessionTitle 持有。
@@ -349,7 +349,7 @@ Settings 来源 `session-title`，一个文档：`enabled: bool` 默认 `true`�
 | 成员、阶段、定时或 ACP Session | `SessionConfig` | 从不生成 | SessionTitle |
 | 生成期间关闭 Session | — | 存储交接前取消；已接纳修改仍由 SessionStore 持有 | Lifecycle / SessionStore |
 | Session fork | 不复制元数据（A7） | fork 无标题；`main` 上下一条被采用的操作者输入触发生成，取其前缀中第一条被采用的操作者输入 | SessionTitle |
-| SessionTitle、Provider、SessionStore 或 Settings 重载 | — | 交接前取消生成，已接纳存储修改遵循 S5b 结算（D3） | Lifecycle / SessionStore |
+| SessionTitle、模型选择所有者、SessionStore 或 Settings 重载 | — | 交接前取消生成，已接纳存储修改遵循 S5b 结算（D3） | Lifecycle / SessionStore |
 | 模型或策略不可用 | — | 输入文本兜底（§3.3） | SessionTitle |
 | 资源节点离线 | — | 无影响 | — |
 | 客户端断开 | — | 无影响 | — |
@@ -427,7 +427,7 @@ fn set_title(&self, session_id: &str, expected_revision: u64, title: Option<Titl
     -> impl Future<Output = Result<u64, MetadataError>>; // Conflict | NotFound | Storage; the call is the handover
 pub struct SessionMetadata { pub revision: u64, pub title: Option<Title> }
 pub struct Title { pub text: String, pub source: TitleSource }   // Auto | Manual
-// Provider AuxiliaryModel
+// AuxiliaryModel（该配置的模型选择所有者）
 async fn complete(&self, model: ModelId, request: AuxiliaryRequest,
     cancel: CancellationToken) -> Result<AuxiliaryReply, AuxiliaryError>;
 ```

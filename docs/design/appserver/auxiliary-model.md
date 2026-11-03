@@ -6,14 +6,20 @@ Overview: [Appendix B.2 Provider row](../overview.md#b2-app-server-process-plugi
 
 ## 1. Summary
 
-Provider adds one service, `auxiliaryModel`, with one async method
-`complete(model, request)`. It makes a single non-streaming model call outside any Session:
-it resolves the connection for the given model inside Provider, calls the existing
-`ModelHost`, and returns the text. It writes no Timeline, and credentials never leave
-Provider.
+The `auxiliaryModel` service has one async method `complete(model, request)`. It makes a
+single non-streaming model call outside any Session: the owner of model selection resolves
+the connection for the given model, calls the existing `ModelHost`, and returns the text.
+It writes no Timeline, and credentials never leave that owner.
+
+The rule that decides who provides it: the owner of model selection provides the
+operation. In the product profile that is Provider, with its catalog and credentials. In
+the model-config profile it is ConfiguredModels (the `--model-config` file), with the
+configured catalog and the connection its `apiKeyEnv` names. The binding and the run are
+shared capability code (`dim_agent_capabilities::auxiliary_model`), so both owners use one
+implementation. The mock profile selects no model, so it does not provide the operation.
 
 The caller decides which model to use and keeps that choice in its own business
-configuration. Provider holds no per-caller policy: it has no purpose keys, no purpose
+configuration. The operation holds no per-caller policy: no purpose keys, no purpose
 storage, and no new management methods.
 
 The S4 done criterion has one consumer: SessionTitle (P4), which needs a call outside its
@@ -41,21 +47,19 @@ more than the need:
 ```
  Process scope
  +----------------------------------------------------------------+
- |  Provider (existing plugin)                                    |
- |   ProviderService: catalogs, default selection (unchanged)     |
- |   ProductResolver: connection and credentials (unchanged)      |
- |   AuxiliaryModel --uses--> ProviderService, ProductResolver,   |
- |                            ModelHost                           |
- +-------------------------^--------------------^-----------------+
-       Aimux: ModelHost ---'                    |
+ |  Provider (product) or ConfiguredModels (model-config)         |
+ |   catalog, credentials and default selection (unchanged)       |
+ |   AuxiliaryModel --uses--> shared auxiliary_model::complete,   |
+ |                            Aimux ModelHost                     |
+ +----------------------------------------------^-----------------+
                                                 | complete(model, request)
  Session scope                                  |
-   SessionTitle (Deps: auxiliaryModel) ---------'
+   SessionTitle (Deps: AuxiliaryModelHost) -----'
      model = its Settings source `session-title`.model, else the Session's model
 ```
 
-Dependencies point to the core: Provider gains a hard dependency on Aimux's `ModelHost`
-(both core, always together in the product profile). Provider names no consumer.
+Dependencies point to the core: both owners gain a hard dependency on Aimux's `ModelHost`
+and use the shared run in `dim-agent-capabilities`; neither names a consumer.
 
 ## 3. Data and state
 
@@ -66,7 +70,9 @@ existing task tracking.
 
 ### 4.1 Language-neutral (ADR 002 D5)
 
-`auxiliaryModel`, process scope, no instance key, provided by Provider.
+`auxiliaryModel`, process scope, no instance key, provided by the profile's owner of
+model selection (Provider in the product profile, ConfiguredModels in the model-config
+profile).
 
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
@@ -105,13 +111,17 @@ pub trait CompleteAuxiliary: Send + Sync + 'static {
 pub struct AuxiliaryModelHost(pub Arc<dyn CompleteAuxiliary>);
 ```
 
-Provider's `apply` provides `AuxiliaryModelHost`; its `Deps` gain `Arc<ModelHost>`.
+`auxiliary_model::provide` binds an owner's operation as `AuxiliaryModelHost` and as the
+named binding. Each owner's `apply` calls it with its own `CompleteAuxiliary`
+implementation; its `Deps` gain `Arc<ModelHost>`.
 
 ### 4.3 Named binding
 
-The same Provider-owned operation implements `HostDispatch` at `host_key("auxiliaryModel")`;
-the process catalog registers that shared name. An ordinary C4 row injects `auxiliaryModel`
-and calls `complete({model, request})`. The SDK declares it as `AuxiliaryModel` in
+The same owner-provided operation implements `HostDispatch` at
+`host_key("auxiliaryModel")` through that shared `provide`; the process catalog registers
+that shared name. An ordinary C4 row injects `auxiliaryModel` and calls
+`complete({model, request})`; the Rust SessionTitle part injects `AuxiliaryModelHost` instead,
+and both reach the same owner operation. The SDK declares it as `AuxiliaryModel` in
 [`dimcode/plugin`](../../../npm/plugin.d.ts). This is the existing operation's binding,
 not another plugin or a second model runner.
 
@@ -120,8 +130,10 @@ at this boundary; unknown fields, invalid message data and invalid argument shap
 with `invalid_request`. Optional `system` and `maxOutputTokens` may be absent or null.
 The reply uses the native `AuxiliaryReply` serialization, with camelCase fields and snake_case
 stop reasons; absent usage is omitted. Errors reject with an Error carrying the existing
-`code` and `message`, without a new reply envelope. Calls use Provider's existing admission,
-task tracking and cleanup; credentials and connection handles stay there.
+`code` and `message`, without a new reply envelope. Provider's calls use its admission,
+task tracking and cleanup; ConfiguredModels lives for the process and has no admission, so
+a call ends with its own result or the caller's cancellation. Credentials and connection
+handles stay with the owner.
 
 An optional second argument, `cancelled: () => Promise<void>`, uses the existing C5 function
 reference mechanism to bind the native cancellation token. Resolving or rejecting the returned
@@ -132,17 +144,21 @@ not cancellation. No new bridge protocol or detached cancellation task is needed
 ## 5. Flow
 
 ```
- Consumer          AuxiliaryModel (Provider)   ProviderService       ModelHost (Aimux)
+ Consumer          AuxiliaryModel (owner)     catalog/connection    ModelHost (Aimux)
     | complete(model, req)  |                       |                       |
     |---------------------->| check request         |                       |
-    |                       | configuration(Some(model)) ->| selectable?    |
-    |                       |<-- ModelSelection | model_unavailable         |
+    |                       | resolve model and defaults ->| selectable?    |
+    |                       |<-- model config | model_unavailable          |
     |                       | build ModelRequest (system, messages, max_tokens, no tools)
-    |                       | ProductResolver.resolve -> connection (credentials stay here)
+    |                       | resolve connection (credentials stay here)    |
     |                       | invoke(request, connection, cancel) --------->|
     |                       |<------------ chunks: Text, Usage, MessageStop |
     |<-- {text, stopReason, usage}                                          |
 ```
+
+Provider resolves the model through `ProviderService` and the connection through
+`ProductResolver`; ConfiguredModels resolves both from the `--model-config` file and the
+environment variable its provider names.
 
 Failures go through the same policy as Session requests, in one shared function
 (`dim-agent-capabilities::model_provider::invoke_with_recovery`, also used by
@@ -168,10 +184,10 @@ written anywhere.
 
 ## 7. Security
 
-- Credentials stay in Provider: `ResolvedModelConnection` is built and used inside
+- Credentials stay in the owner: `ResolvedModelConnection` is built and used inside
   `complete`, never returned or serialized. Consumers see text, stop reason and usage only.
 - Error messages carry no secrets: `failed` uses the existing `HostError` message, which
-  carries no credential values; Provider never formats a connection into a message.
+  carries no credential values; an owner never formats a connection into a message.
 - Process log: `complete` records one `tracing` event, target `auxiliary.complete`, with provider
   id, model id, outcome, duration and token usage, never request or reply content. Consumers
   log their own outcomes. Auxiliary calls are not Session facts and enter no Timeline.
@@ -181,24 +197,24 @@ written anywhere.
 | Part | Relationship |
 | --- | --- |
 | Default selection (`provider.select`) | Unchanged. `complete` does not consult it |
-| SessionTitle (P4) | Injects `auxiliaryModel` and calls `complete({model, request})`; `model` is the optional `model` of its Settings source `session-title`, else the model of the latest `context/configured` in the prefix. Without Provider, its required dependency keeps the optional row Pending; native Sessions do not depend on that row. SessionTitle's own Ready decisions and implementation remain separate |
+| SessionTitle (P4) | The Rust part (`dim-session-title`) requires `AuxiliaryModelHost` and calls `complete`; `model` is the optional `model` of its Settings source `session-title`, else the model of the latest `context/configured` in the prefix. Without an owner that provides the operation, its required dependency keeps the part Pending; native Sessions do not depend on that row. The named `auxiliaryModel` HostDispatch binding stays for TypeScript Session parts. SessionTitle's own Ready decisions and implementation remain separate |
 | Compaction host (F1) | Does not use this service. Implements `ResolveContextModel`; how it picks the model and reads the context window is F1's design |
 | Collaboration | No change from S4. A member's model is its profile's model, else the default selection; a separate member default, if ever wanted, is Collaboration's own setting |
 | Modality | Keeps its default model per category in its own `modality` Settings source and passes the model explicitly. Non-conversational connection resolution is a separate Provider supplement, not S4 |
-| Workflow | `stage.model` > profile model > the Agents default already covers model choice; no stage default in Provider |
-| `--models` API-key profile (ConfiguredModels, no Provider plugin) | Does not provide `auxiliaryModel`; a SessionTitle row requiring it stays Pending |
+| Workflow | `stage.model` > profile model > the Agents default already covers model choice; the operation has no stage default |
+| `--model-config` profile (ConfiguredModels, no Provider plugin) | Provides `auxiliaryModel` from the configured catalog and the connection its provider names, through the same shared run; SessionTitle's required dependency resolves in this profile too |
 
 ## 9. Rule check
 
 | Rule | Answer |
 | --- | --- |
-| Principles §3 (dependency direction) | Provider (core) depends only on Aimux (core); consumers depend on Provider; Provider names no consumer. |
+| Principles §3 (dependency direction) | Each owner (core) depends only on capability code and Aimux (core); consumers depend on the operation; no owner names a consumer. |
 | §4 rule 3 (before callback) | Not used. |
 | §4 rule 8 (infrastructure unchanged) | No change to Timeline, Dispatcher, event format, rutis or assembly; uses `ModelHost`, `ProductResolver` and the existing catalog. No requirement on rutis. |
 | §4 rule 9 (only needed facts in Timeline) | Auxiliary calls write no event. |
-| ADR 002 D2 (no wiring modules) | No new plugin; the service lives in the owner of models and credentials. |
+| ADR 002 D2 (no wiring modules) | No new plugin; the shared run is capability code and the existing model-selection owners provide it. |
 | ADR 002 D3 (dependencies) | No core part hard-depends on an optional plugin; SessionTitle (optional) may depend on this service. |
-| ADR 002 D4 (configuration) | Provider adds no configuration; each consumer's model choice is its own business configuration. |
+| ADR 002 D4 (configuration) | The operation adds no configuration; each consumer's model choice is its own business configuration. |
 | ADR 002 D5 (language-neutral contracts) | §4.1 is the contract; §4.2 is one binding. |
 
 ## 10. Open questions
@@ -225,3 +241,8 @@ takes it as a request parameter. It is decided with the `/settings` design, not 
    a model request held at the HTTP endpoint, closing its caller resolves the cancellation
    reference and closes the HTTP stream while Provider remains loaded. Without Provider,
    native Session creation still succeeds and only the foreign namespace remains unavailable.
+8. The model-config profile provides and runs the operation from its own catalog and the
+   connection its provider names: a call sends the request to the configured model with
+   `maxTokens` clamped to the model's `max_output_tokens`; an undeclared model is
+   `model_unavailable` with no request sent; a Session part and a Session's automatic title
+   both reach it in that profile.

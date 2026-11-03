@@ -109,7 +109,7 @@ R4). This table says what each name Dim defines is for.
 | `sessionPermissions` | process | Agents | yes | Marked `#[rutis::service]` |
 | `sessionMetadata` | process | SessionStore | yes | SessionTitle is the title's one writer |
 | `settings` | process | Settings | yes | Business configuration |
-| `auxiliaryModel` | process | App Server | yes | Auxiliary model requests |
+| `auxiliaryModel` | process | the profile's model-selection owner | yes | Auxiliary model requests |
 | `pluginFiles` | process | host | yes, when the host supplies a root | A process part's own files |
 | `workflowFiles` | process | App Server | yes | Marked `#[rutis::service]` |
 | `collaborationMembers:<kind>` | process | the member provider | designed, not implemented | [ExternalAgent](plugins/ExternalAgent.md); registers with Collaboration when built (rutis usage R6) |

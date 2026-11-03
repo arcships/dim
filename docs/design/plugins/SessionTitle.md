@@ -12,8 +12,8 @@ provides only its generic CLI profile callback and existing owner services. The 
 its public generation contract. DimOAuth imports that contract from this crate. Its process row registers
 the Settings source and the Session part through the existing part registry; every Session
 mounts one copy. Availability does not depend on `--defaults`, a staged TypeScript package,
-Node/Python installation or language-runtime acquisition. Provider and storage remain the
-owners of auxiliary calls and title metadata.
+Node/Python installation or language-runtime acquisition. The owner of model selection in the
+profile and storage remain the owners of auxiliary calls and title metadata.
 
 The shipped plugin retains the `session-title` identity, Settings document and metadata format.
 PluginManager's source selection owns the transition from the former default package to the
@@ -37,7 +37,7 @@ only outcome and duration.
 | History | Use the implemented process sessions.history service, not private TimelineTree reads or branch (C5) bindings. |
 | Configuration | Existing named Settings and row source declaration, user scope only (A.3/A12). Read settings.read({source:"session-title",scope:"user"}) at each decision and use its validated/defaulted document directly. |
 | Metadata/notice | S5b #60/#96 defines the process service `sessionMetadata` (`read` and `setTitle`, both async), its errors `conflict`/`not_found`/`storage`, the handover and the v3 list fields `title`/`titleSource`/`titleRevision` ([title metadata](../appserver/session-title-metadata.md)); A.2 restates that contract. After each commit SessionStore calls `session_broadcast::notify`, and Rpc forwards the record to attached v3 clients as `session.notice {sessionId, source, kind, data}` (C6 #49/#85, [Session broadcast notices](../appserver/session-notices.md)). Names, modes, handover and errors follow S5b. |
-| Auxiliary request | Provider implements AuxiliaryModelHost and its named `auxiliaryModel.complete` HostDispatch/catalog binding. Inject it through ordinary C4 dependencies; credentials stay with Provider ([S4 §4.3](../appserver/auxiliary-model.md#43-named-binding)). |
+| Auxiliary request | The profile's model-selection owner implements AuxiliaryModelHost and its named `auxiliaryModel.complete` HostDispatch/catalog binding: Provider in the product profile, ConfiguredModels in the model-config profile. Inject it through ordinary C4 dependencies; credentials stay with that owner ([S4 §4.3](../appserver/auxiliary-model.md#43-named-binding)). |
 | Policies | A1–A12 define the first implementation. Appendix D requires public-flow acceptance; documentation CI alone is not runtime acceptance. |
 
 C7 #50 is already unnecessary (#86). S4 owns its own credential/connection resolution. Missing
@@ -69,7 +69,7 @@ availability under the existing dependency rules, not the Session's execution ca
 
 The fixed snapshot ends at returned T, not necessarily at N. Its first adopted operator input
 supplies text. With model=null, the latest ContextConfiguredData.settings in that snapshot supplies
-providerId/modelId; without an adopted model, generation uses the excerpt fallback in §3.3 instead of Provider's current default.
+providerId/modelId; without an adopted model, generation uses the excerpt fallback in §3.3 instead of the profile's current default.
 
 Cancellation before setTitle handover stops work without writing. The handover is the setTitle call
 itself: from then on SessionStore settles its own atomic operation, and a lost reply does not authorize
@@ -83,7 +83,7 @@ idle unload follows the same cancellation and store-handover rules.
 ```mermaid
 flowchart LR
   subgraph PROC["Process"]
-    AUX["AuxiliaryModel (Provider)"]
+    AUX["AuxiliaryModel (model-selection owner)"]
     META["SessionStore title metadata"]
     Settings["Settings source session-title"]
     Rpc["Rpc"]
@@ -110,9 +110,9 @@ flowchart LR
 | Part | Scope | Depends on | Provides |
 | --- | --- | --- | --- |
 | `session-title` | Process | Settings and part registry | Registers the Settings source and Session part |
-| `SessionTitle` | Session | Session services `sessionIdentity`, `sessionConfig`, `sessionLifecycle` and `sessionMethods`; process sessions history, Settings, title metadata `sessionMetadata` (S5b) and required `auxiliaryModel` (absent providers keep the row Pending); optional `sessionTitleGenerator` read at use | Registers session.rename with sessionMethods |
+| `SessionTitle` | Session | Session services `sessionIdentity`, `sessionConfig`, `sessionLifecycle` and `sessionMethods`; process sessions history, Settings, title metadata `sessionMetadata` (S5b) and required `auxiliaryModel` (a profile without an owner of model selection keeps the row Pending); optional `sessionTitleGenerator` read at use | Registers session.rename with sessionMethods |
 
-Dependencies stay in the Session or enclosing process. C4/S2/Settings supply existing observation, prefix reads and configuration; S5b supplies title metadata and C6 the notices; Provider supplies the named auxiliary operation. The plugin's row registers its source in its `apply`. Real provider reloads cancel the row's work (ADR 002 D3); S2 index reload does not. Business data changes never reload the plugin (D4).
+Dependencies stay in the Session or enclosing process. C4/S2/Settings supply existing observation, prefix reads and configuration; S5b supplies title metadata and C6 the notices; the profile's model-selection owner supplies the named auxiliary operation. The plugin's row registers its source in its `apply`. Real provider reloads cancel the row's work (ADR 002 D3); S2 index reload does not. Business data changes never reload the plugin (D4).
 
 ## 2. Data and state
 
@@ -216,8 +216,8 @@ the fallback write. Whitespace-only text has no title and is treated as no text.
 
 DimOAuth implements this optional service for its own provider; its endpoint, authentication,
 refresh and rejection classification belong to its [runtime contract](../../../crates/dim-oauth/docs/runtime-contract.md).
-SessionTitle receives neither credentials nor an issuer. Provider, AuxiliaryModel, model execution,
-Timeline and Dispatcher have no title routing policy. No additional registry or wiring plugin is used.
+SessionTitle receives neither credentials nor an issuer. The model-selection owner, AuxiliaryModel,
+model execution, Timeline and Dispatcher have no title routing policy. No additional registry or wiring plugin is used.
 
 ## 4. Timing and conflicts
 
@@ -307,7 +307,7 @@ post-commit title notices. SessionTitle consumes these delivered contracts.
 
 **#4: None.** Observation uses the Session services and the Session channel; history, Settings, `sessionMetadata` and the auxiliary model are process services. SessionTitle injects no branch service.
 
-**Provider (S4): the named `auxiliaryModel` binding — delivered.** Provider binds its existing `AuxiliaryModelHost` operation for C4 injection ([S4 §4.3](../appserver/auxiliary-model.md#43-named-binding)). An absent Provider keeps SessionTitle's row Pending through its ordinary required dependency. No core mechanism is needed.
+**The model-selection owner (S4): the named `auxiliaryModel` binding.** Provider (product) and ConfiguredModels (model-config) bind their existing `AuxiliaryModelHost` operation for C4 injection ([S4 §4.3](../appserver/auxiliary-model.md#43-named-binding)). A profile without such an owner keeps SessionTitle's row Pending through its ordinary required dependency. No core mechanism is needed.
 
 **DimOAuth:** implement the optional generation service defined in §3.3; account requests and settlement remain in its runtime contract. No Provider or Core mechanism change is required.
 
@@ -330,7 +330,7 @@ Registered with `sessionMethods` (Session, namespace `session.rename`) with one 
 | SessionStore `sessionMetadata` (S5b) | `read` | async | `{sessionId}` | `{revision, title: {text, source: "auto" \| "manual"} \| null}`; errors `not_found`, `storage` ([S5b §4](../appserver/session-title-metadata.md#4-operations)) |
 | SessionStore `sessionMetadata` (S5b) | `setTitle` | async | `{sessionId, expectedRevision, title: {text, source} \| null}` | `{revision}`; errors `conflict`, `not_found`, `storage`. The call is the handover; after a commit SessionStore emits the title notice |
 | SessionStore (S5b) | title notice | Session broadcast notice (C6 record, §9) | — | `{source: "SessionStore", kind: "title", data: {title, titleSource, titleRevision}}` on the Session's broadcast channel; no sequence number, not replayed |
-| Provider `AuxiliaryModel` | `complete` | async | `{model: {providerId, modelId}, request: {system, messages: [{role: "user", content: text}]}}`, optional `cancelled: () => Promise<void>` ([S4 §4.3](../appserver/auxiliary-model.md#43-named-binding)) | `{text, stopReason, usage}`; rejects with the existing error code/message. Resolve the cancellation reference on timeout or closing and await the original call's settlement |
+| `AuxiliaryModel` (the profile's model-selection owner) | `complete` | async | `{model: {providerId, modelId}, request: {system, messages: [{role: "user", content: text}]}}`, optional `cancelled: () => Promise<void>` ([S4 §4.3](../appserver/auxiliary-model.md#43-named-binding)) | `{text, stopReason, usage}`; rejects with the existing error code/message. Resolve the cancellation reference on timeout or closing and await the original call's settlement |
 
 ### A.3 Configuration
 
@@ -343,7 +343,7 @@ profile uses the existing Settings row `user/session-title`, not a second file o
 ([Settings §3–4](../appserver/settings-service.md#3-data-and-state)). The schema rejects unknown
 members; `model` is either null or an object requiring nonempty `providerId` and `modelId` strings
 and no other members. Missing documents receive the stated defaults at the Settings boundary.
-No credentials or Provider connection configuration belong in this source.
+No credentials or model-connection configuration belong in this source.
 
 Character limits for the excerpt and titles count Unicode code points. The auxiliary request
 omits `maxOutputTokens`, using S4's existing model limit; the 30 s budget remains SessionTitle's.
@@ -380,7 +380,7 @@ omits `maxOutputTokens`, using S4's existing model limit; the 30 s budget remain
 | Member, stage, scheduled or ACP Session | `SessionConfig` | Never generated | SessionTitle |
 | Session close during generation | — | Cancel before store handover; an admitted mutation remains owned by SessionStore | Lifecycle / SessionStore |
 | Session fork | metadata not copied (A7) | Fork untitled; the next adopted operator input on `main` triggers generation from the first adopted operator input in its prefix | SessionTitle |
-| SessionTitle, Provider, SessionStore or Settings reload | — | Before handover, cancel generation; an admitted store mutation follows S5b settlement (D3) | Lifecycle / SessionStore |
+| SessionTitle, the model-selection owner, SessionStore or Settings reload | — | Before handover, cancel generation; an admitted store mutation follows S5b settlement (D3) | Lifecycle / SessionStore |
 | Model or policy unavailable | — | Failure counted; after 3 no further attempts until reload (A5) | SessionTitle |
 | Resource node offline | — | No effect | — |
 | Client detach | — | No effect | — |
@@ -460,7 +460,7 @@ fn set_title(&self, session_id: &str, expected_revision: u64, title: Option<Titl
     -> impl Future<Output = Result<u64, MetadataError>>; // Conflict | NotFound | Storage; the call is the handover
 pub struct SessionMetadata { pub revision: u64, pub title: Option<Title> }
 pub struct Title { pub text: String, pub source: TitleSource }   // Auto | Manual
-// Provider AuxiliaryModel
+// AuxiliaryModel (the profile's model-selection owner)
 async fn complete(&self, model: ModelId, request: AuxiliaryRequest,
     cancel: CancellationToken) -> Result<AuxiliaryReply, AuxiliaryError>;
 ```

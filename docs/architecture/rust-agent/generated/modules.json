@@ -151,6 +151,13 @@
       "unexpandedMacros": []
     },
     {
+      "id": "dim_agent_aimux::auxiliary",
+      "crate": "dim_agent_aimux",
+      "parent": "dim_agent_aimux",
+      "file": "crates/dim-agent-aimux/src/auxiliary.rs",
+      "unexpandedMacros": []
+    },
+    {
       "id": "dim_agent_aimux::config",
       "crate": "dim_agent_aimux",
       "parent": "dim_agent_aimux",
@@ -6039,6 +6046,13 @@
     },
     {
       "from": "dim_agent_aimux",
+      "to": "dim_agent_aimux::auxiliary",
+      "references": [
+        "mod auxiliary"
+      ]
+    },
+    {
+      "from": "dim_agent_aimux",
       "to": "dim_agent_aimux::config",
       "references": [
         "mod config"
@@ -6112,6 +6126,54 @@
       "to": "dim_agent_runtime::parts",
       "references": [
         "path dim_agent_runtime::Feature::new"
+      ]
+    },
+    {
+      "from": "dim_agent_aimux::auxiliary",
+      "to": "dim_agent_aimux::models",
+      "references": [
+        "path AimuxModels",
+        "use crate::AimuxModels"
+      ]
+    },
+    {
+      "from": "dim_agent_aimux::auxiliary",
+      "to": "dim_agent_capabilities::auxiliary_model",
+      "references": [
+        "path AuxiliaryTarget",
+        "path auxiliary_model::check",
+        "path auxiliary_model::complete",
+        "path auxiliary_model::record",
+        "use dim_agent_capabilities::auxiliary_model",
+        "use dim_agent_capabilities::auxiliary_model::AuxiliaryTarget"
+      ]
+    },
+    {
+      "from": "dim_agent_aimux::auxiliary",
+      "to": "dim_agent_capabilities::host",
+      "references": [
+        "path AuxiliaryError",
+        "path AuxiliaryErrorCode::ModelUnavailable",
+        "path AuxiliaryReply",
+        "path AuxiliaryRequest",
+        "path CompleteAuxiliary",
+        "path ModelHost",
+        "path ResolveModelConnection",
+        "use dim_agent_capabilities::host::AuxiliaryError",
+        "use dim_agent_capabilities::host::AuxiliaryErrorCode",
+        "use dim_agent_capabilities::host::AuxiliaryReply",
+        "use dim_agent_capabilities::host::AuxiliaryRequest",
+        "use dim_agent_capabilities::host::CompleteAuxiliary",
+        "use dim_agent_capabilities::host::ModelHost",
+        "use dim_agent_capabilities::host::ResolveModelConnection"
+      ]
+    },
+    {
+      "from": "dim_agent_aimux::auxiliary",
+      "to": "dim_agent_types::profile",
+      "references": [
+        "path ModelId",
+        "use dim_agent_types::ModelId"
       ]
     },
     {
@@ -6257,6 +6319,13 @@
     },
     {
       "from": "dim_agent_aimux::plugin",
+      "to": "dim_agent_aimux::auxiliary",
+      "references": [
+        "path crate::auxiliary::ConfiguredAuxiliary"
+      ]
+    },
+    {
+      "from": "dim_agent_aimux::plugin",
       "to": "dim_agent_aimux::driver",
       "references": [
         "path AimuxDriver::new",
@@ -6269,6 +6338,13 @@
       "references": [
         "path AimuxModels",
         "use crate::AimuxModels"
+      ]
+    },
+    {
+      "from": "dim_agent_aimux::plugin",
+      "to": "dim_agent_capabilities::auxiliary_model",
+      "references": [
+        "path dim_agent_capabilities::auxiliary_model::provide"
       ]
     },
     {

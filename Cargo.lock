@@ -1384,6 +1384,7 @@ name = "dim-session-title"
 version = "0.1.0-alpha.8"
 dependencies = [
  "axum",
+ "dim-agent-aimux",
  "dim-agent-capabilities",
  "dim-agent-runtime",
  "dim-agent-types",

@@ -237,6 +237,10 @@
   },
   {
     "from": "dim-session-title",
+    "to": "dim-agent-aimux"
+  },
+  {
+    "from": "dim-session-title",
     "to": "dim-app-server"
   },
   {
