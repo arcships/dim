@@ -427,15 +427,23 @@ async fn product_compaction_runs_automatically_on_request_and_settles_after_a_cr
             }
         }
         assert!(held.is_some(), "no automatic compaction was held");
+        // The held automatic compaction is the latest start without a
+        // result: depending on the window, a request can cross the
+        // threshold or go straight to the provider's output budget, and
+        // both are automatic.
         let mut observer = connect(&server).await;
         let running = loop {
-            let start = history(&mut observer, &sid)
-                .await
-                .into_iter()
+            let events = history(&mut observer, &sid).await;
+            let start = events
+                .iter()
                 .rev()
                 .find(|event| is(event, "context/compaction-start"))
-                .unwrap();
-            if start["data"]["trigger"] == "threshold" {
+                .unwrap()
+                .clone();
+            let settled = events.iter().any(|event| {
+                is(event, "context/compaction") && event["data"]["start"] == start["sequence"]
+            });
+            if !settled {
                 break start;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -645,8 +653,32 @@ async fn summary_reasoning_comes_from_factory_configuration() {
                 )
                 .await,
         );
-        turn(&mut client, &sid, &big(0, 600.0)).await;
-        turn(&mut client, &sid, &big(1, 600.0)).await;
+        let usage = client
+            .rpc("session.context.usage", json!({"sessionId":sid,"branchId":"main"}))
+            .await;
+        assert_ok(&usage);
+        let threshold = usage["result"]["thresholdTokens"].as_f64().unwrap();
+        let overhead = usage["result"]["estimatedInputTokens"].as_f64().unwrap();
+        // Two turns of a fifth of the remaining budget: the estimate after
+        // the second stays more than a quarter of that budget below the
+        // threshold, so the window and the built-in instructions do not
+        // decide the compaction below, while the first turn still leaves
+        // most of the window free.
+        let size = (threshold - overhead) / 5.;
+        assert!(size > 0., "the fixed request exceeds the threshold: {usage}");
+        for index in 0..2 {
+            turn(&mut client, &sid, &big(index, size)).await;
+            let after = client
+                .rpc("session.context.usage", json!({"sessionId":sid,"branchId":"main"}))
+                .await;
+            assert_ok(&after);
+            let estimate = after["result"]["estimatedInputTokens"].as_f64().unwrap();
+            assert!(
+                estimate < threshold,
+                "the sized turn crosses the threshold: {}",
+                after["result"]
+            );
+        }
         let reply = client
             .rpc("session.context.compact", json!({"sessionId":sid,"branchId":"main"}))
             .await;

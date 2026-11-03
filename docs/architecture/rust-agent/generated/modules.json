@@ -11831,6 +11831,8 @@
       "from": "dim_agent_capabilities::skills::session",
       "to": "dim_agent_capabilities::context_block",
       "references": [
+        "path crate::context_block::attr",
+        "path crate::context_block::element",
         "path crate::context_block::text"
       ]
     },
@@ -11846,6 +11848,23 @@
         "use crate::host::HostFuture",
         "use crate::host::LoadPrompt",
         "use crate::host::ToolExecutionContext"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::skills::session",
+      "to": "dim_agent_capabilities::input_queue",
+      "references": [
+        "path CheckSubmission",
+        "path SubmitCheckReply",
+        "path SubmitCheckReply::Proceed",
+        "path SubmitCheckRequest",
+        "path SubmitChecks",
+        "path SubmitEntry::Branch",
+        "use crate::input_queue::CheckSubmission",
+        "use crate::input_queue::SubmitCheckReply",
+        "use crate::input_queue::SubmitCheckRequest",
+        "use crate::input_queue::SubmitChecks",
+        "use crate::input_queue::SubmitEntry"
       ]
     },
     {
@@ -11870,11 +11889,13 @@
       "from": "dim_agent_capabilities::skills::session",
       "to": "dim_agent_capabilities::skills",
       "references": [
+        "path SkillDefinition",
         "path SkillSummary",
         "path SkillView",
         "path SkillsError",
         "path super::INSTRUCTIONS",
         "path super::SkillsConfig",
+        "use super::SkillDefinition",
         "use super::SkillSummary",
         "use super::SkillView",
         "use super::SkillsError"
@@ -11963,6 +11984,8 @@
       "from": "dim_agent_capabilities::skills::session",
       "to": "dim_agent_types::content",
       "references": [
+        "path ContentBlock",
+        "path ContentBlock::Text",
         "path content"
       ]
     },
@@ -38295,6 +38318,10 @@
     {
       "module": "dim_agent_capabilities::skills::catalog",
       "path": "Clone::clone"
+    },
+    {
+      "module": "dim_agent_capabilities::skills::session",
+      "path": "char::is_whitespace"
     },
     {
       "module": "dim_agent_capabilities::workspace_tools::files",

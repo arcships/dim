@@ -55,7 +55,7 @@ covers the table and the Rpc entries.
 | 作用域 | Session |
 | 注入 | `S:SessionMethods`、`S:TreeCommands` |
 | 提供 | `S:SubmitChecks` |
-| 被注入于 | `HooksSession` |
+| 被注入于 | `HooksSession`、`Skills` |
 <!-- /generated -->
 
 ## InputQueue

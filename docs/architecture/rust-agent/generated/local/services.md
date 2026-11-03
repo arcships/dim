@@ -164,6 +164,7 @@ flowchart LR
   p32 -->|"dim_agent_runtime::assembly::TimelineFactory@session"| p49
   p32 -->|"dim_agent_runtime::config::SessionIdentity@session"| p49
   p32 -->|"dyn dim_agent_runtime::timeline_store::TimelineStore@session"| p49
+  p38 -->|"dim_agent_capabilities::input_queue::SubmitChecks@session"| p48
   p41 -->|"dim_agent_capabilities::prompt_registry::PromptRegistry@session"| p48
   p32 -->|"dim_agent_capabilities::skills::SkillsConfig@session"| p48
   p27 -->|"dim_agent_capabilities::skills::catalog::SkillsCatalog"| p48

@@ -126,7 +126,7 @@ the instructions are mixed.
 
 | Text | Class and sentences |
 | --- | --- |
-| `dim/skills/instructions`, in the system prefix | Protocol: "A skill is a local instruction bundle stored in a SKILL.md file." states what a skill is, "Discovery: The latest `<dim-state source="dim/skills/list">` lists the skills available in this session, each with a name and, when space allows, a description." names the state source the list arrives in, "A `$skill: name` marker names the exact skill to load." names a marker, and "Use `skill({ "skill_name": "<name>" })` to load the full SKILL.md instructions." states the call shape. Policy: the trigger rules, loading, multiple-match, missing-or-blocked, context-hygiene and safety guidance, and "Use the `skill` tool to load the full instructions before applying a skill." |
+| `dim/skills/instructions`, in the system prefix | Protocol: "A skill is a local instruction bundle stored in a SKILL.md file." states what a skill is, "Discovery: The latest `<dim-state source="dim/skills/list">` lists the skills available in this session, each with a name and, when space allows, a description." names the state source the list arrives in, "A `$skill: name` marker names the exact skill to load." names a marker, "Use `skill({ "skill_name": "<name>" })` to load the full SKILL.md instructions." states the call shape, and "A `$skill: name` marker followed in the same message by a `<dim-skill name="name">` block means that skill is already loaded: follow the block and do not call `skill` for it." states which path loaded it. Policy: the trigger rules, loading, multiple-match, missing-or-blocked, context-hygiene and safety guidance, and "Use the `skill` tool to load the full instructions before applying a skill." |
 | `dim/skills/list`, as a `<dim-state>` block | Protocol: the format — one `- <name>: <description>` or `- <name>` line per enabled skill, names listed always and descriptions added cheapest first within the character budget, escaped — and the source name the block carries. The names and descriptions are the skills' own data |
 
 The list arrives in a `<dim-state>` block, so its guide entry is Prompt's
@@ -154,6 +154,7 @@ protocol, and the loaded body is the skill author's own text.
 | `S:SkillsConfig` | The factory configuration of this plugin, registered and provided by `skills::install_with_config`; its `instructions` text replaces the built-in skill instructions when set, and a profile that registers the parts without the install declares and reads none. |
 | `S:PromptRegistry` | Register the list and instructions sources, until this part unloads. |
 | `S:ToolRegistry` | Register the `skill` tool, until this part unloads. |
+| `S:SubmitChecks` | Register the check `skills` with the Session's submit checks, until this part unloads: `$skill: <name>` references in operator input load those Skills with the same input ([Skills §9](../../../design/plugins/Skills.md#9-references-load-with-the-operators-input)). |
 
 ### Content instances
 
@@ -218,12 +219,18 @@ loading uses the current view rather than an old model-visible list.
 `catalog_changes_during_assembly_wait_for_session_publication`,
 `a_closing_session_creates_no_content_instances`,
 `unavailable_settings_isolate_skills_and_refresh_recovers_existing_sessions`.
+The `skills` check is covered by `crates/dim-app-server/tests/transport_flow/skill_references.rs`
+(`a_reference_loads_the_skill_with_the_submitted_input`, `a_steer_reference_gets_the_block`,
+`a_branch_prompt_gets_no_block`, `a_disabled_or_unknown_name_adds_nothing`,
+`repeated_references_load_one_block_each_in_first_reference_order`,
+`a_restored_session_keeps_the_block_in_its_recorded_input`) and
+`hooks_flow::a_prompt_submit_hook_precedes_a_referenced_skill`.
 
 <!-- generated:plugin Skills — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `P:SkillsCatalog`、`S:PromptRegistry`、`S:SessionConfig`、`S:SessionLifecycle`、`S:SessionLoader`、`S:SkillsConfig`、`S:ToolRegistry` |
+| 注入 | `P:SkillsCatalog`、`S:PromptRegistry`、`S:SessionConfig`、`S:SessionLifecycle`、`S:SessionLoader`、`S:SkillsConfig`、`S:SubmitChecks`、`S:ToolRegistry` |
 | 提供 | `S:SessionSkills` |
 | 被注入于 | `SkillsBranch` |
 <!-- /generated -->
