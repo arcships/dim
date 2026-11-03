@@ -785,7 +785,7 @@ impl Worker {
                 let (provider, model) = (model.provider_id.clone(), model.model_id.clone());
                 params["model"] = json!({"provider": provider, "modelId": model});
                 if self.model_session.is_some() && self.options.model_config.is_none() {
-                    let cannot_copy = "This daemon cannot copy the adopted Session model. Restart the daemon with a version supporting session.create.modelFromSession, then rebind the temporary connection with DIM_BASE_URL and DIM_API_FORMAT, or select a configured Provider model before starting a new Session";
+                    let cannot_copy = "This daemon cannot copy the adopted Session model. Restart the daemon with a version supporting session.create.modelFromSession, then rebind the temporary connection with DIM_BASE_URL and DIM_API_FORMAT";
                     if !self.client.offers("provider.management") {
                         return Err(cannot_copy.into());
                     }
@@ -797,7 +797,7 @@ impl Worker {
                         .providers
                         .into_iter()
                         .find(|entry| entry.provider_id == provider)
-                        .ok_or(cannot_copy)?;
+                        .ok_or_else(|| format!("{cannot_copy}, or select a configured Provider model before starting a new Session"))?;
                     preferences = configured.preferences.get(&model).cloned();
                 } else {
                     preferences = saved_model_preferences(&mut self.client, &provider, &model).await?;

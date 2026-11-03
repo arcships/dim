@@ -279,6 +279,43 @@ fn wait(mut child: Child) -> Output {
 }
 
 #[test]
+fn empty_management_lists_explain_the_result() {
+    for (area, method, reply, message) in [
+        (
+            "scheduled",
+            "schedule.list",
+            json!({"jobs":[]}),
+            "No job is scheduled.\n",
+        ),
+        (
+            "skills",
+            "skills.catalog",
+            json!({"version":1,"entries":[],"issues":[]}),
+            "No Skill is configured.\n",
+        ),
+        (
+            "hooks",
+            "hooks.catalog",
+            json!({"userRevision":"user:1","projectsRevision":"user:1",
+                "disableAllHooks":false,"sources":[],"hooks":[]}),
+            "No hook is configured.\n",
+        ),
+    ] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&[method]);
+            let request = wire.read(method);
+            wire.reply(&request, reply);
+        });
+        let output = home.command().args([area, "list"]).output().unwrap();
+        daemon.join().unwrap();
+        assert!(output.status.success(), "{area}: {output:?}");
+        assert!(output.stdout.is_empty(), "{area}: {output:?}");
+        assert_eq!(String::from_utf8(output.stderr).unwrap(), message, "{area}");
+    }
+}
+
+#[test]
 fn help_and_version_do_not_create_product_state() {
     let home = Home::new();
     fs::remove_dir_all(home.0.join("rust")).unwrap();
@@ -5053,6 +5090,7 @@ fn tui_at_mentions_pick_files_from_the_working_directory() {
         resolved.join("notes.txt").display(),
         resolved.join("src/main.rs").display()
     );
+    let (submitted, received) = std::sync::mpsc::channel();
     let daemon = home.daemon(move |wire| {
         let hello = wire.read("hello");
         wire.reply(&hello,json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","provider.list"]}));
@@ -5068,6 +5106,7 @@ fn tui_at_mentions_pick_files_from_the_working_directory() {
         let submit = wire.read("session.submit");
         assert_eq!(submit["params"]["text"], expected);
         wire.reply(&submit, json!({"event":{}}));
+        submitted.send(()).unwrap();
         let mut line = String::new();
         while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
             line.clear();
@@ -5087,10 +5126,10 @@ fn tui_at_mentions_pick_files_from_the_working_directory() {
     terminal.until("@src/main.rs");
     terminal.write(b"\t");
     terminal.write(b"\r");
-    let joined = daemon.join();
+    received.recv_timeout(PATIENCE).unwrap();
     terminal.signal(libc::SIGKILL);
     terminal.wait();
-    joined.unwrap();
+    daemon.join().unwrap();
 }
 
 #[test]
@@ -5105,6 +5144,7 @@ fn tui_sends_dropped_files_as_links_and_images_by_model_capability() {
         image.display(),
         notes.display()
     );
+    let (submitted, received) = std::sync::mpsc::channel();
     let daemon = home.daemon(move |wire| {
         let hello = wire.read("hello");
         wire.reply(&hello,json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","provider.list","provider.catalog"]}));
@@ -5125,6 +5165,7 @@ fn tui_sends_dropped_files_as_links_and_images_by_model_capability() {
         assert_eq!(submit["params"]["text"], expected);
         assert!(submit["params"].get("user").is_none());
         wire.reply(&submit, json!({"event":{}}));
+        submitted.send(()).unwrap();
         let mut line = String::new();
         while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
             line.clear();
@@ -5141,10 +5182,10 @@ fn tui_sends_dropped_files_as_links_and_images_by_model_capability() {
     terminal.paste(&dragged);
     terminal.until("[my notes.txt]");
     terminal.write(b"\r");
-    let joined = daemon.join();
+    received.recv_timeout(PATIENCE).unwrap();
     terminal.signal(libc::SIGKILL);
     terminal.wait();
-    joined.unwrap();
+    daemon.join().unwrap();
 }
 
 #[test]

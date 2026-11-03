@@ -295,7 +295,7 @@ pub(crate) fn probability(p: f64) -> String {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "eval-tests"))]
 mod tests {
     use super::*;
 

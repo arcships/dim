@@ -479,6 +479,7 @@ impl ProviderService {
             .configuration_with_limits(None, Some(cwd), ModelPreferences::default(), limits, cancel)
             .await;
         self.check(cancel)?;
+        let mut catalog_error = None;
         if let Err(error @ HostError::Cancelled(_)) = effective {
             return Err(error);
         }
@@ -498,7 +499,8 @@ impl ProviderService {
                         });
                     }
                 }
-                _ => {}
+                Err(error) => catalog_error = Some(error),
+                Ok(None) => {}
             }
         }
         let mut matches = Vec::new();
@@ -523,7 +525,11 @@ impl ProviderService {
             let mut catalog = match catalog {
                 Ok(Some(catalog)) => catalog,
                 Err(error @ HostError::Cancelled(_)) => return Err(error),
-                _ => continue,
+                Err(error) => {
+                    catalog_error.get_or_insert(error);
+                    continue;
+                }
+                Ok(None) => continue,
             };
             catalog.apply_startup_limits(limits.0, limits.1);
             if catalog.selectable(model_id).is_some() {
@@ -535,9 +541,13 @@ impl ProviderService {
         }
         match matches.len() {
             1 => Ok(matches.remove(0)),
-            0 => Err(failure(
-                "Model is unavailable; configure its Provider or supply a direct startup connection",
-            )),
+            0 => {
+                let message = "Model is unavailable; configure its Provider or supply a direct startup connection";
+                Err(failure(match catalog_error {
+                    Some(error) => format!("{message}; catalog error: {error}"),
+                    None => message.to_owned(),
+                }))
+            }
             _ => Err(failure(
                 "Model ID is ambiguous; specify --provider or a direct startup connection",
             )),

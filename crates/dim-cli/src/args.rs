@@ -162,6 +162,7 @@ Model startup:\n\
   Effort, autocompact and capacity startup controls require the product Provider\n\
     and cannot be used with --model-config; set API-key generation settings\n\
     in that configuration file instead.\n\
+  Model overrides with --model-config require --provider, including on resume.\n\
   Startup overrides apply before the first input, including on resume, without\n\
     changing saved Providers, preferences, defaults or the daemon environment.\n\
     Explicit overrides force complete configuration inheritance for new work.\n\
@@ -1459,6 +1460,9 @@ impl Options {
             };
         }
         if self.model_config.is_some() {
+            if self.model.is_some() && self.provider.is_none() {
+                return Err("--model / DIM_MODEL requires --provider when used with --model-config; select the configured Provider explicitly or omit the model override".into());
+            }
             if self.effort.is_some() {
                 return Err("--effort / DIM_EFFORT_LEVEL require a product Provider catalog with capability declarations and cannot be used with --model-config; configure the API-key model's generation settings in --model-config instead".into());
             }

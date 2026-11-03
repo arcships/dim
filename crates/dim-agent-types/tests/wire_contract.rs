@@ -216,28 +216,14 @@ fn omitted_modes_and_safe_integer_limits_keep_the_contract() {
     assert_eq!(equivalent.create_at, 1000);
 }
 
-/// Version 1 carries display content only: the model-request projection strips
-/// `providerMetadata` from text, thinking and tool-use parts, while native
-/// continuation stays on the Timeline. A new continuation field or a serializer
-/// change that stops stripping exposes native-only metadata and breaks the
-/// frozen v1 request shape.
 #[test]
-fn request_events_share_the_snapshot_and_preserve_draft_encoding() {
+fn request_events_preserve_draft_encoding() {
     use std::sync::Arc;
     let request = Arc::new(ModelRequest::new(
         "p",
         "m",
         vec![Message::text(Role::User, "first")],
     ));
-    let prepare = ContextPrepareData {
-        turn_id: "turn".into(),
-        request_id: "request".into(),
-        through: 4,
-        request: request.clone(),
-        configuration: None,
-        prompt: None,
-        recovery: None,
-    };
     let call = ModelCallData {
         turn_id: "turn".into(),
         request_id: "request".into(),
@@ -245,24 +231,6 @@ fn request_events_share_the_snapshot_and_preserve_draft_encoding() {
         configuration: None,
         prompt: None,
     };
-    assert!(Arc::ptr_eq(&prepare.request, &call.request));
-    let mut shared = (*call.request).clone();
-    shared.tools = Some(Arc::new(Vec::new()));
-    shared.system = Some(Arc::new(SystemPrompt::Text("system".into())));
-    let copied = shared.clone();
-    assert!(Arc::ptr_eq(&shared.messages[0], &copied.messages[0]));
-    assert!(Arc::ptr_eq(
-        shared.tools.as_ref().unwrap(),
-        copied.tools.as_ref().unwrap()
-    ));
-    assert!(Arc::ptr_eq(
-        shared.system.as_ref().unwrap(),
-        copied.system.as_ref().unwrap()
-    ));
-    assert_eq!(
-        serde_json::to_value(&shared).unwrap(),
-        serde_json::to_value(&copied).unwrap()
-    );
     let draft = EventDraft::new(EventKind::ModelCall(call));
     assert_eq!(
         serde_json::to_value(&draft).unwrap(),

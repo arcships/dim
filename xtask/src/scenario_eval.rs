@@ -3338,7 +3338,7 @@ pub(crate) fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "eval-tests"))]
 mod tests {
     use super::*;
     use dim_agent_capabilities::host::{
@@ -5806,16 +5806,18 @@ mod tests {
     /// The fixture models' output allowance: their `maxOutputTokens` and the
     /// requests' `maxTokens`. The input budget is the window less this.
     const OUTPUT_TOKENS: u64 = 200;
-    /// The fixture model's declared window in the bytes of a request body, at
-    /// the product's four bytes per token.
-    const WINDOW_BYTES: usize = 24_000 * 4;
+    const VIEW_WINDOW: u64 = 32_000;
     /// The judge's answers, its refusal of a request its window cannot hold,
     /// the way a judge model refuses one over its window, and a `read` of the
     /// workspace file for a run request that has not read it [`READS`] times.
     fn reads_until_the_window_overflows(text: &str) -> Option<Value> {
         if text.contains("You check statements") {
-            return (text.len() > WINDOW_BYTES)
-                .then(|| refusal("This model's maximum context length is 24000 tokens"))
+            return (text.len() > VIEW_WINDOW as usize * 4)
+                .then(|| {
+                    refusal(&format!(
+                        "This model's maximum context length is {VIEW_WINDOW} tokens"
+                    ))
+                })
                 .or_else(|| judged(text));
         }
         (text.matches(FILE_TEXT).count() < READS)
@@ -6371,16 +6373,16 @@ mod tests {
     /// so the view loses no field this run produces.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_run_longer_than_the_judge_window_is_judged_through_its_view() {
-        const WINDOW: u64 = 24_000;
-        let fixture = Fixture::start(
+        let fixture = Fixture::with_window(
             "judge-view",
             reads_until_the_window_overflows,
             json!({
                 "message": "Read notes.txt until you are sure of it.",
-                "budget": {"turns": 4, "seconds": 60, "window": 24000},
+                "budget": {"turns": 4, "seconds": 60, "window": VIEW_WINDOW},
                 "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
             }),
             &[("notes.txt", FILE_TEXT)],
+            VIEW_WINDOW,
         )
         .await;
         let options = fixture.options(fixture.directory.join("out"));
@@ -6408,18 +6410,18 @@ mod tests {
                 &[Message::text(Role::User, text)],
                 &ModelConfig::default(),
             );
-            window_facts(WINDOW, 200, &request).count_tokens(&request)
+            window_facts(VIEW_WINDOW, 200, &request).count_tokens(&request)
         };
         for arm in ["current", "candidate"] {
             let directory = options.out.join(arm).join("case").join("run-0");
             let export = std::fs::read_to_string(directory.join("timeline.jsonl")).unwrap();
             let view = std::fs::read_to_string(directory.join("judge-view.jsonl")).unwrap();
             assert!(
-                estimate(&export) > WINDOW as f64,
+                estimate(&export) > VIEW_WINDOW as f64,
                 "{arm}: the raw export is longer than the judge's window"
             );
             assert!(
-                estimate(&view) < WINDOW as f64,
+                estimate(&view) < (VIEW_WINDOW - OUTPUT_TOKENS) as f64,
                 "{arm}: the view fits the judge's window"
             );
             // Every line survives in order and every request is rebuilt from

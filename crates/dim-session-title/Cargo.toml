@@ -20,6 +20,7 @@ tracing.workspace = true
 regex = "1"
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 dim-app-server = { workspace = true, features = ["testing"] }
 dim-client.workspace = true
 axum = { workspace = true, features = ["json"] }

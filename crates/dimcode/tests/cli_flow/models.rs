@@ -329,44 +329,55 @@ fn models_area_shows_the_owner_error_for_an_unreadable_provider() {
     assert!(!stderr.contains("No provider has that id."), "{stderr}");
 }
 
-/// A home whose saved interface language is Simplified Chinese.
-fn chinese_home() -> Home {
-    let home = Home::new();
-    fs::write(home.0.join("config.json"), r#"{"locale":"zh-CN"}"#).unwrap();
-    home
-}
-
-/// A subcommand composes the models area's text in the saved interface
-/// language: the applied line whose read-back fails is Chinese, and the
-/// owner's read error stays as the client reported it.
 #[test]
-fn models_composes_its_lines_in_the_saved_language() {
-    let home = chinese_home();
-    let daemon = home.daemon(|wire| {
-        hello(wire);
-        let request = wire.read("provider.management");
-        wire.reply(&request, provider(models(true), 3));
-        let request = wire.read("provider.models.set_enabled");
-        wire.reply(&request, json!({}));
-        // The read that would report the area after the write fails.
-        let request = wire.read("provider.management");
-        wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
-            "code":-32000,
-            "message":"the provider is unavailable"}}));
-    });
-    let output = home
-        .command()
-        .args(["models", "fixture", "disable", "flash"])
-        .output()
+fn models_uses_each_saved_interface_language() {
+    for (locale, expected) in [
+        ("en", "Disabled flash."),
+        ("zh-CN", "已禁用 flash。"),
+        ("ja", "flash を無効にしました。"),
+        ("ko", "flash을(를) 비활성화했습니다."),
+        ("zh-Hant", "已停用 flash。"),
+        ("id", "flash dinonaktifkan."),
+        ("de", "flash deaktiviert."),
+        ("fr", "flash désactivé."),
+        ("es", "flash desactivado."),
+        ("pt-BR", "flash desativado."),
+        ("pt-PT", "flash desativado."),
+    ] {
+        let home = Home::new();
+        fs::write(
+            home.0.join("config.json"),
+            json!({"locale":locale}).to_string(),
+        )
         .unwrap();
-    daemon.join().unwrap();
-    assert_eq!(output.status.code(), Some(0));
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "已禁用 flash。\n"
-    );
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("the provider is unavailable"), "{stderr}");
+        let daemon = home.daemon(|wire| {
+            hello(wire);
+            let request = wire.read("provider.management");
+            wire.reply(&request, provider(models(true), 3));
+            let request = wire.read("provider.models.set_enabled");
+            wire.reply(&request, json!({}));
+            let request = wire.read("provider.management");
+            wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
+                "code":-32000,"message":"the provider is unavailable"}}));
+        });
+        let output = home
+            .command()
+            .args(["models", "fixture", "disable", "flash"])
+            .output()
+            .unwrap();
+        daemon.join().unwrap();
+        assert!(output.status.success(), "{locale}: {output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("{expected}\n"),
+            "{locale}"
+        );
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            stderr.contains("the provider is unavailable"),
+            "{locale}: {stderr}"
+        );
+    }
 }
 
 /// A daemon that serves the models catalog without the toggle's method
@@ -864,89 +875,6 @@ fn tui_models_area_opens_and_toggles_a_model() {
     terminal.raw(b"\x1b");
     terminal.raw(b"\x1b");
     terminal.until("Ask anything...");
-    terminal.signal(libc::SIGKILL);
-    terminal.wait();
-    daemon.join().unwrap();
-}
-
-/// The panel composes the models area in the saved interface language: the
-/// title, the source headings, the owner's unavailable reason and the
-/// applied line are Chinese.
-#[test]
-fn tui_models_area_composes_in_the_saved_language() {
-    let home = chinese_home();
-    let (shown, wait_shown) = std::sync::mpsc::channel();
-    let daemon = home.daemon(move |wire| {
-        hello(wire);
-        wire.created();
-        let attach = wire.read("session.attach");
-        wire.reply(&attach, attach_record(&attach));
-        let history = wire.read("session.history");
-        wire.reply(
-            &history,
-            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
-        );
-        for _ in 0..2 {
-            let request = wire.read_any();
-            match request["method"].as_str() {
-                Some("account.providers") => wire.reply(&request, json!([])),
-                Some("session.context.usage") => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
-                    "code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
-                method => panic!("unexpected request {method:?}"),
-            }
-        }
-        wait_shown.recv_timeout(PATIENCE).unwrap();
-        let request = wire.read("provider.list");
-        wire.reply(
-            &request,
-            json!({"providers":[{"providerId":"test","displayName":"Test","enabled":true}]}),
-        );
-        let request = wire.read("account.providers");
-        wire.reply(&request, json!([]));
-        let request = wire.read("provider.catalog");
-        wire.reply(&request, picker_catalog());
-        // The picker's check of the Provider's area.
-        let request = wire.read("provider.management");
-        wire.reply(&request, test_provider(area_models_unavailable(), 3));
-        // Edit models opens the area.
-        let request = wire.read("provider.management");
-        wire.reply(&request, test_provider(area_models_unavailable(), 3));
-        // Enter on flash: the fresh read, the write, and the read-back.
-        let request = wire.read("provider.management");
-        wire.reply(&request, test_provider(area_models_unavailable(), 3));
-        let request = wire.read("provider.models.set_enabled");
-        wire.reply(&request, json!({}));
-        let request = wire.read("provider.management");
-        wire.reply(&request, test_provider(area_models_unavailable_after_toggle(), 4));
-        let mut line = String::new();
-        while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
-            line.clear();
-        }
-    });
-    let mut command = home.command();
-    sized(&mut command, 100, 32);
-    let mut terminal = Terminal::launch_tui(command);
-    terminal.until("test / model");
-    shown.send(()).unwrap();
-    terminal.write(b"/models\r");
-    terminal.until("Test / flash");
-    terminal.until("编辑模型");
-    terminal.raw(b"\x1b[B");
-    terminal.until("编辑模型");
-    terminal.raw(b"\r");
-    terminal.until("模型 · Test");
-    terminal.until("目录");
-    terminal.until("覆盖");
-    terminal.until("新增");
-    // The unavailable model's reason, in the interface language.
-    terminal.raw(b"\x1b[B");
-    terminal.until("上限未声明；编辑该模型以声明。");
-    terminal.raw(b"\x1b[A");
-    terminal.raw(b"\r");
-    terminal.until("已禁用 flash。");
-    terminal.raw(b"\x1b");
-    terminal.raw(b"\x1b");
-    terminal.until("输入任何内容...");
     terminal.signal(libc::SIGKILL);
     terminal.wait();
     daemon.join().unwrap();

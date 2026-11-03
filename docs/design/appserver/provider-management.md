@@ -84,7 +84,8 @@ A bare model ID first uses the effective Provider if it offers that exact ID;
 otherwise exactly one available Provider must offer it. Ambiguity is an error.
 An individual catalog failure does not exclude healthy Providers from that
 search; cancellation still stops it. An explicitly named Provider retains its
-own error rather than falling back to another Provider.
+own error rather than falling back to another Provider. If the search finds no
+match, its unavailable-model diagnostic includes the first catalog error, if any.
 
 Provider retains credentials and all header values only in memory, under an
 opaque source UUID. The adopted non-secret declaration contains that UUID,

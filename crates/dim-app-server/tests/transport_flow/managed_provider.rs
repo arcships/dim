@@ -690,6 +690,28 @@ async fn an_injected_managed_provider_serves_accounts_and_recovers_credentials()
         ]
     );
     assert_eq!(fixture.recovered.load(Ordering::SeqCst), 3);
+    let selected = client
+        .rpc(
+            "provider.select",
+            json!({"cwd":home,"providerId":"managed-fixture","modelId":"fixture-model"}),
+        )
+        .await;
+    assert_ok(&selected);
+    *fixture.limited.lock().unwrap() = Limited::ProviderUnavailable;
+    let unavailable_default = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,"model":{"modelId":"fixture-model"},"startup":{}}),
+        )
+        .await;
+    let message = unavailable_default["error"]["message"].as_str().unwrap();
+    assert!(message.contains("Model is unavailable"), "{message}");
+    assert!(message.contains("catalog error:"), "{message}");
+    assert!(
+        message.contains("Managed account operation failed"),
+        "{message}"
+    );
+    *fixture.limited.lock().unwrap() = Limited::Unavailable;
     let default_provider = uuid::Uuid::new_v4().to_string();
     assert_ok(&client.rpc("provider.create", json!({"providerId":default_provider,
         "displayName":"Default provider","enabled":true,
@@ -700,7 +722,8 @@ async fn an_injected_managed_provider_serves_accounts_and_recovers_credentials()
         &client
             .rpc(
                 "provider.select",
-                json!({"cwd":home,"providerId":default_provider,"modelId":"default-model"}),
+                json!({"cwd":home,"providerId":default_provider,"modelId":"default-model",
+                    "expectedVersion":selected["result"]["version"]}),
             )
             .await,
     );

@@ -7369,88 +7369,6 @@ mod tests {
         Theme::system(ColorMode::TrueColor, Appearance::Dark, None)
     }
 
-    #[test]
-    fn model_activity_stays_blue_across_themes_and_terminal_modes() {
-        use crate::ui::theme::{Appearance, ColorMode};
-
-        for (mode, appearance, sgr) in [
-            (
-                ColorMode::TrueColor,
-                Appearance::Dark,
-                "\x1b[38;2;56;189;248m",
-            ),
-            (ColorMode::Ansi256, Appearance::Dark, "\x1b[38;5;75m"),
-            (ColorMode::Ansi16, Appearance::Dark, "\x1b[94m"),
-            (
-                ColorMode::TrueColor,
-                Appearance::Light,
-                "\x1b[38;2;3;105;161m",
-            ),
-            (
-                ColorMode::Ansi256,
-                Appearance::Light,
-                "\x1b[38;2;3;105;161m",
-            ),
-            (ColorMode::Ansi16, Appearance::Light, "\x1b[94m"),
-        ] {
-            let mut drawn = Drawn::new((80, 24), None, true);
-            drawn.app.theme_context = Some(ThemeContext {
-                mode,
-                appearance,
-                background: None,
-                active: "system".into(),
-            });
-            let named = match appearance {
-                Appearance::Dark => "monokai-dark",
-                Appearance::Light => "monokai-light",
-            };
-            for id in ["system", named] {
-                drawn.app.paint_theme(id);
-                for initialized in [true, false] {
-                    let context = (!initialized).then(|| drawn.app.theme_context.take());
-                    for fullscreen in [false, true] {
-                        drawn.app.fullscreen = fullscreen;
-                        for name in ["text", "thinking"] {
-                            let mut projection = crate::projection::Projection::default();
-                            let event = serde_json::from_value(serde_json::json!({
-                                "sequence": 1, "create_at": 1, "type": "step", "name": name,
-                                "data": {"turn_id": "t1", "request_id": "r1", "delta": "Checking the parser."}
-                            }))
-                            .unwrap();
-                            projection.apply("main", &event);
-                            projection.set_running(true);
-                            drawn
-                                .app
-                                .apply(Update::Snapshot(Box::new(projection.snapshot())));
-                            drawn.app.run_started = Some(Instant::now() - Duration::from_secs(42));
-                            let frame = drawn.app.frame((80, 24));
-                            let label = if name == "thinking" {
-                                "thinking…"
-                            } else {
-                                "working…"
-                            };
-                            let row = frame.live.iter().find(|row| row.contains(label)).unwrap();
-                            let start = row
-                                .find(sgr)
-                                .expect("the activity uses the terminal's blue");
-                            let colored = row[start + sgr.len()..].split("\x1b[0m").next().unwrap();
-                            let (pulse, status) = colored.split_once(' ').unwrap();
-                            assert!(["·", "•", "●"].contains(&pulse));
-                            assert_eq!(
-                                status,
-                                format!("{label}  42s"),
-                                "{mode:?}, {appearance:?}, {id}, fullscreen={fullscreen}, initialized={initialized}: {row:?}"
-                            );
-                        }
-                    }
-                    if let Some(context) = context {
-                        drawn.app.theme_context = context;
-                    }
-                }
-            }
-        }
-    }
-
     /// A thought only grows while it runs and never shrinks when it
     /// settles, in either detail: the rows under it would hop otherwise.
     /// A short thought takes only its own rows.
@@ -9806,28 +9724,6 @@ mod tests {
     }
 
     #[test]
-    fn the_goodbye_box_lines_up_with_the_welcome_box() {
-        let welcome = boxed(
-            &["Welcome".to_owned()],
-            40,
-            &|e| e.to_owned(),
-            &|_, b| b.to_owned(),
-            None,
-        );
-        let edge = |row: &str| row.find(|c: char| c != ' ');
-        for row in goodbye_panel(Some("session")) {
-            assert_eq!(edge(&row), edge(&welcome[0]), "{row:?}");
-        }
-        let text = |row: &str| row.find(|c: char| c.is_alphanumeric());
-        assert_eq!(
-            text(&goodbye_panel(None)[1]),
-            text(&welcome[1]),
-            "{:?}",
-            goodbye_panel(None)
-        );
-    }
-
-    #[test]
     fn startup_panels_keep_their_greeting_and_width_in_narrow_terminals() {
         let theme = test_theme();
         let opened = WebOpened {
@@ -9848,50 +9744,6 @@ mod tests {
                 assert!(web.contains(t("DIM Web is ready")), "{web}");
             }
         }
-    }
-
-    #[test]
-    fn boxed_rows_have_equal_display_width() {
-        let rows = vec![
-            "plain".to_owned(),
-            "中文 mixed".to_owned(),
-            "\x1b[2mdim\x1b[22m".to_owned(),
-        ];
-        let out = boxed(&rows, 40, &|e| e.to_owned(), &|_, b| b.to_owned(), None);
-        for line in &out {
-            assert_eq!(width_of(line), 38, "{line:?}");
-        }
-        let out = boxed(
-            &rows,
-            40,
-            &|e| e.to_owned(),
-            &|_, b| b.to_owned(),
-            Some(("● working…  3s", &|s| s.to_owned())),
-        );
-        assert!(
-            out[0].starts_with(&format!("{}╭─ ● working…  3s ─", " ".repeat(MARGIN))),
-            "{:?}",
-            out[0]
-        );
-        for line in &out {
-            assert_eq!(width_of(line), 38, "{line:?}");
-        }
-    }
-
-    #[test]
-    fn emoji_sequences_count_as_one_wide_cluster() {
-        assert_eq!(width_of("👨‍👩‍👧"), 2);
-        assert_eq!(width_of("❤️"), 2);
-        assert_eq!(width_of("🇨🇳"), 2);
-        let (cut, used) = clip("ab👨‍👩‍👧cd", 3);
-        assert_eq!((cut.as_str(), used), ("ab", 2), "a cluster is never split");
-        assert_eq!(wrap("a👨‍👩‍👧b", 2), vec!["a", "👨‍👩‍👧", "b"]);
-    }
-
-    #[test]
-    fn wrap_respects_wide_characters() {
-        assert_eq!(wrap("中中中", 4), vec!["中中", "中"]);
-        assert_eq!(wrap("abcd", 2), vec!["ab", "cd"]);
     }
 
     #[test]

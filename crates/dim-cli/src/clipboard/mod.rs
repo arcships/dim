@@ -152,6 +152,7 @@ mod native_flow {
             std::fs::write(&note, "local file").unwrap();
             let paths = [image.canonicalize().unwrap(), note.canonicalize().unwrap()];
             let board = NSPasteboard::pasteboardWithUniqueName();
+            board.clearContents();
             let items: Vec<_> = paths
                 .iter()
                 .map(|path| {
@@ -210,6 +211,7 @@ mod native_flow {
     fn private_pasteboard_preserves_formats_precedence_pixels_and_rejections() {
         objc2::rc::autoreleasepool(|_| {
             let board = NSPasteboard::pasteboardWithUniqueName();
+            board.clearContents();
             let plain = NSString::from_str("public.utf8-plain-text");
             let png = NSString::from_str("public.png");
             let file = NSString::from_str("public.file-url");

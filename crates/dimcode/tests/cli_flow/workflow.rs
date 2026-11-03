@@ -173,7 +173,7 @@ fn workflow_list_prints_the_definitions_and_their_issues() {
         hello(wire);
         let request = wire.read("workflow.list");
         assert_eq!(request["params"], json!({"cwd": cwd}));
-        wire.reply(&request, listing(false));
+        wire.reply(&request, listing(true));
         let request = wire.read("settings.read");
         wire.reply(&request, settings());
         drains(wire);
@@ -206,43 +206,7 @@ fn workflow_list_prints_the_definitions_and_their_issues() {
         stderr.contains("nightly-check: Stage build: invalid reference {{params.branch}}"),
         "{stderr}"
     );
-}
 
-/// A listing the owner cut at its size limit still prints the definitions it
-/// holds, and says the rest are omitted.
-#[test]
-fn workflow_list_reports_a_listing_the_owner_cut() {
-    let home = Home::new();
-    let (project, cwd) = workspace(&home);
-    let daemon = home.daemon(move |wire| {
-        hello(wire);
-        let request = wire.read("workflow.list");
-        assert_eq!(request["params"], json!({"cwd": cwd}));
-        wire.reply(&request, listing(true));
-        let request = wire.read("settings.read");
-        wire.reply(&request, settings());
-        drains(wire);
-    });
-    let output = home
-        .command()
-        .arg("--cwd")
-        .arg(&project)
-        .args(["workflow", "list"])
-        .output()
-        .unwrap();
-    daemon.join().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "review-and-fix\tuser\tenabled\tAnalyze, fix in parallel, summarize\n\
-         nightly-check\tproject\tdisabled, invalid\tNightly checks\n\
-         release-notes\tplugin\tenabled\tRelease notes\n"
-    );
-    let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
         stderr.contains("The list reached its size limit; later definitions are not shown."),
         "{stderr}"

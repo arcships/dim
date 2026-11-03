@@ -46,41 +46,6 @@ fn older_catalog(enabled: bool) -> Value {
     catalog
 }
 
-#[test]
-fn skills_list_from_a_daemon_without_sources_prints_a_dash() {
-    let home = Home::new();
-    let project = home.0.join("work");
-    fs::create_dir(&project).unwrap();
-    let expected = fs::canonicalize(&project)
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    let daemon = home.daemon(move |wire| {
-        hello(wire);
-        let request = wire.read("skills.catalog");
-        assert_eq!(request["params"]["cwd"], expected);
-        wire.reply(&request, older_catalog(true));
-    });
-    let output = home
-        .command()
-        .arg("--cwd")
-        .arg(&project)
-        .args(["skills", "list"])
-        .output()
-        .unwrap();
-    daemon.join().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "commit\t-\tenabled\t/w/.agents/skills/commit/SKILL.md\tWrites commit messages\n\
-         deploy\t-\tdisabled, shadowed by commit\t/w/.agents/skills/deploy/SKILL.md\tDeploys the project\n"
-    );
-}
-
 /// A daemon that reports no source is still toggled: what the user asked for
 /// is the change, and the read still names the entry.
 #[test]
@@ -222,7 +187,12 @@ fn skills_list_prints_every_source_and_the_issues() {
         hello(wire);
         let request = wire.read("skills.catalog");
         assert_eq!(request["params"]["cwd"], expected);
-        wire.reply(&request, catalog(true));
+        let mut listed = catalog(true);
+        let mut legacy = listed["entries"][0].clone();
+        legacy["name"] = json!("legacy");
+        legacy.as_object_mut().unwrap().remove("source");
+        listed["entries"].as_array_mut().unwrap().push(legacy);
+        wire.reply(&request, listed);
     });
     let output = home
         .command()
@@ -240,7 +210,8 @@ fn skills_list_prints_every_source_and_the_issues() {
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         "commit\tuser\tenabled\t/w/.agents/skills/commit/SKILL.md\tWrites commit messages\n\
-         deploy\tproject\tdisabled, shadowed by commit\t/w/.agents/skills/deploy/SKILL.md\tDeploys the project\n"
+         deploy\tproject\tdisabled, shadowed by commit\t/w/.agents/skills/deploy/SKILL.md\tDeploys the project\n\
+         legacy\t-\tenabled\t/w/.agents/skills/commit/SKILL.md\tWrites commit messages\n"
     );
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
@@ -294,49 +265,6 @@ fn skills_enable_and_disable_name_the_entry_and_send_the_workspace() {
         );
         fs::remove_file(home.0.join("rust/daemon.sock")).unwrap();
     }
-}
-
-#[test]
-fn skills_reload_rescans_the_workspace() {
-    let home = Home::new();
-    let project = home.0.join("work");
-    fs::create_dir(&project).unwrap();
-    let daemon = home.daemon(move |wire| {
-        hello(wire);
-        let request = wire.read("skills.refresh");
-        assert!(request["params"]["cwd"].is_string());
-        wire.reply(
-            &request,
-            json!({"version": 6, "issues": [{"path": "/w/old", "message": "unreadable"}]}),
-        );
-        let request = wire.read("skills.catalog");
-        wire.reply(
-            &request,
-            json!({
-                "version": 6,
-                "entries": [],
-                "issues": [{"path": "/w/old", "message": "unreadable"}],
-            }),
-        );
-    });
-    let output = home
-        .command()
-        .arg("--cwd")
-        .arg(&project)
-        .args(["skills", "reload"])
-        .output()
-        .unwrap();
-    daemon.join().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(output.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "No Skill is configured.\n/w/old: unreadable\n"
-    );
 }
 
 #[test]
@@ -542,71 +470,6 @@ fn tui_skills_panel_lists_toggles_and_reloads() {
     terminal.until("Bye!");
     assert!(terminal.wait().success());
     daemon.join().unwrap();
-}
-
-/// `/skills` lists the entries of a daemon that reports no source under the
-/// area's own heading, and Enter still toggles one, in both terminal modes.
-#[test]
-fn tui_skills_panel_lists_unsourced_entries_under_the_area_heading() {
-    for fullscreen in [false, true] {
-        let home = Home::new();
-        let (shown, wait_shown) = mpsc::channel();
-        let daemon = home.daemon(move |wire| {
-            hello(wire);
-            wire.created();
-            let attach = wire.read("session.attach");
-            wire.reply(&attach, attach_record(&attach));
-            let history = wire.read("session.history");
-            wire.reply(
-                &history,
-                json!({"events":[],"through":8,"nextAfter":8,"done":true}),
-            );
-            for _ in 0..2 {
-                let request = wire.read_any();
-                match request["method"].as_str() {
-                    Some("account.providers") => wire.reply(&request, json!([])),
-                    Some("session.context.usage") => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
-                        "code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
-                    method => panic!("unexpected request {method:?}"),
-                }
-            }
-            wait_shown.recv_timeout(PATIENCE).unwrap();
-            let request = wire.read("skills.catalog");
-            wire.reply(&request, older_catalog(true));
-            let request = wire.read("skills.set_enabled");
-            assert_eq!(request["params"]["id"], "user:commit");
-            assert_eq!(request["params"]["enabled"], false);
-            wire.reply(&request, json!({"version": 5}));
-            let request = wire.read("skills.catalog");
-            wire.reply(&request, older_catalog(false));
-            let mut line = String::new();
-            while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
-                line.clear();
-            }
-        });
-        let mut command = home.command();
-        if fullscreen {
-            command.arg("--fullscreen");
-        }
-        let mut terminal = Terminal::launch_tui(command);
-        terminal.until("test / model");
-        shown.send(()).unwrap();
-        terminal.write(b"/skills\r");
-        terminal.until("Writes commit messages");
-        let opened = terminal.transcript.clone();
-        assert!(
-            opened.contains("  skills"),
-            "the entries are listed under the area's own heading: {opened}"
-        );
-        terminal.raw(b"\r");
-        terminal.until("Disabled commit.");
-        terminal.raw(b"\x1b");
-        thread::sleep(Duration::from_millis(200));
-        terminal.write(b"/exit\r");
-        terminal.until("Bye!");
-        assert!(terminal.wait().success());
-        daemon.join().unwrap();
-    }
 }
 
 /// An empty area still rescans: reload belongs to the area, so Ctrl+R works

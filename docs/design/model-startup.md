@@ -71,7 +71,10 @@ before daemon launch for both creation and resume, directing the user to the
 API-key model's generation settings in the configuration file. Likewise reject
 automatic-compaction and capacity startup controls with `--model-config` rather
 than ignoring them or reporting a Provider reload. Ordinary configured-model
-selection without these controls retains its existing behavior.
+selection without these controls retains its existing behavior. A model override
+with `--model-config` requires an explicit `--provider`, for both creation and
+resume; reject a bare override before connecting instead of returning an RPC
+field-pair error.
 
 ## Session ownership and security
 
@@ -131,7 +134,7 @@ Provider. Read the public management listing to establish that membership;
 never infer a temporary source from the spelling of its identity or query that
 identity as a saved Provider. If it cannot be copied, explain how to restart a
 daemon supporting adopted-model copying and rebind the temporary connection,
-or select a configured Provider model.
+or select a configured Provider model when Provider management is available.
 
 Automatic title generation still uses the auxiliary model path's catalog
 `ModelId`, which carries no startup connection binding. A temporary direct

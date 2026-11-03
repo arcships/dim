@@ -604,9 +604,12 @@ fn launching_a_daemon_does_not_retain_the_sessions_startup_environment() {
                 r#"{"providers":[{"id":"fixture","apiKeyEnv":"LEGACY_API_KEY"}]}"#,
             )
             .unwrap();
-            command
-                .env("DIM_MODEL", "model")
-                .args(["--model-config", config.to_str().unwrap()]);
+            command.env("DIM_MODEL", "model").args([
+                "--model-config",
+                config.to_str().unwrap(),
+                "--provider",
+                "fixture",
+            ]);
         }
         if management {
             command.args(["models", "fixture"]);
@@ -741,6 +744,35 @@ fn model_config_rejects_unsupported_effort_before_create_or_resume() {
 }
 
 #[test]
+fn model_config_requires_a_provider_for_model_overrides_before_create_or_resume() {
+    for resume in [false, true] {
+        for environment in [false, true] {
+            let home = Home::new();
+            fs::remove_dir_all(home.0.join("rust")).unwrap();
+            let config = home.0.join("model.json");
+            fs::write(&config, "{}").unwrap();
+            let mut command = command(&home);
+            command.args(["--model-config", config.to_str().unwrap()]);
+            if environment {
+                command.env("DIM_MODEL", "selected");
+            } else {
+                command.args(["--model", "selected"]);
+            }
+            if resume {
+                command.args(["--resume", "session"]);
+            }
+            let output = command.args(["exec", "-p", "Hello"]).output().unwrap();
+            assert!(!output.status.success());
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(error.contains("requires --provider"), "{error}");
+            assert!(error.contains("--model-config"), "{error}");
+            assert!(!error.contains("must appear together"), "{error}");
+            assert!(!home.0.join("rust").exists());
+        }
+    }
+}
+
+#[test]
 fn model_config_rejects_product_only_controls_before_starting_a_daemon() {
     for resume in [false, true] {
         for (args, env) in [
@@ -778,7 +810,7 @@ fn model_config_rejects_product_only_controls_before_starting_a_daemon() {
 
 #[test]
 fn old_daemon_home_creation_rejects_temporary_sources_and_keeps_configured_fallback() {
-    for configured in [false, true] {
+    for (configured, management) in [(false, false), (false, true), (true, true)] {
         let home = Home::new();
         let provider = if configured {
             "9f556780-8461-4cda-8108-22560729b8ba"
@@ -791,9 +823,14 @@ fn old_daemon_home_creation_rejects_temporary_sources_and_keeps_configured_fallb
                 let request: Value = serde_json::from_str(&line).unwrap();
                 line.clear();
                 let result = match request["method"].as_str().unwrap() {
-                    "hello" => json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),
-                        "protocolVersion":3,"daemonProfile":{"kind":"product"},
-                        "features":["session.create","session.history","provider.list","provider.management"]}),
+                    "hello" => {
+                        let mut features = vec!["session.create", "session.history", "provider.list"];
+                        if management {
+                            features.push("provider.management");
+                        }
+                        json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),
+                            "protocolVersion":3,"daemonProfile":{"kind":"product"},"features":features})
+                    }
                     "session.attach" => {
                         let mut record = attach_record(&request);
                         record["model"] = json!({"providerId":provider,"modelId":"model"});
@@ -803,6 +840,7 @@ fn old_daemon_home_creation_rejects_temporary_sources_and_keeps_configured_fallb
                     "session.idle" => json!({"sequence":8}),
                     "account.providers" => json!([]),
                     "provider.management" => {
+                        assert!(management);
                         assert_eq!(request["params"], json!({}), "Do not query a temporary identity as a saved Provider");
                         let providers = if configured { json!([{"providerId":provider,"source":"user",
                             "displayName":"Configured","preferences":{"model":{"reasoningEffort":"low","serviceTier":"priority"}}}]) } else { json!([]) };
@@ -835,6 +873,11 @@ fn old_daemon_home_creation_rejects_temporary_sources_and_keeps_configured_fallb
         } else {
             terminal.until("Restart the daemon");
             terminal.until("DIM_BASE_URL and DIM_API_FORMAT");
+            if management {
+                terminal.until("before starting a new Session");
+            } else {
+                assert!(!terminal.transcript.contains("or select a configured"));
+            }
             assert!(
                 !terminal
                     .transcript

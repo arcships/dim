@@ -989,12 +989,13 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test]
 async fn web_fetch_times_out_when_the_response_never_finishes() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let stop = CancellationToken::new();
     let stopping = stop.clone();
+    let (arrived, mut connections) = tokio::sync::mpsc::unbounded_channel();
     let held = tokio::spawn(async move {
         let mut sockets = Vec::new();
         loop {
@@ -1002,6 +1003,7 @@ async fn web_fetch_times_out_when_the_response_never_finishes() {
                 _ = stopping.cancelled() => break,
                 accepted = listener.accept() => {
                     sockets.push(accepted.unwrap().0);
+                    arrived.send(()).unwrap();
                 }
             }
         }
@@ -1017,9 +1019,24 @@ async fn web_fetch_times_out_when_the_response_never_finishes() {
         .iter()
         .filter(|event| matches!(event.kind, EventKind::ToolResult(_)))
         .count();
-    let started = std::time::Instant::now();
     submit(&mut client, &id, "web_fetch", json!({"url": base})).await;
-    tokio::time::timeout(Duration::from_secs(120), async {
+    tokio::time::timeout(Duration::from_secs(10), connections.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(25)).await;
+    tokio::time::resume();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), session.idle("main"))
+            .await
+            .is_err(),
+        "the unfinished request must remain active before its 30s deadline"
+    );
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(6)).await;
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let count = session
                 .local("main", ..)
@@ -1035,12 +1052,7 @@ async fn web_fetch_times_out_when_the_response_never_finishes() {
         }
     })
     .await
-    .expect("web_fetch must settle within 120s when the response never finishes");
-    assert!(
-        started.elapsed() >= Duration::from_secs(25),
-        "finished in {:?}, before the 30s whole-call deadline",
-        started.elapsed()
-    );
+    .expect("web_fetch must settle after its 30s deadline when the response never finishes");
     let timed_out = result(&session).await;
     assert!(
         text(&timed_out).contains("timeout: Call timed out."),
