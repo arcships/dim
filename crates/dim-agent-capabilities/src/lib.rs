@@ -8,6 +8,7 @@ pub mod context_model;
 mod context_policy;
 pub mod context_preparation;
 pub mod defaults;
+pub mod environment_clients;
 pub mod exec_stop;
 pub mod execution_settings;
 pub mod file_access;
@@ -113,6 +114,7 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<host::ModelSelectionHost>(catalog, None);
     register::<host::SessionFilesHost>(catalog, None);
     register::<skill_settings::SkillSettingsHost>(catalog, None);
+    register::<environment_clients::SessionClientsHost>(catalog, None);
     register::<execution_settings::ExecutionSettingsHost>(catalog, None);
     register::<skills::SkillsCatalog>(catalog, None);
 }

@@ -2489,6 +2489,12 @@
     ],
     "bindings": [
       {
+        "service": "dim_agent_capabilities::environment_clients::SessionClientsHost",
+        "provider": 37,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dim_agent_capabilities::execution_settings::ExecutionSettingsHost",
         "provider": 22,
         "generation": 1,

@@ -1,6 +1,6 @@
 use crate::{
     ServerConfig, ServerError,
-    connection::{Connection, ConnectionHub, Entry},
+    connection::{ClientIdentity, Connection, ConnectionHub, Entry},
     control::ServerControl,
     outbound::MAX_FRAME_BYTES,
     protocol::*,
@@ -15,6 +15,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use dim_agent_capabilities::environment_clients::{ClientChannel, DeclaredClientKind};
 use dim_agent_capabilities::methods::RpcError;
 use dim_agent_runtime::Names;
 use futures_util::{
@@ -648,6 +649,20 @@ async fn run_connection(
                     if (1..=PROTOCOL_VERSION).contains(&params.protocol_version)
                         && (entry != Entry::Web || params.protocol_version == PROTOCOL_VERSION) =>
                 {
+                    let declared = match &params.client_kind {
+                        ClientKind::Cli => DeclaredClientKind::Cli,
+                        ClientKind::Web => DeclaredClientKind::Web,
+                        ClientKind::Other => DeclaredClientKind::Other,
+                    };
+                    connection
+                        .client
+                        .set(ClientIdentity {
+                            channel: ClientChannel::declared(
+                                declared,
+                                params.client_name.as_deref(),
+                            ),
+                        })
+                        .ok();
                     let instance = hub
                         .with_rpc(|rpc| {
                             if rpc.stopping.is_cancelled() {

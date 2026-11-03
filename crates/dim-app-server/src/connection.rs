@@ -34,6 +34,12 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 const MAX_REQUESTS: usize = 64;
 const CONTROL_RESERVE: usize = 8;
 
+/// The channel a connection declared at `hello`, for presence only.
+#[derive(Clone, Debug)]
+pub(crate) struct ClientIdentity {
+    pub channel: dim_agent_capabilities::environment_clients::ClientChannel,
+}
+
 /// The entry a connection was accepted on; it decides which methods Rpc serves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Entry {
@@ -51,6 +57,8 @@ pub(crate) struct Connection {
     pub version: OnceLock<u32>,
     /// The protocol instance this connection completed hello with.
     pub instance: OnceLock<String>,
+    /// The channel declared by `hello`; informational, never durable.
+    pub client: OnceLock<ClientIdentity>,
     pub entry: Entry,
     hub: Arc<ConnectionHub>,
     pub closed: CancellationToken,
@@ -85,6 +93,7 @@ impl Connection {
             id: uuid::Uuid::new_v4().to_string(),
             version: OnceLock::new(),
             instance: OnceLock::new(),
+            client: OnceLock::new(),
             entry,
             closed,
             sender,
@@ -108,6 +117,14 @@ impl Connection {
             .lock()
             .expect("attachments")
             .contains_key(id)
+    }
+    /// The channel `hello` declared; `unknown` before hello or for an
+    /// unrecognized `other` client.
+    pub fn channel(&self) -> dim_agent_capabilities::environment_clients::ClientChannel {
+        self.client.get().map_or(
+            dim_agent_capabilities::environment_clients::ClientChannel::Unknown,
+            |identity| identity.channel,
+        )
     }
     pub async fn finish(&self) {
         self.closed.cancel();
@@ -1529,6 +1546,32 @@ impl ConnectionHub {
             .filter(|conn| conn.is_attached(session))
             .count()
     }
+    /// The attached clients of one Session by channel. A UI leaf's own
+    /// connection is `tui`; it is not counted again under its declared kind.
+    pub(crate) fn client_counts(
+        &self,
+        session: &str,
+    ) -> dim_agent_capabilities::environment_clients::ClientCounts {
+        use dim_agent_capabilities::environment_clients::{ClientChannel, ClientCounts};
+        let mut counts = ClientCounts::default();
+        let connections: Vec<_> = self
+            .connections
+            .lock()
+            .expect("connection index")
+            .values()
+            .filter_map(Weak::upgrade)
+            .filter(|conn| conn.is_attached(session))
+            .collect();
+        for connection in connections {
+            let channel = if self.ui.is_leaf_connection(&connection.id) {
+                ClientChannel::Tui
+            } else {
+                connection.channel()
+            };
+            counts.add(channel);
+        }
+        counts
+    }
     /// Asks every connection to close and waits for its reader and writer.
     /// Connections created after this call start already closed.
     pub async fn close(&self) {
@@ -1542,6 +1585,7 @@ pub(crate) struct ConnectionPlugin {
     config: Arc<ServerConfig>,
     control: Key<ServerControl>,
     ui: Key<crate::ui_host::UiHost>,
+    clients: Key<dim_agent_capabilities::environment_clients::SessionClientsHost>,
 }
 impl ConnectionPlugin {
     pub fn new(names: &Names<'_>, config: Arc<ServerConfig>) -> rutis::Result<Self> {
@@ -1549,7 +1593,18 @@ impl ConnectionPlugin {
             config,
             control: names.key()?,
             ui: names.key()?,
+            clients: names.key()?,
         })
+    }
+}
+/// The presence host over the connection and UI registries.
+struct HubClients(Arc<ConnectionHub>);
+impl dim_agent_capabilities::environment_clients::SessionClientsSource for HubClients {
+    fn counts(
+        &self,
+        session_id: &str,
+    ) -> dim_agent_capabilities::environment_clients::ClientCounts {
+        self.0.client_counts(session_id)
     }
 }
 impl DynPlugin for ConnectionPlugin {
@@ -1569,7 +1624,15 @@ impl DynPlugin for ConnectionPlugin {
                 owner.close().await;
                 Ok(())
             })?;
-            ctx.provide_as::<ConnectionHub>(hub)?;
+            ctx.provide_as::<ConnectionHub>(hub.clone())?;
+            ctx.provide_at(
+                self.clients.clone(),
+                Arc::new(
+                    dim_agent_capabilities::environment_clients::SessionClientsHost(Arc::new(
+                        HubClients(hub),
+                    )),
+                ),
+            )?;
             Ok(Effect::Done)
         })
     }
