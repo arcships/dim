@@ -37,6 +37,7 @@ async function withdraw(item: QueuedInput, steer: boolean): Promise<void> {
       <li v-for="(item, index) in items" :key="item.id" class="queued-item">
         <span class="queued-index">{{ index + 1 }}</span>
         <span class="queued-text">{{ item.text }}</span>
+        <span v-for="skill in item.skills" :key="skill" class="queued-skill">{{ t("message.skillLoaded", { name: skill }) }}</span>
         <button v-if="index === 0" type="button" class="ui-button" data-size="sm" data-variant="secondary" :disabled="busy" @click="withdraw(item, true)">{{ t("queue.steer") }}</button>
         <button type="button" class="ui-button" data-size="sm" data-variant="ghost" :disabled="busy" @click="withdraw(item, false)">{{ t("queue.remove") }}</button>
       </li>
@@ -51,4 +52,5 @@ async function withdraw(item: QueuedInput, steer: boolean): Promise<void> {
 .queued-item { display: flex; min-width: 0; align-items: center; gap: var(--space-2); }
 .queued-index { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .queued-text { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queued-skill { color: var(--muted-foreground); font-size: var(--text-xs); white-space: nowrap; }
 </style>

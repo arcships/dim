@@ -15,7 +15,7 @@ import { GoalFold, type Goal } from "./goal"
 import type { AskQuestion, ModelId, ModelProgress, QueuedInput, SessionEvent, ToolResult } from "./rpc/protocol"
 
 export type TimelineRow =
-  | { kind: "user"; key: string; text: string; at: number; sequence: number; cut: number }
+  | { kind: "user"; key: string; text: string; skills?: string[]; at: number; sequence: number; cut: number }
   | { kind: "assistant"; key: string; text: string; streaming: boolean }
   | { kind: "thinking"; key: string; text: string; streaming: boolean; elapsedMs?: number }
   | { kind: "tool"; key: string; callId: string; name: string; input: Record<string, unknown>; pending: boolean; result?: ToolResult }
@@ -81,12 +81,13 @@ export class Projection {
     const content = event.content
     switch (content.kind) {
       case "input":
-        if (content.user !== undefined) this.held.set(event.id, { id: event.id, text: content.text ?? "", user: content.user })
+        if (content.user !== undefined) this.held.set(event.id, { id: event.id, text: content.text ?? "", skills: content.skills, user: content.user })
         if (content.text !== undefined) {
           this.push({
             kind: "user",
             key: `user-${event.sequence}`,
             text: content.text,
+            skills: content.skills,
             at: event.createAt,
             sequence: event.sequence,
             cut: Math.max(0, event.sequence - 1),

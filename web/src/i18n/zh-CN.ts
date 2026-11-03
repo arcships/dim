@@ -159,6 +159,7 @@ const zhCN: Messages = {
   "message.branch": "从此消息创建线",
   "message.collapse": "收起",
   "message.copy": "复制整个消息",
+  "message.skillLoaded": "已加载技能：{name}",
   "message.expand": "展示全部",
   "message.quote": "引用到输入框",
   "newThread.pathLabel": "目录的绝对路径",

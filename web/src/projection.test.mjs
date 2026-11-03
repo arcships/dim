@@ -86,3 +86,17 @@ test("replayed events do not duplicate rows", () => {
   assert.equal(projection.apply(input), false)
   assert.equal(projection.rows.length, 1)
 })
+
+test("a user row carries the Skills its message loaded", () => {
+  const projection = new Projection()
+  projection.apply(event(5, { kind: "input", text: "check the build", skills: ["checkin"], blocks: [] }))
+  assert.deepEqual(projection.rows, [{
+    kind: "user",
+    key: "user-5",
+    text: "check the build",
+    skills: ["checkin"],
+    at: 1_005,
+    sequence: 5,
+    cut: 4,
+  }])
+})
