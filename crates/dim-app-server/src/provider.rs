@@ -1979,10 +1979,27 @@ impl ProviderService {
                     .ok_or_else(|| failure("Model capabilities are not adopted"))?,
             )
         } else {
-            let catalog = self
+            let mut catalog = self
                 .catalog_for(current.provider_id.clone(), cancel)
                 .await?
                 .ok_or_else(|| failure("Provider is unavailable"))?;
+            if current
+                .metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.startup.is_some())
+            {
+                let snapshot = current
+                    .capability_snapshot
+                    .as_ref()
+                    .ok_or_else(|| failure("Model capabilities are not adopted"))?;
+                snapshot
+                    .validate_for(&current.provider_id, &current.model_id)
+                    .map_err(failure)?;
+                catalog.apply_startup_limits(
+                    Some(snapshot.capabilities.context_window),
+                    Some(snapshot.capabilities.max_output_tokens),
+                );
+            }
             let model = catalog
                 .selectable(&current.model_id)
                 .ok_or_else(|| failure("Model is unavailable"))?;
@@ -2050,15 +2067,13 @@ impl ResolveModelConnection for ProductResolver {
     ) -> HostFuture<'_, ResolvedModelConnection> {
         Box::pin(async move {
             self.0.check(&cancel)?;
-            request
-                .capability_snapshot
-                .as_ref()
-                .ok_or_else(|| {
-                    HostError::classified(
-                        HostErrorKind::InvalidRequest,
-                        "Model capabilities are not adopted; select the model again",
-                    )
-                })?
+            let snapshot = request.capability_snapshot.as_ref().ok_or_else(|| {
+                HostError::classified(
+                    HostErrorKind::InvalidRequest,
+                    "Model capabilities are not adopted; select the model again",
+                )
+            })?;
+            snapshot
                 .validate_for(&request.provider_id, &request.model_id)
                 .map_err(|message| HostError::classified(HostErrorKind::InvalidRequest, message))?;
             if let Some(source) = request
@@ -2100,7 +2115,18 @@ impl ResolveModelConnection for ProductResolver {
                     .await?
                     .ok_or_else(|| failure("Provider not found"))?;
                 self.0.check(&cancel)?;
-                let catalog = static_catalog(&self.0.bundled, &request.provider_id, &record, true);
+                let mut catalog =
+                    static_catalog(&self.0.bundled, &request.provider_id, &record, true);
+                if request
+                    .metadata
+                    .as_ref()
+                    .is_some_and(|metadata| metadata.startup.is_some())
+                {
+                    catalog.apply_startup_limits(
+                        Some(snapshot.capabilities.context_window),
+                        Some(snapshot.capabilities.max_output_tokens),
+                    );
+                }
                 if catalog.selectable(&model_id).is_none() {
                     let message = catalog
                         .models
@@ -2238,11 +2264,21 @@ impl ResolveModelConnection for ProductResolver {
                     recovery: None,
                 });
             }
-            let catalog = self
+            let mut catalog = self
                 .0
                 .catalog(request.provider_id.clone(), &cancel)
                 .await?
                 .ok_or_else(|| failure("No current managed catalog"))?;
+            if request
+                .metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.startup.is_some())
+            {
+                catalog.apply_startup_limits(
+                    Some(snapshot.capabilities.context_window),
+                    Some(snapshot.capabilities.max_output_tokens),
+                );
+            }
             let model = catalog.selectable(&request.model_id).ok_or_else(|| {
                 let message = catalog
                     .models
@@ -2466,7 +2502,7 @@ fn oauth_rejection(error: &HostError, phase: CredentialRecoveryPhase) -> Credent
 
 pub struct ProviderPlugin {
     db: Key<SqliteStorage>,
-    index: Key<crate::agents::AgentIndex>,
+    index: Option<Key<crate::agents::AgentIndex>>,
     oauth: Key<ManagedProviders>,
     codex: Key<OpenAICodexOAuthService>,
     grok: Key<GrokOAuthService>,
@@ -2478,16 +2514,19 @@ pub struct ProviderPlugin {
 impl ProviderPlugin {
     /// The Provider part without a ProviderSecretHost.
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
-        Self::keyed(names, false)
+        Self::keyed(names, false, false)
     }
     /// The supplying plugin must provide ProviderSecretHost before activation.
     pub fn with_secret_host(names: &Names<'_>) -> rutis::Result<Self> {
-        Self::keyed(names, true)
+        Self::keyed(names, true, false)
     }
-    fn keyed(names: &Names<'_>, secret_host: bool) -> rutis::Result<Self> {
+    pub(crate) fn with_session_lifecycle(names: &Names<'_>) -> rutis::Result<Self> {
+        Self::keyed(names, false, true)
+    }
+    fn keyed(names: &Names<'_>, secret_host: bool, lifecycle: bool) -> rutis::Result<Self> {
         Ok(Self {
             db: names.key()?,
-            index: names.key()?,
+            index: lifecycle.then(|| names.key()).transpose()?,
             oauth: names.key()?,
             codex: names.key()?,
             grok: names.key()?,
@@ -2504,20 +2543,24 @@ impl DynPlugin for ProviderPlugin {
     fn injects(&self) -> Vec<TypeKey> {
         let mut keys = vec![
             self.db.erase(),
-            self.index.erase(),
             self.oauth.erase(),
             self.codex.erase(),
             self.grok.erase(),
             self.host.erase(),
             self.methods.erase(),
         ];
+        keys.extend(self.index.as_ref().map(Key::erase));
         keys.extend(self.secret_host.as_ref().map(Key::erase));
         keys
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let db = ctx.require_at(&self.db)?;
-            let index = ctx.require_at(&self.index)?;
+            let index = self
+                .index
+                .as_ref()
+                .map(|key| ctx.require_at(key))
+                .transpose()?;
             let oauth = ctx.require_at(&self.oauth)?;
             let codex = ctx.require_at(&self.codex)?;
             let grok = ctx.require_at(&self.grok)?;
@@ -2556,13 +2599,15 @@ impl DynPlugin for ProviderPlugin {
                 *owner.startup.lock().unwrap() = startup::StartupBindings::default();
                 Ok(())
             })?;
-            let restored = service.clone();
-            ctx.on::<crate::agents::SessionRestored>(move |event, _| {
-                if let Some((_, session)) = index.session(&event.session_id) {
-                    restored.restore_startup(session);
-                }
-                async { Ok(None) }
-            })?;
+            if let Some(index) = index {
+                let restored = service.clone();
+                ctx.on::<crate::agents::SessionRestored>(move |event, _| {
+                    if let Some((_, session)) = index.session(&event.session_id) {
+                        restored.restore_startup(session);
+                    }
+                    async { Ok(None) }
+                })?;
+            }
             let deleted = service.clone();
             ctx.on::<crate::agents::UnloadedSessionDeleted>(move |event, _| {
                 deleted.forget_startup(&event.session_id);

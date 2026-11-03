@@ -1284,11 +1284,33 @@ impl Connection {
         })
     }
     async fn create(&self, rpc: &RpcService, params: Create) -> Result<Reply, RpcError> {
-        if params.startup.is_some() && (self.entry != Entry::Local || !rpc.index.selects_models()) {
+        if (params.startup.is_some() || params.model_from_session.is_some())
+            && (self.entry != Entry::Local || !rpc.index.selects_models())
+        {
             return Err(RpcError::invalid(
                 "Model startup requires the protected-local product entry",
             ));
         }
+        if params.model_from_session.is_some() && rpc.config.product_home.is_none() {
+            return Err(RpcError::invalid(
+                "modelFromSession requires the product provider",
+            ));
+        }
+        if params.model_from_session.is_some()
+            && (params.model.is_some()
+                || params.startup.is_some()
+                || params.model_preferences.is_some())
+        {
+            return Err(RpcError::invalid(
+                "modelFromSession cannot be combined with model, startup or modelPreferences",
+            ));
+        }
+        let source = if let Some(id) = &params.model_from_session {
+            self.authorize(rpc, id)?;
+            Some(rpc.index.acquire(id).await?)
+        } else {
+            None
+        };
         let cwd = session_cwd(&params.cwd).await?;
         if params
             .tools
@@ -1317,12 +1339,45 @@ impl Connection {
         let mut config = crate::agents::session_config(&host.profile, &rpc.config.session_defaults);
         config.cwd = cwd.clone();
         let mut startup_admission = None;
-        if !rpc.index.selects_models() && params.model_preferences != Default::default() {
+        let preferences = params.model_preferences.unwrap_or_default();
+        if !rpc.index.selects_models() && preferences != Default::default() {
             return Err(RpcError::invalid(
                 "Model preferences require the product provider",
             ));
         }
-        if let Some(startup) = params.startup {
+        if let Some(source) = &source {
+            let adopted = source
+                .session
+                .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>("main")?
+                .and_then(|state| state.configuration.clone())
+                .ok_or_else(|| RpcError::invalid("Source Session has no adopted model"))?;
+            config.model = dim_agent_types::ModelSelection {
+                provider_id: adopted.provider_id,
+                model_id: adopted.model_id,
+                capability_snapshot: adopted.capability_snapshot,
+                config: adopted.config,
+                metadata: adopted
+                    .metadata
+                    .map(|metadata| dim_agent_types::RequestMetadata {
+                        startup: metadata.startup,
+                        extensions: metadata.extensions,
+                        ..Default::default()
+                    }),
+            };
+            if let Some(connection) = config
+                .model
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.startup.as_ref())
+                .and_then(|startup| startup.connection.as_ref())
+            {
+                rpc.ctx
+                    .get::<crate::provider::ProviderService>()
+                    .ok_or_else(RpcError::reloading)?
+                    .startup_connection(connection)
+                    .map_err(provider_error)?;
+            }
+        } else if let Some(startup) = params.startup {
             let provider = rpc
                 .ctx
                 .get::<crate::provider::ProviderService>()
@@ -1341,7 +1396,7 @@ impl Connection {
                 .startup_configuration(
                     target,
                     Path::new(&cwd),
-                    params.model_preferences,
+                    preferences,
                     startup,
                     None,
                     &rpc.unloading,
@@ -1379,7 +1434,7 @@ impl Connection {
                         })
                         .or_else(|| host.profile.model.clone()),
                     Some(cwd.into()),
-                    params.model_preferences,
+                    preferences,
                 )
                 .await?;
         } else if let Some(model) = params.model {
@@ -1423,12 +1478,23 @@ impl Connection {
             .create_session(&host, config, self.protocol_version(), None, origin)
             .await
             .map_err(RpcError::from)?;
-        if startup_admission.is_some() {
-            rpc.ctx
+        if startup_admission.is_some() || source.is_some() {
+            let retained = rpc
+                .ctx
                 .get::<crate::provider::ProviderService>()
-                .ok_or_else(RpcError::reloading)?
-                .retain_startup(&session, &session.config().model)
-                .map_err(provider_error)?;
+                .ok_or_else(RpcError::reloading)
+                .and_then(|provider| {
+                    provider
+                        .retain_startup(&session, &session.config().model)
+                        .map_err(provider_error)
+                });
+            if let Err(error) = retained {
+                rpc.index
+                    .delete(session.id())
+                    .await
+                    .map_err(RpcError::from)?;
+                return Err(error);
+            }
         }
         rpc.index.retain_versions();
         Ok(Reply::Create(CreateResult {

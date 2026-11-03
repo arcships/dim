@@ -76,6 +76,10 @@ gateway entry cannot hide native effort declarations. Explicit capacity
 declarations apply to this adoption only and may
 complete missing catalog limits without making a disabled or otherwise
 unavailable model selectable. Effort and tier still require model declarations.
+Startup execution and preference-only updates use the validated adopted
+capacities, not the persisted catalog's missing limits. Ordinary selections
+still require catalog declarations. Current availability, disablement
+and route checks still apply; no capacity is written back to the catalog.
 A bare model ID first uses the effective Provider if it offers that exact ID;
 otherwise exactly one available Provider must offer it. Ambiguity is an error.
 
@@ -88,6 +92,10 @@ Failed admission/creation releases unclaimed bindings. Sessions sharing a source
 retain it independently; final business close releases it after requests settle.
 Idle unload retains ownership; restore reinstates its close observer, and deletion
 of an unloaded Session releases its ownership. Provider unload drops all bindings.
+The product assembly declares the Session-directory dependency used for these
+lifecycle notifications; standalone Provider assemblies do not require it.
+Forks retain sources from their adopted branch snapshots before returning,
+including a model adopted after the source Session's creation.
 
 After process restart, a recorded source is unbound until the caller explicitly
 supplies a connection. A matching protocol, normalized URL, auth kind and header

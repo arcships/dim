@@ -505,6 +505,57 @@ async fn an_injected_managed_provider_serves_accounts_and_recovers_credentials()
         .await;
     assert_ok(&mixed);
     assert_eq!(mixed["result"]["disabledModelIds"], json!([]));
+    let startup = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,
+        "model":{"provider":"managed-fixture","modelId":"limited-model"},
+        "startup":{"contextWindow":64000,"maxOutputTokens":256}}),
+        )
+        .await;
+    assert_ok(&startup);
+    let startup_id = startup["result"]["sessionId"].as_str().unwrap();
+    for turn in 0..2 {
+        if turn == 1 {
+            assert_ok(
+                &client
+                    .rpc(
+                        "session.model.update",
+                        json!({"sessionId":startup_id,"branchId":"main",
+                "modelPreferences":{"reasoningEffort":{"action":"clear"}}}),
+                    )
+                    .await,
+            );
+        }
+        assert_ok(
+            &client
+                .rpc(
+                    "session.submit",
+                    json!({"sessionId":startup_id,"branchId":"main","text":"startup"}),
+                )
+                .await,
+        );
+        assert_ok(
+            &client
+                .rpc(
+                    "session.idle",
+                    json!({"sessionId":startup_id,"branchId":"main"}),
+                )
+                .await,
+        );
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            (turn + 1) * 2,
+            "managed startup reaches the relay with adopted limits"
+        );
+    }
+    let unchanged = client
+        .rpc("provider.catalog", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_eq!(
+        unchanged["result"]["catalog"]["models"][1]["unavailableReason"],
+        "limits_undeclared"
+    );
     let listed = client
         .rpc(
             "provider.management",
@@ -626,10 +677,14 @@ async fn an_injected_managed_provider_serves_accounts_and_recovers_credentials()
         *seen.lock().unwrap(),
         [
             "Bearer initial-fixture-secret",
+            "Bearer recovered-fixture-secret",
+            "Bearer initial-fixture-secret",
+            "Bearer recovered-fixture-secret",
+            "Bearer initial-fixture-secret",
             "Bearer recovered-fixture-secret"
         ]
     );
-    assert_eq!(fixture.recovered.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.recovered.load(Ordering::SeqCst), 3);
     {
         let mut account = fixture.account.lock().unwrap();
         account.generation += 1;
@@ -687,7 +742,17 @@ async fn an_injected_managed_provider_serves_accounts_and_recovers_credentials()
     server.join().await.unwrap();
     let mut released = fixture.released.lock().unwrap().clone();
     released.sort();
-    assert_eq!(released, ["initial", "recovered"]);
+    assert_eq!(
+        released,
+        [
+            "initial",
+            "initial",
+            "initial",
+            "recovered",
+            "recovered",
+            "recovered"
+        ]
+    );
     http.abort();
     std::fs::remove_dir_all(assets).unwrap();
     std::fs::remove_dir_all(home).unwrap();

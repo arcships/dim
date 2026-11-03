@@ -515,8 +515,10 @@ pub struct Create {
     pub cwd: String,
     #[serde(default, deserialize_with = "optional_non_null")]
     pub model: Option<ModelSelection>,
-    #[serde(default)]
-    pub model_preferences: crate::provider::ModelPreferences,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub model_from_session: Option<String>,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub model_preferences: Option<crate::provider::ModelPreferences>,
     #[serde(default, deserialize_with = "optional_non_null")]
     pub startup: Option<crate::provider::StartupInput>,
     #[serde(default, deserialize_with = "optional_non_null")]

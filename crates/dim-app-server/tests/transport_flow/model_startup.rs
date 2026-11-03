@@ -418,6 +418,16 @@ async fn startup_admission_rejects_unsafe_connections_and_ambiguous_models_witho
  {
     let home = std::env::temp_dir().join(format!("dim-admission-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&home).unwrap();
+    let seen = Seen::default();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let fixture = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new().fallback(endpoint).with_state(seen.clone()),
+        )
+        .into_future(),
+    );
     let server = start(&home).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let mut remote = Client::new_version(&server, true, 3).await;
@@ -496,7 +506,7 @@ async fn startup_admission_rejects_unsafe_connections_and_ambiguous_models_witho
     for name in ["default", "duplicate", "duplicate"] {
         let id = uuid::Uuid::new_v4().to_string();
         let created = client.rpc("provider.create", json!({"providerId":id,"displayName":id,
-            "connection":{"driverKind":"openai-compatible","baseUrl":"http://127.0.0.1:9/v1","auth":{"type":"anonymous"}},
+            "connection":{"driverKind":"openai-compatible","baseUrl":base,"auth":{"type":"anonymous"}},
             "models":[{"modelId":name,"displayName":name,"status":"active","capabilities":dim_agent_types::CatalogCapabilities::with_limits(64000,2048)}],"enabled":true})).await;
         assert_ok(&created);
         providers.push((id, created["result"]["version"].clone()));
@@ -533,10 +543,17 @@ async fn startup_admission_rejects_unsafe_connections_and_ambiguous_models_witho
     assert_ok(&unique);
     assert_eq!(unique["result"]["model"]["providerId"], providers[1].0);
     let undeclared = uuid::Uuid::new_v4().to_string();
-    assert_ok(&client.rpc("provider.create", json!({"providerId":undeclared,"displayName":"undeclared",
-        "connection":{"driverKind":"openai-compatible","baseUrl":"http://127.0.0.1:9/v1","auth":{"type":"anonymous"}},
+    assert_ok(
+        &client
+            .rpc(
+                "provider.create",
+                json!({"providerId":undeclared,"displayName":"undeclared",
+        "connection":{"driverKind":"openai-compatible","baseUrl":base,"auth":{"type":"anonymous"}},
         "models":[{"modelId":"undeclared","displayName":"undeclared","status":"active",
-            "capabilities":dim_agent_types::CatalogCapabilities::default()}],"enabled":true})).await);
+            "capabilities":dim_agent_types::CatalogCapabilities::default()}],"enabled":true}),
+            )
+            .await,
+    );
     let catalog_before = client
         .rpc("provider.catalog", json!({"providerId":undeclared}))
         .await;
@@ -564,12 +581,101 @@ async fn startup_admission_rejects_unsafe_connections_and_ambiguous_models_witho
         .unwrap();
     assert_eq!(snapshot.capabilities.context_window, 12345);
     assert_eq!(snapshot.capabilities.max_output_tokens, 321);
+    let sid = session.id().to_owned();
+    submit(&mut client, &sid, "main").await;
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        1,
+        "adopted capacity permits execution"
+    );
+    assert_ok(
+        &client
+            .rpc(
+                "session.model.update",
+                json!({"sessionId":sid,"branchId":"main",
+        "modelPreferences":{"reasoningEffort":{"action":"clear"}}}),
+            )
+            .await,
+    );
+    submit(&mut client, &sid, "main").await;
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        2,
+        "preference updates preserve adopted capacity"
+    );
+    let inherited = client
+        .rpc("session.create", json!({"cwd":home,"modelFromSession":sid}))
+        .await;
+    assert_ok(&inherited);
+    assert_eq!(inherited["result"]["model"], declared["result"]["model"]);
+    assert_eq!(
+        inherited["result"]["capabilitySnapshot"],
+        declared["result"]["capabilitySnapshot"]
+    );
+    let inherited_id = inherited["result"]["sessionId"].as_str().unwrap();
+    submit(&mut client, inherited_id, "main").await;
+    assert_eq!(seen.lock().unwrap().len(), 3);
     let catalog_after = client
         .rpc("provider.catalog", json!({"providerId":undeclared}))
         .await;
     assert_eq!(catalog_before["result"], catalog_after["result"]);
+    let ordinary = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,
+        "model":{"provider":providers[0].0,"modelId":"default"}}),
+        )
+        .await;
+    assert_ok(&ordinary);
+    let ordinary_id = ordinary["result"]["sessionId"].as_str().unwrap();
+    let copied = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,"modelFromSession":ordinary_id}),
+        )
+        .await;
+    assert_ok(&copied);
+    let copied_id = copied["result"]["sessionId"].as_str().unwrap();
+    let agent = server.agent().unwrap();
+    let ordinary_model = agent
+        .get_session(ordinary_id)
+        .unwrap()
+        .config()
+        .model
+        .clone();
+    assert!(ordinary_model.metadata.as_ref().unwrap().startup.is_none());
+    assert_eq!(
+        agent.get_session(copied_id).unwrap().config().model,
+        ordinary_model
+    );
+    submit(&mut client, copied_id, "main").await;
+    assert_eq!(seen.lock().unwrap().len(), 4);
+    assert_ok(
+        &client
+            .rpc(
+                "provider.update",
+                json!({"providerId":providers[0].0,
+        "expectedVersion":providers[0].1,"patch":{"enabled":false}}),
+            )
+            .await,
+    );
+    submit(&mut client, copied_id, "main").await;
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        4,
+        "copied capacity does not bypass Provider disablement"
+    );
+    let rejected = client
+        .rpc(
+            "session.model.update",
+            json!({"sessionId":copied_id,"branchId":"main",
+        "modelPreferences":{"reasoningEffort":{"action":"clear"}}}),
+        )
+        .await;
+    assert!(rejected.get("error").is_some(), "{rejected}");
     server.shutdown();
     server.join().await.unwrap();
+    fixture.abort();
     std::fs::remove_dir_all(home).unwrap();
 }
 
@@ -698,6 +804,16 @@ async fn temporary_startup_rebinds_after_restart_and_preserves_parent_cut_connec
     let server = start(&home).await;
     let mut client = Client::new_version(&server, false, 3).await;
     assert_ok(&client.rpc("session.attach", json!({"sessionId":sid})).await);
+    let before = server.agent().unwrap().sessions().len();
+    let unbound_copy = client
+        .rpc("session.create", json!({"cwd":home,"modelFromSession":sid}))
+        .await;
+    assert_eq!(unbound_copy["error"]["data"]["appError"], "provider_failed");
+    assert_eq!(
+        server.agent().unwrap().sessions().len(),
+        before,
+        "an unbound source creates no Session"
+    );
     let missing = client
         .rpc(
             "session.model.update",
@@ -745,5 +861,176 @@ async fn temporary_startup_rebinds_after_restart_and_preserves_parent_cut_connec
     server.join().await.unwrap();
     stop.cancel();
     fixture.await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forks_and_new_sessions_retain_the_adopted_connection_after_the_source_closes() {
+    let home = std::env::temp_dir().join(format!("dim-startup-fork-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let seen = Seen::default();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let fixture = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new().fallback(endpoint).with_state(seen.clone()),
+        )
+        .into_future(),
+    );
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let mut remote = Client::new_version(&server, true, 3).await;
+    assert!(
+        client
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("session.create.modelFromSession"))
+    );
+    assert!(
+        !remote
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("session.create.modelFromSession"))
+    );
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,"model":{"modelId":"startup-fixture"},
+        "startup":startup(&base, "openai-compatible", "first-secret")}),
+        )
+        .await;
+    assert_ok(&created);
+    let sid = created["result"]["sessionId"].as_str().unwrap();
+    let source = server.agent().unwrap().get_session(sid).unwrap();
+    submit(&mut client, sid, "main").await;
+    let first_cut = source.sequence("main").unwrap();
+    assert_ok(
+        &client
+            .rpc(
+                "session.model.update",
+                json!({"sessionId":sid,"branchId":"main",
+        "startup":startup(&base.replace("/v1", "/later/v1"), "openai-compatible", "later-secret")}),
+            )
+            .await,
+    );
+    submit(&mut client, sid, "main").await;
+    let later_cut = source.sequence("main").unwrap();
+    assert_ok(
+        &client
+            .rpc(
+                "session.model.update",
+                json!({"sessionId":sid,"branchId":"main",
+        "startup":startup(&base.replace("/v1", "/new/v1"), "openai-compatible", "new-secret")}),
+            )
+            .await,
+    );
+    for extra in [
+        json!({"model":{}}),
+        json!({"startup":{}}),
+        json!({"modelPreferences":{}}),
+    ] {
+        let mut params = json!({"cwd":home,"modelFromSession":sid});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let rejected = client.rpc("session.create", params).await;
+        assert!(rejected.get("error").is_some(), "{rejected}");
+    }
+    let rejected = remote
+        .rpc("session.create", json!({"cwd":home,"modelFromSession":sid}))
+        .await;
+    assert!(rejected.get("error").is_some(), "{rejected}");
+    let mut old_protocol = Client::new_version(&server, false, 2).await;
+    let rejected = old_protocol
+        .rpc("session.create", json!({"cwd":home,"modelFromSession":sid}))
+        .await;
+    assert_eq!(
+        rejected["error"]["data"]["appError"],
+        "session_protocol_version"
+    );
+    let inherited = client
+        .rpc("session.create", json!({"cwd":home,"modelFromSession":sid}))
+        .await;
+    assert_ok(&inherited);
+    let inherited_id = inherited["result"]["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let adopted = source
+        .get::<PromptSnapshot>("main")
+        .unwrap()
+        .unwrap()
+        .configuration
+        .unwrap();
+    let copy = server
+        .agent()
+        .unwrap()
+        .get_session(&inherited_id)
+        .unwrap()
+        .config()
+        .model
+        .clone();
+    assert_eq!(copy.provider_id, adopted.provider_id);
+    assert_eq!(copy.config, adopted.config);
+    assert_eq!(copy.capability_snapshot, adopted.capability_snapshot);
+    assert_eq!(
+        copy.metadata.as_ref().unwrap().startup,
+        adopted.metadata.unwrap().startup
+    );
+    let mut forks = Vec::new();
+    for (cut, credential) in [(first_cut, "first-secret"), (later_cut, "later-secret")] {
+        let fork = client
+            .rpc("session.fork", json!({"sessionId":sid,"at":cut}))
+            .await;
+        assert_ok(&fork);
+        forks.push((
+            fork["result"]["sessionId"].as_str().unwrap().to_owned(),
+            credential,
+        ));
+    }
+    source.close().await.unwrap();
+    for (fork, credential) in &forks {
+        let before = seen.lock().unwrap().len();
+        submit(&mut client, fork, "main").await;
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            before + 1,
+            "fork executes after source close"
+        );
+        assert_eq!(
+            seen.lock().unwrap().last().unwrap().1["authorization"],
+            format!("Bearer {credential}")
+        );
+        server
+            .agent()
+            .unwrap()
+            .get_session(fork)
+            .unwrap()
+            .close()
+            .await
+            .unwrap();
+    }
+    let before = seen.lock().unwrap().len();
+    submit(&mut client, &inherited_id, "main").await;
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        before + 1,
+        "new Session retains its own binding"
+    );
+    assert_eq!(
+        seen.lock().unwrap().last().unwrap().1["authorization"],
+        "Bearer new-secret"
+    );
+    assert_eq!(
+        seen.lock().unwrap().last().unwrap().0.path(),
+        "/new/v1/chat/completions"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    fixture.abort();
     std::fs::remove_dir_all(home).unwrap();
 }

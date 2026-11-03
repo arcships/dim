@@ -16133,7 +16133,7 @@
       "references": [
         "mod provider",
         "path provider",
-        "path provider::ProviderPlugin::new",
+        "path provider::ProviderPlugin::with_session_lifecycle",
         "path provider::ProviderService"
       ]
     },
@@ -18239,7 +18239,8 @@
       "from": "dim_app_server::connection",
       "to": "dim_agent_types::model",
       "references": [
-        "path crate::provider::ModelPreferences"
+        "path crate::provider::ModelPreferences",
+        "path dim_agent_types::RequestMetadata"
       ]
     },
     {

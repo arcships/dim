@@ -62,6 +62,22 @@ through Prompt before the CLI accepts its first user input. Ordinary requests
 without `startup` keep the target/preference rules below. Startup cannot clear
 preferences with the ordinary patch syntax; it accepts set values only.
 
+Protected-local product `session.create` also accepts `modelFromSession: string`,
+the source Session ID. It is mutually exclusive with `model`, `startup` and
+`modelPreferences`, even empty objects. The source passes ordinary Session
+authorization and acquisition and stays acquired through creation. The new
+Session copies the current adopted `main` model, capability snapshot, config
+and metadata, not the source's creation config or saved Provider preferences.
+Request identities (`sessionId`, `runId`, `traceId`, `turnId`) are omitted;
+startup policy and other model extensions are preserved. No history, tools or
+system prompt is copied by this option. Provider retains any bound startup
+connection for the new Session before returning; an unbound source is rejected
+without creating a Session. Ordinary configured selections are copied too,
+and execution keeps Provider's availability, disabled-model and route checks.
+The protected-local product entry advertises
+`session.create.modelFromSession` alongside `session.create` in v3 discovery;
+other entries do not. Clients send this option only when advertised.
+
 The complete adopted selection carries optional `metadata.startup`: a non-secret
 connection source and an optional automatic-compaction window. Its presence,
 including an empty object for a configured model, marks the startup inheritance

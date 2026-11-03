@@ -532,7 +532,7 @@ impl ProviderService {
         }
     }
 
-    pub(super) fn startup_connection(
+    pub(crate) fn startup_connection(
         &self,
         source: &StartupConnectionSource,
     ) -> Result<HttpModelConnection, HostError> {

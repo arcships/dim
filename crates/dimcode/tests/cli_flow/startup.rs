@@ -208,10 +208,11 @@ fn resume_effort_only_sends_forced_inheritance_before_submitting() {
 }
 
 #[test]
-fn home_first_message_keeps_the_startup_connection_without_an_explicit_provider() {
-    let home = Home::new();
-    let (calls, observed) = std::sync::mpsc::channel();
-    let daemon = home.daemon(move |wire| {
+fn home_first_message_inherits_the_adopted_model_without_replaying_startup() {
+    for (resume, switched) in [(false, false), (true, false), (false, true)] {
+        let home = Home::new();
+        let (calls, observed) = std::sync::mpsc::channel();
+        let daemon = home.daemon(move |wire| {
         let mut creates = 0;
         let mut line = String::new();
         while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
@@ -220,11 +221,11 @@ fn home_first_message_keeps_the_startup_connection_without_an_explicit_provider(
             let result = match request["method"].as_str().unwrap() {
                 "hello" => json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),
                     "protocolVersion":3,"daemonProfile":{"kind":"product"},
-                    "features":["session.create","session.history","provider.list"]}),
+                    "features":["session.create","session.create.modelFromSession","session.history","provider.list"]}),
                 "session.create" => {
                     creates += 1;
                     calls.send(request["params"].clone()).unwrap();
-                    if creates == 2 {
+                    if resume || creates == 2 {
                         reject(wire, &request);
                         continue;
                     }
@@ -235,44 +236,68 @@ fn home_first_message_keeps_the_startup_connection_without_an_explicit_provider(
                     record["model"] = json!({"providerId":"session-source","modelId":"model"});
                     record
                 }
-                "session.history" => json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+                "session.history" => {
+                    let events = if switched {
+                        json!([{"id":"switch","sequence":8,"create_at":1000,
+                            "type":"context","name":"configured","data":{
+                                "provider_id":"configured-provider","model_id":"selected-model",
+                                "model_preferences":{"reasoningEffort":"low"}}}])
+                    } else { json!([]) };
+                    json!({"events":events,"through":8,"nextAfter":8,"done":true})
+                }
                 "session.idle" => json!({"sequence":8}),
                 "account.providers" => json!([]),
                 "provider.catalog" => json!({"catalog":null}),
+                "provider.management" => panic!("The adopted model must not be looked up as a saved Provider"),
                 "provider.select" | "provider.preferences.update" => panic!("Startup must not write shared model settings"),
                 _ => json!({}),
             };
             wire.reply(&request, result);
         }
     });
-    let mut command = command(&home);
-    command.envs([
-        ("DIM_BASE_URL", "https://gateway.example/prefix"),
-        ("DIM_API_FORMAT", "gemini"),
-        ("DIM_MODEL", "model"),
-        ("DIM_API_KEY", "home-secret"),
-        ("DIM_AUTO_COMPACT_WINDOW", "1m"),
-    ]);
-    let mut terminal = Terminal::launch_tui(command);
-    terminal.until("session-source / model");
-    terminal.write(b"/new\r");
-    terminal.until("new session");
-    terminal.write(b"hello\r");
-    terminal.until("startup fixture rejection");
-    terminal.signal(libc::SIGKILL);
-    terminal.wait();
-    daemon.join().unwrap();
-    let calls: Vec<Value> = observed.try_iter().collect();
-    assert_eq!(calls.len(), 2);
-    for params in calls {
-        assert_eq!(params["model"], json!({"modelId":"model"}));
-        assert_eq!(
-            params["startup"],
-            json!({"connection":{"baseUrl":"https://gateway.example/prefix",
+        let mut command = command(&home);
+        if resume {
+            command.args(["--resume", "session"]);
+        } else {
+            command.envs([
+                ("DIM_BASE_URL", "https://gateway.example/prefix"),
+                ("DIM_API_FORMAT", "gemini"),
+                ("DIM_MODEL", "model"),
+                ("DIM_API_KEY", "home-secret"),
+                ("DIM_AUTO_COMPACT_WINDOW", "1m"),
+            ]);
+        }
+        let mut terminal = Terminal::launch_tui(command);
+        terminal.until(if switched {
+            "configured-provider / selected-model"
+        } else {
+            "session-source / model"
+        });
+        terminal.write(b"/new\r");
+        terminal.until("new session");
+        terminal.write(b"hello\r");
+        terminal.until("startup fixture rejection");
+        terminal.signal(libc::SIGKILL);
+        terminal.wait();
+        daemon.join().unwrap();
+        let calls: Vec<Value> = observed.try_iter().collect();
+        assert_eq!(calls.len(), if resume { 1 } else { 2 });
+        if !resume {
+            let params = &calls[0];
+            assert_eq!(params["model"], json!({"modelId":"model"}));
+            assert_eq!(
+                params["startup"],
+                json!({"connection":{"baseUrl":"https://gateway.example/prefix",
             "apiFormat":"gemini","apiKey":"home-secret"},"autoCompactWindow":1000000})
-        );
+            );
+        }
+        let inherited = calls.last().unwrap();
+        assert_eq!(inherited["modelFromSession"], "session");
+        for key in ["model", "startup", "modelPreferences"] {
+            assert!(inherited.get(key).is_none(), "{inherited}");
+        }
+        assert!(!terminal.transcript.contains("home-secret"));
     }
-    assert!(!terminal.transcript.contains("home-secret"));
 }
 
 #[test]

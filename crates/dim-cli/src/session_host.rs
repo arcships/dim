@@ -268,6 +268,7 @@ struct Worker {
     shell_stops: Vec<u64>,
     /// The model the session adopted, for the preference commands.
     model: Option<Configuration>,
+    model_session: Option<String>,
     /// The MCP sign-in waiting for its callback.
     mcp_attempt: Option<McpAttempt>,
     /// Callbacks the local listener captured.
@@ -368,6 +369,7 @@ async fn run(
         title_revision: 0,
         session_cwd: None,
         parked: String::new(),
+        model_session: None,
         projection: Projection::default(),
         question_responses: Vec::new(),
         approval_details: Default::default(),
@@ -714,6 +716,7 @@ impl Worker {
         }
         let attached_session = self.invalidate_projection();
         let mut params = self.create_params();
+        self.options.creation_startup(&mut params);
         let mut preferences = self.options.creation_preferences(None);
         let mut target = None;
         if let (Some(provider), Some(model)) =
@@ -755,19 +758,18 @@ impl Worker {
     async fn start_session(&mut self) -> crate::Result<()> {
         let attached_session = self.invalidate_projection();
         let mut params = self.create_params();
-        let mut preferences = self.options.creation_preferences(None);
+        let mut preferences = None;
         let mut target = None;
         let result = async {
-            if let Some(model) = &self.model {
-                params["model"] = json!({"modelId": model.model_id});
-                if params["startup"].get("connection").is_none() {
-                    params["model"]["provider"] = json!(model.provider_id);
-                    let (provider, model) = (model.provider_id.clone(), model.model_id.clone());
-                    preferences = self.options.creation_preferences(
-                        saved_model_preferences(&mut self.client, &provider, &model).await?,
-                    );
-                    target = Some((provider, model));
-                }
+            if let Some(source) = &self.model_session
+                && self.client.offers("session.create.modelFromSession")
+            {
+                params["modelFromSession"] = json!(source);
+            } else if let Some(model) = &self.model {
+                let (provider, model) = (model.provider_id.clone(), model.model_id.clone());
+                params["model"] = json!({"provider": provider, "modelId": model});
+                preferences = saved_model_preferences(&mut self.client, &provider, &model).await?;
+                target = Some((provider, model));
             }
             if let Some(preferences) = &preferences {
                 params["modelPreferences"] = preferences.clone();
@@ -778,9 +780,7 @@ impl Worker {
                     &mut self.client,
                     target.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
                     error,
-                    preferences
-                        .as_ref()
-                        .filter(|_| self.options.effort.is_none()),
+                    preferences.as_ref(),
                 )
                 .await),
             }
@@ -809,7 +809,6 @@ impl Worker {
     /// scope sends it.
     fn create_params(&self) -> serde_json::Value {
         let mut params = json!({"cwd": self.options.cwd.to_string_lossy()});
-        self.options.creation_startup(&mut params);
         if let Some(policy) = permission::creation_policy(&self.options) {
             params["permissionPolicy"] = policy;
         }
@@ -857,6 +856,7 @@ impl Worker {
         self.session_title = stored_title(attached.title.as_deref()).map(str::to_owned);
         self.title_revision = attached.title_revision;
         self.session_id = session_id.clone();
+        self.model_session = Some(session_id.clone());
         self.session_cwd = attached.cwd;
         self.register_ui().await;
         self.mcp_required.clear();
@@ -1027,11 +1027,13 @@ impl Worker {
             && matches!(command, Command::Submit(..) | Command::SubmitDraft(..))
             && let Err(error) = self.start_session().await
         {
-            self.send(Update::Notice(if self.options.startup.is_some() {
-                error.to_string()
-            } else {
-                no_session(&error)
-            }));
+            self.send(Update::Notice(
+                if self.options.startup.is_some() || self.model_session.is_some() {
+                    error.to_string()
+                } else {
+                    no_session(&error)
+                },
+            ));
             return Ok(());
         }
         match command {
@@ -3170,6 +3172,7 @@ impl Worker {
             }
         }
         let model = if self.session_id.is_empty() {
+            self.model_session = None;
             let model = ModelId {
                 provider_id,
                 model_id,

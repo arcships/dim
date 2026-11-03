@@ -355,10 +355,15 @@ startup `DIM_*` variables from that child environment; the running client keeps
 its parsed Session options and unrelated environment variables are unchanged.
 Explicit startup choices force new branches and members to inherit the adopted
 configuration. Resume without overrides retains the recorded configuration.
+On daemons advertising `session.create.modelFromSession`, `/new` starts its first
+message with the previous Session's currently adopted main model, preferences,
+capacities and temporary connection. Launch overrides are not replayed. Selecting
+a configured model at home instead uses that model and its saved preferences.
 
 ```text
 flags + DIM_* -> session.create / resumed session.model.update -> first input
                 (Session-local; no saved Provider mutation)
+current main -> /new -> first input -> new Session with adopted model
 ```
 
 ```sh
