@@ -1150,7 +1150,7 @@ async fn startup_summaries_keep_selection_and_strategy_reasoning_without_narrowi
                 auto_compact_window: Some(2_000),
             }),
             extensions: serde_json::from_value(
-                serde_json::json!({"providerRoute":"captured-route"}),
+                serde_json::json!({"providerRoute":"captured-route", "requestId":"turn-model-call"}),
             )
             .unwrap(),
         });
@@ -1202,8 +1202,12 @@ async fn startup_summaries_keep_selection_and_strategy_reasoning_without_narrowi
                 selected.metadata.as_ref().unwrap().startup
             );
             assert_eq!(
-                metadata.extensions,
-                selected.metadata.as_ref().unwrap().extensions
+                metadata.extensions.get("providerRoute"),
+                Some(&serde_json::json!("captured-route"))
+            );
+            assert!(
+                !metadata.extensions.contains_key("requestId"),
+                "each summary call must receive its own recording identity"
             );
             assert!(
                 metadata.session_id.is_none()

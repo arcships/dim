@@ -1550,8 +1550,9 @@ change to chunking, the cut-off rule, retention or the trigger.
   capability snapshot and selection metadata, including the durable startup connection
   source. They copy model options before applying the strategy's reasoning rule:
   startup does not override the default `off` or an explicitly configured strategy
-  value. They drop the conversation's session/run/trace/turn request identities; a
-  producer supplies its own identities. Provider resolves the source without selecting
+  value. They drop the conversation's session/run/trace/turn request identities
+  and its `requestId` model-call identity while retaining routing extensions; a
+  producer supplies a fresh identity for each summary call. Provider resolves the source without selecting
   a saved default or borrowing another connection's credentials. Summary prompts,
   output allowance, chunking and cut-off handling remain the strategy's.
 - `off` and `low` apply where the model allows it. Where Provider's mapping rejects the effort for
@@ -2076,4 +2077,3 @@ symbol, a command, an error — is kept verbatim ([model-facing prompts
 §7](../model-prompts.md#7-language)). The prompt asks for it; a change to that sentence is judged
 like the rest of the prompt. The prompt itself and every other text on this page stay English in
 one copy.
-

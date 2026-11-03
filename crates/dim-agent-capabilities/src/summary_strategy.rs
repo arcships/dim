@@ -597,7 +597,11 @@ fn summary_request(
         .as_ref()
         .map(|metadata| RequestMetadata {
             startup: metadata.startup.clone(),
-            extensions: metadata.extensions.clone(),
+            extensions: {
+                let mut extensions = metadata.extensions.clone();
+                extensions.remove("requestId");
+                extensions
+            },
             ..Default::default()
         });
     request
