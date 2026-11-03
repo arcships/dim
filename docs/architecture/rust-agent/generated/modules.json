@@ -8626,13 +8626,6 @@
     },
     {
       "from": "dim_agent_capabilities::environment_clients",
-      "to": "dim_agent_types::events",
-      "references": [
-        "path EventKind::InputMessage"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::environment_clients",
       "to": "dim_agent_types::prompt",
       "references": [
         "path PromptDelivery::State",

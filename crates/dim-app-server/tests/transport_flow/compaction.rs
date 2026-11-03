@@ -645,8 +645,10 @@ async fn summary_reasoning_comes_from_factory_configuration() {
                 )
                 .await,
         );
-        turn(&mut client, &sid, &big(0, 600.0)).await;
-        turn(&mut client, &sid, &big(1, 600.0)).await;
+        // Keep the turns below the automatic threshold the state blocks a
+        // Session carries now count toward; this test exercises the manual step.
+        turn(&mut client, &sid, &big(0, 500.0)).await;
+        turn(&mut client, &sid, &big(1, 500.0)).await;
         let reply = client
             .rpc("session.context.compact", json!({"sessionId":sid,"branchId":"main"}))
             .await;
