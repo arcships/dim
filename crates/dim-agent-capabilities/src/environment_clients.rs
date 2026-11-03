@@ -2,9 +2,8 @@
 //!
 //! The App Server owns the connection and UI registries and provides the
 //! read-only `SessionClientsHost`. This capability registers
-//! `dim/environment/clients`; each branch adopts the current counts when the
-//! operator's input arrives, so idle attach/detach churn does not become a
-//! block.
+//! `dim/environment/clients`; each branch adopts the current counts at every
+//! turn start, so idle attach/detach churn does not become a block.
 use crate::{
     host::{HostError, HostFuture, LoadPrompt},
     prompt_registry::{PromptRegistry, targets},
@@ -233,12 +232,9 @@ impl DynPlugin for ClientsBranchPlugin {
                 .follow(
                     ctx,
                     "EnvironmentClients",
-                    &["input/message"],
+                    &["turn/start"],
                     move |delivery| {
-                        if let Delivery::Live(event) = delivery
-                            && let EventKind::InputMessage(data) = &event.kind
-                            && data.user.is_some()
-                        {
+                        if let Delivery::Live(_) = delivery {
                             let configure = configure.clone();
                             owned.spawn(async move {
                                 let update = ConfigureUpdate {
