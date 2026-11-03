@@ -30,24 +30,25 @@ impl CompleteAuxiliary for ConfiguredAuxiliary {
         Box::pin(async move {
             auxiliary_model::check(&request)?;
             let started = Instant::now();
-            let target = self
-                .models
-                .get(&model.provider_id, &model.model_id)
-                .map(|entry| AuxiliaryTarget {
-                    model: model.clone(),
-                    config: entry.defaults.clone(),
-                    capability_snapshot: None,
-                    max_output_tokens: entry.max_output_tokens,
-                })
-                .map_err(|_| unavailable())?;
-            let result = auxiliary_model::complete(
-                &self.host,
-                self.connection.as_ref(),
-                target,
-                request,
-                &cancel,
-            )
-            .await;
+            let result = match self.models.get(&model.provider_id, &model.model_id) {
+                Ok(entry) => {
+                    let target = AuxiliaryTarget {
+                        model: model.clone(),
+                        config: entry.defaults.clone(),
+                        capability_snapshot: None,
+                        max_output_tokens: entry.max_output_tokens,
+                    };
+                    auxiliary_model::complete(
+                        &self.host,
+                        self.connection.as_ref(),
+                        target,
+                        request,
+                        &cancel,
+                    )
+                    .await
+                }
+                Err(_) => Err(unavailable()),
+            };
             auxiliary_model::record(&model, started, result.as_ref());
             result
         })
