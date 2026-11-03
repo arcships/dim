@@ -84,7 +84,7 @@ flowchart LR
 
 **行的配置。** 行的 `config` 是清单的 `code.config` 上深合并宿主的同名补丁：对象逐成员合并，其他值（包括数组）替换清单的值。宿主在启动前设置补丁；产品不设置，所以随产品发布的插件读到清单里的值。运行候选文本的宿主把文本放在插件作者暴露的成员上，评测工具即如此（[model-prompts §8.1](../model-prompts.md#81-规则)），两臂运行同一份插件代码。
 
-**数据目录。** pluginFiles 根目录是产品 home 的；没有产品 home 的宿主自己给出这个根。打开一个带代码的插件时，如果 `<pluginFiles 根目录>/<id>/` 不存在，PluginManager 就创建它：`<id>` 是已安装插件的 id，或默认插件的名字，两者都按 id 规则检查（§7）。关闭或删除插件时，PluginManager 从不删除这个目录，和 Settings 文档留在 home 中一样。已存在的条目只有在它是目录、不是符号链接、并且解析后就是根目录下的它自己时才使用；否则不创建任何东西，插件的文件操作会像没有这个目录时一样失败。插件通过 `pluginFiles` 只在自己的 id 目录下写入（[进程 TypeScript §5.2](../../../design/process-typescript.md#52-public-pluginfiles-binding)）。
+**数据目录。** pluginFiles 根目录依次是：嵌入式宿主给出的根、产品 home、宿主启动时的执行 home（`--home`）。只带数据库文件启动的宿主三者都没有，所以既没有 pluginFiles 根，也不运行 PluginManager；根目录从不取数据库所在目录或工作目录。打开一个带代码的插件时，如果 `<pluginFiles 根目录>/<id>/` 不存在，PluginManager 就创建它：`<id>` 是已安装插件的 id，或默认插件的名字，两者都按 id 规则检查（§7）。关闭或删除插件时，PluginManager 从不删除这个目录，和 Settings 文档留在 home 中一样。已存在的条目只有在它是目录、不是符号链接、并且解析后就是根目录下的它自己时才使用；否则不创建任何东西，插件的文件操作会像没有这个目录时一样失败。插件通过 `pluginFiles` 只在自己的 id 目录下写入（[进程 TypeScript §5.2](../../../design/process-typescript.md#52-public-pluginfiles-binding)）。
 
 插件的业务配置（它的 Settings 来源）不在清单中：插件的代码在启动时向 Settings 登记自己的来源（§9 R1）。现在 TypeScript 行中的 `settings` 成员将被去掉。
 

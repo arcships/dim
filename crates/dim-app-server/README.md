@@ -19,8 +19,9 @@ cargo run --locked -p dim-app-server -- \
 
 A configured model file uses the same public execution capabilities: workspace tools, approvals,
 Skills, prompt sources, MCP, branches, collaboration and automatic Session titles. The configured
-catalog provides the auxiliary model those titles use, and plugin files live under the native home
-when no `--plugin-files` is given. Provider selection does not select a different harness. Accounts,
+catalog provides the auxiliary model those titles use, and plugin files live under `--home`; a host
+started with only a database file has no plugin files root and registers no `pluginFiles` provider.
+Provider selection does not select a different harness. Accounts,
 OAuth sign-in and provider management remain specific to the product provider.
 
 ```sh

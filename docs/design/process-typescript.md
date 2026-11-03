@@ -414,8 +414,15 @@ Timeline, storage or persistence contract changes here.
 
 | Host configuration | Registration |
 | --- | --- |
-| Authorized `product_home` | Register the existing `PluginFilesPlugin(product_root)` once in the native process rows; availability does not depend on which process, Session, branch or managed rows are configured |
-| No authorized product root | Do not invent a root or fall back to the working directory; no provider is supplied |
+| An embedding host names a root in `ServerConfig::plugin_files` | Register `PluginFilesPlugin` with that root once in the native process rows; availability does not depend on which process, Session, branch or managed rows are configured |
+| Otherwise, an authorized `product_home` | Register `PluginFilesPlugin(product_root)` once in the native process rows, as above |
+| Otherwise, the execution home `--home` | Register `PluginFilesPlugin(execution_home)` once in the native process rows, as above |
+| Only `--database` (no named root, product home or `--home`) | Do not invent a root and never fall back to the database's directory or the working directory; no provider is supplied |
+
+PluginManager's home is the product home, else `--home`, and it runs only with
+a product home or `--home` ([PluginManager §2.1](plugins/PluginManager.md#21-the-plugin-directory-and-its-manifest)),
+so the plugin files root and the plugin manager never disagree. A host started
+with only a database file therefore runs no PluginManager either.
 
 This changes only native composition. Keep `pluginFiles.open`, the scope/lease
 API, S10 outer v1, errors, FileStorage authority and provider lifetime unchanged.

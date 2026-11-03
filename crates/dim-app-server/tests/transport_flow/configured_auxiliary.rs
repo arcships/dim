@@ -83,6 +83,27 @@ async fn launch_configured(
     parts: Option<SessionTypeScriptConfig>,
     defaults: Option<PathBuf>,
 ) -> RunningServer {
+    launch_configured_with(
+        directory,
+        models,
+        parts,
+        defaults,
+        Some(directory.join("state")),
+    )
+    .await
+}
+
+/// Serves the model-config profile with no product home and a configured
+/// catalog. `home` is `--home`; `None` starts the host with only the database
+/// file under `directory`.
+async fn launch_configured_with(
+    directory: &Path,
+    models: Arc<AimuxModels>,
+    parts: Option<SessionTypeScriptConfig>,
+    defaults: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> RunningServer {
+    let database = home.is_none().then(|| directory.join("dim.sqlite"));
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
         .timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()))
@@ -113,7 +134,8 @@ async fn launch_configured(
         ServerConfig {
             unix_path: Some(directory.join("ipc/server.sock")),
             model_catalog: Some(models),
-            target_home: Some(directory.join("state")),
+            target_home: home,
+            database_path: database,
             session_typescript: parts,
             plugin_defaults: defaults,
             session_defaults: SessionConfig {
@@ -266,8 +288,8 @@ async fn node_configured_profile_reaches_the_auxiliary_model_from_a_session_part
     .unwrap();
 }
 
-/// Without `--plugin-files` and without a product home, the plugin files root
-/// is the native home, so the PluginFiles row runs.
+/// With no named root and no product home, the plugin files root is the
+/// execution home `--home`, so the PluginFiles row runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_configured_profile_provides_a_plugin_files_root() {
     tokio::time::timeout(Duration::from_secs(60), async {
@@ -291,6 +313,43 @@ async fn the_configured_profile_provides_a_plugin_files_root() {
             .expect("the binding names its provider");
         assert_eq!(owner.name, "PluginFiles");
         assert_eq!(owner.state, rutis::host::FiberState::Active);
+
+        server.shutdown();
+        server.join().await.unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// A host started with only a database file has no plugin files root: it
+/// registers no `pluginFiles` provider and never falls back to the database
+/// directory or the working directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_configured_profile_with_only_a_database_provides_no_plugin_files_root() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let capture = Arc::new(Capture::default());
+        let address = provider(capture.clone()).await;
+        let directory = directory("configured-plugin-files-none");
+        let models = models(&models_file(&directory, &format!("http://{address}/v1")));
+        let server = launch_configured_with(&directory, models, None, None, None).await;
+
+        let diagnostics = server.diagnostics();
+        let key = rutis_bridge::session::host_key("pluginFiles").erase();
+        assert!(
+            diagnostics
+                .bindings
+                .iter()
+                .all(|binding| binding.key != key),
+            "a database-only host provides no pluginFiles"
+        );
+        assert!(
+            diagnostics
+                .plugins
+                .iter()
+                .all(|plugin| plugin.name != "PluginFiles"),
+            "a database-only host starts no PluginFiles row"
+        );
 
         server.shutdown();
         server.join().await.unwrap();
