@@ -638,6 +638,30 @@ mod tests {
         assert!(text.iter().any(|r| r.contains("2 / 3")), "{text:#?}");
     }
 
+    /// A Skill and a command of the same name are both offered, the command
+    /// first.
+    #[test]
+    fn a_shared_name_offers_the_command_first() {
+        let skills = vec![Skill {
+            name: "new".into(),
+            description: "Start a fresh session".into(),
+            display_name: None,
+            display_description: None,
+        }];
+        for query in ["new", "ne"] {
+            let rows = rows_for(query, SCROLLBACK, &skills);
+            assert!(
+                matches!(rows[0].kind, Kind::Command(_)),
+                "{query}: {:?}",
+                rows[0].label
+            );
+            assert!(
+                rows.iter()
+                    .any(|row| matches!(&row.kind, Kind::Skill(name) if name == "new"))
+            );
+        }
+    }
+
     fn strip(s: &str) -> String {
         let mut out = String::new();
         let mut skip = false;

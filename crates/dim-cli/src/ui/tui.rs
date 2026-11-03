@@ -1819,6 +1819,26 @@ impl App {
                 ));
             }
             Update::Switched { session_id, kind } => self.switch_session(session_id, kind),
+            Update::Skills(entries) => {
+                self.composer.set_skills(
+                    entries
+                        .into_iter()
+                        .filter(|entry| {
+                            // A name with whitespace cannot be referenced
+                            // (Skills §9), so it is not offered.
+                            entry.enabled
+                                && entry.shadowed_by.is_none()
+                                && !entry.name.chars().any(char::is_whitespace)
+                        })
+                        .map(|entry| crate::ui::composer::palette::Skill {
+                            name: entry.name,
+                            description: entry.description,
+                            display_name: None,
+                            display_description: None,
+                        })
+                        .collect(),
+                );
+            }
             Update::Sessions { id, paged, result } => {
                 if let Some(Prompt::Sessions(panel)) = &mut self.prompt {
                     panel.page(&id, paged, result);
@@ -8549,6 +8569,61 @@ mod tests {
         for row in ["line first", "line second", "line third"] {
             assert!(text.contains(row), "{row} is drawn: {text}");
         }
+    }
+
+    /// The palette lists the Session's enabled, unshadowed Skills, and a row
+    /// completes its marker without sending.
+    #[test]
+    fn the_palette_lists_enabled_unshadowed_skills() {
+        use crate::management::skills::Entry;
+        let key = |code| InputEvent::Key(crate::ui::terminal::KeyEvent::new(code, Modifiers::NONE));
+        let (mut app, sent, _home) = session_with_queue(false, &[]);
+        let entry = |name: &str, enabled: bool, shadowed_by: Option<&str>| Entry {
+            id: format!("user:{name}"),
+            source: Some("user".into()),
+            name: name.into(),
+            description: format!("About {name}"),
+            file_path: format!("/home/.agents/skills/{name}/SKILL.md"),
+            enabled,
+            shadowed_by: shadowed_by.map(str::to_owned),
+        };
+        app.apply(Update::Skills(vec![
+            entry("commit", true, None),
+            entry("deploy", false, None),
+            entry("shadowed", true, Some("user:shadowed")),
+            entry("two words", true, None),
+        ]));
+        typed(&mut app, "/comm");
+        assert!(matches!(app.handle(key(KeyCode::Enter)), Outcome::Continue));
+        assert_eq!(app.composer.text(), "$skill: commit ");
+        assert!(
+            sent.borrow().is_empty(),
+            "the marker is a draft, not a message"
+        );
+        app.composer.clear();
+        typed(&mut app, "/dep");
+        app.handle(key(KeyCode::Tab));
+        assert_eq!(
+            app.composer.text(),
+            "/dep",
+            "a disabled Skill is not offered"
+        );
+        app.composer.clear();
+        typed(&mut app, "/sha");
+        app.handle(key(KeyCode::Tab));
+        assert_eq!(
+            app.composer.text(),
+            "/sha",
+            "a shadowed Skill is not offered"
+        );
+        app.composer.clear();
+        typed(&mut app, "/two");
+        app.handle(key(KeyCode::Tab));
+        assert_eq!(
+            app.composer.text(),
+            "/two",
+            "a name with whitespace cannot be referenced and is not offered"
+        );
     }
 
     /// A resumed session of `count` user messages `ask N`, each cut at `N`.

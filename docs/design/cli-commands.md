@@ -70,10 +70,22 @@ matching nothing, leaves the draft unchanged. A command without an argument
 runs on `Enter` only.
 The command menu lists `/permissions` as the permission entry. `/approvals` and `/approval`
 remain compatibility aliases when typed directly. Run, queue and steer keys are
-omitted from the menu. The menu only lists slash commands: the view actions for
+omitted from the menu. The menu lists slash commands and Skills: the view actions for
 picking an earlier message and scrolling to the top or bottom are also omitted;
 `Tab`, `Home` and `End` keep their fullscreen message-picker and scroll bindings
 outside the menu.
+
+A Skill row reads `$name` with its description and shows the `skill` category. Only
+an enabled Skill that no other root shadows is listed; a name containing whitespace
+is not listed either, because a reference ends at the first whitespace. The list follows the
+Session's catalog: the client rereads it on attach, on a Session switch, after
+`/reload-skills`, and after a change in `/skills`. A daemon that does not serve
+`skills.catalog` shows the commands alone, without an error. Choosing a Skill row,
+with `Enter` or `Tab`, fills `$skill: <name> ` and never sends; the marker is part
+of the message text. Skills come after commands; a Skill leads only when its name
+starts with the query and no command name or alias does, so a name shared with a
+command keeps both rows, the command first. `/` is the only trigger: `@` stays the
+file picker.
 
 The menu fits the available terminal columns and rows in both modes. Command
 names take priority over category labels, descriptions and shortcut labels;
@@ -127,6 +139,7 @@ Commands
   session /tasks       view command output or interrupt a member
   session /lines       follow, talk to and end this session's lines
   model   /permissions permission preset and command rules
+  skill   $commit      write a commit message for the staged changes
 
 / + Enter          -> start a new session
 /ex + Enter        -> /exit (completion only)

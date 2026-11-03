@@ -1052,6 +1052,9 @@ pub enum Update {
         session_id: String,
         kind: SwitchKind,
     },
+    /// The Session's Skills as the palette lists them: enabled and not
+    /// shadowed. An empty list when the daemon has no catalog.
+    Skills(Vec<crate::management::skills::Entry>),
     /// The stored sessions, or why they could not be listed.
     Sessions {
         id: String,

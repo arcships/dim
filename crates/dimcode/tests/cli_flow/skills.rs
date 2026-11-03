@@ -425,10 +425,11 @@ fn tui_skills_panel_reads_again_after_a_failed_read() {
             &history,
             json!({"events":[],"through":8,"nextAfter":8,"done":true}),
         );
-        for _ in 0..2 {
+        for _ in 0..3 {
             let request = wire.read_any();
             match request["method"].as_str() {
                 Some("account.providers") => wire.reply(&request, json!([])),
+                Some("skills.catalog") => wire.reply(&request, json!({"version": 1, "entries": [], "issues": []})),
                 Some("session.context.usage") => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
                     "code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
                 method => panic!("unexpected request {method:?}"),
@@ -478,10 +479,11 @@ fn tui_skills_panel_lists_toggles_and_reloads() {
             &history,
             json!({"events":[],"through":8,"nextAfter":8,"done":true}),
         );
-        for _ in 0..2 {
+        for _ in 0..3 {
             let request = wire.read_any();
             match request["method"].as_str() {
                 Some("account.providers") => wire.reply(&request, json!([])),
+                Some("skills.catalog") => wire.reply(&request, json!({"version": 1, "entries": [], "issues": []})),
                 Some("session.context.usage") => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
                     "code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
                 method => panic!("unexpected request {method:?}"),
@@ -561,10 +563,11 @@ fn tui_skills_panel_lists_unsourced_entries_under_the_area_heading() {
                 &history,
                 json!({"events":[],"through":8,"nextAfter":8,"done":true}),
             );
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let request = wire.read_any();
                 match request["method"].as_str() {
                     Some("account.providers") => wire.reply(&request, json!([])),
+                    Some("skills.catalog") => wire.reply(&request, json!({"version": 1, "entries": [], "issues": []})),
                     Some("session.context.usage") => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
                         "code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
                     method => panic!("unexpected request {method:?}"),
@@ -625,10 +628,11 @@ fn tui_skills_panel_reloads_an_empty_catalog() {
             &history,
             json!({"events":[],"through":8,"nextAfter":8,"done":true}),
         );
-        for _ in 0..2 {
+        for _ in 0..3 {
             let request = wire.read_any();
             match request["method"].as_str() {
                 Some("account.providers") => wire.reply(&request, json!([])),
+                Some("skills.catalog") => wire.reply(&request, json!({"version": 1, "entries": [], "issues": []})),
                 Some("session.context.usage") => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
                     "code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
                 method => panic!("unexpected request {method:?}"),

@@ -48,7 +48,7 @@ flowchart TB
 
 | 契约 | 负责文档 |
 | --- | --- |
-| 线路协议 v3：分帧、`hello` 与功能声明、通知 | `crates/dim-app-server/src/protocol.rs`（没有文字版参考，见 §4 第 5 条）；[App Server README](../../../crates/dim-app-server/README.md) |
+| 线路协议 v3：分帧、`hello` 与功能声明、通知 | `crates/dim-app-server/src/protocol.rs`（没有文字版参考，见 §4 第 4 条）；[App Server README](../../../crates/dim-app-server/README.md) |
 | Session 方法与管理方法之分，以及每种入口提供哪些方法 | [Session 边界](contracts/session-boundary.md)（A.3 入口）、[管理方法](../../design/appserver/management-methods.md) |
 | 读取 Session：先 `session.attach`，再按固定的头部读 `session.history`，然后接收实时的 `session.event`、`session.state`、`session.model.progress`；由客户端自己折叠。attach 的回复携带该 Session 的 `SessionInfo`，其中 `model` 取自该 Session 最近采纳的配置，而 `session.summaries` 的条目在 [#795](https://github.com/arcships/dim/issues/795) 完成前仍报告创建时的模型，因此打开已知 Session 的客户端从它取模型，不读目录；重载期间标题字段缺失、`running` 为 false，随后的通知将其更正 | [Session 访问](contracts/session-access.md)、[CLI 命令](cli-commands.md)；[#276](https://github.com/arcships/dim/issues/276) 的处理结论 |
 | 不属于 Timeline 事实的广播通知（`session.notice`，例如标题） | [Session 广播通知](appserver/session-notices.md) |
@@ -93,9 +93,9 @@ CLI 要求协议 v3，以及 `session.create` 和 `session.history` 两项功能
 | 发送、排队（运行中按 `Enter`）、自动发送、引导（`Ctrl+S`，或草稿为空时按 `Enter`）、中断 | 已实现 | 发送和停止：已实现；排队：后续阶段 | InputQueue（S1） |
 | 线：树、切换、新建、发送、停止、审批、结束 | 已实现 | 已实现（右侧 Lines 面板） | [Timeline 线](../../design/timeline-branches.md) §14、[Web 工作区](../../design/web-workspace.md#41-lines-and-branch) |
 | `/queue` 面板与删除排队消息 | 无 | — | 服务端契约已实现（S1） |
-| 取回排队消息重新编辑 | 已实现；带附件的消息会丢失附件（§4 第 4 条） | — | |
+| 取回排队消息重新编辑 | 已实现；带附件的消息会丢失附件（§4 第 3 条） | — | |
 | 多行、粘贴、大段粘贴、图片、混合附件、`@` 文件、`!` / `!!` | 已实现 | 附件：后续阶段 | [CLI 附件输入](../../design/cli-attachment-input.md)、[ShellInput](plugins/ShellInput.md) |
-| Skill 引用（`$`、`/`、`@`） | 部分：有选单代码，但不会列出任何 Skill | — | 无 |
+| Skill 引用：`/` 选单列出 Skill，`$skill: <name>` 让它在随消息提交时加载 | 已实现 | 无 | [Skills](../../design/plugins/Skills.md#9-references-load-with-the-operators-input) |
 | 剪贴板文本、图片、文件；选区复制；OSC 52 | 已实现 | 浏览器自带 | |
 | 通过消息操作复制消息 | 无 | — | |
 | 打开链接、工具分组、`/tools` | 已实现 | 已实现（渲染） | |
@@ -129,11 +129,10 @@ CLI 要求协议 v3，以及 `session.create` 和 `session.history` 两项功能
 
 1. 复制消息（`/timeline` 及其他消息操作见 [Timeline UI §4.6](timeline-ui.md#46-timeline跳到某条消息)）。
 2. `/queue` 面板与删除排队消息（服务端契约已有）。
-3. 通过 `$`、`/`、`@` 引用 Skill（选单代码已有，但没有数据来源）。
-4. 取回带附件的排队消息：`QueuedInput` 只保存文本，附件会丢失。要么像功能清单写的那样由客户端拒绝取回，要么让队列保留附件。
-5. 协议 v3 的文字版参考：线路格式只在 `protocol.rs` 里定义，相关说明分散在 App Server README 和各功能设计中。
-6. Web 工作区里的提问：它处理审批，但不处理 `ask_user`，而 Web 工作区 §4 也没有把它列为推迟项。
-7. Session 列表按项目/全部切换、`/debug`、其余 `/settings` 项、终端界面内导出、`dimcode upgrade`。
+3. 取回带附件的排队消息：`QueuedInput` 只保存文本，附件会丢失。要么像功能清单写的那样由客户端拒绝取回，要么让队列保留附件。
+4. 协议 v3 的文字版参考：线路格式只在 `protocol.rs` 里定义，相关说明分散在 App Server README 和各功能设计中。
+5. Web 工作区里的提问：它处理审批，但不处理 `ask_user`，而 Web 工作区 §4 也没有把它列为推迟项。
+6. Session 列表按项目/全部切换、`/debug`、其余 `/settings` 项、终端界面内导出、`dimcode upgrade`。
 
 与代码或彼此之间不一致的文档：
 
@@ -172,7 +171,7 @@ flowchart LR
 
 1. **全屏终端界面。** 代码已经交付了它，总体设计却说不在范围内。要么接受它在范围内（更新总体设计和 CLI 命令文档，并决定回滚和 `/stats` 是否仍不做），要么冻结它。
 2. **Web 第二阶段的范围**，包括回环 web 入口能否为设置页面提供管理方法（Web 工作区 Q2），以及 Web 工作区是否必须支持提问。
-3. **§4 中哪些缺口要做设计**，归哪个里程碑：`/timeline` 与消息操作、`/queue`、Skill 引用、排队消息的附件。
-4. **协议 v3 参考文档**（§4 第 5 条）：写一份，还是继续以代码为准。
+3. **§4 中哪些缺口要做设计**，归哪个里程碑：`/timeline` 与消息操作、`/queue`、排队消息的附件。
+4. **协议 v3 参考文档**（§4 第 4 条）：写一份，还是继续以代码为准。
 5. **开放的客户端 issue 归哪个里程碑**：[#263](https://github.com/arcships/dim/issues/263)（成员 transcript 卡片、子 agent 模型策略的运行时）、[#264](https://github.com/arcships/dim/issues/264)（Workflow 视图）、[#386](https://github.com/arcships/dim/issues/386)（UI 事件传给 agent）。
 6. **路线图中客户端负责线的负责人。**

@@ -26305,6 +26305,7 @@
       "to": "dim_cli::management::skills",
       "references": [
         "mod skills",
+        "path skills::Entry",
         "path skills::Outcome::Catalog",
         "path skills::Outcome::ReadFailed",
         "path skills::Outcome::Refused",
@@ -27417,6 +27418,13 @@
       "to": "dim_cli::goal",
       "references": [
         "path crate::goal::Request"
+      ]
+    },
+    {
+      "from": "dim_cli::model::session",
+      "to": "dim_cli::management::skills",
+      "references": [
+        "path crate::management::skills::Entry"
       ]
     },
     {
@@ -28676,6 +28684,13 @@
     },
     {
       "from": "dim_cli::session_host",
+      "to": "dim_cli::management::skills",
+      "references": [
+        "path crate::management::skills::catalog"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host",
       "to": "dim_cli::mcp",
       "references": [
         "path mcp::Started",
@@ -28850,6 +28865,7 @@
         "path Update::ShellDone",
         "path Update::ShellProgress",
         "path Update::Shutdown",
+        "path Update::Skills",
         "path Update::Snapshot",
         "path Update::Switched",
         "path Update::TaskOutput",
@@ -35572,6 +35588,7 @@
         "path Update::ShellDone",
         "path Update::ShellProgress",
         "path Update::Shutdown",
+        "path Update::Skills",
         "path Update::Snapshot",
         "path Update::Switched",
         "path Update::TaskOutput",
@@ -35716,6 +35733,13 @@
         "path history::flush",
         "path history::load",
         "use crate::ui::composer::history"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::tui",
+      "to": "dim_cli::ui::composer::palette",
+      "references": [
+        "path crate::ui::composer::palette::Skill"
       ]
     },
     {
@@ -36453,6 +36477,7 @@
         "path Update::Plugins",
         "path Update::Ready",
         "path Update::Runtimes",
+        "path Update::Skills",
         "path Update::Snapshot",
         "path Update::Switched",
         "path Update::Upgrade",

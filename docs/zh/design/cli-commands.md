@@ -30,8 +30,14 @@ scrollback 与 fullscreen TUI 都按固定的任务顺序分组：会话、模�
 Skill 行补全 `$skill: <name> ` 标记。分类标题行或没有匹配项时草稿保持不变。
 不带参数的命令只在 `Enter` 时执行。
 菜单中的权限入口为 `/permissions`；`/approvals` 和 `/approval` 是完整输入时仍可使用的兼容别名。
-菜单不列出运行、排队和 steer 的按键，它们只由按键触发。菜单只列出斜杠命令：选择较早消息、滚动到顶部或底部等视图操作也不列出；
+菜单不列出运行、排队和 steer 的按键，它们只由按键触发。菜单列出斜杠命令与 Skill：选择较早消息、滚动到顶部或底部等视图操作也不列出；
 `Tab`、`Home`、`End` 在菜单之外保留各自的 fullscreen 消息选择和滚动绑定。
+
+Skill 行读作 `$name`，带其描述，分类为 `skill`。只列出已启用且没有被其他来源遮蔽的 Skill；名称含空白的 Skill 无法被引用，因此也不列出。列表跟随会话的目录：
+客户端在挂载、切换会话、`/reload-skills` 之后以及 `/skills` 中的改动之后重新读取。不提供 `skills.catalog` 的守护进程只显示命令，不报错。
+用 `Enter` 或 `Tab` 选择 Skill 行只填入 `$skill: <name> `，绝不发送；该标记随消息文本一起提交。Skill 排在命令之后；
+只有当查询是某个 Skill 名称的前缀、且不是任何命令名或别名的前缀时，Skill 才排在前面；因此与命令同名的 Skill 两行都保留，命令在前。
+`/` 是唯一的触发器：`@` 仍是文件选择器。
 
 两种模式下，菜单都适应终端可用的列数和行数。命令名优先于分类标签、描述和快捷键标签；必要时缩短
 分类标签以保留完整命令名。快捷键标签会挤占命令名时省略标签，但不改变按键绑定。
@@ -72,6 +78,8 @@ Commands
   session /goal        follow or change the shown line's goal
   session /tasks       view command output or interrupt a member
   session /lines       follow, talk to and end this session's lines
+  model   /permissions permission preset and command rules
+  skill   $commit      write a commit message for the staged changes
 
 / + Enter          -> start a new session
 /ex + Enter        -> /exit (completion only)

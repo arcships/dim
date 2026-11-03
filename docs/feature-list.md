@@ -52,7 +52,7 @@ The CLI owns terminal and command interactions; the App Server owns host configu
 - Multiline editing: use `Shift+Enter` or `Ctrl+J` for a newline; `Shift+Enter` requires terminal support.
 - Input history: use Up/Down to retrieve submitted prompts and `!` / `!!` command history, stored per working directory; availability depends on cursor position and draft state.
 - Command completion: use `/` to find commands and Skills; execute a selected command or complete it before entering arguments.
-- Skill references: choose a Skill through `$`, `/` or `@` suggestions and insert `$skill: <name>` for submission with the message. Inserting a reference does not send the message.
+- Skill references: choose a Skill through the `/` command palette, or type `$skill: <name>`; the reference loads that Skill with the message it is submitted with. Inserting a reference does not send the message. `/` is the only trigger, and `@` remains the file picker.
 - File references: use `@` to search project paths, browse directories and select files; ordinary files are passed as paths for the Agent to read as needed.
 - Pasted and dropped paths: recognize existing paths, including multiple paths, quoted paths and `file://` URLs. Ordinary files become path references; supported images become attachments. Drag-and-drop depends on the terminal passing paths.
 - Multiline paste: display long or multiline text as a compact block and restore the full text on submission.

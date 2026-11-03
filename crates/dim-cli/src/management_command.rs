@@ -362,7 +362,10 @@ async fn write(client: &mut Client, options: &Options, draft: &Draft) -> Result<
             document,
         },
     };
-    match management::apply(client, &request, options.named_workspace(), None).await {
+    match management::apply(client, &request, options.named_workspace(), None)
+        .await
+        .result
+    {
         ManagementResult::Refused(error) => {
             Err(format!("{error} Your text is kept in {}.", draft.kept).into())
         }
@@ -405,7 +408,10 @@ async fn create(
         area,
         action: ManagementAction::Add { document },
     };
-    match management::apply(client, &request, options.named_workspace(), None).await {
+    match management::apply(client, &request, options.named_workspace(), None)
+        .await
+        .result
+    {
         ManagementResult::View { note, .. } => {
             // The note names the entry the owner saved: made safe, as every
             // line the Scheduler prints is.
