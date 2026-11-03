@@ -11,6 +11,10 @@ pub struct HistoryEntry {
     pub id: String,
     pub message: Arc<Message>,
     pub tool_context: bool,
+    /// A live keyed state block. The keyed baseline replays its latest value,
+    /// so a compaction cut does not remove it even when the entry is before
+    /// the cut. A retired block carries no baseline value and is removable.
+    pub state: bool,
     /// Deterministic state immediately after this entry's source event.
     pub baseline: Arc<[ContextBaselineEntry]>,
     /// Id of the Timeline event that placed this entry; compaction cuts are
@@ -1151,6 +1155,7 @@ fn entry(
         id,
         message: Arc::new(message),
         tool_context,
+        state: false,
         baseline,
         event_id: String::new(),
         position: TimelinePosition {
@@ -1165,6 +1170,7 @@ fn apply(
     delivered_state: &mut Vec<ContextBaselineEntry>,
     projection: ProjectionEntry,
 ) {
+    let state = matches!(&projection.state, Some((_, Some(_))));
     if let Some((key, value)) = projection.state {
         let position = delivered_state.iter().position(|entry| entry.key == key);
         match (position, value) {
@@ -1175,12 +1181,14 @@ fn apply(
             (None, value) => delivered_state.extend(value),
         }
     }
-    history.push(entry(
+    let mut entry = entry(
         projection.id,
         projection.message,
         false,
         baseline(delivered_state),
-    ));
+    );
+    entry.state = state;
+    history.push(entry);
 }
 
 fn baseline(state: &[ContextBaselineEntry]) -> Arc<[ContextBaselineEntry]> {
