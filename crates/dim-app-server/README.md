@@ -18,8 +18,10 @@ cargo run --locked -p dim-app-server -- \
 ```
 
 A configured model file uses the same public execution capabilities: workspace tools, approvals,
-Skills, prompt sources, MCP, branches and collaboration. Provider selection does not select a
-different harness. Account/provider management remains specific to the product provider.
+Skills, prompt sources, MCP, branches, collaboration and automatic Session titles. The configured
+catalog provides the auxiliary model those titles use, and plugin files live under the native home
+when no `--plugin-files` is given. Provider selection does not select a different harness. Accounts,
+OAuth sign-in and provider management remain specific to the product provider.
 
 ```sh
 cargo run --locked -p dim-app-server -- \

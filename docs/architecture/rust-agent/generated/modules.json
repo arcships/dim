@@ -16234,6 +16234,7 @@
       "to": "dim_app_server::plugin_files",
       "references": [
         "mod plugin_files",
+        "path plugin_files",
         "path plugin_files::PluginFilesPlugin::new"
       ]
     },

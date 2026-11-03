@@ -266,6 +266,124 @@ async fn node_configured_profile_reaches_the_auxiliary_model_from_a_session_part
     .unwrap();
 }
 
+/// Without `--plugin-files` and without a product home, the plugin files root
+/// is the native home, so the PluginFiles row runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_configured_profile_provides_a_plugin_files_root() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let capture = Arc::new(Capture::default());
+        let address = provider(capture.clone()).await;
+        let directory = directory("configured-plugin-files");
+        let models = models(&models_file(&directory, &format!("http://{address}/v1")));
+        let server = launch_configured(&directory, models, None, None).await;
+
+        let diagnostics = server.diagnostics();
+        let key = rutis_bridge::session::host_key("pluginFiles").erase();
+        let binding = diagnostics
+            .bindings
+            .iter()
+            .find(|binding| binding.key == key)
+            .expect("the configured profile provides pluginFiles");
+        let owner = diagnostics
+            .plugins
+            .iter()
+            .find(|plugin| plugin.id == binding.provider)
+            .expect("the binding names its provider");
+        assert_eq!(owner.name, "PluginFiles");
+        assert_eq!(owner.state, rutis::host::FiberState::Active);
+
+        server.shutdown();
+        server.join().await.unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// The default plugins this profile's file names load: the process plugins
+/// run as defaults and the content plugin lists its Skill.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_configured_profile_runs_the_default_plugins() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let capture = Arc::new(Capture::default());
+        let address = provider(capture.clone()).await;
+        let directory = directory("configured-defaults");
+        let models = models(&models_file(&directory, &format!("http://{address}/v1")));
+        let mut parts = fixture();
+        parts.rows.clear();
+        let defaults = parts.anchor.with_file_name("default-plugins.json");
+        let document: Value =
+            serde_json::from_str(&std::fs::read_to_string(&defaults).unwrap()).unwrap();
+        let names: Vec<String> = document["plugins"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        let server = launch_configured(&directory, models, Some(parts), Some(defaults)).await;
+        let mut client = Client::new_version(&server, false, 3).await;
+        // The process plugins the product profile's flow waits for; the file
+        // this profile loads names them too.
+        let process = ["goal", "workflow", "scheduler"];
+        for name in process {
+            assert!(
+                names.iter().any(|listed| listed == name),
+                "{names:?} names {name}"
+            );
+        }
+        tokio::time::timeout(Duration::from_secs(60), async {
+            loop {
+                let listed = client.rpc("plugin.list", json!({})).await;
+                assert_ok(&listed);
+                let items = listed["result"].as_array().unwrap();
+                let found = |name: &str| items.iter().find(|item| item["name"] == name);
+                let running = process
+                    .iter()
+                    .all(|name| found(name).is_some_and(|item| item["status"] == "running"));
+                let by_default = names
+                    .iter()
+                    .all(|name| found(name).is_some_and(|item| item["use"] == "default"));
+                if running && by_default {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the default plugins run");
+
+        // The content plugin contributes its Skill.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let catalog = when_served(&mut client, "skills.catalog", json!({})).await;
+                let listed = catalog["result"]["entries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| {
+                        entry["id"]
+                            .as_str()
+                            .unwrap_or("")
+                            .ends_with("plugin-authoring")
+                    });
+                if listed {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the default content plugin lists its Skill");
+
+        server.shutdown();
+        server.join().await.unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
 async fn create(client: &mut Client, home: &Path) -> String {
     let created = client
         .rpc(
