@@ -524,8 +524,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "follow or change the shown line's goal" => "ikuti atau ubah goal baris yang ditampilkan",
         "◎ goal active" => "◎ goal aktif",
         "◎ goal paused" => "◎ goal dijeda",
-        "Kept verbatim" => "Dipertahankan apa adanya",
-        "Tool effects" => "Catatan operasi alat",
         "insufficient space: {parts}" => "ruang tidak cukup: {parts}",
         "system prompt" => "system prompt",
         "tools" => "alat",

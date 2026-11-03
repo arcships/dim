@@ -111,6 +111,14 @@ The CLI draws the effort from that field and keeps no preference state of its
 own. The view does not expose the rest of the internal model settings or
 capability snapshots. Catalog choices are display data; Provider validates each
 update.
+An adoption starts from the model's declared configuration with the model's own
+catalog defaults applied: when no preference names an effort and that
+configuration carries none, Provider applies the declared `reasoning.effort`
+through the same mapping an explicit value uses, and likewise for a declared
+default service tier. A declared default applies only when the model advertises
+the value (one of `effortOptions`, or `none` beside a reasoning-off declaration)
+and the protocol can express it; otherwise the adoption starts unchanged, and a
+default never fails an adoption.
 `none` needs that declaration or an advertised native `none`. Unsupported values
 fail without adoption; no value is guessed from a model name.
 
@@ -161,7 +169,8 @@ clears anything. The sibling preference and every other adopted model setting
 stay. A cleared field carries the value an explicit adoption of the same model
 with no preference for that field would carry, so reselecting the model is no
 longer needed to clear one field. The value comes from the model's declared
-configuration, not from a per-model preference saved through
+configuration, including the catalog's own defaults applied when it declares
+one, not from a per-model preference saved through
 [Provider management](appserver/provider-management.md#33-probe-preference-adoption-and-usage);
 a Session clear neither reads nor changes those saved values.
 

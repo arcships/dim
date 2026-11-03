@@ -54,7 +54,7 @@ A compaction keeps four classes of content and drops the rest.
 All of the following is required, and all of it is the client's part.
 
 - **A compaction row in the TUI.** Running, then its outcome — completed, skipped, failed or cancelled — and the insufficient-space mark of a completed compaction that could not reach the §5 bound.
-- **The summary and the digest are readable from the TUI.**
+- **The expanded compaction row shows only the summary body.** Hide the `<dim-summary>` … `</dim-summary>` markers and the runtime's fixed opening background notice and closing sentence when they wrap a summary. Keep unwrapped summary text and any such wording quoted within the summary unchanged. Do not display the digest or pinned inputs in this row. This presentation rule does not change the stored compaction record or the replacement sent to the model.
 - **A `/compact` command**, wired to `session.context.compact`.
 - **A standing context usage gauge.**
 - **A warning as usage nears the automatic threshold.**

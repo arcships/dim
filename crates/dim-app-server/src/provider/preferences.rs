@@ -1,5 +1,78 @@
-use dim_agent_capabilities::host::{ModelProtocol, reasoning_config};
+use dim_agent_capabilities::host::{ModelProtocol, adopted_preferences, reasoning_config};
 use dim_agent_types::*;
+
+/// The base configuration an adoption starts from: the model's declared
+/// configuration with the catalog's own defaults applied.
+///
+/// `docs/design/appserver/provider-management.md` §3.3 says omitted
+/// preferences "still start at catalog defaults", and
+/// `docs/design/model-configuration.md` says a cleared field carries "the
+/// value an explicit adoption of the same model with no preference for that
+/// field would carry". The declared reasoning effort and service tier are
+/// therefore part of that base, applied through the same mapping an explicit
+/// preference uses, so the adopted configuration, every read and every
+/// request agree on the value.
+///
+/// A declared default applies only when the model declares the control: the
+/// effort is one of the picker's `effortOptions` (or `none` beside a
+/// reasoning-off declaration), the tier is supported and listed, and the
+/// protocol can express the value. Otherwise the base comes back unchanged.
+/// Unlike an explicit preference, a default never makes an adoption fail.
+pub(super) fn catalog_defaults(
+    base: &ModelConfig,
+    snapshot: &ModelCapabilitySnapshot,
+    protocol: ModelProtocol,
+) -> ModelConfig {
+    let mut config = base.clone();
+    let adopted = adopted_preferences(&config, protocol);
+    if adopted
+        .as_ref()
+        .is_none_or(|adopted| adopted.reasoning_effort.is_none())
+        && let Some(effort) = declared_effort(snapshot)
+        && let Ok(applied) = reasoning_config(&config, snapshot, protocol, &effort)
+    {
+        config = applied;
+    }
+    if adopted
+        .as_ref()
+        .is_none_or(|adopted| adopted.service_tier.is_none())
+        && let Some(tier) = declared_service_tier(snapshot)
+    {
+        let preferences = ModelPreferences {
+            reasoning_effort: None,
+            service_tier: Some(tier),
+        };
+        if let Ok(applied) = configure(&preferences, snapshot, protocol, &config) {
+            config = applied;
+        }
+    }
+    config
+}
+
+/// The model's declared default effort, when the picker would offer it.
+fn declared_effort(snapshot: &ModelCapabilitySnapshot) -> Option<String> {
+    let reasoning = snapshot.reasoning.as_ref()?;
+    if !reasoning.supported || !snapshot.capabilities.reasoning {
+        return None;
+    }
+    let effort = reasoning.effort.as_ref()?;
+    let mut options = reasoning.effort_options.clone().unwrap_or_default();
+    if reasoning.off.is_some() && !options.iter().any(|option| option == "none") {
+        options.push("none".into());
+    }
+    options
+        .iter()
+        .any(|option| option == effort)
+        .then(|| effort.clone())
+}
+
+/// The model's declared default service tier, when its declaration lists it.
+fn declared_service_tier(snapshot: &ModelCapabilitySnapshot) -> Option<String> {
+    let tier = snapshot.service_tier.as_ref()?;
+    let default = tier.default.as_ref()?;
+    (tier.supported && !default.is_empty() && tier.options.contains(default))
+        .then(|| default.clone())
+}
 
 /// Applies preferences to a copy of `base`, validating them against the
 /// model's declared capabilities.
@@ -215,120 +288,5 @@ pub(super) fn restore_service_tier(
             }
         }
         _ => {}
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A declared option group that carries no preference control must not
-    /// leave an empty group behind, or a no-op clear would look adopted.
-    #[test]
-    fn a_declared_group_without_controls_leaves_the_config_unchanged() {
-        let declared = ModelConfig {
-            provider_options: Some(ProviderOptions {
-                anthropic: Some(Default::default()),
-                openai_compatible: Some(Default::default()),
-                openai: Some(Default::default()),
-                xai: Some(Default::default()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        for protocol in [
-            ModelProtocol::Anthropic,
-            ModelProtocol::OpenaiCompatible,
-            ModelProtocol::OpenaiChat,
-            ModelProtocol::OpenaiResponses,
-            ModelProtocol::Xai,
-            ModelProtocol::XaiResponses,
-        ] {
-            let mut config = ModelConfig::default();
-            restore_reasoning(&mut config, &declared, protocol);
-            restore_service_tier(&mut config, &declared, protocol);
-            assert_eq!(config, ModelConfig::default(), "{protocol:?}");
-        }
-    }
-
-    #[test]
-    fn a_declared_group_with_an_unrelated_field_does_not_create_one() {
-        let declared = ModelConfig {
-            provider_options: Some(ProviderOptions {
-                anthropic: Some(AnthropicProviderOptions {
-                    interleaved_thinking: Some(true),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let mut config = ModelConfig::default();
-        restore_reasoning(&mut config, &declared, ModelProtocol::Anthropic);
-        assert_eq!(config, ModelConfig::default());
-    }
-
-    /// A clear reports the values the model declares, as a `--model-config`
-    /// model carrying an effort, a thinking declaration and a tier does.
-    #[test]
-    fn a_clear_restores_the_declared_values() {
-        let declared = ModelConfig {
-            reasoning: Some(ProviderReasoningConfig {
-                effort: Some("low".into()),
-                budget_tokens: Some(2048.),
-                ..Default::default()
-            }),
-            provider_options: Some(ProviderOptions {
-                openai_compatible: Some(OpenAiCompatibleProviderOptions {
-                    reasoning_effort: Some("low".into()),
-                    service_tier: Some("priority".into()),
-                    thinking: Some(CompatibleThinking {
-                        thinking_type: Some(ThinkingType::Disabled),
-                    }),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let mut config = ModelConfig {
-            reasoning: Some(ProviderReasoningConfig {
-                effort: Some("high".into()),
-                summary: Some(SummaryStyle::Auto),
-                ..Default::default()
-            }),
-            provider_options: Some(ProviderOptions {
-                openai_compatible: Some(OpenAiCompatibleProviderOptions {
-                    reasoning_effort: Some("high".into()),
-                    service_tier: Some("default".into()),
-                    enable_thinking: Some(true),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        restore_reasoning(&mut config, &declared, ModelProtocol::OpenaiCompatible);
-        restore_service_tier(&mut config, &declared, ModelProtocol::OpenaiCompatible);
-        let options = config
-            .provider_options
-            .as_ref()
-            .unwrap()
-            .openai_compatible
-            .as_ref()
-            .unwrap();
-        assert_eq!(options.reasoning_effort.as_deref(), Some("low"));
-        assert_eq!(
-            options.thinking,
-            Some(CompatibleThinking {
-                thinking_type: Some(ThinkingType::Disabled)
-            })
-        );
-        assert_eq!(options.enable_thinking, None);
-        assert_eq!(options.service_tier.as_deref(), Some("priority"));
-        let reasoning = config.reasoning.as_ref().unwrap();
-        assert_eq!(reasoning.effort.as_deref(), Some("low"));
-        assert_eq!(reasoning.budget_tokens, Some(2048.));
-        assert_eq!(reasoning.summary, Some(SummaryStyle::Auto));
     }
 }

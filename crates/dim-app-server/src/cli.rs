@@ -66,24 +66,18 @@ fn close_inherited_descriptors() {
     close_bounded_descriptors();
 }
 
-/// `close_range(3, ~0U, 0)`, false when the kernel or libc does not have it.
+/// `close_range(3, ~0U, 0)`, false when the kernel does not have it.
 #[cfg(target_os = "linux")]
 fn close_range_above_standard_error() -> bool {
-    // `libc` declares the function for GNU targets only, so the other Linux
-    // environments call the kernel's own entry point for it.
-    #[cfg(target_env = "gnu")]
     // SAFETY: the range covers descriptors this process owns and closing
     // them is what the call does.
-    let closed = unsafe { libc::close_range(3, libc::c_uint::MAX, 0) };
-    #[cfg(not(target_env = "gnu"))]
-    // SAFETY: as above; the arguments are the function's unsigned int range.
     let closed = unsafe {
         libc::syscall(
             libc::SYS_close_range,
             3 as libc::c_long,
             libc::c_uint::MAX as libc::c_long,
             0 as libc::c_long,
-        ) as libc::c_int
+        )
     };
     closed == 0
 }

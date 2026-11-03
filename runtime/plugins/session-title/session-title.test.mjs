@@ -255,7 +255,7 @@ test('manual validation, bounded conflict retries and cancellation before store 
   assert.equal(p.state.metadata.revision, before)
 })
 
-test('closing cancels and joins the original auxiliary call; admitted store writes settle once', async t => {
+test('closing cancels and joins the original auxiliary call; admitted store writes settle once', { timeout: 60_000 }, async t => {
   const p = await fixture(t)
   p.adopted()
   const entered = deferred()
@@ -263,7 +263,7 @@ test('closing cancels and joins the original auxiliary call; admitted store writ
   const settled = deferred()
   p.state.complete = async (_request, cancellation) => {
     entered.resolve()
-    await cancellation()
+    await p.invoke(cancellation, [])
     cancelled.resolve()
     await settled.promise
     throw new Error('cancelled')

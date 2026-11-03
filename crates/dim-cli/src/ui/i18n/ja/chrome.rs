@@ -504,8 +504,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "follow or change the shown line's goal" => "表示中のラインのゴールを追従または変更",
         "◎ goal active" => "◎ ゴール実行中",
         "◎ goal paused" => "◎ ゴール一時停止",
-        "Kept verbatim" => "原文のまま保持",
-        "Tool effects" => "ツール操作の記録",
         "insufficient space: {parts}" => "空き不足：{parts}",
         "system prompt" => "システムプロンプト",
         "tools" => "ツール",

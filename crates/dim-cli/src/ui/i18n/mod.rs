@@ -321,8 +321,6 @@ mod tests {
                 "near the compaction threshold",
                 "This daemon does not support context compaction",
                 "compact the context of the shown line",
-                "Kept verbatim",
-                "Tool effects",
                 "insufficient space: {parts}",
                 "system prompt",
                 "tools",

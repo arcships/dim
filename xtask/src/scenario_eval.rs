@@ -1899,6 +1899,7 @@ fn unparsed(scenario: &Scenario) -> Vec<ProbeRecord> {
 /// turn's error. The export is the account of record: a run that ends on a
 /// budget or an error stops reading the notice stream with notices still
 /// queued, so that stream can hold fewer turn ends than the Timeline does.
+/// Turns cancelled by Timeline closure are excluded.
 fn turns_in_export(export: &str) -> (u32, Option<String>) {
     let mut turns = 0;
     let mut failed = None;
@@ -1911,6 +1912,9 @@ fn turns_in_export(export: &str) -> (u32, Option<String>) {
         }
         let event = &line["event"];
         if event["type"] != "turn" || event["name"] != "end" {
+            continue;
+        }
+        if event["data"]["status"] == "cancelled" && event["data"]["reason"] == "timeline closed" {
             continue;
         }
         turns += 1;

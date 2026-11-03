@@ -1897,7 +1897,8 @@ impl ProviderService {
                 },
             )
             .map_err(|error| failure(error.to_string()))?;
-            let config = preferences::configure(&preferences, &snapshot, protocol, &model.config)
+            let base = preferences::catalog_defaults(&model.config, &snapshot, protocol);
+            let config = preferences::configure(&preferences, &snapshot, protocol, &base)
                 .map_err(failure)?;
             return Ok(ModelSelection {
                 provider_id: id.clone(),
@@ -1950,13 +1951,6 @@ impl ProviderService {
                 "Model route changed; select the model again",
             ));
         }
-        let mut base = current.config.clone().unwrap_or_default();
-        if update.clears_reasoning() {
-            preferences::restore_reasoning(&mut base, &model.config, protocol);
-        }
-        if update.clears_service_tier() {
-            preferences::restore_service_tier(&mut base, &model.config, protocol);
-        }
         let snapshot = capability_snapshot(
             model,
             ModelId {
@@ -1965,6 +1959,16 @@ impl ProviderService {
             },
         )
         .map_err(|error| failure(error.to_string()))?;
+        // A clear carries what an explicit adoption of the same model would,
+        // so the declared configuration includes the catalog's own defaults.
+        let declared = preferences::catalog_defaults(&model.config, &snapshot, protocol);
+        let mut base = current.config.clone().unwrap_or_default();
+        if update.clears_reasoning() {
+            preferences::restore_reasoning(&mut base, &declared, protocol);
+        }
+        if update.clears_service_tier() {
+            preferences::restore_service_tier(&mut base, &declared, protocol);
+        }
         let config = preferences::configure(&update.values(), &snapshot, protocol, &base)
             .map_err(failure)?;
         let unchanged = current

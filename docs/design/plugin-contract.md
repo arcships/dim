@@ -117,7 +117,7 @@ R4). This table says what each name Dim defines is for.
 | `sessionIdentity` | `session` | SessionScope | yes | `get()`: `{sessionId, restored}` |
 | `sessionLifecycle` | `session` | SessionScope | yes | `activated`, `closing`, `hold`, `release`: a hold is an id the calling row owns, ended by `release(id)` or that row's unload |
 | `sessionConfig` | `session` | SessionScope | yes | `get()`: the creation-time configuration, the snapshot a tool call carries |
-| `timeline` | `branch` | BranchScope | yes, except `before` | `append` of the part's own domain; history reads |
+| `timeline` | `branch` | BranchScope | yes, except `before` | `append`, the published sequence and the event query (§5.4); the query reaches other languages with its declaration |
 | `dispatcher` | `branch` | BranchScope | yes, `consume`, `listen` and reads; their Rust forms `follow` and `subscribe` are Rust-only | Ordered consumption (§5.2) |
 | `branchLifecycle` | `branch` | BranchScope | yes | `activated`, `closing` |
 | `timelineIdentity` | `branch` | BranchScope | yes | `{sessionId, branchId}` |
@@ -198,6 +198,73 @@ Public bus events:
 | `agent/session-restored`, `agent/unloaded-session-deleted` | Agents | ids | Host-internal, consumed by Collaboration |
 
 *Today:* the events are implemented as listed, and TypeScript rows listen to them directly.
+
+### 5.4 The event query
+
+A part reads facts through its branch's `timeline` service with one bounded query. The selection is:
+
+| Element | What it says |
+| --- | --- |
+| Scope | This branch, or the branch chain: each ancestor up to its cut, root first, then this branch to its head |
+| Position | A sequence range whose ends are inclusive, or a cursor. A range's end may be left out, and so may a cursor's through: absent, the read covers each branch's own coverage — an ancestor to its cut, the read branch to its published head — and a descending cursor read with no through runs down to the first sequence. A bound taken from above must end an atomic batch and is clamped to the branch's cut, so it never hides an ancestor fact: a range's end, and a cursor's through in an ascending read. A bound taken from below may fall inside one: a range's start, and a cursor's through in a descending read |
+| Kinds and flags | The event kinds it accepts (`domain/name`), and the envelope's context flags (§5.1) it selects on |
+| Event id | An equality on the event id: one id selects that event, so a caller reads one event or looks up its position without paging |
+| Predicate | One equality against one JSON scalar. The path is a sequence of field names inside the event's data joined by dots, with no array indexing and no wildcards |
+| Direction and order | The caller chooses the end a page is taken from: ascending (oldest first) or descending (newest first). A reply is always ordered by chain position, then sequence, ascending, so a consumer folds a page directly; the direction decides only which end of the remaining range the page comes from |
+| Limit | Nonzero by type, so no read is unbounded. It counts events, not storage rows: a row may carry several events, so a page ends at an atomic batch boundary and may return more events than the limit. The reply's cursor is what tells the caller to continue; a page shorter than the limit is returned only when the scope is exhausted |
+
+The elements combine: an event is selected when it satisfies all of them, and flags named together
+are alternatives, so an event is accepted when it carries at least one of them — the context read
+selects the rows that carry `context_render` or `context_state`. A selection that names no kind
+accepts every kind, one with no event id accepts every event, and a flag it does not name constrains
+nothing: no omission is an error. The limit applies to every read, so a caller that wants everything
+in its scope pages the result from the cursor.
+
+The path's spelling is fixed here and not in a binding: there is one form, the one above, and the
+storage translates that form. A binding writes this path syntax and invents no other.
+
+The cursor is opaque. It names a position, not a number: it carries the branch together with a
+sequence, so the same sequence on a parent and on its child are different positions. The cursor
+names an atomic batch boundary: an ascending page does not end inside an atomic batch, and a
+descending page does not start inside one. After an ascending page the cursor continues strictly
+after the last event returned; after a descending page, strictly before the oldest event returned.
+The reply is the events, each with its chain position — its branch and sequence — and the next
+cursor; the next cursor is absent once the scope is exhausted, so absence means no more, not start
+over.
+
+The query returns facts; it does not fold, project or aggregate them. What a part folds from facts
+is its own state and stays with it ([ADR 002](../adr/002-plugin-scope.md) D1). A part that needs a
+whole prefix reads pages and folds them itself.
+
+| Input | Result |
+| --- | --- |
+| A position past the published head | Invalid input. The head is the scope's: a branch read compares against that branch's published head, a chain read against its coverage, the largest ancestor cut or the read branch's head, so a read branch with little local history still reaches its ancestors, and only a bound past every branch's coverage is invalid |
+| A range end, or a cursor's through in an ascending read, inside an atomic batch | Invalid input |
+| A cursor that does not name an atomic batch boundary | Invalid input |
+| A cursor that names a branch the read's scope does not cover | Invalid input |
+| A kind or a data path the store does not know | No rows; not an error |
+
+The query addresses the event contract, not the storage: the session, the branch, the sequence,
+the kind, the event id, the two context flags and paths inside the event's data. Table, column and
+index names, the content table, batch metadata and every other part of the stored layout are not
+addressable, and SQL is not a capability interface
+([ADR 019](../adr/019-event-query.md) D3).
+
+Besides the query, the service keeps two things: appending a fact of the part's own domain (§5.1)
+and reading the published sequence. Branch segments are the branch directory and recovery
+snapshots are derived state; neither is an event, and each keeps a typed read of its own.
+
+A read shaped for one consumer is compatibility, not a contract: it exists only while that
+consumer moves to this query, and it is removed after. A selection the query cannot express is a
+decision to extend the query, never a method to add. While a consumer still uses its own read, the
+two shapes must agree on ordering, batch boundaries and cursor meaning, or the difference is stated
+where that consumer's move is followed ([ADR 019](../adr/019-event-query.md) D2, D5).
+
+The request and reply are serde data of the `timeline` name
+([How Dim uses rutis §3.2](rutis-usage.md#32-shape)), so the spelling of a scope or a position
+belongs to a binding: its Rust form is [appendix A](rutis-usage.md#appendix-a-rust-binding), and the
+generated declarations are where the other languages read its shape. This section states the query,
+not the rest of its spelling.
 
 ## 6. Capability
 

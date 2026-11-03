@@ -81,7 +81,6 @@ const THINKING_DETAILS_KEY: &str = "tuiThinkingDetailsExpanded";
 /// the interface; the threshold itself is the one `session.context.usage`
 /// returns (compaction requirements §4).
 const CONTEXT_WARNING_PERCENT: u64 = 90;
-/// Frames are coalesced to roughly 60 Hz.
 /// A resize waits this long after the last size change before it is applied.
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(100);
 /// ...but never longer than this from the first change of a drag.
@@ -92,7 +91,7 @@ const HISTORY_MAX_BLOCKS: usize = 5_000;
 const REWRITE_MAX_ROWS: usize = 10_000;
 /// In-place rewrites fullscreen can catch up on before it lays out again.
 const REWRITE_LOG: usize = 64;
-const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000_u64.div_ceil(240));
 /// How often the loop looks at session updates while input is idle.
 const SESSION_POLL: Duration = Duration::from_millis(40);
 const GIT_BRANCH_POLL: Duration = Duration::from_secs(10);
@@ -449,7 +448,9 @@ fn run_terminal(
             }
         }
         let wait = match (dirty, last_frame) {
-            (true, Some(at)) => FRAME_INTERVAL.saturating_sub(now.duration_since(at)),
+            (true, Some(at)) if !terminal.writing() => {
+                FRAME_INTERVAL.saturating_sub(now.duration_since(at))
+            }
             _ if app.running() => FRAME_INTERVAL,
             _ => SESSION_POLL,
         };
@@ -4820,6 +4821,13 @@ impl App {
             self.session_id = session_id;
             self.awaiting_window = true;
             return;
+        }
+        // Home keeps the provider and model it drew but no preference: no
+        // configuration is adopted there until its first message arrives.
+        if session_id.is_empty()
+            && let Some(label) = &mut self.label
+        {
+            label.effort = None;
         }
         self.session_id = session_id;
         self.planner.reset();

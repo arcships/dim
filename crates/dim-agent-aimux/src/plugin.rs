@@ -72,12 +72,21 @@ impl ResolveModelSelection for ConfiguredConnection {
             }
             let id = explicit.unwrap_or_else(|| self.models.default_model().clone());
             let model = self.models.get(&id.provider_id, &id.model_id)?;
+            // Record the protocol beside the adopted configuration, in the
+            // same metadata member Provider records it, so the existing reads
+            // derive the preferences the configuration sends.
             Ok(dim_agent_types::ModelSelection {
                 provider_id: id.provider_id,
                 model_id: id.model_id,
                 capability_snapshot: None,
                 config: Some(model.defaults.clone()),
-                metadata: None,
+                metadata: Some(dim_agent_types::RequestMetadata {
+                    extensions: serde_json::Map::from_iter([(
+                        "providerProtocol".into(),
+                        serde_json::json!(model.kind),
+                    )]),
+                    ..Default::default()
+                }),
             })
         })
     }

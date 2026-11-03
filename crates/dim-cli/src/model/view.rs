@@ -94,12 +94,6 @@ pub struct CompactionView {
     /// replaced the cut history — or the reason or error of one that did not
     /// complete.
     pub text: String,
-    /// The completed compaction's digest, carried between the summary and
-    /// the pinned inputs; none when the record wrote no digest.
-    pub digest: Option<String>,
-    /// The completed compaction's pinned inputs, carried verbatim after the
-    /// summary and the digest; none when the record pins nothing.
-    pub kept: Option<String>,
     /// The parts that keep a completed compaction above its bound, as the
     /// record names them; empty when the record carries no such mark.
     pub insufficient: Vec<CompactionPartSize>,

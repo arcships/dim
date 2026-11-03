@@ -492,8 +492,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "follow or change the shown line's goal" => "표시된 라인의 목표 추적 또는 변경",
         "◎ goal active" => "◎ 목표 진행 중",
         "◎ goal paused" => "◎ 목표 일시정지",
-        "Kept verbatim" => "원문 그대로 유지",
-        "Tool effects" => "도구 작업 기록",
         "insufficient space: {parts}" => "공간 부족: {parts}",
         "system prompt" => "시스템 프롬프트",
         "tools" => "도구",

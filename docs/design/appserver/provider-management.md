@@ -267,7 +267,8 @@ the exact `{providerId, modelId}` with preferences read for that pair to
 `session.create` or `session.model.update`. An unavailable explicit target fails;
 report it and do not retry without the target or fall back to another model.
 The server never applies saved preferences implicitly. Omitted preferences with
-an explicit target still start at catalog defaults; untargeted F3 updates still
+an explicit target still start at catalog defaults, including a model's declared
+default reasoning effort and service tier; untargeted F3 updates still
 change only supplied fields on the current adopted model. `/fast` remains
 Session-only; saved `serviceTier` is a persisted fast/tier choice applied only by
 an explicit client request. Consumer-specific models do not inherit chat preferences.

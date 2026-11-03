@@ -22,6 +22,8 @@ pub struct Emu {
     /// Cursor visibility toggles seen.
     pub visibility_changes: usize,
     pub bytes: usize,
+    scroll_top: usize,
+    scroll_bottom: usize,
     /// Rows that showed text when a write began, were blanked during it and
     /// showed text again at its end: without synchronized output the
     /// terminal can show them blank in between, which reads as a flicker.
@@ -47,6 +49,8 @@ impl Emu {
             sync_blocks: 0,
             visibility_changes: 0,
             bytes: 0,
+            scroll_top: 0,
+            scroll_bottom: rows - 1,
             flickers: 0,
             had_text: vec![false; rows],
             blanked: vec![false; rows],
@@ -89,21 +93,23 @@ impl Emu {
     }
 
     fn scroll_up(&mut self) {
-        self.had_text.remove(0);
-        self.had_text.push(false);
-        self.blanked.remove(0);
-        self.blanked.push(false);
-        let top = self.screen.remove(0);
-        self.scrollback
-            .push(top.iter().collect::<String>().trim_end().to_owned());
-        self.screen.push(vec![' '; self.cols]);
+        self.had_text.remove(self.scroll_top);
+        self.had_text.insert(self.scroll_bottom, false);
+        self.blanked.remove(self.scroll_top);
+        self.blanked.insert(self.scroll_bottom, false);
+        let top = self.screen.remove(self.scroll_top);
+        if self.scroll_top == 0 {
+            self.scrollback
+                .push(top.iter().collect::<String>().trim_end().to_owned());
+        }
+        self.screen.insert(self.scroll_bottom, vec![' '; self.cols]);
     }
 
     fn line_feed(&mut self) {
-        if self.cy + 1 >= self.rows {
+        if self.cy == self.scroll_bottom {
             self.scroll_up();
         } else {
-            self.cy += 1;
+            self.cy = (self.cy + 1).min(self.rows - 1);
         }
     }
 
@@ -236,6 +242,14 @@ impl Emu {
             }
             (false, 'G') => {
                 self.cx = (first(1) - 1).min(self.cols - 1);
+                self.wrap_pending = false;
+            }
+            (false, 'r') => {
+                self.scroll_top = first(1) - 1;
+                self.scroll_bottom =
+                    nums.get(1).copied().filter(|n| *n > 0).unwrap_or(self.rows) - 1;
+                self.cx = 0;
+                self.cy = 0;
                 self.wrap_pending = false;
             }
             (false, 'K') => {

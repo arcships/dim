@@ -189,6 +189,7 @@
       "unexpandedMacros": [
         "format",
         "matches",
+        "serde_json::json",
         "vec"
       ]
     },
@@ -2382,15 +2383,6 @@
       "parent": "dim_app_server::provider",
       "file": "crates/dim-app-server/src/provider/preferences.rs",
       "unexpandedMacros": []
-    },
-    {
-      "id": "dim_app_server::provider::preferences::tests",
-      "crate": "dim_app_server",
-      "parent": "dim_app_server::provider::preferences",
-      "file": "crates/dim-app-server/src/provider/preferences.rs",
-      "unexpandedMacros": [
-        "assert_eq"
-      ]
     },
     {
       "id": "dim_app_server::provider::remote",
@@ -6281,6 +6273,7 @@
         "path SystemPrompt::Text",
         "path dim_agent_types::ModelConfig",
         "path dim_agent_types::ModelRequest",
+        "path dim_agent_types::RequestMetadata",
         "path model",
         "use dim_agent_types::SystemPrompt"
       ]
@@ -21677,6 +21670,7 @@
       "references": [
         "mod preferences",
         "path preferences",
+        "path preferences::catalog_defaults",
         "path preferences::configure",
         "path preferences::restore_reasoning",
         "path preferences::restore_service_tier"
@@ -22208,8 +22202,10 @@
         "path ModelProtocol::OpenaiResponses",
         "path ModelProtocol::Xai",
         "path ModelProtocol::XaiResponses",
+        "path adopted_preferences",
         "path reasoning_config",
         "use dim_agent_capabilities::host::ModelProtocol",
+        "use dim_agent_capabilities::host::adopted_preferences",
         "use dim_agent_capabilities::host::reasoning_config"
       ]
     },
@@ -22223,48 +22219,6 @@
         "path ModelPreferences::default",
         "path ProviderOptions",
         "path ProviderReasoningConfig::default"
-      ]
-    },
-    {
-      "from": "dim_app_server::provider::preferences",
-      "to": "dim_app_server::provider::preferences::tests",
-      "references": [
-        "mod tests"
-      ]
-    },
-    {
-      "from": "dim_app_server::provider::preferences::tests",
-      "to": "dim_agent_capabilities::host",
-      "references": [
-        "path ModelProtocol::Anthropic",
-        "path ModelProtocol::OpenaiChat",
-        "path ModelProtocol::OpenaiCompatible",
-        "path ModelProtocol::OpenaiResponses",
-        "path ModelProtocol::Xai",
-        "path ModelProtocol::XaiResponses"
-      ]
-    },
-    {
-      "from": "dim_app_server::provider::preferences::tests",
-      "to": "dim_agent_types::model",
-      "references": [
-        "path AnthropicProviderOptions",
-        "path CompatibleThinking",
-        "path ModelConfig",
-        "path ModelConfig::default",
-        "path OpenAiCompatibleProviderOptions",
-        "path ProviderOptions",
-        "path ProviderReasoningConfig",
-        "path SummaryStyle::Auto",
-        "path ThinkingType::Disabled"
-      ]
-    },
-    {
-      "from": "dim_app_server::provider::preferences::tests",
-      "to": "dim_app_server::provider::preferences",
-      "references": [
-        "path restore_reasoning",
-        "path restore_service_tier"
       ]
     },
     {
@@ -34625,6 +34579,20 @@
         "use crate::ui::transcript::tool_group::Detail",
         "use crate::ui::transcript::tool_group::ToolGroup",
         "use crate::ui::transcript::tool_group::project_group"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::transcript::block::tests",
+      "to": "dim_agent_capabilities::history",
+      "references": [
+        "path dim_agent_capabilities::history::summary_message"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::transcript::block::tests",
+      "to": "dim_agent_types::content",
+      "references": [
+        "path dim_agent_types::MessageContent::Text"
       ]
     },
     {

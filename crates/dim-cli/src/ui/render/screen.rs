@@ -313,7 +313,20 @@ impl Screen {
         else {
             return false;
         };
-        let bottom = i64::from(self.size.1.saturating_sub(1));
+        let anchor = self.top + self.tail;
+        let pinned = !self.synchronized
+            && anchor > 1
+            && anchor < self.size.1
+            && self.top + self.viewport_height == self.size.1
+            && laid.iter().all(|row| row.rows <= anchor as usize);
+        let bottom = i64::from(if pinned {
+            anchor - 1
+        } else {
+            self.size.1.saturating_sub(1)
+        });
+        if pinned {
+            let _ = write!(out, "\x1b[1;{anchor}r");
+        }
         let mut top = i64::from(self.top);
         let mut offset = 0;
         for (row, laid) in rows.iter().zip(laid) {
@@ -321,6 +334,7 @@ impl Screen {
             let painted = self
                 .painted
                 .get(offset)
+                .filter(|_| !pinned || offset < self.tail as usize)
                 .and_then(|p| p.as_deref())
                 .map(scrub);
             if height == 1 && painted.as_deref() == Some(*row) {
@@ -334,6 +348,14 @@ impl Screen {
                 out.extend(std::iter::repeat_n(b"\n", by as usize).flatten());
                 top -= i64::from(by);
                 self.note_scroll(by);
+                if pinned {
+                    self.painted.splice(
+                        self.tail as usize..self.tail as usize,
+                        std::iter::repeat_n(Some(String::new()), by as usize),
+                    );
+                    self.tail += by;
+                    self.viewport_height += by;
+                }
             }
             push_move(out, 0, (top + offset as i64) as u16);
             out.extend_from_slice(laid.text.as_bytes());
@@ -343,6 +365,10 @@ impl Screen {
             }
             self.cursor_at = None;
             offset += height;
+        }
+        if pinned {
+            out.extend_from_slice(b"\x1b[r");
+            self.cursor_at = None;
         }
         let kept = (self.viewport_height as usize).saturating_sub(offset);
         self.top = (top + offset as i64).clamp(0, i64::from(self.size.1)) as u16;
@@ -393,8 +419,25 @@ impl Screen {
         let desired = self.anchored_top(wanted, tail);
         let overflow = (desired + wanted).saturating_sub(rows);
         if overflow > 0 {
-            push_move(out, 0, rows.saturating_sub(1));
+            let anchor = self.top + self.tail;
+            let pinned = !self.synchronized
+                && anchor > 1
+                && anchor < rows
+                && old - self.tail == wanted - tail;
+            if pinned {
+                let _ = write!(out, "\x1b[1;{anchor}r");
+                push_move(out, 0, anchor - 1);
+            } else {
+                push_move(out, 0, rows.saturating_sub(1));
+            }
             out.extend(std::iter::repeat_n(b"\n", overflow as usize).flatten());
+            if pinned {
+                out.extend_from_slice(b"\x1b[r");
+                self.painted.splice(
+                    self.tail as usize..self.tail as usize,
+                    std::iter::repeat_n(Some(String::new()), overflow as usize),
+                );
+            }
             self.note_scroll(overflow);
         }
         let shift = i64::from(desired) - i64::from(self.top);
@@ -1036,6 +1079,59 @@ mod tests {
         assert!(
             again.is_empty(),
             "no bytes for an identical frame: {again:?}"
+        );
+    }
+
+    #[test]
+    fn streaming_commits_keep_the_dock_visible_while_scrolling_without_sync() {
+        let (mut screen, mut emu) = setup(false);
+        let before = docked(
+            &[
+                "first", "second", "third", "fourth", "fifth", "sixth", "composer", "status",
+            ],
+            6,
+            Some((6, 1)),
+        );
+        drive(&mut screen, &mut emu, &before);
+        let mut after = docked(
+            &[
+                "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "composer", "status",
+            ],
+            6,
+            Some((6, 1)),
+        );
+        after.commits.push("first\nsecond\nthird".into());
+        for chunk in screen
+            .render(&after, SIZE)
+            .split_inclusive(|&byte| byte == b'\n')
+        {
+            emu.feed(chunk);
+            assert_eq!(emu.row(10), "composer", "the dock moved during a scroll");
+            assert_eq!(emu.row(11), "status", "the status moved during a scroll");
+        }
+        assert_eq!(emu.rows_text()[4..], after.live);
+        assert_eq!(emu.rows_text()[1..4], ["first", "second", "third"]);
+
+        let mut next = docked(&["tenth", "composer", "status"], 1, Some((1, 1)));
+        next.commits
+            .push("fourth\nfifth\nsixth\nseventh\neighth\nninth\nextra".into());
+        for chunk in screen
+            .render(&next, SIZE)
+            .split_inclusive(|&byte| byte == b'\n')
+        {
+            emu.feed(chunk);
+            assert_eq!(emu.row(10), "composer", "committing moved the dock");
+            assert_eq!(emu.row(11), "status", "committing moved the status");
+        }
+        assert_eq!(emu.rows_text()[9..], next.live);
+        let transcript = emu.transcript();
+        let first = transcript.iter().position(|row| row == "first").unwrap();
+        assert_eq!(
+            &transcript[first..first + 11],
+            [
+                "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
+                "ninth", "extra", "tenth"
+            ]
         );
     }
 

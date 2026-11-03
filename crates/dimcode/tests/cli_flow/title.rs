@@ -112,16 +112,20 @@ fn title_notice_after_the_first_message_updates_the_window_title() {
 #[test]
 fn resuming_a_titled_session_shows_its_title_and_never_its_first_message() {
     let home = Home::new();
-    let daemon = home.daemon(|wire| {
+    let (ready, readiness) = mpsc::channel();
+    let daemon = home.daemon(move |wire| {
         open(
             wire,
             Some(("Stored title", 3)),
             Some(("first", "first message words")),
         );
+        ready.send(()).unwrap();
         wire.hold();
     });
     let mut terminal = resume(&home);
     terminal.until("\u{1b}]0;DIM | Stored title\u{7}");
+    readiness.recv_timeout(PATIENCE).unwrap();
+    terminal.until("first message words");
     assert!(
         !terminal
             .transcript

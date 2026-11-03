@@ -62,6 +62,9 @@ mod native_storage;
 #[path = "transport_flow/compaction.rs"]
 mod compaction;
 
+#[path = "transport_flow/default_effort.rs"]
+mod default_effort;
+
 #[path = "transport_flow/recall.rs"]
 mod recall;
 

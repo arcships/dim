@@ -468,8 +468,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "follow or change the shown line's goal" => "跟隨或修改目前顯示線的目標",
         "◎ goal active" => "◎ 目標進行中",
         "◎ goal paused" => "◎ 目標已暫停",
-        "Kept verbatim" => "原文保留",
-        "Tool effects" => "工具操作紀錄",
         "insufficient space: {parts}" => "空間不足：{parts}",
         "system prompt" => "系統提示詞",
         "tools" => "工具",

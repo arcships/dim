@@ -544,8 +544,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "◎ goal active" => "◎ objetivo activo",
         "◎ goal paused" => "◎ objetivo en pausa",
-        "Kept verbatim" => "Conservado tal cual",
-        "Tool effects" => "Acciones de las herramientas",
         "insufficient space: {parts}" => "espacio insuficiente: {parts}",
         "system prompt" => "indicación del sistema",
         "tools" => "herramientas",
