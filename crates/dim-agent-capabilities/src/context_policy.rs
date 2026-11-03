@@ -940,6 +940,7 @@ impl ContextPolicy {
         let dropped = count(
             view.history[..cut.entry]
                 .iter()
+                .filter(|entry| !entry.state)
                 .map(|entry| entry.message.as_ref().clone())
                 .collect(),
         ) - empty;
