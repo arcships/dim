@@ -1091,6 +1091,161 @@ async fn summary_reasoning_maps_off_and_falls_back_to_inherit() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_summaries_keep_selection_and_strategy_reasoning_without_narrowing_capacity() {
+    use dim_agent_capabilities::{
+        context_preparation::ContextPreparation, prompt::Prompt, prompt_state::PromptSnapshot,
+    };
+
+    for startup in [false, true] {
+        let recorder = Arc::new(Recorder::default());
+        let (agent, session) = product_session_on(
+            WINDOW,
+            Arc::new(MockTools),
+            recorder.clone(),
+            OUTPUT,
+            ProductSummaryStrategyConfig::default(),
+            SessionConfig::default(),
+            Arc::new(Compatible),
+            Some(serde_json::json!({
+                "supported": true,
+                "off": {"kind": "thinking_type", "value": "disabled"}
+            })),
+        )
+        .await;
+        let adopted = session
+            .get::<PromptSnapshot>("main")
+            .unwrap()
+            .unwrap()
+            .configuration
+            .unwrap();
+        let mut selected = ModelSelection {
+            provider_id: adopted.provider_id,
+            model_id: adopted.model_id,
+            capability_snapshot: adopted.capability_snapshot,
+            config: adopted.config,
+            metadata: adopted.metadata,
+        };
+        selected.config = Some(
+            serde_json::from_value(serde_json::json!({
+                "maxTokens": 80,
+                "temperature": 0.25,
+                "providerOptions": {"openai-compatible": {"reasoningEffort": "high"}}
+            }))
+            .unwrap(),
+        );
+        selected.metadata = Some(RequestMetadata {
+            session_id: Some("old-session".into()),
+            run_id: Some("old-run".into()),
+            trace_id: Some("old-trace".into()),
+            turn_id: Some("old-turn".into()),
+            startup: startup.then(|| ModelStartup {
+                connection: Some(StartupConnectionSource {
+                    id: "summary-source".into(),
+                    api_format: ModelProtocol::OpenaiCompatible,
+                    base_url: "http://127.0.0.1:9/gateway".into(),
+                    auth: StartupAuth::Anonymous,
+                    header_names: Vec::new(),
+                }),
+                auto_compact_window: Some(2_000),
+            }),
+            extensions: serde_json::from_value(
+                serde_json::json!({"providerRoute":"captured-route", "requestId":"turn-model-call"}),
+            )
+            .unwrap(),
+        });
+        session
+            .service::<Prompt>("main")
+            .unwrap()
+            .configure_loaded(Some(selected.clone()), Vec::new())
+            .await
+            .unwrap();
+        let usage = session
+            .service::<ContextPreparation>("main")
+            .unwrap()
+            .usage(CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(usage.context_window, WINDOW as f64);
+        assert_eq!(usage.output_tokens, 80.);
+        assert_eq!(
+            usage.threshold_tokens,
+            if startup { 1_920. } else { 3_136. }
+        );
+
+        for text in [cjk(2_000), cjk(1_400)] {
+            session
+                .submit(text, InputMode::Queue, "main")
+                .await
+                .unwrap();
+            session.idle("main").await.unwrap();
+        }
+        let before_manual = recorder.requests.lock().unwrap().len();
+        assert_eq!(
+            before_manual > 0,
+            startup,
+            "only the startup threshold should trigger"
+        );
+        let (command, events) = compact_now(&session).await;
+        let requests = recorder.requests.lock().unwrap().clone();
+        assert!(
+            requests.len() > before_manual,
+            "manual compaction still runs below the ordinary threshold"
+        );
+        for request in requests {
+            assert_eq!(request.provider_id, selected.provider_id);
+            assert_eq!(request.model_id, selected.model_id);
+            assert_eq!(request.capability_snapshot, selected.capability_snapshot);
+            let metadata = request.metadata.as_ref().unwrap();
+            assert_eq!(
+                metadata.startup,
+                selected.metadata.as_ref().unwrap().startup
+            );
+            assert_eq!(
+                metadata.extensions.get("providerRoute"),
+                Some(&serde_json::json!("captured-route"))
+            );
+            assert!(
+                !metadata.extensions.contains_key("requestId"),
+                "each summary call must receive its own recording identity"
+            );
+            assert!(
+                metadata.session_id.is_none()
+                    && metadata.run_id.is_none()
+                    && metadata.trace_id.is_none()
+                    && metadata.turn_id.is_none()
+            );
+            let config = request.config.as_ref().unwrap();
+            assert_eq!(config.max_tokens, Some(80.));
+            assert_eq!(config.temperature, Some(0.25));
+            assert_eq!(
+                config
+                    .provider_options
+                    .as_ref()
+                    .unwrap()
+                    .openai_compatible
+                    .as_ref()
+                    .unwrap()
+                    .thinking
+                    .as_ref()
+                    .unwrap()
+                    .thinking_type,
+                Some(ThinkingType::Disabled)
+            );
+            let model = ProductContextModel
+                .resolve(request.clone(), CancellationToken::new())
+                .await
+                .unwrap();
+            assert!(model.count_tokens(&request) <= WINDOW as f64 - 80.);
+        }
+        assert!(events.iter().any(|event| matches!(&event.kind,
+            EventKind::ContextCompaction(ContextCompactionData {
+                command: Some(fact), outcome: ContextCompactionResult::Completed { diagnostics, .. }, ..
+            }) if *fact == command && diagnostics.strategy.details["reasoning"] == "off")));
+        agent.close().await.unwrap();
+    }
+}
+
 /// The previous digest is never sent to the summarizer: the strategy carries
 /// the previous summary part and the newly cut entries, and the digest part
 /// rolls forward from the record instead (ContextCompaction §5.10).

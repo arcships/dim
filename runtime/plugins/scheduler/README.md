@@ -114,7 +114,7 @@ Run from the repository root, using Node 24:
 ```sh
 npm ci --prefix runtime/plugins/scheduler --ignore-scripts
 node runtime/node_modules/typescript/bin/tsc -p runtime/plugins/scheduler/tsconfig.json
-node --test runtime/plugins/scheduler/scheduler.test.mjs
+cargo test --locked -p dim-app-server --test transport_flow node_scheduler -- --ignored
 ```
 
 Before native flows, reinstall the local packages using the CI
@@ -124,12 +124,8 @@ package copy; source edits alone do not refresh it.
 
 | Public flow | Evidence |
 | --- | --- |
-| Save takeover, CAS failure, live permissions, shared cap/reuse vectors, tool restrictions and retirement | SDK service flows in `scheduler.test.mjs` |
-| Cron DST gap/fold, enabled anchor, missed windows and one-off disable | SDK flows with a controlled wall clock |
-| Held/consumed/applied input deadlines, uncertain withdrawal, late launch/reuse replies and revision rechecks | SDK execution flows |
-| Restart lookup/history, single-attempt reports, admitted-report cleanup and deletion retry | SDK persistence/lifetime flows |
 | Actual source defaults/protected fields, tool save, later live widening bounded by the saved cap, non-interactive execution, takeover, reporting and inner/outer-v1 records | `node_scheduler_saves_live_authority_runs_noninteractive_and_reports_to_the_latest_saver` |
-| An untitled interactive leader adopts its saving operator input before the raw Steer report; subsequent automatic title generation sends the original operator text to the real auxiliary HTTP binding and publishes its title | `node_scheduler_reports_preserve_the_first_adopted_operator_title` |
+| An untitled interactive leader adopts its saving operator input before the raw Steer report; subsequent automatic title generation sends the original operator text to the real auxiliary HTTP binding and publishes its title | [`scheduler_reports_do_not_replace_the_first_operator_input_for_titles`](../../../crates/dim-session-title/tests/scheduler_flow.rs) |
 | Required invalid-record startup, unchanged bytes, failed optional owner and usable native Sessions | `node_scheduler_invalid_inner_records_preserve_bytes_and_do_not_block_native_sessions` |
 | Agents index replacement keeps the owner and run loaded; owner reload preserves pending approval, input, deadline and anchor; completion/report occur once | `node_scheduler_owner_reload_tracks_the_existing_native_run_without_replaying_input_or_reports` |
 | Native timer windows, DST gap/fold, enabled-anchor changes, one-off disable and missed-window collapse | `node_scheduler_native_clock_preserves_anchors_collapses_gaps_and_handles_dst_once` |
@@ -141,7 +137,7 @@ package copy; source edits alone do not refresh it.
 | Real filesystem deletion/replace failures preserve the last ownership record and retry with no jobs; external Sessions survive | `node_scheduler_retention_retries_real_delete_and_record_failures_with_no_jobs` |
 | Fresh and pre-interrupt history prefixes preserve applied inputs without model consumption, deletion or another stop; later reuse consumption cannot change the terminal record | `node_scheduler_applied_inputs_interrupted_before_consumption_expire_without_another_stop` |
 | A stale history prefix followed by genuine notHeld re-reads native deletion, completion or consumption before deciding | `node_scheduler_not_held_rereads_native_deletion_completion_and_consumption` |
-| All shared cap and reuse vectors pass real authorizing saves, native launch policies and reused-policy checks | `node_scheduler_shared_policy_vectors_reach_native_save_launch_and_reuse` |
+| Shared cap/reuse vectors and unrepresentable saves use real native policies; default-policy groups share one host while job identities stay separate | `node_scheduler_shared_policy_vectors_reach_native_save_launch_and_reuse` |
 | Selected/other job edits, one-CAS conflict, frozen accepted prompt/authority/report target and accepted same-revision local writes | `node_scheduler_job_edits_cas_and_local_source_writes_preserve_accepted_snapshots` |
 | Both job origins preserve completed/failed/cancelled/timed-out/skipped/missed history; only selected tool outcomes send one Steer report with model-visible identities, and reload sends none | `node_scheduler_reports_only_selected_tool_outcomes_with_model_visible_identity` |
 | Closed/deleted report targets and a discarded reply after actual native publication preserve the outcome, record failure once and never redirect or resend after reload | `node_scheduler_failed_reports_keep_the_outcome_and_never_retry_or_redirect` |
@@ -153,8 +149,7 @@ A prefix captured before a user interrupt can permit a withdrawal command at the
 InputQueue returns `notHeld` for the applied input; the command does not imply an `input/deleted`
 fact. The native check preserves this distinction and still requires no model call or extra stop.
 
-The SDK suite exercises the public process/Session services; the native matrix
-runs with the repository's public Node binding setup in CI, including the required
+The native matrix exercises the public process/Session services and runs with the repository's public Node binding setup in CI, including the required
 invalid-record case. The test fixture wraps the real package's public ports
 and uses Node's built-in test clock. Native SQLite publication and filesystem
 permissions supply the report and retention faults; production interfaces are

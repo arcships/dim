@@ -170,22 +170,21 @@ async fn open_tui_leaf(root: &rutis::Ctx, options: &Options) -> Result<i32> {
         client
             .rpc("session.attach", serde_json::json!({ "sessionId": id }))
             .await?;
+        session_host::adopt_startup(&mut client, options, id).await?;
         id.clone()
     } else {
         let mut params = serde_json::json!({ "cwd": options.workspace().as_str() });
-        let mut preferences = None;
+        options.creation_startup(&mut params);
+        let mut preferences = options.creation_preferences(None);
         let mut target = None;
         if let (Some(provider), Some(model)) = (&options.provider, &options.model) {
-            params["model"] = serde_json::json!({
-                "provider": provider,
-                "modelId": model,
-            });
-            preferences =
-                session_host::saved_model_preferences(&mut client, provider, model).await?;
-            if let Some(preferences) = &preferences {
-                params["modelPreferences"] = preferences.clone();
-            }
+            preferences = options.creation_preferences(
+                session_host::saved_model_preferences(&mut client, provider, model).await?,
+            );
             target = Some((provider.clone(), model.clone()));
+        }
+        if let Some(preferences) = &preferences {
+            params["modelPreferences"] = preferences.clone();
         }
         if let Some(policy) = permission::creation_policy(options) {
             params["permissionPolicy"] = policy;
@@ -195,6 +194,7 @@ async fn open_tui_leaf(root: &rutis::Ctx, options: &Options) -> Result<i32> {
             Err(error)
                 if options.provider.is_none()
                     && options.model_config.is_none()
+                    && options.startup.is_none()
                     && client::app_error(&error) == Some("provider_failed") =>
             {
                 drop(client);
@@ -206,7 +206,7 @@ async fn open_tui_leaf(root: &rutis::Ctx, options: &Options) -> Result<i32> {
                     &mut client,
                     target.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
                     error,
-                    preferences.as_ref(),
+                    preferences.as_ref().filter(|_| options.effort.is_none()),
                 )
                 .await;
                 return Err(format!(

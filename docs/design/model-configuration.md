@@ -51,9 +51,52 @@ revoking committed Prompt commands. The entry stores no adopted configuration. I
   `PromptSnapshot` contains prompt entries and revisions, but no adopted model
   configuration; F3 adds that derived value to this owner-held snapshot.
 
+## Temporary startup adoption
+
+[Model startup](model-startup.md) adds optional `startup` to the protected-local
+creation and model-update entries. Its connection admission belongs to
+[Provider](appserver/provider-management.md#session-local-startup-connections).
+With `startup` present, an update may name a model without a Provider, or omit
+both to keep the adopted model. Explicit resume input is resolved and adopted
+through Prompt before the CLI accepts its first user input. Ordinary requests
+without `startup` keep the target/preference rules below. Startup cannot clear
+preferences with the ordinary patch syntax; it accepts set values only.
+
+Protected-local product `session.create` also accepts `modelFromSession: string`,
+the source Session ID. It is mutually exclusive with `model`, `startup` and
+`modelPreferences`, even empty objects. The source passes ordinary Session
+authorization and acquisition and stays acquired through creation. The new
+Session copies the current adopted `main` model, capability snapshot, config
+and metadata, not the source's creation config or saved Provider preferences.
+Request identities (`sessionId`, `runId`, `traceId`, `turnId`) are omitted;
+startup policy and other model extensions are preserved. No history, tools or
+system prompt is copied by this option. Provider retains any bound startup
+connection for the new Session before returning; an unbound source is rejected
+without creating a Session. Ordinary configured selections are copied too,
+and execution keeps Provider's availability, disabled-model and route checks.
+The protected-local product entry advertises
+`session.create.modelFromSession` alongside `session.create` in v3 discovery;
+other entries do not. Clients send this option only when advertised.
+
+The complete adopted selection carries optional `metadata.startup`: a non-secret
+connection source and an optional automatic-compaction window. Its presence,
+including an empty object for a configured model, marks the startup inheritance
+policy. Prompt persists and restores it with the existing model configuration;
+it does not resolve credentials. Child branches retain their parent's cut, and
+later explicit model selection can replace that configuration normally.
+
+The persistence decision is additive within the existing open `RequestMetadata`
+map: reserve the `startup` extension as a typed optional value. Absence retains
+the old meaning and serialized bytes; old readers retain it as opaque extension
+data. There is no new SQL schema, Timeline event or storage-version change.
+An old binary does not implement this startup policy or connection rebinding;
+temporary sources cannot silently become saved Provider credentials. Credential
+and header values are never included. Frozen event fixtures remain unchanged;
+restoration is validated against disposable stores.
+
 ## Model parameters
 
-Extend the existing request without adding fields:
+The ordinary model-update request is:
 
 ```text
 session.model.update {
@@ -91,9 +134,10 @@ The `/models` picker cycles a model's advertised efforts with ←/→. Enter sav
 cycled effort as that model's `reasoningEffort`, then adopts the model with its
 saved preferences.
 Values come from declared `effortOptions` and the existing reasoning-off declaration.
-The CLI reads the adopted provider/model identity from the public
-`context/configured` view, then reads choices from the existing `provider.catalog`
-response. The same view carries `model_preferences` (`reasoningEffort`,
+The CLI reads the adopted provider/model identity and `capability_snapshot` from
+the public `context/configured` view and takes choices from that declaration.
+When an older server omits the declaration, the existing `provider.catalog`
+response supplies choices. The same view carries `model_preferences` (`reasoningEffort`,
 `serviceTier`): the effective values the adopted configuration sends, derived
 from the event's stored config and the `providerProtocol` recorded with it when
 the view is read. The field is absent when the configuration carries neither
@@ -108,9 +152,10 @@ Session shows the current model and values after any update. The event data
 spells the field `model_preferences` and the two replies spell it
 `modelPreferences`; each keeps its layer's naming and the inner fields match.
 The CLI draws the effort from that field and keeps no preference state of its
-own. The view does not expose the rest of the internal model settings or
-capability snapshots. Catalog choices are display data; Provider validates each
-update.
+own. The attach reply also carries the adopted declaration as `capabilitySnapshot`,
+so temporary connections support preference commands before their first input
+without requiring a saved Provider catalog. Other internal model settings remain
+private. Advertised choices are display data; Provider validates each update.
 An adoption starts from the model's declared configuration with the model's own
 catalog defaults applied: when no preference names an effort and that
 configuration carries none, Provider applies the declared `reasoning.effort`
@@ -162,6 +207,12 @@ without changing the other field. Without a target, the fields are independent:
 | field omitted | keep the adopted value | that field unchanged | the value it already carried |
 | `"high"` | apply the value | the model sends `high` | `"high"` |
 | `{"action":"clear"}` | remove the Session's value for the field | the model's declared configuration for that field, or no value when it declares none | the declared value, or absent |
+
+Direct startup has no saved Provider configuration. Its preference-only updates
+use the adopted capability declaration and captured connection; clearing removes
+the explicit native preference controls and restores any declared catalog
+default, as a direct adoption without that preference would. Capacity, output
+budget and startup metadata remain unchanged.
 
 Clear is not a value: `reasoningEffort:"none"` selects the model's reasoning-off
 declaration and `serviceTier:"default"` selects an advertised tier; neither

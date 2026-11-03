@@ -2155,7 +2155,7 @@ fn tui_new_creates_the_session_on_the_first_message() {
     let home = Home::new();
     let (ready, readiness) = std::sync::mpsc::channel();
     let daemon = home.daemon(move |wire| {
-        wire.hello(&[]);
+        wire.hello(&["session.create.modelFromSession"]);
         wire.created();
         let attach = wire.read("session.attach");
         wire.reply(&attach, attach_record(&attach));
@@ -2172,10 +2172,8 @@ fn tui_new_creates_the_session_on_the_first_message() {
         wire.quiet(Duration::from_millis(300));
         ready.send(()).unwrap();
         let create = wire.read("session.create");
-        assert_eq!(
-            create["params"]["model"],
-            json!({"provider":"test","modelId":"model"})
-        );
+        assert_eq!(create["params"]["modelFromSession"], "session");
+        assert!(create["params"].get("model").is_none());
         wire.reply(
             &create,
             json!({"sessionId":"fresh","sequence":0,

@@ -76,6 +76,9 @@ mod barrier;
 #[path = "transport_flow/product_protocol.rs"]
 mod product_protocol;
 
+#[path = "transport_flow/model_startup.rs"]
+mod model_startup;
+
 #[path = "transport_flow/summaries.rs"]
 mod summaries;
 

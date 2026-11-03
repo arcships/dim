@@ -58,6 +58,61 @@ continues to exclude private account implementations and credentials from this r
 
 ## 3. Management contract
 
+### Session-local startup connections
+
+[Model startup](../model-startup.md) adds a separate admission to the existing
+protected-local `session.create` and `session.model.update` entries, not a
+Provider-management write. `startup` contains optional `connection`,
+`contextWindow`, `maxOutputTokens` and `autoCompactWindow`. Connection fields are
+`apiFormat`, `baseUrl`, optional `apiKey` or `authToken`, and optional `headers`
+(a name/value map). A compaction window is a positive integer or `"auto"`.
+Remote entries reject this admission. Ordinary creation stays unchanged.
+
+Provider admits the connection and model together. It uses the existing protocol
+driver and bundled descriptor projection; a configured target keeps its catalog
+descriptor. A direct connection prefers an exact model declaration in its
+protocol's native catalog before generic descriptor matching, so a generic
+gateway entry cannot hide native effort declarations. Explicit capacity
+declarations apply to this adoption only and may
+complete missing catalog limits without making a disabled or otherwise
+unavailable model selectable. Effort and tier still require model declarations.
+Startup execution and preference-only updates use the validated adopted
+capacities, not the persisted catalog's missing limits. Ordinary selections
+still require catalog declarations. Current availability, disablement
+and route checks still apply; no capacity is written back to the catalog.
+A bare model ID first uses the effective Provider if it offers that exact ID;
+otherwise exactly one available Provider must offer it. Ambiguity is an error.
+An individual catalog failure does not exclude healthy Providers from that
+search; cancellation still stops it. An explicitly named Provider retains its
+own error rather than falling back to another Provider. If the search finds no
+match, its unavailable-model diagnostic includes the first catalog error, if any.
+
+Provider retains credentials and all header values only in memory, under an
+opaque source UUID. The adopted non-secret declaration contains that UUID,
+protocol, normalized base URL, authentication kind and sorted header names.
+URL user info, query and fragment are rejected. Source lookup requires the whole
+declaration to match and never falls back to another Provider or account.
+Header names use the HTTP case-insensitive grammar. Header values trim leading
+and trailing space and tab before HTTP validation; internal whitespace and
+colons are preserved. Duplicate canonical names and generated-auth conflicts
+are rejected, matching the CLI's text-to-map admission.
+Failed admission/creation releases unclaimed bindings. Sessions sharing a source
+retain it independently; final business close releases it after requests settle.
+Idle unload retains ownership; restore reinstates its close observer, and deletion
+of an unloaded Session releases its ownership. Provider unload drops all bindings.
+The product assembly declares the Session-directory dependency used for these
+lifecycle notifications; standalone Provider assemblies do not require it.
+Forks retain sources from their adopted branch snapshots before returning,
+including a model adopted after the source Session's creation.
+
+After process restart, a recorded source is unbound until the caller explicitly
+supplies a connection. A matching protocol, normalized URL, auth kind and header
+name set rebinds missing sources in that Session, including parent-cut branches.
+Credential/header values may rotate, but a live source is never overwritten:
+already running branches and members retain their captured connection. A changed
+destination adopts a new source on main only. No Provider record, saved
+preference, workspace selection, account lease or secret file is created.
+
 ### 3.1 Read models
 
 | Method | Request | Reply | mutating | interruption |

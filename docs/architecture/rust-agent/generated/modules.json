@@ -1828,6 +1828,7 @@
         "json",
         "matches",
         "tokio::select",
+        "tracing::error",
         "tracing::warn",
         "unreachable",
         "vec"
@@ -2468,6 +2469,19 @@
       ]
     },
     {
+      "id": "dim_app_server::provider::startup",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::provider",
+      "file": "crates/dim-app-server/src/provider/startup.rs",
+      "unexpandedMacros": [
+        "format",
+        "matches",
+        "serde_json::json",
+        "tokio::select",
+        "unreachable"
+      ]
+    },
+    {
       "id": "dim_app_server::provider::view",
       "crate": "dim_app_server",
       "parent": "dim_app_server::provider",
@@ -2893,7 +2907,8 @@
         "cfg",
         "env",
         "format",
-        "matches"
+        "matches",
+        "serde_json::json"
       ]
     },
     {
@@ -4202,7 +4217,7 @@
       "unexpandedMacros": [
         "assert",
         "assert_eq",
-        "panic"
+        "assert_ne"
       ]
     },
     {
@@ -6216,9 +6231,7 @@
       "references": [
         "path HostError",
         "path HostError::failed",
-        "path ProviderKind",
-        "use dim_agent_capabilities::host::HostError",
-        "use dim_agent_capabilities::host::ModelProtocol"
+        "use dim_agent_capabilities::host::HostError"
       ]
     },
     {
@@ -6226,6 +6239,8 @@
       "to": "dim_agent_types::model",
       "references": [
         "path ModelConfig",
+        "path ProviderKind",
+        "use dim_agent_capabilities::host::ModelProtocol",
         "use dim_agent_types::ModelConfig"
       ]
     },
@@ -6276,10 +6291,6 @@
         "path ModelDriver",
         "path ModelNetwork",
         "path ModelNetwork::default",
-        "path ModelProtocol::Anthropic",
-        "path ModelProtocol::Bedrock",
-        "path ModelProtocol::Gemini",
-        "path ModelProtocol::OpenaiResponses",
         "path ModelStream"
       ]
     },
@@ -6287,6 +6298,10 @@
       "from": "dim_agent_aimux::driver",
       "to": "dim_agent_types::model",
       "references": [
+        "path ModelProtocol::Anthropic",
+        "path ModelProtocol::Bedrock",
+        "path ModelProtocol::Gemini",
+        "path ModelProtocol::OpenaiResponses",
         "path ModelRequest",
         "use dim_agent_types::ModelRequest"
       ]
@@ -6322,10 +6337,7 @@
         "path HostError",
         "path HostError::failed",
         "path HostFuture",
-        "path ProviderKind",
-        "path ProviderKind::Bedrock",
         "path ResolveContextModel",
-        "use crate::config::ProviderKind",
         "use dim_agent_capabilities::host::ContextModel",
         "use dim_agent_capabilities::host::HostError",
         "use dim_agent_capabilities::host::HostFuture",
@@ -6339,6 +6351,9 @@
         "path ModelConfig",
         "path ModelRequest",
         "path ModelRequest::new",
+        "path ProviderKind",
+        "path ProviderKind::Bedrock",
+        "use crate::config::ProviderKind",
         "use dim_agent_types::ModelConfig",
         "use dim_agent_types::ModelRequest"
       ]
@@ -6519,13 +6534,6 @@
       "references": [
         "path HostError",
         "path HostError::failed",
-        "path ProviderKind",
-        "path ProviderKind::Anthropic",
-        "path ProviderKind::Bedrock",
-        "path ProviderKind::Gemini",
-        "path ProviderKind::OpenaiResponses",
-        "path ProviderKind::XaiResponses",
-        "use crate::config::ProviderKind",
         "use dim_agent_capabilities::host::HostError"
       ]
     },
@@ -6574,9 +6582,16 @@
       "to": "dim_agent_types::model",
       "references": [
         "path ModelRequest",
+        "path ProviderKind",
+        "path ProviderKind::Anthropic",
+        "path ProviderKind::Bedrock",
+        "path ProviderKind::Gemini",
+        "path ProviderKind::OpenaiResponses",
+        "path ProviderKind::XaiResponses",
         "path SystemPrompt::Parts",
         "path SystemPrompt::Text",
         "path SystemPromptPart::Text",
+        "use crate::config::ProviderKind",
         "use dim_agent_types::ModelRequest",
         "use dim_agent_types::SystemPrompt",
         "use dim_agent_types::SystemPromptPart"
@@ -6595,14 +6610,6 @@
       "to": "dim_agent_capabilities::host",
       "references": [
         "path HostError",
-        "path ProviderKind",
-        "path ProviderKind::Anthropic",
-        "path ProviderKind::Bedrock",
-        "path ProviderKind::Gemini",
-        "path ProviderKind::OpenaiResponses",
-        "path ProviderKind::Xai",
-        "path ProviderKind::XaiResponses",
-        "use crate::config::ProviderKind",
         "use dim_agent_capabilities::host::HostError"
       ]
     },
@@ -6612,6 +6619,14 @@
       "references": [
         "path ModelConfig",
         "path ModelRequest",
+        "path ProviderKind",
+        "path ProviderKind::Anthropic",
+        "path ProviderKind::Bedrock",
+        "path ProviderKind::Gemini",
+        "path ProviderKind::OpenaiResponses",
+        "path ProviderKind::Xai",
+        "path ProviderKind::XaiResponses",
+        "use crate::config::ProviderKind",
         "use dim_agent_types::AnthropicThinkingType",
         "use dim_agent_types::ModelConfig",
         "use dim_agent_types::ModelRequest"
@@ -6637,10 +6652,6 @@
       "to": "dim_agent_capabilities::host",
       "references": [
         "path HostError",
-        "path ProviderKind",
-        "path ProviderKind::OpenaiChat",
-        "path ProviderKind::OpenaiCompatible",
-        "use crate::config::ProviderKind",
         "use dim_agent_capabilities::host::HostError"
       ]
     },
@@ -6650,8 +6661,12 @@
       "references": [
         "path ModelConfig",
         "path ModelRequest",
+        "path ProviderKind",
+        "path ProviderKind::OpenaiChat",
+        "path ProviderKind::OpenaiCompatible",
         "path ThinkingType",
         "path ThinkingType::Enabled",
+        "use crate::config::ProviderKind",
         "use dim_agent_types::ModelConfig",
         "use dim_agent_types::ModelRequest",
         "use dim_agent_types::ThinkingType"
@@ -6667,8 +6682,10 @@
     },
     {
       "from": "dim_agent_aimux::request::tests",
-      "to": "dim_agent_capabilities::host",
+      "to": "dim_agent_types::model",
       "references": [
+        "path ModelRequest",
+        "path ModelRequest::new",
         "path ProviderKind",
         "path ProviderKind::Anthropic",
         "path ProviderKind::Bedrock",
@@ -6677,15 +6694,7 @@
         "path ProviderKind::OpenaiCompatible",
         "path ProviderKind::OpenaiResponses",
         "path ProviderKind::Xai",
-        "path ProviderKind::XaiResponses"
-      ]
-    },
-    {
-      "from": "dim_agent_aimux::request::tests",
-      "to": "dim_agent_types::model",
-      "references": [
-        "path ModelRequest",
-        "path ModelRequest::new",
+        "path ProviderKind::XaiResponses",
         "path SystemPrompt::Parts",
         "path SystemPrompt::Text"
       ]
@@ -6735,14 +6744,12 @@
         "path ModelFailureOrigin::HttpResponse",
         "path ModelFailureOrigin::StreamEvent",
         "path ModelFailureOrigin::Transport",
-        "path ModelProtocol",
         "path ModelStream",
         "use dim_agent_capabilities::host::HostError",
         "use dim_agent_capabilities::host::HostErrorKind",
         "use dim_agent_capabilities::host::ModelChunk",
         "use dim_agent_capabilities::host::ModelFailureFacts",
         "use dim_agent_capabilities::host::ModelFailureOrigin",
-        "use dim_agent_capabilities::host::ModelProtocol",
         "use dim_agent_capabilities::host::ModelStopReason",
         "use dim_agent_capabilities::host::ModelStream"
       ]
@@ -6759,7 +6766,9 @@
       "from": "dim_agent_aimux::stream",
       "to": "dim_agent_types::model",
       "references": [
+        "path ModelProtocol",
         "path Usage",
+        "use dim_agent_capabilities::host::ModelProtocol",
         "use dim_agent_types::Usage"
       ]
     },
@@ -6776,14 +6785,7 @@
       "references": [
         "path HostError",
         "path HostError::failed",
-        "path ModelProtocol",
-        "path ModelProtocol::Anthropic",
-        "path ModelProtocol::Bedrock",
-        "path ModelProtocol::Gemini",
-        "path ModelProtocol::OpenaiResponses",
-        "path ModelProtocol::XaiResponses",
-        "use dim_agent_capabilities::host::HostError",
-        "use dim_agent_capabilities::host::ModelProtocol"
+        "use dim_agent_capabilities::host::HostError"
       ]
     },
     {
@@ -6804,6 +6806,19 @@
         "path MessagePart::ToolUse",
         "use dim_agent_types::ContentMetadata",
         "use dim_agent_types::MessagePart"
+      ]
+    },
+    {
+      "from": "dim_agent_aimux::stream::content",
+      "to": "dim_agent_types::model",
+      "references": [
+        "path ModelProtocol",
+        "path ModelProtocol::Anthropic",
+        "path ModelProtocol::Bedrock",
+        "path ModelProtocol::Gemini",
+        "path ModelProtocol::OpenaiResponses",
+        "path ModelProtocol::XaiResponses",
+        "use dim_agent_capabilities::host::ModelProtocol"
       ]
     },
     {
@@ -6830,8 +6845,14 @@
         "path ModelChunk::MessageStart",
         "path ModelChunk::Text",
         "path ModelChunk::Usage",
-        "path ModelProtocol::OpenaiChat",
         "path ModelStream"
+      ]
+    },
+    {
+      "from": "dim_agent_aimux::stream::tests",
+      "to": "dim_agent_types::model",
+      "references": [
+        "path ModelProtocol::OpenaiChat"
       ]
     },
     {
@@ -9636,6 +9657,15 @@
         "path ModelCapabilitySnapshot",
         "path ModelConfig",
         "path ModelPreferences",
+        "path ModelProtocol",
+        "path ModelProtocol::Anthropic",
+        "path ModelProtocol::Bedrock",
+        "path ModelProtocol::Gemini",
+        "path ModelProtocol::OpenaiChat",
+        "path ModelProtocol::OpenaiCompatible",
+        "path ModelProtocol::OpenaiResponses",
+        "path ModelProtocol::Xai",
+        "path ModelProtocol::XaiResponses",
         "path ModelRequest",
         "path ProviderOptions",
         "path ProviderOutputBudgetFacts",
@@ -9646,7 +9676,8 @@
         "path RequestMetadata",
         "path SystemPrompt",
         "path ThinkingType::Disabled",
-        "path Usage"
+        "path Usage",
+        "use dim_agent_types::ModelProtocol"
       ]
     },
     {
@@ -12494,6 +12525,7 @@
         "path CompactionStrategyRecord",
         "path ModelRequest",
         "path ModelRequest::new",
+        "path RequestMetadata",
         "path SystemPrompt::Text",
         "path Usage",
         "path model"
@@ -16508,7 +16540,7 @@
       "references": [
         "mod provider",
         "path provider",
-        "path provider::ProviderPlugin::new",
+        "path provider::ProviderPlugin::with_session_lifecycle",
         "path provider::ProviderService"
       ]
     },
@@ -18244,6 +18276,13 @@
     },
     {
       "from": "dim_app_server::collaboration",
+      "to": "dim_app_server::provider",
+      "references": [
+        "path crate::provider::ProviderService"
+      ]
+    },
+    {
+      "from": "dim_app_server::collaboration",
       "to": "dim_app_server::settings",
       "references": [
         "path SettingsService",
@@ -18612,7 +18651,8 @@
       "from": "dim_app_server::connection",
       "to": "dim_agent_types::model",
       "references": [
-        "path crate::provider::ModelPreferences"
+        "path crate::provider::ModelPreferences",
+        "path dim_agent_types::RequestMetadata"
       ]
     },
     {
@@ -18841,6 +18881,7 @@
         "path WEB_MANAGEMENT_METHODS",
         "path WEB_SETTINGS_SOURCES",
         "path agent_unknown",
+        "path crate::protocol::ModelSelection",
         "path crate::protocol::agent_unknown",
         "path session_cwd"
       ]
@@ -19760,14 +19801,6 @@
     },
     {
       "from": "dim_app_server::managed_provider",
-      "to": "dim_agent_capabilities::host",
-      "references": [
-        "path ModelProtocol",
-        "use dim_agent_capabilities::host::ModelProtocol"
-      ]
-    },
-    {
-      "from": "dim_app_server::managed_provider",
       "to": "dim_agent_runtime::assembly",
       "references": [
         "path dim_agent_runtime::Modules"
@@ -19779,6 +19812,14 @@
       "references": [
         "path Names",
         "use dim_agent_runtime::Names"
+      ]
+    },
+    {
+      "from": "dim_app_server::managed_provider",
+      "to": "dim_agent_types::model",
+      "references": [
+        "path ModelProtocol",
+        "use dim_agent_capabilities::host::ModelProtocol"
       ]
     },
     {
@@ -21935,6 +21976,7 @@
       "to": "dim_agent_types::model",
       "references": [
         "path crate::provider::ModelPreferences",
+        "path dim_agent_types::ModelCapabilitySnapshot",
         "path dim_agent_types::ModelPreferences"
       ]
     },
@@ -21980,6 +22022,13 @@
       "references": [
         "path crate::mcp::McpAppCallResult",
         "path crate::mcp::McpWidgetResult"
+      ]
+    },
+    {
+      "from": "dim_app_server::protocol",
+      "to": "dim_app_server::provider::startup",
+      "references": [
+        "path crate::provider::StartupInput"
       ]
     },
     {
@@ -22044,9 +22093,6 @@
         "path ModelHost",
         "path ModelNetwork",
         "path ModelNetwork::default",
-        "path ModelProtocol",
-        "path ModelProtocol::OpenaiCompatible",
-        "path ModelProtocol::OpenaiResponses",
         "path ModelSelectionHost",
         "path ProviderConnectionResolver",
         "path RecoverModelConnection",
@@ -22094,6 +22140,9 @@
         "path ModelConfig::default",
         "path ModelPreferences",
         "path ModelPreferences::default",
+        "path ModelProtocol",
+        "path ModelProtocol::OpenaiCompatible",
+        "path ModelProtocol::OpenaiResponses",
         "path ModelRequest",
         "path dim_agent_types::RequestMetadata",
         "path model",
@@ -22126,6 +22175,15 @@
       "to": "dim_agent_types::tool",
       "references": [
         "path kind"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider",
+      "to": "dim_app_server::agents",
+      "references": [
+        "path crate::agents::AgentIndex",
+        "path crate::agents::SessionRestored",
+        "path crate::agents::UnloadedSessionDeleted"
       ]
     },
     {
@@ -22332,6 +22390,18 @@
     },
     {
       "from": "dim_app_server::provider",
+      "to": "dim_app_server::provider::startup",
+      "references": [
+        "mod startup",
+        "path startup",
+        "path startup::StartupBindings",
+        "path startup::StartupBindings::default",
+        "use startup::StartupInput",
+        "use startup::StartupSelection"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider",
       "to": "dim_app_server::provider::view",
       "references": [
         "mod view",
@@ -22406,6 +22476,14 @@
       "references": [
         "path HostError",
         "path HttpModelConnection",
+        "use dim_agent_capabilities::host::HostError",
+        "use dim_agent_capabilities::host::HttpModelConnection"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider::drivers",
+      "to": "dim_agent_types::model",
+      "references": [
         "path ModelProtocol",
         "path ModelProtocol::Anthropic",
         "path ModelProtocol::Bedrock",
@@ -22414,8 +22492,6 @@
         "path ModelProtocol::OpenaiResponses",
         "path ModelProtocol::Xai",
         "path ModelProtocol::XaiResponses",
-        "use dim_agent_capabilities::host::HostError",
-        "use dim_agent_capabilities::host::HttpModelConnection",
         "use dim_agent_capabilities::host::ModelProtocol"
       ]
     },
@@ -22773,12 +22849,18 @@
       "to": "dim_agent_capabilities::host",
       "references": [
         "path HostError",
+        "use dim_agent_capabilities::host::HostError"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider::new_api",
+      "to": "dim_agent_types::model",
+      "references": [
         "path ModelProtocol",
         "path ModelProtocol::Anthropic",
         "path ModelProtocol::Gemini",
         "path ModelProtocol::OpenaiCompatible",
         "path ModelProtocol::OpenaiResponses",
-        "use dim_agent_capabilities::host::HostError",
         "use dim_agent_capabilities::host::ModelProtocol"
       ]
     },
@@ -22809,18 +22891,8 @@
       "from": "dim_app_server::provider::preferences",
       "to": "dim_agent_capabilities::host",
       "references": [
-        "path ModelProtocol",
-        "path ModelProtocol::Anthropic",
-        "path ModelProtocol::Bedrock",
-        "path ModelProtocol::Gemini",
-        "path ModelProtocol::OpenaiChat",
-        "path ModelProtocol::OpenaiCompatible",
-        "path ModelProtocol::OpenaiResponses",
-        "path ModelProtocol::Xai",
-        "path ModelProtocol::XaiResponses",
         "path adopted_preferences",
         "path reasoning_config",
-        "use dim_agent_capabilities::host::ModelProtocol",
         "use dim_agent_capabilities::host::adopted_preferences",
         "use dim_agent_capabilities::host::reasoning_config"
       ]
@@ -22833,8 +22905,18 @@
         "path ModelConfig",
         "path ModelPreferences",
         "path ModelPreferences::default",
+        "path ModelProtocol",
+        "path ModelProtocol::Anthropic",
+        "path ModelProtocol::Bedrock",
+        "path ModelProtocol::Gemini",
+        "path ModelProtocol::OpenaiChat",
+        "path ModelProtocol::OpenaiCompatible",
+        "path ModelProtocol::OpenaiResponses",
+        "path ModelProtocol::Xai",
+        "path ModelProtocol::XaiResponses",
         "path ProviderOptions",
-        "path ProviderReasoningConfig::default"
+        "path ProviderReasoningConfig::default",
+        "use dim_agent_capabilities::host::ModelProtocol"
       ]
     },
     {
@@ -22844,14 +22926,14 @@
         "path HostError",
         "path HostError::classified",
         "path HostErrorKind::Http",
-        "path ModelNetwork",
-        "path ModelProtocol::OpenaiCompatible"
+        "path ModelNetwork"
       ]
     },
     {
       "from": "dim_app_server::provider::remote",
       "to": "dim_agent_types::model",
       "references": [
+        "path ModelProtocol::OpenaiCompatible",
         "path model"
       ]
     },
@@ -22942,10 +23024,111 @@
       ]
     },
     {
-      "from": "dim_app_server::provider::view",
+      "from": "dim_app_server::provider::startup",
       "to": "dim_agent_capabilities::host",
       "references": [
-        "path ModelProtocol"
+        "path HostError",
+        "path HostError::Cancelled",
+        "path HttpModelConnection",
+        "path ModelNetwork::default"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider::startup",
+      "to": "dim_agent_capabilities::prompt_state",
+      "references": [
+        "path dim_agent_capabilities::prompt_state::PromptSnapshot"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider::startup",
+      "to": "dim_agent_runtime::agent",
+      "references": [
+        "path Session",
+        "use dim_agent_runtime::Session"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider::startup",
+      "to": "dim_agent_types::model",
+      "references": [
+        "path ModelCapabilitySnapshot",
+        "path ModelConfig",
+        "path ModelPreferences",
+        "path ModelPreferences::default",
+        "path ModelProtocol",
+        "path ModelProtocol::Anthropic",
+        "path ModelProtocol::Bedrock",
+        "path ModelProtocol::Gemini",
+        "path ModelProtocol::OpenaiChat",
+        "path ModelProtocol::OpenaiCompatible",
+        "path ModelProtocol::OpenaiResponses",
+        "path ModelProtocol::Xai",
+        "path ModelProtocol::XaiResponses",
+        "path StartupAuth::Anonymous",
+        "path StartupAuth::ApiKey",
+        "path StartupAuth::Bearer",
+        "path StartupConnectionSource",
+        "path dim_agent_types::RequestMetadata",
+        "path model",
+        "use dim_agent_types::StartupAuth",
+        "use dim_agent_types::StartupConnectionSource"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider::startup",
+      "to": "dim_agent_types::profile",
+      "references": [
+        "path ModelId"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider::startup",
+      "to": "dim_agent_types::prompt",
+      "references": [
+        "path ModelConfiguration",
+        "path ModelSelection",
+        "use dim_agent_types::ModelConfiguration"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider::startup",
+      "to": "dim_app_server::model_catalog",
+      "references": [
+        "path MAX_MODEL_TOKENS",
+        "path ProviderProjection"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider::startup",
+      "to": "dim_app_server::protocol",
+      "references": [
+        "path crate::protocol::ModelSelection"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider::startup",
+      "to": "dim_app_server::provider",
+      "references": [
+        "path ProviderService",
+        "path failure",
+        "path provider_protocol"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider::startup",
+      "to": "dim_app_server::provider::preferences",
+      "references": [
+        "path preferences",
+        "path preferences::catalog_defaults",
+        "path preferences::configure"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider::startup",
+      "to": "dim_app_server::provider::view",
+      "references": [
+        "path view"
       ]
     },
     {
@@ -22960,6 +23143,7 @@
       "to": "dim_agent_types::model",
       "references": [
         "path ModelPreferences",
+        "path ModelProtocol",
         "path model"
       ]
     },
@@ -25626,6 +25810,7 @@
         "mod session_host",
         "path session_host::LimitTarget::Missing",
         "path session_host::LimitTarget::Model",
+        "path session_host::adopt_startup",
         "path session_host::clear_saved_model_preferences",
         "path session_host::declare_model_limits",
         "path session_host::saved_model_preferences"
@@ -28861,6 +29046,7 @@
       "from": "dim_cli::session",
       "to": "dim_cli::session_host",
       "references": [
+        "path crate::session_host::adopt_startup",
         "path crate::session_host::saved_model_preferences"
       ]
     },
@@ -28972,6 +29158,7 @@
       "to": "dim_agent_types::model",
       "references": [
         "path dim_agent_types::CatalogCapabilities",
+        "path dim_agent_types::ModelCapabilitySnapshot",
         "path dim_agent_types::ModelPreferences",
         "path dim_agent_types::ModelReasoning",
         "path dim_agent_types::ModelServiceTier"
@@ -31139,168 +31326,11 @@
       "from": "dim_cli::ui::i18n::tests",
       "to": "dim_cli::ui::i18n",
       "references": [
-        "path Locale::from_env_value"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::de",
-      "references": [
-        "path de::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::de::management",
-      "references": [
-        "path de::management::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::es",
-      "references": [
-        "path es::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::es::management",
-      "references": [
-        "path es::management::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::fr",
-      "references": [
-        "path fr::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::fr::management",
-      "references": [
-        "path fr::management::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::id",
-      "references": [
-        "path id::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::id::management",
-      "references": [
-        "path id::management::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::ja",
-      "references": [
-        "path ja::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::ja::management",
-      "references": [
-        "path ja::management::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::ko",
-      "references": [
-        "path ko::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::ko::management",
-      "references": [
-        "path ko::management::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::pt_br",
-      "references": [
-        "path pt_br::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::pt_br::management",
-      "references": [
-        "path pt_br::management::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::pt_pt",
-      "references": [
-        "path pt_pt::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::pt_pt::management",
-      "references": [
-        "path pt_pt::management::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::zh_cn",
-      "references": [
-        "path zh_cn::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::zh_cn::management",
-      "references": [
-        "path zh_cn::management::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::zh_hant",
-      "references": [
-        "path zh_hant::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::i18n::zh_hant::management",
-      "references": [
-        "path zh_hant::management::lookup"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::management_panel",
-      "references": [
-        "path crate::ui::management_panel::STRINGS"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::plugins_panel",
-      "references": [
-        "path crate::ui::plugins_panel::STRINGS"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::i18n::tests",
-      "to": "dim_cli::ui::runtime_panel",
-      "references": [
-        "path crate::ui::runtime_panel::STRINGS"
+        "path LOCALES",
+        "path Locale::En",
+        "path Locale::from_env_value",
+        "path active",
+        "path set"
       ]
     },
     {
@@ -37028,7 +37058,6 @@
       "from": "dim_cli::ui::tui::tests",
       "to": "dim_cli::ui::render::panel",
       "references": [
-        "path clip",
         "path crate::ui::render::panel::strip_escapes"
       ]
     },
@@ -37157,12 +37186,9 @@
         "path Prompt::Sessions",
         "path QUEUE_HINT",
         "path QUEUE_HINT_MORE",
-        "path ThemeContext",
         "path WebOpened",
         "path banner",
-        "path boxed",
         "path chunk",
-        "path goodbye_panel",
         "path live_panel_rows",
         "path overlay_panel_rows",
         "path queue_strip",
@@ -37464,6 +37490,7 @@
       "from": "dim_client::wire",
       "to": "dim_agent_types::model",
       "references": [
+        "path ModelCapabilitySnapshot",
         "path dim_agent_types::ModelPreferences"
       ]
     },
@@ -39851,14 +39878,6 @@
     {
       "module": "dim_cli::ui::tui::tests",
       "path": "Appearance::Light"
-    },
-    {
-      "module": "dim_cli::ui::tui::tests",
-      "path": "ColorMode::Ansi16"
-    },
-    {
-      "module": "dim_cli::ui::tui::tests",
-      "path": "ColorMode::Ansi256"
     },
     {
       "module": "dim_cli::ui::tui::tests",

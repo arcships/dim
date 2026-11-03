@@ -63,11 +63,17 @@ incomplete match fills the command name and keeps the composer open. Exact typed
 commands, including hidden commands, retain their own dispatch behavior.
 Menu selection can still complete rather than dispatch an exact name: commands
 with inline arguments and `/goal` fill the composer for a separate submission.
+`Tab` only completes the selected row and never runs or sends it: a command
+fills its name, one that takes an argument also fills the space after it, and a
+Skill row fills its `$skill: <name> ` marker. A category heading, or a query
+matching nothing, leaves the draft unchanged. A command without an argument
+runs on `Enter` only.
 The command menu lists `/permissions` as the permission entry. `/approvals` and `/approval`
 remain compatibility aliases when typed directly. Run, queue and steer keys are
 omitted from the menu. The menu only lists slash commands: the view actions for
 picking an earlier message and scrolling to the top or bottom are also omitted;
-`Tab`, `Home` and `End` retain their bindings.
+`Tab`, `Home` and `End` keep their fullscreen message-picker and scroll bindings
+outside the menu.
 
 The menu fits the available terminal columns and rows in both modes. Command
 names take priority over category labels, descriptions and shortcut labels;

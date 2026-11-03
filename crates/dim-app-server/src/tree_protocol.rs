@@ -108,6 +108,10 @@ impl Serialize for ProductEvent {
                 view["data"]["model_preferences"] =
                     serde_json::to_value(preferences).map_err(serde::ser::Error::custom)?;
             }
+            if let Some(snapshot) = &configured.settings.capability_snapshot {
+                view["data"]["capability_snapshot"] =
+                    serde_json::to_value(snapshot).map_err(serde::ser::Error::custom)?;
+            }
             view.serialize(serializer)
         } else {
             self.0.serialize(serializer)

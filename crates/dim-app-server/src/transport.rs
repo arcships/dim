@@ -715,6 +715,9 @@ async fn run_connection(
                                             "session.branch_end",
                                             "session.create.origin",
                                         ]);
+                                        if local && hub.config().product_home.is_some() {
+                                            features.push("session.create.modelFromSession");
+                                        }
                                         if hub.config().database_path.is_some() {
                                             features.push("session.fork");
                                             features.push("session.history.latestTurn");

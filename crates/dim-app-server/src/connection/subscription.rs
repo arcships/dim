@@ -494,7 +494,7 @@ impl Connection {
                 .ok()
                 .flatten()
                 .and_then(|snapshot| snapshot.configuration);
-            let (model, model_preferences) = match adopted {
+            let (model, model_preferences, capability_snapshot) = match adopted {
                 Some(configuration) => (
                     dim_agent_types::ModelId {
                         provider_id: configuration.provider_id.clone(),
@@ -504,6 +504,7 @@ impl Connection {
                         configuration.config.as_ref(),
                         configuration.metadata.as_ref(),
                     ),
+                    configuration.capability_snapshot,
                 ),
                 None => (
                     record.model.clone(),
@@ -511,6 +512,7 @@ impl Connection {
                         session.config().model.config.as_ref(),
                         session.config().model.metadata.as_ref(),
                     ),
+                    session.config().model.capability_snapshot.clone(),
                 ),
             };
             let record = SessionInfo {
@@ -521,6 +523,7 @@ impl Connection {
             let reply = AttachResult {
                 session: record,
                 model_preferences,
+                capability_snapshot: capability_snapshot.map(Box::new),
             };
             if self
                 .sender

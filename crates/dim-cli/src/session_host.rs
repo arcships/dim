@@ -268,6 +268,7 @@ struct Worker {
     shell_stops: Vec<u64>,
     /// The model the session adopted, for the preference commands.
     model: Option<Configuration>,
+    model_session: Option<String>,
     /// The MCP sign-in waiting for its callback.
     mcp_attempt: Option<McpAttempt>,
     /// Callbacks the local listener captured.
@@ -375,6 +376,7 @@ async fn run(
         title_revision: 0,
         session_cwd: None,
         parked: String::new(),
+        model_session: None,
         projection: Projection::default(),
         question_responses: Vec::new(),
         approval_details: Default::default(),
@@ -418,7 +420,7 @@ async fn run(
         ..Default::default()
     })));
     if let Err(error) = worker.open().await {
-        if worker.options.resume.is_some() {
+        if worker.options.resume.is_some() || worker.options.startup.is_some() {
             let _ = updates.send(Update::Failed(error.to_string()));
             return;
         }
@@ -500,6 +502,8 @@ struct Created {
 struct Attached {
     #[serde(default)]
     model: Option<ModelId>,
+    #[serde(default)]
+    capability_snapshot: Option<Box<dim_agent_types::ModelCapabilitySnapshot>>,
     /// The adopted configuration's preferences; absent when it carries none.
     #[serde(default)]
     model_preferences: Option<dim_agent_types::ModelPreferences>,
@@ -716,6 +720,9 @@ impl Worker {
     /// Creates or resumes the session the process was started for.
     async fn open(&mut self) -> crate::Result<()> {
         if let Some(id) = self.options.resume.clone() {
+            if self.options.ui_identity.is_none() {
+                adopt_startup(&mut self.client, &self.options, &id).await?;
+            }
             let kind = if self.options.created_session {
                 SwitchKind::New
             } else {
@@ -725,17 +732,19 @@ impl Worker {
         }
         let attached_session = self.invalidate_projection();
         let mut params = creation_params(&self.options);
-        let mut preferences = None;
+        self.options.creation_startup(&mut params);
+        let mut preferences = self.options.creation_preferences(None);
         let mut target = None;
         if let (Some(provider), Some(model)) =
             (self.options.provider.clone(), self.options.model.clone())
         {
-            params["model"] = json!({"provider": provider, "modelId": model});
-            preferences = saved_model_preferences(&mut self.client, &provider, &model).await?;
-            if let Some(preferences) = &preferences {
-                params["modelPreferences"] = preferences.clone();
-            }
+            preferences = self.options.creation_preferences(
+                saved_model_preferences(&mut self.client, &provider, &model).await?,
+            );
             target = Some((provider, model));
+        }
+        if let Some(preferences) = &preferences {
+            params["modelPreferences"] = preferences.clone();
         }
         let created: Created = match self.client.typed("session.create", params).await {
             Ok(created) => created,
@@ -744,7 +753,9 @@ impl Worker {
                     &mut self.client,
                     target.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
                     error,
-                    preferences.as_ref(),
+                    preferences
+                        .as_ref()
+                        .filter(|_| self.options.effort.is_none()),
                 )
                 .await);
             }
@@ -766,14 +777,35 @@ impl Worker {
         let mut preferences = None;
         let mut target = None;
         let result = async {
-            if let Some(model) = &self.model {
-                params["model"] = json!({"provider": model.provider_id, "modelId": model.model_id});
+            if let Some(source) = &self.model_session
+                && self.client.offers("session.create.modelFromSession")
+            {
+                params["modelFromSession"] = json!(source);
+            } else if let Some(model) = &self.model {
                 let (provider, model) = (model.provider_id.clone(), model.model_id.clone());
-                preferences = saved_model_preferences(&mut self.client, &provider, &model).await?;
-                if let Some(preferences) = &preferences {
-                    params["modelPreferences"] = preferences.clone();
+                params["model"] = json!({"provider": provider, "modelId": model});
+                if self.model_session.is_some() && self.options.model_config.is_none() {
+                    let cannot_copy = "This daemon cannot copy the adopted Session model. Restart the daemon with a version supporting session.create.modelFromSession, then rebind the temporary connection with DIM_BASE_URL and DIM_API_FORMAT";
+                    if !self.client.offers("provider.management") {
+                        return Err(cannot_copy.into());
+                    }
+                    let snapshot: ProviderManagement = self
+                        .client
+                        .typed("provider.management", json!({}))
+                        .await?;
+                    let configured = snapshot
+                        .providers
+                        .into_iter()
+                        .find(|entry| entry.provider_id == provider)
+                        .ok_or_else(|| format!("{cannot_copy}, or select a configured Provider model before starting a new Session"))?;
+                    preferences = configured.preferences.get(&model).cloned();
+                } else {
+                    preferences = saved_model_preferences(&mut self.client, &provider, &model).await?;
                 }
                 target = Some((provider, model));
+            }
+            if let Some(preferences) = &preferences {
+                params["modelPreferences"] = preferences.clone();
             }
             match self.client.typed::<Created>("session.create", params).await {
                 Ok(created) => Ok(created),
@@ -839,11 +871,13 @@ impl Worker {
         let configuration = Configuration {
             provider_id: model.provider_id.clone(),
             model_id: model.model_id.clone(),
+            capability_snapshot: attached.capability_snapshot,
             model_preferences,
         };
         self.session_title = stored_title(attached.title.as_deref()).map(str::to_owned);
         self.title_revision = attached.title_revision;
         self.session_id = session_id.clone();
+        self.model_session = Some(session_id.clone());
         // The method table is read once per Session, before anything can ask
         // for an offer or probe the settings source: a Session that does not
         // list the methods is never asked.
@@ -1046,7 +1080,13 @@ impl Worker {
             && matches!(command, Command::Submit(..) | Command::SubmitDraft(..))
             && let Err(error) = self.start_session().await
         {
-            self.send(Update::Notice(no_session(&error)));
+            self.send(Update::Notice(
+                if self.options.startup.is_some() || self.model_session.is_some() {
+                    error.to_string()
+                } else {
+                    no_session(&error)
+                },
+            ));
             return Ok(());
         }
         match command {
@@ -3294,6 +3334,7 @@ impl Worker {
             }
         }
         let model = if self.session_id.is_empty() {
+            self.model_session = None;
             let model = ModelId {
                 provider_id,
                 model_id,
@@ -3302,6 +3343,7 @@ impl Worker {
             let configuration = Configuration {
                 provider_id: model.provider_id.clone(),
                 model_id: model.model_id.clone(),
+                capability_snapshot: None,
                 model_preferences: None,
             };
             self.model = Some(configuration.clone());
@@ -3341,6 +3383,14 @@ impl Worker {
             let configuration = Configuration {
                 provider_id: updated.model.provider_id.clone(),
                 model_id: updated.model.model_id.clone(),
+                capability_snapshot: self
+                    .model
+                    .as_ref()
+                    .filter(|shown| {
+                        shown.provider_id == updated.model.provider_id
+                            && shown.model_id == updated.model.model_id
+                    })
+                    .and_then(|shown| shown.capability_snapshot.clone()),
                 model_preferences,
             };
             self.model = Some(configuration.clone());
@@ -4149,6 +4199,38 @@ fn effort_choices(
         .clone()
         .filter(|effort| efforts.iter().any(|option| option == effort));
     (efforts, default)
+}
+
+pub(crate) async fn adopt_startup(
+    client: &mut Client,
+    options: &Options,
+    session_id: &str,
+) -> crate::Result<()> {
+    if options.startup.is_none() && options.effort.is_none() && options.model.is_none() {
+        return Ok(());
+    }
+    let mut params = json!({"sessionId":session_id,"branchId":"main"});
+    if let Some(startup) = &options.startup {
+        params["startup"] = startup.clone();
+    }
+    if let Some(model) = &options.model {
+        params["modelId"] = json!(model);
+    }
+    let mut saved = None;
+    if let (Some(provider), Some(model)) = (&options.provider, &options.model) {
+        params["providerId"] = json!(provider);
+        saved = saved_model_preferences(client, provider, model).await?;
+    }
+    if let Some(preferences) = options.creation_preferences(saved) {
+        params["modelPreferences"] = preferences;
+    }
+    client
+        .rpc("session.model.update", params)
+        .await
+        .map_err(|error| {
+            format!("Cannot adopt startup configuration for resumed Session: {error}")
+        })?;
+    Ok(())
 }
 
 pub(crate) async fn saved_model_preferences(

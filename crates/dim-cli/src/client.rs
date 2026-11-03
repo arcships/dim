@@ -309,6 +309,20 @@ pub async fn connect_inner(options: &Options, start: bool) -> Result<Option<Clie
     };
     let mut command = Command::new(&program);
     command.args(server.subcommand());
+    for name in [
+        "DIM_MODEL",
+        "DIM_EFFORT_LEVEL",
+        "DIM_BASE_URL",
+        "DIM_API_FORMAT",
+        "DIM_API_KEY",
+        "DIM_AUTH_TOKEN",
+        "DIM_CUSTOM_HEADERS",
+        "DIM_MAX_CONTEXT_TOKENS",
+        "DIM_MAX_OUTPUT_TOKENS",
+        "DIM_AUTO_COMPACT_WINDOW",
+    ] {
+        command.env_remove(name);
+    }
     command
         .current_dir(options.launch_dir())
         .stdin(Stdio::null())

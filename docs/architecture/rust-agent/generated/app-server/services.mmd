@@ -153,6 +153,7 @@ flowchart LR
   p8 -->|"dim_app_server::methods::ManagementMethods"| p15
   p16 -->|"dim_app_server::settings::SettingsService"| p15
   p5 -->|"dim_agent_capabilities::host::ModelHost"| p14
+  p34 -->|"dim_app_server::agents::AgentIndex"| p14
   p12 -->|"dim_app_server::codex_oauth::OpenAICodexOAuthService"| p14
   p13 -->|"dim_app_server::grok_oauth::GrokOAuthService"| p14
   p9 -->|"dim_app_server::managed_provider::ManagedProviders"| p14

@@ -133,7 +133,7 @@ changes that accepted input/terminal-fact contract.
 
 ```sh
 node runtime/node_modules/typescript/bin/tsc -p runtime/plugins/workflow/tsconfig.json
-node --test runtime/plugins/workflow/workflow.test.mjs
+cargo test --locked -p dim-app-server --test transport_flow node_workflow -- --ignored
 ```
 
 Actual Node/App Server flows are in
@@ -141,10 +141,10 @@ Actual Node/App Server flows are in
 `DIM_TEST_NODE`, `DIM_TEST_JS_RUNTIME` and `DIM_TEST_RUTIS_SDK` settings and disposable homes.
 They exercise stage Sessions, published reports, resubmission across row/runtime replacement, crashes and failed
 record replacement. Native retention flows use actual Session deletion, file read/replace failures,
-fixed-row replacement and the existing one-minute maintenance timer. The acceptance mapping below
-separates native coverage from SDK coverage.
+fixed-row replacement and the real maintenance callback. The fixture advances Node interval timers
+without waiting one minute per pass; stage I/O, SQLite publication and filesystem faults remain real.
 The read-failure retry case needs a valid startup restore before making the run
-file unreadable. It retains two real timer passes; corrupting that file before
+file unreadable. It advances both maintenance passes; corrupting that file before
 row activation would exercise startup failure instead of retention recovery.
 The existing [#126](https://github.com/arcships/dim/issues/126) idle-unload work must land before
 shipping repeated stage creation. A launch whose reply is lost before its Session id is persisted
@@ -152,22 +152,18 @@ can leave an unidentified Session; it is not relaunched or recovered by a new re
 
 ## Acceptance coverage
 
-The [SDK flows](workflow.test.mjs) execute the actual modules through their declared ports.
 The [native flows](../../../crates/dim-app-server/tests/transport_flow/workflow.rs) use real
-Node rows, Settings, file authority, S2 calls, publication and Session history. This maps to
-[Workflow Appendix D](../../../docs/design/plugins/Workflow.md#appendix-d-acceptance):
+Node rows, Settings, file authority, S2 calls, publication and Session history.
 
-| Items | Evidence |
+| Public behavior | Evidence |
 | --- | --- |
-| 1 | SDK definition, template, parameter, frozen-run and whole-step overflow flows; native source identities, generic Settings writes and model-visible diagnostics |
-| 2, 5 | Native start + wait batch: report wakes wait, adoption follows the batch result, and interrupting the starter leaves accepted run work alive; native starter closure makes its report undeliverable |
-| 3, 4 | Native held, consumed/approval and completed-turn stop cases; SDK applied-before-consumption and concurrent-withdrawal cases; repeated stop and no-report assertions |
-| 6 | Native project default-disabled/client enablement, editing a running definition and the next run reading the edit |
-| 7 | Native running-stage Node crash, row/runtime report replacement, complete host restart and Agents-index reload; no stage relaunch |
-| 8–11 | Native live first-admission narrowing with the sibling launch gated, cap persistence before siblings, starter loss, non-interactive/default-profile stage Sessions with and without `workflow` in the mount list, ReadOnly denial and handler refusal when it is declared |
-| 12 | Native retention keeps the latest 100 terminal records, newer active/pending work and retained references; SDK flows prove that older active/pending records also survive the terminal limit and that a start expires older settled records for frame space; user forks and external Sessions survive owned-parent deletion. Real deletion/read/atomic-replace failures preserve ownership, minute maintenance retries without active runs or definitions, and Node restart reconciles deletion before record removal. A failed change-token write after a committed store replace leaves the run readable in the same generation. Native terminal/report-settlement triggers continue with an unreadable definition source; native source CAS and invalid-file preservation are also covered |
-| 13 | Native resubmission across row/runtime replacement with the append held, before/after-input crashes, failed atomic replacement, a resubmitted report written once and host restart; SDK rejected, failed, ambiguous, reloading and publication-unknown replies |
-| 14 | SDK definition, user-document, run-store and listing payload flows: over-1-MiB definitions are rejected, a user save over the 8 MiB document is rejected without writing, quote/backslash/control-character results and logs are measured in their committed JSON form and a run's results stop at 512 KiB, `agent_id` copies are charged, an over-payload active admission returns `limit_exceeded` without persisting, a start expires older settled records to fit, the listing is sent once and stops at its payload with `truncated`, and the store and status replies stay within 8 MiB. Native inner-v2 records remain decodable |
+| Definition and parameter admission, source identities, project enablement, source-file preservation and whole-parallel-step prompt rejection | `node_workflow_sources_stages_policy_and_report_use_the_real_package`, `node_workflow_project_enablement_invalid_sources_and_tool_policy` |
+| Live first-admission policy, starter loss, frozen authority and native non-interactive stage Sessions | `node_workflow_captures_live_first_admission_and_survives_starter_and_index_changes` |
+| Held, consumed and completed work settles on stop and reload | `node_workflow_stop_and_reload_settle_held_consumed_and_completed_work` |
+| Reports wake wait and adopt after the start batch commits | `node_workflow_report_wakes_wait_and_is_adopted_after_its_start_batch` |
+| Crash, row/runtime replacement, complete-host restart and uncertain report publication | `node_workflow_reconciles_crashes_failed_records_and_resubmitted_reports`, `node_workflow_reports_recover_after_complete_host_restart`, `node_workflow_background_report_resubmits_after_row_and_runtime_replacement` |
+| Invalid inner records and failed change-token writes preserve committed runs | `node_workflow_rejects_invalid_inner_records_without_changing_bytes`, `node_workflow_failed_token_write_keeps_the_committed_run_readable` |
+| Retention preserves live references, user forks and external Sessions, and retries real deletion/read/record faults | The three `node_workflow_retention_*` flows |
 
 Scope cleanup also exercises a failing parallel reader while another native launch is admitted:
 the original task joins its siblings before its file scope can close. No additional lock or owner

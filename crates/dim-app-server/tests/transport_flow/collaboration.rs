@@ -325,6 +325,70 @@ async fn product_collaboration_adopts_profile_and_default_capabilities() {
         assert!(last_error(&events(&lead_session).await).contains("member_create_failed"), "the failure detail is stored before collaboration/delivered so the waiting tool call observes it");
         assert_eq!(configs.lock().unwrap().len(), members);
         assert_eq!(client.rpc("agent.list", json!({})).await["result"].as_array().unwrap().len(), agents);
+
+        assert_ok(&client.rpc("session.model.update", json!({"sessionId":lead,"branchId":"main","modelId":"alpha",
+            "startup":{"connection":{"apiFormat":"openai-compatible","baseUrl":"http://127.0.0.1:9/gateway"},
+                "contextWindow":32000,"maxOutputTokens":128,"autoCompactWindow":16000}})).await);
+        let adopted = lead_session.get::<PromptSnapshot>("main").unwrap().unwrap().configuration.unwrap();
+        let mut startup = dim_agent_types::ModelSelection {
+            provider_id: adopted.provider_id,
+            model_id: adopted.model_id,
+            capability_snapshot: adopted.capability_snapshot,
+            config: adopted.config,
+            metadata: adopted.metadata,
+        };
+        startup.config = Some(serde_json::from_value(json!({"temperature":0.25,"maxTokens":64,
+            "providerOptions":{"openai-compatible":{"reasoningEffort":"high"}}})).unwrap());
+        let metadata = startup.metadata.get_or_insert_default();
+        assert!(metadata.startup.as_ref().unwrap().connection.is_some());
+        metadata.session_id = Some("old-session".into());
+        metadata.run_id = Some("old-run".into());
+        metadata.trace_id = Some("old-trace".into());
+        metadata.turn_id = Some("old-turn".into());
+        lead_session.service::<dim_agent_capabilities::prompt::Prompt>("main").unwrap()
+            .configure_loaded(Some(startup.clone()), Vec::new()).await.unwrap();
+        let cut = lead_session.sequence("main").unwrap();
+        let child = lead_session.branch("main".into(), cut, dim_agent_runtime::BranchOptions {
+            prompt: "Startup inheritance child".into(),
+            source: dim_agent_types::BranchSource::Host { operation_id: "startup-inheritance".into() },
+        }).await.unwrap();
+        assert_ok(&client.rpc("session.model.update", json!({"sessionId":lead,"branchId":"main","providerId":PROVIDER,"modelId":"beta"})).await);
+        let child_selection = lead_session.get::<PromptSnapshot>(&child).unwrap().unwrap().configuration.unwrap();
+        assert_eq!(child_selection.model_id, startup.model_id);
+        assert_eq!(child_selection.config, startup.config);
+        assert_eq!(child_selection.capability_snapshot, startup.capability_snapshot);
+        assert_eq!(child_selection.metadata, startup.metadata, "a child retains full parent-cut metadata after main changes");
+        for (branch, request, policy) in [
+            (child.as_str(), json!({"action":"request","agentId":reviewer,"prompt":"startup child"}), json!({"mode":"fixed","model":model("missing")})),
+            ("main", json!({"action":"request","profile":temporary,"prompt":"startup temporary"}), json!({"mode":"agent"})),
+        ] {
+            if branch == "main" {
+                let revision = client.rpc("collaboration.model_policy", json!({})).await["result"]["revision"].as_str().unwrap().to_owned();
+                set(&mut client, &revision, policy.clone()).await;
+                lead_session.service::<dim_agent_capabilities::prompt::Prompt>("main").unwrap()
+                    .configure_loaded(Some(startup.clone()), Vec::new()).await.unwrap();
+            }
+            let before = configs.lock().unwrap().len();
+            let through = lead_session.sequence(branch).unwrap();
+            lead_session.submit(tool(request), dim_agent_types::InputMode::Queue, branch).await.unwrap();
+            lead_session.idle(branch).await.unwrap();
+            poll("startup member delivered", async || {
+                lead_session.local(branch, ..).await.unwrap().iter().any(|event|
+                    event.sequence > through && matches!(&event.kind,
+                        EventKind::CollaborationDelivered(data) if matches!(&data.delivery, CollaborationDelivery::Ok { .. })))
+                    .then_some(())
+            }).await;
+            assert_eq!(configs.lock().unwrap().len(), before + 1);
+            let config = configs.lock().unwrap().last().unwrap().clone();
+            let mut expected = startup.clone();
+            let metadata = expected.metadata.as_mut().unwrap();
+            metadata.session_id = None;
+            metadata.run_id = None;
+            metadata.trace_id = None;
+            metadata.turn_id = None;
+            assert_eq!(config.model, expected, "startup wins over user and Agent policy");
+            assert_eq!(client.rpc("collaboration.model_policy", json!({})).await["result"]["policy"], policy);
+        }
         server.shutdown();
         server.join().await.unwrap();
         std::fs::remove_dir_all(home).unwrap();

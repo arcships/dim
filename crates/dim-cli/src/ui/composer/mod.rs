@@ -370,7 +370,7 @@ impl Composer {
                 }
                 Some(Outcome::Handled)
             }
-            KeyCode::Enter | KeyCode::Tab => {
+            KeyCode::Enter => {
                 let row = rows.get(self.palette.current(&rows))?;
                 if !row.selectable() {
                     return Some(Outcome::Handled);
@@ -381,10 +381,7 @@ impl Composer {
                             && query != command.name
                             && !command.aliases.contains(&query.as_str()) =>
                     {
-                        let filled = format!("/{}", command.name);
-                        self.clear();
-                        self.area.insert_str(&filled);
-                        Some(Outcome::Handled)
+                        Some(self.complete_row(row))
                     }
                     crate::ui::rows::Kind::Command(command)
                         if command.argument.is_some() || command.name == "goal" =>
@@ -402,19 +399,42 @@ impl Composer {
                             args: String::new(),
                         })
                     }
-                    crate::ui::rows::Kind::Skill(name) => {
-                        let mention = format!("$skill: {name} ");
-                        self.clear();
-                        self.area.insert_str(&mention);
-                        Some(Outcome::Handled)
-                    }
+                    crate::ui::rows::Kind::Skill(_) => Some(self.complete_row(row)),
                     crate::ui::rows::Kind::Heading | crate::ui::rows::Kind::Item => {
                         Some(Outcome::Handled)
                     }
                 }
             }
+            KeyCode::Tab => {
+                let row = rows.get(self.palette.current(&rows))?;
+                if !row.selectable() {
+                    return Some(Outcome::Handled);
+                }
+                Some(self.complete_row(row))
+            }
             _ => None,
         }
+    }
+
+    /// Fills the draft with the selected row: a command's name, its name and a
+    /// space when it takes an argument, or a Skill's marker. It never runs the
+    /// row; Tab uses it for every kind.
+    fn complete_row(&mut self, row: &crate::ui::rows::Row) -> Outcome {
+        let filled = match &row.kind {
+            crate::ui::rows::Kind::Command(command)
+                if command.argument.is_some() || command.name == "goal" =>
+            {
+                format!("/{} ", command.name)
+            }
+            crate::ui::rows::Kind::Command(command) => format!("/{}", command.name),
+            crate::ui::rows::Kind::Skill(name) => format!("$skill: {name} "),
+            crate::ui::rows::Kind::Heading | crate::ui::rows::Kind::Item => {
+                return Outcome::Handled;
+            }
+        };
+        self.clear();
+        self.area.insert_str(&filled);
+        Outcome::Handled
     }
 
     /// The `@` mention being typed, unless Esc closed it.
@@ -1881,6 +1901,19 @@ mod tests {
     }
 
     #[test]
+    fn tab_accepts_an_at_mention_and_never_sends() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "").unwrap();
+        let mut c = Composer::new(Vec::new());
+        c.set_root(dir.path().to_owned());
+        typed(&mut c, "read @no");
+        assert_eq!(picked(&mut c, "no"), ["notes.txt"]);
+        assert_eq!(c.handle_key(key(KeyCode::Tab)), Outcome::Handled);
+        assert_eq!(c.text(), "read @notes.txt ");
+        assert!(!c.mention_open());
+    }
+
+    #[test]
     fn short_pastes_are_inserted_verbatim_and_labels_stay_unique() {
         let mut c = Composer::new(Vec::new());
         c.paste("short\ntext");
@@ -1991,6 +2024,66 @@ mod tests {
             assert_eq!(c.text(), "/rename ", "the palette waits for the title");
             assert!(!c.palette_open());
         }
+    }
+
+    /// Tab fills the draft and stops there for every kind of row; only Enter
+    /// runs a command.
+    #[test]
+    fn tab_completes_each_row_kind_without_running_it() {
+        for (query, filled) in [
+            ("/", "/new"),
+            ("/ke", "/keys"),
+            ("/ren", "/rename "),
+            ("/ex", "/exit"),
+        ] {
+            let mut c = Composer::new(Vec::new());
+            typed(&mut c, query);
+            assert_eq!(c.handle_key(key(KeyCode::Tab)), Outcome::Handled, "{query}");
+            assert_eq!(c.text(), filled, "{query}");
+        }
+
+        let mut c = Composer::new(Vec::new());
+        c.set_skills(vec![palette::Skill {
+            name: "commit".into(),
+            description: "Writes commit messages".into(),
+            display_name: None,
+            display_description: None,
+        }]);
+        typed(&mut c, "/comm");
+        assert_eq!(c.handle_key(key(KeyCode::Tab)), Outcome::Handled);
+        assert_eq!(c.text(), "$skill: commit ");
+        assert!(!c.palette_open());
+
+        let mut c = Composer::new(Vec::new());
+        typed(&mut c, "/zzz");
+        assert_eq!(c.handle_key(key(KeyCode::Tab)), Outcome::Handled);
+        assert_eq!(c.text(), "/zzz", "a row that does not exist fills nothing");
+    }
+
+    /// Pressing Tab again on the completed name repeats the completion; it
+    /// never dispatches the command, so it cannot exit the interface.
+    #[test]
+    fn repeated_tab_never_dispatches_the_completed_command() {
+        let mut c = Composer::new(Vec::new());
+        typed(&mut c, "/");
+        for _ in 0..3 {
+            assert_eq!(c.handle_key(key(KeyCode::Tab)), Outcome::Handled);
+            assert_eq!(c.text(), "/new");
+        }
+    }
+
+    #[test]
+    fn enter_still_runs_a_command_without_an_argument() {
+        let mut c = Composer::new(Vec::new());
+        typed(&mut c, "/ke");
+        assert_eq!(
+            c.handle_key(key(KeyCode::Enter)),
+            Outcome::Command {
+                name: "keys".into(),
+                args: String::new(),
+            }
+        );
+        assert!(c.is_empty());
     }
 
     #[test]

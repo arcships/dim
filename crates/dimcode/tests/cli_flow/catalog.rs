@@ -27,6 +27,7 @@ fn tui_resume_catalog_pages_searches_and_closes_without_waiting_for_a_read() {
         let second=wire.read("session.catalog");
         assert_eq!(second["params"],json!({"limit":50,"query":"","withPreview":true,"cwd":expected,"cursor":"second-page"}));
         wire.reply(&second,json!({"sessions":rows(50,100)}));
+        ready.send(()).unwrap();
         let query=wire.read("session.catalog");
         assert_eq!(query["params"],json!({"limit":50,"query":"ä title","withPreview":true,"cwd":expected}));
         wire.reply(&query,json!({"sessions":[{"sessionId":"off-page","cwd":"/workspace","title":"off-page result","preview":"different preview","model":{"providerId":"test","modelId":"model"},"updatedAt":2}]}));
@@ -53,6 +54,7 @@ fn tui_resume_catalog_pages_searches_and_closes_without_waiting_for_a_read() {
     terminal.until("topic0000");
     terminal.write(b"\x1b[F");
     terminal.until("topic0049");
+    waiting.recv_timeout(PATIENCE).unwrap();
     terminal.write("ä title".as_bytes());
     terminal.until("off-page result");
     terminal.write(b"\x1b[27u");

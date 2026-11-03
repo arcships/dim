@@ -33,47 +33,6 @@ const WAITING_HINT: &str = "Enter open /runtime · o on/off · r reload · Esc c
 const CONFIRM_HINT: &str = "Tab switch  Enter confirm  Esc cancel";
 const LOCKED: &str = "Locked: Dim needs it, so it cannot be turned off.";
 
-/// Every English key this panel and `/plugins` draw through [`t`]; each
-/// locale translates them all.
-#[cfg(test)]
-pub const STRINGS: &[&str] = &[
-    "Plugins",
-    HINT,
-    WAITING_HINT,
-    CONFIRM_HINT,
-    LOCKED,
-    "Loading plugins...",
-    "No plugins.",
-    "Working...",
-    "running",
-    "pending",
-    "failed",
-    "stopped",
-    "off",
-    "on",
-    "locked",
-    "Uses {use}",
-    "Candidates: {candidates}",
-    "Error: {error}",
-    "Waiting for: {names}",
-    "waits for the {runtime} runtime",
-    "Refused {kind}: {error}",
-    "Turn off {name}?",
-    "Its tools and content stop in new turns until you turn it on again.",
-    "Turn off",
-    "Cancel",
-    "Turned on {name}.",
-    "Turned off {name}.",
-    "Reloaded {name}.",
-    "Installed {name} ({id}).",
-    "Installed {name} ({id}); it is not turned on.",
-    "Installing {path}...",
-    "Restart required: it loads after the App Server restarts (dimcode daemon stop).",
-    "Skipped {kinds}: their owner is not running.",
-    "Usage: /plugins [install PATH]",
-    "list plugins, turn them on or off, reload (install PATH)",
-];
-
 pub struct PluginsPanel {
     items: Vec<PluginItem>,
     selected: usize,

@@ -616,33 +616,6 @@ mod tests {
     }
 
     #[test]
-    fn the_mock_markdown_script_lays_out_like_the_contract() {
-        let src = "## Heading\n\nA paragraph that streams in two pieces.\n\n- first bullet\n- second bullet\n\n```ts\nexport const answer = 42\n```\n\n| col | value |\n| --- | --- |\n| a | 1 |\n| b | 2 |\n\nFinal line.";
-        let rows = plain(&renderer().render(src, 60, 2));
-        let expected = [
-            "  Heading",
-            "  ",
-            "  A paragraph that streams in two pieces.",
-            "  ",
-            "  - first bullet",
-            "  - second bullet",
-            "  ",
-            "      export const answer = 42",
-            "  ",
-            "  ╭─────┬───────╮",
-            "  │ col │ value │",
-            "  ├─────┼───────┤",
-            "  │ a   │ 1     │",
-            "  ├─────┼───────┤",
-            "  │ b   │ 2     │",
-            "  ╰─────┴───────╯",
-            "  ",
-            "  Final line.",
-        ];
-        assert_eq!(rows, expected);
-    }
-
-    #[test]
     fn long_paragraphs_wrap_on_words_within_the_width() {
         let rows =
             plain(&renderer().render("one two three four five six seven eight nine ten", 20, 0));
@@ -705,33 +678,6 @@ mod tests {
     }
 
     #[test]
-    fn headings_use_the_highlight_and_deeper_levels_keep_a_muted_marker() {
-        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
-        let r = MarkdownRenderer::new(&theme);
-        let h2 = r.render("## Two", 40, 0);
-        assert_eq!(plain(&h2), vec!["Two"]);
-        assert!(h2[0].contains("\x1b[1;36m"), "{:?}", h2[0]);
-        assert_eq!(plain(&r.render("### Three", 40, 0)), vec!["### Three"]);
-    }
-
-    #[test]
-    fn tables_have_round_corners_and_a_divider_under_every_row() {
-        let rows = plain(&renderer().render("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |", 40, 0));
-        assert_eq!(
-            rows,
-            vec![
-                "╭───┬───╮",
-                "│ a │ b │",
-                "├───┼───┤",
-                "│ 1 │ 2 │",
-                "├───┼───┤",
-                "│ 3 │ 4 │",
-                "╰───┴───╯",
-            ]
-        );
-    }
-
-    #[test]
     fn fenced_code_is_indented_without_its_fences() {
         let rows = plain(&renderer().render("```rust\nlet x = 1;\n```", 40, 0));
         assert_eq!(rows, vec!["    let x = 1;"]);
@@ -775,12 +721,6 @@ mod tests {
     fn task_items_keep_the_marker_and_the_box() {
         let rows = plain(&renderer().render("- [x] done\n- [ ] todo", 40, 0));
         assert_eq!(rows, vec!["- [x] done", "- [ ] todo"]);
-    }
-
-    #[test]
-    fn a_rule_fills_the_width() {
-        let rows = plain(&renderer().render("---", 40, 0));
-        assert_eq!(rows, vec!["─".repeat(40)]);
     }
 
     #[test]

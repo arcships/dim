@@ -588,7 +588,7 @@ async fn native_session_title_generation_rename_settings_restore_fork_and_close(
     http.abort();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test]
 async fn optional_title_generation_routes_falls_back_and_cancels_without_gating_the_session() {
     let store = Store::new();
     let (sent, mut requests) = mpsc::unbounded_channel::<Request>();
@@ -734,7 +734,10 @@ async fn optional_title_generation_routes_falls_back_and_cancels_without_gating_
         .await
         .unwrap()
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(35), release.closed())
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(30)).await;
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(5), release.closed())
         .await
         .unwrap();
     titled(

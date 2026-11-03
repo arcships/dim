@@ -92,6 +92,36 @@ cron ─► nightly.sh ─► git fetch dim 与 dim-eval-data（SSH）─► cor
    两条共用一把锁，后一条等前一条结束。日志在 `~/dim-eval/logs/`，harbor 结果在
    `~/dim-eval/results/`，保留 30 天。
 
+## verifier 缓存
+
+30 个任务中有 18 个 Terminal-Bench verifier 会在评分时安装 uv，其中部分还会下载 CPython。
+评测机连 GitHub 不稳定时，这两步会把一次正常的 agent 运行变成 0。评测机预先准备一个只读
+缓存，`run_l2.py` 把它挂到任务容器的 `/opt/eval-cache`：
+
+```sh
+. ~/dim-eval/config.env
+cache=~/dim-eval/eval-cache
+mkdir -p "$cache/curl-home" "$cache/python" "$cache/uv"
+printf 'http1.1\n' > "$cache/curl-home/.curlrc"
+export HTTP_PROXY="$DIM_EVAL_VERIFIER_PROXY" HTTPS_PROXY="$DIM_EVAL_VERIFIER_PROXY"
+export CURL_HOME="$cache/curl-home"
+# 任意一个 uv 0.9.5 的二进制都可以用来填充 CPython 缓存。
+curl -LsSf -o /tmp/uv.tar.gz \
+  https://github.com/astral-sh/uv/releases/download/0.9.5/uv-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf /tmp/uv.tar.gz -C "$cache/uv" --strip-components=1
+UV_PYTHON_INSTALL_DIR="$cache/python" UV_CACHE_DIR=/tmp/uv-cache \
+  UV_HTTP_TIMEOUT=300 "$cache/uv/uv" python install 3.13.9
+```
+
+`UV_PYTHON_INSTALL_DIR` 让 `uvx -p 3.13` 命中 `cpython-3.13.9`；`CURL_HOME` 让 curl 用
+HTTP/1.1，避开代理的 HTTP/2 问题。uv 安装本身仍从 astral.sh 下载（verifier 脚本无条件执行
+安装器），`UV_INSTALLER_GITHUB_BASE_URL` 不设置，所以缓存缺失时安装器会走网络而不是失败。
+`UV_CACHE_DIR` 放在容器的 `/tmp`，每个 trial 独立。`run_l2.py` 只在 `python/` 下找到
+`cpython-3.13.*` 时才导出 `UV_PYTHON_INSTALL_DIR`；缺失时打印 warning，让 verifier 回退到
+网络下载。prep 必须在能访问 GitHub（或能用代理访问）的机器上执行，否则目录会留空。缓存里的
+CPython 版本是固定的 harness 条件；升级 `cpython-3.13.*` 需要按新的 baseline 重采，不能把
+旧 baseline 和新缓存混在一起比较。
+
 ## 试运行
 
 ```sh

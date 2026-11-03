@@ -2123,6 +2123,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_app_server::agents::AgentIndex",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_app_server::codex_oauth::OpenAICodexOAuthService",
             "scope": null,
             "status": "Ready"
@@ -2153,6 +2158,12 @@
             "service": "dim_agent_capabilities::host::ModelHost",
             "scope": null,
             "provider": 5,
+            "generation": 1
+          },
+          {
+            "service": "dim_app_server::agents::AgentIndex",
+            "scope": null,
+            "provider": 34,
             "generation": 1
           },
           {
@@ -2190,6 +2201,12 @@
           {
             "service": "dim_agent_capabilities::host::ModelHost",
             "provider": 5,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_app_server::agents::AgentIndex",
+            "provider": 34,
             "declared": true,
             "external": true
           },

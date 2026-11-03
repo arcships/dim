@@ -1431,10 +1431,11 @@ async fn create_instance(
         })
         .collect();
     let mut created = Created {
-        children: rows(loader, &created.view, None),
+        children: Vec::new(),
         view: created.view,
     };
     if let Err(error) = AgentError::aggregate(failures) {
+        created.children = rows(loader, &created.view);
         return Err((error, Some(created)));
     }
     // The instance's settle returns with its group or a row still waiting for
@@ -1446,7 +1447,14 @@ async fn create_instance(
         .wait(active_rows(&group, cancel), || vec![created.view.id])
         .await
         .unwrap_or_else(|| Err(timed_out(ctx, &group)));
-    let mut waiting = rows(loader, &created.view, Some(&required));
+    // Read after the group is Active: a settle can return while it still waits,
+    // and its rows are the ones the required-row wait has to name.
+    let mut waiting: Vec<FiberView> = loader
+        .instance_rows(created.view.instance())
+        .into_iter()
+        .filter(|(id, _)| required.contains(id))
+        .map(|(_, view)| view)
+        .collect();
     if ready.is_ok() {
         ready = progress
             .wait(active_rows(&waiting, cancel), || vec![created.view.id])
@@ -1477,7 +1485,9 @@ async fn create_instance(
             .await
             .unwrap_or_else(|| Err(timed_out(ctx, &parts)));
     }
-    created.children = rows(loader, &created.view, None);
+    // Parts create nested instances while they load, and their rows are this
+    // creation's members: read them once the waits above are done.
+    created.children = rows(loader, &created.view);
     extend_children(&mut created.children, handed.all());
     if let Err(error) = ready {
         return Err((error, Some(created)));
@@ -1525,13 +1535,12 @@ fn extend_children(children: &mut Vec<FiberView>, views: impl Iterator<Item = Fi
     let mut seen: HashSet<_> = children.iter().map(|view| view.id).collect();
     children.extend(views.filter(|view| seen.insert(view.id)));
 }
-/// Reads current candidate rows, including nested instances added during readiness waits.
-/// Main and child branches have their own assembly snapshots.
-fn rows(loader: &Loader, instance: &FiberView, required: Option<&[String]>) -> Vec<FiberView> {
+/// The rows `instance` holds now, its own group row aside, including the rows
+/// of nested instances created under it.
+fn rows(loader: &Loader, instance: &FiberView) -> Vec<FiberView> {
     loader
         .instance_rows(instance.instance())
         .into_iter()
-        .filter(|(id, _)| required.is_none_or(|rows| rows.contains(id)))
         .map(|(_, view)| view)
         .collect()
 }
@@ -1573,7 +1582,7 @@ fn locate(loader: &Loader, ctx: &Ctx, instance: rutis::host::InstanceId) -> Opti
         .id;
     let view = ctx.view(plugin)?;
     Some(Created {
-        children: rows(loader, &view, None),
+        children: rows(loader, &view),
         view,
     })
 }

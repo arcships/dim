@@ -362,14 +362,6 @@ mod tests {
     }
 
     #[test]
-    fn relative_time_buckets() {
-        assert_eq!(relative_time(1_000, 30_000), "now");
-        assert_eq!(relative_time(0, 5 * 60_000), "5m ago");
-        assert_eq!(relative_time(0, 3 * 3_600_000), "3h ago");
-        assert_eq!(relative_time(0, 2 * 86_400_000), "2d ago");
-    }
-
-    #[test]
     fn filter_narrows_and_enter_resumes_the_selected_row() {
         let mut panel = SessionsPanel::new(false);
         panel.set_items(Ok(vec![

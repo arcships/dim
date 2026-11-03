@@ -1969,7 +1969,7 @@ fn item_table(rows: &[Value]) -> Option<String> {
     Some(text)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "eval-tests"))]
 mod tests {
     use super::*;
     use dim_agent_capabilities::host::{

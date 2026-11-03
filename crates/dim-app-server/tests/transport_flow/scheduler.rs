@@ -1120,14 +1120,30 @@ async fn node_scheduler_shared_policy_vectors_reach_native_save_launch_and_reuse
         "../../../../tests/fixtures/permission-policy-cap.json"
     ))
     .unwrap();
-    for vector in vectors["cap"].as_array().unwrap() {
+    let unrestricted = json!({"preset":"full-access","allowedTools":[],"disallowedTools":[]});
+    let mut bounds = vec![unrestricted.clone()];
+    for bound in vectors["cap"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|vector| vector["usage"] == "job-save-and-launch")
+        .map(|vector| &vector["bound"])
+        .chain(
+            vectors["reuse"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|vector| &vector["liveBound"]),
+        )
+    {
+        if !bounds.contains(bound) {
+            bounds.push(bound.clone());
+        }
+    }
+    for bound in bounds {
         let home = home();
         let mut config = config(&home);
-        let authorizing_save = vector["usage"] == "job-save-and-launch";
-        if authorizing_save {
-            config.session_defaults.permission_policy =
-                serde_json::from_value(vector["bound"].clone()).unwrap();
-        }
+        config.session_defaults.permission_policy = serde_json::from_value(bound.clone()).unwrap();
         let (server, _) = launch_with_agent(Arc::new(MockTools), config).await;
         let mut client = Client::new_version(&server, false, 3).await;
         process_typescript::select_model(&mut client).await;
@@ -1136,144 +1152,179 @@ async fn node_scheduler_shared_policy_vectors_reach_native_save_launch_and_reuse
             .rpc("settings.read", json!({"source":"schedule","scope":"user"}))
             .await;
         assert_ok(&before);
-        let mut job = json!({"name":vector["name"],"cwd":home,"prompt":"policy check",
-            "schedule":{"at":"2030-01-01T00:00:00Z"}});
-        if authorizing_save {
-            job["policy"] = vector["requested"]["preset"].clone();
-        }
-        let saved = client.rpc("schedule.save", json!({"job":job})).await;
-        if authorizing_save && vector["presetWithin"] == false {
-            assert_eq!(
-                saved["error"]["data"]["appError"], "schedule_invalid",
-                "{saved}"
-            );
-            let after = client
+        let rejected = client
+            .rpc(
+                "schedule.save",
+                json!({"job":{"name":"overflow","cwd":home,"prompt":"never admitted",
+            "max_run_minutes":5_000_000_000_u64,"schedule":{"at":"2030-01-01T00:00:00Z"}}}),
+            )
+            .await;
+        assert_eq!(
+            rejected["error"]["data"]["appError"], "schedule_invalid",
+            "{rejected}"
+        );
+        let after = client
+            .rpc("settings.read", json!({"source":"schedule","scope":"user"}))
+            .await;
+        assert_ok(&after);
+        assert_eq!(after["result"], before["result"]);
+        for vector in vectors["cap"].as_array().unwrap().iter().filter(|vector| {
+            if vector["usage"] == "job-save-and-launch" {
+                vector["bound"] == bound
+            } else {
+                bound == unrestricted
+            }
+        }) {
+            let authorizing_save = vector["usage"] == "job-save-and-launch";
+            let before = client
                 .rpc("settings.read", json!({"source":"schedule","scope":"user"}))
                 .await;
-            assert_ok(&after);
-            assert_eq!(after["result"], before["result"]);
-        } else {
-            assert_ok(&saved);
-            let job = &saved["result"]["job"]["id"];
+            assert_ok(&before);
+            let mut job = json!({"name":vector["name"],"cwd":home,"prompt":"policy check",
+                "schedule":{"at":"2030-01-01T00:00:00Z"}});
             if authorizing_save {
-                assert_eq!(saved["result"]["job"]["policy_cap"], vector["bound"]);
+                job["policy"] = vector["requested"]["preset"].clone();
+            }
+            let saved = client.rpc("schedule.save", json!({"job":job})).await;
+            if authorizing_save && vector["presetWithin"] == false {
                 assert_eq!(
-                    saved["result"]["transition"]["to"]["effective_policy"],
-                    vector["capped"]
+                    saved["error"]["data"]["appError"], "schedule_invalid",
+                    "{saved}"
                 );
-            } else {
-                let starter = client
-                    .rpc(
-                        "session.create",
-                        json!({"cwd":home,"tools":[],"permissionPolicy":vector["bound"]}),
-                    )
-                    .await;
-                assert_ok(&starter);
-                let settings = client
+                let after = client
                     .rpc("settings.read", json!({"source":"schedule","scope":"user"}))
                     .await;
-                assert_ok(&settings);
-                let mut document = settings["result"]["document"].clone();
-                document["jobs"][0]["policy_cap"] = vector["requested"].clone();
-                document["jobs"][0]["policy_cap"]["fileAccess"] = json!("read-only");
-                document["jobs"][0]["policy_cap"]["toolApproval"] = json!("ask");
-                document["jobs"][0]["created_by"] = json!({"tool":{"session_id":starter["result"]["sessionId"],"branch_id":"main"}});
-                document["jobs"][0]["revision"] = json!(2);
-                assert_ok(
-                    &client
+                assert_ok(&after);
+                assert_eq!(after["result"], before["result"]);
+            } else {
+                assert_ok(&saved);
+                let job = &saved["result"]["job"]["id"];
+                if authorizing_save {
+                    assert_eq!(saved["result"]["job"]["policy_cap"], vector["bound"]);
+                    assert_eq!(
+                        saved["result"]["transition"]["to"]["effective_policy"],
+                        vector["capped"]
+                    );
+                } else {
+                    let starter = client
                         .rpc(
-                            "settings.update",
-                            json!({"source":"schedule","scope":"user",
-                    "expectedRevision":settings["result"]["revision"],"document":document}),
+                            "session.create",
+                            json!({"cwd":home,"tools":[],"permissionPolicy":vector["bound"]}),
                         )
-                        .await,
-                );
+                        .await;
+                    assert_ok(&starter);
+                    let settings = client
+                        .rpc("settings.read", json!({"source":"schedule","scope":"user"}))
+                        .await;
+                    assert_ok(&settings);
+                    let mut document = settings["result"]["document"].clone();
+                    let selected = document["jobs"]
+                        .as_array_mut()
+                        .unwrap()
+                        .iter_mut()
+                        .find(|entry| entry["id"] == *job)
+                        .unwrap();
+                    selected["policy_cap"] = vector["requested"].clone();
+                    selected["policy_cap"]["fileAccess"] = json!("read-only");
+                    selected["policy_cap"]["toolApproval"] = json!("ask");
+                    selected["created_by"] = json!({"tool":{"session_id":starter["result"]["sessionId"],"branch_id":"main"}});
+                    selected["revision"] = json!(2);
+                    assert_ok(
+                        &client
+                            .rpc(
+                                "settings.update",
+                                json!({"source":"schedule","scope":"user",
+                        "expectedRevision":settings["result"]["revision"],"document":document}),
+                            )
+                            .await,
+                    );
+                }
+                let accepted = client.rpc("schedule.run_now", json!({"job_id":job})).await;
+                assert_ok(&accepted);
+                let run = settled(&mut client, job, &accepted["result"]["run_id"]).await;
+                assert_eq!(run["state"], "completed", "{vector}: {run}");
+                assert_eq!(run["policy"], vector["capped"], "{vector}");
+                let actual = client
+                    .rpc(
+                        "session.permission.get",
+                        json!({"sessionId":run["session_id"],"branchId":"main"}),
+                    )
+                    .await;
+                assert_ok(&actual);
+                assert_eq!(actual["result"]["policy"], vector["capped"]);
             }
+        }
+        for vector in vectors["reuse"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|vector| vector["liveBound"] == bound)
+        {
+            let target = client
+                .rpc(
+                    "session.create",
+                    json!({"cwd":home,"tools":[],"permissionPolicy":vector["x"]}),
+                )
+                .await;
+            assert_ok(&target);
+            let target = &target["result"]["sessionId"];
+            let saved = client.rpc("schedule.save", json!({"job":{"name":vector["name"],"cwd":home,
+                "prompt":"reuse policy check","schedule":{"at":"2030-01-01T00:00:00Z"},"mode":"reuse","session_id":target}})).await;
+            assert_ok(&saved);
+            let job = &saved["result"]["job"]["id"];
+            let settings = client
+                .rpc("settings.read", json!({"source":"schedule","scope":"user"}))
+                .await;
+            assert_ok(&settings);
+            let mut document = settings["result"]["document"].clone();
+            let selected = document["jobs"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|entry| entry["id"] == *job)
+                .unwrap();
+            selected["policy_cap"] = vector["savedEffective"].clone();
+            selected["policy"] = vector["savedEffective"]["preset"].clone();
+            selected["revision"] = json!(2);
+            assert_ok(
+                &client
+                    .rpc(
+                        "settings.update",
+                        json!({"source":"schedule","scope":"user",
+                "expectedRevision":settings["result"]["revision"],"document":document}),
+                    )
+                    .await,
+            );
             let accepted = client.rpc("schedule.run_now", json!({"job_id":job})).await;
             assert_ok(&accepted);
             let run = settled(&mut client, job, &accepted["result"]["run_id"]).await;
-            assert_eq!(run["state"], "completed", "{vector}: {run}");
-            assert_eq!(run["policy"], vector["capped"], "{vector}");
+            let allowed = vector["withinSaved"] == true && vector["withinLive"] == true;
+            assert_eq!(
+                run["state"],
+                if allowed { "completed" } else { "skipped" },
+                "{vector}: {run}"
+            );
+            if allowed {
+                assert_eq!(run["session_origin"], "reuse");
+            } else {
+                assert_eq!(run["detail"], "policy");
+            }
+            assert_eq!(
+                input_count(&mut client, target, run["submission_id"].as_str().unwrap()).await,
+                usize::from(allowed)
+            );
             let actual = client
                 .rpc(
                     "session.permission.get",
-                    json!({"sessionId":run["session_id"],"branchId":"main"}),
+                    json!({"sessionId":target,"branchId":"main"}),
                 )
                 .await;
             assert_ok(&actual);
-            assert_eq!(actual["result"]["policy"], vector["capped"]);
+            assert_eq!(
+                actual["result"]["policy"], vector["x"],
+                "reuse must not change the target policy"
+            );
         }
-        server.shutdown();
-        server.join().await.unwrap();
-        std::fs::remove_dir_all(home).unwrap();
-    }
-    for vector in vectors["reuse"].as_array().unwrap() {
-        let home = home();
-        let mut config = config(&home);
-        config.session_defaults.permission_policy =
-            serde_json::from_value(vector["liveBound"].clone()).unwrap();
-        let (server, _) = launch_with_agent(Arc::new(MockTools), config).await;
-        let mut client = Client::new_version(&server, false, 3).await;
-        process_typescript::select_model(&mut client).await;
-        process_typescript::files_available(&mut client, "schedule.list", json!({})).await;
-        let target = client
-            .rpc(
-                "session.create",
-                json!({"cwd":home,"tools":[],"permissionPolicy":vector["x"]}),
-            )
-            .await;
-        assert_ok(&target);
-        let target = &target["result"]["sessionId"];
-        let saved = client.rpc("schedule.save", json!({"job":{"name":vector["name"],"cwd":home,
-            "prompt":"reuse policy check","schedule":{"at":"2030-01-01T00:00:00Z"},"mode":"reuse","session_id":target}})).await;
-        assert_ok(&saved);
-        let job = &saved["result"]["job"]["id"];
-        let settings = client
-            .rpc("settings.read", json!({"source":"schedule","scope":"user"}))
-            .await;
-        assert_ok(&settings);
-        let mut document = settings["result"]["document"].clone();
-        document["jobs"][0]["policy_cap"] = vector["savedEffective"].clone();
-        document["jobs"][0]["policy"] = vector["savedEffective"]["preset"].clone();
-        document["jobs"][0]["revision"] = json!(2);
-        assert_ok(
-            &client
-                .rpc(
-                    "settings.update",
-                    json!({"source":"schedule","scope":"user",
-            "expectedRevision":settings["result"]["revision"],"document":document}),
-                )
-                .await,
-        );
-        let accepted = client.rpc("schedule.run_now", json!({"job_id":job})).await;
-        assert_ok(&accepted);
-        let run = settled(&mut client, job, &accepted["result"]["run_id"]).await;
-        let allowed = vector["withinSaved"] == true && vector["withinLive"] == true;
-        assert_eq!(
-            run["state"],
-            if allowed { "completed" } else { "skipped" },
-            "{vector}: {run}"
-        );
-        if allowed {
-            assert_eq!(run["session_origin"], "reuse");
-        } else {
-            assert_eq!(run["detail"], "policy");
-        }
-        assert_eq!(
-            input_count(&mut client, target, run["submission_id"].as_str().unwrap()).await,
-            usize::from(allowed)
-        );
-        let actual = client
-            .rpc(
-                "session.permission.get",
-                json!({"sessionId":target,"branchId":"main"}),
-            )
-            .await;
-        assert_ok(&actual);
-        assert_eq!(
-            actual["result"]["policy"], vector["x"],
-            "reuse must not change the target policy"
-        );
         server.shutdown();
         server.join().await.unwrap();
         std::fs::remove_dir_all(home).unwrap();

@@ -37,6 +37,7 @@ enum Limited {
     Available,
     /// A second model whose limits are undeclared, so it cannot be used.
     Unavailable,
+    ProviderUnavailable,
 }
 
 /// A signed-in managed account whose first credential the relay rejects.
@@ -82,6 +83,9 @@ impl ManagedProvider for Provider {
     fn status(&self, provider: &str) -> ManagedFuture<AccountSnapshot> {
         ready(match provider {
             "fail" => Err(ManagedError::InvalidStore),
+            _ if *self.0.limited.lock().unwrap() == Limited::ProviderUnavailable => {
+                Err(ManagedError::Transient)
+            }
             _ => Ok(self.0.account.lock().unwrap().clone()),
         })
     }
@@ -164,6 +168,7 @@ impl ManagedProvider for Provider {
         }];
         match *self.0.limited.lock().unwrap() {
             Limited::Absent => {}
+            Limited::ProviderUnavailable => return ready(Err(ManagedError::Transient)),
             Limited::Available => {
                 let entry: ModelEntry = serde_json::from_value(json!({"modelId":"limited-model",
                     "displayName":"Limited model","status":"active",
@@ -505,6 +510,57 @@ async fn an_injected_managed_provider_serves_accounts_and_recovers_credentials()
         .await;
     assert_ok(&mixed);
     assert_eq!(mixed["result"]["disabledModelIds"], json!([]));
+    let startup = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,
+        "model":{"provider":"managed-fixture","modelId":"limited-model"},
+        "startup":{"contextWindow":64000,"maxOutputTokens":256}}),
+        )
+        .await;
+    assert_ok(&startup);
+    let startup_id = startup["result"]["sessionId"].as_str().unwrap();
+    for turn in 0..2 {
+        if turn == 1 {
+            assert_ok(
+                &client
+                    .rpc(
+                        "session.model.update",
+                        json!({"sessionId":startup_id,"branchId":"main",
+                "modelPreferences":{"reasoningEffort":{"action":"clear"}}}),
+                    )
+                    .await,
+            );
+        }
+        assert_ok(
+            &client
+                .rpc(
+                    "session.submit",
+                    json!({"sessionId":startup_id,"branchId":"main","text":"startup"}),
+                )
+                .await,
+        );
+        assert_ok(
+            &client
+                .rpc(
+                    "session.idle",
+                    json!({"sessionId":startup_id,"branchId":"main"}),
+                )
+                .await,
+        );
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            (turn + 1) * 2,
+            "managed startup reaches the relay with adopted limits"
+        );
+    }
+    let unchanged = client
+        .rpc("provider.catalog", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_eq!(
+        unchanged["result"]["catalog"]["models"][1]["unavailableReason"],
+        "limits_undeclared"
+    );
     let listed = client
         .rpc(
             "provider.management",
@@ -626,10 +682,90 @@ async fn an_injected_managed_provider_serves_accounts_and_recovers_credentials()
         *seen.lock().unwrap(),
         [
             "Bearer initial-fixture-secret",
+            "Bearer recovered-fixture-secret",
+            "Bearer initial-fixture-secret",
+            "Bearer recovered-fixture-secret",
+            "Bearer initial-fixture-secret",
             "Bearer recovered-fixture-secret"
         ]
     );
-    assert_eq!(fixture.recovered.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.recovered.load(Ordering::SeqCst), 3);
+    let selected = client
+        .rpc(
+            "provider.select",
+            json!({"cwd":home,"providerId":"managed-fixture","modelId":"fixture-model"}),
+        )
+        .await;
+    assert_ok(&selected);
+    *fixture.limited.lock().unwrap() = Limited::ProviderUnavailable;
+    let unavailable_default = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,"model":{"modelId":"fixture-model"},"startup":{}}),
+        )
+        .await;
+    let message = unavailable_default["error"]["message"].as_str().unwrap();
+    assert!(message.contains("Model is unavailable"), "{message}");
+    assert!(message.contains("catalog error:"), "{message}");
+    assert!(
+        message.contains("Managed account operation failed"),
+        "{message}"
+    );
+    *fixture.limited.lock().unwrap() = Limited::Unavailable;
+    let default_provider = uuid::Uuid::new_v4().to_string();
+    assert_ok(&client.rpc("provider.create", json!({"providerId":default_provider,
+        "displayName":"Default provider","enabled":true,
+        "connection":{"driverKind":"openai-compatible","baseUrl":"http://127.0.0.1:1/v1","auth":{"type":"anonymous"}},
+        "models":[{"modelId":"default-model","displayName":"Default model","status":"active",
+            "capabilities":dim_agent_types::CatalogCapabilities::with_limits(32000,128)}]})).await);
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"cwd":home,"providerId":default_provider,"modelId":"default-model",
+                    "expectedVersion":selected["result"]["version"]}),
+            )
+            .await,
+    );
+    *fixture.limited.lock().unwrap() = Limited::ProviderUnavailable;
+    let unavailable = client
+        .rpc("provider.catalog", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert!(unavailable.get("error").is_some(), "{unavailable}");
+    for duplicate in [false, true] {
+        let provider_id = uuid::Uuid::new_v4().to_string();
+        assert_ok(&client.rpc("provider.create", json!({"providerId":provider_id,
+            "displayName":"Healthy provider","enabled":true,
+            "connection":{"driverKind":"openai-compatible","baseUrl":"http://127.0.0.1:1/v1","auth":{"type":"anonymous"}},
+            "models":[{"modelId":"reachable-model","displayName":"Reachable model","status":"active",
+                "capabilities":dim_agent_types::CatalogCapabilities::with_limits(32000,128)}]})).await);
+        let found = client
+            .rpc(
+                "session.create",
+                json!({"cwd":home,"model":{"modelId":"reachable-model"},"startup":{}}),
+            )
+            .await;
+        if duplicate {
+            assert!(
+                found["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("ambiguous"),
+                "{found}"
+            );
+        } else {
+            assert_ok(&found);
+            assert_eq!(found["result"]["model"]["providerId"], provider_id);
+        }
+    }
+    let explicit = client
+        .rpc(
+            "session.create",
+            json!({"cwd":home,"model":{"provider":"managed-fixture","modelId":"fixture-model"},"startup":{}}),
+        )
+        .await;
+    assert!(explicit.get("error").is_some(), "{explicit}");
+    *fixture.limited.lock().unwrap() = Limited::Unavailable;
     {
         let mut account = fixture.account.lock().unwrap();
         account.generation += 1;
@@ -687,7 +823,17 @@ async fn an_injected_managed_provider_serves_accounts_and_recovers_credentials()
     server.join().await.unwrap();
     let mut released = fixture.released.lock().unwrap().clone();
     released.sort();
-    assert_eq!(released, ["initial", "recovered"]);
+    assert_eq!(
+        released,
+        [
+            "initial",
+            "initial",
+            "initial",
+            "recovered",
+            "recovered",
+            "recovered"
+        ]
+    );
     http.abort();
     std::fs::remove_dir_all(assets).unwrap();
     std::fs::remove_dir_all(home).unwrap();

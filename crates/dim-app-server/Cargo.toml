@@ -68,6 +68,7 @@ testing = []
 embedded-web = []
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 dim-app-server = { path = ".", features = ["testing"] }
 dim-agent-runtime = { workspace = true, features = ["testing"] }
 dim-agent-capabilities = { workspace = true, features = ["testing"] }
