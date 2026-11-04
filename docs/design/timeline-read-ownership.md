@@ -10,6 +10,8 @@ Rules: [design rules](../architecture/rust-agent/principles.md), [ADR 002](../ad
 
 This document states who reads a line's facts, which object serves each read, and which dependencies are allowed. It covers the client history read, the ended line's page, the collaboration read of a peer Session, the restore reads of `TimelineTree` and the database export.
 
+This document is the target. Where the code does not follow it yet, the section says so and names the implementation that closes the gap (`dim/1039-read-ownership`, based on this document). One adjacent defect is out of scope: the chain helper's range end is checked against an ancestor's sequence before the queried branch is reached, which truncates a chain read; it belongs to [#1039](https://github.com/arcships/dim/issues/1039) and changes no ownership rule.
+
 It does not restate the query contract ([plugin contract §5.4](plugin-contract.md#54-the-event-query)), the page shape of the client protocol ([session history window](appserver/session-history-window.md)), or the storage layout ([request delta storage](appserver/request-delta-storage.md)). It adds no event, service, state or format change.
 
 ## 2. Owners and their reads
@@ -85,8 +87,8 @@ Not allowed:
 
 - **Runtime (opening):** remove the shared decoded copy of a branch's opening, which kept `1..=head` in memory for replay and now has no regular reader ([#1063](https://github.com/arcships/dim/issues/1063)).
 - **Runtime (TimelineStore owner):** the ended line's page and the port's other reads are composed from `query` and `batch_end`; where the tree needs a selection the port cannot express, the port gains it in its own contract.
-- **App Server (session history owner):** `session.history` acquires the Session and never falls to `SessionStore` for a Session the process does not hold; an ended line is served by the tree whether or not the host keeps a store. Acceptance: the client path has no call to `SessionStore`'s event reads, and a flow test reads the history of an idle Session and observes the acquire rather than a store read. `idle-unload.md` acceptance 1 and 2 are rewritten: `summaries` reads metadata, and a history read acquires the Session.
-- **TimelineTree owner:** the restore reads of `branch/ended`, `branch/end`, `branch/create` and the creation check move to the port's query, so the tree reads selections instead of ranges and decodes only the events it selects ([#1064](https://github.com/arcships/dim/issues/1064)).
+- **App Server (session history owner):** `session.history` acquires the Session and never falls to `SessionStore` for a Session the process does not hold; an ended line is served by the tree whether or not the host keeps a store (carried by `dim/1039-read-ownership`). Acceptance: the client path has no call to `SessionStore`'s event reads, and a flow test reads the history of an idle Session and observes the acquire rather than a store read. `idle-unload.md` acceptance 1 and 2 are rewritten: `summaries` reads metadata, and a history read acquires the Session.
+- **TimelineTree owner:** the restore reads of `branch/ended`, `branch/end`, `branch/create` and the creation check move to the port's query, so the tree reads selections instead of ranges and decodes only the events it selects ([#1064](https://github.com/arcships/dim/issues/1064), carried by `dim/1039-read-ownership`; `page` is composed from `query` and `batch_end`, not a new port method).
 - **CLI (export owner):** `dim export` collects every page of the Session today; it writes each page as it arrives instead, and `chain_through` folds its prefix page by page ([#1065](https://github.com/arcships/dim/issues/1065)).
 
 ## 7. Rule check
