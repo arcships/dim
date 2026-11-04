@@ -2,14 +2,13 @@
 //!
 //! The App Server's `ExecutionSettings` owns the Settings document and
 //! provides `ExecutionSettingsHost`. This capability registers
-//! `dim/settings/execution` and adopts it when the source changes or when the
-//! operator's input arrives; an assembly without the host registers nothing.
+//! `dim/settings/execution` and adopts it on a periodic check while no turn is
+//! open; an assembly without the host registers nothing.
 use crate::{
     execution_settings::{ExecutionSettings, ExecutionSettingsHost},
     host::{HostError, HostFuture, LoadPrompt},
     prompt_registry::{PromptRegistry, targets},
     prompt_sources::sha256_version,
-    settings::{SettingsChanged, settings_changes},
 };
 use dim_agent_runtime::{
     AgentBuilder, ConfigureControl, ConfigureUpdate, Delivery, Dispatcher, Feature, Names,
@@ -18,14 +17,18 @@ use dim_agent_runtime::{
 use dim_agent_types::*;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
-use std::sync::Arc;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 /// The prompt source of the execution switches.
 pub const SOURCE: &str = "dim/settings/execution";
-/// The Settings source whose committed writes wake the projection.
-const SETTINGS_SOURCE: &str = "execution";
 
 /// The body: effective values and when they apply.
 fn body(settings: ExecutionSettings) -> String {
@@ -154,43 +157,68 @@ impl DynPlugin for SettingsBranchPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            if self.host.is_none() {
+            let Some(host) = &self.host else {
                 return Ok(Effect::Done);
-            }
+            };
+            let host = ctx.require_at(host)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let configure = ctx.require_at(&self.configure)?;
-            let tasks = TaskTracker::new();
-
-            let event_configure = configure.clone();
-            let event_tasks = tasks.clone();
-            ctx.listen::<SettingsChanged>()
-                .name(settings_changes(SETTINGS_SOURCE))
-                .on(move |_, _| {
-                    let configure = event_configure.clone();
-                    event_tasks.spawn(async move { adopt(configure).await });
-                    async { Ok(None) }
-                })?;
-
-            let input_configure = configure.clone();
-            let input_tasks = tasks.clone();
+            let open = Arc::new(AtomicBool::new(false));
+            let turn_open = open.clone();
             dispatcher
                 .follow(
                     ctx,
                     "EnvironmentSettings",
-                    &["input/message"],
+                    &["turn/start", "turn/end"],
                     move |delivery| {
-                        if let Delivery::Live(event) = delivery
-                            && let EventKind::InputMessage(data) = &event.kind
-                            && data.user.is_some()
-                        {
-                            let configure = input_configure.clone();
-                            input_tasks.spawn(async move { adopt(configure).await });
+                        if let Delivery::Live(event) = delivery {
+                            match &event.kind {
+                                EventKind::TurnStart(_) => turn_open.store(true, Ordering::SeqCst),
+                                EventKind::TurnEnd(_) => turn_open.store(false, Ordering::SeqCst),
+                                _ => {}
+                            }
                         }
                         Box::pin(async { Ok(()) })
                     },
                 )
                 .await?;
 
+            let lifecycle = ctx.cancellation_token();
+            let tasks = TaskTracker::new();
+            tasks.spawn(async move {
+                let Ok(mut last) = host.0.read(lifecycle.child_token()).await else {
+                    return;
+                };
+                loop {
+                    tokio::select! {
+                        _ = lifecycle.cancelled() => return,
+                        _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+                    }
+                    if open.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    let current = match host.0.read(lifecycle.child_token()).await {
+                        Ok(current) => current,
+                        Err(error) => {
+                            tracing::warn!(%error, "execution settings were not read");
+                            continue;
+                        }
+                    };
+                    if current == last {
+                        continue;
+                    }
+                    let update = ConfigureUpdate {
+                        sources: targets([SOURCE]),
+                        model: None,
+                    };
+                    match configure.clone().configure(update).await {
+                        Ok(_) => last = current,
+                        Err(error) => {
+                            tracing::warn!(%error, "execution settings were not adopted")
+                        }
+                    }
+                }
+            });
             ctx.effect(move || async move {
                 tasks.close();
                 tasks.wait().await;
@@ -198,16 +226,6 @@ impl DynPlugin for SettingsBranchPlugin {
             })?;
             Ok(Effect::Done)
         })
-    }
-}
-
-async fn adopt(configure: Arc<dyn ConfigureControl>) {
-    let update = ConfigureUpdate {
-        sources: targets([SOURCE]),
-        model: None,
-    };
-    if let Err(error) = configure.configure(update).await {
-        tracing::warn!(%error, "execution settings were not adopted");
     }
 }
 
