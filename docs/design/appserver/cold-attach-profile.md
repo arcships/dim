@@ -70,9 +70,9 @@ client                Connection::handle          Agents::acquire        Agent r
 ```
 
 The restore path is the one [restore-scoped shared history read](restore-shared-read.md) describes:
-validation decodes every stored event once, each branch opens with one shared decode of its history,
-and the opening appends `branch/resume` before the Session is published. The attach reply is sent after
-that. The measurement below separates the restore spans from the attach call's own work.
+validation decodes every stored event once, each branch opens and its parts read what they rebuild
+from, and the opening appends `branch/resume` before the Session is published. The attach reply is
+sent after that. The measurement below separates the restore spans from the attach call's own work.
 
 Excluded from "cold first attach": the client's connection and `hello`, daemon process startup, the
 Desktop fold, and the history paging that #712 owns. They are outside the timed call.
@@ -289,8 +289,8 @@ on a cold open.
   fails with `InvalidInput`; a storage failure that validation would report fails the restore before a
   copy exists; a read the copy does not cover falls back to `read_page`. A failed validation keeps no
   copy.
-- **Bound.** The copy is one branch's history and is dropped when that branch's opening ends, like the
-  opening's shared read ([restore-shared-read §4.2](restore-shared-read.md#42-what-the-copy-holds)).
+- **Bound.** The copy is one branch's history and is dropped when that branch's opening ends: no read
+  holds a whole branch ([ADR 021 D6](../adr/021-reads-follow-the-state-owner.md)).
   A Session with several branches must not retain all of them at once; if the store cannot bound it to
   the branch being opened (or, at most, `main`), do not adopt the change.
 - **Contract.** The cache is inside the SQLite store's read path; `TimelineStore`'s signatures and the

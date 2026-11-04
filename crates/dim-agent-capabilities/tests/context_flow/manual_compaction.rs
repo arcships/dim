@@ -937,10 +937,10 @@ async fn a_manual_compaction_inside_a_turn_runs_at_the_next_step_boundary() {
     agent.close().await.unwrap();
 }
 
-/// Once armed, while `main` opens with its history's read held in the
-/// store, reads it the way rebuilding capabilities do: a read that starts
-/// after sequence 1 reads alone, and a read of all of it waits for the held
-/// read instead of reading again. Then releases the held read.
+/// Once armed, while `main` opens with a read of its history held in the
+/// store, reads it the way rebuilding capabilities do: a whole read is held,
+/// a read from sequence 2 runs beside it, and a second whole read does not
+/// wait for it. Then releases the held read.
 ///
 /// While the child opens, reads its ancestry as Permission does, then its
 /// context as Prompt does, from `main`'s checkpoint; records the store reads
@@ -1152,7 +1152,6 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
         "{:?}",
         failed.err()
     );
-    assert_eq!(agent.live_openings(), 0);
     let main_head = head("main").await;
     store.ranges.lock().unwrap().clear();
     store.pages.lock().unwrap().clear();
@@ -1188,7 +1187,6 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
             .all(|(branch, range)| *branch == child || range.start() == range.end()),
         "{context_reads:?}"
     );
-    assert_eq!(agent.live_openings(), 0);
     let published = session.sequence("main").unwrap();
     branch_events(&session, "main", ..).await.unwrap();
     assert!(

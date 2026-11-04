@@ -27,11 +27,11 @@
 //! event count includes the `branch/resume` events earlier restores wrote.
 //! A counting allocator reports the live heap over its level before each
 //! restore: the peak until the first idle, at the first idle and after the
-//! unload, with the branch openings still alive at the first idle. The first
-//! restore of each Session in the process validates the stored Timeline; later
-//! ones reuse it while the stored directory is unchanged, so the line reports
-//! `firstRestoreMs`/`firstBranchesMs` and the medians of the re-acquisitions
-//! separately ([restore validation reuse](../../../docs/design/appserver/restore-validation.md)).
+//! unload. The first restore of each Session in the process validates the
+//! stored Timeline; later ones reuse it while the stored directory is
+//! unchanged, so the line reports `firstRestoreMs`/`firstBranchesMs` and the
+//! medians of the re-acquisitions separately
+//! ([restore validation reuse](../../../docs/design/appserver/restore-validation.md)).
 //!
 //! `RESTORE_COST_CHILD` also grows a child cut at `main`'s head with one turn
 //! of its own, so a restore opens a branch with ancestry.
@@ -319,7 +319,6 @@ struct Restore {
     peak_live: f64,
     idle_live: f64,
     unloaded_live: f64,
-    openings: usize,
 }
 
 /// Grows one Session per size on `main` and unloads it.
@@ -687,7 +686,6 @@ async fn main() -> std::result::Result<(), Error> {
             let end = Instant::now();
             let peak_live = allocation::peak() as f64 - base as f64;
             let idle_live = allocation::live() as f64 - base as f64;
-            let openings = agent.live_openings();
             probe.recording.store(false, Ordering::Relaxed);
             let spans = std::mem::take(&mut *probe.spans.lock().unwrap());
             if rep == 0 && std::env::var_os("RESTORE_COST_SPANS").is_some() {
@@ -732,7 +730,6 @@ async fn main() -> std::result::Result<(), Error> {
                 peak_live: peak_live / 1e6,
                 idle_live: idle_live / 1e6,
                 unloaded_live: unloaded_live / 1e6,
-                openings,
             });
         }
         if let Some(pause) = std::env::var("RESTORE_COST_CREATE_PAUSE_MS")
@@ -785,7 +782,7 @@ async fn main() -> std::result::Result<(), Error> {
             "bytesPerEvent":bytes[target] as f64 / events[target] as f64,
             "fullReads":restores[0].read_events as f64 / events[target] as f64,
             "peakLiveMedianMB":of(|r| r.peak_live),"idleLiveMedianMB":of(|r| r.idle_live),
-            "unloadedLiveMedianMB":of(|r| r.unloaded_live),"openingsAtIdle":restores.iter().map(|r| r.openings).max(),
+            "unloadedLiveMedianMB":of(|r| r.unloaded_live),
             "debugAssertions":cfg!(debug_assertions)})
         );
     }

@@ -1,4 +1,3 @@
-use crate::core::Opening;
 pub use dim_agent_types::ModelId;
 use dim_agent_types::ModelSelection;
 use rutis::service;
@@ -190,11 +189,11 @@ impl<P: Copy + Ord + Default + Send + Sync + 'static> Phases<P> {
 /// branch's [`crate::TimelineContext`]. Capabilities that spawn background
 /// work in `apply` wait for [`Self::activated`] before doing it.
 #[derive(Clone)]
-pub struct BranchLifecycle(Phases<BranchPhase>, Arc<Mutex<Option<Arc<Opening>>>>);
+pub struct BranchLifecycle(Phases<BranchPhase>);
 #[service]
 impl BranchLifecycle {
     pub(crate) fn new() -> Self {
-        Self(Phases::new(), Arc::default())
+        Self(Phases::new())
     }
     #[service(skip)]
     pub fn phase(&self) -> BranchPhase {
@@ -216,15 +215,6 @@ impl BranchLifecycle {
     }
     pub(crate) fn advance(&self, next: BranchPhase) {
         self.0.advance(next);
-        if next > BranchPhase::Loading {
-            let opening = self.1.lock().unwrap().take();
-            drop(opening);
-        }
-    }
-    /// Holds `opening` until the branch leaves `Loading`; called while it
-    /// is `Loading`.
-    pub(crate) fn hold(&self, opening: Arc<Opening>) {
-        *self.1.lock().unwrap() = Some(opening);
     }
 }
 

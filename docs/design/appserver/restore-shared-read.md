@@ -7,6 +7,13 @@ merged as [#213](https://github.com/arcships/dim/pull/213); phase 2, request mes
 as [#224](https://github.com/arcships/dim/pull/224), and §15 of its [design](request-delta-storage.md) leaves this
 phase to the runtime. The numbers in §2 to §8 were measured on #224's branch with a prototype; §8 ends with the
 implementation's.
+
+> **The opening copy is withdrawn.** [ADR 021](../adr/021-reads-follow-the-state-owner.md) D6 and
+> [#1063](https://github.com/arcships/dim/issues/1063) removed the shared decoded copy of a branch's opening: no read
+> fills or serves a copy while a branch opens, and `Agent::live_openings` is gone. §4, §5, §8, §14 and §17 describe it
+> and are kept for reference only. The bounded content cache across the pages of one read and the request message
+> lists of phases 1 and 2 are separate mechanisms and remain in force.
+
 The change is to runtime infrastructure ([principles §4](../../architecture/rust-agent/principles.md#4-通过时间线扩展行为)
 rule 8), so it requires review by the runtime mechanism owner, the core mechanisms lane (eric8810,
 [roadmap §3.5](../roadmap.md#35-按人按批次)). Author lane: Agents/storage (yyhhyyyyyy). Reviewers: eric8810, zerob13.

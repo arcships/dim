@@ -2,6 +2,8 @@
 
 状态：已在 [#235](https://github.com/arcships/dim/pull/235) 实现；§17（TimelineTree 的恢复事实，[#239](https://github.com/arcships/dim/issues/239)）在此基础上扩展。[#193](https://github.com/arcships/dim/issues/193) 的第 3 阶段。第 1 阶段是在一次读取的各页之间共用有界内容缓存，已以 [#213](https://github.com/arcships/dim/pull/213) 合入；第 2 阶段是请求消息列表（原生格式 v17），已以 [#224](https://github.com/arcships/dim/pull/224) 合入，其[设计](request-delta-storage.md) §15 把本阶段留给运行时。§2 至 §8 的数据是在 #224 的分支上用原型测得的；§8 末尾是实现的数据。这项改动属于运行时基础设施（[原则 §4](../../../architecture/rust-agent/principles.md#4-通过时间线扩展行为) 第 8 条），须经运行时机制所有者评审，即核心机制负责线（eric8810，[路线图 §3.5](../../../design/roadmap.md#35-按人按批次)）。作者负责线：Agents/存储（yyhhyyyyyy）。评审：eric8810、zerob13。范围：`Timeline` 的已提交历史读取路径（[timeline.rs](../../../../crates/dim-agent-runtime/src/core/timeline.rs)），由分支作用域开始共用（[assembly.rs](../../../../crates/dim-agent-runtime/src/assembly.rs)），分支离开 `Loading` 时由该分支的 `BranchLifecycle` 结束共用（[config.rs](../../../../crates/dim-agent-runtime/src/config.rs)）。
 
+> **打开期间副本已撤销。** [ADR 021](../../adr/021-reads-follow-the-state-owner.md) D6 与 [#1063](https://github.com/arcships/dim/issues/1063) 删除了分支打开期间共用的解码副本：分支打开期间没有读取填充或使用副本，`Agent::live_openings` 也已删除。§4、§5、§8、§14 和 §17 描述它，仅供参考。第 1 阶段一次读取各页之间共用的有界内容缓存、第 2 阶段的请求消息列表是另外的机制，仍然有效。
+
 ## 1. 概要
 
 v17 之后，恢复一个 Session 仍要把每个分支的历史解码十来次：存储校验一次，TimelineTree 扫描一次，分支打开期间每个重建的能力再各读一次（§2）。这些读取返回的是同一批不可变事实，重复的只是解码。

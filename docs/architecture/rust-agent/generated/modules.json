@@ -15073,11 +15073,8 @@
       "from": "dim_agent_runtime::assembly",
       "to": "dim_agent_runtime::core::timeline",
       "references": [
-        "path OpeningCount",
-        "path OpeningCount::default",
         "path Timeline",
-        "path Timeline::branch",
-        "use crate::core::OpeningCount"
+        "path Timeline::branch"
       ]
     },
     {
@@ -15244,14 +15241,6 @@
     },
     {
       "from": "dim_agent_runtime::config",
-      "to": "dim_agent_runtime::core::timeline",
-      "references": [
-        "path Opening",
-        "use crate::core::Opening"
-      ]
-    },
-    {
-      "from": "dim_agent_runtime::config",
       "to": "dim_agent_runtime::error",
       "references": [
         "path crate::AgentError",
@@ -15390,14 +15379,6 @@
         "path Result",
         "use crate::AgentError",
         "use crate::Result"
-      ]
-    },
-    {
-      "from": "dim_agent_runtime::core::timeline",
-      "to": "dim_agent_runtime::config",
-      "references": [
-        "path BranchLifecycle",
-        "use crate::BranchLifecycle"
       ]
     },
     {

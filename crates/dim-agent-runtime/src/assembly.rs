@@ -1,4 +1,3 @@
-use crate::core::OpeningCount;
 use crate::*;
 use futures_util::FutureExt;
 use rutis::host::{
@@ -170,8 +169,6 @@ pub(crate) struct Assembly {
     pub startup_timeout: Duration,
     pub store: Arc<dyn TimelineStore>,
     pub ephemeral_store: Option<Arc<MemoryTimelineStore>>,
-    /// This Agent's branch openings that are alive.
-    pub openings: OpeningCount,
     /// Shutdowns of instances whose creation was abandoned before the
     /// instance could be found; the Agent's close waits for them.
     pub abandoned: tokio_util::task::TaskTracker,
@@ -216,7 +213,6 @@ impl AgentBuilder {
                 startup_timeout: Duration::from_secs(10),
                 store: Arc::new(MemoryTimelineStore::default()),
                 ephemeral_store: None,
-                openings: OpeningCount::default(),
                 abandoned: tokio_util::task::TaskTracker::new(),
                 values: vec![],
                 value_names: vec![],
@@ -631,7 +627,6 @@ impl AgentBuilder {
     }
     fn finished(&self) -> Assembly {
         let mut assembly = self.assembly.clone();
-        assembly.openings = OpeningCount::default();
         assembly.abandoned = tokio_util::task::TaskTracker::new();
         assembly.catalog = Arc::new(self.catalog.clone());
         if !self.custom_store {
@@ -1160,7 +1155,6 @@ impl DynPlugin for BranchScopePlugin {
             ctx.provide_at(scope.key::<Timeline>(), Arc::new(timeline.clone()))?;
             ctx.provide_at(scope.key::<Dispatcher>(), Arc::new(dispatcher.clone()))?;
             let lifecycle = BranchLifecycle::new();
-            timeline.begin_opening(&lifecycle, &session.assembly.openings);
             ctx.provide_at(scope.key::<BranchLifecycle>(), Arc::new(lifecycle.clone()))?;
             let opening = Arc::new(BranchOpening::new());
             ctx.provide_at(scope.key::<BranchOpening>(), opening.clone())?;
