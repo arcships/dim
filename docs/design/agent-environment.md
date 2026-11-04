@@ -43,7 +43,7 @@ Each fact is delivered the way Skills already delivers its list ([Skills §Sessi
 
 1. The **owner** registers one prompt source with the Session's `PromptRegistry` from a Session part's `apply`; the registration ends with that part.
 2. Prompt turns a `State` source into one `<dim-state source="…">` Append input. The body is final text produced by the owner, escaped by the owner. The source declares its `order`.
-3. A **branch part** watches the owner's change signal (a Settings event, or the operator's input) and asks Prompt to adopt the source through `ConfigureControl::configure(targets([SOURCE]))`.
+3. A **branch part** checks the owner periodically while no turn is open and asks Prompt to adopt the source through `ConfigureControl::configure(targets([SOURCE]))`. A change during a turn waits for the turn to end.
 4. The branch's Prompt loads the source, compares it with the adopted entry, and writes a state input only when the body changed.
 
 Consequences:
@@ -67,15 +67,15 @@ Current prompt sources are Session-wide in practice. `targets()` fixes `PromptSc
 
 | Fact | Trigger | Boundary |
 | --- | --- | --- |
-| Clients | `turn/start`; branch open | One snapshot per turn, not per attach/detach |
-| Settings | the owner's change signal (`settings.changed` for a Settings source); operator input; branch open | Adopt before the next request; coalesce |
+| Clients | a check while no turn is open; branch open | One snapshot per change, before the next input; not per attach/detach |
+| Settings | a check while no turn is open; branch open | One snapshot per change, before the next input; coalesce |
 | Client view | operator input; branch open | Only if promoted to the model; a boolean, not per-switch |
 | Existing environment, date, instructions | PromptSources' check, including [#986](https://github.com/arcships/dim/issues/986)'s request-boundary direction | Unchanged |
 
 - **No wake.** A changed fact does not start a turn. The block is consumed with the next request; an idle branch stays idle.
-- **Handlers return.** A Dispatcher or bus handler registers its own task and returns; the task reads the owner and calls `configure`. It never waits in the handler (rule 3).
-- **One-request lag is possible.** Adoption is asynchronous. A client that attaches and immediately sends, or a setting changed just before a request, can miss the first request. The design either accepts that first-request lag or adds a request-boundary check (the direction of #986) for cheap in-memory facts. For safety-relevant facts such as the sandbox, the state is advisory: the process boundary and the tools enforce the real rule.
-- **Coalescing.** A per-branch task holds a `watch` or a similar one-slot signal, so several changes before the next adoption collapse into one read of the latest snapshot. This is the same shape as Skills' `SessionSkills::changed` and `SkillsBranch`.
+- **The check task owns the work.** A per-branch task reads the owner while no turn is open and calls `configure`; no event handler waits for the adoption (rule 3).
+- **One-request lag is possible.** Adoption is asynchronous and runs only while no turn is open. A change during a turn waits for the turn to end; a client that changes the fact and immediately sends can miss the first request. The design accepts that lag; a request-boundary check remains the direction of #986. For safety-relevant facts such as the sandbox, the state is advisory: the process boundary and the tools enforce the real rule.
+- **Coalescing.** The task remembers the last adopted snapshot, so several changes before the next check collapse into one read of the latest snapshot.
 
 ## 6. Noise budget
 
@@ -98,7 +98,8 @@ The failure mode of this design is environment chatter: many small state blocks 
 ## 8. Compaction and restore
 
 - Before compaction, every adopted block stays in history; the model is told the latest block of a source is the one in force.
-- A compaction replaces the range with the summary and the keyed baseline; the latest block of each live key is replayed after the summary. The state blocks are not duplicated into the running-turn pin.
+- A compaction replaces the range with the summary and the keyed baseline; the latest block of each live key is replayed after the summary. A live state block is therefore not a saving: the compaction accounting excludes it from the removed content. The state blocks are not duplicated into the running-turn pin.
+- A manual compaction reads only the branch's published sequence; a concurrent state adoption can advance the publication first, and the command waits for the next publication instead of reading a future entry.
 - A restored branch loads its sources at `branch/resume` and adopts differences, so it reads the current presence and settings rather than replaying an old block as "now".
 - A source that is unavailable at restore produces no new entry and does not write `cleared="true"`; the previously adopted entry stays as the last known value unless the owner says it no longer applies.
 - A setting that the operator genuinely removed may write `cleared="true"`; that is a business statement, not an error path.
@@ -195,9 +196,9 @@ The format follows [design rules §4 rule 8](../architecture/rust-agent/principl
 
 | Scenario | Expected |
 | --- | --- |
-| Two TUIs attach the same Session | The model sees one presence block at the next turn start with 2 tui; not two attach blocks |
-| A TUI leaves while idle | No block; the next turn start shows 1 tui |
-| The last client leaves | The next turn start says no client is attached |
+| Two TUIs attach the same Session | The model sees one presence block at the next idle check with 2 tui; not two attach blocks |
+| A TUI leaves while idle | No block; the next idle check shows 1 tui |
+| The last client leaves | The next idle check says no client is attached |
 | Web, ACP or a remote device attaches | The channel count names it; no device id/name/token |
 | No provider | No source, no block, no error |
 | Settings change from another client | The next request after the change carries the new execution state; no reload |

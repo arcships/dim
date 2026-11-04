@@ -72,14 +72,11 @@ The source is written by the capability, but its values belong to `ExecutionSett
 
 ## 4. Adoption
 
-The source has two triggers, both of which read the latest value and ask Prompt to adopt it:
+The source has one trigger: a periodic check while no turn is open.
 
-1. **A committed change.** The branch part listens to `settings.changed` on `settings_changes("execution")` (`settings/execution`). The event carries `{source, scope, revision}`, never the document; the source load reads the host.
-2. **An operator input.** The branch part also follows `input/message` with operator content, so a value that changed while no listener was active, or a restored branch, converges on the next input. The handler spawns a tracked adoption and returns.
-
-Both triggers ask Prompt's serial adoption queue; several writes before the adoption collapse into one read. Prompt refuses an adoption after the branch closes.
-
-The initial configuration adopts the source at branch open, so the first request of a branch carries the current value.
+- The branch part follows `turn/start` and `turn/end` only to know whether a turn is open. While idle it reads `ExecutionSettingsHost` every 500 ms; when the values differ from the last adopted snapshot it asks Prompt to adopt the source.
+- The initial configuration adopts the source at branch open, so the first request of a branch carries the current value. A change during a turn waits for the turn to end, so the block is written while idle before the next input and the operator's message stays the last message.
+- Prompt's serial adoption queue coalesces; several writes before the adoption collapse into one read. Prompt refuses an adoption after the branch closes.
 
 ## 5. Error and absence
 
@@ -116,9 +113,8 @@ Version 1 therefore does not publish the permission preset. It also does not pub
 | --- | --- |
 | `P:ExecutionSettingsHost` | Read the effective sandbox and network |
 | `S:PromptRegistry` | Register `dim/settings/execution` |
-| `B:Dispatcher` | Follow the operator's input |
+| `B:Dispatcher` | Track whether a turn is open |
 | `B:dyn ConfigureControl` | Adopt the source |
-| process bus (`settings.changed`) | Wake on a committed write |
 
 The feature is installed only where `ExecutionSettingsHost` is provided. A fixed host (evaluation, a native profile) may install it with fixed values; the product App Server provides the real source.
 
@@ -129,7 +125,7 @@ The feature is installed only where `ExecutionSettingsHost` is provided. A fixed
 | §1 Parts bounded | Session part registers the source; branch part adopts; the value owner is the App Server's execution settings. |
 | §4 rule 1 Command events | The design changes no setting; it reads one. Writes are [AgentSettings](AgentSettings.md). |
 | §4 rule 2 Handover | No handover. |
-| §4 rule 3 Before callbacks | None. Bus and Dispatcher handlers signal a task and return. |
+| §4 rule 3 Before callbacks | None. The check task reads the host and asks Prompt to adopt; the Dispatcher handler only tracks the turn. |
 | §4 rule 4 Core carries no business meaning | The body is the capability's projection of a public port; no core branch. |
 | §4 rule 5 Batch | No new facts. |
 | §4 rule 6 Context from consumed events | The block is an adopted input; no second path. |
@@ -151,7 +147,7 @@ The feature is installed only where `ExecutionSettingsHost` is provided. A fixed
 | Sandbox back off | A new block with the off value; no stale "on" |
 | A non-model field of the same document changes | No block |
 | The same value is written twice | No second block (body equality) |
-| Session idle when the setting changes | No turn; the next input sees the new value |
+| Session idle when the setting changes | No turn; the next idle check writes the block before the next input |
 | Restore | The current value, not the stored block as "now" |
 | Host read fails | The old block stays; no `unknown`/`cleared` |
 | No host | No block, no error |
@@ -162,6 +158,6 @@ The feature is installed only where `ExecutionSettingsHost` is provided. A fixed
 ## 11. Open decisions
 
 1. The branch-scoped source route for permission preset and other per-branch settings.
-2. Whether the source also adopts at each model request (the #986 boundary) instead of only on a change and on operator input.
+2. Whether the source also adopts at each model request (the #986 boundary) instead of only on the idle check.
 3. Whether `dim/language` joins this capability or stays in PromptSources once its value carrier exists.
 4. The exact set of later model-facing settings after the first `execution` source is measured.
