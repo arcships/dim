@@ -257,6 +257,15 @@ impl UiHost {
     /// interface it replaces, returning it.
     fn forget(&self, ui_id: &str) -> Option<Instance> {
         let mut instances = self.instances.lock().expect("ui registry");
+        if let Some(instance) = instances.get(ui_id)
+            && instance.leaf.is_some()
+            && let Some(connection) = instance.connection.as_deref()
+        {
+            self.disposing
+                .lock()
+                .expect("disposing ui connections")
+                .insert(connection.to_owned());
+        }
         let instance = instances.remove(ui_id)?;
         if let Some(old) = instance
             .leaf
@@ -511,14 +520,6 @@ impl UiHost {
         reason: Option<String>,
     ) -> Result<(), RpcError> {
         let instance = self.forget(ui_id).ok_or_else(ui_unknown)?;
-        if instance.leaf.is_some()
-            && let Some(connection) = instance.connection.as_deref()
-        {
-            self.disposing
-                .lock()
-                .expect("disposing ui connections")
-                .insert(connection.to_owned());
-        }
         if let Some(connection) = instance
             .connection
             .as_deref()
