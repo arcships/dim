@@ -2,9 +2,9 @@
 //!
 //! The App Server owns the connection and UI registries and provides the
 //! read-only `SessionClientsHost`. This capability registers
-//! `dim/environment/clients`; each branch adopts the current counts when the
-//! operator's input arrives, so idle attach/detach churn does not become a
-//! block.
+//! `dim/environment/clients`; each branch checks the current counts while no
+//! turn is open, so a change is adopted before the next input and idle churn
+//! does not become a block.
 use crate::{
     host::{HostError, HostFuture, LoadPrompt},
     prompt_registry::{PromptRegistry, targets},
@@ -17,7 +17,14 @@ use dim_agent_runtime::{
 use dim_agent_types::*;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
@@ -205,12 +212,16 @@ impl DynPlugin for ClientsPlugin {
 }
 
 struct ClientsBranchPlugin {
+    clients: Key<SessionClientsHost>,
+    identity: Key<SessionIdentity>,
     dispatcher: Key<Dispatcher>,
     configure: Key<dyn ConfigureControl>,
 }
 impl ClientsBranchPlugin {
     fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
+            clients: names.key()?,
+            identity: names.key()?,
             dispatcher: names.key()?,
             configure: names.key()?,
         })
@@ -221,39 +232,66 @@ impl DynPlugin for ClientsBranchPlugin {
         "EnvironmentClientsBranch"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.dispatcher.erase(), self.configure.erase()]
+        vec![
+            self.clients.erase(),
+            self.identity.erase(),
+            self.dispatcher.erase(),
+            self.configure.erase(),
+        ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
+            let clients = ctx.require_at(&self.clients)?;
+            let identity = ctx.require_at(&self.identity)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let configure = ctx.require_at(&self.configure)?;
-            let tasks = TaskTracker::new();
-            let owned = tasks.clone();
+            let open = Arc::new(AtomicBool::new(false));
+            let turn_open = open.clone();
             dispatcher
                 .follow(
                     ctx,
                     "EnvironmentClients",
-                    &["input/message"],
+                    &["turn/start", "turn/end"],
                     move |delivery| {
-                        if let Delivery::Live(event) = delivery
-                            && let EventKind::InputMessage(data) = &event.kind
-                            && data.user.is_some()
-                        {
-                            let configure = configure.clone();
-                            owned.spawn(async move {
-                                let update = ConfigureUpdate {
-                                    sources: targets([CLIENTS]),
-                                    model: None,
-                                };
-                                if let Err(error) = configure.configure(update).await {
-                                    tracing::warn!(%error, "client presence was not adopted");
-                                }
-                            });
+                        if let Delivery::Live(event) = delivery {
+                            match &event.kind {
+                                EventKind::TurnStart(_) => turn_open.store(true, Ordering::SeqCst),
+                                EventKind::TurnEnd(_) => turn_open.store(false, Ordering::SeqCst),
+                                _ => {}
+                            }
                         }
                         Box::pin(async { Ok(()) })
                     },
                 )
                 .await?;
+
+            let session = identity.session_id.clone();
+            let lifecycle = ctx.cancellation_token();
+            let tasks = TaskTracker::new();
+            tasks.spawn(async move {
+                let mut last = clients.0.counts(&session);
+                loop {
+                    tokio::select! {
+                        _ = lifecycle.cancelled() => return,
+                        _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+                    }
+                    if open.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    let counts = clients.0.counts(&session);
+                    if counts == last {
+                        continue;
+                    }
+                    let update = ConfigureUpdate {
+                        sources: targets([CLIENTS]),
+                        model: None,
+                    };
+                    match configure.clone().configure(update).await {
+                        Ok(_) => last = counts,
+                        Err(error) => tracing::warn!(%error, "client presence was not adopted"),
+                    }
+                }
+            });
             ctx.effect(move || async move {
                 tasks.close();
                 tasks.wait().await;
