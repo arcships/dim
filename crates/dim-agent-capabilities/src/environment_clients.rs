@@ -2,8 +2,9 @@
 //!
 //! The App Server owns the connection and UI registries and provides the
 //! read-only `SessionClientsHost`. This capability registers
-//! `dim/environment/clients`; each branch adopts the current counts at every
-//! turn start, so idle attach/detach churn does not become a block.
+//! `dim/environment/clients`; each branch checks the current counts while no
+//! turn is open, so a change is adopted before the next input and idle churn
+//! does not become a block.
 use crate::{
     host::{HostError, HostFuture, LoadPrompt},
     prompt_registry::{PromptRegistry, targets},
