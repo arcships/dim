@@ -1537,10 +1537,64 @@ fn workflow_facts(wire: &mut Wire) {
     );
     event(
         wire,
+        "same-call-line",
+        fact(
+            "other-line-result",
+            1,
+            2100,
+            "step",
+            "tool-completed",
+            json!({
+                "turn_id":"turn","request_id":"request","call_id":"wf-call",
+                "call_event_id":"other-use","result":{"content":"other line result"},
+            }),
+        ),
+    );
+    let history = wire.read("session.history");
+    assert_eq!(history["params"]["branchId"], "same-call-line");
+    wire.reply(
+        &history,
+        json!({"events":[],"through":0,"nextAfter":0,"done":true}),
+    );
+    event(
+        wire,
+        "main",
+        fact(
+            "other-request-result",
+            3,
+            2200,
+            "step",
+            "tool-result",
+            json!({
+                "turn_id":"turn","request_id":"other-request",
+                "results":[{"call_id":"wf-call","result":{"content":"other request result"}}],
+            }),
+        ),
+    );
+    event(
+        wire,
+        "main",
+        fact(
+            "wf-completed",
+            4,
+            2500,
+            "step",
+            "tool-completed",
+            json!({
+                "turn_id":"turn","request_id":"request","call_id":"wf-call",
+                "call_event_id":"wf-use","result":{
+                    "content":"{\"run_id\":\"run-a\"}",
+                    "structuredContent":{"run_id":"run-a","status":"running","stages":[]},
+                },
+            }),
+        ),
+    );
+    event(
+        wire,
         "main",
         fact(
             "wf-result",
-            3,
+            5,
             3000,
             "step",
             "tool-result",

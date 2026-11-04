@@ -296,7 +296,7 @@ impl Worker {
                 if prepend {
                     for event in page.events {
                         self.discover_task_branches(&event);
-                        self.discover_workflow(&event);
+                        self.discover_workflow(&request.branch_id, &event);
                         self.task_history
                             .get_mut(&request.branch_id)
                             .expect("history")

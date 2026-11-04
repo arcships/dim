@@ -2185,7 +2185,7 @@ impl Worker {
                 let event: Event = serde_json::from_value(value)?;
                 if backfill && event.sequence <= self.cursors.get(branch).copied().unwrap_or(0) {
                     self.discover_task_branches(&event);
-                    self.discover_workflow(&event);
+                    self.discover_workflow(branch, &event);
                     self.task_history
                         .get_mut(branch)
                         .expect("branch history")
@@ -4102,7 +4102,7 @@ impl Worker {
                 history.progress = None;
             }
         }
-        self.discover_workflow(&event);
+        self.discover_workflow(branch_id, &event);
         if branch_id == "main"
             && let EventContent::Configuration(configuration) = &event.content
         {

@@ -12,7 +12,7 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 #[derive(Default)]
 pub(super) struct WorkflowReads {
     /// `workflow` tool calls whose results can name a run.
-    calls: HashSet<String>,
+    calls: HashSet<(String, String, String)>,
     /// Run IDs the Session's facts named, in rotation order.
     known: BTreeMap<String, Known>,
     /// The run the last automatic read named.
@@ -92,22 +92,34 @@ impl Worker {
 
     /// Finds run IDs in the producer-defined fields of tool results and
     /// report inputs, never in result prose.
-    pub(super) fn discover_workflow(&mut self, event: &Event) {
+    pub(super) fn discover_workflow(&mut self, branch_id: &str, event: &Event) {
         let mut observed = Vec::new();
         match &event.content {
             EventContent::ToolCall(data) => {
                 for call in data.calls.iter().filter(|call| call.name == "workflow") {
-                    self.workflow.calls.insert(call.id.clone());
+                    self.workflow.calls.insert((
+                        branch_id.to_owned(),
+                        data.request_id.clone(),
+                        call.id.clone(),
+                    ));
                 }
             }
             EventContent::ToolCompleted(data) => {
-                if self.workflow.calls.remove(&data.call_id) {
+                if self.workflow.calls.remove(&(
+                    branch_id.to_owned(),
+                    data.request_id.clone(),
+                    data.call_id.clone(),
+                )) {
                     observed.extend(workflow_tool_run(&data.result));
                 }
             }
             EventContent::ToolResult(data) => {
                 for result in &data.results {
-                    if self.workflow.calls.remove(&result.call_id) {
+                    if self.workflow.calls.remove(&(
+                        branch_id.to_owned(),
+                        data.request_id.clone(),
+                        result.call_id.clone(),
+                    )) {
                         observed.extend(workflow_tool_run(&result.result));
                     }
                 }

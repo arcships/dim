@@ -55,6 +55,8 @@ Reuse the command/member worker's existing all-branch history/live path to find
 Workflow run IDs. A successful `workflow` start result supplies `run_id`; status
 and stop results can supply the owner's stored run. UI code may use the existing
 `structuredContent` for these fields; the model-visible ID remains in `content`.
+Match a tool result to its call by branch, model request and call id. Another
+branch or request may reuse the call id without settling that association.
 The existing report input carries `run` and `status` in its `dim-workflow`
 marker. Decode these producer-defined fields at the wire boundary, not by
 searching free-form result prose. Tool errors, list results and stage-input
