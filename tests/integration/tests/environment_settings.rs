@@ -76,6 +76,12 @@ async fn execution_state_is_adopted_and_unchanged_values_do_not_duplicate() {
     let session = env.session(&cwd, "").await.unwrap();
 
     run(&session, "hello").await;
+    until_block(
+        &session,
+        "<dim-state source=\"dim/settings/execution\">Execution sandbox: off. New processes run with the host's normal access.</dim-state>",
+    )
+    .await;
+    run(&session, "hello again").await;
     let text = request_text(requests(&session).await.last().unwrap());
     assert!(
         text.contains(

@@ -140,7 +140,6 @@ impl Connection {
             self.hub.web.release(&self.hub, &self.id).await;
         }
         self.hub.ui.release(&self.id);
-        self.hub.ui.finished(&self.id);
         let sessions: Vec<String> = self
             .attachments
             .lock()
@@ -152,6 +151,7 @@ impl Connection {
         for session in sessions {
             self.hub.notify_clients(&session);
         }
+        self.hub.ui.finished(&self.id);
         self.subscriptions.close();
         self.subscriptions.wait().await;
         self.hub
