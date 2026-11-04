@@ -5,7 +5,7 @@
 use dim_agent_capabilities::{
     defaults,
     environment_clients::{SessionClientsHost, SessionClientsSource},
-    execution_settings::{ExecutionSettings, ExecutionSettingsHost},
+    execution_settings::{ExecutionSettings, ExecutionSettingsHost, ExecutionSettingsSource},
     history::HistoryRenderer,
     host::*,
     host_platform::{
@@ -387,6 +387,9 @@ pub struct Options {
     pub require_without_install: bool,
     /// A client-presence source, provided at the root when present.
     pub clients: Option<Arc<dyn SessionClientsSource>>,
+    /// The execution switches, provided to HostPlatform and the root when
+    /// present; `EnvironmentSettings` is installed with it.
+    pub execution: Option<Arc<dyn ExecutionSettingsSource>>,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -400,6 +403,7 @@ impl Default for Options {
             instructions: None,
             require_without_install: false,
             clients: None,
+            execution: None,
         }
     }
 }
@@ -408,6 +412,9 @@ impl Default for Options {
 pub async fn env(dirs: &Dirs, options: Options) -> Env {
     let mut host = platform(&dirs.home);
     host.timezone = Some(options.timezone.into());
+    if let Some(execution) = options.execution.clone() {
+        host = host.with_execution_settings(ExecutionSettingsHost(execution));
+    }
     let settings = options.settings.clone();
     let model = Arc::new(ScriptedModel::default());
     let gate = Arc::new(Gate::default());
@@ -440,6 +447,9 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
     if options.clients.is_some() {
         dim_agent_capabilities::environment_clients::install(&mut builder);
     }
+    if options.execution.is_some() {
+        dim_agent_capabilities::environment_settings::install(&mut builder);
+    }
     if options.require_without_install {
         for part in ["Skills", "SkillsBranch"] {
             builder.require_part(part);
@@ -470,11 +480,15 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
     }
     builder.plugin(|names| Ok(Box::new(SkillsCatalogPlugin::new(names)?)));
     let clients = options.clients.clone();
+    let execution = options.execution.clone();
     let agent = MinimalHost::start_with(&builder, move |root, _| {
         root.provide_as::<HostPlatform>(Arc::new(host))?;
         root.provide_as::<SkillSettingsHost>(Arc::new(SkillSettingsHost(settings)))?;
         if let Some(clients) = clients {
             root.provide_as::<SessionClientsHost>(Arc::new(SessionClientsHost(clients)))?;
+        }
+        if let Some(execution) = execution {
+            root.provide_as::<ExecutionSettingsHost>(Arc::new(ExecutionSettingsHost(execution)))?;
         }
         Ok(())
     })

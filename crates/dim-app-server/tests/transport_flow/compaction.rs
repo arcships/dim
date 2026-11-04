@@ -645,8 +645,11 @@ async fn summary_reasoning_comes_from_factory_configuration() {
                 )
                 .await,
         );
-        turn(&mut client, &sid, &big(0, 600.0)).await;
-        turn(&mut client, &sid, &big(1, 600.0)).await;
+        // The two state blocks a Session now carries are part of the fixed
+        // request; keep these turns under the automatic threshold so the test
+        // still exercises the manual path.
+        turn(&mut client, &sid, &big(0, 400.0)).await;
+        turn(&mut client, &sid, &big(1, 400.0)).await;
         let reply = client
             .rpc("session.context.compact", json!({"sessionId":sid,"branchId":"main"}))
             .await;
