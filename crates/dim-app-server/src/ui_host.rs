@@ -460,6 +460,7 @@ impl UiHost {
                     replace_claim: None,
                 },
             );
+            self.finished(&connection.id);
             UiAttached { ui_id, generation }
         };
         let _ = self
