@@ -54,7 +54,7 @@ A branch's `Timeline` exists from the moment its Session is loaded until the lin
 
 A line that ended keeps its identity in `TimelineTree`: the ended head, the end record and the creation source. That state outlives the line's `Timeline`, which is why the tree, not the App Server, serves its page.
 
-No read holds a whole branch. A reader takes a page, consumes it and drops it before the next; the page size belongs to the caller. This holds for the client history read, the ended line's page and a part's fold. A copy shared by readers exists only while the readers and the branch's opening are alive together (ADR 021 D6).
+No read holds a whole branch. A reader takes a page, consumes it and drops it before the next; the page size belongs to the caller. This is the rule for the client history read, the ended line's page and a part's fold. Two readers do not follow it today and are tracked in [#1065](https://github.com/arcships/dim/issues/1065): `dim export` collects every page of the Session (`crates/dim-cli/src/export.rs`), and `chain_through` keeps the whole prefix until the fork's rest point (`crates/dim-app-server/src/agents.rs`). A copy shared by readers exists only while the readers and the branch's opening are alive together (ADR 021 D6).
 
 ## 5. Dependencies
 

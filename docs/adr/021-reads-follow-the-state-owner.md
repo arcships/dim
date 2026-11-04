@@ -42,7 +42,7 @@ A line that ended still belongs to a live Session, and `TimelineTree` owns its e
 
 ### D6. A read holds one page at a time
 
-A reader takes a page, consumes it and drops it before the next; the page size belongs to the caller. A part's fold and the ended-line read keep their state bounded by what they fold, not by the branch. The opening copy that kept `1..=head` in memory was built for replay and goes ([#1063](https://github.com/arcships/dim/issues/1063)); readers that accumulate today are listed with their issues in the design document ([#1065](https://github.com/arcships/dim/issues/1065)).
+A reader takes a page, consumes it and drops it before the next; the page size belongs to the caller. A part's fold and the ended-line read keep their state bounded by what they fold, not by the branch. Two readers accumulate today and are tracked: the opening copy that kept `1..=head` in memory was built for replay and goes ([#1063](https://github.com/arcships/dim/issues/1063)); `dim export` collects every page of a Session, and the fork check keeps the prefix it folds ([#1065](https://github.com/arcships/dim/issues/1065)).
 
 ## Consequences
 
