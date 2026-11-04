@@ -426,6 +426,7 @@
       "file": "crates/dim-agent-capabilities/src/environment_clients.rs",
       "unexpandedMacros": [
         "format",
+        "tokio::select",
         "tracing::warn",
         "vec"
       ]
@@ -8628,7 +8629,8 @@
       "from": "dim_agent_capabilities::environment_clients",
       "to": "dim_agent_types::events",
       "references": [
-        "path EventKind::InputMessage"
+        "path EventKind::TurnEnd",
+        "path EventKind::TurnStart"
       ]
     },
     {
