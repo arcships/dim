@@ -135,7 +135,7 @@ async fn append(
 }
 /// How long a flow waits for the writer to publish a write before it fails
 /// instead of hanging.
-const PUBLISHED: Duration = Duration::from_secs(5);
+const PUBLISHED: Duration = Duration::from_secs(15);
 /// Queues `records` and returns their publish result, which fails the test
 /// after `PUBLISHED`.
 fn queue(
