@@ -119,9 +119,6 @@ export default definePlugin({
         }
       })()
     }
-    const startedClear = (at: bigint) => task(`clear:${at}`, async () => {
-      if (!fold.isDecided(at) && fold.localBlocks === 0) await tree.input(branchId, writes.startClear(branchId, at))
-    })
     const interrupted = (at: bigint) => task(`interrupt:${at}`, async () => {
       if (decideInterrupt(fold, at)) await tree.input(branchId, writes.pause(branchId, 'interrupted', at))
     })
@@ -285,13 +282,13 @@ export default definePlugin({
         offset += BigInt(page.events.length)
       }
     }
-    const decideStart = (at: bigint) => {
+    const decideStart = (at: bigint) => task(`clear:${at}`, async () => {
       if (fold.isDecided(at) || fold.localBlocks > 0) return
-      const live = fold.copiedLive !== undefined ? Promise.resolve(fold.copiedLive) : inheritedLive(at)
-      void live.then(live => {
-        if (live) startedClear(at)
-      })
-    }
+      const live = fold.copiedLive ?? await inheritedLive(at)
+      if (!stopped && live && !fold.isDecided(at) && fold.localBlocks === 0) {
+        await tree.input(branchId, writes.startClear(branchId, at))
+      }
+    })
     const decideEnd = () => {
       const end = fold.turnEnd
       if (!end || !fold.running || fold.isDecided(end.sequence)) return

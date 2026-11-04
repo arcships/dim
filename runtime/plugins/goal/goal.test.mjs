@@ -87,7 +87,7 @@ async function loadGoalBranch(read, options = {}) {
   const ends = []
   const info = options.info ?? { id: branchId }
   const sessionLifecycle = options.sessionLifecycle ?? { activated: async () => true }
-  const closing = Promise.withResolvers()
+  const closing = options.closing ?? Promise.withResolvers()
   let listener
   let call
   const emit = async (type, name, data) => {
@@ -109,6 +109,7 @@ async function loadGoalBranch(read, options = {}) {
   // chain order before this branch's own; the query keeps the position of
   // each fact, which is how the part tells the two apart.
   const queryTimeline = async query => {
+    await options.query?.(query)
     const chain = [
       ...(options.inherited ?? []).map(event => ({ event, branch: B })),
       ...branch.events.map(event => ({ event, branch: branchId })),
@@ -1226,6 +1227,53 @@ test('A.6 Load: a new branch clears the goal its inherited prefix still carries'
   await flush()
   assert.equal(goal.writes.length, 1, 'the inherited objective is retired once')
   assert.match(goal.writes[0].data.blocks[0].text, /^<dim-goal kind="goal" op="clear" reason="new_branch"/)
+})
+
+test('A.6 Load: a failed inherited read writes nothing and does not escape the opening task', async t => {
+  let failed = false
+  const goal = await loadGoalBranch(async () => settingsDocument(20), {
+    branchId: 'L',
+    query: query => {
+      if (query.scope === 'chain') {
+        failed = true
+        throw Object.assign(new Error('inherited read failed'), { code: 'storage_error' })
+      }
+    },
+    before: branch => branch.commit('branch', 'start', { parent: B }),
+  })
+  t.after(() => goal.unload())
+  await flush()
+  assert.equal(failed, true)
+  assert.equal(goal.writes.length, 0)
+  await goal.emit('input', 'message', changes.set('L', 'local goal', TEXTS))
+  await flush()
+  assert.equal(goal.branch.fold.objective, 'local goal', 'the plugin remains usable after the failed read')
+})
+
+test('A.6 Load: an inherited read finishing after local input or closing cannot clear a goal', async t => {
+  for (const change of ['local input', 'closing']) {
+    await t.test(change, async t => {
+      const parent = new Branch()
+      parent.input(changes.set(B, 'parent goal', TEXTS))
+      const entered = Promise.withResolvers()
+      const resume = Promise.withResolvers()
+      const closing = Promise.withResolvers()
+      const goal = await loadGoalBranch(async () => settingsDocument(20), {
+        branchId: 'L', inherited: parent.events, closing,
+        query: async query => {
+          if (query.scope === 'chain') { entered.resolve(); await resume.promise }
+        },
+        before: branch => branch.commit('branch', 'start', { parent: B }),
+      })
+      t.after(() => goal.unload())
+      await entered.promise
+      if (change === 'local input') await goal.emit('input', 'message', changes.set('L', 'local goal', TEXTS))
+      else closing.resolve()
+      resume.resolve()
+      await flush()
+      assert.equal(goal.writes.length, 0)
+    })
+  }
 })
 
 test('A.6 Load: a cleared inherited goal is not cleared again', async t => {

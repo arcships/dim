@@ -182,6 +182,11 @@ sequenceDiagram
 
 The runtime fact is `branch/start`, the first local event of every new branch: a child branch's Timeline starts with it ([event-driven flows](../../architecture/rust-agent/event-driven-flows.md)), and a new Session's root branch starts with it. A forked Session's `main` has instead the `session/forked` its fork writes after the copied facts (A11), and Goal treats that fact the same way: `S` is its sequence. Goal's write tasks wait for `branchLifecycle.activated()`, because the fact is already in the history Goal folds while the branch loads. Goal reacts to it like any other decision: from consumed state, it registers one owned write task and returns. The task rechecks `inherited_live` and writes nothing if a local goal block already exists (a local `set`, any other change, or this `clear` itself). The write is one `clear` input (both keys retired, Append, `reason="new_branch" after="S"`), so the model on the new branch does not take the parent's goal as its own. The `clear` is a local event of the new branch, so no later compaction there shows the parent's goal as live: if `retain_from` lies after the `clear`, the keyed baseline in effect at the cut has both keys retired; otherwise the `clear` is kept verbatim after the inherited blocks. Event ids, and so `retain_from`, are stable across the inherited prefix, so a compaction record inherited from the parent replays the same way on the new branch. The load path takes the same decision when `S` is consumed and not `decided`, so a reload or restart writes it at most once. Because the task does not block the creation, the branch's initial Queue input may commit before the `clear`; the parent's blocks already tell a line of this Session that the goal belongs to another line, so it does not call `goal_update` for it, and the fold has no goal there either way, so the branch never continues.
 
+An inherited-history query runs in the same owned task as the opening clear.
+A failed query stops the decision without inferring an empty history or writing
+a clear. After the query, the task checks closing and consumed local goal
+blocks again before writing.
+
 ## 4. Timing and conflicts
 
 ### 4.1 Interrupt committed before the continuation (at most one extra turn)
