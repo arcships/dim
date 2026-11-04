@@ -426,6 +426,7 @@
       "file": "crates/dim-agent-capabilities/src/environment_clients.rs",
       "unexpandedMacros": [
         "format",
+        "tokio::select",
         "tracing::warn",
         "vec"
       ]
@@ -446,6 +447,7 @@
       "file": "crates/dim-agent-capabilities/src/environment_settings.rs",
       "unexpandedMacros": [
         "format",
+        "tokio::select",
         "tracing::warn",
         "vec"
       ]
@@ -8653,6 +8655,14 @@
     },
     {
       "from": "dim_agent_capabilities::environment_clients",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path EventKind::TurnEnd",
+        "path EventKind::TurnStart"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::environment_clients",
       "to": "dim_agent_types::prompt",
       "references": [
         "path PromptDelivery::State",
@@ -8725,16 +8735,6 @@
     },
     {
       "from": "dim_agent_capabilities::environment_settings",
-      "to": "dim_agent_capabilities::settings",
-      "references": [
-        "path SettingsChanged",
-        "path settings_changes",
-        "use crate::settings::SettingsChanged",
-        "use crate::settings::settings_changes"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::environment_settings",
       "to": "dim_agent_runtime::assembly",
       "references": [
         "path AgentBuilder",
@@ -8784,7 +8784,8 @@
       "from": "dim_agent_capabilities::environment_settings",
       "to": "dim_agent_types::events",
       "references": [
-        "path EventKind::InputMessage"
+        "path EventKind::TurnEnd",
+        "path EventKind::TurnStart"
       ]
     },
     {
