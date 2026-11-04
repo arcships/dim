@@ -40,12 +40,15 @@ A line that ended still belongs to a live Session, and `TimelineTree` owns its e
 
 `TimelineStore` is a runtime port. `Timeline` and `TimelineTree` may declare it; `Session`, `Branch` and other parts may not. `SessionStore` keeps Session files, titles, grants, fork and delete, and serves no event read for the client protocol.
 
-### D6. A read holds one page at a time
+### D6. A read fetches one storage page at a time
 
-A reader takes a page, consumes it and drops it before the next; the page size belongs to the caller. A part's fold and the ended-line read keep their state bounded by what they fold, not by the branch. Two readers accumulate today and are tracked: the opening copy that kept `1..=head` in memory was built for replay and goes ([#1063](https://github.com/arcships/dim/issues/1063)); `dim export` collects every page of a Session, and the fork check keeps the prefix it folds ([#1065](https://github.com/arcships/dim/issues/1065)).
+A read takes its facts from storage one page at a time: a page is consumed and dropped before the next is fetched, and its size belongs to the caller. This bounds what a read takes from the store, not what a consumer keeps. The query contract lets a consumer fold a prefix from pages (plugin contract §5.4), and an export materializes what it writes; both are accumulation by design, not a second read of the store.
+
+Three readers accumulate beyond one page today and are named in the design document: the opening copy that kept `1..=head` in memory was built for replay and goes ([#1063](https://github.com/arcships/dim/issues/1063)); `dim export` collects every page of a Session, and `chain_through` keeps the prefix the fork check folds ([#1065](https://github.com/arcships/dim/issues/1065)).
 
 ## Consequences
 
+- D3 and D5 are the target, not the current code: `agents.rs::history_page` still falls to `SessionStore` when a store exists (`history_page`, and `read_page` for a peer). The implementation removes that fallback, and a flow test reads the history of an idle Session and observes the acquire instead of a store read.
 - `agents.rs::history_page` loses the branch that reads `SessionStore` for a Session the process does not hold. A Session that is not loaded is loaded by the acquire, and an ended line is served by `TimelineTree` whether or not the host keeps a store.
 - `idle-unload.md` acceptance 1 and 2 describe `session.summaries` listing unloaded Sessions and their history reading in full without a restore. `summaries` reads metadata, not history; the history read acquires the Session, so the acceptance sentence is rewritten to match.
 - The page rules have one owner per path: the query path for a live line and the tree's stored read for an ended line. A divergence between them is a defect, tested against the query's page shape.

@@ -20,10 +20,12 @@ It does not restate the query contract ([plugin contract §5.4](plugin-contract.
 | An ended line's page | `TimelineTree`, through the tree's service | the stored facts of a line whose `Timeline` is gone, at the fixed head the tree owns |
 | A collaboration peer's facts | the peer Session's `Timeline`; the read acquires the peer first | the same as any live line |
 | Branches and their metadata | the store port's branch listing and head; titles from `session.summaries` | branch records and title metadata, not events |
-| Session files, titles, grants, fork, delete | `SessionStore` | not events |
+| Session files, titles, grants, fork, delete | `SessionStore` | not events; today it also exposes the store's event reads, which the target removes from the client path |
 | A database file | `dimcode --export-timeline` | the database, with nothing mounted |
 
 A caller does not choose a read because it is cheaper; it reads through the object that owns the state. When no such object exists, the read is the ended line's row or the export, and says so.
+
+This table is the target. Today `AgentIndex::history_page` and `AgentIndex::read_page` still fall to `SessionStore` whenever a store exists (`crates/dim-app-server/src/agents.rs`), so the ended line and the peer read reach the store through the App Server. The implementation on `dim/1039-read-ownership` removes those fallbacks; until it lands, the table describes where these reads are going, not where they go.
 
 ## 3. Read paths
 
@@ -54,7 +56,9 @@ A branch's `Timeline` exists from the moment its Session is loaded until the lin
 
 A line that ended keeps its identity in `TimelineTree`: the ended head, the end record and the creation source. That state outlives the line's `Timeline`, which is why the tree, not the App Server, serves its page.
 
-No read holds a whole branch. A reader takes a page, consumes it and drops it before the next; the page size belongs to the caller. This is the rule for the client history read, the ended line's page and a part's fold. Two readers do not follow it today and are tracked in [#1065](https://github.com/arcships/dim/issues/1065): `dim export` collects every page of the Session (`crates/dim-cli/src/export.rs`), and `chain_through` keeps the whole prefix until the fork's rest point (`crates/dim-app-server/src/agents.rs`). A copy shared by readers exists only while the readers and the branch's opening are alive together (ADR 021 D6).
+A read fetches from storage one page at a time: a page is consumed and dropped before the next is fetched, and the page size belongs to the caller. This bounds what a read takes from the store, not what a consumer keeps. The query contract lets a consumer fold a prefix from pages (plugin contract §5.4), and an export materializes what it writes.
+
+Three readers accumulate beyond one page today: the opening copy ([#1063](https://github.com/arcships/dim/issues/1063)), `dim export` (`crates/dim-cli/src/export.rs`) and `chain_through` for the fork check (`crates/dim-app-server/src/agents.rs`), the last two in [#1065](https://github.com/arcships/dim/issues/1065). A copy shared by readers exists only while the readers and the branch's opening are alive together (ADR 021 D6).
 
 ## 5. Dependencies
 
@@ -81,9 +85,9 @@ Not allowed:
 
 - **Runtime (opening):** remove the shared decoded copy of a branch's opening, which kept `1..=head` in memory for replay and now has no regular reader ([#1063](https://github.com/arcships/dim/issues/1063)).
 - **Runtime (TimelineStore owner):** the ended line's page and the port's other reads are composed from `query` and `batch_end`; where the tree needs a selection the port cannot express, the port gains it in its own contract.
-- **App Server (session history owner):** `session.history` acquires the Session and never falls to `SessionStore` for a Session the process does not hold; an ended line is served by the tree whether or not the host keeps a store. `idle-unload.md` acceptance 1 and 2 are rewritten: `summaries` reads metadata, and a history read acquires the Session.
+- **App Server (session history owner):** `session.history` acquires the Session and never falls to `SessionStore` for a Session the process does not hold; an ended line is served by the tree whether or not the host keeps a store. Acceptance: the client path has no call to `SessionStore`'s event reads, and a flow test reads the history of an idle Session and observes the acquire rather than a store read. `idle-unload.md` acceptance 1 and 2 are rewritten: `summaries` reads metadata, and a history read acquires the Session.
 - **TimelineTree owner:** the restore reads of `branch/ended`, `branch/end`, `branch/create` and the creation check move to the port's query, so the tree reads selections instead of ranges and decodes only the events it selects ([#1064](https://github.com/arcships/dim/issues/1064)).
-- **CLI (export owner):** `dim export` writes each page as it arrives instead of collecting the whole Session ([#1065](https://github.com/arcships/dim/issues/1065)).
+- **CLI (export owner):** `dim export` collects every page of the Session today; it writes each page as it arrives instead, and `chain_through` folds its prefix page by page ([#1065](https://github.com/arcships/dim/issues/1065)).
 
 ## 7. Rule check
 
