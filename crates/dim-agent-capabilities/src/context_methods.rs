@@ -75,7 +75,10 @@ async fn compact(branch: &Branch, cancel: &CancellationToken) -> Result<Value, R
     let mut watch = publication.watch();
     let mut after = command;
     loop {
-        let head = watch.borrow_and_update().0;
+        // A concurrent append (a prompt state adoption) can advance the
+        // publication head before this branch's projection has applied it;
+        // read only what the branch has and wait for the next publication.
+        let head = watch.borrow_and_update().0.min(branch.sequence());
         if head > after {
             let result = branch
                 .local(after + 1..=head)
