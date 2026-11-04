@@ -34,8 +34,7 @@ async fn submit(client: &mut Client, id: &str) {
 }
 
 async fn result(session: &dim_agent_runtime::Session) -> ToolResult {
-    session
-        .history("main", None)
+    chain_events(session, "main", ..)
         .await
         .unwrap()
         .iter()
