@@ -734,6 +734,46 @@ fn tui_goal_reads_the_line_before_it_picks_set_or_edit() {
     daemon.join().unwrap();
 }
 
+#[test]
+fn tui_goal_reads_older_state_outside_the_initial_turn_window() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["session.methods", "session.history.latestTurn"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let table = wire.read("session.methods");
+        wire.reply(&table, methods(true));
+        let history = wire.read("session.history");
+        assert_eq!(history["params"]["latestTurn"], true);
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"nextBefore":5,"done":true}),
+        );
+        started(wire);
+        let history = wire.read("session.history");
+        assert_eq!(history["params"]["after"], 0);
+        wire.reply(&history, page(8, vec![set(1, "Existing objective")]));
+        let write = wire.read("session.goal.edit");
+        assert_eq!(write["params"]["objective"], "New objective");
+        wire.reply(&write, json!({"sequence":9}));
+        let history = wire.read("session.history");
+        assert_eq!(history["params"]["after"], 8);
+        wire.reply(&history, page(9, vec![edit(9, "New objective")]));
+        drained(wire);
+    });
+    let mut command = home.command();
+    command.args(["--resume", "session"]);
+    sized(&mut command, 100, 32);
+    let mut terminal = Terminal::launch_tui(command);
+    terminal.until("test / model");
+    terminal.write(b"/goal New objective\r");
+    terminal.until("Goal edited on main · active");
+    terminal.until("  New objective");
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+}
+
 /// A read the command needs fails. `/goal OBJECTIVE` reports it and sends no
 /// goal method, instead of deciding from the fold it already has.
 #[test]
@@ -761,7 +801,19 @@ fn tui_goal_reports_a_failed_read_and_sends_nothing() {
         let discovery = until_request(wire, "session.history");
         failed(wire, &discovery);
 
-        let read = until_request(wire, "session.methods");
+        let read = loop {
+            let request = wire.read_any();
+            match request["method"].as_str() {
+                Some("session.history") => {
+                    assert_eq!(request["params"]["branchId"], "line-1");
+                    failed(wire, &request);
+                }
+                Some("session.context.usage") => wire.reply(&request, usage()),
+                Some("account.providers") => wire.reply(&request, json!([])),
+                Some("session.methods") => break request,
+                other => panic!("unexpected request {other:?}"),
+            }
+        };
         wire.reply(&read, methods(true));
         let read = until_request(wire, "session.history");
         assert_eq!(read["params"]["branchId"], "line-1");

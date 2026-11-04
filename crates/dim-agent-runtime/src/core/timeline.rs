@@ -1003,6 +1003,27 @@ impl Timeline {
     pub async fn batch_end(&self, sequence: u64) -> Result<()> {
         self.0.store.batch_end(&self.0.key, sequence).await
     }
+    /// A native whole-batch page below `before`, pinned at a published
+    /// batch boundary. `window_start` must start a batch. Batch metadata is
+    /// retained for transport byte trimming, not exported by the event query.
+    #[service(skip)]
+    pub async fn page_before(
+        &self,
+        before: u64,
+        limit: usize,
+        through: u64,
+        window_start: u64,
+    ) -> Result<Vec<StoredEvent>> {
+        if through > self.sequence() {
+            return Err(AgentError::InvalidInput(
+                "future published Timeline cursor".into(),
+            ));
+        }
+        self.0
+            .store
+            .read_page_before(&self.0.key, before, limit, through, window_start)
+            .await
+    }
     /// The branch chain the context covers, root first: each ancestor to its
     /// fixed cut and the local branch to `through`.
     #[service(skip)]

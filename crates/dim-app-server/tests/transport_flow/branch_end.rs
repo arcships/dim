@@ -47,20 +47,147 @@ fn end(session: &str, branch: &str) -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_user_ends_a_line_and_a_v3_client_reads_both_sides() {
-    let (server, agent) = launch_with_agent(Arc::new(MockTools), ServerConfig::default()).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    user_end_history(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_user_ends_a_native_line_and_a_v3_client_reads_both_sides() {
+    user_end_history(true).await;
+}
+
+async fn user_end_history(native: bool) {
+    use super::history_window::{BatchProbe, BatchProbePlugin};
+
+    let directory = std::env::temp_dir().join(format!("dim-end-{}", uuid::Uuid::new_v4()));
+    let batch = Arc::new(BatchProbe::default());
+    let probe = batch.clone();
+    let (server, agent) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            database_path: native.then(|| directory.join("dimcode.sqlite")),
+            ..Default::default()
+        },
+        |builder| {
+            builder.require_feature(
+                Feature::new("end-history-batch").branch("end-history-batch", move |names| {
+                    Ok(Box::new(BatchProbePlugin::new(names, probe.clone())?))
+                }),
+            );
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, native, 3).await;
     let created = client.rpc("session.create", create_with_branch()).await;
     assert_ok(&created);
     let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
     let session = agent.get_session(&id).unwrap();
     let child = open_tool_line(&mut client, &session, &id).await;
+    let timeline = batch.0.lock().unwrap().clone().unwrap();
+    let appended = timeline
+        .append_batch_registered(
+            ["first in batch", "second in batch"]
+                .into_iter()
+                .map(|text| {
+                    EventKind::InputMessage(dim_agent_types::InputMessageData::text(
+                        text,
+                        Some(InputMode::Append),
+                    ))
+                    .into()
+                })
+                .collect(),
+            |_| Ok(()),
+        )
+        .unwrap();
     let idle = client
         .rpc("session.idle", json!({"sessionId":id,"branchId":child}))
         .await;
     assert_ok(&idle);
+    let pin = appended[1].sequence;
+    let open = history_pages(&mut client, &id, &child, pin).await;
+    let mut windows = Vec::new();
+    if native {
+        for fields in [
+            json!({"latestTurn":true,"limit":1}),
+            json!({"latestTurn":true,"limit":4096}),
+            json!({"before":pin,"limit":1}),
+            json!({"before":appended[0].sequence,"limit":1}),
+        ] {
+            let mut params = json!({"sessionId":id,"branchId":child,"through":pin});
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            let reply = client.rpc("session.history", params.clone()).await;
+            assert_ok(&reply);
+            if fields["latestTurn"] == true && fields["limit"] == 1 {
+                assert_eq!(reply["result"]["events"].as_array().unwrap().len(), 2);
+                assert_eq!(reply["result"]["nextBefore"], appended[0].sequence);
+            }
+            if fields["before"].is_number() {
+                assert!(
+                    reply["result"]["events"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|event| {
+                            event["sequence"].as_u64().unwrap() < appended[0].sequence
+                        })
+                );
+            }
+            windows.push((params, reply["result"].clone()));
+        }
+    }
     let ended = client.rpc("session.branch_end", end(&id, &child)).await;
     assert_ok(&ended);
     assert_eq!(ended["result"], json!({}));
+    assert_eq!(history_pages(&mut client, &id, &child, pin).await, open);
+    for (params, expected) in windows {
+        let reply = client.rpc("session.history", params).await;
+        assert_ok(&reply);
+        assert_eq!(
+            reply["result"], expected,
+            "ending preserves the pinned window"
+        );
+    }
+    if native {
+        let invalid = client
+            .rpc(
+                "session.history",
+                json!({
+                    "sessionId":id,"branchId":child,"latestTurn":true,
+                    "through":appended[0].sequence
+                }),
+            )
+            .await;
+        assert_eq!(invalid["error"]["code"], -32602, "{invalid}");
+    }
+    history_pages(&mut client, &id, &child, session.sequence(&child).unwrap()).await;
+    for after in [0, appended[0].sequence] {
+        let invalid = client
+            .rpc(
+                "session.history",
+                json!({"sessionId":id,"branchId":child,"after":after,"through":appended[0].sequence}),
+            )
+            .await;
+        assert_eq!(invalid["error"]["code"], -32602, "{invalid}");
+    }
+    let invalid = client
+        .rpc(
+            "session.history",
+            json!({"sessionId":id,"branchId":child,"after":appended[0].sequence,"through":pin}),
+        )
+        .await;
+    assert_eq!(invalid["error"]["code"], -32602, "{invalid}");
+    let whole = client
+        .rpc(
+            "session.history",
+            json!({"sessionId":id,"branchId":child,"after":appended[0].sequence-1,"through":pin,"limit":1}),
+        )
+        .await;
+    assert_ok(&whole);
+    assert_eq!(whole["result"]["events"].as_array().unwrap().len(), 2);
+    assert_eq!(whole["result"]["nextAfter"], pin);
+    assert_eq!(whole["result"]["done"], true);
     let main = branch_events(&session, "main", ..).await.unwrap();
     let result = main
         .iter()
@@ -150,6 +277,50 @@ async fn a_user_ends_a_line_and_a_v3_client_reads_both_sides() {
     );
     server.shutdown();
     server.join().await.unwrap();
+    if native {
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+async fn history_pages(client: &mut Client, id: &str, branch: &str, through: u64) -> Vec<Value> {
+    let full = client
+        .rpc(
+            "session.history",
+            json!({"sessionId":id,"branchId":branch,"through":through,"limit":256}),
+        )
+        .await;
+    assert_ok(&full);
+    assert_eq!(full["result"]["done"], true);
+    let mut after = 0;
+    let mut events = Vec::new();
+    while after < through {
+        let page = client
+            .rpc(
+                "session.history",
+                json!({"sessionId":id,"branchId":branch,"through":through,"after":after,"limit":1}),
+            )
+            .await;
+        assert_ok(&page);
+        let result = &page["result"];
+        assert_eq!(result["through"], through);
+        let next = result["nextAfter"].as_u64().unwrap();
+        assert!(next > after && next <= through, "{page}");
+        assert_eq!(result["done"], next == through);
+        events.extend(result["events"].as_array().unwrap().iter().cloned());
+        after = next;
+    }
+    assert_eq!(events, *full["result"]["events"].as_array().unwrap());
+    let empty = client
+        .rpc(
+            "session.history",
+            json!({"sessionId":id,"branchId":branch,"through":through,"after":through,"limit":1}),
+        )
+        .await;
+    assert_ok(&empty);
+    assert_eq!(empty["result"]["events"], json!([]));
+    assert_eq!(empty["result"]["nextAfter"], through);
+    assert_eq!(empty["result"]["done"], true);
+    events
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

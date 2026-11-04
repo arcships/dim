@@ -307,7 +307,7 @@ A line that has `branch/end` but whose parent has no `branch/ended` for it is no
 
 **After the end:**
 
-- The line stays in the branch directory, and its history stays readable from the store, through `session.history` (v3) and through the tool's `read`. Its head never moves.
+- The line stays in the branch directory, and its history stays readable through the tree's `page` service, used by forward `session.history` (v3) and the tool's `read`. Its head never moves. An optional `through` pins a page no later than that head; both `after` and `through` must end an atomic batch, even for an empty page. The default upper bound is the line's head. Backward history windows and their anchor queries also read through TimelineTree, under the [history window contract](appserver/session-history-window.md#53-where-the-reads-live).
 - A fork copies directory rows and main's events as it does today. A line that ended before the fork point is inactive in the fork too, because its `branch/ended` is in the copied prefix.
 - Deleting the Session removes the line along with it.
 - Session close and idle unload are not ends: lines restore as open.
@@ -464,7 +464,7 @@ The panel is separate from the tasks panel, which lists background commands, mem
 | Module | Change | Why |
 | --- | --- | --- |
 | [Design rules §2](../architecture/rust-agent/principles.md#2-作用域的含义) | Rewritten: lines of one subject, shared facts, parent and child as the only communication relation, and the shared interaction surface. Relations row: "only between parent and child". Session row: adds "end" | The current text, "equal lines, the relation only records the source", has no communication relation |
-| TimelineTree | The identity block in `first_input` for every source. `TreeCommands.end(id, source)` and `TreeCommands.page(id, after, limit)`. `TimelineInfo.source`, filled from the parent's `branch/create` (§5). The end flow, refusing input once a line is ending, `branch/ended`, the restore rule, and reads of ended lines | It owns the line lifecycle and the opening input |
+| TimelineTree | The identity block in `first_input` for every source. `TreeCommands.end(id, source)` and `TreeCommands.page(id, after, limit, through?)`. `TimelineInfo.source`, filled from the parent's `branch/create` (§5). The end flow, refusing input once a line is ending, `branch/ended`, the restore rule, and reads of ended lines | It owns the line lifecycle and the opening input |
 | TreeTimeline | Consumes `branch/end`, plus the line's next turn end for an end issued by a tool call, and routes them to TimelineTree | It routes `branch/create` the same way |
 | BranchTool | The action-based tool, plus the new BranchLine branch part | The tool's actions and one line's view of its lines |
 | Session facade | `Session::end_branch(id, source)`. An ended line's head is `Session::sequence`; its history is read at that fixed head through `TreeCommands.page` | §17 |
@@ -479,7 +479,7 @@ New public content:
 
 - two events;
 - one RPC method;
-- two TreeCommands methods: `end(id, source)` and `page(id, after, limit)`;
+- two TreeCommands methods: `end(id, source)` and `page(id, after, limit, through?)`;
 - `TimelineInfo.source`, read by BranchLine and by Goal;
 - the `branch` tool's new input.
 

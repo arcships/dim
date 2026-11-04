@@ -1084,17 +1084,6 @@ impl SqliteTimelineStore {
     }
 }
 
-/// The newest turn at a watermark and the first event a window over it must
-/// include: the turn start, or an input the turn consumed when that is older
-/// (session-history-window §4.2).
-#[derive(Debug, Clone, Copy)]
-pub struct TurnWindow {
-    /// `None` when the branch has no `turn/start` at or below the watermark.
-    pub turn_start: Option<u64>,
-    /// The window's first sequence, always a batch start. `1` without a turn.
-    pub window_start: u64,
-}
-
 /// Session directory service; Agent hosting owns the profile and owner meaning.
 #[derive(Clone)]
 pub struct SessionStore {
@@ -1313,40 +1302,34 @@ impl SessionStore {
             .map(|record| record.event)
             .collect())
     }
+}
+
+impl SqliteTimelineStore {
     /// The newest events below `before` inside `window_start..=through`, whole
     /// batches at both ends (session-history-window §4.2). A `before` inside a
     /// batch clamps down to the batch end; a `through` inside one fails like
     /// the forward read. Every event carries its batch end, so the caller can
     /// trim by bytes without splitting one.
-    pub async fn read_page_before(
+    async fn page_before(
         &self,
-        id: &str,
-        branch: &str,
+        key: &TimelineKey,
         before: u64,
         limit: usize,
         through: u64,
         window_start: u64,
     ) -> Result<Vec<StoredEvent>> {
-        let key = TimelineKey {
-            session_id: id.into(),
-            branch_id: branch.into(),
-        };
-        if through > 0 {
-            self.timeline
-                .read_records(&key, through..=through, RequestBodies::Unused)
-                .await?;
-        }
+        self.batch_end(key, through).await?;
         let top = before.saturating_sub(1).min(through);
         if top == 0 || top < window_start || limit == 0 {
             return Ok(vec![]);
         }
-        let Some(at_top) = self.read_any(&key, top..=top).await?.pop() else {
+        let Some(at_top) = self.read_any(key, top..=top).await?.pop() else {
             return Ok(vec![]);
         };
         let end = if at_top.batch_end <= top {
             at_top.batch_end
         } else {
-            self.previous_batch_end(&key, at_top.event.sequence, at_top.batch_end, window_start)
+            self.previous_batch_end(key, at_top.event.sequence, at_top.batch_end, window_start)
                 .await?
         };
         if end < window_start {
@@ -1358,8 +1341,7 @@ impl SessionStore {
             .max(window_start);
         loop {
             let page = self
-                .timeline
-                .read_records(&key, low..=end, RequestBodies::Unused)
+                .read_records(key, low..=end, RequestBodies::Unused)
                 .await?;
             let Some(first) = page.first() else {
                 return Ok(vec![]);
@@ -1368,7 +1350,7 @@ impl SessionStore {
                 return Ok(page);
             }
             let start = self
-                .batch_start(&key, first.event.sequence, first.batch_end, window_start)
+                .batch_start(key, first.event.sequence, first.batch_end, window_start)
                 .await?;
             if start >= low {
                 return Ok(page);
@@ -1383,9 +1365,9 @@ impl SessionStore {
         key: &TimelineKey,
         range: RangeInclusive<u64>,
     ) -> Result<Vec<StoredEvent>> {
-        let mut reader = self.timeline.reader(RequestBodies::Unused);
-        let records = read_range(&self.timeline.db, &mut reader, key, range, false).await;
-        self.timeline.finish(reader);
+        let mut reader = self.reader(RequestBodies::Unused);
+        let records = read_range(&self.db, &mut reader, key, range, false).await;
+        self.finish(reader);
         records
     }
     /// The end of the batch before the one holding `sequence..=batch_end`,
@@ -1446,6 +1428,9 @@ impl SessionStore {
             probe = low - 1;
         }
     }
+}
+
+impl SessionStore {
     /// The stored events of `event_ids` in one statement; ids the store
     /// does not hold are absent.
     pub async fn read_events(
@@ -3261,6 +3246,19 @@ impl TimelineStore for SqliteTimelineStore {
     ) -> BoxFuture<'a, Result<Vec<StoredEvent>>> {
         Box::pin(async move {
             self.page(key, after, limit, through, RequestBodies::Unused)
+                .await
+        })
+    }
+    fn read_page_before<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        before: u64,
+        limit: usize,
+        through: u64,
+        window_start: u64,
+    ) -> BoxFuture<'a, Result<Vec<StoredEvent>>> {
+        Box::pin(async move {
+            self.page_before(key, before, limit, through, window_start)
                 .await
         })
     }

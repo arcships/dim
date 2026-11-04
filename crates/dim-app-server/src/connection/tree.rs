@@ -193,9 +193,9 @@ impl Connection {
         }
         if window {
             let turn = if params.latest_turn {
-                turn_window(&session, branch, through).await?
+                turn_window(&rpc.index, &params.session_id, branch, through).await?
             } else {
-                crate::storage::TurnWindow {
+                TurnWindow {
                     turn_start: None,
                     window_start: 1,
                 }
@@ -362,17 +362,23 @@ fn history_error(error: AgentError) -> RpcError {
     }
 }
 
+struct TurnWindow {
+    turn_start: Option<u64>,
+    window_start: u64,
+}
+
 /// The newest turn at `through` and the first sequence a window over it
 /// includes (session-history-window §4.2): the turn's start, and the messages
 /// its first request consumed or, when it has yet to take one, the newest
 /// message at or below the start.
 async fn turn_window(
-    session: &Session,
+    index: &crate::agents::AgentIndex,
+    session_id: &str,
     branch: &str,
     through: u64,
-) -> Result<crate::storage::TurnWindow, RpcError> {
+) -> Result<TurnWindow, RpcError> {
     if through == 0 {
-        return Ok(crate::storage::TurnWindow {
+        return Ok(TurnWindow {
             turn_start: None,
             window_start: 1,
         });
@@ -394,8 +400,9 @@ async fn turn_window(
         limit: std::num::NonZeroU64::new(TURN_WINDOW_PAGE).expect("a page keeps one event"),
         offset: 0,
     };
-    let turned = session
-        .query(
+    let turned = index
+        .history_query(
+            session_id,
             branch,
             page(
                 vec!["turn/start".into()],
@@ -407,13 +414,14 @@ async fn turn_window(
         .await
         .map_err(history_error)?;
     let Some(turn_start) = turned.events.first().map(|event| event.sequence) else {
-        return Ok(crate::storage::TurnWindow {
+        return Ok(TurnWindow {
             turn_start: None,
             window_start: 1,
         });
     };
-    let first_step = session
-        .query(
+    let first_step = index
+        .history_query(
+            session_id,
             branch,
             page(
                 vec!["step/model-start".into()],
@@ -433,8 +441,9 @@ async fn turn_window(
     if let Some(first_step) = first_step {
         let mut from = turn_start.saturating_add(1);
         loop {
-            let reply = session
-                .query(
+            let reply = index
+                .history_query(
+                    session_id,
                     branch,
                     page(
                         vec!["input/consumed".into()],
@@ -455,8 +464,9 @@ async fn turn_window(
                 let EventKind::InputConsumed(data) = &event.kind else {
                     unreachable!("the read selects consumed inputs")
                 };
-                let input = session
-                    .query(
+                let input = index
+                    .history_query(
+                        session_id,
                         branch,
                         page(
                             Vec::new(),
@@ -479,8 +489,9 @@ async fn turn_window(
         }
     }
     if !consumed {
-        let newest = session
-            .query(
+        let newest = index
+            .history_query(
+                session_id,
                 branch,
                 page(
                     vec!["input/message".into()],
@@ -495,7 +506,7 @@ async fn turn_window(
             window_start = window_start.min(sequence);
         }
     }
-    Ok(crate::storage::TurnWindow {
+    Ok(TurnWindow {
         turn_start: Some(turn_start),
         window_start,
     })
@@ -508,7 +519,7 @@ async fn turn_window(
 fn history_window(
     stored: Vec<dim_agent_runtime::StoredEvent>,
     through: u64,
-    turn: crate::storage::TurnWindow,
+    turn: TurnWindow,
     version: u32,
 ) -> Result<wire::HistoryResult, RpcError> {
     let mut items = Vec::with_capacity(stored.len());

@@ -24,7 +24,7 @@ The Dispatcher delivers live events only and no longer reads history. A part reb
 
 ### D4. Batch structure stays on the store port
 
-Whether a sequence ends an atomic batch is storage structure, not event content. The check stays on the store port and is not a field of the query.
+Whether a sequence ends an atomic batch is storage structure, not event content. The check stays on the store port and is not a field of the query. Native batch-aware pagination forwards through the Timeline or the ended branch's TimelineTree; its batch metadata is not added to the event query or exported to other languages.
 
 ### D5. The checkpoint names its resume event
 

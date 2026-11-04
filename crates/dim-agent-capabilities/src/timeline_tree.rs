@@ -7,7 +7,8 @@ use dim_agent_runtime::{
     AgentError, Branch, BranchLifecycle, BranchOptions, Dispatcher, Names, Result, SessionIdentity,
     StoredBranch, StoredEvent, Timeline, TimelineContext, TimelineFactory, TimelineIdentity,
     TimelineInfo, TimelineKey, TimelineQuery, TimelineQueryDirection, TimelineQueryOrderBy,
-    TimelineQueryPredicate, TimelineQueryScope, TimelineStore, TimelineTreeControl, rebuild_facts,
+    TimelineQueryPredicate, TimelineQueryReply, TimelineQueryScope, TimelineStore,
+    TimelineTreeControl, rebuild_facts,
 };
 use dim_agent_types::*;
 use futures_util::{FutureExt, future::join_all};
@@ -179,18 +180,93 @@ impl TreeCommands {
             .end(&id, source)
             .await
     }
-    /// One page of `id`'s committed batches; an ended line reads at its
-    /// fixed head.
+    /// One page of `id`'s committed batches, bounded by `through` or the
+    /// published head (fixed once ended). Both cursors must end a batch.
     pub async fn page(
         &self,
         id: String,
         after: u64,
         limit: usize,
+        through: Option<u64>,
     ) -> std::result::Result<Vec<Arc<AgentEvent>>, AgentError> {
         self.tree
             .upgrade()
             .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?
-            .page(&id, after, limit)
+            .page(&id, after, limit, through)
+            .await
+    }
+    /// A published own-branch query, including after the branch ends.
+    /// Chain scope, `from_event` and publishing-tail reads are not supported.
+    #[service(skip)]
+    pub async fn query(&self, id: &str, query: TimelineQuery) -> Result<TimelineQueryReply> {
+        if query.scope != TimelineQueryScope::Branch
+            || query.include_publishing
+            || query.from_event.is_some()
+        {
+            return Err(AgentError::InvalidInput(
+                "tree queries read one published branch".into(),
+            ));
+        }
+        query.validate()?;
+        let tree = self
+            .tree
+            .upgrade()
+            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?;
+        if let Some(context) = tree.owned_context(id) {
+            return context.branch().query(query).await;
+        }
+        let head = tree
+            .ended_head(id)
+            .ok_or_else(|| AgentError::UnknownBranch(id.into()))?;
+        let (from, through) = match query.direction {
+            TimelineQueryDirection::Ascending => (query.from_sequence.unwrap_or(1), head),
+            TimelineQueryDirection::Descending => {
+                (1, query.from_sequence.unwrap_or(head).min(head))
+            }
+        };
+        let key = TimelineKey {
+            session_id: tree.session_id.clone(),
+            branch_id: id.into(),
+        };
+        let page = tree.store.query(&key, &query, from, through).await?;
+        Ok(TimelineQueryReply {
+            events: page.events,
+            positions: page.positions,
+            through: head,
+        })
+    }
+    /// See [`Timeline::page_before`]. Ended branches use their fixed head.
+    #[service(skip)]
+    pub async fn page_before(
+        &self,
+        id: &str,
+        before: u64,
+        limit: usize,
+        through: u64,
+        window_start: u64,
+    ) -> Result<Vec<StoredEvent>> {
+        let tree = self
+            .tree
+            .upgrade()
+            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?;
+        if let Some(context) = tree.owned_context(id) {
+            return context
+                .timeline()
+                .page_before(before, limit, through, window_start)
+                .await;
+        }
+        let head = tree
+            .ended_head(id)
+            .ok_or_else(|| AgentError::UnknownBranch(id.into()))?;
+        if through > head {
+            return Err(AgentError::InvalidInput("future Timeline cursor".into()));
+        }
+        let key = TimelineKey {
+            session_id: tree.session_id.clone(),
+            branch_id: id.into(),
+        };
+        tree.store
+            .read_page_before(&key, before, limit, through, window_start)
             .await
     }
     /// The head a read of `id` ends at: fixed once ended, published while
@@ -731,15 +807,25 @@ impl TimelineTree {
             ready.send_replace(Some(outcome));
         });
     }
-    async fn page(&self, id: &str, after: u64, limit: usize) -> Result<Vec<Arc<AgentEvent>>> {
-        let through = self
+    async fn page(
+        &self,
+        id: &str,
+        after: u64,
+        limit: usize,
+        through: Option<u64>,
+    ) -> Result<Vec<Arc<AgentEvent>>> {
+        let head = self
             .head(id)
             .ok_or_else(|| AgentError::UnknownBranch(id.into()))?;
-        if through <= after {
-            return Ok(Vec::new());
+        let through = through.unwrap_or(head);
+        if through > head || after > through {
+            return Err(AgentError::InvalidInput("future Timeline cursor".into()));
         }
         if let Some(context) = self.owned_context(id) {
-            return open_page(context.timeline(), after, limit, through).await;
+            let timeline = context.timeline();
+            timeline.batch_end(after).await?;
+            timeline.batch_end(through).await?;
+            return open_page(timeline, after, limit, through).await;
         }
         let key = TimelineKey {
             session_id: self.session_id.clone(),
@@ -2551,7 +2637,7 @@ impl BranchTool {
         let after = input.after.unwrap_or(0);
         let events = self
             .tree
-            .page(target.id.clone(), after, limit)
+            .page(target.id.clone(), after, limit, None)
             .await
             .map_err(|error| HostError::failed(error.to_string()))?;
         let head = self

@@ -1066,7 +1066,7 @@ async fn node_goal_evaluator_judge_creates_an_evaluator_and_completes_on_done() 
     let line_events = session
         .session_service::<dim_agent_capabilities::timeline_tree::TreeCommands>()
         .unwrap()
-        .page(child.to_owned(), 0, 256)
+        .page(child.to_owned(), 0, 256, None)
         .await
         .unwrap();
     assert_eq!(

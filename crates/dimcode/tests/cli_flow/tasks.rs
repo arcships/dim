@@ -1,6 +1,113 @@
 use super::*;
 
 #[test]
+fn tui_loads_the_latest_turn_then_earlier_pages_only_on_demand() {
+    fn message(sequence: u64, text: &str) -> Vec<Value> {
+        let id = format!("input-{sequence}");
+        vec![
+            fact(
+                &id,
+                sequence,
+                1,
+                "input",
+                "message",
+                json!({"mode":"queue","user":{"content":[{"type":"text","text":text}]}}),
+            ),
+            fact(
+                &format!("applied-{sequence}"),
+                sequence + 1,
+                1,
+                "input",
+                "applied",
+                json!({"input_id":id,"mode":"queue"}),
+            ),
+            fact(
+                &format!("consumed-{sequence}"),
+                sequence + 2,
+                1,
+                "input",
+                "consumed",
+                json!({"input_id":id}),
+            ),
+        ]
+    }
+
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let (ready, readiness) = std::sync::mpsc::channel();
+        let (reply, replies) = std::sync::mpsc::channel();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&["session.history.latestTurn"]);
+            let attach = wire.read("session.attach");
+            let mut record = attach_record(&attach);
+            record["sequence"] = json!(100);
+            wire.reply(&attach, record);
+            let history = wire.read("session.history");
+            assert_eq!(history["params"], json!({"sessionId":"session","branchId":"main","latestTurn":true,"through":100,"limit":4096}));
+            for event_value in message(101, "live prompt") {
+                event(wire, "main", event_value);
+            }
+            wire.reply(&history, json!({"events":message(70,"newest prompt"),"through":100,"nextAfter":100,"nextBefore":70,"done":false}));
+            wire.no_context();
+            let providers = wire.read("account.providers");
+            wire.reply(&providers, json!([]));
+            wire.quiet(Duration::from_millis(150));
+            ready.send(()).unwrap();
+
+            for (before, latest, events, next, done) in [
+                (70, true, message(40, "earlier turn section"), 40, true),
+                (40, false, vec![], 20, false),
+                (20, false, message(1, "oldest prompt"), 1, true),
+            ] {
+                let request = wire.read("session.history");
+                assert_eq!(request["params"]["before"], before);
+                assert_eq!(request["params"]["through"], 100);
+                assert_eq!(request["params"]["after"], Value::Null);
+                assert_eq!(request["params"]["latestTurn"], if latest { json!(true) } else { Value::Null });
+                ready.send(()).unwrap();
+                replies.recv_timeout(PATIENCE).unwrap();
+                wire.reply(&request, json!({"events":events,"through":100,"nextAfter":before - 1,"nextBefore":next,"done":done}));
+                wire.quiet(Duration::from_millis(100));
+                ready.send(()).unwrap();
+            }
+            wire.hold();
+        });
+        let mut command = home.command();
+        command.args(["--resume", "session"]);
+        if fullscreen {
+            command.arg("--fullscreen");
+        }
+        let mut terminal = Terminal::launch_tui(command);
+        terminal.until("newest prompt");
+        terminal.until("live prompt");
+        readiness.recv_timeout(PATIENCE).unwrap();
+        terminal.write(b"/timeline\r");
+        terminal.until("Load earlier history");
+        for page in 0..3 {
+            terminal.write(b"\x1b[H\r");
+            readiness.recv_timeout(PATIENCE).unwrap();
+            terminal.until("Loading earlier history");
+            reply.send(()).unwrap();
+            terminal.until(if page == 2 {
+                "oldest prompt"
+            } else {
+                "Load earlier history"
+            });
+            readiness.recv_timeout(PATIENCE).unwrap();
+        }
+        terminal.write(b"\x1b");
+        home.kill(&terminal);
+        terminal.wait();
+        daemon.join().unwrap();
+        assert!(
+            !terminal
+                .transcript
+                .contains("Invalid backward history cursor")
+        );
+    }
+}
+
+#[test]
 #[ignore = "requires DIM_TEST_APP_SERVER pointing to the built production App Server"]
 fn native_tui_stop_all_settles_the_member_and_reports_cancellation_to_the_leader() {
     fn rpc(stream: &mut BufReader<UnixStream>, method: &str, params: Value) -> Value {

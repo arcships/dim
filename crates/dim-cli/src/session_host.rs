@@ -500,6 +500,7 @@ struct Created {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Attached {
+    sequence: Option<u64>,
     #[serde(default)]
     model: Option<ModelId>,
     #[serde(default)]
@@ -535,6 +536,7 @@ struct History {
     through: u64,
     next_after: u64,
     done: bool,
+    next_before: Option<u64>,
 }
 
 impl History {
@@ -553,6 +555,37 @@ impl History {
         let mut sequence = after;
         for event in &page.events {
             if event.sequence <= sequence || event.sequence > page.next_after {
+                return Err("History event is outside its page or unordered".into());
+            }
+            sequence = event.sequence;
+        }
+        Ok(page)
+    }
+
+    fn backward(
+        value: serde_json::Value,
+        before: Option<u64>,
+        through: Option<u64>,
+    ) -> Result<Self, String> {
+        let page: Self = serde_json::from_value(value)
+            .map_err(|error| format!("Invalid history reply: {error}"))?;
+        let top = before.unwrap_or_else(|| page.through.saturating_add(1));
+        if through.is_some_and(|through| through != page.through)
+            || page.through > dim_agent_types::JS_MAX_SAFE_INTEGER
+            || page.next_after > page.through
+            || page
+                .next_before
+                .is_some_and(|next| next == 0 || next >= top)
+            || ((!page.done || !page.events.is_empty()) && page.next_before.is_none())
+        {
+            return Err("Invalid backward history cursor".into());
+        }
+        let mut sequence = page.next_before.unwrap_or(1).saturating_sub(1);
+        for event in &page.events {
+            if event.sequence <= sequence
+                || event.sequence >= top
+                || event.sequence > page.next_after
+            {
                 return Err("History event is outside its page or unordered".into());
             }
             sequence = event.sequence;
@@ -890,6 +923,12 @@ impl Worker {
         self.mcp_required.clear();
         self.model = Some(configuration.clone());
         self.discover_branch("main");
+        if self.client.offers("session.history.latestTurn") {
+            self.task_history
+                .get_mut("main")
+                .expect("main history")
+                .through = attached.sequence;
+        }
         self.poll_task_history().await?;
         let features = self.model_features(&model).await;
         self.send(Update::Ready(configuration));
@@ -1921,6 +1960,14 @@ impl Worker {
                     self.discover_workflows();
                 }
             }
+            Command::LoadEarlier {
+                projection_id,
+                branch_id,
+            } => {
+                if projection_id == self.projection_id {
+                    self.load_earlier_history(&branch_id);
+                }
+            }
             Command::StopWorkflow {
                 session_id,
                 projection_id,
@@ -2111,10 +2158,17 @@ impl Worker {
         self.report(text, false);
     }
 
-    /// Applies the portion of `branch` the interface has not folded yet, from
-    /// its applied sequence to the published head.
+    /// Catches up `branch` to its published head, including earlier pages
+    /// when a complete history fold is needed for `/goal`.
     async fn read_branch(&mut self, branch: &str) -> crate::Result<()> {
-        let mut after = self.cursors.get(branch).copied().unwrap_or(0);
+        let backfill = self.task_history.get(branch).is_some_and(|history| {
+            history.window && history.before.is_some_and(|before| before > 1)
+        });
+        let mut after = if backfill {
+            0
+        } else {
+            self.cursors.get(branch).copied().unwrap_or(0)
+        };
         let mut through = None;
         loop {
             let mut params = json!({
@@ -2128,11 +2182,30 @@ impl Worker {
             through = Some(page.through);
             let next = page.next(after, through)?;
             for value in page.events {
-                self.apply(branch, serde_json::from_value(value)?);
+                let event: Event = serde_json::from_value(value)?;
+                if backfill && event.sequence <= self.cursors.get(branch).copied().unwrap_or(0) {
+                    self.discover_task_branches(&event);
+                    self.discover_workflow(&event);
+                    self.task_history
+                        .get_mut(branch)
+                        .expect("branch history")
+                        .events
+                        .push(std::sync::Arc::new(event));
+                } else {
+                    self.apply(branch, event);
+                }
             }
             match next {
                 Some(next) => after = next,
-                None => return Ok(()),
+                None => {
+                    if backfill {
+                        let history = self.task_history.get_mut(branch).expect("branch history");
+                        history.before = Some(1);
+                        self.rebuild_history(branch);
+                        self.changed();
+                    }
+                    return Ok(());
+                }
             }
         }
     }
@@ -2264,6 +2337,11 @@ impl Worker {
                         transcript_mut(&mut self.projection, &mut self.lines, &notice.branch_id)
                     {
                         transcript.progress(&notice);
+                    }
+                    if let Some(history) = self.task_history.get_mut(&notice.branch_id)
+                        && history.window
+                    {
+                        history.progress = Some(notice);
                     }
                     self.changed();
                 } else if notice.branch_id == "main" && self.observes_member(&notice.session_id) {
@@ -4012,6 +4090,18 @@ impl Worker {
             return;
         }
         *cursor = event.sequence;
+        let event = std::sync::Arc::new(event);
+        if let Some(history) = self.task_history.get_mut(branch_id)
+            && history.window
+        {
+            history.events.push(event.clone());
+            if matches!(
+                event.content,
+                EventContent::ModelEnd(_) | EventContent::TurnEnd(_)
+            ) {
+                history.progress = None;
+            }
+        }
         self.discover_workflow(&event);
         if branch_id == "main"
             && let EventContent::Configuration(configuration) = &event.content
@@ -4168,6 +4258,10 @@ impl Worker {
             .task_history
             .get(&self.focus)
             .is_some_and(|branch| branch.done);
+        if let Some(history) = self.task_history.get(&self.focus) {
+            snapshot.history_earlier = history.before.is_some_and(|before| before > 1);
+            snapshot.history_loading = !history.done && history.error.is_none();
+        }
         snapshot.task_history_loading = self
             .task_history
             .values()

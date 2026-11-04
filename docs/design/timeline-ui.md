@@ -112,7 +112,7 @@ While a line is shown, the composer's bottom border names its path from `main`, 
 
 ### 4.6 `/timeline`: jumping to a message
 
-The Timeline's points are its user messages. Tab walks them one at a time from the newest; `/timeline` lists them all, as the desktop client's message rail does: each row is the message and the first text of its answer.
+The Timeline's points are its loaded user messages. Tab walks them one at a time from the newest; `/timeline` lists them as the desktop client's message rail does: each row is the message and the first text of its answer. When older history remains on the server, the first item is **Load earlier history**; Enter requests one earlier page without closing the panel. Message numbers are relative to the loaded history.
 
 ```
 ┌ Timeline ────────────────────────────────────────────────────────┐
@@ -126,7 +126,21 @@ The Timeline's points are its user messages. Tab walks them one at a time from t
 - `Enter` opens a bordered action list naming the selected message: Jump to message, Edit as a new draft, Quote message, Create branch from here, Fork session. The fork choice states that its cut is before the selected message. Up/Down and Enter select an action; numbers 1–5 select directly. Existing `e`, `q`, `b` and `f` shortcuts work in both lists. Esc returns to the message list with its selection and list position intact, then closes it. Fullscreen shows the lists as overlays; scrollback shows them in the live interaction region without committing them to history.
 - Jump closes the panel. Fullscreen picks the message, as Tab would, and the pick keys apply. Scrollback cannot move up: a message it has not drawn yet is drawn from there on as an earlier-history page; one already drawn gets a notice that `/tui` can jump to it.
 
-A resume draws the newest 100 messages. Fullscreen tops the transcript with a load-more row (`↑ 130 earlier messages · Enter or click to load`): a click, or Tab up to it and `Enter`, draws the previous 100 above and keeps the oldest drawn message at the top of the view. Scrollback has no such row; its earlier history comes from `/timeline` jumps. This replaces `/history`, which paged earlier messages in after the newest ones.
+A resume requests the newest page of the latest turn through the [history window](appserver/session-history-window.md#6-client-flow), pinned to the attach reply's sequence. It does not scan the whole transcript before displaying it. Further pages use `before` and the same `through`: `latestTurn` remains set until that window is complete, then is omitted to reach older turns. Live events are merged once above the pin. A daemon without `session.history.latestTurn` keeps the existing forward read.
+
+Fullscreen tops the transcript with a load-more row (`↑ Earlier history · Enter or click to load`) when server history remains; it does not invent a message count for unread pages. A click, or Tab up to it and Enter, requests one earlier page and keeps the previous top message in view. Scrollback loads through `/timeline`, then uses its existing jump action to draw earlier messages. Locally retained history still draws in groups of 100 messages. Opening `/tasks` or `/lines` requests the remaining history for the inventory, including branches discovered in those pages; simply opening the conversation does not.
+
+`/goal` reads the branch's complete goal history on demand before deciding
+whether the requested change edits an active goal or sets a new one. An active
+goal may predate the initial turn window.
+
+```text
+attach -> history {latestTurn:true, through:H} -> newest page
+               live > H ---------------------> merge once
+load earlier -> history {before:F, through:H} -> prepend, retain view anchor
+```
+
+The client reads only RPC replies. Timeline and TimelineTree ownership and persistence reads remain inside the App Server; no TUI history path opens the database.
 
 ### 4.7 `/branch <prompt>` and the side panel
 

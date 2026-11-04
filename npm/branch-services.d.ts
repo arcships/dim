@@ -76,11 +76,11 @@ export interface TreeCommands {
    */
   end(id: string, source: BranchSource): Promise<void>
   /**
-   * One page of `id`'s committed batches; an ended line reads at its
-   * fixed head.
+   * One page of `id`'s committed batches, bounded by `through` or the
+   * published head (fixed once ended). Both cursors must end a batch.
    * @throws {AgentErrorThrown}
    */
-  page(id: string, after: number | bigint, limit: number | bigint): Promise<import('./plugin.js').BranchEvent[]>
+  page(id: string, after: number | bigint, limit: number | bigint, through?: number | bigint | null): Promise<import('./plugin.js').BranchEvent[]>
   /**
    * Creates a child of `parent` cut at `at` and returns its id.
    * `cancelled` is the caller's cancellation as an explicit argument, the

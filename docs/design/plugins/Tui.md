@@ -50,6 +50,8 @@ Not part of this design: a loader in the client (no rows, no editable layer, no 
 
 Nothing in the client tree is Timeline state. The daemon owns every Session fact; a client crash loses only its view.
 
+Conversation history follows [Timeline UI §4.6](../timeline-ui.md#46-timeline-jumping-to-a-message): the first read uses the advertised latest-turn window, older pages are requested on demand over RPC, and live events are merged at the fixed watermark. The TUI never opens SQL storage.
+
 ## 3. Flows
 
 ### 3.1 `dimcode` (interactive): client start, daemon start, TUI

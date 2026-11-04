@@ -58,18 +58,20 @@ impl dim_agent_capabilities::host::ModelDriver for StreamingModel {
     }
 }
 
-/// Captures the main branch's Timeline so a flow can commit several events as
-/// one atomic batch, which a fixed `through` must not point inside.
+/// Captures the most recently opened branch's Timeline for atomic history writes.
 #[derive(Default)]
-struct BatchProbe(std::sync::Mutex<Option<Arc<dim_agent_runtime::Timeline>>>);
+pub(super) struct BatchProbe(pub(super) std::sync::Mutex<Option<Arc<dim_agent_runtime::Timeline>>>);
 
-struct BatchProbePlugin(
+pub(super) struct BatchProbePlugin(
     Arc<BatchProbe>,
     rutis::host::Key<dim_agent_runtime::Timeline>,
 );
 
 impl BatchProbePlugin {
-    fn new(names: &dim_agent_runtime::Names<'_>, probe: Arc<BatchProbe>) -> rutis::Result<Self> {
+    pub(super) fn new(
+        names: &dim_agent_runtime::Names<'_>,
+        probe: Arc<BatchProbe>,
+    ) -> rutis::Result<Self> {
         Ok(Self(probe, names.key()?))
     }
 }

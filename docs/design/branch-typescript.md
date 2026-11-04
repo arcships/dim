@@ -44,7 +44,7 @@ every instance of that group; a row gets the nearest enclosing instance. Its met
 
 | Name | Group | Rust type | Methods used by parts |
 | --- | --- | --- | --- |
-| `treeCommands` | `session` | `TreeCommands` | `list()`, `info(id)`, `input(id, input)`, `create(parent, at, options, cancelled)`, `end(id, source)`, `page(id, after, limit)` |
+| `treeCommands` | `session` | `TreeCommands` | `list()`, `info(id)`, `input(id, input)`, `create(parent, at, options, cancelled)`, `end(id, source)`, `page(id, after, limit, through?)` |
 | `dispatcher` | `branch` | `Dispatcher` | `consume(name, keys, rebuild, handler)`, `listen(name, keys, handler)`, `committed()`, `notify()`, `sequence()`, `changed()` |
 | `branchLifecycle` | `branch` | `BranchLifecycle` | `activated()`, `closing()` |
 | `timeline` | `branch` | `Timeline` | `append({type, name, data, tags?})` → the committed event; `query(query)` (the one bounded read, `include_publishing` for the branch's not-yet-published facts), `ancestors()`, `sequence()`, `committed()`, `hasPending()` |

@@ -149,6 +149,40 @@ pub trait TimelineStore: Send + Sync + 'static {
     ) -> BoxFuture<'a, Result<Vec<StoredEvent>>> {
         self.read_page(key, after, limit, through)
     }
+    /// Reads the newest complete batches below `before` in
+    /// `window_start..=through`, returning events in ascending order.
+    /// `through` must end a batch and `window_start` must start one.
+    /// An interior `before` excludes that batch. The limit is a target;
+    /// the oldest included batch may exceed it. Native implementations may
+    /// omit stored request bodies, as in [`Self::read_page_without_request_bodies`].
+    fn read_page_before<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        before: u64,
+        limit: usize,
+        through: u64,
+        window_start: u64,
+    ) -> BoxFuture<'a, Result<Vec<StoredEvent>>> {
+        Box::pin(async move {
+            self.batch_end(key, through).await?;
+            let top = before.saturating_sub(1).min(through);
+            if limit == 0 || top < window_start {
+                return Ok(Vec::new());
+            }
+            let mut records = self.read(key, 1..=through).await?;
+            records
+                .retain(|record| record.event.sequence >= window_start && record.batch_end <= top);
+            if records.len() > limit {
+                let batch = records[records.len() - limit].batch_end;
+                let start = records
+                    .iter()
+                    .position(|record| record.batch_end == batch)
+                    .expect("the limiting batch belongs to the page");
+                records.drain(..start);
+            }
+            Ok(records)
+        })
+    }
     /// One per-branch read for [`TimelineQuery`] (ADR 019, plugin contract
     /// §5.4): applies the read point, direction, kinds, flags, event id,
     /// predicate, limit and offset to `key`'s branch and returns up to `limit`

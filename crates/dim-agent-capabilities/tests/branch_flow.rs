@@ -1314,6 +1314,13 @@ async fn ending_a_line_ends_its_children_first_and_records_one_result_each() {
         session.sequence(&parent).unwrap(),
         session.sequence(&grandchild).unwrap(),
     );
+    let pin = ends_before.2;
+    let open = session
+        .page_before(&grandchild, pin + 1, 3, pin, 1)
+        .await
+        .unwrap();
+    assert_eq!(open.last().unwrap().event.sequence, pin);
+    assert!(open.len() >= 3);
 
     let source = BranchSource::Host {
         operation_id: "op:end".into(),
@@ -1351,6 +1358,20 @@ async fn ending_a_line_ends_its_children_first_and_records_one_result_each() {
     ));
     assert!(!session.branches().iter().any(|line| line.id == parent));
     assert!(!session.branches().iter().any(|line| line.id == grandchild));
+    let tree = session.session_service::<TreeCommands>().unwrap();
+    let ended = tree
+        .page_before(&grandchild, pin + 1, 3, pin, 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        ended
+            .iter()
+            .map(|record| record.event.sequence)
+            .collect::<Vec<_>>(),
+        open.iter()
+            .map(|record| record.event.sequence)
+            .collect::<Vec<_>>()
+    );
 
     let grandchild_events = line_events(&session, &grandchild).await.unwrap();
     assert!(matches!(
@@ -2655,7 +2676,7 @@ async fn call(session: &Session, branch: &str, arguments: &str) -> (String, Stri
 async fn line_events(session: &Session, branch: &str) -> Result<Vec<Arc<AgentEvent>>> {
     session
         .session_service::<TreeCommands>()?
-        .page(branch.to_owned(), 0, LINE_PAGE)
+        .page(branch.to_owned(), 0, LINE_PAGE, None)
         .await
 }
 async fn local_events(session: &Session, branch: &str) -> Vec<Arc<AgentEvent>> {

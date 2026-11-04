@@ -12934,14 +12934,17 @@
       "references": [
         "path TimelineQuery",
         "path TimelineQueryDirection::Ascending",
+        "path TimelineQueryDirection::Descending",
         "path TimelineQueryOrderBy::Sequence",
         "path TimelineQueryPredicate",
+        "path TimelineQueryReply",
         "path TimelineQueryScope::Branch",
         "path rebuild_facts",
         "use dim_agent_runtime::TimelineQuery",
         "use dim_agent_runtime::TimelineQueryDirection",
         "use dim_agent_runtime::TimelineQueryOrderBy",
         "use dim_agent_runtime::TimelineQueryPredicate",
+        "use dim_agent_runtime::TimelineQueryReply",
         "use dim_agent_runtime::TimelineQueryScope",
         "use dim_agent_runtime::rebuild_facts"
       ]
@@ -12951,6 +12954,7 @@
       "to": "dim_agent_runtime::timeline_store",
       "references": [
         "path StoredBranch",
+        "path StoredEvent",
         "path TimelineKey",
         "path TimelineStore",
         "use dim_agent_runtime::StoredBranch",
@@ -15005,6 +15009,13 @@
     },
     {
       "from": "dim_agent_runtime::agent",
+      "to": "dim_agent_runtime::timeline_store",
+      "references": [
+        "path StoredEvent"
+      ]
+    },
+    {
+      "from": "dim_agent_runtime::agent",
       "to": "dim_agent_types::events",
       "references": [
         "path AgentEvent",
@@ -15230,6 +15241,13 @@
       "references": [
         "path TimelineQuery",
         "path TimelineQueryReply"
+      ]
+    },
+    {
+      "from": "dim_agent_runtime::branch",
+      "to": "dim_agent_runtime::timeline_store",
+      "references": [
+        "path StoredEvent"
       ]
     },
     {
@@ -17635,6 +17653,7 @@
         "path dim_agent_runtime::TimelineQuery",
         "path dim_agent_runtime::TimelineQueryDirection::Ascending",
         "path dim_agent_runtime::TimelineQueryOrderBy::Sequence",
+        "path dim_agent_runtime::TimelineQueryReply",
         "path dim_agent_runtime::TimelineQueryScope::Branch",
         "path dim_agent_runtime::TimelineQueryScope::Chain",
         "use dim_agent_runtime::TimelineQuery",
@@ -20175,6 +20194,13 @@
     },
     {
       "from": "dim_app_server::connection::tree",
+      "to": "dim_app_server::agents",
+      "references": [
+        "path crate::agents::AgentIndex"
+      ]
+    },
+    {
+      "from": "dim_app_server::connection::tree",
       "to": "dim_app_server::connection",
       "references": [
         "path Connection",
@@ -20206,13 +20232,6 @@
         "path Reply::empty",
         "path Submit",
         "path SubmitResult"
-      ]
-    },
-    {
-      "from": "dim_app_server::connection::tree",
-      "to": "dim_app_server::storage::timeline",
-      "references": [
-        "path crate::storage::TurnWindow"
       ]
     },
     {
@@ -25057,7 +25076,6 @@
         "use timeline::SessionStore",
         "use timeline::SessionStorePlugin",
         "use timeline::SqliteTimelineStore",
-        "use timeline::TurnWindow",
         "use timeline::WorktreeUsage"
       ]
     },
@@ -30272,6 +30290,7 @@
         "path Command::ListProviders",
         "path Command::ListRuntimes",
         "path Command::ListSessions",
+        "path Command::LoadEarlier",
         "path Command::LoginStatus",
         "path Command::LoginUsage",
         "path Command::Logout",
@@ -30757,6 +30776,7 @@
       "from": "dim_cli::session_host::tasks",
       "to": "dim_cli::session_host",
       "references": [
+        "path History::backward",
         "path History::decode",
         "path LineProjection",
         "path LineProjection::new",
@@ -30791,7 +30811,8 @@
         "path Event",
         "path EventContent::BranchCreate",
         "path EventContent::BranchCreateFailed",
-        "path EventContent::BranchStart"
+        "path EventContent::BranchStart",
+        "path Progress"
       ]
     },
     {
@@ -36090,6 +36111,7 @@
       "references": [
         "path Effect",
         "path Effect::Close",
+        "path Effect::LoadEarlier",
         "path Effect::None",
         "path Effect::Timeline",
         "use crate::ui::prompts::Effect"
@@ -36880,6 +36902,7 @@
         "path Command::ListPlugins",
         "path Command::ListProviders",
         "path Command::ListRuntimes",
+        "path Command::LoadEarlier",
         "path Command::LoginStatus",
         "path Command::LoginUsage",
         "path Command::Logout",
@@ -37290,6 +37313,7 @@
         "path Effect::LanguageApply",
         "path Effect::LanguagePreview",
         "path Effect::LanguageRestore",
+        "path Effect::LoadEarlier",
         "path Effect::LoginStatus",
         "path Effect::LoginUsage",
         "path Effect::Logout",

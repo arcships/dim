@@ -529,6 +529,19 @@ impl Session {
     pub async fn batch_end(&self, branch: &str, sequence: u64) -> Result<()> {
         self.published(branch)?.batch_end(sequence).await
     }
+    /// See [`Branch::page_before`].
+    pub async fn page_before(
+        &self,
+        branch: &str,
+        before: u64,
+        limit: usize,
+        through: u64,
+        window_start: u64,
+    ) -> Result<Vec<StoredEvent>> {
+        self.published(branch)?
+            .page_before(before, limit, through, window_start)
+            .await
+    }
     pub fn sequence(&self, branch: &str) -> Result<u64> {
         if let Some(head) = self.0.tree.ended_head(branch) {
             return Ok(head);

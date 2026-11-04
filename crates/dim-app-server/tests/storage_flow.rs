@@ -2659,12 +2659,7 @@ async fn paging_reads_do_not_rebuild_request_bodies() {
         vec![1, 2, 3]
     );
     assert_eq!(store.take_node_loads(), NodeLoads::default());
-    let sessions =
-        dim_app_server::storage::SessionStore::new(db.clone(), rutis::Ctx::root().unwrap(), 0);
-    let page = sessions
-        .read_page_before("paging", "main", 4, 8, 3, 1)
-        .await
-        .unwrap();
+    let page = store.read_page_before(&main, 4, 8, 3, 1).await.unwrap();
     assert_eq!(
         page.iter()
             .map(|record| record.event.sequence)
@@ -2672,7 +2667,6 @@ async fn paging_reads_do_not_rebuild_request_bodies() {
         vec![1, 2, 3],
         "the reverse history page does not rebuild the damaged request"
     );
-    drop(sessions);
     drop(connection);
     agent.close().await.unwrap();
     store.close().await.unwrap();
@@ -7596,9 +7590,7 @@ async fn the_derived_indexes_are_created_at_open_without_a_format_step() {
 async fn a_history_window_read_rejects_a_through_inside_a_batch() {
     let database = Database::new();
     let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let sessions =
-        dim_app_server::storage::SessionStore::new(db.clone(), rutis::Ctx::root().unwrap(), 0);
-    let store = sessions.timeline_store();
+    let store = SqliteTimelineStore::new(db.clone());
     store
         .create_session("session", &SessionConfig::default())
         .await
@@ -7626,12 +7618,12 @@ async fn a_history_window_read_rejects_a_through_inside_a_batch() {
         Err(AgentError::InvalidInput(message)) if message.contains("inside an atomic batch")
     ));
     assert!(matches!(
-        sessions.read_page_before("session", "main", 2, 10, 1, 1).await,
+        store.read_page_before(&key("session", "main"), 2, 10, 1, 1).await,
         Err(AgentError::InvalidInput(message)) if message.contains("inside an atomic batch")
     ));
     assert_eq!(
-        sessions
-            .read_page_before("session", "main", 3, 10, 2, 1)
+        store
+            .read_page_before(&key("session", "main"), 3, 10, 2, 1)
             .await
             .unwrap()
             .len(),
@@ -7639,7 +7631,6 @@ async fn a_history_window_read_rejects_a_through_inside_a_batch() {
     );
 
     drop(store);
-    drop(sessions);
     db.close().await.unwrap();
 }
 

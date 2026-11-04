@@ -191,6 +191,10 @@ pub enum Command {
     TaskHistory {
         projection_id: u64,
     },
+    LoadEarlier {
+        projection_id: u64,
+        branch_id: String,
+    },
     /// Capture addressed stops from the displayed attachment.
     StopTasks {
         session_id: String,

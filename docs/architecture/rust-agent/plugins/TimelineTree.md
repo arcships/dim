@@ -32,9 +32,16 @@ operations. TreeTimeline consumes creation on the parent and an end on the
 ending line. `TreeCommands::end`
 checks only the target: it exists, it is open, and it is not `main`; a line
 that ended writes nothing and answers `branch_ended`. `info` answers for an
-ended line too, and `page` reads an open or ended line from the store at its
-head. Candidate branches remain private until opening
-receipts/dispatch fences and initial input acceptance succeed. Creation retains
+ended line too. `page` reads an open line through its Timeline query and an
+ended line through the tree's store. Its optional `through` pins a batch-boundary
+position no later than the published head (fixed once ended); `after` must also
+end a batch, including when the page is empty. Native `query` serves published
+own-branch selections after a line ends; native `page_before` preserves complete
+batches and their metadata for the client history window. Open lines forward
+these reads to their Timeline; ended lines use the tree's store at their fixed
+head. Neither native method adds batch metadata to the cross-language query.
+Candidate branches remain private
+until opening receipts/dispatch fences and initial input acceptance succeed. Creation retains
 its fixed ancestry cut even if a waiter disappears. One opening budget requests
 cancellation; rollback and accepted host work must still settle. Cleanup closes
 the tree, cancels reservations, joins builds and closes branch contexts. Restore

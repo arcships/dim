@@ -116,6 +116,19 @@ impl Branch {
     pub async fn batch_end(&self, sequence: u64) -> Result<()> {
         self.0.timeline().batch_end(sequence).await
     }
+    /// See [`Timeline::page_before`].
+    pub async fn page_before(
+        &self,
+        before: u64,
+        limit: usize,
+        through: u64,
+        window_start: u64,
+    ) -> Result<Vec<StoredEvent>> {
+        self.0
+            .timeline()
+            .page_before(before, limit, through, window_start)
+            .await
+    }
     /// One bounded read of this branch's facts: the request selects them and
     /// the reply carries each event's position. The read stops at what is
     /// published: the branch's own committed tail belongs to the part that
