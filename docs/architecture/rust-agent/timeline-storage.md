@@ -124,7 +124,7 @@ fork 与 Session 删除在复制连接上分块提交（事件与快照每 256 �
 | `state` | 投影在 `resume` 之前的状态：`retain_from` 锚点、prompt 条目与 revision、已投递的上下文基线、已提交但未采用的输入、最新 `context/configured`、未闭合的输出与工具 |
 
 - 写入：ContextPolicy 在 completed 事实被采用后构建快照，`Timeline::save_snapshot` 等锚点发布后才写缓存；构建或保存失败只记录告警，不回滚事实、不重做模型工作。
-- 读取：`Timeline::checkpoint` 按解释器选候选，校验锚点 ID、sequence、completed 种类、游标，并按 `resume.event_id` 定位后校验 resume 位于固定祖先链和 source through 之内（按 ID 查不到时用记录的位置）；解码失败、摘要不符、越界或孤立快照一律忽略并回退完整事实重放。默认解释器有两个读取入口：`HistoryRenderer::rendered_context` 返回上下文与其渲染，校验检查点的那次渲染就是调用方使用的渲染，没有检查点时也在这里渲染一次；`HistoryRenderer::context` 只返回上下文，有检查点时渲染一次用于校验并丢弃结果，没有检查点时不渲染。两者的检查点渲染失败——或按 id 找不到 resume 事件、折叠为空——都回退完整重放（`rendered_context` 渲染该重放，`context` 不渲染）；读取必需事实的错误不被吞掉，`history::read_context` 与 ContextPolicy 的预算校验走 `context`。
+- 读取：`Timeline::checkpoint` 按解释器选候选，校验锚点 ID、sequence、completed 种类、游标，并按 `resume.event_id` 定位后校验 resume 位于固定祖先链和 source through 之内（按 ID 查不到时用记录的位置）；锚点事件是单个事件，按该 sequence 读一条事件查询（本分支热窗口中已有的取同一条），不从锚点读到截点，锚点位于原子批次内部时也一样；解码失败、摘要不符、越界或孤立快照一律忽略并回退完整事实重放。默认解释器有两个读取入口：`HistoryRenderer::rendered_context` 返回上下文与其渲染，校验检查点的那次渲染就是调用方使用的渲染，没有检查点时也在这里渲染一次；`HistoryRenderer::context` 只返回上下文，有检查点时渲染一次用于校验并丢弃结果，没有检查点时不渲染。两者的检查点渲染失败——或按 id 找不到 resume 事件、折叠为空——都回退完整重放（`rendered_context` 渲染该重放，`context` 不渲染）；读取必需事实的错误不被吞掉，`history::read_context` 与 ContextPolicy 的预算校验走 `context`。
 - 投影从 `state` 开始重放 `resume` 起的事件，并丢弃游标及其之前的条目。编码与摘要规则见[存储格式](../../design/appserver/native-storage-format.md#可丢弃恢复快照)。
 
 ### 使用方
@@ -143,14 +143,14 @@ fork 与 Session 删除在复制连接上分块提交（事件与快照每 256 �
 
 - 每个模型步骤两次上下文历史读取，有有效快照时每次不超过最近一次压缩之后的历史；ContextPolicy 另读一次同准备的尾段，稳态下为空。
 - Dispatcher handler 内不等待冷读取；需要历史的工作在能力自有任务中读取，完成后再提交事件。
-- 热窗口只保存未发布和未分发的事件；进程内不保留已分发的事件；返回给调用方的 `Arc<AgentEvent>` 由调用方决定持有时长。唯一的例外是分支打开期间（`Loading`）：Timeline 用一份共用的解码副本服务对其构建时已有历史的读取（本分支截至构建时的存储头部，以及祖先链各截点之前），分支离开 `Loading`（发布、关闭或构建回滚）时释放；副本保存每条事件的批次终点，切片前按“有界读取与恢复扫描”中“分段读取”行的终点规则检查，结果与错误都与读存储相同（[恢复期间共用的历史读取](../../design/appserver/restore-shared-read.md)）。
+- 热窗口只保存未发布和未分发的事件；进程内不保留已分发的事件；返回给调用方的 `Arc<AgentEvent>` 由调用方决定持有时长。分支打开期间没有额外的解码副本：恢复和打开时的读取与其它读取一样走事件查询、存储读取或热窗口（[ADR 021](../../adr/021-reads-follow-the-state-owner.md) D6）。
 
 ## 5. 分支、恢复与关闭
 
 | 场景 | 约定 |
 | --- | --- |
 | 建分支 | 分支目录与 `branch/create` 在同一事务中提交；子 Timeline 以祖先链描述构造 |
-| 恢复 | 按[存储格式](../../design/appserver/native-storage-format.md)校验物理格式与提交边界后（进程内首次恢复全量校验；之后目录与所有分支头不变时复用上次结果，记录只在存储的进程内存，校验失败或目录变化回退全量；[恢复校验复用](../../design/appserver/restore-validation.md)），Timeline 以存储中最后的 sequence 为发布水位构造；能力按 `context` 或 `local` 重建，这些读取在分支打开期间共用一份解码副本（第 4 节“使用方”）；TimelineTree 的恢复事实（分支记录的创建失败）也在打开期间从中读取，子分支的创建检查只分页读到它的第一个排队输入 |
+| 恢复 | 按[存储格式](../../design/appserver/native-storage-format.md)校验物理格式与提交边界后（进程内首次恢复全量校验；之后目录与所有分支头不变时复用上次结果，记录只在存储的进程内存，校验失败或目录变化回退全量；[恢复校验复用](../../design/appserver/restore-validation.md)），Timeline 以存储中最后的 sequence 为发布水位构造；能力按 `context` 或 `local` 重建，与其它读取一样走事件查询与存储读取；TimelineTree 的恢复事实（分支记录的创建失败）同样按查询读取，子分支的创建检查只分页读到它的第一个排队输入 |
 | Timeline close | 关闭前提交的事件全部发布后，才完成关闭 |
 | Session close | 各分支关闭并结算其写入、Session scope 清理完成后释放该次加载的存储准入状态；存储仍接收写入时，释放排在已接收批次之后，完成后才从 Agent 移除 Session。只清理故障与 writer memo，不删除持久数据；恢复初始化失败且生产者停止后也执行此释放 |
 

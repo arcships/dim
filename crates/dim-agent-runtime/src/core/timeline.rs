@@ -502,76 +502,59 @@ impl Timeline {
         }
         Ok(through)
     }
-    /// Events of `branch` in `start..=end`. For this branch the hot window
-    /// holds every event not yet dispatched, which includes every event not
-    /// yet published; the store holds everything published.
-    async fn records(&self, branch: &str, start: u64, end: u64) -> Result<Vec<Arc<AgentEvent>>> {
-        if end == 0 || start > end {
-            return Ok(vec![]);
-        }
+    /// This branch's events in `start..=end` that the store does not hold yet:
+    /// every event above the published head is still in the hot window, which
+    /// also keeps published events until they are dispatched.
+    fn publishing(&self, start: u64, end: u64) -> Vec<Arc<AgentEvent>> {
+        let data = self.0.data.lock().unwrap();
+        data.hot
+            .iter()
+            .filter(|record| record.event.sequence >= start && record.event.sequence <= end)
+            .map(|record| record.event.clone())
+            .collect()
+    }
+    /// The event a context checkpoint is anchored at. It is one fact, so it is
+    /// read as one event and never as a range that reaches the cut: this
+    /// branch's hot window while it holds the event, otherwise a one-event
+    /// query of the store. A point read is not a range, so a row inside an
+    /// atomic batch is read like any other.
+    async fn anchor(&self, branch: &str, sequence: u64) -> Result<Option<Arc<AgentEvent>>> {
         if branch == self.0.key.branch_id {
-            let (published, hot_start, hot) = {
-                let data = self.0.data.lock().unwrap();
-                if data
-                    .hot
-                    .iter()
-                    .any(|r| r.event.sequence == end && r.batch_end > end)
-                {
-                    return Err(AgentError::InvalidInput(format!(
-                        "sequence {end} is inside an atomic batch"
-                    )));
-                }
-                let hot_start = data.hot.front().map_or(u64::MAX, |r| r.event.sequence);
-                let from = if start >= hot_start {
-                    start
-                } else {
-                    start.max(data.published + 1)
-                };
-                let hot: Vec<_> = data
-                    .hot
-                    .iter()
-                    .filter(|r| r.event.sequence >= from && r.event.sequence <= end)
-                    .map(|r| r.event.clone())
-                    .collect();
-                (data.published, hot_start, hot)
-            };
-            if start >= hot_start {
-                return Ok(hot);
+            let hot = self.0.data.lock().unwrap();
+            if let Some(record) = hot
+                .hot
+                .iter()
+                .find(|record| record.event.sequence == sequence)
+            {
+                return Ok(Some(record.event.clone()));
             }
-            let mut stored = events(
-                self.0
-                    .store
-                    .read(&self.0.key, start..=end.min(published))
-                    .await?,
-            );
-            stored.extend(hot);
-            return Ok(stored);
         }
         let key = TimelineKey {
             session_id: self.0.key.session_id.clone(),
             branch_id: branch.into(),
         };
-        Ok(events(self.0.store.read(&key, start..=end).await?))
-    }
-    /// The event a context checkpoint is anchored at, out of the events of
-    /// `branch` up to `cut`. The point read decodes one row. A row inside an
-    /// atomic batch cannot end a range, so an invalid point read falls back to
-    /// the segment read this check made before the point read existed.
-    async fn anchor(
-        &self,
-        branch: &str,
-        sequence: u64,
-        cut: u64,
-    ) -> Result<Option<Arc<AgentEvent>>> {
-        match self.records(branch, sequence, sequence).await {
-            Ok(records) => Ok(records.into_iter().next()),
-            Err(AgentError::InvalidInput(_)) => Ok(self
-                .records(branch, sequence, cut)
-                .await?
-                .into_iter()
-                .next()),
-            Err(error) => Err(error),
-        }
+        let point = TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            from_event: None,
+            from_sequence: None,
+            order_by: TimelineQueryOrderBy::Sequence,
+            direction: TimelineQueryDirection::Ascending,
+            include_publishing: false,
+            kinds: Vec::new(),
+            flags: Vec::new(),
+            event_id: None,
+            predicate: None,
+            limit: NonZeroU64::new(1).expect("one is nonzero"),
+            offset: 0,
+        };
+        Ok(self
+            .0
+            .store
+            .query(&key, &point, sequence, sequence)
+            .await?
+            .events
+            .into_iter()
+            .next())
     }
     /// One bounded read over this branch or over its chain ([ADR 019](../../../../docs/adr/019-event-query.md),
     /// [plugin contract §5.4](../../../../docs/design/plugin-contract.md#54-the-event-query)):
@@ -618,11 +601,7 @@ impl Timeline {
 
         query.validate()?;
         let tail = if through > published {
-            Some((
-                self.records(&self.0.key.branch_id, published + 1, through)
-                    .await?,
-                through,
-            ))
+            Some((self.publishing(published + 1, through), through))
         } else {
             None
         };
@@ -913,7 +892,7 @@ impl Timeline {
             {
                 continue;
             }
-            let Some(anchor) = self.anchor(branch, snapshot.sequence, *cut).await? else {
+            let Some(anchor) = self.anchor(branch, snapshot.sequence).await? else {
                 continue;
             };
             if anchor.id != snapshot.event_id || anchor.sequence != snapshot.sequence {
@@ -1156,11 +1135,6 @@ impl EventReader {
             }
         }
     }
-}
-/// The events of a store read; reads of committed history return events
-/// only, traces have their own read.
-fn events(records: Vec<StoredEvent>) -> Vec<Arc<AgentEvent>> {
-    records.into_iter().map(|record| record.event).collect()
 }
 
 pub fn unix_millis() -> u64 {

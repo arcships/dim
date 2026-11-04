@@ -15,11 +15,12 @@ fn input(text: &str) -> EventDraft {
     EventKind::InputMessage(InputMessageData::text(text, None)).into()
 }
 
-/// Counts every segment read from the store, in call order.
+/// Counts every segment read and every query from the store, in call order.
 #[derive(Default)]
 struct Reads {
     memory: MemoryTimelineStore,
     segments: Mutex<Vec<(String, RangeInclusive<u64>)>>,
+    queries: Mutex<Vec<(String, u64, u64)>>,
 }
 impl TimelineStore for Reads {
     fn create_session<'a>(
@@ -99,6 +100,10 @@ impl TimelineStore for Reads {
         from: u64,
         through: u64,
     ) -> BoxFuture<'a, Result<dim_agent_runtime::TimelineQueryPage>> {
+        self.queries
+            .lock()
+            .unwrap()
+            .push((key.branch_id.clone(), from, through));
         self.memory.query(key, query, from, through)
     }
 }
@@ -584,8 +589,8 @@ async fn before_keys_accept_a_domain_wildcard() {
     assert_eq!(other.tags, None);
 }
 
-/// A checkpoint selection reads the anchor as one row and never a range that
-/// spans it to the cut, so the tail is not decoded twice.
+/// A checkpoint selection reads the anchor as one event and never a range
+/// that spans it to the cut, so the tail is not decoded twice.
 #[tokio::test]
 async fn a_checkpoint_selection_decodes_one_anchor_event() {
     let store = Arc::new(Reads::default());
@@ -631,28 +636,24 @@ async fn a_checkpoint_selection_decodes_one_anchor_event() {
     let through = reader.committed();
     assert_eq!(through, 1051);
     store.segments.lock().unwrap().clear();
+    store.queries.lock().unwrap().clear();
     let checkpoint = reader
         .checkpoint(through, "test/anchor", checkpoint_resume)
         .await
         .unwrap();
     assert!(checkpoint.is_some());
-    let segments = store.segments.lock().unwrap();
     assert_eq!(
-        segments
-            .first()
-            .map(|(branch, range)| (branch.as_str(), range.clone())),
-        Some(("main", 51..=51)),
-        "the anchor check reads the anchor row"
+        store.queries.lock().unwrap().first().cloned(),
+        Some(("main".into(), 51, 51)),
+        "the anchor check reads the anchor event"
     );
-    assert!(
-        !segments
-            .iter()
-            .any(|(_, range)| *range.start() >= 51 && *range.end() >= through),
-        "no read runs from the anchor row to the cut"
+    assert_eq!(
+        *store.segments.lock().unwrap(),
+        [],
+        "the anchor check reads no segment"
     );
 }
 
-/// A live branch serves the anchor from its hot window: the anchor check makes
 /// A live branch serves the anchor from its hot window: the anchor check makes
 /// no store read, and the checkpoint is used.
 #[tokio::test]
@@ -700,6 +701,7 @@ async fn a_checkpoint_anchored_in_the_hot_window_is_used() {
     let through = branch.committed();
     assert_eq!(through, 1051);
     store.segments.lock().unwrap().clear();
+    store.queries.lock().unwrap().clear();
     let checkpoint = branch
         .checkpoint(through, "test/anchor", checkpoint_resume)
         .await
@@ -710,10 +712,19 @@ async fn a_checkpoint_anchored_in_the_hot_window_is_used() {
         [],
         "the anchor comes from the hot window: the selection reads no segment"
     );
+    assert!(
+        store
+            .queries
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, from, _)| *from != anchor.sequence),
+        "the anchor comes from the hot window: no query reads it"
+    );
 }
 
-/// An anchor row inside an atomic batch keeps its checkpoint: the point read
-/// cannot end there, so the segment read finds the same anchor as before.
+/// An anchor row inside an atomic batch keeps its checkpoint: the anchor is
+/// one event, so it is read at its sequence like any other.
 #[tokio::test]
 async fn a_checkpoint_anchored_inside_an_atomic_batch_is_still_used() {
     let store = Arc::new(Reads::default());
@@ -750,12 +761,115 @@ async fn a_checkpoint_anchored_inside_an_atomic_batch_is_still_used() {
     let reader = Timeline::restore(Ctx::root().unwrap(), key, vec![], store.clone())
         .await
         .unwrap();
+    store.segments.lock().unwrap().clear();
+    store.queries.lock().unwrap().clear();
     let checkpoint = reader
         .checkpoint(52, "test/anchor", checkpoint_resume)
         .await
         .unwrap()
         .expect("a mid-batch anchor still selects its checkpoint");
     assert_eq!(checkpoint.resume.sequence, 40);
+    assert_eq!(
+        store.queries.lock().unwrap().first().cloned(),
+        Some(("main".into(), 51, 51)),
+        "the anchor check reads the anchor event alone"
+    );
+    assert_eq!(
+        *store.segments.lock().unwrap(),
+        [],
+        "the anchor check reads no segment"
+    );
+}
+
+/// A child branch whose first event is inside a multi-event batch anchors a
+/// checkpoint at it: the restore reads that event alone, never the branch's
+/// prefix to its head.
+#[tokio::test]
+async fn a_first_event_anchor_inside_an_atomic_batch_is_read_alone() {
+    let store = Arc::new(Reads::default());
+    store
+        .memory
+        .create_session("session", &SessionConfig::default())
+        .await
+        .unwrap();
+    let main = Timeline::new(
+        Ctx::root().unwrap(),
+        TimelineKey {
+            session_id: "session".into(),
+            branch_id: "main".into(),
+        },
+        vec![],
+        store.clone(),
+    );
+    main.append_batch_registered(
+        (1..=50)
+            .map(|index| input(&format!("prefix {index}")))
+            .collect(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    main.append(branch_create("child", 50)).unwrap();
+    let child_key = TimelineKey {
+        session_id: "session".into(),
+        branch_id: "child".into(),
+    };
+    let child = Timeline::new(
+        Ctx::root().unwrap(),
+        child_key.clone(),
+        vec![("main".into(), 50)],
+        store.clone(),
+    );
+    let batch = child
+        .append_batch_registered(vec![input("anchor"), input("after")], |_| Ok(()))
+        .unwrap();
+    child
+        .save_snapshot(RecoverySnapshot {
+            sequence: batch[0].sequence,
+            event_id: batch[0].id.clone(),
+            interpreter: "test/anchor".into(),
+            state: "1".into(),
+        })
+        .await
+        .unwrap();
+    child
+        .append_batch_registered(
+            (1..=1000)
+                .map(|index| input(&format!("tail {index}")))
+                .collect(),
+            |_| Ok(()),
+        )
+        .unwrap();
+    let reader = Timeline::restore(
+        Ctx::root().unwrap(),
+        child_key,
+        vec![("main".into(), 50)],
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    let through = reader.committed();
+    assert_eq!((batch[0].sequence, through), (1, 1002));
+    store.segments.lock().unwrap().clear();
+    store.queries.lock().unwrap().clear();
+    let checkpoint = reader
+        .checkpoint(through, "test/anchor", checkpoint_resume)
+        .await
+        .unwrap()
+        .expect("a first-event anchor still selects its checkpoint");
+    assert_eq!(
+        checkpoint.resume.sequence, 1,
+        "the resume is the ancestor's"
+    );
+    assert_eq!(
+        store.queries.lock().unwrap().first().cloned(),
+        Some(("child".into(), 1, 1)),
+        "the anchor check reads the anchor event alone"
+    );
+    assert_eq!(
+        *store.segments.lock().unwrap(),
+        [],
+        "the anchor check reads no segment"
+    );
 }
 
 /// The resume event the checkpoint names by id is the position the read
