@@ -1970,7 +1970,7 @@ fn predicate_clause(
                 return Ok(None);
             };
             parameters.extend([path.clone(), path.clone(), text(value)]);
-            format!("(json_type({expr}, ?) = 'text' AND json_extract({expr}, ?) LIKE ? || '%')")
+            format!("(json_type({expr}, ?) = 'text' AND instr(json_extract({expr}, ?), ?) = 1)")
         }
         PredicateOp::Contains => {
             let Some(value) = predicate.value.as_str() else {

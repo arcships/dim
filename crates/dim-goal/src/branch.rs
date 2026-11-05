@@ -564,6 +564,7 @@ impl Owner {
             .query(TimelineQuery {
                 kinds: vec!["step/tool-call".into()],
                 predicate: Some(TimelineQueryPredicate {
+                    op: PredicateOp::Eq,
                     path: "turn_id".into(),
                     value: turn_id.into(),
                 }),

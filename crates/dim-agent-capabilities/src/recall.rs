@@ -250,7 +250,7 @@ impl RecallTool {
 
 /// Answers an `about` search from the turns text search selects. `None` means
 /// the caller falls back to the full kind read: no candidate, a full candidate
-/// page, an inherited candidate, or a malformed turn range.
+/// page, a branch with an inherited prefix, or a malformed turn range.
 async fn text_candidates(
     branch: &Branch,
     context: &ToolExecutionContext,
@@ -287,11 +287,29 @@ async fn text_candidates(
     if candidates.events.is_empty() || candidates.events.len() >= PAGE_EVENTS {
         return Ok(None);
     }
-    if candidates
-        .positions
-        .iter()
-        .any(|position| position.branch_id != context.branch_id)
-    {
+    let branch_start = branch
+        .query(TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            include_publishing: false,
+            from_event: None,
+            from_sequence: None,
+            order_by: TimelineQueryOrderBy::Sequence,
+            direction: TimelineQueryDirection::Ascending,
+            kinds: vec!["branch/start".into()],
+            flags: Vec::new(),
+            event_id: None,
+            predicate: None,
+            predicates: Vec::new(),
+            text: None,
+            limit: std::num::NonZeroU64::new(1).expect("one branch start"),
+            offset: 0,
+        })
+        .await
+        .map_err(RecallTool::facade_error)?;
+    if matches!(
+        branch_start.events.first().map(|event| &event.kind),
+        Some(EventKind::BranchStart(data)) if data.parent.is_some()
+    ) {
         return Ok(None);
     }
     let starts = branch

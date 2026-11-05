@@ -3277,8 +3277,50 @@ async fn a_long_history_is_answered_from_bounded_pages_read_backwards() {
     .expect("the long history flow");
 }
 
+/// A search on a child branch keeps a matching parent turn; the candidate
+/// path must not narrow to the child.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_child_search_keeps_inherited_matches() {
+    tokio::time::timeout(Duration::from_secs(180), async {
+        let reads = Arc::new(PageReads::default());
+        let agent = agent_with(reads.clone()).await;
+        let session = open(&agent).await;
+        session
+            .submit("shared parent".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        session
+            .submit(
+                r#"tool:branch {"action":"create","prompt":"shared child"}"#.into(),
+                InputMode::Queue,
+                "main",
+            )
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        let child = session
+            .branches()
+            .into_iter()
+            .find(|info| info.parent.as_deref() == Some("main"))
+            .expect("the child branch")
+            .id;
+        session.idle(&child).await.unwrap();
+
+        reads.pin_head(&session, &child);
+        let (search, _) =
+            recall_is_the_whole_fold(&session, &reads, &child, json!({ "about": "shared" })).await;
+        assert!(search.contains("shared parent"), "{search}");
+        assert!(search.contains("shared child"), "{search}");
+
+        agent.close().await.unwrap();
+    })
+    .await
+    .expect("the child search flow");
+}
+
 // §3.1 pages through the inherited prefix and §3.6 the cut parent turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_child_branch_pages_through_its_inherited_prefix() {
     tokio::time::timeout(Duration::from_secs(180), async {
         let reads = Arc::new(PageReads::default());

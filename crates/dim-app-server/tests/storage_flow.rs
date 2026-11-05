@@ -8200,6 +8200,8 @@ async fn a_query_predicate_prefix_contains_and_exists() {
             (1u64, serde_json::json!({ "value": "alpha" })),
             (2, serde_json::json!({ "value": "beta" })),
             (3, serde_json::json!({ "value": "alphabet", "extra": true })),
+            (4, serde_json::json!({ "value": "100%" })),
+            (5, serde_json::json!({ "value": "100x" })),
         ] {
             publish_records(
                 &target,
@@ -8245,10 +8247,10 @@ async fn a_query_predicate_prefix_contains_and_exists() {
         (
             PredicateOp::Exists,
             serde_json::json!(null),
-            ["value-1", "value-2", "value-3"].as_slice(),
+            ["value-1", "value-2", "value-3", "value-4", "value-5"].as_slice(),
         ),
     ] {
-        let mut request = query(Branch, 3);
+        let mut request = query(Branch, 5);
         request.predicate = Some(op_predicate("value", op, value));
         let from_sqlite = sqlite.query(request.clone()).await.unwrap();
         let from_memory = memory.query(request).await.unwrap();
@@ -8256,7 +8258,23 @@ async fn a_query_predicate_prefix_contains_and_exists() {
         assert_eq!(query_ids(&from_memory), expected, "{op:?} memory");
     }
 
-    let mut extra = query(Branch, 3);
+    let mut wildcard = query(Branch, 5);
+    wildcard.predicate = Some(op_predicate(
+        "value",
+        PredicateOp::Prefix,
+        serde_json::json!("100%"),
+    ));
+    assert_eq!(
+        query_ids(&sqlite.query(wildcard.clone()).await.unwrap()),
+        ["value-4"],
+        "the percent is a literal, not a LIKE wildcard"
+    );
+    assert_eq!(
+        query_ids(&memory.query(wildcard).await.unwrap()),
+        ["value-4"]
+    );
+
+    let mut extra = query(Branch, 5);
     extra.predicate = Some(op_predicate(
         "extra",
         PredicateOp::Exists,
@@ -8264,7 +8282,7 @@ async fn a_query_predicate_prefix_contains_and_exists() {
     ));
     assert_eq!(query_ids(&sqlite.query(extra).await.unwrap()), ["value-3"]);
 
-    let mut bad_prefix = query(Branch, 3);
+    let mut bad_prefix = query(Branch, 5);
     bad_prefix.predicate = Some(op_predicate(
         "value",
         PredicateOp::Prefix,
@@ -8272,7 +8290,7 @@ async fn a_query_predicate_prefix_contains_and_exists() {
     ));
     assert!(sqlite.query(bad_prefix).await.is_err(), "a number prefix");
 
-    let mut bad_exists = query(Branch, 3);
+    let mut bad_exists = query(Branch, 5);
     bad_exists.predicate = Some(op_predicate(
         "value",
         PredicateOp::Exists,
@@ -8505,8 +8523,13 @@ async fn a_query_text_search_selects_terms() {
             vec!["beta".to_owned(), "gamma".to_owned()],
             ["value-1", "value-3"].as_slice(),
         ),
+        (
+            TextMatch::All,
+            vec!["ALPHA".to_owned()],
+            ["value-1", "value-2"].as_slice(),
+        ),
     ] {
-        let mut request = query(Branch, 3);
+        let mut request = query(Branch, 5);
         request.text = Some(dim_agent_runtime::TextSearch { terms, mode });
         let from_sqlite = sqlite.query(request.clone()).await.unwrap();
         let from_memory = memory.query(request).await.unwrap();
@@ -8514,7 +8537,7 @@ async fn a_query_text_search_selects_terms() {
         assert_eq!(query_ids(&from_memory), expected, "{mode:?} memory");
     }
 
-    let mut empty = query(Branch, 3);
+    let mut empty = query(Branch, 5);
     empty.text = Some(dim_agent_runtime::TextSearch {
         terms: vec![],
         mode: TextMatch::All,

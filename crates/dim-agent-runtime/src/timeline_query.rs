@@ -109,14 +109,13 @@ impl TimelineQueryPredicate {
     /// elements for `In`.
     pub fn values(&self) -> Vec<&serde_json::Value> {
         match self.op {
-            PredicateOp::Eq | PredicateOp::Prefix | PredicateOp::Contains | PredicateOp::Exists => {
-                vec![&self.value]
-            }
+            PredicateOp::Eq => vec![&self.value],
             PredicateOp::In => self
                 .value
                 .as_array()
                 .map(|values| values.iter().collect())
                 .unwrap_or_default(),
+            PredicateOp::Prefix | PredicateOp::Contains | PredicateOp::Exists => Vec::new(),
         }
     }
 
@@ -300,16 +299,16 @@ impl TextSearch {
         let Some(data) = kind.get("data") else {
             return false;
         };
-        let data = data.to_string().to_lowercase();
+        let data = data.to_string().to_ascii_lowercase();
         match self.mode {
             TextMatch::All => self
                 .terms
                 .iter()
-                .all(|term| data.contains(&term.to_lowercase())),
+                .all(|term| data.contains(&term.to_ascii_lowercase())),
             TextMatch::Any => self
                 .terms
                 .iter()
-                .any(|term| data.contains(&term.to_lowercase())),
+                .any(|term| data.contains(&term.to_ascii_lowercase())),
         }
     }
 }
