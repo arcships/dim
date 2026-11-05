@@ -8,7 +8,7 @@ use dim_agent_runtime::{
     Dispatcher, Names, Result, SessionIdentity, StoredBranch, StoredEvent, Timeline,
     TimelineContext, TimelineFactory, TimelineIdentity, TimelineInfo, TimelineKey, TimelineQuery,
     TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryPredicate, TimelineQueryReply,
-    TimelineQueryScope, TimelineStore, TimelineTreeControl, rebuild_facts,
+    TimelineQueryScope, TimelineStore, TimelineTreeControl,
 };
 use dim_agent_types::*;
 use futures_util::{FutureExt, future::join_all};
@@ -2350,24 +2350,36 @@ impl DynPlugin for BranchLinePlugin {
                         let read = read.clone();
                         let timeline = read_timeline.clone();
                         Box::pin(async move {
-                            let reply = rebuild_facts(
-                                &timeline,
-                                &[
-                                    "branch/create",
-                                    "branch/create-failed",
-                                    "branch/ended",
-                                    "branch/end",
-                                    "input/message",
-                                    "input/applied",
-                                    "input/consumed",
-                                    "input/deleted",
-                                    "stop/interrupt",
-                                    "turn/end",
-                                    "step/tool-use",
-                                    "step/tool-result",
-                                ],
-                            )
-                            .await?;
+                            let reply = timeline
+                                .query_all(TimelineQuery {
+                                    scope: TimelineQueryScope::Branch,
+                                    include_publishing: true,
+                                    from_event: None,
+                                    from_sequence: None,
+                                    order_by: TimelineQueryOrderBy::Sequence,
+                                    direction: TimelineQueryDirection::Ascending,
+                                    kinds: vec![
+                                        "branch/create".into(),
+                                        "branch/create-failed".into(),
+                                        "branch/ended".into(),
+                                        "branch/end".into(),
+                                        "input/message".into(),
+                                        "input/applied".into(),
+                                        "input/consumed".into(),
+                                        "input/deleted".into(),
+                                        "stop/interrupt".into(),
+                                        "turn/end".into(),
+                                        "step/tool-use".into(),
+                                        "step/tool-result".into(),
+                                    ],
+                                    flags: Vec::new(),
+                                    event_id: None,
+                                    predicate: None,
+                                    limit: NonZeroU64::new(1024)
+                                        .expect("a page keeps one fact"),
+                                    offset: 0,
+                                })
+                                .await?;
                             read.rebuild(&reply.events);
                             Ok(reply.through)
                         })
