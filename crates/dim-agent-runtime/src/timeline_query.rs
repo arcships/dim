@@ -105,20 +105,6 @@ pub struct TimelineQueryPredicate {
 }
 
 impl TimelineQueryPredicate {
-    /// The scalars this predicate compares against: one for `Eq`, the array
-    /// elements for `In`.
-    pub fn values(&self) -> Vec<&serde_json::Value> {
-        match self.op {
-            PredicateOp::Eq => vec![&self.value],
-            PredicateOp::In => self
-                .value
-                .as_array()
-                .map(|values| values.iter().collect())
-                .unwrap_or_default(),
-            PredicateOp::Prefix | PredicateOp::Contains | PredicateOp::Exists => Vec::new(),
-        }
-    }
-
     /// Whether `event`'s data holds an accepted value at `path`. A path the
     /// event does not have matches nothing.
     pub fn matches(&self, event: &AgentEvent) -> bool {
@@ -292,7 +278,7 @@ pub struct TextSearch {
 impl TextSearch {
     /// Whether `event`'s data carries the terms. This is the in-memory store's
     /// candidate check; it is a superset of what the rendered body carries.
-    pub fn matches(&self, event: &AgentEvent) -> bool {
+    pub(crate) fn matches(&self, event: &AgentEvent) -> bool {
         let Ok(kind) = serde_json::to_value(&event.kind) else {
             return false;
         };

@@ -1957,8 +1957,17 @@ fn predicate_clause(
     let path = text(path);
     let clause = match predicate.op {
         PredicateOp::Eq | PredicateOp::In => {
+            let values: Vec<&serde_json::Value> = match predicate.op {
+                PredicateOp::Eq => vec![&predicate.value],
+                PredicateOp::In => predicate
+                    .value
+                    .as_array()
+                    .map(|values| values.iter().collect())
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
             let mut clauses = Vec::new();
-            for value in predicate.values() {
+            for value in values {
                 match json_text(value) {
                     Some(literal) => {
                         clauses.push(format!("({expr} -> ?) = ?"));
