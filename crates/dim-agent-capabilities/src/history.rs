@@ -789,14 +789,6 @@ pub struct StreamedContext {
     pub compaction_cut: Option<dim_agent_types::TimelinePosition>,
 }
 
-/// Read the shared prompt/input/output projection using its supported cache.
-pub async fn read_context(
-    timeline: &Timeline,
-    through: u64,
-) -> dim_agent_runtime::Result<ContextHistory> {
-    HistoryRenderer::default().context(timeline, through).await
-}
-
 /// Read the context at `through` from its facts alone, selecting no
 /// checkpoint: the fold begins at the chain's start.
 pub async fn replay_context(

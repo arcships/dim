@@ -4,8 +4,8 @@ use crate::{
     tool_binding::ToolBinding,
 };
 use dim_agent_runtime::{
-    AgentError, CAPABILITY_RELOADING, Dispatcher, Names, Timeline, TimelineIdentity,
-    TimelineQuery, TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryScope,
+    AgentError, CAPABILITY_RELOADING, Dispatcher, Names, Timeline, TimelineIdentity, TimelineQuery,
+    TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;

@@ -4,7 +4,7 @@ use super::context_reads::{CountContextReads, TASK_READS};
 use super::*;
 use dim_agent_capabilities::{
     agent_loop::AgentLoop,
-    history::{context_messages, read_context, summary_message},
+    history::{HistoryRenderer, context_messages, summary_message},
 };
 use dim_agent_runtime::testing::{branch_events, chain_events, timeline_events};
 use rutis::host::CtxHost;
@@ -995,7 +995,9 @@ impl DynPlugin for OpeningReads {
                 timeline_events(&timeline, TimelineQueryScope::Chain, ..=0).await?;
                 let (context, reads) = TASK_READS
                     .scope(Default::default(), async {
-                        let context = read_context(&timeline, timeline.committed()).await;
+                        let context = HistoryRenderer::default()
+                            .context(&timeline, timeline.committed())
+                            .await;
                         (context, TASK_READS.with(|reads| reads.take()))
                     })
                     .await;

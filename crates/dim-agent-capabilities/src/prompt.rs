@@ -543,14 +543,16 @@ impl Prompt {
             self.finish(id, Ok(ConfigureOutcome::Superseded));
             return Ok(());
         }
-        let context =
-            match crate::history::read_context(&self.timeline, self.timeline.sequence()).await {
-                Ok(context) => context,
-                Err(error) => {
-                    self.finish(id, Err(error));
-                    return Ok(());
-                }
-            };
+        let context = match crate::history::HistoryRenderer::default()
+            .context(&self.timeline, self.timeline.sequence())
+            .await
+        {
+            Ok(context) => context,
+            Err(error) => {
+                self.finish(id, Err(error));
+                return Ok(());
+            }
+        };
         let current = PromptSnapshot::from_context(&context);
         if update
             .sources
@@ -970,7 +972,9 @@ impl DynPlugin for PromptPlugin {
                 },
             )?;
             let projected_through = timeline.sequence();
-            let context = crate::history::read_context(&timeline, projected_through).await?;
+            let context = crate::history::HistoryRenderer::default()
+                .context(&timeline, projected_through)
+                .await?;
             state.set(PromptSnapshot::from_context(&context));
             *projecting = projected_through;
             drop(projecting);
@@ -1034,7 +1038,9 @@ impl Prompt {
         {
             return Err(AgentError::Cancelled("initial prompt".into()));
         }
-        let context = crate::history::read_context(&self.timeline, event.sequence).await?;
+        let context = crate::history::HistoryRenderer::default()
+            .context(&self.timeline, event.sequence)
+            .await?;
         let current = PromptSnapshot::from_context(&context);
         if update
             .sources

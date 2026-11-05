@@ -2375,8 +2375,7 @@ impl DynPlugin for BranchLinePlugin {
                                     flags: Vec::new(),
                                     event_id: None,
                                     predicate: None,
-                                    limit: NonZeroU64::new(1024)
-                                        .expect("a page keeps one fact"),
+                                    limit: NonZeroU64::new(1024).expect("a page keeps one fact"),
                                     offset: 0,
                                 })
                                 .await?;

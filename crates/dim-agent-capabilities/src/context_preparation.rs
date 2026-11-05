@@ -63,8 +63,9 @@ impl ConfigurationPublisher {
         inputs: impl FnOnce(&PromptSnapshot, &PromptSnapshot) -> Vec<InputBlock> + Send,
         register: impl FnOnce(&[Arc<AgentEvent>]) -> dim_agent_runtime::Result<()> + Send,
     ) -> dim_agent_runtime::Result<Option<u64>> {
-        let context =
-            crate::history::read_context(&self.timeline, self.timeline.sequence()).await?;
+        let context = crate::history::HistoryRenderer::default()
+            .context(&self.timeline, self.timeline.sequence())
+            .await?;
         let before = PromptSnapshot::from_context(&context);
         for change in &changes {
             let scope = match change {
@@ -217,8 +218,9 @@ impl ConfigurationPublisher {
         if self.closing() {
             return Ok(());
         }
-        let context =
-            crate::history::read_context(&self.timeline, self.timeline.sequence()).await?;
+        let context = crate::history::HistoryRenderer::default()
+            .context(&self.timeline, self.timeline.sequence())
+            .await?;
         let Some(previous) = context_configuration(&context) else {
             return Ok(());
         };
@@ -951,8 +953,7 @@ impl DynPlugin for ContextPreparationPlugin {
                                     flags: Vec::new(),
                                     event_id: None,
                                     predicate: None,
-                                    limit: NonZeroU64::new(1024)
-                                        .expect("a page keeps one fact"),
+                                    limit: NonZeroU64::new(1024).expect("a page keeps one fact"),
                                     offset: 0,
                                 })
                                 .await?;
