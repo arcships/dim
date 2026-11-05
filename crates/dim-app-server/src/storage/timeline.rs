@@ -2001,47 +2001,51 @@ fn query_rows(
             paths.push(header);
         }
         let mut clauses = Vec::new();
-        for path in paths {
-            let path = text(&path);
-            match json_text(&predicate.value) {
-                Some(literal) => {
-                    clauses.push("(body -> ?) = ?");
-                    parameters.extend([path, literal]);
-                }
-                None => {
-                    clauses.push("(json_type(body, ?) = ? AND json_extract(body, ?) IS ?)");
-                    parameters.extend([
-                        path.clone(),
-                        text(json_type_name(&predicate.value)),
-                        path,
-                        json_value(&predicate.value)?,
-                    ]);
+        for path in &paths {
+            for value in predicate.values() {
+                let path = text(path);
+                match json_text(value) {
+                    Some(literal) => {
+                        clauses.push("(body -> ?) = ?");
+                        parameters.extend([path, literal]);
+                    }
+                    None => {
+                        clauses.push("(json_type(body, ?) = ? AND json_extract(body, ?) IS ?)");
+                        parameters.extend([
+                            path.clone(),
+                            text(json_type_name(value)),
+                            path,
+                            json_value(value)?,
+                        ]);
+                    }
                 }
             }
         }
         let record_path = text(&format!("$.event.data.{}", predicate.path));
-        match json_text(&predicate.value) {
-            Some(literal) => {
-                clauses.push(
-                    "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
-                       WHERE (r.value -> ?) = ? \
-                       AND json_extract(r.value, '$.event.sequence') <= ?))",
-                );
-                parameters.extend([record_path, literal, bound]);
-            }
-            None => {
-                clauses.push(
-                    "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
-                       WHERE json_type(r.value, ?) = ? AND json_extract(r.value, ?) IS ? \
-                       AND json_extract(r.value, '$.event.sequence') <= ?))",
-                );
-                parameters.extend([
-                    record_path.clone(),
-                    text(json_type_name(&predicate.value)),
-                    record_path,
-                    json_value(&predicate.value)?,
-                    bound,
-                ]);
+        for value in predicate.values() {
+            match json_text(value) {
+                Some(literal) => {
+                    clauses.push(
+                        "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
+                           WHERE (r.value -> ?) = ? \
+                           AND json_extract(r.value, '$.event.sequence') <= ?))",
+                    );
+                    parameters.extend([record_path.clone(), literal, bound.clone()]);
+                }
+                None => {
+                    clauses.push(
+                        "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
+                           WHERE json_type(r.value, ?) = ? AND json_extract(r.value, ?) IS ? \
+                           AND json_extract(r.value, '$.event.sequence') <= ?))",
+                    );
+                    parameters.extend([
+                        record_path.clone(),
+                        text(json_type_name(value)),
+                        record_path.clone(),
+                        json_value(value)?,
+                        bound.clone(),
+                    ]);
+                }
             }
         }
         sql.push_str(&format!(" AND ({})", clauses.join(" OR ")));

@@ -76,14 +76,21 @@ export type TimelineQueryFlag =
   | /** The flag that puts an event in the rendered context. */ "render"
   | /** The flag that puts an event in the projection's checkpoint state. */ "state"
 
-/** One equality against one JSON scalar of an event's data. */
+/** How one predicate compares the JSON value at its path. */
+export type PredicateOp =
+  | /** The value equals `value`. */ "eq"
+  | /** The value is one of the scalars in `value`. */ "in"
+
+/** One comparison against one JSON scalar of an event's data. */
 export interface TimelineQueryPredicate {
   /**
    * Field names inside the event's data joined by dots; no array indexing
    * and no wildcards.
    */
   path: string
-  /** The JSON scalar the path must equal. */
+  /** The comparison; absent reads as `Eq`. */
+  op?: PredicateOp
+  /** The scalar `Eq` compares, or the scalars `In` accepts. */
   value: unknown
 }
 

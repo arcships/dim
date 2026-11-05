@@ -7,9 +7,9 @@ use crate::fold::{self, Conclusion, ConclusionAction, Decision, Fold, TurnEnd};
 use crate::text::{self, GoalTexts};
 use dim_agent_capabilities::timeline_tree::TreeCommands;
 use dim_agent_runtime::{
-    AgentError, BoxFuture, BranchLifecycle, BranchOptions, Dispatcher, Names, SessionLifecycle,
-    Timeline, TimelineIdentity, TimelineQuery, TimelineQueryDirection, TimelineQueryOrderBy,
-    TimelineQueryPredicate, TimelineQueryScope, rebuild_facts,
+    AgentError, BoxFuture, BranchLifecycle, BranchOptions, Dispatcher, Names, PredicateOp,
+    SessionLifecycle, Timeline, TimelineIdentity, TimelineQuery, TimelineQueryDirection,
+    TimelineQueryOrderBy, TimelineQueryPredicate, TimelineQueryScope, rebuild_facts,
 };
 use dim_agent_types::{
     AgentEvent, BranchSource, EventKind, ExecStatus, InputBlock, InterruptScope, TurnEndData,
@@ -543,6 +543,7 @@ impl Owner {
             .query(TimelineQuery {
                 kinds: vec!["branch/create".into()],
                 predicate: Some(TimelineQueryPredicate {
+                    op: PredicateOp::Eq,
                     path: "source.operation_id".into(),
                     value: fold::evaluation_operation(after).into(),
                 }),
@@ -831,6 +832,7 @@ impl Owner {
                 .query(TimelineQuery {
                     kinds: vec!["step/model-start".into(), "step/text".into()],
                     predicate: Some(TimelineQueryPredicate {
+                        op: PredicateOp::Eq,
                         path: "turn_id".into(),
                         value: turn_id.into(),
                     }),

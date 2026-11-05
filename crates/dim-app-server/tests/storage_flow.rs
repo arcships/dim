@@ -7685,8 +7685,20 @@ fn query(
 
 fn predicate(path: &str, value: serde_json::Value) -> dim_agent_runtime::TimelineQueryPredicate {
     dim_agent_runtime::TimelineQueryPredicate {
+        op: dim_agent_runtime::PredicateOp::Eq,
         path: path.into(),
         value,
+    }
+}
+
+fn in_predicate(
+    path: &str,
+    values: serde_json::Value,
+) -> dim_agent_runtime::TimelineQueryPredicate {
+    dim_agent_runtime::TimelineQueryPredicate {
+        op: dim_agent_runtime::PredicateOp::In,
+        path: path.into(),
+        value: values,
     }
 }
 
@@ -8079,6 +8091,73 @@ async fn a_query_compares_a_json_scalar_by_its_type() {
         assert_eq!(query_ids(&from_sqlite), [expected], "{direction:?} sqlite");
         assert_eq!(query_ids(&from_memory), [expected], "{direction:?} memory");
     }
+    db.close().await.unwrap();
+}
+
+/// `In` accepts any listed scalar and is pushed to both stores.
+#[tokio::test]
+async fn a_query_predicate_in_selects_any_listed_scalar() {
+    use dim_agent_runtime::TimelineQueryScope::Branch;
+
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    let memory_store: std::sync::Arc<dyn TimelineStore> =
+        std::sync::Arc::new(dim_agent_runtime::MemoryTimelineStore::default());
+    for target in [store.clone(), memory_store.clone()] {
+        target
+            .create_session("query", &SessionConfig::default())
+            .await
+            .unwrap();
+        for sequence in 1..=3u64 {
+            publish_records(
+                &target,
+                key("query", "main"),
+                vec![query_record(
+                    sequence,
+                    sequence,
+                    &format!("value-{sequence}"),
+                    marked(serde_json::json!({ "value": sequence })),
+                )],
+            )
+            .await;
+        }
+    }
+    let sqlite = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        store,
+    )
+    .await
+    .unwrap();
+    let memory = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        memory_store,
+    )
+    .await
+    .unwrap();
+
+    let mut request = query(Branch, 2);
+    request.predicate = Some(in_predicate("value", serde_json::json!([1, 3])));
+    let from_sqlite = sqlite.query(request.clone()).await.unwrap();
+    let from_memory = memory.query(request).await.unwrap();
+    assert_eq!(query_ids(&from_sqlite), ["value-1", "value-3"], "sqlite");
+    assert_eq!(query_ids(&from_memory), ["value-1", "value-3"], "memory");
+
+    let mut empty = query(Branch, 1);
+    empty.predicate = Some(in_predicate("value", serde_json::json!([])));
+    assert!(sqlite.query(empty).await.is_err(), "an empty In is invalid");
+
+    let mut object = query(Branch, 1);
+    object.predicate = Some(in_predicate("value", serde_json::json!([{ "a": 1 }])));
+    assert!(
+        sqlite.query(object).await.is_err(),
+        "an object In is invalid"
+    );
+
     db.close().await.unwrap();
 }
 
