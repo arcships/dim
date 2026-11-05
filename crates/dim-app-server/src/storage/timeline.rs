@@ -1931,6 +1931,20 @@ fn output_header_path(path: &str) -> Option<String> {
     matches!(path, "turn_id" | "request_id").then(|| format!("$.{path}"))
 }
 
+/// Whether a term is long enough and shaped for the trigram index; anything
+/// else falls back to the data scan.
+fn fts_term(term: &str) -> bool {
+    term.chars().count() >= 3
+        && term
+            .chars()
+            .all(|c| c.is_alphanumeric() || c.is_whitespace())
+}
+
+/// One FTS5 phrase, with inner quotes escaped.
+fn fts_phrase(term: &str) -> String {
+    format!("\"{}\"", term.replace('"', "\"\""))
+}
+
 /// One predicate clause over the JSON expression `expr` (a row body or a
 /// merged record's event), with its parameters appended in placeholder order.
 fn predicate_clause(
@@ -2112,17 +2126,27 @@ fn query_rows(
     if let Some(search) = &query.text {
         let mut clauses = Vec::new();
         for term in &search.terms {
-            clauses.push(
-                "(instr(lower(json_extract(body, '$.record.event.data')), lower(?)) > 0 \
-                   OR EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
-                     WHERE instr(lower(json_extract(r.value, '$.event.data')), lower(?)) > 0 \
-                     AND json_extract(r.value, '$.event.sequence') <= ?))",
-            );
-            parameters.extend([
-                text(term),
-                text(term),
-                rusqlite::types::Value::Integer(sql_sequence(*range.end())?),
-            ]);
+            if fts_term(term) {
+                clauses.push(
+                    "(EXISTS (SELECT 1 FROM timeline_text \
+                       WHERE timeline_text.session_id = ? AND timeline_text.branch_id = ? \
+                       AND timeline_text.sequence = timeline_events.sequence \
+                       AND timeline_text MATCH ?))",
+                );
+                parameters.extend([text(session), text(branch), text(&fts_phrase(term))]);
+            } else {
+                clauses.push(
+                    "(instr(lower(json_extract(body, '$.record.event.data')), lower(?)) > 0 \
+                       OR EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
+                         WHERE instr(lower(json_extract(r.value, '$.event.data')), lower(?)) > 0 \
+                         AND json_extract(r.value, '$.event.sequence') <= ?))",
+                );
+                parameters.extend([
+                    text(term),
+                    text(term),
+                    rusqlite::types::Value::Integer(sql_sequence(*range.end())?),
+                ]);
+            }
         }
         let join = match search.mode {
             dim_agent_runtime::TextMatch::All => " AND ",

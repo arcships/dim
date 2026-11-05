@@ -332,12 +332,13 @@ fn same_schema(actual: &[(String, String)], mut expected: Vec<(&str, String)>) -
                 name == expected_name && *sql == expected_sql
             })
 }
-/// The read indexes the daemon creates at open: the latest-turn window's
+/// The derived objects the daemon creates at open: the latest-turn window's
 /// ([session-history-window §5.1](../../../../docs/design/appserver/session-history-window.md#51-the-derived-index)),
-/// the policy window's turn starts, and the event query's by kind, which carries
-/// the event id so a kind read needs no table body for it (ADR 019 D4). They
-/// carry no data and no decode rule, so they are not part of the format: `schema`
-/// and the format gate ignore them, and every open recreates them.
+/// the policy window's turn starts, the event query's by kind (which carries
+/// the event id so a kind read needs no table body for it, ADR 019 D4), and the
+/// text index with its triggers. They carry no format state and no decode rule,
+/// so they are not part of the format: `schema` and the format gate ignore
+/// them, and every open recreates them.
 const DERIVED_INDEXES: &[(&str, &str)] = &[
     (
         "timeline_history_anchors",
@@ -351,6 +352,41 @@ const DERIVED_INDEXES: &[(&str, &str)] = &[
         "timeline_policy_turns",
         "CREATE INDEX IF NOT EXISTS timeline_policy_turns ON timeline_events(session_id, branch_id, kind, sequence, event_id) WHERE kind = 'turn/start'",
     ),
+    (
+        "timeline_text",
+        "CREATE VIRTUAL TABLE IF NOT EXISTS timeline_text USING fts5(data, session_id UNINDEXED, branch_id UNINDEXED, sequence UNINDEXED, tokenize='trigram')",
+    ),
+    (
+        "timeline_text_ai",
+        "CREATE TRIGGER IF NOT EXISTS timeline_text_ai AFTER INSERT ON timeline_events BEGIN \
+           INSERT INTO timeline_text(data, session_id, branch_id, sequence) \
+           VALUES (CASE WHEN json_valid(NEW.body) \
+                     THEN coalesce(json_extract(NEW.body, '$.record.event.data'), '') || ' ' || \
+                          coalesce(json_extract(NEW.body, '$.records'), '') \
+                     ELSE NEW.body END, \
+                   NEW.session_id, NEW.branch_id, NEW.sequence); \
+         END",
+    ),
+    (
+        "timeline_text_au",
+        "CREATE TRIGGER IF NOT EXISTS timeline_text_au AFTER UPDATE ON timeline_events BEGIN \
+           DELETE FROM timeline_text WHERE session_id = OLD.session_id \
+             AND branch_id = OLD.branch_id AND sequence = OLD.sequence; \
+           INSERT INTO timeline_text(data, session_id, branch_id, sequence) \
+           VALUES (CASE WHEN json_valid(NEW.body) \
+                     THEN coalesce(json_extract(NEW.body, '$.record.event.data'), '') || ' ' || \
+                          coalesce(json_extract(NEW.body, '$.records'), '') \
+                     ELSE NEW.body END, \
+                   NEW.session_id, NEW.branch_id, NEW.sequence); \
+         END",
+    ),
+    (
+        "timeline_text_ad",
+        "CREATE TRIGGER IF NOT EXISTS timeline_text_ad AFTER DELETE ON timeline_events BEGIN \
+           DELETE FROM timeline_text WHERE session_id = OLD.session_id \
+             AND branch_id = OLD.branch_id AND sequence = OLD.sequence; \
+         END",
+    ),
 ];
 /// The schema objects of `connection`'s database that belong to the format,
 /// sorted by name.
@@ -363,7 +399,8 @@ fn schema(connection: &Connection) -> Result<Vec<(String, String)>> {
     let mut query = connection
         .prepare(&format!(
             "SELECT name, sql FROM sqlite_master \
-             WHERE name NOT LIKE 'sqlite_%' AND name NOT IN ({placeholders}) ORDER BY name"
+             WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'timeline_text%' \
+             AND name NOT IN ({placeholders}) ORDER BY name"
         ))
         .map_err(storage)?;
     let objects = query
@@ -729,6 +766,21 @@ impl SqliteStorage {
         }
         for (_, sql) in DERIVED_INDEXES {
             tx.execute_batch(sql).map_err(storage)?;
+        }
+        let text_rows: i64 = tx
+            .query_row("SELECT count(*) FROM timeline_text", [], |row| row.get(0))
+            .map_err(storage)?;
+        if text_rows == 0 {
+            tx.execute_batch(
+                "INSERT INTO timeline_text(data, session_id, branch_id, sequence) \
+                 SELECT CASE WHEN json_valid(body) \
+                        THEN coalesce(json_extract(body, '$.record.event.data'), '') || ' ' || \
+                             coalesce(json_extract(body, '$.records'), '') \
+                        ELSE body END, \
+                        session_id, branch_id, sequence \
+                 FROM timeline_events",
+            )
+            .map_err(storage)?;
         }
         tx.commit().map_err(storage)?;
         connection

@@ -485,6 +485,7 @@ fn schema(connection: &Connection) -> Vec<String> {
     let mut statements: Vec<String> = connection
         .prepare(
             "SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' \
+             AND name NOT LIKE 'timeline_text%' \
              AND name NOT IN ('timeline_history_anchors', 'timeline_events_by_kind', \
                               'timeline_policy_turns')",
         )
@@ -8520,6 +8521,11 @@ async fn a_query_text_search_selects_terms() {
             vec!["ALPHA".to_owned()],
             ["value-1", "value-2"].as_slice(),
         ),
+        (
+            TextMatch::All,
+            vec!["al".to_owned()],
+            ["value-1", "value-2"].as_slice(),
+        ),
     ] {
         let mut request = query(Branch, 5);
         request.text = Some(dim_agent_runtime::TextSearch { terms, mode });
@@ -8536,6 +8542,96 @@ async fn a_query_text_search_selects_terms() {
     });
     assert!(sqlite.query(empty).await.is_err(), "empty text terms");
 
+    db.close().await.unwrap();
+}
+
+/// The derived text index follows inserts and event deletes.
+#[tokio::test]
+async fn the_text_index_follows_events_and_deletes() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("query", &SessionConfig::default())
+        .await
+        .unwrap();
+    publish_records(
+        &store,
+        key("query", "main"),
+        vec![query_record(
+            1,
+            1,
+            "indexed",
+            marked(serde_json::json!({ "text": "indexed phrase" })),
+        )],
+    )
+    .await;
+
+    let connection = rusqlite::Connection::open(&database.0).unwrap();
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM timeline_text WHERE session_id = 'query' AND data LIKE '%indexed phrase%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "the insert reached the text index");
+
+    connection
+        .execute("DELETE FROM timeline_events WHERE session_id = 'query'", [])
+        .unwrap();
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM timeline_text WHERE session_id = 'query'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0, "the delete removed the index rows");
+}
+
+/// Opening a store whose text index was dropped backfills it from events.
+#[tokio::test]
+async fn opening_backfills_an_empty_text_index() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("query", &SessionConfig::default())
+        .await
+        .unwrap();
+    publish_records(
+        &store,
+        key("query", "main"),
+        vec![query_record(
+            1,
+            1,
+            "backfilled",
+            marked(serde_json::json!({ "text": "backfill phrase" })),
+        )],
+    )
+    .await;
+    db.close().await.unwrap();
+
+    let connection = rusqlite::Connection::open(&database.0).unwrap();
+    connection
+        .execute_batch(
+            "DROP TRIGGER timeline_text_ai; DROP TRIGGER timeline_text_au; \
+             DROP TRIGGER timeline_text_ad; DROP TABLE timeline_text",
+        )
+        .unwrap();
+    drop(connection);
+
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let connection = rusqlite::Connection::open(&database.0).unwrap();
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM timeline_text WHERE session_id = 'query' AND data LIKE '%backfill phrase%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "the empty index was backfilled");
     db.close().await.unwrap();
 }
 

@@ -18,7 +18,6 @@ Non-goals:
 - No business meaning in the store: turn, thing, recall body and open/closed state are the caller's.
 - `open pair` and `latest per key` stay caller plans (two-step point reads and the keyed-block projection in #958), not query fields.
 - Text search returns candidates; it is not the recall answer.
-- No FTS index in this change: the text selection is a whole-data candidate scan. FTS5 is future work behind the same field.
 
 ## 2. Own contract
 
@@ -74,18 +73,19 @@ pub struct TextSearch {
 }
 ```
 
-- Both stores compare the serialized `event.data` value with `instr`, case-insensitively for ASCII; non-ASCII characters compare exactly. This is a candidate scan over the requested range, not an index and not a rank.
+- SQLite maintains a derived FTS5 index (`timeline_text`, `trigram` tokenizer) over the serialized event data: the row's `$.record.event.data` and each merged record's `$.event.data`. Triggers on `timeline_events` insert, update and delete its entries; opening a store backfills an empty index from the committed rows. The index is not part of the format.
+- A term of at least three alphanumeric characters uses the index; a shorter or punctuation-bearing term uses an `instr` scan over the same data. The in-memory store scans with `instr`. Matching is case-insensitive for ASCII; non-ASCII characters compare exactly.
+- This is a candidate selection, not a rank: the result is the matching events in the query's normal order and range, and the caller folds them.
 - The result is the matching events in the query's normal order and range; a text match adds no rank and does not reorder. The caller folds the candidates.
 - `All` requires every term; `Any` requires one. Terms are matched as text, not as a query language.
-- The scan may miss a term split across two events (for example two `step/text` deltas) and may match a field name or identifier that is not rendered. Recall verifies the rendered body, which removes false positives; it cannot restore a missed candidate. That narrowing is accepted for the first implementation.
-- An FTS5 index (`trigram` for CJK, `unicode61` for Latin) is future work behind the same `text` field. It needs its own format decision and schema version; no request depends on an index today.
+- The index may miss a term split across two events (for example two `step/text` deltas) and may match a field name or identifier that is not rendered. Recall verifies the rendered body, which removes false positives; it cannot restore a missed candidate. That narrowing is accepted.
 - Recall is the first consumer: it uses the candidates to read the surrounding turn and verifies every `about` word against the rendered body. The text result is a candidate set, never the answer.
 
 ### 2.3 Store pushdown
 
 - `Eq`/`In`/`Prefix`/`Exists` are pushed to the store; the caller-side `accepts` still checks every predicate.
 - A predicate with `Contains` or an array path may be applied in the store when the backend can express it; otherwise the store returns the range and the caller filters. It must not widen the range silently.
-- `text` is pushed as an `instr` over `event.data` in SQLite and as the same comparison over the serialized data in the in-memory store. There is no index and no `InvalidInput` fallback in this implementation.
+- `text` is pushed to `timeline_text` for terms the trigram index can answer, and to an `instr` scan for shorter terms; the in-memory store always scans. A backend that cannot express the selection fails validation rather than returning a different set.
 - `validate` rejects an unsupported operator, an invalid array path, a non-scalar `Eq`/`In` member, empty text terms, text with a named event, or both `predicate` and `predicates`.
 
 ### 2.4 Compatibility
@@ -94,12 +94,12 @@ pub struct TextSearch {
 
 ## 3. Events and state
 
-The query is read-only. There is no text index in this implementation; the scan reads committed event data and no event shape changes. A later FTS index would be derived state, not a fact and not a source of truth; a missing or stale entry must only make a text search miss, never change a non-text read, and Session deletion removes its entries.
+The query is read-only. `timeline_text` is derived state, not a fact and not a source of truth; triggers keep it in step with committed rows, an open backfills it when empty, and deleting events removes its entries. A missing or stale entry may only make a text search miss, never change a non-text read.
 
 ## 4. Dependencies
 
-- `TimelineStore` implements the pushed predicates and the text scan. The port's existing range/order contract is unchanged.
-- SQLite and the in-memory store both implement the same selection; a backend that cannot express an operator fails validation rather than returning a different set.
+- `TimelineStore` implements the pushed predicates and the text selection. The port's existing range/order contract is unchanged.
+- SQLite owns the derived FTS5 table and its triggers; the in-memory store scans. Both implement the same selection; a backend that cannot express an operator fails validation rather than returning a different set.
 - Recall consumes the text candidates; its narrative and verification stay in the capability.
 
 ## 5. Cross-module requirements
