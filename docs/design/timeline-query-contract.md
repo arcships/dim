@@ -59,6 +59,8 @@ An array segment expands to `EXISTS (SELECT 1 FROM json_each(...) e WHERE json_e
 
 One array level is the maximum. A wildcard, a second `[]`, a leading `$`, or a bracket anywhere else is invalid.
 
+The Rust binding exposes `TimelineQueryPredicate::array_path()` to the store: it returns the path before the array and the path inside each element. It is an accessor over the path grammar, not another selection form.
+
 ### 2.2 Text search
 
 `TimelineQuery` gains:
