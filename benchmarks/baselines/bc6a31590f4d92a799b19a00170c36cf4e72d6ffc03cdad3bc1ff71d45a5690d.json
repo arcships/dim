@@ -190,7 +190,7 @@
     "subject": "Merge pull request #1024 from arcships/fix/973-runtime-block-references",
     "version": "0.1.0-alpha.8-source"
   },
-  "taken_at": "2026-11-05T01:45:31.679319+00:00",
+  "taken_at": "2026-11-05T03:36:32.660923+00:00",
   "tasks": {
     "databricks/officeqa-pro__UID0001": {
       "fully_scored": true,
@@ -403,8 +403,8 @@
     "databricks/officeqa-pro__UID0007": {
       "fully_scored": true,
       "k": 3,
-      "pass_score": 0.6666666666666666,
-      "passes": 2,
+      "pass_score": 1.0,
+      "passes": 3,
       "source_run_id": "2026-11-04T0626__baseline__4247a6240__3ae3",
       "task_checksum": "bd6da0dd416a9b3cb9fd378bdade5bc89307cb9d771525cb12ca93a61bb583c6",
       "trials": [
@@ -437,17 +437,17 @@
           "usage_complete": true
         },
         {
-          "agent_seconds": 649.70349,
-          "cache_tokens": 22282624,
-          "end_reason": "failed",
-          "exception": "NonZeroAgentExitCodeError",
-          "input_tokens": 22606704,
-          "output_tokens": 86398,
-          "reward": 0.0,
-          "token_cost": 410478,
-          "trial_name": "UID0007__pg6Gpux",
-          "turns": 103,
-          "uncached_input_tokens": 324080,
+          "agent_seconds": 517.236557,
+          "cache_tokens": 15751296,
+          "end_reason": "end_turn",
+          "exception": null,
+          "input_tokens": 16068020,
+          "output_tokens": 77275,
+          "reward": 1.0,
+          "token_cost": 393999,
+          "trial_name": "UID0007__Sf77zg9",
+          "turns": 84,
+          "uncached_input_tokens": 316724,
           "usage_complete": true
         }
       ]
@@ -853,17 +853,17 @@
           "usage_complete": true
         },
         {
-          "agent_seconds": 307.350958,
-          "cache_tokens": 1922816,
-          "end_reason": "failed",
-          "exception": "NonZeroAgentExitCodeError",
-          "input_tokens": 1985778,
-          "output_tokens": 49212,
+          "agent_seconds": 861.210129,
+          "cache_tokens": 9242112,
+          "end_reason": "end_turn",
+          "exception": null,
+          "input_tokens": 9327340,
+          "output_tokens": 123364,
           "reward": 0.0,
-          "token_cost": 112174,
-          "trial_name": "UID0019__f7m5oA7",
-          "turns": 31,
-          "uncached_input_tokens": 62962,
+          "token_cost": 208592,
+          "trial_name": "UID0019__hmTdMac",
+          "turns": 79,
+          "uncached_input_tokens": 85228,
           "usage_complete": true
         }
       ]
@@ -871,8 +871,8 @@
     "databricks/officeqa-pro__UID0022": {
       "fully_scored": true,
       "k": 3,
-      "pass_score": 0.6666666666666666,
-      "passes": 2,
+      "pass_score": 1.0,
+      "passes": 3,
       "source_run_id": "2026-11-04T0626__baseline__4247a6240__3ae3",
       "task_checksum": "dcd80ab72b9f10d0381f740f9e64c7cf95944fa09a9ffb88f66867aa9f96befd",
       "trials": [
@@ -905,17 +905,17 @@
           "usage_complete": true
         },
         {
-          "agent_seconds": 288.897612,
-          "cache_tokens": 3325056,
-          "end_reason": "failed",
-          "exception": "NonZeroAgentExitCodeError",
-          "input_tokens": 3379836,
-          "output_tokens": 39717,
-          "reward": 0.0,
-          "token_cost": 94497,
-          "trial_name": "UID0022__YwyXNk8",
-          "turns": 60,
-          "uncached_input_tokens": 54780,
+          "agent_seconds": 207.384311,
+          "cache_tokens": 2504960,
+          "end_reason": "end_turn",
+          "exception": null,
+          "input_tokens": 2556475,
+          "output_tokens": 27752,
+          "reward": 1.0,
+          "token_cost": 79267,
+          "trial_name": "UID0022__S4MXakq",
+          "turns": 56,
+          "uncached_input_tokens": 51515,
           "usage_complete": true
         }
       ]
@@ -943,6 +943,20 @@
           "usage_complete": true
         },
         {
+          "agent_seconds": 1045.784482,
+          "cache_tokens": 28864128,
+          "end_reason": "end_turn",
+          "exception": null,
+          "input_tokens": 29261410,
+          "output_tokens": 60037,
+          "reward": 0.0,
+          "token_cost": 457319,
+          "trial_name": "UID0025__aA8LtqS",
+          "turns": 109,
+          "uncached_input_tokens": 397282,
+          "usage_complete": true
+        },
+        {
           "agent_seconds": 593.350882,
           "cache_tokens": 27262848,
           "end_reason": "end_turn",
@@ -954,20 +968,6 @@
           "trial_name": "UID0025__mtzzW2D",
           "turns": 118,
           "uncached_input_tokens": 348824,
-          "usage_complete": true
-        },
-        {
-          "agent_seconds": 277.772437,
-          "cache_tokens": 10521600,
-          "end_reason": "failed",
-          "exception": "NonZeroAgentExitCodeError",
-          "input_tokens": 10779739,
-          "output_tokens": 27066,
-          "reward": 0.0,
-          "token_cost": 285205,
-          "trial_name": "UID0025__xHyxfad",
-          "turns": 63,
-          "uncached_input_tokens": 258139,
           "usage_complete": true
         }
       ]
@@ -1027,23 +1027,23 @@
     "databricks/officeqa-pro__UID0028": {
       "fully_scored": true,
       "k": 3,
-      "pass_score": 0.6666666666666666,
-      "passes": 2,
+      "pass_score": 1.0,
+      "passes": 3,
       "source_run_id": "2026-11-04T0626__baseline__4247a6240__3ae3",
       "task_checksum": "8c7239f3e81027782e68902da8c57135c3c4ed099e1ec78f37239fca837ac4ad",
       "trials": [
         {
-          "agent_seconds": 213.187738,
-          "cache_tokens": 2482432,
-          "end_reason": "failed",
-          "exception": "NonZeroAgentExitCodeError",
-          "input_tokens": 2556898,
-          "output_tokens": 34382,
-          "reward": 0.0,
-          "token_cost": 108848,
-          "trial_name": "UID0028__XupDhmz",
-          "turns": 38,
-          "uncached_input_tokens": 74466,
+          "agent_seconds": 503.395974,
+          "cache_tokens": 13696384,
+          "end_reason": "end_turn",
+          "exception": null,
+          "input_tokens": 13870173,
+          "output_tokens": 79342,
+          "reward": 1.0,
+          "token_cost": 253131,
+          "trial_name": "UID0028__4YAFU9b",
+          "turns": 89,
+          "uncached_input_tokens": 173789,
           "usage_complete": true
         },
         {
@@ -1079,25 +1079,11 @@
     "databricks/officeqa-pro__UID0029": {
       "fully_scored": true,
       "k": 3,
-      "pass_score": 0.6666666666666666,
-      "passes": 2,
+      "pass_score": 1.0,
+      "passes": 3,
       "source_run_id": "2026-11-04T0626__baseline__4247a6240__3ae3",
       "task_checksum": "94b09c41dfe336f13d20a849ae64afa6b106b695cee626c9ff39847e70dcddef",
       "trials": [
-        {
-          "agent_seconds": 192.685607,
-          "cache_tokens": 2345344,
-          "end_reason": "failed",
-          "exception": "NonZeroAgentExitCodeError",
-          "input_tokens": 2407102,
-          "output_tokens": 26979,
-          "reward": 0.0,
-          "token_cost": 88737,
-          "trial_name": "UID0029__8JEaDka",
-          "turns": 44,
-          "uncached_input_tokens": 61758,
-          "usage_complete": true
-        },
         {
           "agent_seconds": 118.137442,
           "cache_tokens": 918016,
@@ -1125,6 +1111,20 @@
           "turns": 55,
           "uncached_input_tokens": 68643,
           "usage_complete": true
+        },
+        {
+          "agent_seconds": 140.519404,
+          "cache_tokens": 909696,
+          "end_reason": "end_turn",
+          "exception": null,
+          "input_tokens": 940076,
+          "output_tokens": 26034,
+          "reward": 1.0,
+          "token_cost": 56414,
+          "trial_name": "UID0029__dDHkASw",
+          "turns": 23,
+          "uncached_input_tokens": 30380,
+          "usage_complete": true
         }
       ]
     },
@@ -1137,17 +1137,31 @@
       "task_checksum": "388f3d6b3c7b01016758fd45f2187b947c1d15aa9c31180482e599a2eb2a8214",
       "trials": [
         {
-          "agent_seconds": 169.116435,
-          "cache_tokens": 1586432,
-          "end_reason": "failed",
-          "exception": "NonZeroAgentExitCodeError",
-          "input_tokens": 1634260,
-          "output_tokens": 18266,
+          "agent_seconds": 1804.210893,
+          "cache_tokens": null,
+          "end_reason": null,
+          "exception": "AgentTimeoutError",
+          "input_tokens": null,
+          "output_tokens": null,
           "reward": 0.0,
-          "token_cost": 66094,
-          "trial_name": "UID0030__9KeoUfi",
-          "turns": 42,
-          "uncached_input_tokens": 47828,
+          "token_cost": null,
+          "trial_name": "UID0030__YUZJkJL",
+          "turns": null,
+          "uncached_input_tokens": null,
+          "usage_complete": null
+        },
+        {
+          "agent_seconds": 1288.064783,
+          "cache_tokens": 19753728,
+          "end_reason": "end_turn",
+          "exception": null,
+          "input_tokens": 19922044,
+          "output_tokens": 89697,
+          "reward": 0.0,
+          "token_cost": 258013,
+          "trial_name": "UID0030__baxKFE8",
+          "turns": 155,
+          "uncached_input_tokens": 168316,
           "usage_complete": true
         },
         {
@@ -1163,28 +1177,14 @@
           "turns": null,
           "uncached_input_tokens": null,
           "usage_complete": null
-        },
-        {
-          "agent_seconds": 1804.263782,
-          "cache_tokens": null,
-          "end_reason": null,
-          "exception": "AgentTimeoutError",
-          "input_tokens": null,
-          "output_tokens": null,
-          "reward": 0.0,
-          "token_cost": null,
-          "trial_name": "UID0030__uSDthDo",
-          "turns": null,
-          "uncached_input_tokens": null,
-          "usage_complete": null
         }
       ]
     },
     "databricks/officeqa-pro__UID0031": {
       "fully_scored": true,
       "k": 3,
-      "pass_score": 0.6666666666666666,
-      "passes": 2,
+      "pass_score": 1.0,
+      "passes": 3,
       "source_run_id": "2026-11-04T0626__baseline__4247a6240__3ae3",
       "task_checksum": "c0dd7757562fcdea6cc7fffed08b5b05e9aadce81e5b33c08c9c402caacffd47",
       "trials": [
@@ -1203,17 +1203,17 @@
           "usage_complete": true
         },
         {
-          "agent_seconds": 132.600158,
-          "cache_tokens": 1506816,
-          "end_reason": "failed",
-          "exception": "NonZeroAgentExitCodeError",
-          "input_tokens": 1565480,
-          "output_tokens": 14559,
-          "reward": 0.0,
-          "token_cost": 73223,
-          "trial_name": "UID0031__hTmNQm3",
-          "turns": 33,
-          "uncached_input_tokens": 58664,
+          "agent_seconds": 68.236141,
+          "cache_tokens": 951552,
+          "end_reason": "end_turn",
+          "exception": null,
+          "input_tokens": 1004411,
+          "output_tokens": 8058,
+          "reward": 1.0,
+          "token_cost": 60917,
+          "trial_name": "UID0031__n3fXorE",
+          "turns": 25,
+          "uncached_input_tokens": 52859,
           "usage_complete": true
         },
         {
@@ -1397,7 +1397,7 @@
       "task_checksum": "69b0d961816e986cd17399ac1cad49aad678811f31adb1c52b0a64355093d48b",
       "trials": [
         {
-          "agent_seconds": 1804.22877,
+          "agent_seconds": 1804.275939,
           "cache_tokens": null,
           "end_reason": null,
           "exception": "AgentTimeoutError",
@@ -1405,7 +1405,7 @@
           "output_tokens": null,
           "reward": 0.0,
           "token_cost": null,
-          "trial_name": "UID0037__Kq5q7Nn",
+          "trial_name": "UID0037__GQVmr7S",
           "turns": null,
           "uncached_input_tokens": null,
           "usage_complete": null
@@ -1425,7 +1425,7 @@
           "usage_complete": true
         },
         {
-          "agent_seconds": 1804.329829,
+          "agent_seconds": 1804.228618,
           "cache_tokens": null,
           "end_reason": null,
           "exception": "AgentTimeoutError",
@@ -1433,7 +1433,7 @@
           "output_tokens": null,
           "reward": 0.0,
           "token_cost": null,
-          "trial_name": "UID0037__wKpo6C3",
+          "trial_name": "UID0037__iUQCytm",
           "turns": null,
           "uncached_input_tokens": null,
           "usage_complete": null
@@ -3127,6 +3127,20 @@
           "usage_complete": true
         },
         {
+          "agent_seconds": 1248.669488,
+          "cache_tokens": 29156352,
+          "end_reason": "end_turn",
+          "exception": null,
+          "input_tokens": 29366898,
+          "output_tokens": 105059,
+          "reward": 0.0,
+          "token_cost": 315605,
+          "trial_name": "UID0110__Ukkbt2D",
+          "turns": 159,
+          "uncached_input_tokens": 210546,
+          "usage_complete": true
+        },
+        {
           "agent_seconds": 130.761666,
           "cache_tokens": 1929472,
           "end_reason": "failed",
@@ -3139,20 +3153,6 @@
           "turns": 39,
           "uncached_input_tokens": 83333,
           "usage_complete": true
-        },
-        {
-          "agent_seconds": 1804.258085,
-          "cache_tokens": null,
-          "end_reason": null,
-          "exception": "AgentTimeoutError",
-          "input_tokens": null,
-          "output_tokens": null,
-          "reward": 0.0,
-          "token_cost": null,
-          "trial_name": "UID0110__fUBhFpP",
-          "turns": null,
-          "uncached_input_tokens": null,
-          "usage_complete": null
         }
       ]
     },
@@ -3321,20 +3321,6 @@
       "task_checksum": "4c0ad2c7af2d819f6ec86236d991f3bf71a059d76cc04cfe7dabf81a5c5c40de",
       "trials": [
         {
-          "agent_seconds": 1804.25919,
-          "cache_tokens": null,
-          "end_reason": null,
-          "exception": "AgentTimeoutError",
-          "input_tokens": null,
-          "output_tokens": null,
-          "reward": 0.0,
-          "token_cost": null,
-          "trial_name": "UID0114__3BRQaWY",
-          "turns": null,
-          "uncached_input_tokens": null,
-          "usage_complete": null
-        },
-        {
           "agent_seconds": 838.82157,
           "cache_tokens": 9558016,
           "end_reason": null,
@@ -3347,6 +3333,20 @@
           "turns": 101,
           "uncached_input_tokens": 130923,
           "usage_complete": false
+        },
+        {
+          "agent_seconds": 1299.695771,
+          "cache_tokens": 40841344,
+          "end_reason": "end_turn",
+          "exception": null,
+          "input_tokens": 41100781,
+          "output_tokens": 125818,
+          "reward": 0.0,
+          "token_cost": 385255,
+          "trial_name": "UID0114__QEPWJyX",
+          "turns": 202,
+          "uncached_input_tokens": 259437,
+          "usage_complete": true
         },
         {
           "agent_seconds": 1574.39662,
@@ -3425,6 +3425,20 @@
       "task_checksum": "b443c1fabc5d00446a332b14ea1b56b5b27d6f492475e7f8d4cfad7c81dba782",
       "trials": [
         {
+          "agent_seconds": 1804.3185,
+          "cache_tokens": null,
+          "end_reason": null,
+          "exception": "AgentTimeoutError",
+          "input_tokens": null,
+          "output_tokens": null,
+          "reward": 0.0,
+          "token_cost": null,
+          "trial_name": "UID0118__ER45xdL",
+          "turns": null,
+          "uncached_input_tokens": null,
+          "usage_complete": null
+        },
+        {
           "agent_seconds": 1474.709202,
           "cache_tokens": 36848000,
           "end_reason": "end_turn",
@@ -3448,20 +3462,6 @@
           "reward": 0.0,
           "token_cost": null,
           "trial_name": "UID0118__mqDvETE",
-          "turns": null,
-          "uncached_input_tokens": null,
-          "usage_complete": null
-        },
-        {
-          "agent_seconds": 1804.263121,
-          "cache_tokens": null,
-          "end_reason": null,
-          "exception": "AgentTimeoutError",
-          "input_tokens": null,
-          "output_tokens": null,
-          "reward": 0.0,
-          "token_cost": null,
-          "trial_name": "UID0118__xQXPwMY",
           "turns": null,
           "uncached_input_tokens": null,
           "usage_complete": null
@@ -4219,7 +4219,7 @@
           "usage_complete": null
         },
         {
-          "agent_seconds": 1804.229847,
+          "agent_seconds": 1804.24539,
           "cache_tokens": null,
           "end_reason": null,
           "exception": "AgentTimeoutError",
@@ -4227,13 +4227,13 @@
           "output_tokens": null,
           "reward": 0.0,
           "token_cost": null,
-          "trial_name": "UID0150__W8goN22",
+          "trial_name": "UID0150__JfCR9H7",
           "turns": null,
           "uncached_input_tokens": null,
           "usage_complete": null
         },
         {
-          "agent_seconds": 1804.27305,
+          "agent_seconds": 1804.319992,
           "cache_tokens": null,
           "end_reason": null,
           "exception": "AgentTimeoutError",
@@ -4241,7 +4241,7 @@
           "output_tokens": null,
           "reward": 0.0,
           "token_cost": null,
-          "trial_name": "UID0150__sLvTebQ",
+          "trial_name": "UID0150__NwqFjmC",
           "turns": null,
           "uncached_input_tokens": null,
           "usage_complete": null
@@ -5193,7 +5193,7 @@
       "task_checksum": "11b4faf7df10c389a806c3a59baeb6c258496ec5c1a910c52695195147ccf591",
       "trials": [
         {
-          "agent_seconds": 1804.264426,
+          "agent_seconds": 1804.309699,
           "cache_tokens": null,
           "end_reason": null,
           "exception": "AgentTimeoutError",
@@ -5201,24 +5201,24 @@
           "output_tokens": null,
           "reward": 0.0,
           "token_cost": null,
-          "trial_name": "UID0188__MauUsh7",
+          "trial_name": "UID0188__Mz2KHLy",
           "turns": null,
           "uncached_input_tokens": null,
           "usage_complete": null
         },
         {
-          "agent_seconds": 1804.287431,
-          "cache_tokens": null,
-          "end_reason": null,
-          "exception": "AgentTimeoutError",
-          "input_tokens": null,
-          "output_tokens": null,
+          "agent_seconds": 1259.326096,
+          "cache_tokens": 42723840,
+          "end_reason": "end_turn",
+          "exception": null,
+          "input_tokens": 43086813,
+          "output_tokens": 100060,
           "reward": 0.0,
-          "token_cost": null,
-          "trial_name": "UID0188__RddxQzm",
-          "turns": null,
-          "uncached_input_tokens": null,
-          "usage_complete": null
+          "token_cost": 463033,
+          "trial_name": "UID0188__XdSUYsa",
+          "turns": 167,
+          "uncached_input_tokens": 362973,
+          "usage_complete": true
         },
         {
           "agent_seconds": 1400.209194,
@@ -6129,6 +6129,20 @@
       "task_checksum": "cb43f0f00c433adff3acf90829cff222b44ddccefb22be89c1b844e229014cfd",
       "trials": [
         {
+          "agent_seconds": 760.099947,
+          "cache_tokens": 21317888,
+          "end_reason": "end_turn",
+          "exception": null,
+          "input_tokens": 21542711,
+          "output_tokens": 122393,
+          "reward": 0.0,
+          "token_cost": 347216,
+          "trial_name": "UID0219__JwDe4aE",
+          "turns": 121,
+          "uncached_input_tokens": 224823,
+          "usage_complete": true
+        },
+        {
           "agent_seconds": 756.054953,
           "cache_tokens": 25967872,
           "end_reason": "end_turn",
@@ -6141,20 +6155,6 @@
           "turns": 114,
           "uncached_input_tokens": 233611,
           "usage_complete": true
-        },
-        {
-          "agent_seconds": 1804.253731,
-          "cache_tokens": null,
-          "end_reason": null,
-          "exception": "AgentTimeoutError",
-          "input_tokens": null,
-          "output_tokens": null,
-          "reward": 0.0,
-          "token_cost": null,
-          "trial_name": "UID0219__fnxPBFE",
-          "turns": null,
-          "uncached_input_tokens": null,
-          "usage_complete": null
         },
         {
           "agent_seconds": 1022.752519,
@@ -6337,18 +6337,18 @@
       "task_checksum": "33b244246215b99d819df8d821a9da3da3dfc5f986210c87431f389289d3b6f4",
       "trials": [
         {
-          "agent_seconds": 1804.319534,
-          "cache_tokens": null,
-          "end_reason": null,
-          "exception": "AgentTimeoutError",
-          "input_tokens": null,
-          "output_tokens": null,
+          "agent_seconds": 1192.709467,
+          "cache_tokens": 8298240,
+          "end_reason": "end_turn",
+          "exception": null,
+          "input_tokens": 8361110,
+          "output_tokens": 88422,
           "reward": 0.0,
-          "token_cost": null,
-          "trial_name": "UID0223__QuoQeeY",
-          "turns": null,
-          "uncached_input_tokens": null,
-          "usage_complete": null
+          "token_cost": 151292,
+          "trial_name": "UID0223__NjdsAFY",
+          "turns": 101,
+          "uncached_input_tokens": 62870,
+          "usage_complete": true
         },
         {
           "agent_seconds": 281.469051,
@@ -6975,20 +6975,6 @@
           "usage_complete": true
         },
         {
-          "agent_seconds": 1804.212038,
-          "cache_tokens": null,
-          "end_reason": null,
-          "exception": "AgentTimeoutError",
-          "input_tokens": null,
-          "output_tokens": null,
-          "reward": 0.0,
-          "token_cost": null,
-          "trial_name": "UID0244__Vip6rkg",
-          "turns": null,
-          "uncached_input_tokens": null,
-          "usage_complete": null
-        },
-        {
           "agent_seconds": 519.250469,
           "cache_tokens": 13796224,
           "end_reason": "end_turn",
@@ -7000,6 +6986,20 @@
           "trial_name": "UID0244__dMYRoXG",
           "turns": 95,
           "uncached_input_tokens": 204767,
+          "usage_complete": true
+        },
+        {
+          "agent_seconds": 743.265652,
+          "cache_tokens": 32539648,
+          "end_reason": "end_turn",
+          "exception": null,
+          "input_tokens": 32824803,
+          "output_tokens": 96947,
+          "reward": 0.0,
+          "token_cost": 382102,
+          "trial_name": "UID0244__xyFfWi3",
+          "turns": 154,
+          "uncached_input_tokens": 285155,
           "usage_complete": true
         }
       ]
