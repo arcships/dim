@@ -484,7 +484,7 @@ fn v15_store(path: &std::path::Path) -> Connection {
 fn schema(connection: &Connection) -> Vec<String> {
     let mut statements: Vec<String> = connection
         .prepare(
-            "SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'timeline_submissions%' \
+            "SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'timeline_submissions%' AND name NOT LIKE 'timeline_key_blocks%' AND name NOT LIKE 'timeline_deleted_inputs%' AND name NOT LIKE 'timeline_openings%' \
              AND name NOT IN ('timeline_history_anchors', 'timeline_events_by_kind', \
                               'timeline_policy_turns')",
         )
@@ -8176,6 +8176,88 @@ async fn opening_backfills_the_submission_index() {
         .unwrap();
     assert_eq!(count, 1);
     db.close().await.unwrap();
+}
+
+/// The SQLite keyed index replies the latest live block and follows deletes.
+#[tokio::test]
+async fn the_keyed_index_follows_inputs_and_deletes() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("query", &SessionConfig::default())
+        .await
+        .unwrap();
+    let key = key("query", "main");
+    publish_records(
+        &store,
+        key.clone(),
+        vec![query_record(
+            1,
+            1,
+            "input-1",
+            EventKind::InputMessage(InputMessageData {
+                blocks: vec![InputBlock::Raw {
+                    text: "first".into(),
+                    key: Some("goal:objective".into()),
+                    retire: false,
+                }],
+                ..InputMessageData::text("hello", None)
+            }),
+        )],
+    )
+    .await;
+    let rows = store.live_keys(&key, 1).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key, "goal:objective");
+    assert_eq!(rows[0].text, "first");
+
+    publish_records(
+        &store,
+        key.clone(),
+        vec![query_record(
+            2,
+            2,
+            "input-2",
+            EventKind::InputMessage(InputMessageData {
+                blocks: vec![InputBlock::Raw {
+                    text: "second".into(),
+                    key: Some("goal:objective".into()),
+                    retire: false,
+                }],
+                ..InputMessageData::text("hello", None)
+            }),
+        )],
+    )
+    .await;
+    let rows = store.live_keys(&key, 2).await.unwrap();
+    assert_eq!(rows[0].text, "second");
+
+    publish_records(
+        &store,
+        key.clone(),
+        vec![query_record(
+            3,
+            3,
+            "input-3",
+            EventKind::InputMessage(InputMessageData {
+                blocks: vec![InputBlock::Raw {
+                    text: "retired".into(),
+                    key: Some("goal:objective".into()),
+                    retire: true,
+                }],
+                ..InputMessageData::text("hello", None)
+            }),
+        )],
+    )
+    .await;
+    assert!(store.live_keys(&key, 3).await.unwrap().is_empty());
+
+    let connection = rusqlite::Connection::open(&database.0).unwrap();
+    connection
+        .execute("DELETE FROM timeline_events WHERE session_id='query'", [])
+        .unwrap();
+    assert!(store.live_keys(&key, 3).await.unwrap().is_empty());
 }
 
 /// An integer above `i64` is a value SQLite's extraction rounds, so a page of

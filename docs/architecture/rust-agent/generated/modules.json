@@ -13675,10 +13675,12 @@
       "to": "dim_agent_runtime::timeline_store",
       "references": [
         "path StoredBranch",
+        "path StoredKeyBlock",
         "path TimelineKey",
         "path TimelineStore",
         "use dim_agent_runtime::StoredBranch",
         "use dim_agent_runtime::StoredEvent",
+        "use dim_agent_runtime::StoredKeyBlock",
         "use dim_agent_runtime::TimelineKey",
         "use dim_agent_runtime::TimelineStore"
       ]
@@ -15755,6 +15757,13 @@
     },
     {
       "from": "dim_agent_runtime::agent",
+      "to": "dim_agent_runtime::timeline_store",
+      "references": [
+        "path StoredKeyBlock"
+      ]
+    },
+    {
+      "from": "dim_agent_runtime::agent",
       "to": "dim_agent_types::events",
       "references": [
         "path AgentEvent",
@@ -15981,6 +15990,13 @@
     },
     {
       "from": "dim_agent_runtime::branch",
+      "to": "dim_agent_runtime::timeline_store",
+      "references": [
+        "path StoredKeyBlock"
+      ]
+    },
+    {
+      "from": "dim_agent_runtime::branch",
       "to": "dim_agent_types::events",
       "references": [
         "path AgentEvent",
@@ -16190,6 +16206,7 @@
         "path StoredEvent",
         "path TimelineKey",
         "path TimelineStore",
+        "path crate::StoredKeyBlock",
         "use crate::StoredEvent",
         "use crate::TimelineKey",
         "use crate::TimelineStore"
@@ -16784,9 +16801,16 @@
       "to": "dim_agent_runtime::timeline_query",
       "references": [
         "path TimelineQuery",
+        "path TimelineQueryDirection::Ascending",
+        "path TimelineQueryDirection::Descending",
+        "path TimelineQueryOrderBy::Sequence",
         "path TimelineQueryPage",
+        "path TimelineQueryScope::Branch",
         "use crate::TimelineQuery",
-        "use crate::TimelineQueryPage"
+        "use crate::TimelineQueryDirection",
+        "use crate::TimelineQueryOrderBy",
+        "use crate::TimelineQueryPage",
+        "use crate::TimelineQueryScope"
       ]
     },
     {
@@ -16802,7 +16826,14 @@
       "to": "dim_agent_types::events",
       "references": [
         "path AgentEvent",
-        "use dim_agent_types::AgentEvent"
+        "path EventKind::BranchStart",
+        "path EventKind::InputDeleted",
+        "path EventKind::InputMessage",
+        "path EventKind::SessionForked",
+        "path InputBlock::Raw",
+        "use dim_agent_types::AgentEvent",
+        "use dim_agent_types::EventKind",
+        "use dim_agent_types::InputBlock"
       ]
     },
     {
@@ -21230,15 +21261,18 @@
     },
     {
       "from": "dim_app_server::connection::tree",
+      "to": "dim_agent_runtime::timeline_store",
+      "references": [
+        "path StoredKeyBlock",
+        "use dim_agent_runtime::StoredKeyBlock"
+      ]
+    },
+    {
+      "from": "dim_app_server::connection::tree",
       "to": "dim_agent_types::events",
       "references": [
         "path BranchSource::Host",
-        "path EventKind::BranchStart",
         "path EventKind::InputConsumed",
-        "path EventKind::InputDeleted",
-        "path EventKind::InputMessage",
-        "path EventKind::SessionForked",
-        "path InputBlock::Raw",
         "path InputMessageData",
         "path InputMessageData::default",
         "path InputMode::Queue",
@@ -21246,7 +21280,6 @@
         "path dim_agent_types::AgentEvent",
         "use dim_agent_types::BranchSource",
         "use dim_agent_types::EventKind",
-        "use dim_agent_types::InputBlock",
         "use dim_agent_types::InputMode"
       ]
     },
@@ -27035,11 +27068,15 @@
         "path PublishCallback",
         "path StoredBranch",
         "path StoredEvent",
+        "path StoredKeyBlock",
+        "path StoredSubmission",
         "path TimelineKey",
         "path TimelineStore",
         "use dim_agent_runtime::PublishCallback",
         "use dim_agent_runtime::StoredBranch",
         "use dim_agent_runtime::StoredEvent",
+        "use dim_agent_runtime::StoredKeyBlock",
+        "use dim_agent_runtime::StoredSubmission",
         "use dim_agent_runtime::TimelineKey",
         "use dim_agent_runtime::TimelineStore"
       ]

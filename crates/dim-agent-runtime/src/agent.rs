@@ -515,6 +515,11 @@ impl Session {
         idle
     }
     /// See [`Branch::query`].
+    /// The live keyed raw blocks of `branch` at `through`.
+    pub async fn live_keys(&self, branch: &str, through: u64) -> Result<Vec<StoredKeyBlock>> {
+        self.published(branch)?.live_keys(through).await
+    }
+
     pub async fn query(&self, branch: &str, query: TimelineQuery) -> Result<TimelineQueryReply> {
         self.published(branch)?.query(query).await
     }

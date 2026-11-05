@@ -120,6 +120,11 @@ impl Branch {
     /// the reply carries each event's position. The read stops at what is
     /// published: the branch's own committed tail belongs to the part that
     /// folds it, through the branch's Timeline.
+    /// The live keyed raw blocks of this branch at `through`.
+    pub async fn live_keys(&self, through: u64) -> Result<Vec<StoredKeyBlock>> {
+        self.0.timeline().live_keys(through).await
+    }
+
     pub async fn query(&self, query: TimelineQuery) -> Result<TimelineQueryReply> {
         if query.include_publishing {
             return Err(AgentError::InvalidInput(

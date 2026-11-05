@@ -90,7 +90,7 @@ Each catalog name a part of the assembly provides or injects. A name that crosse
 | `toolHost` | session | WorkspaceTools | Rust-only | — |
 | `toolRegistry` | session | ToolRegistry | yes | `register` async |
 | `toolSourcesView` | session | ToolRegistry | Rust-only | — |
-| `treeCommands` | session | TimelineTree | yes | `create` async, `end` async, `info` async, `input` async, `list` async, `page` async, `query` async |
+| `treeCommands` | session | TimelineTree | yes | `create` async, `end` async, `info` async, `input` async, `list` async, `liveKeys` async, `page` async, `query` async |
 | `uiResources` | session | UiResources | yes | `publishFile` async, `withdraw` async |
 | `agentLoop` | branch | Loop | Rust-only | — |
 | `approval` | branch | Approval | Rust-only | — |
@@ -109,7 +109,7 @@ Each catalog name a part of the assembly provides or injects. A name that crosse
 | `permission` | branch | Permission | Rust-only | — |
 | `prompt` | branch | Prompt | Rust-only | — |
 | `skillsBranch` | branch | SkillsBranch | Rust-only | — |
-| `timeline` | branch | BranchScope | yes | `ancestors` async, `append` async, `branchId` async, `committed` async, `hasPending` async, `query` async, `sequence` async |
+| `timeline` | branch | BranchScope | yes | `ancestors` async, `append` async, `branchId` async, `committed` async, `hasPending` async, `liveKeys` async, `query` async, `sequence` async |
 | `timelineIdentity` | branch | BranchScope | yes | `get` async |
 | `toolBinding` | branch | ToolBinding | Rust-only | — |
 | `toolExecutor` | branch | ToolExecutor | Rust-only | — |

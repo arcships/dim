@@ -16,9 +16,9 @@ use dim_agent_capabilities::{
 use dim_agent_runtime::Names;
 use dim_agent_runtime::{
     AgentError, BoxFuture, BranchRecord, PublishCallback, Result, SessionConfig, StoredBranch,
-    StoredEvent, StoredSubmission, TimelineKey, TimelineQuery, TimelineQueryDirection,
-    TimelineQueryFlag, TimelineQueryPage, TimelineQueryScope, TimelineStore, TimelineTrace,
-    panic_message,
+    StoredEvent, StoredKeyBlock, StoredSubmission, TimelineKey, TimelineQuery,
+    TimelineQueryDirection, TimelineQueryFlag, TimelineQueryPage, TimelineQueryScope,
+    TimelineStore, TimelineTrace, panic_message,
 };
 use dim_agent_types::{
     AgentEvent, BranchCreateAt, ContextCompactionResult, EventKind, ModelRequest, RecoverySnapshot,
@@ -3057,6 +3057,39 @@ impl TimelineStore for SqliteTimelineStore {
                                     submission_id: row.get(0)?,
                                     event_id: row.get(1)?,
                                     sequence: read_sequence(row, 2)?,
+                                })
+                            },
+                        )
+                        .map_err(error)?;
+                    rows.map(|row| row.map_err(error)).collect()
+                })
+                .await
+        })
+    }
+    fn live_keys<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        through: u64,
+    ) -> BoxFuture<'a, Result<Vec<StoredKeyBlock>>> {
+        Box::pin(async move {
+            let key = key.clone();
+            self.db
+                .run_read(move |connection| {
+                    let mut statement = connection
+                        .prepare_cached(
+                            "WITH latest AS (SELECT kb.key, kb.sequence, kb.block_index, kb.input_id, kb.text, kb.retire, ROW_NUMBER() OVER (PARTITION BY kb.key ORDER BY kb.sequence DESC, kb.block_index DESC) AS rn FROM timeline_key_blocks kb WHERE kb.session_id=?1 AND kb.branch_id=?2 AND kb.sequence<=?3 AND kb.sequence > COALESCE((SELECT MAX(o.sequence) FROM timeline_openings o WHERE o.session_id=kb.session_id AND o.branch_id=kb.branch_id AND o.sequence<=?3), 0) AND NOT EXISTS (SELECT 1 FROM timeline_deleted_inputs d WHERE d.session_id=kb.session_id AND d.branch_id=kb.branch_id AND d.input_id=kb.input_id)) SELECT key, sequence, block_index, input_id, text FROM latest WHERE rn=1 AND retire=0 ORDER BY sequence, block_index",
+                        )
+                        .map_err(error)?;
+                    let rows = statement
+                        .query_map(
+                            params![key.session_id, key.branch_id, sql_sequence(through)?],
+                            |row| {
+                                Ok(StoredKeyBlock {
+                                    key: row.get(0)?,
+                                    sequence: read_sequence(row, 1)?,
+                                    block_index: row.get::<_, i64>(2)? as u64,
+                                    input_id: row.get(3)?,
+                                    text: row.get(4)?,
                                 })
                             },
                         )

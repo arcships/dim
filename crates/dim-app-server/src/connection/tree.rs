@@ -5,7 +5,7 @@ use dim_agent_capabilities::input_queue::{
     append_blocks,
 };
 use dim_agent_capabilities::timeline_tree::TreeCommands;
-use dim_agent_runtime::{BranchDirectoryState, BranchOptions, TimelineQuery};
+use dim_agent_runtime::{BranchDirectoryState, BranchOptions, StoredKeyBlock, TimelineQuery};
 use dim_agent_types::{BranchSource, EventKind, InputBlock, InputMode};
 
 impl Connection {
@@ -493,8 +493,6 @@ const HISTORY_TURN_BYTES: usize = 4 * 1024 * 1024;
 const REPLY_FRAME_BYTES: usize = crate::outbound::MAX_FRAME_BYTES - 64 * 1024;
 /// Facts one page of the window's anchor read keeps.
 const TURN_WINDOW_PAGE: u64 = 256;
-/// Facts one page of the `session.keys` scan keeps.
-const KEYS_PAGE: u64 = 256;
 /// The most live keyed blocks one `session.keys` reply carries. The key is
 /// writer-chosen and unchecked (session-access A.2), so the entry count is
 /// bounded here rather than by the producers' key sets; a reply above it
@@ -691,6 +689,17 @@ impl HistoryRead<'_> {
             Self::Ended(tree) => tree.batch_end(branch.to_owned(), sequence).await,
         }
     }
+
+    async fn live_keys(
+        &self,
+        branch: &str,
+        through: u64,
+    ) -> Result<Vec<StoredKeyBlock>, AgentError> {
+        match self {
+            Self::Open(session) => session.live_keys(branch, through).await,
+            Self::Ended(tree) => tree.live_keys(branch.to_owned(), through).await,
+        }
+    }
 }
 
 /// The branch segment's live keyed blocks at `through` (keyed-blocks §3): one
@@ -709,100 +718,23 @@ async fn scan_keys(
     branch: &str,
     through: u64,
 ) -> Result<Vec<wire::KeyEntry>, RpcError> {
-    let mut found: HashMap<String, (u64, usize, wire::KeyEntry)> = HashMap::new();
-    let mut closed: HashSet<String> = HashSet::new();
-    let mut deleted: HashSet<String> = HashSet::new();
-    let mut from = through;
-    while from > 0 {
-        let page = read
-            .query(
-                branch,
-                TimelineQuery {
-                    scope: TimelineQueryScope::Branch,
-                    include_publishing: false,
-                    from_event: None,
-                    from_sequence: Some(from),
-                    order_by: TimelineQueryOrderBy::Sequence,
-                    direction: TimelineQueryDirection::Descending,
-                    kinds: vec![
-                        "input/message".into(),
-                        "input/deleted".into(),
-                        "branch/start".into(),
-                        "session/forked".into(),
-                    ],
-                    flags: Vec::new(),
-                    event_id: None,
-                    predicate: None,
-                    limit: std::num::NonZeroU64::new(KEYS_PAGE).expect("a page keeps one event"),
-                    offset: 0,
-                },
-            )
-            .await
-            .map_err(history_error)?;
-        let exhausted = (page.events.len() as u64) < KEYS_PAGE;
-        let mut done = false;
-        for event in &page.events {
-            match &event.kind {
-                EventKind::BranchStart(_) | EventKind::SessionForked(_) => {
-                    done = true;
-                    break;
-                }
-                EventKind::InputDeleted(data) => {
-                    deleted.insert(data.input_id.clone());
-                }
-                EventKind::InputMessage(data) if !deleted.contains(&event.id) => {
-                    for (index, block) in data.blocks.iter().enumerate().rev() {
-                        let InputBlock::Raw {
-                            text,
-                            key: Some(key),
-                            retire,
-                        } = block
-                        else {
-                            continue;
-                        };
-                        if found.contains_key(key) {
-                            continue;
-                        }
-                        if *retire {
-                            closed.insert(key.clone());
-                            continue;
-                        }
-                        if closed.contains(key) {
-                            continue;
-                        }
-                        found.insert(
-                            key.clone(),
-                            (
-                                event.sequence,
-                                index,
-                                wire::KeyEntry {
-                                    key: key.clone(),
-                                    sequence: event.sequence,
-                                    input_id: event.id.clone(),
-                                    text: text.clone(),
-                                },
-                            ),
-                        );
-                        if found.len() > KEYS_ENTRY_LIMIT {
-                            return Err(too_many_keys());
-                        }
-                    }
-                }
-                EventKind::InputMessage(_) => {}
-                _ => {}
-            }
-        }
-        if done || exhausted {
-            break;
-        }
-        from = page
-            .events
-            .last()
-            .map_or(0, |event| event.sequence.saturating_sub(1));
+    let mut rows = read
+        .live_keys(branch, through)
+        .await
+        .map_err(history_error)?;
+    if rows.len() > KEYS_ENTRY_LIMIT {
+        return Err(too_many_keys());
     }
-    let mut entries: Vec<_> = found.into_values().collect();
-    entries.sort_by_key(|(sequence, index, _)| (*sequence, *index));
-    Ok(entries.into_iter().map(|(_, _, entry)| entry).collect())
+    rows.sort_by_key(|row| (row.sequence, row.block_index));
+    Ok(rows
+        .into_iter()
+        .map(|row| wire::KeyEntry {
+            key: row.key,
+            sequence: row.sequence,
+            input_id: row.input_id,
+            text: row.text,
+        })
+        .collect())
 }
 
 async fn window_at(

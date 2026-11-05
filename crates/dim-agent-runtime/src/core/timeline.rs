@@ -294,6 +294,16 @@ impl Timeline {
             _ => Err(AgentError::AmbiguousSubmission(id.into())),
         }
     }
+    /// The live keyed raw blocks of this branch at `through`.
+    pub async fn live_keys(&self, through: u64) -> Result<Vec<crate::StoredKeyBlock>> {
+        if through > self.sequence() {
+            return Err(AgentError::InvalidInput(format!(
+                "future timeline sequence {through}"
+            )));
+        }
+        self.0.store.live_keys(&self.0.key, through).await
+    }
+
     /// Indexes the submission ids of the inputs the branch was restored
     /// with. The branch's build calls it before the branch accepts input, so
     /// the published head is the restored head and nothing of this branch is

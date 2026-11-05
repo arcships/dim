@@ -49,6 +49,15 @@ export interface InputMessageData {
   mode?: InputMode | null
 }
 
+/** One live keyed raw block at a through. */
+export interface StoredKeyBlock {
+  key: string
+  sequence: number | bigint
+  block_index: number | bigint
+  input_id: string
+  text: string
+}
+
 /** Which branches a query covers. */
 export type TimelineQueryScope =
   | /** The queried branch alone. */ "branch"
@@ -182,6 +191,11 @@ export interface TreeCommands {
    * @throws {AgentErrorThrown}
    */
   page(id: string, after: number | bigint, limit: number | bigint, through: number | bigint): Promise<import('./plugin.js').BranchEvent[]>
+  /**
+   * The live keyed raw blocks of line `id` at `through`.
+   * @throws {AgentErrorThrown}
+   */
+  liveKeys(id: string, through: number | bigint): Promise<StoredKeyBlock[]>
   /**
    * Queries one line's own facts, forwarding to its Timeline while open
    * and reading at the tree's fixed head after it ends. Chain scope is
@@ -333,6 +347,11 @@ export interface Timeline {
    * @throws {AgentErrorThrown}
    */
   append(original: { type: string; name: string; data: unknown; tags?: string[]; context_render?: boolean; context_state?: boolean }): Promise<import('./plugin.js').BranchEvent>
+  /**
+   * The live keyed raw blocks of this branch at `through`.
+   * @throws {AgentErrorThrown}
+   */
+  liveKeys(through: number | bigint): Promise<StoredKeyBlock[]>
   /**
    * Published sequence: what is durable and visible to the Dispatcher
    * and to readers outside the branch.
