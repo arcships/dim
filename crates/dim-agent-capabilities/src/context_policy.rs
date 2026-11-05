@@ -814,6 +814,7 @@ impl ContextPolicy {
                         value: json!(source.turn_id),
                     }),
                     predicates: Vec::new(),
+                    text: None,
                     limit: NonZeroU64::new(REUSE_PAGE).expect("a page keeps at least one event"),
                     offset: 0,
                 })

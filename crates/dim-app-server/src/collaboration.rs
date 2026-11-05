@@ -1154,6 +1154,7 @@ impl CollaborationSession {
                 event_id: Some(result_id.to_owned()),
                 predicate: None,
                 predicates: Vec::new(),
+                text: None,
                 limit: NonZeroU64::MIN,
                 offset: 0,
             })
@@ -2335,6 +2336,7 @@ async fn read_page(
                 event_id: None,
                 predicate: None,
                 predicates: Vec::new(),
+                text: None,
                 limit: NonZeroU64::new(next - after).expect("a page keeps at least one fact"),
                 offset: 0,
             },
@@ -2368,6 +2370,7 @@ async fn read_events(
                     event_id: Some(event_id.clone()),
                     predicate: None,
                     predicates: Vec::new(),
+                    text: None,
                     limit: NonZeroU64::MIN,
                     offset: 0,
                 },
@@ -2397,6 +2400,7 @@ async fn read_tool_use_starts(
         event_id: None,
         predicate: None,
         predicates: Vec::new(),
+        text: None,
         limit: NonZeroU64::new(TOOL_USE_START_PAGE).expect("a page keeps at least one tool use"),
         offset: 0,
     };

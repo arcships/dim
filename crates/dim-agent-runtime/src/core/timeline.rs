@@ -321,6 +321,7 @@ impl Timeline {
                     event_id: None,
                     predicate: None,
                     predicates: Vec::new(),
+                    text: None,
                     limit: NonZeroU64::new(SUBMISSION_PAGE)
                         .expect("a page keeps at least one input"),
                     offset: 0,
@@ -535,6 +536,7 @@ impl Timeline {
             event_id: None,
             predicate: None,
             predicates: Vec::new(),
+            text: None,
             limit: NonZeroU64::new(1).expect("one is nonzero"),
             offset: 0,
         };
@@ -644,6 +646,7 @@ impl Timeline {
                         event_id: Some(event_id.clone()),
                         predicate: None,
                         predicates: Vec::new(),
+                        text: None,
                         limit: std::num::NonZeroU64::new(1).expect("one is nonzero"),
                         offset: 0,
                     };
@@ -940,6 +943,7 @@ impl Timeline {
             event_id: None,
             predicate: None,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(1).expect("one is nonzero"),
             offset: 0,
         };

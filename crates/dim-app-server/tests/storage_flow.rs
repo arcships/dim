@@ -1620,6 +1620,7 @@ async fn extension_events_store_the_switches_their_producer_sets() {
                 event_id: None,
                 predicate: None,
                 predicates: Vec::new(),
+                text: None,
                 limit: std::num::NonZeroU64::MIN,
                 offset: 0,
             },
@@ -7680,6 +7681,7 @@ fn query(
         event_id: None,
         predicate: None,
         predicates: Vec::new(),
+        text: None,
         limit: std::num::NonZeroU64::new(limit).unwrap(),
         offset: 0,
     }
@@ -7847,6 +7849,7 @@ async fn paged(
             .query(dim_agent_runtime::TimelineQuery {
                 direction,
                 predicates: Vec::new(),
+                text: None,
                 limit: std::num::NonZeroU64::new(limit).unwrap(),
                 offset,
                 ..query(scope, limit)
@@ -8440,6 +8443,87 @@ async fn a_query_predicate_compares_one_array_level() {
     db.close().await.unwrap();
 }
 
+/// Text search selects data carrying the terms in both stores.
+#[tokio::test]
+async fn a_query_text_search_selects_terms() {
+    use dim_agent_runtime::TextMatch;
+    use dim_agent_runtime::TimelineQueryScope::Branch;
+
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    let memory_store: std::sync::Arc<dyn TimelineStore> =
+        std::sync::Arc::new(dim_agent_runtime::MemoryTimelineStore::default());
+    for target in [store.clone(), memory_store.clone()] {
+        target
+            .create_session("query", &SessionConfig::default())
+            .await
+            .unwrap();
+        for (sequence, value) in [
+            (1u64, serde_json::json!({ "text": "alpha beta" })),
+            (2, serde_json::json!({ "text": "alpha" })),
+            (3, serde_json::json!({ "text": "gamma" })),
+        ] {
+            publish_records(
+                &target,
+                key("query", "main"),
+                vec![query_record(
+                    sequence,
+                    sequence,
+                    &format!("value-{sequence}"),
+                    marked(value),
+                )],
+            )
+            .await;
+        }
+    }
+    let sqlite = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        store,
+    )
+    .await
+    .unwrap();
+    let memory = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        memory_store,
+    )
+    .await
+    .unwrap();
+
+    for (mode, terms, expected) in [
+        (
+            TextMatch::All,
+            vec!["alpha".to_owned(), "beta".to_owned()],
+            ["value-1"].as_slice(),
+        ),
+        (
+            TextMatch::Any,
+            vec!["beta".to_owned(), "gamma".to_owned()],
+            ["value-1", "value-3"].as_slice(),
+        ),
+    ] {
+        let mut request = query(Branch, 3);
+        request.text = Some(dim_agent_runtime::TextSearch { terms, mode });
+        let from_sqlite = sqlite.query(request.clone()).await.unwrap();
+        let from_memory = memory.query(request).await.unwrap();
+        assert_eq!(query_ids(&from_sqlite), expected, "{mode:?} sqlite");
+        assert_eq!(query_ids(&from_memory), expected, "{mode:?} memory");
+    }
+
+    let mut empty = query(Branch, 3);
+    empty.text = Some(dim_agent_runtime::TextSearch {
+        terms: vec![],
+        mode: TextMatch::All,
+    });
+    assert!(sqlite.query(empty).await.is_err(), "empty text terms");
+
+    db.close().await.unwrap();
+}
+
 /// An integer above `i64` is a value SQLite's extraction rounds, so a page of
 /// one must not be spent on the neighbouring integer.
 #[tokio::test]
@@ -8739,6 +8823,7 @@ async fn a_query_skips_to_its_page_and_its_pages_compose() {
         .query(dim_agent_runtime::TimelineQuery {
             offset: 1,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(3).unwrap(),
             ..query(Branch, 16)
         })
@@ -8764,6 +8849,7 @@ async fn a_query_skips_to_its_page_and_its_pages_compose() {
         .query(dim_agent_runtime::TimelineQuery {
             offset: 1,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(2).unwrap(),
             ..query(Chain, 16)
         })
@@ -8778,6 +8864,7 @@ async fn a_query_skips_to_its_page_and_its_pages_compose() {
         .query(dim_agent_runtime::TimelineQuery {
             offset: 3,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(1).unwrap(),
             ..query(Chain, 16)
         })
@@ -8866,6 +8953,7 @@ async fn a_query_page_reports_the_facts_it_skipped() {
             &dim_agent_runtime::TimelineQuery {
                 offset: 1,
                 predicates: Vec::new(),
+                text: None,
                 limit: std::num::NonZeroU64::new(2).unwrap(),
                 ..query(Branch, 16)
             },
@@ -8952,6 +9040,7 @@ async fn a_descending_page_takes_the_newest_fact() {
         .query(dim_agent_runtime::TimelineQuery {
             direction: Descending,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(1).unwrap(),
             ..query(Branch, 16)
         })
@@ -8963,6 +9052,7 @@ async fn a_descending_page_takes_the_newest_fact() {
             direction: Descending,
             offset: 1,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(1).unwrap(),
             ..query(Branch, 16)
         })
@@ -9027,6 +9117,7 @@ async fn a_query_pages_a_selection_wider_than_one_reader_window() {
         .query(dim_agent_runtime::TimelineQuery {
             offset: 250,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(10).unwrap(),
             ..query(Branch, 16)
         })
@@ -9046,6 +9137,7 @@ async fn a_query_pages_a_selection_wider_than_one_reader_window() {
         .query(dim_agent_runtime::TimelineQuery {
             offset: 50,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(200).unwrap(),
             ..query(Branch, 16)
         })
@@ -9064,6 +9156,7 @@ async fn a_query_pages_a_selection_wider_than_one_reader_window() {
         .query(dim_agent_runtime::TimelineQuery {
             offset: 299,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(16).unwrap(),
             ..query(Branch, 16)
         })
@@ -9119,6 +9212,7 @@ async fn a_query_page_ends_only_when_no_more_facts_match() {
         predicate: Some(predicate("delta", serde_json::json!("hit"))),
         offset,
         predicates: Vec::new(),
+        text: None,
         limit: std::num::NonZeroU64::new(1).unwrap(),
         ..query(Branch, 16)
     };
@@ -9143,6 +9237,7 @@ async fn a_query_page_ends_only_when_no_more_facts_match() {
                 predicate: Some(predicate("delta", serde_json::json!("hit"))),
                 offset: 1,
                 predicates: Vec::new(),
+                text: None,
                 limit: std::num::NonZeroU64::new(1).unwrap(),
                 ..query(Branch, 16)
             },
@@ -9282,6 +9377,7 @@ async fn a_query_reads_interleaved_kinds_in_sequence_order() {
         kinds: vec!["turn/start".into(), "step/model-start".into()],
         offset,
         predicates: Vec::new(),
+        text: None,
         limit: std::num::NonZeroU64::new(1).unwrap(),
         ..query(Branch, 1)
     };
@@ -9336,6 +9432,7 @@ async fn the_memory_and_sqlite_stores_agree_on_a_query() {
         direction,
         offset,
         predicates: Vec::new(),
+        text: None,
         limit: std::num::NonZeroU64::new(limit).unwrap(),
         ..query(Branch, 16)
     };
@@ -9429,6 +9526,7 @@ async fn the_memory_and_sqlite_stores_agree_on_a_query() {
         direction,
         offset,
         predicates: Vec::new(),
+        text: None,
         limit: std::num::NonZeroU64::new(limit).unwrap(),
         ..query(Chain, 16)
     };

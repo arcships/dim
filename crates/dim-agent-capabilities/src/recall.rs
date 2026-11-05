@@ -200,6 +200,7 @@ impl RecallTool {
             event_id: None,
             predicate: None,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(PAGE_EVENTS as u64).expect("a page holds an event"),
             offset: 0,
         };

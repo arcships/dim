@@ -76,8 +76,9 @@ pub struct TextSearch {
 - The store searches its derived text index over text-bearing event fields: `input/message` user/block text, `step/text` grouped by `request_id`, `step/model-content`, `step/tool-result` content, and tool call name/input.
 - The result is the matching events in the query's normal order and range; a text match adds no rank and does not reorder. The caller folds the candidates.
 - `All` requires every term; `Any` requires one. Terms are matched as text, not as a query language.
-- SQLite uses FTS5: `trigram` for CJK/substring, `unicode61` for Latin. A store that cannot index falls back to `LIKE` only when the request asks for it; no silent fallback.
-- The index is derived and append-only; it is not required for correctness. A missing or stale entry must not hide a fact from a non-text query. Deleting a Session removes its entries.
+- The first implementation compares the event data text with `instr` in both stores. It is a candidate filter, not a full-text rank: it scans the requested range and may miss a term split across two events, which is why recall still verifies the rendered body.
+- An FTS5 index (`trigram` for CJK, `unicode61` for Latin) is a later store optimization behind the same `text` field. It needs its own format decision and schema version; until then no request depends on an index.
+- An index is derived and append-only; it is not required for correctness. A missing or stale entry must not hide a fact from a non-text query. Deleting a Session removes its entries.
 - Recall is the first consumer: it uses the candidates to read the surrounding turn and verifies every `about` word against the rendered body. The text result must be a superset, never the answer.
 
 ### 2.3 Store pushdown

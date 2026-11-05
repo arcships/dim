@@ -23,6 +23,7 @@ pub(crate) fn chain_by_id(id: &str) -> TimelineQuery {
         event_id: Some(id.to_owned()),
         predicate: None,
         predicates: Vec::new(),
+        text: None,
         limit: NonZeroU64::MIN,
         offset: 0,
     }
@@ -50,6 +51,7 @@ pub(crate) fn newest_chain(
         event_id: None,
         predicate,
         predicates: Vec::new(),
+        text: None,
         limit: NonZeroU64::new(limit).expect("a page keeps at least one event"),
         offset: 0,
     }
@@ -75,6 +77,7 @@ pub(crate) fn rising_chain(
         event_id: None,
         predicate: None,
         predicates: Vec::new(),
+        text: None,
         limit: NonZeroU64::new(limit).expect("a page keeps at least one event"),
         offset,
     }
@@ -116,6 +119,7 @@ fn context_read(
         event_id: None,
         predicate: None,
         predicates: Vec::new(),
+        text: None,
         limit: NonZeroU64::new(limit).expect("a page keeps at least one event"),
         offset,
     }
@@ -1473,6 +1477,7 @@ impl ContextReads<'_> {
                     value: serde_json::Value::String("completed".into()),
                 }),
                 predicates: Vec::new(),
+                text: None,
                 limit: NonZeroU64::MIN,
                 offset: 0,
             })

@@ -2109,6 +2109,27 @@ fn query_rows(
     if !all.is_empty() {
         sql.push_str(&format!(" AND {}", all.join(" AND ")));
     }
+    if let Some(search) = &query.text {
+        let mut clauses = Vec::new();
+        for term in &search.terms {
+            clauses.push(
+                "(instr(lower(json_extract(body, '$.record.event.data')), lower(?)) > 0 \
+                   OR EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
+                     WHERE instr(lower(json_extract(r.value, '$.event.data')), lower(?)) > 0 \
+                     AND json_extract(r.value, '$.event.sequence') <= ?))",
+            );
+            parameters.extend([
+                text(term),
+                text(term),
+                rusqlite::types::Value::Integer(sql_sequence(*range.end())?),
+            ]);
+        }
+        let join = match search.mode {
+            dim_agent_runtime::TextMatch::All => " AND ",
+            dim_agent_runtime::TextMatch::Any => " OR ",
+        };
+        sql.push_str(&format!(" AND ({})", clauses.join(join)));
+    }
     sql.push_str(if descending {
         " ORDER BY sequence DESC"
     } else {

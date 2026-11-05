@@ -103,6 +103,7 @@ impl Wait {
                 event_id: None,
                 predicate: None,
                 predicates: Vec::new(),
+                text: None,
                 limit: NonZeroU64::MIN,
                 offset: 0,
             })

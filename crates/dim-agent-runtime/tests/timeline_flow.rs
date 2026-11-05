@@ -1000,6 +1000,7 @@ fn branch_query(scope: dim_agent_runtime::TimelineQueryScope) -> dim_agent_runti
         event_id: None,
         predicate: None,
         predicates: Vec::new(),
+        text: None,
         limit: std::num::NonZeroU64::new(16).unwrap(),
         offset: 0,
     }
@@ -1092,6 +1093,7 @@ async fn paged(
             .query(dim_agent_runtime::TimelineQuery {
                 direction,
                 predicates: Vec::new(),
+                text: None,
                 limit: std::num::NonZeroU64::new(limit).unwrap(),
                 offset,
                 ..branch_query(scope)
@@ -1191,6 +1193,7 @@ async fn a_query_pages_by_skipping_and_its_pages_compose_to_the_selection() {
         .query(dim_agent_runtime::TimelineQuery {
             offset: 1,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(5).unwrap(),
             ..branch_query(Branch)
         })
@@ -1236,6 +1239,7 @@ async fn a_descending_query_takes_the_newest_facts_in_descending_order() {
         .query(dim_agent_runtime::TimelineQuery {
             direction: Descending,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(2).unwrap(),
             ..branch_query(Branch)
         })
@@ -1556,6 +1560,7 @@ async fn a_chain_page_carries_its_offset_across_segments() {
         .query(dim_agent_runtime::TimelineQuery {
             offset: 4,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(3).unwrap(),
             ..branch_query(Chain)
         })
@@ -1571,6 +1576,7 @@ async fn a_chain_page_carries_its_offset_across_segments() {
         .query(dim_agent_runtime::TimelineQuery {
             offset: 7,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(3).unwrap(),
             ..branch_query(Chain)
         })
@@ -1607,6 +1613,7 @@ async fn a_descending_chain_page_starts_in_the_branch_and_continues_into_the_anc
         .query(dim_agent_runtime::TimelineQuery {
             direction: Descending,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(2).unwrap(),
             ..branch_query(Chain)
         })
@@ -1623,6 +1630,7 @@ async fn a_descending_chain_page_starts_in_the_branch_and_continues_into_the_anc
             direction: Descending,
             offset: 2,
             predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(4).unwrap(),
             ..branch_query(Chain)
         })
@@ -1755,6 +1763,7 @@ fn the_query_crosses_languages_with_its_serde_shape() {
             value: serde_json::json!(3),
         }),
         predicates: Vec::new(),
+        text: None,
         limit: std::num::NonZeroU64::new(4).unwrap(),
         offset: 2,
     };

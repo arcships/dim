@@ -271,6 +271,49 @@ impl TimelineQueryPredicate {
     }
 }
 
+/// Whether every term must appear or one is enough.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextMatch {
+    #[default]
+    All,
+    Any,
+}
+
+/// A text selection over the event data. The store selects candidates; the
+/// caller verifies what the rendered content says.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextSearch {
+    pub terms: Vec<String>,
+    #[serde(default)]
+    pub mode: TextMatch,
+}
+
+impl TextSearch {
+    /// Whether `event`'s data carries the terms. This is the in-memory store's
+    /// candidate check; it is a superset of what the rendered body carries.
+    pub fn matches(&self, event: &AgentEvent) -> bool {
+        let Ok(kind) = serde_json::to_value(&event.kind) else {
+            return false;
+        };
+        let Some(data) = kind.get("data") else {
+            return false;
+        };
+        let data = data.to_string().to_lowercase();
+        match self.mode {
+            TextMatch::All => self
+                .terms
+                .iter()
+                .all(|term| data.contains(&term.to_lowercase())),
+            TextMatch::Any => self
+                .terms
+                .iter()
+                .any(|term| data.contains(&term.to_lowercase())),
+        }
+    }
+}
+
 /// One bounded read of a branch's facts: what it covers, how far it reaches,
 /// what it accepts, and how much of the result it returns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -312,6 +355,9 @@ pub struct TimelineQuery {
     /// Further predicates the event's data must satisfy; all are ANDed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub predicates: Vec<TimelineQueryPredicate>,
+    /// A text selection over the event data; absent selects without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<TextSearch>,
     /// How many matching events the page returns; nonzero by type.
     pub limit: NonZeroU64,
     /// How many matching events the read skips before the page.
@@ -346,6 +392,7 @@ impl TimelineQuery {
                 .predicates
                 .iter()
                 .all(|predicate| predicate.matches(event))
+            && self.text.as_ref().is_none_or(|text| text.matches(event))
     }
 
     /// Checks the input a caller can get wrong before any storage read: the
@@ -361,6 +408,18 @@ impl TimelineQuery {
         }
         for predicate in &self.predicates {
             predicate.validate()?;
+        }
+        if let Some(text) = &self.text {
+            if text.terms.is_empty() || text.terms.iter().any(|term| term.trim().is_empty()) {
+                return Err(AgentError::InvalidInput(
+                    "a text search keeps nonempty terms".into(),
+                ));
+            }
+            if self.event_id.is_some() {
+                return Err(AgentError::InvalidInput(
+                    "a text search and a named event are exclusive".into(),
+                ));
+            }
         }
         if self.from_event.is_some() && self.from_sequence.is_some() {
             return Err(AgentError::InvalidInput(
@@ -424,6 +483,7 @@ pub async fn rebuild_facts(timeline: &Timeline, kinds: &[&str]) -> Result<Timeli
         event_id: None,
         predicate: None,
         predicates: Vec::new(),
+        text: None,
         limit: NonZeroU64::new(REBUILD_PAGE).expect("a page keeps at least one fact"),
         offset: 0,
     };

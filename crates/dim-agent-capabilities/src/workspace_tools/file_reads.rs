@@ -186,6 +186,7 @@ impl FileReads {
                     event_id: None,
                     predicate: None,
                     predicates: Vec::new(),
+                    text: None,
                     limit: NonZeroU64::new(COMPACTION_PAGE)
                         .expect("a page keeps at least one compaction"),
                     offset,

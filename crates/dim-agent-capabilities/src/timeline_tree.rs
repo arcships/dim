@@ -334,6 +334,7 @@ fn line_page(after: u64, limit: usize) -> TimelineQuery {
         event_id: None,
         predicate: None,
         predicates: Vec::new(),
+        text: None,
         limit: std::num::NonZeroU64::new(u64::try_from(limit).unwrap_or(u64::MAX).max(1))
             .expect("a page keeps one fact"),
         offset: 0,
@@ -408,6 +409,7 @@ impl TimelineTree {
             event_id: None,
             predicate: None,
             predicates: Vec::new(),
+            text: None,
             limit: NonZeroU64::new(head).expect("non-empty stored head"),
             offset: 0,
         };
@@ -556,6 +558,7 @@ impl TimelineTree {
             event_id: None,
             predicate: None,
             predicates: Vec::new(),
+            text: None,
             limit: NonZeroU64::new(CREATION_PAGE as u64).expect("a page keeps one fact"),
             offset: 0,
         };
@@ -731,6 +734,7 @@ impl TimelineTree {
                                     event_id: None,
                                     predicate: None,
                                     predicates: Vec::new(),
+                                    text: None,
                                     limit: NonZeroU64::new(LINE_PAGE).expect("a page keeps at least one event"),
                                     offset: 0,
                                 })) =>
@@ -911,6 +915,7 @@ impl TimelineTree {
                 predicate: None,
                 offset: 0,
                 predicates: Vec::new(),
+                text: None,
                 limit: NonZeroU64::MIN,
                 ..query.clone()
             };
@@ -978,6 +983,7 @@ impl TimelineTree {
                 event_id: None,
                 predicate: None,
                 predicates: Vec::new(),
+                text: None,
                 limit: std::num::NonZeroU64::new(PAGE).expect("a page is nonzero"),
                 offset,
             };
@@ -1039,6 +1045,7 @@ impl TimelineTree {
                     event_id: None,
                     predicate: None,
                     predicates: Vec::new(),
+                    text: None,
                     limit: std::num::NonZeroU64::new(PAGE).expect("a page is nonzero"),
                     offset,
                 };
@@ -1110,6 +1117,7 @@ impl TimelineTree {
             event_id: None,
             predicate: None,
             predicates: Vec::new(),
+            text: None,
             limit: NonZeroU64::MIN,
             offset: 0,
         };
@@ -1146,6 +1154,7 @@ impl TimelineTree {
             event_id: None,
             predicate: None,
             predicates: Vec::new(),
+            text: None,
             limit: NonZeroU64::MIN,
             offset: 0,
         };
@@ -3061,6 +3070,7 @@ impl BranchTool {
                                 value: json!(context.request_id),
                             }),
                             predicates: Vec::new(),
+                            text: None,
                             limit: NonZeroU64::new(LINE_PAGE)
                                 .expect("a page keeps at least one event"),
                             offset: 0,

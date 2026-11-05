@@ -379,6 +379,7 @@ async fn a_latest_turn_waiting_for_dispatch_survives_the_line_ending() {
         event_id: None,
         predicate: None,
         predicates: Vec::new(),
+        text: None,
         limit: std::num::NonZeroU64::MIN,
         offset: 0,
     };

@@ -413,6 +413,7 @@ fn history_page_query(after: u64, limit: usize) -> dim_agent_runtime::TimelineQu
         event_id: None,
         predicate: None,
         predicates: Vec::new(),
+        text: None,
         limit: NonZeroU64::new(u64::try_from(limit).unwrap_or(u64::MAX).max(1))
             .expect("a page keeps one fact"),
         offset: 0,
@@ -1035,6 +1036,7 @@ impl AgentIndex {
             event_id: None,
             predicate: None,
             predicates: Vec::new(),
+            text: None,
             limit: NonZeroU64::new(Self::SUMMARY_SCAN_LIMIT)
                 .expect("a summary scan keeps at least one input"),
             offset: 0,
@@ -1137,6 +1139,7 @@ impl AgentIndex {
                 event_id: None,
                 predicate: None,
                 predicates: Vec::new(),
+                text: None,
                 limit: NonZeroU64::new(Self::SUMMARY_SCAN_LIMIT)
                     .expect("an activity page keeps at least one event"),
                 offset: 0,

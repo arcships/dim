@@ -97,6 +97,18 @@ export interface TimelineQueryPredicate {
   value: unknown
 }
 
+/** Whether every term must appear or one is enough. */
+export type TextMatch = "all" | "any"
+
+/**
+ * A text selection over the event data. The store selects candidates; the
+ * caller verifies what the rendered content says.
+ */
+export interface TextSearch {
+  terms: string[]
+  mode?: TextMatch
+}
+
 /**
  * One bounded read of a branch's facts: what it covers, how far it reaches,
  * what it accepts, and how much of the result it returns.
@@ -136,6 +148,8 @@ export interface TimelineQuery {
   predicate?: TimelineQueryPredicate | null
   /** Further predicates the event's data must satisfy; all are ANDed. */
   predicates?: TimelineQueryPredicate[]
+  /** A text selection over the event data; absent selects without one. */
+  text?: TextSearch | null
   /** How many matching events the page returns; nonzero by type. */
   limit: number | bigint
   /** How many matching events the read skips before the page. */

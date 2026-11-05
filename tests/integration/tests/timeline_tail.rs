@@ -233,6 +233,7 @@ impl DynPlugin for TailPart {
                         event_id: None,
                         predicate: None,
                         predicates: Vec::new(),
+                        text: None,
                         limit: std::num::NonZeroU64::new(4096).expect("a limit"),
                         offset: 0,
                     })
@@ -371,6 +372,7 @@ fn page(offset: u64, include_publishing: bool) -> TimelineQuery {
         event_id: None,
         predicate: None,
         predicates: Vec::new(),
+        text: None,
         limit: std::num::NonZeroU64::new(2).expect("a limit"),
         offset,
     }
