@@ -17,8 +17,9 @@ use crate::{
 };
 use chrono::{DateTime, TimeZone, Utc};
 use dim_agent_runtime::{
-    AgentBuilder, AgentError, CAPABILITY_RELOADING, Feature, Names, TimelineQuery,
-    TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryReply, TimelineQueryScope,
+    AgentBuilder, AgentError, Branch, CAPABILITY_RELOADING, Feature, Names, TextMatch, TextSearch,
+    TimelineQuery, TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryReply,
+    TimelineQueryScope,
 };
 use dim_agent_types::*;
 use rutis::Ctx;
@@ -181,6 +182,13 @@ impl RecallTool {
             Ok(arguments) => arguments,
             Err(message) => return Ok(ToolResult::error(message)),
         };
+        if arguments.about.is_some()
+            && arguments.before.is_none()
+            && arguments.open.is_none()
+            && let Some(answer) = text_candidates(&branch, &context, &arguments, &cancel).await?
+        {
+            return Ok(answer);
+        }
         let mut read = Read::new(&arguments, &context.branch_id);
         // The head is read once, before the first page: every page starts at
         // that sequence, so a fact published while the read runs stays outside
@@ -238,6 +246,156 @@ impl RecallTool {
         let narrative = read.fold();
         Ok(narrative.answer(&context.turn_id, &arguments))
     }
+}
+
+/// Answers an `about` search from the turns text search selects. `None` means
+/// the caller falls back to the full kind read: no candidate, a full candidate
+/// page, an inherited candidate, or a malformed turn range.
+async fn text_candidates(
+    branch: &Branch,
+    context: &ToolExecutionContext,
+    arguments: &Arguments,
+    cancel: &CancellationToken,
+) -> Result<Option<ToolResult>, HostError> {
+    let words = arguments.words();
+    if words.is_empty() {
+        return Ok(None);
+    }
+    let head = branch.sequence();
+    let candidates = branch
+        .query(TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            include_publishing: false,
+            from_event: None,
+            from_sequence: Some(head),
+            order_by: TimelineQueryOrderBy::Sequence,
+            direction: TimelineQueryDirection::Descending,
+            kinds: KINDS.iter().map(|kind| (*kind).to_owned()).collect(),
+            flags: Vec::new(),
+            event_id: None,
+            predicate: None,
+            predicates: Vec::new(),
+            text: Some(TextSearch {
+                terms: words,
+                mode: TextMatch::All,
+            }),
+            limit: std::num::NonZeroU64::new(PAGE_EVENTS as u64).expect("a page holds an event"),
+            offset: 0,
+        })
+        .await
+        .map_err(RecallTool::facade_error)?;
+    if candidates.events.is_empty() || candidates.events.len() >= PAGE_EVENTS {
+        return Ok(None);
+    }
+    if candidates
+        .positions
+        .iter()
+        .any(|position| position.branch_id != context.branch_id)
+    {
+        return Ok(None);
+    }
+    let starts = branch
+        .query(TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            include_publishing: false,
+            from_event: None,
+            from_sequence: None,
+            order_by: TimelineQueryOrderBy::Sequence,
+            direction: TimelineQueryDirection::Ascending,
+            kinds: vec!["turn/start".into()],
+            flags: Vec::new(),
+            event_id: None,
+            predicate: None,
+            predicates: Vec::new(),
+            text: None,
+            limit: std::num::NonZeroU64::new(1024).expect("a page keeps one turn"),
+            offset: 0,
+        })
+        .await
+        .map_err(RecallTool::facade_error)?;
+    if starts.events.len() >= 1024 {
+        return Ok(None);
+    }
+    let starts: Vec<(u64, String)> = starts
+        .events
+        .iter()
+        .zip(&starts.positions)
+        .filter_map(|(event, position)| match &event.kind {
+            EventKind::TurnStart(data) => Some((position.sequence, data.turn_id.clone())),
+            _ => None,
+        })
+        .collect();
+    if starts.is_empty() {
+        return Ok(None);
+    }
+    let mut turns = std::collections::BTreeSet::new();
+    for position in &candidates.positions {
+        let at = starts.partition_point(|(sequence, _)| *sequence <= position.sequence);
+        if at == 0 {
+            return Ok(None);
+        }
+        turns.insert(at - 1);
+    }
+    if turns.len() > 64 {
+        return Ok(None);
+    }
+    let mut events: Vec<(u64, Arc<AgentEvent>)> = Vec::new();
+    for index in turns {
+        let start = starts[index].0;
+        let end = starts
+            .get(index + 1)
+            .map_or(head, |(next, _)| next.saturating_sub(1));
+        if end < start {
+            continue;
+        }
+        let mut from = start;
+        loop {
+            check_cancel(cancel)?;
+            let limit = (end - from + 1).min(PAGE_EVENTS as u64).max(1);
+            let page = branch
+                .query(TimelineQuery {
+                    scope: TimelineQueryScope::Branch,
+                    include_publishing: false,
+                    from_event: None,
+                    from_sequence: Some(from),
+                    order_by: TimelineQueryOrderBy::Sequence,
+                    direction: TimelineQueryDirection::Ascending,
+                    kinds: KINDS.iter().map(|kind| (*kind).to_owned()).collect(),
+                    flags: Vec::new(),
+                    event_id: None,
+                    predicate: None,
+                    predicates: Vec::new(),
+                    text: None,
+                    limit: std::num::NonZeroU64::new(limit).expect("a page keeps one event"),
+                    offset: 0,
+                })
+                .await
+                .map_err(RecallTool::facade_error)?;
+            let Some(last) = page.positions.last().map(|position| position.sequence) else {
+                break;
+            };
+            let page_len = page.events.len();
+            events.extend(
+                page.events
+                    .into_iter()
+                    .zip(page.positions)
+                    .filter(|(_, position)| position.sequence <= end)
+                    .map(|(event, position)| (position.sequence, event)),
+            );
+            if last >= end || page_len < limit as usize {
+                break;
+            }
+            from = last + 1;
+        }
+    }
+    events.sort_by_key(|(sequence, _)| *sequence);
+    events.dedup_by(|(_, left), (_, right)| left.id == right.id);
+    if events.is_empty() {
+        return Ok(None);
+    }
+    let events: Vec<Arc<AgentEvent>> = events.into_iter().map(|(_, event)| event).collect();
+    let narrative = Narrative::window(&events, 0, false);
+    Ok(Some(narrative.answer(&context.turn_id, arguments)))
 }
 
 impl ToolHandler for RecallTool {
