@@ -4,13 +4,15 @@ use crate::{
     tool_binding::ToolBinding,
 };
 use dim_agent_runtime::{
-    AgentError, CAPABILITY_RELOADING, Dispatcher, Names, Timeline, TimelineIdentity, rebuild_facts,
+    AgentError, CAPABILITY_RELOADING, Dispatcher, Names, Timeline, TimelineIdentity,
+    TimelineQuery, TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
 use std::{
+    num::NonZeroU64,
     panic::AssertUnwindSafe,
     sync::{Arc, Mutex},
 };
@@ -112,17 +114,29 @@ impl DynPlugin for ToolExecutorPlugin {
                     let read = read.clone();
                     let timeline = read_timeline.clone();
                     Box::pin(async move {
-                        let reply = rebuild_facts(
-                            &timeline,
-                            &[
-                                "step/tool-call",
-                                "step/tool-result",
-                                "stop/interrupt",
-                                "turn/start",
-                                "turn/end",
-                            ],
-                        )
-                        .await?;
+                        let reply = timeline
+                            .query_all(TimelineQuery {
+                                scope: TimelineQueryScope::Branch,
+                                include_publishing: true,
+                                from_event: None,
+                                from_sequence: None,
+                                order_by: TimelineQueryOrderBy::Sequence,
+                                direction: TimelineQueryDirection::Ascending,
+                                kinds: vec![
+                                    "step/tool-call".into(),
+                                    "step/tool-result".into(),
+                                    "stop/interrupt".into(),
+                                    "turn/start".into(),
+                                    "turn/end".into(),
+                                ],
+                                flags: Vec::new(),
+                                event_id: None,
+                                predicate: None,
+                                limit: NonZeroU64::new(1024)
+                                    .expect("a page keeps one fact"),
+                                offset: 0,
+                            })
+                            .await?;
                         rebuild(&mut read.state.lock().unwrap(), &timeline, &reply.events)?;
                         Ok(reply.through)
                     })
