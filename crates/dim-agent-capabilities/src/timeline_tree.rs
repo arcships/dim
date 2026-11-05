@@ -3031,9 +3031,9 @@ impl BranchTool {
                 // The dispatcher delivers only published facts, so the
                 // `step/tool-use` this call runs from and the `step/model-start`
                 // before it are published when the read runs.
-                let mut model_start = None;
+                let mut saw_tool_use = false;
                 let mut found = None;
-                let mut from = 1;
+                let mut from = parent.sequence();
                 loop {
                     let reply = parent
                         .query(TimelineQuery {
@@ -3042,7 +3042,7 @@ impl BranchTool {
                             from_event: None,
                             from_sequence: Some(from),
                             order_by: TimelineQueryOrderBy::Sequence,
-                            direction: TimelineQueryDirection::Ascending,
+                            direction: TimelineQueryDirection::Descending,
                             kinds: vec!["step/model-start".into(), "step/tool-use".into()],
                             flags: Vec::new(),
                             event_id: None,
@@ -3057,20 +3057,17 @@ impl BranchTool {
                         .await
                         .map_err(|error| HostError::failed(error.to_string()))?;
                     let short = (reply.events.len() as u64) < LINE_PAGE;
-                    let last = reply.events.last().map(|event| event.sequence);
+                    let last = reply.positions.last().map(|position| position.sequence);
                     for event in &reply.events {
                         match &event.kind {
-                            EventKind::ModelStart(data) if data.turn_id == context.turn_id => {
-                                model_start = Some(event.sequence);
-                            }
                             EventKind::ToolUse(data) if data.turn_id == context.turn_id => {
-                                found = Some(
-                                    model_start.ok_or_else(|| {
-                                        HostError::failed(
-                                            "branch tool batch has no owning model start",
-                                        )
-                                    })? - 1,
-                                );
+                                saw_tool_use = true;
+                            }
+                            EventKind::ModelStart(data) if data.turn_id == context.turn_id => {
+                                if !saw_tool_use {
+                                    break;
+                                }
+                                found = Some(event.sequence - 1);
                                 break;
                             }
                             _ => {}
@@ -3080,7 +3077,7 @@ impl BranchTool {
                         break;
                     }
                     match last {
-                        Some(last) if !short => from = last + 1,
+                        Some(last) if !short && last > 1 => from = last - 1,
                         _ => break,
                     }
                 }
