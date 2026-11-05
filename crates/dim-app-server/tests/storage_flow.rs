@@ -8351,6 +8351,95 @@ async fn a_query_predicates_are_anded() {
     db.close().await.unwrap();
 }
 
+/// One array segment compares each element's field in both stores.
+#[tokio::test]
+async fn a_query_predicate_compares_one_array_level() {
+    use dim_agent_runtime::PredicateOp;
+    use dim_agent_runtime::TimelineQueryScope::Branch;
+
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    let memory_store: std::sync::Arc<dyn TimelineStore> =
+        std::sync::Arc::new(dim_agent_runtime::MemoryTimelineStore::default());
+    for target in [store.clone(), memory_store.clone()] {
+        target
+            .create_session("query", &SessionConfig::default())
+            .await
+            .unwrap();
+        for (sequence, value) in [
+            (
+                1u64,
+                serde_json::json!({ "blocks": [{ "key": "alpha" }, { "key": "beta" }] }),
+            ),
+            (2, serde_json::json!({ "blocks": [{ "key": "gamma" }] })),
+        ] {
+            publish_records(
+                &target,
+                key("query", "main"),
+                vec![query_record(
+                    sequence,
+                    sequence,
+                    &format!("value-{sequence}"),
+                    marked(value),
+                )],
+            )
+            .await;
+        }
+    }
+    let sqlite = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        store,
+    )
+    .await
+    .unwrap();
+    let memory = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        memory_store,
+    )
+    .await
+    .unwrap();
+
+    for (op, value, expected) in [
+        (
+            PredicateOp::Eq,
+            serde_json::json!("beta"),
+            ["value-1"].as_slice(),
+        ),
+        (
+            PredicateOp::In,
+            serde_json::json!(["gamma"]),
+            ["value-2"].as_slice(),
+        ),
+        (
+            PredicateOp::Exists,
+            serde_json::json!(null),
+            ["value-1", "value-2"].as_slice(),
+        ),
+    ] {
+        let mut request = query(Branch, 2);
+        request.predicate = Some(op_predicate("blocks[].key", op, value));
+        let from_sqlite = sqlite.query(request.clone()).await.unwrap();
+        let from_memory = memory.query(request).await.unwrap();
+        assert_eq!(query_ids(&from_sqlite), expected, "{op:?} sqlite");
+        assert_eq!(query_ids(&from_memory), expected, "{op:?} memory");
+    }
+
+    let mut invalid = query(Branch, 2);
+    invalid.predicate = Some(op_predicate(
+        "blocks[].key[]",
+        PredicateOp::Exists,
+        serde_json::json!(null),
+    ));
+    assert!(sqlite.query(invalid).await.is_err(), "two array segments");
+
+    db.close().await.unwrap();
+}
+
 /// An integer above `i64` is a value SQLite's extraction rounds, so a page of
 /// one must not be spent on the neighbouring integer.
 #[tokio::test]

@@ -129,12 +129,34 @@ impl TimelineQueryPredicate {
         let Some(mut current) = kind.get("data") else {
             return false;
         };
-        for segment in self.path.split('.') {
+        let Some((before, after)) = self.segments() else {
+            return false;
+        };
+        for segment in &before {
             let Some(next) = current.get(segment) else {
                 return false;
             };
             current = next;
         }
+        if let Some(after) = after {
+            let Some(values) = current.as_array() else {
+                return false;
+            };
+            return values.iter().any(|element| {
+                let mut current = element;
+                for segment in &after {
+                    let Some(next) = current.get(segment) else {
+                        return false;
+                    };
+                    current = next;
+                }
+                self.compare(current)
+            });
+        }
+        self.compare(current)
+    }
+
+    fn compare(&self, current: &serde_json::Value) -> bool {
         match self.op {
             PredicateOp::Eq => current == &self.value,
             PredicateOp::In => self
@@ -154,24 +176,64 @@ impl TimelineQueryPredicate {
         }
     }
 
-    /// The path as a JSON path from the root of the event's data, `None` when
-    /// its spelling is not the one the contract fixes.
-    pub fn json_path(&self) -> Option<String> {
-        let valid = self.path.split('.').all(|segment| {
+    /// The fields before and after the one array segment, `None` when the
+    /// spelling is not the one the contract fixes. `after` is `None` for a
+    /// path without an array.
+    fn segments(&self) -> Option<(Vec<String>, Option<Vec<String>>)> {
+        let valid = |segment: &str| {
             !segment.is_empty()
                 && !segment.chars().any(|c| {
                     c.is_whitespace()
                         || c.is_control()
                         || matches!(c, '.' | '[' | ']' | '*' | '"' | '\'' | '\\' | '$' | '#')
                 })
-        });
-        valid.then(|| format!("$.{path}", path = self.path))
+        };
+        let mut before = Vec::new();
+        let mut after: Option<Vec<String>> = None;
+        for segment in self.path.split('.') {
+            if let Some(field) = segment.strip_suffix("[]") {
+                if after.is_some() || !valid(field) {
+                    return None;
+                }
+                before.push(field.to_owned());
+                after = Some(Vec::new());
+            } else {
+                if !valid(segment) {
+                    return None;
+                }
+                match &mut after {
+                    Some(fields) => fields.push(segment.to_owned()),
+                    None => before.push(segment.to_owned()),
+                }
+            }
+        }
+        Some((before, after))
+    }
+
+    /// The array path before the one `[]`, and the field path inside each
+    /// element (`$` when the element itself is compared).
+    pub fn array_path(&self) -> Option<(String, String)> {
+        let (before, after) = self.segments()?;
+        let after = after?;
+        let inside = if after.is_empty() {
+            "$".into()
+        } else {
+            format!("$.{}", after.join("."))
+        };
+        Some((before.join("."), inside))
+    }
+
+    /// The path as a JSON path from the root of the event's data, `None` when
+    /// its spelling is not the one the contract fixes or it uses an array.
+    pub fn json_path(&self) -> Option<String> {
+        let (before, after) = self.segments()?;
+        after.is_none().then(|| format!("$.{}", before.join(".")))
     }
 
     fn validate(&self) -> Result<()> {
-        if self.json_path().is_none() {
+        if self.segments().is_none() {
             return Err(AgentError::InvalidInput(format!(
-                "query path {:?} is not field names joined by dots",
+                "query path {:?} is not field names joined by dots with at most one []",
                 self.path
             )));
         }

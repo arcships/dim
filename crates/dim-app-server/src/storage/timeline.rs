@@ -2055,8 +2055,32 @@ fn query_rows(
         .collect();
     let mut all = Vec::new();
     for predicate in predicates {
-        if predicate.json_path().is_none() {
+        if predicate.json_path().is_none() && predicate.array_path().is_none() {
             return Err(error("query path is not field names joined by dots"));
+        }
+        if let Some((array, inside)) = predicate.array_path() {
+            let mut inside_parameters = Vec::new();
+            let Some(clause) =
+                predicate_clause("e.value", &inside, predicate, &mut inside_parameters)?
+            else {
+                continue;
+            };
+            let mut clauses = vec![format!(
+                "(EXISTS (SELECT 1 FROM json_each(json_extract(body, ?)) AS e WHERE {clause}))"
+            )];
+            parameters.push(text(&format!("$.record.event.data.{array}")));
+            parameters.extend(inside_parameters.clone());
+            clauses.push(format!(
+                "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r, \
+                   json_each(json_extract(r.value, ?)) AS e \
+                   WHERE {clause} \
+                   AND json_extract(r.value, '$.event.sequence') <= ?))"
+            ));
+            parameters.push(text(&format!("$.event.data.{array}")));
+            parameters.extend(inside_parameters);
+            parameters.push(rusqlite::types::Value::Integer(sql_sequence(*range.end())?));
+            all.push(format!("({})", clauses.join(" OR ")));
+            continue;
         }
         let mut clauses = Vec::new();
         let mut paths = vec![format!("$.record.event.data.{}", predicate.path)];
