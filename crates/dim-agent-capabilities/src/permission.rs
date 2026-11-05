@@ -544,6 +544,7 @@ impl Permission {
                 flags: Vec::new(),
                 event_id: None,
                 predicate: None,
+                predicates: Vec::new(),
                 limit: NonZeroU64::MIN,
                 offset: 0,
             })

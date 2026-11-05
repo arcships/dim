@@ -22,6 +22,7 @@ pub(crate) fn chain_by_id(id: &str) -> TimelineQuery {
         flags: Vec::new(),
         event_id: Some(id.to_owned()),
         predicate: None,
+        predicates: Vec::new(),
         limit: NonZeroU64::MIN,
         offset: 0,
     }
@@ -48,6 +49,7 @@ pub(crate) fn newest_chain(
         flags: Vec::new(),
         event_id: None,
         predicate,
+        predicates: Vec::new(),
         limit: NonZeroU64::new(limit).expect("a page keeps at least one event"),
         offset: 0,
     }
@@ -72,6 +74,7 @@ pub(crate) fn rising_chain(
         flags: Vec::new(),
         event_id: None,
         predicate: None,
+        predicates: Vec::new(),
         limit: NonZeroU64::new(limit).expect("a page keeps at least one event"),
         offset,
     }
@@ -112,6 +115,7 @@ fn context_read(
         flags: vec![TimelineQueryFlag::Render, TimelineQueryFlag::State],
         event_id: None,
         predicate: None,
+        predicates: Vec::new(),
         limit: NonZeroU64::new(limit).expect("a page keeps at least one event"),
         offset,
     }
@@ -1468,6 +1472,7 @@ impl ContextReads<'_> {
                     path: "status".into(),
                     value: serde_json::Value::String("completed".into()),
                 }),
+                predicates: Vec::new(),
                 limit: NonZeroU64::MIN,
                 offset: 0,
             })

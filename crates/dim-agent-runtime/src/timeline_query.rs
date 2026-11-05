@@ -244,9 +244,12 @@ pub struct TimelineQuery {
     /// When named, only the event with this id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
-    /// One equality the event's data must satisfy.
+    /// One predicate the event's data must satisfy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predicate: Option<TimelineQueryPredicate>,
+    /// Further predicates the event's data must satisfy; all are ANDed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub predicates: Vec<TimelineQueryPredicate>,
     /// How many matching events the page returns; nonzero by type.
     pub limit: NonZeroU64,
     /// How many matching events the read skips before the page.
@@ -277,12 +280,24 @@ impl TimelineQuery {
                 .predicate
                 .as_ref()
                 .is_none_or(|predicate| predicate.matches(event))
+            && self
+                .predicates
+                .iter()
+                .all(|predicate| predicate.matches(event))
     }
 
     /// Checks the input a caller can get wrong before any storage read: the
     /// predicate's spelling and value. The read point is the store's to bound.
     pub fn validate(&self) -> Result<()> {
+        if self.predicate.is_some() && !self.predicates.is_empty() {
+            return Err(AgentError::InvalidInput(
+                "a read carries predicate or predicates, not both".into(),
+            ));
+        }
         if let Some(predicate) = &self.predicate {
+            predicate.validate()?;
+        }
+        for predicate in &self.predicates {
             predicate.validate()?;
         }
         if self.from_event.is_some() && self.from_sequence.is_some() {
@@ -346,6 +361,7 @@ pub async fn rebuild_facts(timeline: &Timeline, kinds: &[&str]) -> Result<Timeli
         flags: Vec::new(),
         event_id: None,
         predicate: None,
+        predicates: Vec::new(),
         limit: NonZeroU64::new(REBUILD_PAGE).expect("a page keeps at least one fact"),
         offset: 0,
     };

@@ -96,6 +96,7 @@ async fn compact(branch: &Branch, cancel: &CancellationToken) -> Result<Value, R
                         path: "command".into(),
                         value: json!(command),
                     }),
+                    predicates: Vec::new(),
                     limit: NonZeroU64::MIN,
                     offset: 0,
                 })

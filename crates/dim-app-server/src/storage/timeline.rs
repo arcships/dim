@@ -2048,7 +2048,13 @@ fn query_rows(
             rusqlite::types::Value::Integer(sql_sequence(*range.end())?),
         ]);
     }
-    if let Some(predicate) = &query.predicate {
+    let predicates: Vec<&TimelineQueryPredicate> = query
+        .predicate
+        .iter()
+        .chain(query.predicates.iter())
+        .collect();
+    let mut all = Vec::new();
+    for predicate in predicates {
         if predicate.json_path().is_none() {
             return Err(error("query path is not field names joined by dots"));
         }
@@ -2072,7 +2078,12 @@ fn query_rows(
             ));
             parameters.push(rusqlite::types::Value::Integer(sql_sequence(*range.end())?));
         }
-        sql.push_str(&format!(" AND ({})", clauses.join(" OR ")));
+        if !clauses.is_empty() {
+            all.push(format!("({})", clauses.join(" OR ")));
+        }
+    }
+    if !all.is_empty() {
+        sql.push_str(&format!(" AND {}", all.join(" AND ")));
     }
     sql.push_str(if descending {
         " ORDER BY sequence DESC"

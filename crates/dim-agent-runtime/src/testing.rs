@@ -345,6 +345,7 @@ async fn read<R: std::ops::RangeBounds<u64> + Send>(
         flags: Vec::new(),
         event_id: None,
         predicate: None,
+        predicates: Vec::new(),
         limit: std::num::NonZeroU64::new(page).expect("a page keeps at least one fact"),
         offset: 0,
     };

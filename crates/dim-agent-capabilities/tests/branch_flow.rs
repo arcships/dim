@@ -6446,6 +6446,7 @@ async fn a_host_lines_end_says_nothing_to_main() {
         flags: vec![],
         event_id: None,
         predicate: None,
+        predicates: Vec::new(),
         limit: std::num::NonZeroU64::new(2).unwrap(),
         offset: 1,
     };

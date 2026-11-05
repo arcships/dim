@@ -787,6 +787,7 @@ pub async fn branch_events<R: std::ops::RangeBounds<u64> + Send>(
                     flags: Vec::new(),
                     event_id: None,
                     predicate: None,
+                    predicates: Vec::new(),
                     limit: std::num::NonZeroU64::new(4096).unwrap(),
                     offset: 0,
                 },

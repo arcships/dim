@@ -132,8 +132,10 @@ export interface TimelineQuery {
   flags?: TimelineQueryFlag[]
   /** When named, only the event with this id. */
   event_id?: string | null
-  /** One equality the event's data must satisfy. */
+  /** One predicate the event's data must satisfy. */
   predicate?: TimelineQueryPredicate | null
+  /** Further predicates the event's data must satisfy; all are ANDed. */
+  predicates?: TimelineQueryPredicate[]
   /** How many matching events the page returns; nonzero by type. */
   limit: number | bigint
   /** How many matching events the read skips before the page. */
