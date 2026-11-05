@@ -1,6 +1,6 @@
 # Timeline query selection
 
-Status: Draft. Delivery status is tracked in #1147, not here.
+Status: Ready. Delivery status is tracked in #1147, not here.
 
 Scope: process.
 Issue: #1147.
