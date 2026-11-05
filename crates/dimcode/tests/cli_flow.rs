@@ -7562,8 +7562,9 @@ fn web_install_refuses_for_a_build_from_source() {
 
 #[test]
 fn tui_web_toggles_the_daemon_switch_without_leaving() {
-    let home = Home::new();
-    let daemon = home.daemon(|wire| {
+    for manual in [true, false] {
+        let home = Home::new();
+        let daemon = home.daemon(|wire| {
         let hello = wire.read("hello");
         wire.reply(&hello,json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","web.toggle"]}));
         let create = wire.read("session.create");
@@ -7593,23 +7594,40 @@ fn tui_web_toggles_the_daemon_switch_without_leaving() {
             line.clear();
         }
     });
-    let mut command = home.command();
-    command
-        .env("DIMCODE_OAUTH_MANUAL", "1")
-        .env_remove("DIMCODE_WEB_ASSETS");
-    let mut terminal = Terminal::launch_tui(command);
-    terminal.until("test / model");
-    terminal.write(b"/web\r");
-    terminal.until("Web interface on: http://127.0.0.1:4567/chat/session#token=fixture-token");
-    terminal.write(b"/web\r");
-    terminal.until("Web interface off");
-    terminal.write(b"/web\r");
-    terminal.until("The Web workspace is not installed. Set DIMCODE_WEB_ASSETS");
-    assert!(!terminal.transcript.contains("RPC"));
-    terminal.write(b"/exit\r");
-    let status = terminal.wait();
-    daemon.join().unwrap();
-    assert!(status.success());
+        let bin = home.0.join("bin");
+        fs::create_dir(&bin).unwrap();
+        for name in ["open", "xdg-open"] {
+            let path = bin.join(name);
+            fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let mut command = home.command();
+        command
+            .env("PATH", &bin)
+            .env("DIMCODE_OAUTH_MANUAL", if manual { "1" } else { "0" })
+            .env_remove("DIMCODE_WEB_ASSETS");
+        let mut terminal = Terminal::launch_tui(command);
+        terminal.until("test / model");
+        terminal.write(b"/we");
+        terminal.until("turn the web interface on or off");
+        terminal.write(b"\r");
+        terminal.until("Web interface on: http://127.0.0.1:4567/chat/session");
+        if manual {
+            terminal.until("#token=fixture-token");
+        }
+        terminal.write(b"/web\r");
+        terminal.until("Web interface off");
+        if !manual {
+            assert!(!terminal.transcript.contains("fixture-token"));
+        }
+        terminal.write(b"/web\r");
+        terminal.until("The Web workspace is not installed. Set DIMCODE_WEB_ASSETS");
+        assert!(!terminal.transcript.contains("RPC"));
+        terminal.write(b"/exit\r");
+        let status = terminal.wait();
+        daemon.join().unwrap();
+        assert!(status.success());
+    }
 }
 
 #[test]

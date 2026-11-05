@@ -270,7 +270,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "列出 MCP 服务器，登录或退出（login|logout ID）"
         }
         "resume a previous session" => "恢复之前的会话",
-        "open this session in the browser" => "在浏览器中打开此会话",
+        "turn the web interface on or off" => "开启或关闭 Web 界面",
         "show the context window usage" => "显示上下文窗口用量",
         "interrupt the run" => "中断运行",
         "steer with the next queued message" => "用下一条队列消息 steer",

@@ -208,7 +208,7 @@ pub const COMMANDS: &[Command] = &[
     },
     slash(
         "web",
-        "open this session in the browser",
+        "turn the web interface on or off",
         &[],
         Needs::Nothing,
     ),

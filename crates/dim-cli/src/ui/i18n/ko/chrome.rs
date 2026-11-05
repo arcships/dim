@@ -284,7 +284,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "MCP 서버 목록, 로그인/로그아웃 (login|logout ID)"
         }
         "resume a previous session" => "이전 세션 재개",
-        "open this session in the browser" => "브라우저에서 이 세션 열기",
+        "turn the web interface on or off" => "웹 인터페이스 켜기 또는 끄기",
         "show the context window usage" => "컨텍스트 창 사용량 보기",
         "interrupt the run" => "실행 중단",
         "steer with the next queued message" => "다음 대기 메시지로 steer",

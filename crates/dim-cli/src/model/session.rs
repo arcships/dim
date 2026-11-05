@@ -1214,8 +1214,8 @@ pub enum Update {
         text: String,
         warning: bool,
     },
-    /// The Web entry switch after `/web`; `url` is present while the entry
-    /// is open and carries its sign-in fragment.
+    /// The Web entry switch after `/web`; `url` includes its sign-in
+    /// fragment only when the browser could not be launched.
     Web {
         enabled: bool,
         open: bool,

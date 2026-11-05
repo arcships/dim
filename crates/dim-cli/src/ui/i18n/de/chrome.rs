@@ -324,7 +324,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "MCP-Server auflisten, an- oder abmelden (login|logout ID)"
         }
         "resume a previous session" => "frühere Session fortsetzen",
-        "open this session in the browser" => "diese Session im Browser öffnen",
+        "turn the web interface on or off" => "Weboberfläche ein- oder ausschalten",
         "show the context window usage" => "Kontextfenster-Nutzung anzeigen",
         "interrupt the run" => "Lauf unterbrechen",
         "steer with the next queued message" => "mit nächster eingereihter Nachricht steuern",

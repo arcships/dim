@@ -1383,9 +1383,12 @@ impl Worker {
                         let browser = state.enabled
                             && state.open
                             && url.as_deref().is_some_and(crate::browser::open);
-                        state.url = (state.enabled && state.open && !browser)
-                            .then_some(url)
-                            .flatten();
+                        state.url = url.map(|mut url| {
+                            if browser && let Some(fragment) = url.find('#') {
+                                url.truncate(fragment);
+                            }
+                            url
+                        });
                         self.send(Update::Web {
                             enabled: state.enabled,
                             open: state.open,

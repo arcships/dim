@@ -314,7 +314,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "daftar server MCP, masuk/keluar (login|logout ID)"
         }
         "resume a previous session" => "lanjutkan sesi sebelumnya",
-        "open this session in the browser" => "buka sesi ini di browser",
+        "turn the web interface on or off" => "aktifkan atau nonaktifkan antarmuka web",
         "show the context window usage" => "lihat pemakaian jendela konteks",
         "interrupt the run" => "interupsi run",
         "steer with the next queued message" => "steer dengan pesan antrean berikutnya",

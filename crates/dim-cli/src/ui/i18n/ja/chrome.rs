@@ -298,7 +298,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "MCP サーバー一覧・サインイン/アウト（login|logout ID）"
         }
         "resume a previous session" => "過去のセッションを再開",
-        "open this session in the browser" => "セッションをブラウザで開く",
+        "turn the web interface on or off" => "Web インターフェースをオン・オフ",
         "show the context window usage" => "コンテキスト使用量を表示",
         "interrupt the run" => "実行を中断",
         "steer with the next queued message" => "次のキューメッセージで steer",

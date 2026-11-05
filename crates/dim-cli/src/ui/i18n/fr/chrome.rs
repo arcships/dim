@@ -318,7 +318,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "lister les serveurs MCP, (dé)connexion (login|logout ID)"
         }
         "resume a previous session" => "reprendre une session",
-        "open this session in the browser" => "ouvrir la session dans le navigateur",
+        "turn the web interface on or off" => "activer ou désactiver l'interface web",
         "show the context window usage" => "voir l'usage du contexte",
         "interrupt the run" => "interrompre l'exécution",
         "steer with the next queued message" => "orienter avec le message en file",

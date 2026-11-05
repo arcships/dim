@@ -332,7 +332,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "listar servidores MCP, iniciar/cerrar sesión (login|logout ID)"
         }
         "resume a previous session" => "reanudar sesión anterior",
-        "open this session in the browser" => "abrir esta sesión en el navegador",
+        "turn the web interface on or off" => "activar o desactivar la interfaz web",
         "show the context window usage" => "ver uso de la ventana de contexto",
         "interrupt the run" => "interrumpir ejecución",
         "steer with the next queued message" => "steer con el próximo mensaje en cola",
