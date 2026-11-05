@@ -11,7 +11,8 @@ use crate::{
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
 };
 use dim_agent_runtime::{
-    AgentError, Dispatcher, Names, SessionLifecycle, Timeline, TimelineIdentity, rebuild_facts,
+    AgentError, Dispatcher, Names, SessionLifecycle, Timeline, TimelineIdentity, TimelineQuery,
+    TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use rutis::Ctx;
@@ -19,6 +20,7 @@ use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use std::{
     collections::HashMap,
     io::SeekFrom,
+    num::NonZeroU64,
     sync::{Arc, Mutex},
 };
 use tokio::{
@@ -683,16 +685,28 @@ impl DynPlugin for BackgroundExecPlugin {
                         let read = read.clone();
                         let timeline = read_timeline.clone();
                         Box::pin(async move {
-                            let reply = rebuild_facts(
-                                &timeline,
-                                &[
-                                    "exec/started",
-                                    "exec/ended",
-                                    "stop/interrupt",
-                                    "input/message",
-                                ],
-                            )
-                            .await?;
+                            let reply = timeline
+                                .query_all(TimelineQuery {
+                                    scope: TimelineQueryScope::Branch,
+                                    include_publishing: true,
+                                    from_event: None,
+                                    from_sequence: None,
+                                    order_by: TimelineQueryOrderBy::Sequence,
+                                    direction: TimelineQueryDirection::Ascending,
+                                    kinds: vec![
+                                        "exec/started".into(),
+                                        "exec/ended".into(),
+                                        "stop/interrupt".into(),
+                                        "input/message".into(),
+                                    ],
+                                    flags: Vec::new(),
+                                    event_id: None,
+                                    predicate: None,
+                                    limit: NonZeroU64::new(1024)
+                                        .expect("a page keeps one fact"),
+                                    offset: 0,
+                                })
+                                .await?;
                             let unposted = read.rebuild(&reply.events);
                             read.repost(unposted);
                             Ok(reply.through)
