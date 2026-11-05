@@ -7688,22 +7688,14 @@ fn query(
 }
 
 fn predicate(path: &str, value: serde_json::Value) -> dim_agent_runtime::TimelineQueryPredicate {
-    dim_agent_runtime::TimelineQueryPredicate {
-        op: dim_agent_runtime::PredicateOp::Eq,
-        path: path.into(),
-        value,
-    }
+    op_predicate(path, dim_agent_runtime::PredicateOp::Eq, value)
 }
 
 fn in_predicate(
     path: &str,
     values: serde_json::Value,
 ) -> dim_agent_runtime::TimelineQueryPredicate {
-    dim_agent_runtime::TimelineQueryPredicate {
-        op: dim_agent_runtime::PredicateOp::In,
-        path: path.into(),
-        value: values,
-    }
+    op_predicate(path, dim_agent_runtime::PredicateOp::In, values)
 }
 
 fn op_predicate(
