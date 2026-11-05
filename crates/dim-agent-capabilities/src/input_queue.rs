@@ -5,13 +5,14 @@ use crate::{
 };
 use dim_agent_runtime::{
     AgentError, Dispatcher, InputSnapshot, Names, Registrations, Result, StateCell, Timeline,
-    rebuild_facts,
+    TimelineQuery, TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
 use std::{
     collections::{HashMap, HashSet},
+    num::NonZeroU64,
     sync::{Arc, Mutex},
 };
 use tokio_util::sync::CancellationToken;
@@ -328,20 +329,32 @@ impl DynPlugin for InputQueuePlugin {
                         let read = read.clone();
                         let timeline = read_timeline.clone();
                         Box::pin(async move {
-                            let reply = rebuild_facts(
-                                &timeline,
-                                &[
-                                    "input/message",
-                                    "input/consumed",
-                                    "input/withdraw",
-                                    "input/applied",
-                                    "input/deleted",
-                                    "turn/start",
-                                    "turn/end",
-                                    "stop/interrupt",
-                                ],
-                            )
-                            .await?;
+                            let reply = timeline
+                                .query_all(TimelineQuery {
+                                    scope: TimelineQueryScope::Branch,
+                                    include_publishing: true,
+                                    from_event: None,
+                                    from_sequence: None,
+                                    order_by: TimelineQueryOrderBy::Sequence,
+                                    direction: TimelineQueryDirection::Ascending,
+                                    kinds: vec![
+                                        "input/message".into(),
+                                        "input/consumed".into(),
+                                        "input/withdraw".into(),
+                                        "input/applied".into(),
+                                        "input/deleted".into(),
+                                        "turn/start".into(),
+                                        "turn/end".into(),
+                                        "stop/interrupt".into(),
+                                    ],
+                                    flags: Vec::new(),
+                                    event_id: None,
+                                    predicate: None,
+                                    limit: NonZeroU64::new(1024)
+                                        .expect("a page keeps one fact"),
+                                    offset: 0,
+                                })
+                                .await?;
                             read.rebuild(&reply.events)?;
                             Ok(reply.through)
                         })
