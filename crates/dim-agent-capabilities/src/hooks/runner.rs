@@ -21,7 +21,8 @@ use crate::{
 };
 use dim_agent_runtime::{
     BranchLifecycle, CollaborationRole, Dispatcher, Names, SessionConfig, SessionIdentity,
-    Timeline, TimelineIdentity, rebuild_facts,
+    Timeline, TimelineIdentity, TimelineQuery, TimelineQueryDirection, TimelineQueryOrderBy,
+    TimelineQueryScope,
 };
 use dim_agent_types::{
     AgentEvent, ApprovalCancelledData, ApprovalDecision, ApprovalRequestData, ApprovalRespondData,
@@ -35,6 +36,7 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
     future::Future,
+    num::NonZeroU64,
     path::Path,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -1818,7 +1820,25 @@ impl DynPlugin for HooksBranchPlugin {
                         let read = read.clone();
                         let timeline = read_timeline.clone();
                         Box::pin(async move {
-                            let reply = rebuild_facts(&timeline, &FOLLOWED_EVENTS).await?;
+                            let reply = timeline
+                                .query_all(TimelineQuery {
+                                    scope: TimelineQueryScope::Branch,
+                                    include_publishing: true,
+                                    from_event: None,
+                                    from_sequence: None,
+                                    order_by: TimelineQueryOrderBy::Sequence,
+                                    direction: TimelineQueryDirection::Ascending,
+                                    kinds: FOLLOWED_EVENTS
+                                        .iter()
+                                        .map(|kind| (*kind).to_owned())
+                                        .collect(),
+                                    flags: Vec::new(),
+                                    event_id: None,
+                                    predicate: None,
+                                    limit: NonZeroU64::new(1024).expect("a page keeps one fact"),
+                                    offset: 0,
+                                })
+                                .await?;
                             for event in &reply.events {
                                 read.fold(event, false);
                             }
