@@ -403,34 +403,46 @@ impl DynPlugin for ModelProviderPlugin {
                         let read = read.clone();
                         let timeline = read_timeline.clone();
                         Box::pin(async move {
-                            let reply = timeline
-                                .query_all(TimelineQuery {
-                                    scope: TimelineQueryScope::Branch,
-                                    include_publishing: true,
-                                    from_event: None,
-                                    from_sequence: None,
-                                    order_by: TimelineQueryOrderBy::Sequence,
-                                    direction: TimelineQueryDirection::Ascending,
-                                    kinds: vec![
-                                        "model/call".into(),
-                                        "step/tool-use-start".into(),
-                                        "step/tool-use".into(),
-                                        "step/model-output-end".into(),
-                                        "step/model-start".into(),
-                                        "input/applied".into(),
-                                        "stop/interrupt".into(),
-                                        "turn/start".into(),
-                                        "turn/end".into(),
-                                    ],
-                                    flags: Vec::new(),
-                                    event_id: None,
-                                    predicate: None,
-                                    limit: NonZeroU64::new(1024).expect("a page keeps one fact"),
-                                    offset: 0,
-                                })
-                                .await?;
-                            read.rebuild(&mut read.state.lock().unwrap(), &reply.events)?;
-                            Ok(reply.through)
+                            let mut events = Vec::new();
+                            let mut from: Option<u64> = None;
+                            let through = loop {
+                                let reply = timeline
+                                    .query(TimelineQuery {
+                                        scope: TimelineQueryScope::Branch,
+                                        include_publishing: true,
+                                        from_event: None,
+                                        from_sequence: from,
+                                        order_by: TimelineQueryOrderBy::Sequence,
+                                        direction: TimelineQueryDirection::Ascending,
+                                        kinds: vec![
+                                            "model/call".into(),
+                                            "step/tool-use-start".into(),
+                                            "step/tool-use".into(),
+                                            "step/model-output-end".into(),
+                                            "step/model-start".into(),
+                                            "input/applied".into(),
+                                            "stop/interrupt".into(),
+                                            "turn/start".into(),
+                                            "turn/end".into(),
+                                        ],
+                                        flags: Vec::new(),
+                                        event_id: None,
+                                        predicate: None,
+                                        limit: NonZeroU64::new(1024)
+                                            .expect("a page keeps one fact"),
+                                        offset: 0,
+                                    })
+                                    .await?;
+                                let short = (reply.events.len() as u64) < 1024;
+                                let last = reply.positions.last().map(|position| position.sequence);
+                                events.extend(reply.events);
+                                match last {
+                                    Some(last) if !short => from = Some(last + 1),
+                                    _ => break reply.through,
+                                }
+                            };
+                            read.rebuild(&mut read.state.lock().unwrap(), &events)?;
+                            Ok(through)
                         })
                     }),
                     Arc::new(move |event| {

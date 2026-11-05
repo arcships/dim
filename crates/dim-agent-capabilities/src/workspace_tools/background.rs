@@ -685,30 +685,42 @@ impl DynPlugin for BackgroundExecPlugin {
                         let read = read.clone();
                         let timeline = read_timeline.clone();
                         Box::pin(async move {
-                            let reply = timeline
-                                .query_all(TimelineQuery {
-                                    scope: TimelineQueryScope::Branch,
-                                    include_publishing: true,
-                                    from_event: None,
-                                    from_sequence: None,
-                                    order_by: TimelineQueryOrderBy::Sequence,
-                                    direction: TimelineQueryDirection::Ascending,
-                                    kinds: vec![
-                                        "exec/started".into(),
-                                        "exec/ended".into(),
-                                        "stop/interrupt".into(),
-                                        "input/message".into(),
-                                    ],
-                                    flags: Vec::new(),
-                                    event_id: None,
-                                    predicate: None,
-                                    limit: NonZeroU64::new(1024).expect("a page keeps one fact"),
-                                    offset: 0,
-                                })
-                                .await?;
-                            let unposted = read.rebuild(&reply.events);
+                            let mut events = Vec::new();
+                            let mut from: Option<u64> = None;
+                            let through = loop {
+                                let reply = timeline
+                                    .query(TimelineQuery {
+                                        scope: TimelineQueryScope::Branch,
+                                        include_publishing: true,
+                                        from_event: None,
+                                        from_sequence: from,
+                                        order_by: TimelineQueryOrderBy::Sequence,
+                                        direction: TimelineQueryDirection::Ascending,
+                                        kinds: vec![
+                                            "exec/started".into(),
+                                            "exec/ended".into(),
+                                            "stop/interrupt".into(),
+                                            "input/message".into(),
+                                        ],
+                                        flags: Vec::new(),
+                                        event_id: None,
+                                        predicate: None,
+                                        limit: NonZeroU64::new(1024)
+                                            .expect("a page keeps one fact"),
+                                        offset: 0,
+                                    })
+                                    .await?;
+                                let short = (reply.events.len() as u64) < 1024;
+                                let last = reply.positions.last().map(|position| position.sequence);
+                                events.extend(reply.events);
+                                match last {
+                                    Some(last) if !short => from = Some(last + 1),
+                                    _ => break reply.through,
+                                }
+                            };
+                            let unposted = read.rebuild(&events);
                             read.repost(unposted);
-                            Ok(reply.through)
+                            Ok(through)
                         })
                     }),
                     Arc::new(move |event| consumer.consume(Arc::new(event))),

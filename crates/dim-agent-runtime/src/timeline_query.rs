@@ -6,7 +6,7 @@
 //! The request and the reply are serde data: they cross languages through the
 //! `timeline` service.
 
-use crate::{AgentError, Result, Timeline};
+use crate::{AgentError, Result};
 use dim_agent_types::{AgentEvent, TimelinePosition};
 use serde::{Deserialize, Serialize};
 use std::{num::NonZeroU64, sync::Arc};
@@ -244,58 +244,4 @@ pub struct TimelineQueryPage {
     pub events: Vec<Arc<AgentEvent>>,
     pub positions: Vec<TimelinePosition>,
     pub skipped: u64,
-}
-
-impl Timeline {
-    /// Every fact one branch selection returns, read a page at a time from the
-    /// selection's start through its cutoff, in sequence order. The caller
-    /// names the kinds and any predicate; this method only executes the
-    /// selection and returns the last page's cutoff for live delivery.
-    pub async fn query_all(&self, mut query: TimelineQuery) -> Result<TimelineQueryReply> {
-        if query.scope != TimelineQueryScope::Branch {
-            return Err(AgentError::InvalidInput(
-                "query_all reads one branch".into(),
-            ));
-        }
-        if query.direction != TimelineQueryDirection::Ascending {
-            return Err(AgentError::InvalidInput(
-                "query_all reads in sequence order".into(),
-            ));
-        }
-        if query.event_id.is_some() {
-            return Err(AgentError::InvalidInput(
-                "query_all does not take a named event".into(),
-            ));
-        }
-        if query.offset != 0 {
-            return Err(AgentError::InvalidInput(
-                "query_all does not skip facts".into(),
-            ));
-        }
-        query.validate()?;
-        let page = query.limit.get();
-        let mut events = Vec::new();
-        let mut positions = Vec::new();
-        loop {
-            let reply = self.query(query.clone()).await?;
-            let through = reply.through;
-            let short = (reply.events.len() as u64) < page;
-            let last = reply.positions.last().map(|position| position.sequence);
-            events.extend(reply.events);
-            positions.extend(reply.positions);
-            match last {
-                Some(last) if !short => {
-                    query.from_event = None;
-                    query.from_sequence = Some(last + 1);
-                }
-                _ => {
-                    return Ok(TimelineQueryReply {
-                        events,
-                        positions,
-                        through,
-                    });
-                }
-            }
-        }
-    }
 }

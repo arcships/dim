@@ -114,12 +114,15 @@ impl DynPlugin for ToolExecutorPlugin {
                     let read = read.clone();
                     let timeline = read_timeline.clone();
                     Box::pin(async move {
-                        let reply = timeline
-                            .query_all(TimelineQuery {
+let mut events = Vec::new();
+                        let mut from: Option<u64> = None;
+                        let through = loop {
+                            let reply = timeline
+                                .query(TimelineQuery {
                                 scope: TimelineQueryScope::Branch,
                                 include_publishing: true,
                                 from_event: None,
-                                from_sequence: None,
+                                from_sequence: from,
                                 order_by: TimelineQueryOrderBy::Sequence,
                                 direction: TimelineQueryDirection::Ascending,
                                 kinds: vec![
@@ -136,9 +139,17 @@ impl DynPlugin for ToolExecutorPlugin {
                                     .expect("a page keeps one fact"),
                                 offset: 0,
                             })
-                            .await?;
-                        rebuild(&mut read.state.lock().unwrap(), &timeline, &reply.events)?;
-                        Ok(reply.through)
+                                .await?;
+                            let short = (reply.events.len() as u64) < 1024;
+                            let last = reply.positions.last().map(|position| position.sequence);
+                            events.extend(reply.events);
+                            match last {
+                                Some(last) if !short => from = Some(last + 1),
+                                _ => break reply.through,
+                            }
+                        };
+                        rebuild(&mut read.state.lock().unwrap(), &timeline, &events)?;
+                        Ok(through)
                     })
                 }),
                 Arc::new(move |event| {

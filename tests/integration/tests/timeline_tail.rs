@@ -20,22 +20,40 @@ use std::{
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 async fn read_all(timeline: &Timeline, kinds: &[&str]) -> Result<TimelineQueryReply> {
-    timeline
-        .query_all(TimelineQuery {
-            scope: TimelineQueryScope::Branch,
-            include_publishing: true,
-            from_event: None,
-            from_sequence: None,
-            order_by: TimelineQueryOrderBy::Sequence,
-            direction: TimelineQueryDirection::Ascending,
-            kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
-            flags: Vec::new(),
-            event_id: None,
-            predicate: None,
-            limit: std::num::NonZeroU64::new(1024).expect("a page keeps one fact"),
-            offset: 0,
-        })
-        .await
+    let mut events = Vec::new();
+    let mut positions = Vec::new();
+    let mut from: Option<u64> = None;
+    let through = loop {
+        let reply = timeline
+            .query(TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                include_publishing: true,
+                from_event: None,
+                from_sequence: from,
+                order_by: TimelineQueryOrderBy::Sequence,
+                direction: TimelineQueryDirection::Ascending,
+                kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
+                flags: Vec::new(),
+                event_id: None,
+                predicate: None,
+                limit: std::num::NonZeroU64::new(1024).expect("a page keeps one fact"),
+                offset: 0,
+            })
+            .await?;
+        let short = (reply.events.len() as u64) < 1024;
+        let last = reply.positions.last().map(|position| position.sequence);
+        events.extend(reply.events);
+        positions.extend(reply.positions);
+        match last {
+            Some(last) if !short => from = Some(last + 1),
+            _ => break reply.through,
+        }
+    };
+    Ok(TimelineQueryReply {
+        events,
+        positions,
+        through,
+    })
 }
 
 /// Publish callbacks a test holds back until it releases them.
