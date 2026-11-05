@@ -12,7 +12,8 @@ use crate::{
     permission::{Decision, Permission},
 };
 use dim_agent_runtime::{
-    AgentError, CAPABILITY_RELOADING, Dispatcher, Names, Timeline, rebuild_facts,
+    AgentError, CAPABILITY_RELOADING, Dispatcher, Names, Timeline, TimelineQuery,
+    TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryScope,
 };
 use dim_agent_types::{
     AgentEvent, ApprovalCallData, ApprovalCancelledData, ApprovalDecision, ApprovalRequestData,
@@ -22,6 +23,7 @@ use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
 use std::{
     collections::HashMap,
+    num::NonZeroU64,
     sync::{Arc, Mutex},
 };
 use tokio::sync::oneshot;
@@ -367,13 +369,44 @@ impl DynPlugin for ApprovalPlugin {
                         let rebuild = rebuild.clone();
                         let timeline = timeline.clone();
                         Box::pin(async move {
-                            let reply = rebuild_facts(
-                                &timeline,
-                                &["approval/request", "approval/respond", "approval/cancelled"],
-                            )
-                            .await?;
-                            rebuild.rebuild(&reply.events)?;
-                            Ok(reply.through)
+                            let mut from = 1;
+                            let mut events = Vec::new();
+                            let through = loop {
+                                let reply = timeline
+                                    .query(TimelineQuery {
+                                        scope: TimelineQueryScope::Branch,
+                                        include_publishing: false,
+                                        from_event: None,
+                                        from_sequence: Some(from),
+                                        order_by: TimelineQueryOrderBy::Sequence,
+                                        direction: TimelineQueryDirection::Ascending,
+                                        kinds: vec![
+                                            "approval/request".into(),
+                                            "approval/respond".into(),
+                                            "approval/cancelled".into(),
+                                        ],
+                                        flags: Vec::new(),
+                                        event_id: None,
+                                        predicate: None,
+                                        limit: NonZeroU64::new(1024)
+                                            .expect("a page keeps one approval fact"),
+                                        offset: 0,
+                                    })
+                                    .await?;
+                                let through = reply.through;
+                                let complete = reply.events.len() < 1024;
+                                let next = reply.events.last().map(|event| event.sequence);
+                                events.extend(reply.events);
+                                if complete {
+                                    break through;
+                                }
+                                let Some(next) = next else {
+                                    break through;
+                                };
+                                from = next + 1;
+                            };
+                            rebuild.rebuild(&events)?;
+                            Ok(through)
                         })
                     }),
                     Arc::new(move |event| {
