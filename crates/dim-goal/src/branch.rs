@@ -9,7 +9,7 @@ use dim_agent_capabilities::timeline_tree::TreeCommands;
 use dim_agent_runtime::{
     AgentError, BoxFuture, BranchLifecycle, BranchOptions, Dispatcher, Names, SessionLifecycle,
     Timeline, TimelineIdentity, TimelineQuery, TimelineQueryDirection, TimelineQueryOrderBy,
-    TimelineQueryPredicate, TimelineQueryScope, rebuild_facts,
+    TimelineQueryPredicate, TimelineQueryScope,
 };
 use dim_agent_types::{
     AgentEvent, BranchSource, EventKind, ExecStatus, InputBlock, InterruptScope, TurnEndData,
@@ -331,7 +331,23 @@ impl Owner {
     /// selects `KEYS`, the kinds the fold consumes, never the whole branch
     /// (ADR 020 D3).
     async fn rebuild(self: &Arc<Self>) -> Result<u64, AgentError> {
-        let reply = rebuild_facts(&self.timeline, KEYS).await?;
+        let reply = self
+            .timeline
+            .query_all(TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                include_publishing: true,
+                from_event: None,
+                from_sequence: None,
+                order_by: TimelineQueryOrderBy::Sequence,
+                direction: TimelineQueryDirection::Ascending,
+                kinds: KEYS.iter().map(|kind| (*kind).to_owned()).collect(),
+                flags: Vec::new(),
+                event_id: None,
+                predicate: None,
+                limit: NonZeroU64::new(1024).expect("a page keeps one fact"),
+                offset: 0,
+            })
+            .await?;
         for event in &reply.events {
             self.ingest(event, false);
         }
