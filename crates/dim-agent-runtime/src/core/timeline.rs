@@ -24,9 +24,6 @@ use std::{
 use tokio::sync::watch;
 use uuid::Uuid;
 
-/// Inputs one page of the restored submission index keeps.
-const SUBMISSION_PAGE: u64 = 256;
-
 /// One draft offered to the branch's `before` middleware. Each wrapper records
 /// the step it applied, so steps follow the order the transforms took effect.
 /// The steps stay local: the event is dispatched only by its own branch's
@@ -305,39 +302,27 @@ impl Timeline {
         if self.0.restored.get().is_some() {
             return Ok(());
         }
+        let rows = self
+            .0
+            .store
+            .submission_index(&self.0.key, self.sequence())
+            .await?;
         let mut restored = HashMap::new();
-        let mut from = 1;
-        loop {
-            let reply = self
-                .query(TimelineQuery {
-                    scope: TimelineQueryScope::Branch,
-                    include_publishing: false,
-                    from_event: None,
-                    from_sequence: Some(from),
-                    order_by: TimelineQueryOrderBy::Sequence,
-                    direction: TimelineQueryDirection::Ascending,
-                    kinds: vec!["input/message".into()],
-                    flags: Vec::new(),
-                    event_id: None,
-                    predicate: None,
-                    limit: NonZeroU64::new(SUBMISSION_PAGE)
-                        .expect("a page keeps at least one input"),
-                    offset: 0,
-                })
-                .await?;
-            let short = (reply.events.len() as u64) < SUBMISSION_PAGE;
-            let last = reply.events.last().map(|event| event.sequence);
-            for event in &reply.events {
-                index_submission(&mut restored, event);
-            }
-            match last {
-                Some(last) if !short => from = last + 1,
-                _ => break,
-            }
+        for row in rows {
+            restored
+                .entry(row.submission_id)
+                .and_modify(|found| *found = Submission::Ambiguous)
+                .or_insert_with(|| {
+                    Submission::Input(SubmissionInput {
+                        id: row.event_id,
+                        sequence: row.sequence,
+                    })
+                });
         }
         let _ = self.0.restored.set(restored);
         Ok(())
     }
+
     /// Commits a batch; the caller holds the append guard and commit lock.
     fn commit(
         &self,

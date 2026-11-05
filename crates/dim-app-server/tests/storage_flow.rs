@@ -484,7 +484,7 @@ fn v15_store(path: &std::path::Path) -> Connection {
 fn schema(connection: &Connection) -> Vec<String> {
     let mut statements: Vec<String> = connection
         .prepare(
-            "SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' \
+            "SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'timeline_submissions%' \
              AND name NOT IN ('timeline_history_anchors', 'timeline_events_by_kind', \
                               'timeline_policy_turns')",
         )
@@ -8079,6 +8079,102 @@ async fn a_query_compares_a_json_scalar_by_its_type() {
         assert_eq!(query_ids(&from_sqlite), [expected], "{direction:?} sqlite");
         assert_eq!(query_ids(&from_memory), [expected], "{direction:?} memory");
     }
+    db.close().await.unwrap();
+}
+
+/// The derived submission index follows an input and its delete.
+#[tokio::test]
+async fn the_submission_index_follows_events_and_deletes() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("query", &SessionConfig::default())
+        .await
+        .unwrap();
+    publish_records(
+        &store,
+        key("query", "main"),
+        vec![query_record(
+            1,
+            1,
+            "input-1",
+            EventKind::InputMessage(InputMessageData {
+                submission_id: Some("submission-1".into()),
+                ..InputMessageData::text("hello", None)
+            }),
+        )],
+    )
+    .await;
+
+    let connection = rusqlite::Connection::open(&database.0).unwrap();
+    let row: (String, i64) = connection
+        .query_row(
+            "SELECT event_id, sequence FROM timeline_submissions WHERE session_id='query' AND submission_id='submission-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("input-1".into(), 1));
+
+    connection
+        .execute("DELETE FROM timeline_events WHERE session_id='query'", [])
+        .unwrap();
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM timeline_submissions WHERE session_id='query'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+/// Opening a store whose submission index was dropped backfills it.
+#[tokio::test]
+async fn opening_backfills_the_submission_index() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("query", &SessionConfig::default())
+        .await
+        .unwrap();
+    publish_records(
+        &store,
+        key("query", "main"),
+        vec![query_record(
+            1,
+            1,
+            "input-1",
+            EventKind::InputMessage(InputMessageData {
+                submission_id: Some("submission-1".into()),
+                ..InputMessageData::text("hello", None)
+            }),
+        )],
+    )
+    .await;
+    db.close().await.unwrap();
+
+    let connection = rusqlite::Connection::open(&database.0).unwrap();
+    connection
+        .execute_batch(
+            "DROP TRIGGER timeline_submissions_ai; DROP TRIGGER timeline_submissions_au; \
+             DROP TRIGGER timeline_submissions_ad; DROP TABLE timeline_submissions",
+        )
+        .unwrap();
+    drop(connection);
+
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let connection = rusqlite::Connection::open(&database.0).unwrap();
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM timeline_submissions WHERE submission_id='submission-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
     db.close().await.unwrap();
 }
 

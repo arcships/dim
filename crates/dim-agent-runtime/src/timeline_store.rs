@@ -1,8 +1,9 @@
 use crate::{
-    BoxFuture, BranchRecord, Result, SessionConfig, TimelineQuery, TimelineQueryPage, TimelineTrace,
+    BoxFuture, BranchRecord, Result, SessionConfig, TimelineQuery, TimelineQueryDirection,
+    TimelineQueryOrderBy, TimelineQueryPage, TimelineQueryScope, TimelineTrace,
 };
-use dim_agent_types::{AgentEvent, RecoverySnapshot};
-use std::{ops::RangeInclusive, sync::Arc};
+use dim_agent_types::{AgentEvent, EventKind, RecoverySnapshot};
+use std::{num::NonZeroU64, ops::RangeInclusive, sync::Arc};
 
 /// Storage address of one Timeline inside an Agent's shared store.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -26,6 +27,14 @@ pub struct StoredBranch {
 }
 
 pub type PublishCallback = Box<dyn FnOnce(Result<()>) + Send + 'static>;
+
+/// One indexed `input/message` submission id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredSubmission {
+    pub submission_id: String,
+    pub event_id: String,
+    pub sequence: u64,
+}
 
 /// Agent-shared event storage. Append queues a complete atomic batch without
 /// waiting for I/O; an accepted batch's callback runs once after durable commit
@@ -188,5 +197,58 @@ pub trait TimelineStore: Send + Sync + 'static {
         _interpreter: &'a str,
     ) -> BoxFuture<'a, Result<Option<RecoverySnapshot>>> {
         Box::pin(async { Ok(None) })
+    }
+    /// The submission ids of this branch's `input/message` facts through
+    /// `through`. A store may answer from an index; the default scans the
+    /// kind in bounded pages.
+    fn submission_index<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        through: u64,
+    ) -> BoxFuture<'a, Result<Vec<StoredSubmission>>> {
+        Box::pin(async move {
+            let mut rows = Vec::new();
+            let mut from = 1;
+            while from <= through {
+                let page = self
+                    .query(
+                        key,
+                        &TimelineQuery {
+                            scope: TimelineQueryScope::Branch,
+                            include_publishing: false,
+                            from_event: None,
+                            from_sequence: None,
+                            order_by: TimelineQueryOrderBy::Sequence,
+                            direction: TimelineQueryDirection::Ascending,
+                            kinds: vec!["input/message".into()],
+                            flags: Vec::new(),
+                            event_id: None,
+                            predicate: None,
+                            limit: NonZeroU64::new(256).expect("a page keeps one input"),
+                            offset: 0,
+                        },
+                        from,
+                        through,
+                    )
+                    .await?;
+                let last = page.positions.last().map(|position| position.sequence);
+                for event in page.events {
+                    if let EventKind::InputMessage(data) = &event.kind
+                        && let Some(submission_id) = &data.submission_id
+                    {
+                        rows.push(StoredSubmission {
+                            submission_id: submission_id.clone(),
+                            event_id: event.id.clone(),
+                            sequence: event.sequence,
+                        });
+                    }
+                }
+                match last {
+                    Some(last) if last < through => from = last + 1,
+                    _ => break,
+                }
+            }
+            Ok(rows)
+        })
     }
 }

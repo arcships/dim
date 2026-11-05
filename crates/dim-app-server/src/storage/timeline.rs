@@ -16,8 +16,9 @@ use dim_agent_capabilities::{
 use dim_agent_runtime::Names;
 use dim_agent_runtime::{
     AgentError, BoxFuture, BranchRecord, PublishCallback, Result, SessionConfig, StoredBranch,
-    StoredEvent, TimelineKey, TimelineQuery, TimelineQueryDirection, TimelineQueryFlag,
-    TimelineQueryPage, TimelineQueryScope, TimelineStore, TimelineTrace, panic_message,
+    StoredEvent, StoredSubmission, TimelineKey, TimelineQuery, TimelineQueryDirection,
+    TimelineQueryFlag, TimelineQueryPage, TimelineQueryScope, TimelineStore, TimelineTrace,
+    panic_message,
 };
 use dim_agent_types::{
     AgentEvent, BranchCreateAt, ContextCompactionResult, EventKind, ModelRequest, RecoverySnapshot,
@@ -3031,6 +3032,38 @@ impl TimelineStore for SqliteTimelineStore {
                     |row| Ok(RecoverySnapshot { sequence: read_sequence(row, 0)?, event_id: row.get(1)?, interpreter: row.get(2)?, state: row.get(3)? }),
                 ).optional().map_err(error)
             }).await
+        })
+    }
+    fn submission_index<'a>(
+        &'a self,
+        key: &'a TimelineKey,
+        through: u64,
+    ) -> BoxFuture<'a, Result<Vec<StoredSubmission>>> {
+        Box::pin(async move {
+            let key = key.clone();
+            self.db
+                .run_read(move |connection| {
+                    let mut statement = connection
+                        .prepare_cached(
+                            "SELECT submission_id, event_id, sequence FROM timeline_submissions \
+                             WHERE session_id=?1 AND branch_id=?2 AND sequence<=?3 ORDER BY sequence",
+                        )
+                        .map_err(error)?;
+                    let rows = statement
+                        .query_map(
+                            params![key.session_id, key.branch_id, sql_sequence(through)?],
+                            |row| {
+                                Ok(StoredSubmission {
+                                    submission_id: row.get(0)?,
+                                    event_id: row.get(1)?,
+                                    sequence: read_sequence(row, 2)?,
+                                })
+                            },
+                        )
+                        .map_err(error)?;
+                    rows.map(|row| row.map_err(error)).collect()
+                })
+                .await
         })
     }
 }

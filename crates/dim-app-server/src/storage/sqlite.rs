@@ -351,6 +351,35 @@ const DERIVED_INDEXES: &[(&str, &str)] = &[
         "timeline_policy_turns",
         "CREATE INDEX IF NOT EXISTS timeline_policy_turns ON timeline_events(session_id, branch_id, kind, sequence, event_id) WHERE kind = 'turn/start'",
     ),
+    (
+        "timeline_submissions",
+        "CREATE TABLE IF NOT EXISTS timeline_submissions (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, submission_id TEXT NOT NULL, event_id TEXT NOT NULL, sequence INTEGER NOT NULL, PRIMARY KEY (session_id, branch_id, submission_id, event_id))",
+    ),
+    (
+        "timeline_submissions_ai",
+        "CREATE TRIGGER IF NOT EXISTS timeline_submissions_ai AFTER INSERT ON timeline_events BEGIN \
+           INSERT OR REPLACE INTO timeline_submissions(session_id, branch_id, submission_id, event_id, sequence) \
+           SELECT NEW.session_id, NEW.branch_id, json_extract(NEW.body, '$.record.event.data.submission_id'), NEW.event_id, NEW.sequence \
+           WHERE NEW.kind = 'input/message' AND NEW.event_id IS NOT NULL AND json_valid(NEW.body) \
+             AND json_extract(NEW.body, '$.record.event.data.submission_id') IS NOT NULL; \
+         END",
+    ),
+    (
+        "timeline_submissions_au",
+        "CREATE TRIGGER IF NOT EXISTS timeline_submissions_au AFTER UPDATE ON timeline_events BEGIN \
+           DELETE FROM timeline_submissions WHERE session_id = OLD.session_id AND branch_id = OLD.branch_id AND event_id = OLD.event_id; \
+           INSERT OR REPLACE INTO timeline_submissions(session_id, branch_id, submission_id, event_id, sequence) \
+           SELECT NEW.session_id, NEW.branch_id, json_extract(NEW.body, '$.record.event.data.submission_id'), NEW.event_id, NEW.sequence \
+           WHERE NEW.kind = 'input/message' AND NEW.event_id IS NOT NULL AND json_valid(NEW.body) \
+             AND json_extract(NEW.body, '$.record.event.data.submission_id') IS NOT NULL; \
+         END",
+    ),
+    (
+        "timeline_submissions_ad",
+        "CREATE TRIGGER IF NOT EXISTS timeline_submissions_ad AFTER DELETE ON timeline_events BEGIN \
+           DELETE FROM timeline_submissions WHERE session_id = OLD.session_id AND branch_id = OLD.branch_id AND event_id = OLD.event_id; \
+         END",
+    ),
 ];
 /// The schema objects of `connection`'s database that belong to the format,
 /// sorted by name.
@@ -363,7 +392,7 @@ fn schema(connection: &Connection) -> Result<Vec<(String, String)>> {
     let mut query = connection
         .prepare(&format!(
             "SELECT name, sql FROM sqlite_master \
-             WHERE name NOT LIKE 'sqlite_%' AND name NOT IN ({placeholders}) ORDER BY name"
+             WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'timeline_submissions%' AND name NOT IN ({placeholders}) ORDER BY name"
         ))
         .map_err(storage)?;
     let objects = query
@@ -729,6 +758,21 @@ impl SqliteStorage {
         }
         for (_, sql) in DERIVED_INDEXES {
             tx.execute_batch(sql).map_err(storage)?;
+        }
+        let submission_rows: i64 = tx
+            .query_row("SELECT count(*) FROM timeline_submissions", [], |row| {
+                row.get(0)
+            })
+            .map_err(storage)?;
+        if submission_rows == 0 {
+            tx.execute_batch(
+                "INSERT OR REPLACE INTO timeline_submissions(session_id, branch_id, submission_id, event_id, sequence) \
+                 SELECT session_id, branch_id, json_extract(body, '$.record.event.data.submission_id'), event_id, sequence \
+                 FROM timeline_events \
+                 WHERE kind = 'input/message' AND event_id IS NOT NULL AND json_valid(body) \
+                   AND json_extract(body, '$.record.event.data.submission_id') IS NOT NULL",
+            )
+            .map_err(storage)?;
         }
         tx.commit().map_err(storage)?;
         connection
