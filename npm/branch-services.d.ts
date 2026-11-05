@@ -80,6 +80,9 @@ export type TimelineQueryFlag =
 export type PredicateOp =
   | /** The value equals `value`. */ "eq"
   | /** The value is one of the scalars in `value`. */ "in"
+  | /** The value is a string starting with `value`. */ "prefix"
+  | /** The value is a string containing `value`. */ "contains"
+  | /** The path exists; `value` is null. */ "exists"
 
 /** One comparison against one JSON scalar of an event's data. */
 export interface TimelineQueryPredicate {

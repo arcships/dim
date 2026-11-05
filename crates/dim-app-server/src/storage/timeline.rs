@@ -15,9 +15,10 @@ use dim_agent_capabilities::{
 };
 use dim_agent_runtime::Names;
 use dim_agent_runtime::{
-    AgentError, BoxFuture, BranchRecord, PublishCallback, Result, SessionConfig, StoredBranch,
-    StoredEvent, TimelineKey, TimelineQuery, TimelineQueryDirection, TimelineQueryFlag,
-    TimelineQueryPage, TimelineQueryScope, TimelineStore, TimelineTrace, panic_message,
+    AgentError, BoxFuture, BranchRecord, PredicateOp, PublishCallback, Result, SessionConfig,
+    StoredBranch, StoredEvent, TimelineKey, TimelineQuery, TimelineQueryDirection,
+    TimelineQueryFlag, TimelineQueryPage, TimelineQueryPredicate, TimelineQueryScope,
+    TimelineStore, TimelineTrace, panic_message,
 };
 use dim_agent_types::{
     AgentEvent, BranchCreateAt, ContextCompactionResult, EventKind, ModelRequest, RecoverySnapshot,
@@ -1930,6 +1931,62 @@ fn output_header_path(path: &str) -> Option<String> {
     matches!(path, "turn_id" | "request_id").then(|| format!("$.{path}"))
 }
 
+/// One predicate clause over the JSON expression `expr` (a row body or a
+/// merged record's event), with its parameters appended in placeholder order.
+fn predicate_clause(
+    expr: &str,
+    path: &str,
+    predicate: &TimelineQueryPredicate,
+    parameters: &mut Vec<rusqlite::types::Value>,
+) -> Result<Option<String>> {
+    let text = |value: &str| rusqlite::types::Value::Text(value.to_owned());
+    let path = text(path);
+    let clause = match predicate.op {
+        PredicateOp::Eq | PredicateOp::In => {
+            let mut clauses = Vec::new();
+            for value in predicate.values() {
+                match json_text(value) {
+                    Some(literal) => {
+                        clauses.push(format!("({expr} -> ?) = ?"));
+                        parameters.extend([path.clone(), literal]);
+                    }
+                    None => {
+                        clauses.push(format!(
+                            "(json_type({expr}, ?) = ? AND json_extract({expr}, ?) IS ?)"
+                        ));
+                        parameters.extend([
+                            path.clone(),
+                            text(json_type_name(value)),
+                            path.clone(),
+                            json_value(value)?,
+                        ]);
+                    }
+                }
+            }
+            clauses.join(" OR ")
+        }
+        PredicateOp::Prefix => {
+            let Some(value) = predicate.value.as_str() else {
+                return Ok(None);
+            };
+            parameters.extend([path.clone(), path.clone(), text(value)]);
+            format!("(json_type({expr}, ?) = 'text' AND json_extract({expr}, ?) LIKE ? || '%')")
+        }
+        PredicateOp::Contains => {
+            let Some(value) = predicate.value.as_str() else {
+                return Ok(None);
+            };
+            parameters.extend([path.clone(), path.clone(), text(value)]);
+            format!("(json_type({expr}, ?) = 'text' AND instr(json_extract({expr}, ?), ?) > 0)")
+        }
+        PredicateOp::Exists => {
+            parameters.push(path.clone());
+            format!("json_type({expr}, ?) IS NOT NULL")
+        }
+    };
+    Ok((!clause.is_empty()).then_some(clause))
+}
+
 /// The rows a query selects from `session`'s `branch` in `range`, in sequence
 /// order. Kinds, flags, event id and predicate select in SQL; the decoded
 /// events are checked against the event id and the predicate again, because a
@@ -1995,58 +2052,25 @@ fn query_rows(
         if predicate.json_path().is_none() {
             return Err(error("query path is not field names joined by dots"));
         }
-        let bound = rusqlite::types::Value::Integer(sql_sequence(*range.end())?);
+        let mut clauses = Vec::new();
         let mut paths = vec![format!("$.record.event.data.{}", predicate.path)];
         if let Some(header) = output_header_path(&predicate.path) {
             paths.push(header);
         }
-        let mut clauses = Vec::new();
         for path in &paths {
-            for value in predicate.values() {
-                let path = text(path);
-                match json_text(value) {
-                    Some(literal) => {
-                        clauses.push("(body -> ?) = ?");
-                        parameters.extend([path, literal]);
-                    }
-                    None => {
-                        clauses.push("(json_type(body, ?) = ? AND json_extract(body, ?) IS ?)");
-                        parameters.extend([
-                            path.clone(),
-                            text(json_type_name(value)),
-                            path,
-                            json_value(value)?,
-                        ]);
-                    }
-                }
+            if let Some(clause) = predicate_clause("body", path, predicate, &mut parameters)? {
+                clauses.push(clause);
             }
         }
-        let record_path = text(&format!("$.event.data.{}", predicate.path));
-        for value in predicate.values() {
-            match json_text(value) {
-                Some(literal) => {
-                    clauses.push(
-                        "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
-                           WHERE (r.value -> ?) = ? \
-                           AND json_extract(r.value, '$.event.sequence') <= ?))",
-                    );
-                    parameters.extend([record_path.clone(), literal, bound.clone()]);
-                }
-                None => {
-                    clauses.push(
-                        "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
-                           WHERE json_type(r.value, ?) = ? AND json_extract(r.value, ?) IS ? \
-                           AND json_extract(r.value, '$.event.sequence') <= ?))",
-                    );
-                    parameters.extend([
-                        record_path.clone(),
-                        text(json_type_name(value)),
-                        record_path.clone(),
-                        json_value(value)?,
-                        bound.clone(),
-                    ]);
-                }
-            }
+        let record_path = format!("$.event.data.{}", predicate.path);
+        if let Some(clause) = predicate_clause("r.value", &record_path, predicate, &mut parameters)?
+        {
+            clauses.push(format!(
+                "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
+                   WHERE {clause} \
+                   AND json_extract(r.value, '$.event.sequence') <= ?))"
+            ));
+            parameters.push(rusqlite::types::Value::Integer(sql_sequence(*range.end())?));
         }
         sql.push_str(&format!(" AND ({})", clauses.join(" OR ")));
     }

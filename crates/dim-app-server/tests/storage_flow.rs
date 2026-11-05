@@ -7702,6 +7702,18 @@ fn in_predicate(
     }
 }
 
+fn op_predicate(
+    path: &str,
+    op: dim_agent_runtime::PredicateOp,
+    value: serde_json::Value,
+) -> dim_agent_runtime::TimelineQueryPredicate {
+    dim_agent_runtime::TimelineQueryPredicate {
+        op,
+        path: path.into(),
+        value,
+    }
+}
+
 /// `main` with five facts whose last is the `child` branch create at 5, and
 /// `child` cut at that head with `child_facts` input facts.
 async fn tall_chain_histories(
@@ -8157,6 +8169,110 @@ async fn a_query_predicate_in_selects_any_listed_scalar() {
         sqlite.query(object).await.is_err(),
         "an object In is invalid"
     );
+
+    db.close().await.unwrap();
+}
+
+/// `Prefix`, `Contains` and `Exists` select the same rows in both stores and
+/// reject a value of the wrong shape before the read.
+#[tokio::test]
+async fn a_query_predicate_prefix_contains_and_exists() {
+    use dim_agent_runtime::PredicateOp;
+    use dim_agent_runtime::TimelineQueryScope::Branch;
+
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    let memory_store: std::sync::Arc<dyn TimelineStore> =
+        std::sync::Arc::new(dim_agent_runtime::MemoryTimelineStore::default());
+    for target in [store.clone(), memory_store.clone()] {
+        target
+            .create_session("query", &SessionConfig::default())
+            .await
+            .unwrap();
+        for (sequence, value) in [
+            (1u64, serde_json::json!({ "value": "alpha" })),
+            (2, serde_json::json!({ "value": "beta" })),
+            (3, serde_json::json!({ "value": "alphabet", "extra": true })),
+        ] {
+            publish_records(
+                &target,
+                key("query", "main"),
+                vec![query_record(
+                    sequence,
+                    sequence,
+                    &format!("value-{sequence}"),
+                    marked(value),
+                )],
+            )
+            .await;
+        }
+    }
+    let sqlite = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        store,
+    )
+    .await
+    .unwrap();
+    let memory = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        memory_store,
+    )
+    .await
+    .unwrap();
+
+    for (op, value, expected) in [
+        (
+            PredicateOp::Prefix,
+            serde_json::json!("alpha"),
+            ["value-1", "value-3"].as_slice(),
+        ),
+        (
+            PredicateOp::Contains,
+            serde_json::json!("pha"),
+            ["value-1", "value-3"].as_slice(),
+        ),
+        (
+            PredicateOp::Exists,
+            serde_json::json!(null),
+            ["value-1", "value-2", "value-3"].as_slice(),
+        ),
+    ] {
+        let mut request = query(Branch, 3);
+        request.predicate = Some(op_predicate("value", op, value));
+        let from_sqlite = sqlite.query(request.clone()).await.unwrap();
+        let from_memory = memory.query(request).await.unwrap();
+        assert_eq!(query_ids(&from_sqlite), expected, "{op:?} sqlite");
+        assert_eq!(query_ids(&from_memory), expected, "{op:?} memory");
+    }
+
+    let mut extra = query(Branch, 3);
+    extra.predicate = Some(op_predicate(
+        "extra",
+        PredicateOp::Exists,
+        serde_json::json!(null),
+    ));
+    assert_eq!(query_ids(&sqlite.query(extra).await.unwrap()), ["value-3"]);
+
+    let mut bad_prefix = query(Branch, 3);
+    bad_prefix.predicate = Some(op_predicate(
+        "value",
+        PredicateOp::Prefix,
+        serde_json::json!(1),
+    ));
+    assert!(sqlite.query(bad_prefix).await.is_err(), "a number prefix");
+
+    let mut bad_exists = query(Branch, 3);
+    bad_exists.predicate = Some(op_predicate(
+        "value",
+        PredicateOp::Exists,
+        serde_json::json!(true),
+    ));
+    assert!(sqlite.query(bad_exists).await.is_err(), "a non-null Exists");
 
     db.close().await.unwrap();
 }

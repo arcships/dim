@@ -76,6 +76,12 @@ pub enum PredicateOp {
     Eq,
     /// The value is one of the scalars in `value`.
     In,
+    /// The value is a string starting with `value`.
+    Prefix,
+    /// The value is a string containing `value`.
+    Contains,
+    /// The path exists; `value` is null.
+    Exists,
 }
 
 impl PredicateOp {
@@ -103,7 +109,9 @@ impl TimelineQueryPredicate {
     /// elements for `In`.
     pub fn values(&self) -> Vec<&serde_json::Value> {
         match self.op {
-            PredicateOp::Eq => vec![&self.value],
+            PredicateOp::Eq | PredicateOp::Prefix | PredicateOp::Contains | PredicateOp::Exists => {
+                vec![&self.value]
+            }
             PredicateOp::In => self
                 .value
                 .as_array()
@@ -133,6 +141,16 @@ impl TimelineQueryPredicate {
                 .value
                 .as_array()
                 .is_some_and(|values| values.iter().any(|value| value == current)),
+            PredicateOp::Prefix => self.value.as_str().is_some_and(|prefix| {
+                current
+                    .as_str()
+                    .is_some_and(|text| text.starts_with(prefix))
+            }),
+            PredicateOp::Contains => self
+                .value
+                .as_str()
+                .is_some_and(|part| current.as_str().is_some_and(|text| text.contains(part))),
+            PredicateOp::Exists => true,
         }
     }
 
@@ -180,6 +198,12 @@ impl TimelineQueryPredicate {
                 }
                 Ok(())
             }
+            PredicateOp::Prefix | PredicateOp::Contains if !self.value.is_string() => Err(
+                AgentError::InvalidInput("a Prefix or Contains predicate compares a string".into()),
+            ),
+            PredicateOp::Exists if !self.value.is_null() => Err(AgentError::InvalidInput(
+                "an Exists predicate carries null".into(),
+            )),
             _ => Ok(()),
         }
     }
