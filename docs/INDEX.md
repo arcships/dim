@@ -41,6 +41,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Timeline branches](design/timeline-branches.md): what branches are for, branch versus member and fork, messages between lines, identity across compaction, ending a line (#427)（[中文](zh/design/timeline-branches.md)）
 - [Context replay memory plan](design/context-replay-memory.md)（中文）：每步重建的拷贝链、按边界重放与共享消息
 - [Context read switches and the cut](design/context-read-and-compaction.md)（中文）：两个冗余开关列、状态重放与消息收集的边界、一次性迁移
+- [Timeline query selection](design/timeline-query-contract.md): predicate ops, one array level and text candidates for the event query (#1147)
 - [Context assembly and recognition requirements](design/context-assembly-requirements.md)（中文）：业务必须保证什么，内存与读取加速允许改变什么
 - [Compaction requirements](design/compaction-quality.md): what compaction keeps, what users see and control, its cost bounds, how its quality is judged (#428)（[中文](zh/design/compaction-quality.md)）
 - [Model-facing prompts](design/model-prompts.md): the channels that carry model text, protocol versus policy, who may change what, the input guide, one prompt language, and how a prompt change is judged (#429)（[中文](zh/design/model-prompts.md)）
