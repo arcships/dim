@@ -8535,16 +8535,13 @@ mod tests {
                         .take_while(|row| {
                             !row.contains("Callback URL") && !row.contains("Restart device login")
                         })
-                        .map(|row| {
-                            row.trim()
-                                .strip_prefix('│')
-                                .expect("the link keeps the left dialog border")
-                                .strip_suffix('│')
-                                .expect("the link keeps the right dialog border")
-                                .trim()
-                        })
+                        .map(|row| row.trim())
                         .collect::<Vec<_>>()
                         .join("\n");
+                    assert!(
+                        !selected.contains(['│', '|']),
+                        "Native selection must not include dialog borders: {selected}"
+                    );
                     if shortened && !mode.starts_with("device") {
                         let prefix = selected.replace('\n', "");
                         assert!(prefix.ends_with('…'));

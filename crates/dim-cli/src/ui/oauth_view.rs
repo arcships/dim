@@ -39,7 +39,7 @@ use crate::ui::i18n::{t, tf};
 use crate::ui::line_input::LineInput;
 use crate::ui::prompts::Effect;
 use crate::ui::providers_panel::{action_row, field_room, input_row};
-use crate::ui::render::panel::{IDLE_MARKER, SELECTED_MARKER, bordered};
+use crate::ui::render::panel::{IDLE_MARKER, SELECTED_MARKER, bordered, visible_width};
 use crate::ui::rows::title_plain;
 use crate::ui::terminal::{KeyCode, KeyEvent, Modifiers};
 use crate::ui::text::{display_width as width_of, truncate_cells, wrap_cells};
@@ -810,6 +810,7 @@ impl OauthView {
         let restart = matches!(self.phase, Phase::Error | Phase::Cancelled);
         let rows = self.rows(inner.saturating_sub(2), Some(p));
         let mut shortened = false;
+        let mut link_rows = 0..0;
         for (row, label) in &rows {
             match row {
                 Row::Section => content.push(format!(
@@ -826,6 +827,7 @@ impl OauthView {
                         let last = lines.last_mut().unwrap();
                         *last = truncate_cells(&format!("{last}…"), inner);
                     }
+                    link_rows = content.len()..content.len() + lines.len();
                     for line in lines {
                         content.push(fg(
                             &crate::ui::render::osc8::hyperlink(label, &line),
@@ -882,7 +884,15 @@ impl OauthView {
             self.hint()
         };
         content.push(fg(&truncate_cells(hint, inner), &p.muted));
-        bordered(&content, width, None, &p.border, None, None)
+        let mut panel = bordered(&content, width, None, &p.border, None, None);
+        for index in link_rows {
+            panel[index + 1] = format!(
+                "  {}{}",
+                content[index],
+                " ".repeat(width.saturating_sub(2 + visible_width(&content[index])))
+            );
+        }
+        panel
     }
 }
 
