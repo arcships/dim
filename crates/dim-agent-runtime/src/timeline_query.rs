@@ -67,20 +67,53 @@ impl TimelineQueryFlag {
     }
 }
 
-/// One equality against one JSON scalar of an event's data.
+/// How one predicate compares the JSON value at its path.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PredicateOp {
+    /// The value equals `value`.
+    #[default]
+    Eq,
+    /// The value is one of the scalars in `value`.
+    In,
+}
+
+impl PredicateOp {
+    pub(crate) fn is_eq(&self) -> bool {
+        matches!(self, Self::Eq)
+    }
+}
+
+/// One comparison against one JSON scalar of an event's data.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TimelineQueryPredicate {
     /// Field names inside the event's data joined by dots; no array indexing
     /// and no wildcards.
     pub path: String,
-    /// The JSON scalar the path must equal.
+    /// The comparison; absent reads as `Eq`.
+    #[serde(default, skip_serializing_if = "PredicateOp::is_eq")]
+    pub op: PredicateOp,
+    /// The scalar `Eq` compares, or the scalars `In` accepts.
     pub value: serde_json::Value,
 }
 
 impl TimelineQueryPredicate {
-    /// Whether `event`'s data holds `value` at `path`. A path the event does
-    /// not have matches nothing.
+    /// The scalars this predicate compares against: one for `Eq`, the array
+    /// elements for `In`.
+    pub fn values(&self) -> Vec<&serde_json::Value> {
+        match self.op {
+            PredicateOp::Eq => vec![&self.value],
+            PredicateOp::In => self
+                .value
+                .as_array()
+                .map(|values| values.iter().collect())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Whether `event`'s data holds an accepted value at `path`. A path the
+    /// event does not have matches nothing.
     pub fn matches(&self, event: &AgentEvent) -> bool {
         let Ok(kind) = serde_json::to_value(&event.kind) else {
             return false;
@@ -94,7 +127,13 @@ impl TimelineQueryPredicate {
             };
             current = next;
         }
-        *current == self.value
+        match self.op {
+            PredicateOp::Eq => current == &self.value,
+            PredicateOp::In => self
+                .value
+                .as_array()
+                .is_some_and(|values| values.iter().any(|value| value == current)),
+        }
     }
 
     /// The path as a JSON path from the root of the event's data, `None` when
@@ -118,15 +157,31 @@ impl TimelineQueryPredicate {
                 self.path
             )));
         }
-        if matches!(
-            self.value,
-            serde_json::Value::Array(_) | serde_json::Value::Object(_)
-        ) {
-            return Err(AgentError::InvalidInput(
+        let scalar = |value: &serde_json::Value| {
+            !matches!(
+                value,
+                serde_json::Value::Array(_) | serde_json::Value::Object(_)
+            )
+        };
+        match self.op {
+            PredicateOp::Eq if !scalar(&self.value) => Err(AgentError::InvalidInput(
                 "query predicate compares one JSON scalar".into(),
-            ));
+            )),
+            PredicateOp::In => {
+                let Some(values) = self.value.as_array() else {
+                    return Err(AgentError::InvalidInput(
+                        "an In predicate compares an array of JSON scalars".into(),
+                    ));
+                };
+                if values.is_empty() || !values.iter().all(scalar) {
+                    return Err(AgentError::InvalidInput(
+                        "an In predicate compares a nonempty array of JSON scalars".into(),
+                    ));
+                }
+                Ok(())
+            }
+            _ => Ok(()),
         }
-        Ok(())
     }
 }
 

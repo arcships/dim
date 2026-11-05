@@ -1396,7 +1396,7 @@ async fn a_query_selects_kinds_and_the_flags_it_names() {
 
 #[tokio::test]
 async fn a_query_predicate_matches_one_dotted_path_and_an_unknown_path_matches_nothing() {
-    use dim_agent_runtime::{TimelineQueryPredicate, TimelineQueryScope::Branch};
+    use dim_agent_runtime::{PredicateOp, TimelineQueryPredicate, TimelineQueryScope::Branch};
 
     let store = Arc::new(MemoryTimelineStore::default());
     store
@@ -1428,6 +1428,7 @@ async fn a_query_predicate_matches_one_dotted_path_and_an_unknown_path_matches_n
 
     let matching = |path: &str, value: serde_json::Value| dim_agent_runtime::TimelineQuery {
         predicate: Some(TimelineQueryPredicate {
+            op: PredicateOp::Eq,
             path: path.into(),
             value,
         }),
@@ -1725,7 +1726,7 @@ async fn a_read_begins_at_the_sequence_or_event_it_names() {
 
 #[test]
 fn the_query_crosses_languages_with_its_serde_shape() {
-    use dim_agent_runtime::{TimelineQueryPredicate, TimelineQueryScope};
+    use dim_agent_runtime::{PredicateOp, TimelineQueryPredicate, TimelineQueryScope};
 
     let query = dim_agent_runtime::TimelineQuery {
         scope: TimelineQueryScope::Chain,
@@ -1741,6 +1742,7 @@ fn the_query_crosses_languages_with_its_serde_shape() {
         ],
         event_id: Some("event-1".into()),
         predicate: Some(TimelineQueryPredicate {
+            op: PredicateOp::Eq,
             path: "nested.level".into(),
             value: serde_json::json!(3),
         }),

@@ -5,7 +5,7 @@ use crate::{
 };
 use dim_agent_runtime::{
     AgentError, Branch, BranchDirectoryEntry, BranchDirectoryState, BranchLifecycle, BranchOptions,
-    Dispatcher, Names, Result, SessionIdentity, StoredBranch, StoredEvent, Timeline,
+    Dispatcher, Names, PredicateOp, Result, SessionIdentity, StoredBranch, StoredEvent, Timeline,
     TimelineContext, TimelineFactory, TimelineIdentity, TimelineInfo, TimelineKey, TimelineQuery,
     TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryPredicate, TimelineQueryReply,
     TimelineQueryScope, TimelineStore, TimelineTreeControl, rebuild_facts,
@@ -3047,6 +3047,7 @@ impl BranchTool {
                             flags: Vec::new(),
                             event_id: None,
                             predicate: Some(TimelineQueryPredicate {
+                                op: PredicateOp::Eq,
                                 path: "request_id".into(),
                                 value: json!(context.request_id),
                             }),

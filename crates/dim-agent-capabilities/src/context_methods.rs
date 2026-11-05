@@ -7,7 +7,7 @@ use crate::{
     timeline_tree::TreeCommands,
 };
 use dim_agent_runtime::{
-    Branch, Names, TimelineQuery, TimelineQueryDirection, TimelineQueryOrderBy,
+    Branch, Names, PredicateOp, TimelineQuery, TimelineQueryDirection, TimelineQueryOrderBy,
     TimelineQueryPredicate, TimelineQueryScope,
 };
 use dim_agent_types::*;
@@ -92,6 +92,7 @@ async fn compact(branch: &Branch, cancel: &CancellationToken) -> Result<Value, R
                     flags: Vec::new(),
                     event_id: None,
                     predicate: Some(TimelineQueryPredicate {
+                        op: PredicateOp::Eq,
                         path: "command".into(),
                         value: json!(command),
                     }),
