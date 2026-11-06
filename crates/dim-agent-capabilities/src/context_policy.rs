@@ -6,8 +6,8 @@ use crate::{
     host::*,
 };
 use dim_agent_runtime::{
-    ContextHistory, Timeline, TimelineQuery, TimelineQueryDirection, TimelineQueryOrderBy,
-    TimelineQueryPredicate, TimelineQueryScope,
+    ContextHistory, PredicateOp, Timeline, TimelineQuery, TimelineQueryDirection,
+    TimelineQueryOrderBy, TimelineQueryPredicate, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use serde_json::json;
@@ -608,6 +608,7 @@ impl ContextPolicy {
                 Some("context/compaction"),
                 Some(view.through),
                 Some(TimelineQueryPredicate {
+                    op: PredicateOp::Eq,
                     path: "status".into(),
                     value: json!("completed"),
                 }),
@@ -643,6 +644,7 @@ impl ContextPolicy {
                     Some("turn/start"),
                     Some(view.through),
                     Some(TimelineQueryPredicate {
+                        op: PredicateOp::Eq,
                         path: "turn_id".into(),
                         value: json!(turn_id),
                     }),
@@ -807,9 +809,12 @@ impl ContextPolicy {
                     flags: Vec::new(),
                     event_id: None,
                     predicate: Some(TimelineQueryPredicate {
+                        op: PredicateOp::Eq,
                         path: "turn_id".into(),
                         value: json!(source.turn_id),
                     }),
+                    predicates: Vec::new(),
+                    text: None,
                     limit: NonZeroU64::new(REUSE_PAGE).expect("a page keeps at least one event"),
                     offset: 0,
                 })
@@ -2462,6 +2467,7 @@ pub(crate) async fn estimate_events(
             Some("model/call"),
             None,
             Some(TimelineQueryPredicate {
+                op: PredicateOp::Eq,
                 path: "request_id".into(),
                 value: json!(request_id),
             }),
@@ -2474,6 +2480,7 @@ pub(crate) async fn estimate_events(
             Some("context/compaction"),
             None,
             Some(TimelineQueryPredicate {
+                op: PredicateOp::Eq,
                 path: "status".into(),
                 value: json!("completed"),
             }),

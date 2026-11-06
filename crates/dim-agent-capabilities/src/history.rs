@@ -1,8 +1,8 @@
 use crate::prompt_state::PromptSnapshot;
 use dim_agent_runtime::{
-    AgentError, ContextHistory, Session, Timeline, TimelineQuery, TimelineQueryDirection,
-    TimelineQueryFlag, TimelineQueryOrderBy, TimelineQueryPredicate, TimelineQueryReply,
-    TimelineQueryScope,
+    AgentError, ContextHistory, PredicateOp, Session, Timeline, TimelineQuery,
+    TimelineQueryDirection, TimelineQueryFlag, TimelineQueryOrderBy, TimelineQueryPredicate,
+    TimelineQueryReply, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,8 @@ pub(crate) fn chain_by_id(id: &str) -> TimelineQuery {
         flags: Vec::new(),
         event_id: Some(id.to_owned()),
         predicate: None,
+        predicates: Vec::new(),
+        text: None,
         limit: NonZeroU64::MIN,
         offset: 0,
     }
@@ -48,6 +50,8 @@ pub(crate) fn newest_chain(
         flags: Vec::new(),
         event_id: None,
         predicate,
+        predicates: Vec::new(),
+        text: None,
         limit: NonZeroU64::new(limit).expect("a page keeps at least one event"),
         offset: 0,
     }
@@ -72,6 +76,8 @@ pub(crate) fn rising_chain(
         flags: Vec::new(),
         event_id: None,
         predicate: None,
+        predicates: Vec::new(),
+        text: None,
         limit: NonZeroU64::new(limit).expect("a page keeps at least one event"),
         offset,
     }
@@ -112,6 +118,8 @@ fn context_read(
         flags: vec![TimelineQueryFlag::Render, TimelineQueryFlag::State],
         event_id: None,
         predicate: None,
+        predicates: Vec::new(),
+        text: None,
         limit: NonZeroU64::new(limit).expect("a page keeps at least one event"),
         offset,
     }
@@ -1464,9 +1472,12 @@ impl ContextReads<'_> {
                 flags: Vec::new(),
                 event_id: None,
                 predicate: Some(TimelineQueryPredicate {
+                    op: PredicateOp::Eq,
                     path: "status".into(),
                     value: serde_json::Value::String("completed".into()),
                 }),
+                predicates: Vec::new(),
+                text: None,
                 limit: NonZeroU64::MIN,
                 offset: 0,
             })

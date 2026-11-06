@@ -485,6 +485,7 @@ fn schema(connection: &Connection) -> Vec<String> {
     let mut statements: Vec<String> = connection
         .prepare(
             "SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' \
+             AND name NOT LIKE 'timeline_text%' \
              AND name NOT IN ('timeline_history_anchors', 'timeline_events_by_kind', \
                               'timeline_policy_turns')",
         )
@@ -1619,6 +1620,8 @@ async fn extension_events_store_the_switches_their_producer_sets() {
                 ],
                 event_id: None,
                 predicate: None,
+                predicates: Vec::new(),
+                text: None,
                 limit: std::num::NonZeroU64::MIN,
                 offset: 0,
             },
@@ -7678,13 +7681,31 @@ fn query(
         flags: vec![],
         event_id: None,
         predicate: None,
+        predicates: Vec::new(),
+        text: None,
         limit: std::num::NonZeroU64::new(limit).unwrap(),
         offset: 0,
     }
 }
 
 fn predicate(path: &str, value: serde_json::Value) -> dim_agent_runtime::TimelineQueryPredicate {
+    op_predicate(path, dim_agent_runtime::PredicateOp::Eq, value)
+}
+
+fn in_predicate(
+    path: &str,
+    values: serde_json::Value,
+) -> dim_agent_runtime::TimelineQueryPredicate {
+    op_predicate(path, dim_agent_runtime::PredicateOp::In, values)
+}
+
+fn op_predicate(
+    path: &str,
+    op: dim_agent_runtime::PredicateOp,
+    value: serde_json::Value,
+) -> dim_agent_runtime::TimelineQueryPredicate {
     dim_agent_runtime::TimelineQueryPredicate {
+        op,
         path: path.into(),
         value,
     }
@@ -7820,6 +7841,8 @@ async fn paged(
         let reply = timeline
             .query(dim_agent_runtime::TimelineQuery {
                 direction,
+                predicates: Vec::new(),
+                text: None,
                 limit: std::num::NonZeroU64::new(limit).unwrap(),
                 offset,
                 ..query(scope, limit)
@@ -8079,6 +8102,536 @@ async fn a_query_compares_a_json_scalar_by_its_type() {
         assert_eq!(query_ids(&from_sqlite), [expected], "{direction:?} sqlite");
         assert_eq!(query_ids(&from_memory), [expected], "{direction:?} memory");
     }
+    db.close().await.unwrap();
+}
+
+/// `In` accepts any listed scalar and is pushed to both stores.
+#[tokio::test]
+async fn a_query_predicate_in_selects_any_listed_scalar() {
+    use dim_agent_runtime::TimelineQueryScope::Branch;
+
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    let memory_store: std::sync::Arc<dyn TimelineStore> =
+        std::sync::Arc::new(dim_agent_runtime::MemoryTimelineStore::default());
+    for target in [store.clone(), memory_store.clone()] {
+        target
+            .create_session("query", &SessionConfig::default())
+            .await
+            .unwrap();
+        for sequence in 1..=3u64 {
+            publish_records(
+                &target,
+                key("query", "main"),
+                vec![query_record(
+                    sequence,
+                    sequence,
+                    &format!("value-{sequence}"),
+                    marked(serde_json::json!({ "value": sequence })),
+                )],
+            )
+            .await;
+        }
+    }
+    let sqlite = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        store,
+    )
+    .await
+    .unwrap();
+    let memory = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        memory_store,
+    )
+    .await
+    .unwrap();
+
+    let mut request = query(Branch, 2);
+    request.predicate = Some(in_predicate("value", serde_json::json!([1, 3])));
+    let from_sqlite = sqlite.query(request.clone()).await.unwrap();
+    let from_memory = memory.query(request).await.unwrap();
+    assert_eq!(query_ids(&from_sqlite), ["value-1", "value-3"], "sqlite");
+    assert_eq!(query_ids(&from_memory), ["value-1", "value-3"], "memory");
+
+    let mut empty = query(Branch, 1);
+    empty.predicate = Some(in_predicate("value", serde_json::json!([])));
+    assert!(sqlite.query(empty).await.is_err(), "an empty In is invalid");
+
+    let mut object = query(Branch, 1);
+    object.predicate = Some(in_predicate("value", serde_json::json!([{ "a": 1 }])));
+    assert!(
+        sqlite.query(object).await.is_err(),
+        "an object In is invalid"
+    );
+
+    db.close().await.unwrap();
+}
+
+/// `Prefix`, `Contains` and `Exists` select the same rows in both stores and
+/// reject a value of the wrong shape before the read.
+#[tokio::test]
+async fn a_query_predicate_prefix_contains_and_exists() {
+    use dim_agent_runtime::PredicateOp;
+    use dim_agent_runtime::TimelineQueryScope::Branch;
+
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    let memory_store: std::sync::Arc<dyn TimelineStore> =
+        std::sync::Arc::new(dim_agent_runtime::MemoryTimelineStore::default());
+    for target in [store.clone(), memory_store.clone()] {
+        target
+            .create_session("query", &SessionConfig::default())
+            .await
+            .unwrap();
+        for (sequence, value) in [
+            (1u64, serde_json::json!({ "value": "alpha" })),
+            (2, serde_json::json!({ "value": "beta" })),
+            (3, serde_json::json!({ "value": "alphabet", "extra": true })),
+            (4, serde_json::json!({ "value": "100%" })),
+            (5, serde_json::json!({ "value": "100x" })),
+        ] {
+            publish_records(
+                &target,
+                key("query", "main"),
+                vec![query_record(
+                    sequence,
+                    sequence,
+                    &format!("value-{sequence}"),
+                    marked(value),
+                )],
+            )
+            .await;
+        }
+    }
+    let sqlite = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        store,
+    )
+    .await
+    .unwrap();
+    let memory = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        memory_store,
+    )
+    .await
+    .unwrap();
+
+    for (op, value, expected) in [
+        (
+            PredicateOp::Prefix,
+            serde_json::json!("alpha"),
+            ["value-1", "value-3"].as_slice(),
+        ),
+        (
+            PredicateOp::Contains,
+            serde_json::json!("pha"),
+            ["value-1", "value-3"].as_slice(),
+        ),
+        (
+            PredicateOp::Exists,
+            serde_json::json!(null),
+            ["value-1", "value-2", "value-3", "value-4", "value-5"].as_slice(),
+        ),
+    ] {
+        let mut request = query(Branch, 5);
+        request.predicate = Some(op_predicate("value", op, value));
+        let from_sqlite = sqlite.query(request.clone()).await.unwrap();
+        let from_memory = memory.query(request).await.unwrap();
+        assert_eq!(query_ids(&from_sqlite), expected, "{op:?} sqlite");
+        assert_eq!(query_ids(&from_memory), expected, "{op:?} memory");
+    }
+
+    let mut wildcard = query(Branch, 5);
+    wildcard.predicate = Some(op_predicate(
+        "value",
+        PredicateOp::Prefix,
+        serde_json::json!("100%"),
+    ));
+    assert_eq!(
+        query_ids(&sqlite.query(wildcard.clone()).await.unwrap()),
+        ["value-4"],
+        "the percent is a literal, not a LIKE wildcard"
+    );
+    assert_eq!(
+        query_ids(&memory.query(wildcard).await.unwrap()),
+        ["value-4"]
+    );
+
+    let mut extra = query(Branch, 5);
+    extra.predicate = Some(op_predicate(
+        "extra",
+        PredicateOp::Exists,
+        serde_json::json!(null),
+    ));
+    assert_eq!(query_ids(&sqlite.query(extra).await.unwrap()), ["value-3"]);
+
+    let mut bad_prefix = query(Branch, 5);
+    bad_prefix.predicate = Some(op_predicate(
+        "value",
+        PredicateOp::Prefix,
+        serde_json::json!(1),
+    ));
+    assert!(sqlite.query(bad_prefix).await.is_err(), "a number prefix");
+
+    let mut bad_exists = query(Branch, 5);
+    bad_exists.predicate = Some(op_predicate(
+        "value",
+        PredicateOp::Exists,
+        serde_json::json!(true),
+    ));
+    assert!(sqlite.query(bad_exists).await.is_err(), "a non-null Exists");
+
+    db.close().await.unwrap();
+}
+
+/// `predicates` are ANDed; carrying both forms is invalid.
+#[tokio::test]
+async fn a_query_predicates_are_anded() {
+    use dim_agent_runtime::PredicateOp;
+    use dim_agent_runtime::TimelineQueryScope::Branch;
+
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    let memory_store: std::sync::Arc<dyn TimelineStore> =
+        std::sync::Arc::new(dim_agent_runtime::MemoryTimelineStore::default());
+    for target in [store.clone(), memory_store.clone()] {
+        target
+            .create_session("query", &SessionConfig::default())
+            .await
+            .unwrap();
+        for (sequence, value) in [
+            (1u64, serde_json::json!({ "value": "alpha", "n": 1 })),
+            (2, serde_json::json!({ "value": "alpha", "n": 2 })),
+        ] {
+            publish_records(
+                &target,
+                key("query", "main"),
+                vec![query_record(
+                    sequence,
+                    sequence,
+                    &format!("value-{sequence}"),
+                    marked(value),
+                )],
+            )
+            .await;
+        }
+    }
+    let sqlite = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        store,
+    )
+    .await
+    .unwrap();
+    let memory = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        memory_store,
+    )
+    .await
+    .unwrap();
+
+    let mut request = query(Branch, 2);
+    request.predicates = vec![
+        op_predicate("value", PredicateOp::Eq, serde_json::json!("alpha")),
+        op_predicate("n", PredicateOp::Eq, serde_json::json!(1)),
+    ];
+    let from_sqlite = sqlite.query(request.clone()).await.unwrap();
+    let from_memory = memory.query(request).await.unwrap();
+    assert_eq!(query_ids(&from_sqlite), ["value-1"], "sqlite");
+    assert_eq!(query_ids(&from_memory), ["value-1"], "memory");
+
+    let mut both = query(Branch, 2);
+    both.predicate = Some(predicate("value", serde_json::json!("alpha")));
+    both.predicates = vec![op_predicate("n", PredicateOp::Eq, serde_json::json!(1))];
+    assert!(
+        sqlite.query(both).await.is_err(),
+        "predicate and predicates"
+    );
+
+    db.close().await.unwrap();
+}
+
+/// One array segment compares each element's field in both stores.
+#[tokio::test]
+async fn a_query_predicate_compares_one_array_level() {
+    use dim_agent_runtime::PredicateOp;
+    use dim_agent_runtime::TimelineQueryScope::Branch;
+
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    let memory_store: std::sync::Arc<dyn TimelineStore> =
+        std::sync::Arc::new(dim_agent_runtime::MemoryTimelineStore::default());
+    for target in [store.clone(), memory_store.clone()] {
+        target
+            .create_session("query", &SessionConfig::default())
+            .await
+            .unwrap();
+        for (sequence, value) in [
+            (
+                1u64,
+                serde_json::json!({ "blocks": [{ "key": "alpha" }, { "key": "beta" }] }),
+            ),
+            (2, serde_json::json!({ "blocks": [{ "key": "gamma" }] })),
+        ] {
+            publish_records(
+                &target,
+                key("query", "main"),
+                vec![query_record(
+                    sequence,
+                    sequence,
+                    &format!("value-{sequence}"),
+                    marked(value),
+                )],
+            )
+            .await;
+        }
+    }
+    let sqlite = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        store,
+    )
+    .await
+    .unwrap();
+    let memory = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        memory_store,
+    )
+    .await
+    .unwrap();
+
+    for (op, value, expected) in [
+        (
+            PredicateOp::Eq,
+            serde_json::json!("beta"),
+            ["value-1"].as_slice(),
+        ),
+        (
+            PredicateOp::In,
+            serde_json::json!(["gamma"]),
+            ["value-2"].as_slice(),
+        ),
+        (
+            PredicateOp::Exists,
+            serde_json::json!(null),
+            ["value-1", "value-2"].as_slice(),
+        ),
+    ] {
+        let mut request = query(Branch, 2);
+        request.predicate = Some(op_predicate("blocks[].key", op, value));
+        let from_sqlite = sqlite.query(request.clone()).await.unwrap();
+        let from_memory = memory.query(request).await.unwrap();
+        assert_eq!(query_ids(&from_sqlite), expected, "{op:?} sqlite");
+        assert_eq!(query_ids(&from_memory), expected, "{op:?} memory");
+    }
+
+    let mut invalid = query(Branch, 2);
+    invalid.predicate = Some(op_predicate(
+        "blocks[].key[]",
+        PredicateOp::Exists,
+        serde_json::json!(null),
+    ));
+    assert!(sqlite.query(invalid).await.is_err(), "two array segments");
+
+    db.close().await.unwrap();
+}
+
+/// Text search selects data carrying the terms in both stores.
+#[tokio::test]
+async fn a_query_text_search_selects_terms() {
+    use dim_agent_runtime::TextMatch;
+    use dim_agent_runtime::TimelineQueryScope::Branch;
+
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    let memory_store: std::sync::Arc<dyn TimelineStore> =
+        std::sync::Arc::new(dim_agent_runtime::MemoryTimelineStore::default());
+    for target in [store.clone(), memory_store.clone()] {
+        target
+            .create_session("query", &SessionConfig::default())
+            .await
+            .unwrap();
+        for (sequence, value) in [
+            (1u64, serde_json::json!({ "text": "alpha beta" })),
+            (2, serde_json::json!({ "text": "alpha" })),
+            (3, serde_json::json!({ "text": "gamma" })),
+        ] {
+            publish_records(
+                &target,
+                key("query", "main"),
+                vec![query_record(
+                    sequence,
+                    sequence,
+                    &format!("value-{sequence}"),
+                    marked(value),
+                )],
+            )
+            .await;
+        }
+    }
+    let sqlite = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        store,
+    )
+    .await
+    .unwrap();
+    let memory = Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key("query", "main"),
+        vec![],
+        memory_store,
+    )
+    .await
+    .unwrap();
+
+    for (mode, terms, expected) in [
+        (
+            TextMatch::All,
+            vec!["alpha".to_owned(), "beta".to_owned()],
+            ["value-1"].as_slice(),
+        ),
+        (
+            TextMatch::Any,
+            vec!["beta".to_owned(), "gamma".to_owned()],
+            ["value-1", "value-3"].as_slice(),
+        ),
+        (
+            TextMatch::All,
+            vec!["ALPHA".to_owned()],
+            ["value-1", "value-2"].as_slice(),
+        ),
+        (
+            TextMatch::All,
+            vec!["al".to_owned()],
+            ["value-1", "value-2"].as_slice(),
+        ),
+    ] {
+        let mut request = query(Branch, 5);
+        request.text = Some(dim_agent_runtime::TextSearch { terms, mode });
+        let from_sqlite = sqlite.query(request.clone()).await.unwrap();
+        let from_memory = memory.query(request).await.unwrap();
+        assert_eq!(query_ids(&from_sqlite), expected, "{mode:?} sqlite");
+        assert_eq!(query_ids(&from_memory), expected, "{mode:?} memory");
+    }
+
+    let mut empty = query(Branch, 5);
+    empty.text = Some(dim_agent_runtime::TextSearch {
+        terms: vec![],
+        mode: TextMatch::All,
+    });
+    assert!(sqlite.query(empty).await.is_err(), "empty text terms");
+
+    db.close().await.unwrap();
+}
+
+/// The derived text index follows inserts and event deletes.
+#[tokio::test]
+async fn the_text_index_follows_events_and_deletes() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("query", &SessionConfig::default())
+        .await
+        .unwrap();
+    publish_records(
+        &store,
+        key("query", "main"),
+        vec![query_record(
+            1,
+            1,
+            "indexed",
+            marked(serde_json::json!({ "text": "indexed phrase" })),
+        )],
+    )
+    .await;
+
+    let connection = rusqlite::Connection::open(&database.0).unwrap();
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM timeline_text WHERE session_id = 'query' AND data LIKE '%indexed phrase%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "the insert reached the text index");
+
+    connection
+        .execute("DELETE FROM timeline_events WHERE session_id = 'query'", [])
+        .unwrap();
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM timeline_text WHERE session_id = 'query'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0, "the delete removed the index rows");
+}
+
+/// Opening a store whose text index was dropped backfills it from events.
+#[tokio::test]
+async fn opening_backfills_an_empty_text_index() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store: std::sync::Arc<dyn TimelineStore> = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("query", &SessionConfig::default())
+        .await
+        .unwrap();
+    publish_records(
+        &store,
+        key("query", "main"),
+        vec![query_record(
+            1,
+            1,
+            "backfilled",
+            marked(serde_json::json!({ "text": "backfill phrase" })),
+        )],
+    )
+    .await;
+    db.close().await.unwrap();
+
+    let connection = rusqlite::Connection::open(&database.0).unwrap();
+    connection
+        .execute_batch(
+            "DROP TRIGGER timeline_text_ai; DROP TRIGGER timeline_text_au; \
+             DROP TRIGGER timeline_text_ad; DROP TABLE timeline_text",
+        )
+        .unwrap();
+    drop(connection);
+
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let connection = rusqlite::Connection::open(&database.0).unwrap();
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM timeline_text WHERE session_id = 'query' AND data LIKE '%backfill phrase%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "the empty index was backfilled");
     db.close().await.unwrap();
 }
 
@@ -8380,6 +8933,8 @@ async fn a_query_skips_to_its_page_and_its_pages_compose() {
     let skipped = main
         .query(dim_agent_runtime::TimelineQuery {
             offset: 1,
+            predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(3).unwrap(),
             ..query(Branch, 16)
         })
@@ -8404,6 +8959,8 @@ async fn a_query_skips_to_its_page_and_its_pages_compose() {
     let spanning = child
         .query(dim_agent_runtime::TimelineQuery {
             offset: 1,
+            predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(2).unwrap(),
             ..query(Chain, 16)
         })
@@ -8417,6 +8974,8 @@ async fn a_query_skips_to_its_page_and_its_pages_compose() {
     let into_child = child
         .query(dim_agent_runtime::TimelineQuery {
             offset: 3,
+            predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(1).unwrap(),
             ..query(Chain, 16)
         })
@@ -8504,6 +9063,8 @@ async fn a_query_page_reports_the_facts_it_skipped() {
             &key("skip", "main"),
             &dim_agent_runtime::TimelineQuery {
                 offset: 1,
+                predicates: Vec::new(),
+                text: None,
                 limit: std::num::NonZeroU64::new(2).unwrap(),
                 ..query(Branch, 16)
             },
@@ -8589,6 +9150,8 @@ async fn a_descending_page_takes_the_newest_fact() {
     let newest = timeline
         .query(dim_agent_runtime::TimelineQuery {
             direction: Descending,
+            predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(1).unwrap(),
             ..query(Branch, 16)
         })
@@ -8599,6 +9162,8 @@ async fn a_descending_page_takes_the_newest_fact() {
         .query(dim_agent_runtime::TimelineQuery {
             direction: Descending,
             offset: 1,
+            predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(1).unwrap(),
             ..query(Branch, 16)
         })
@@ -8662,6 +9227,8 @@ async fn a_query_pages_a_selection_wider_than_one_reader_window() {
     let across = timeline
         .query(dim_agent_runtime::TimelineQuery {
             offset: 250,
+            predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(10).unwrap(),
             ..query(Branch, 16)
         })
@@ -8680,6 +9247,8 @@ async fn a_query_pages_a_selection_wider_than_one_reader_window() {
     let window = timeline
         .query(dim_agent_runtime::TimelineQuery {
             offset: 50,
+            predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(200).unwrap(),
             ..query(Branch, 16)
         })
@@ -8697,6 +9266,8 @@ async fn a_query_pages_a_selection_wider_than_one_reader_window() {
     let last = timeline
         .query(dim_agent_runtime::TimelineQuery {
             offset: 299,
+            predicates: Vec::new(),
+            text: None,
             limit: std::num::NonZeroU64::new(16).unwrap(),
             ..query(Branch, 16)
         })
@@ -8751,6 +9322,8 @@ async fn a_query_page_ends_only_when_no_more_facts_match() {
     let hit = |offset: u64| dim_agent_runtime::TimelineQuery {
         predicate: Some(predicate("delta", serde_json::json!("hit"))),
         offset,
+        predicates: Vec::new(),
+        text: None,
         limit: std::num::NonZeroU64::new(1).unwrap(),
         ..query(Branch, 16)
     };
@@ -8774,6 +9347,8 @@ async fn a_query_page_ends_only_when_no_more_facts_match() {
             &dim_agent_runtime::TimelineQuery {
                 predicate: Some(predicate("delta", serde_json::json!("hit"))),
                 offset: 1,
+                predicates: Vec::new(),
+                text: None,
                 limit: std::num::NonZeroU64::new(1).unwrap(),
                 ..query(Branch, 16)
             },
@@ -8912,6 +9487,8 @@ async fn a_query_reads_interleaved_kinds_in_sequence_order() {
         direction,
         kinds: vec!["turn/start".into(), "step/model-start".into()],
         offset,
+        predicates: Vec::new(),
+        text: None,
         limit: std::num::NonZeroU64::new(1).unwrap(),
         ..query(Branch, 1)
     };
@@ -8965,6 +9542,8 @@ async fn the_memory_and_sqlite_stores_agree_on_a_query() {
     let paged = |offset, limit, direction| dim_agent_runtime::TimelineQuery {
         direction,
         offset,
+        predicates: Vec::new(),
+        text: None,
         limit: std::num::NonZeroU64::new(limit).unwrap(),
         ..query(Branch, 16)
     };
@@ -9057,6 +9636,8 @@ async fn the_memory_and_sqlite_stores_agree_on_a_query() {
     let chain = |offset, limit, direction| dim_agent_runtime::TimelineQuery {
         direction,
         offset,
+        predicates: Vec::new(),
+        text: None,
         limit: std::num::NonZeroU64::new(limit).unwrap(),
         ..query(Chain, 16)
     };

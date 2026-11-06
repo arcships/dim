@@ -76,15 +76,37 @@ export type TimelineQueryFlag =
   | /** The flag that puts an event in the rendered context. */ "render"
   | /** The flag that puts an event in the projection's checkpoint state. */ "state"
 
-/** One equality against one JSON scalar of an event's data. */
+/** How one predicate compares the JSON value at its path. */
+export type PredicateOp =
+  | /** The value equals `value`. */ "eq"
+  | /** The value is one of the scalars in `value`. */ "in"
+  | /** The value is a string starting with `value`. */ "prefix"
+  | /** The value is a string containing `value`. */ "contains"
+  | /** The path exists; `value` is null. */ "exists"
+
+/** One comparison against one JSON scalar of an event's data. */
 export interface TimelineQueryPredicate {
   /**
    * Field names inside the event's data joined by dots; no array indexing
    * and no wildcards.
    */
   path: string
-  /** The JSON scalar the path must equal. */
+  /** The comparison; absent reads as `Eq`. */
+  op?: PredicateOp
+  /** The scalar `Eq` compares, or the scalars `In` accepts. */
   value: unknown
+}
+
+/** Whether every term must appear or one is enough. */
+export type TextMatch = "all" | "any"
+
+/**
+ * A text selection over the event data. The store selects candidates; the
+ * caller verifies what the rendered content says.
+ */
+export interface TextSearch {
+  terms: string[]
+  mode?: TextMatch
 }
 
 /**
@@ -122,8 +144,12 @@ export interface TimelineQuery {
   flags?: TimelineQueryFlag[]
   /** When named, only the event with this id. */
   event_id?: string | null
-  /** One equality the event's data must satisfy. */
+  /** One predicate the event's data must satisfy. */
   predicate?: TimelineQueryPredicate | null
+  /** Further predicates the event's data must satisfy; all are ANDed. */
+  predicates?: TimelineQueryPredicate[]
+  /** A text selection over the event data; absent selects without one. */
+  text?: TextSearch | null
   /** How many matching events the page returns; nonzero by type. */
   limit: number | bigint
   /** How many matching events the read skips before the page. */

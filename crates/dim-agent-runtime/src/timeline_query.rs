@@ -67,20 +67,46 @@ impl TimelineQueryFlag {
     }
 }
 
-/// One equality against one JSON scalar of an event's data.
+/// How one predicate compares the JSON value at its path.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PredicateOp {
+    /// The value equals `value`.
+    #[default]
+    Eq,
+    /// The value is one of the scalars in `value`.
+    In,
+    /// The value is a string starting with `value`.
+    Prefix,
+    /// The value is a string containing `value`.
+    Contains,
+    /// The path exists; `value` is null.
+    Exists,
+}
+
+impl PredicateOp {
+    pub(crate) fn is_eq(&self) -> bool {
+        matches!(self, Self::Eq)
+    }
+}
+
+/// One comparison against one JSON scalar of an event's data.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TimelineQueryPredicate {
     /// Field names inside the event's data joined by dots; no array indexing
     /// and no wildcards.
     pub path: String,
-    /// The JSON scalar the path must equal.
+    /// The comparison; absent reads as `Eq`.
+    #[serde(default, skip_serializing_if = "PredicateOp::is_eq")]
+    pub op: PredicateOp,
+    /// The scalar `Eq` compares, or the scalars `In` accepts.
     pub value: serde_json::Value,
 }
 
 impl TimelineQueryPredicate {
-    /// Whether `event`'s data holds `value` at `path`. A path the event does
-    /// not have matches nothing.
+    /// Whether `event`'s data holds an accepted value at `path`. A path the
+    /// event does not have matches nothing.
     pub fn matches(&self, event: &AgentEvent) -> bool {
         let Ok(kind) = serde_json::to_value(&event.kind) else {
             return false;
@@ -88,45 +114,188 @@ impl TimelineQueryPredicate {
         let Some(mut current) = kind.get("data") else {
             return false;
         };
-        for segment in self.path.split('.') {
+        let Some((before, after)) = self.segments() else {
+            return false;
+        };
+        for segment in &before {
             let Some(next) = current.get(segment) else {
                 return false;
             };
             current = next;
         }
-        *current == self.value
+        if let Some(after) = after {
+            let Some(values) = current.as_array() else {
+                return false;
+            };
+            return values.iter().any(|element| {
+                let mut current = element;
+                for segment in &after {
+                    let Some(next) = current.get(segment) else {
+                        return false;
+                    };
+                    current = next;
+                }
+                self.compare(current)
+            });
+        }
+        self.compare(current)
     }
 
-    /// The path as a JSON path from the root of the event's data, `None` when
-    /// its spelling is not the one the contract fixes.
-    pub fn json_path(&self) -> Option<String> {
-        let valid = self.path.split('.').all(|segment| {
+    fn compare(&self, current: &serde_json::Value) -> bool {
+        match self.op {
+            PredicateOp::Eq => current == &self.value,
+            PredicateOp::In => self
+                .value
+                .as_array()
+                .is_some_and(|values| values.iter().any(|value| value == current)),
+            PredicateOp::Prefix => self.value.as_str().is_some_and(|prefix| {
+                current
+                    .as_str()
+                    .is_some_and(|text| text.starts_with(prefix))
+            }),
+            PredicateOp::Contains => self
+                .value
+                .as_str()
+                .is_some_and(|part| current.as_str().is_some_and(|text| text.contains(part))),
+            PredicateOp::Exists => true,
+        }
+    }
+
+    /// The fields before and after the one array segment, `None` when the
+    /// spelling is not the one the contract fixes. `after` is `None` for a
+    /// path without an array.
+    fn segments(&self) -> Option<(Vec<String>, Option<Vec<String>>)> {
+        let valid = |segment: &str| {
             !segment.is_empty()
                 && !segment.chars().any(|c| {
                     c.is_whitespace()
                         || c.is_control()
                         || matches!(c, '.' | '[' | ']' | '*' | '"' | '\'' | '\\' | '$' | '#')
                 })
-        });
-        valid.then(|| format!("$.{path}", path = self.path))
+        };
+        let mut before = Vec::new();
+        let mut after: Option<Vec<String>> = None;
+        for segment in self.path.split('.') {
+            if let Some(field) = segment.strip_suffix("[]") {
+                if after.is_some() || !valid(field) {
+                    return None;
+                }
+                before.push(field.to_owned());
+                after = Some(Vec::new());
+            } else {
+                if !valid(segment) {
+                    return None;
+                }
+                match &mut after {
+                    Some(fields) => fields.push(segment.to_owned()),
+                    None => before.push(segment.to_owned()),
+                }
+            }
+        }
+        Some((before, after))
+    }
+
+    /// The array path before the one `[]`, and the field path inside each
+    /// element (`$` when the element itself is compared).
+    pub fn array_path(&self) -> Option<(String, String)> {
+        let (before, after) = self.segments()?;
+        let after = after?;
+        let inside = if after.is_empty() {
+            "$".into()
+        } else {
+            format!("$.{}", after.join("."))
+        };
+        Some((before.join("."), inside))
+    }
+
+    /// The path as a JSON path from the root of the event's data, `None` when
+    /// its spelling is not the one the contract fixes or it uses an array.
+    pub fn json_path(&self) -> Option<String> {
+        let (before, after) = self.segments()?;
+        after.is_none().then(|| format!("$.{}", before.join(".")))
     }
 
     fn validate(&self) -> Result<()> {
-        if self.json_path().is_none() {
+        if self.segments().is_none() {
             return Err(AgentError::InvalidInput(format!(
-                "query path {:?} is not field names joined by dots",
+                "query path {:?} is not field names joined by dots with at most one []",
                 self.path
             )));
         }
-        if matches!(
-            self.value,
-            serde_json::Value::Array(_) | serde_json::Value::Object(_)
-        ) {
-            return Err(AgentError::InvalidInput(
+        let scalar = |value: &serde_json::Value| {
+            !matches!(
+                value,
+                serde_json::Value::Array(_) | serde_json::Value::Object(_)
+            )
+        };
+        match self.op {
+            PredicateOp::Eq if !scalar(&self.value) => Err(AgentError::InvalidInput(
                 "query predicate compares one JSON scalar".into(),
-            ));
+            )),
+            PredicateOp::In => {
+                let Some(values) = self.value.as_array() else {
+                    return Err(AgentError::InvalidInput(
+                        "an In predicate compares an array of JSON scalars".into(),
+                    ));
+                };
+                if values.is_empty() || !values.iter().all(scalar) {
+                    return Err(AgentError::InvalidInput(
+                        "an In predicate compares a nonempty array of JSON scalars".into(),
+                    ));
+                }
+                Ok(())
+            }
+            PredicateOp::Prefix | PredicateOp::Contains if !self.value.is_string() => Err(
+                AgentError::InvalidInput("a Prefix or Contains predicate compares a string".into()),
+            ),
+            PredicateOp::Exists if !self.value.is_null() => Err(AgentError::InvalidInput(
+                "an Exists predicate carries null".into(),
+            )),
+            _ => Ok(()),
         }
-        Ok(())
+    }
+}
+
+/// Whether every term must appear or one is enough.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextMatch {
+    #[default]
+    All,
+    Any,
+}
+
+/// A text selection over the event data. The store selects candidates; the
+/// caller verifies what the rendered content says.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextSearch {
+    pub terms: Vec<String>,
+    #[serde(default)]
+    pub mode: TextMatch,
+}
+
+impl TextSearch {
+    /// Whether `event`'s data carries the terms. This is the in-memory store's
+    /// candidate check; it is a superset of what the rendered body carries.
+    pub(crate) fn matches(&self, event: &AgentEvent) -> bool {
+        let Ok(kind) = serde_json::to_value(&event.kind) else {
+            return false;
+        };
+        let Some(data) = kind.get("data") else {
+            return false;
+        };
+        let data = data.to_string().to_ascii_lowercase();
+        match self.mode {
+            TextMatch::All => self
+                .terms
+                .iter()
+                .all(|term| data.contains(&term.to_ascii_lowercase())),
+            TextMatch::Any => self
+                .terms
+                .iter()
+                .any(|term| data.contains(&term.to_ascii_lowercase())),
+        }
     }
 }
 
@@ -165,9 +334,15 @@ pub struct TimelineQuery {
     /// When named, only the event with this id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
-    /// One equality the event's data must satisfy.
+    /// One predicate the event's data must satisfy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predicate: Option<TimelineQueryPredicate>,
+    /// Further predicates the event's data must satisfy; all are ANDed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub predicates: Vec<TimelineQueryPredicate>,
+    /// A text selection over the event data; absent selects without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<TextSearch>,
     /// How many matching events the page returns; nonzero by type.
     pub limit: NonZeroU64,
     /// How many matching events the read skips before the page.
@@ -198,13 +373,38 @@ impl TimelineQuery {
                 .predicate
                 .as_ref()
                 .is_none_or(|predicate| predicate.matches(event))
+            && self
+                .predicates
+                .iter()
+                .all(|predicate| predicate.matches(event))
+            && self.text.as_ref().is_none_or(|text| text.matches(event))
     }
 
     /// Checks the input a caller can get wrong before any storage read: the
     /// predicate's spelling and value. The read point is the store's to bound.
     pub fn validate(&self) -> Result<()> {
+        if self.predicate.is_some() && !self.predicates.is_empty() {
+            return Err(AgentError::InvalidInput(
+                "a read carries predicate or predicates, not both".into(),
+            ));
+        }
         if let Some(predicate) = &self.predicate {
             predicate.validate()?;
+        }
+        for predicate in &self.predicates {
+            predicate.validate()?;
+        }
+        if let Some(text) = &self.text {
+            if text.terms.is_empty() || text.terms.iter().any(|term| term.trim().is_empty()) {
+                return Err(AgentError::InvalidInput(
+                    "a text search keeps nonempty terms".into(),
+                ));
+            }
+            if self.event_id.is_some() {
+                return Err(AgentError::InvalidInput(
+                    "a text search and a named event are exclusive".into(),
+                ));
+            }
         }
         if self.from_event.is_some() && self.from_sequence.is_some() {
             return Err(AgentError::InvalidInput(
@@ -267,6 +467,8 @@ pub async fn rebuild_facts(timeline: &Timeline, kinds: &[&str]) -> Result<Timeli
         flags: Vec::new(),
         event_id: None,
         predicate: None,
+        predicates: Vec::new(),
+        text: None,
         limit: NonZeroU64::new(REBUILD_PAGE).expect("a page keeps at least one fact"),
         offset: 0,
     };
