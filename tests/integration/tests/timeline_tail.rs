@@ -19,6 +19,43 @@ use std::{
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
+async fn read_all(timeline: &Timeline, kinds: &[&str]) -> Result<TimelineQueryReply> {
+    let mut events = Vec::new();
+    let mut positions = Vec::new();
+    let mut from: Option<u64> = None;
+    let through = loop {
+        let reply = timeline
+            .query(TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                include_publishing: true,
+                from_event: None,
+                from_sequence: from,
+                order_by: TimelineQueryOrderBy::Sequence,
+                direction: TimelineQueryDirection::Ascending,
+                kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
+                flags: Vec::new(),
+                event_id: None,
+                predicate: None,
+                limit: std::num::NonZeroU64::new(1024).expect("a page keeps one fact"),
+                offset: 0,
+            })
+            .await?;
+        let short = (reply.events.len() as u64) < 1024;
+        let last = reply.positions.last().map(|position| position.sequence);
+        events.extend(reply.events);
+        positions.extend(reply.positions);
+        match last {
+            Some(last) if !short => from = Some(last + 1),
+            _ => break reply.through,
+        }
+    };
+    Ok(TimelineQueryReply {
+        events,
+        positions,
+        through,
+    })
+}
+
 /// Publish callbacks a test holds back until it releases them.
 type HeldPublishes = Arc<Mutex<VecDeque<(PublishCallback, Result<()>)>>>;
 
@@ -712,7 +749,7 @@ async fn every_rebuild_selection_folds_what_the_replay_folded() {
             .filter(|event| kinds.contains(&event.kind.key()))
             .map(|event| event.id.clone())
             .collect();
-        let reply = rebuild_facts(&timeline, kinds).await.unwrap();
+        let reply = read_all(&timeline, kinds).await.unwrap();
         let folded: Vec<_> = reply.events.iter().map(|event| event.id.clone()).collect();
         assert_eq!(folded, expected, "{kinds:?}");
         assert_eq!(reply.through, through, "{kinds:?}");

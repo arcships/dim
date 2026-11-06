@@ -8,7 +8,7 @@ use dim_agent_runtime::{
     Dispatcher, Names, Result, SessionIdentity, StoredBranch, StoredEvent, Timeline,
     TimelineContext, TimelineFactory, TimelineIdentity, TimelineInfo, TimelineKey, TimelineQuery,
     TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryPredicate, TimelineQueryReply,
-    TimelineQueryScope, TimelineStore, TimelineTreeControl, rebuild_facts,
+    TimelineQueryScope, TimelineStore, TimelineTreeControl,
 };
 use dim_agent_types::*;
 use futures_util::{FutureExt, future::join_all};
@@ -2350,26 +2350,49 @@ impl DynPlugin for BranchLinePlugin {
                         let read = read.clone();
                         let timeline = read_timeline.clone();
                         Box::pin(async move {
-                            let reply = rebuild_facts(
-                                &timeline,
-                                &[
-                                    "branch/create",
-                                    "branch/create-failed",
-                                    "branch/ended",
-                                    "branch/end",
-                                    "input/message",
-                                    "input/applied",
-                                    "input/consumed",
-                                    "input/deleted",
-                                    "stop/interrupt",
-                                    "turn/end",
-                                    "step/tool-use",
-                                    "step/tool-result",
-                                ],
-                            )
-                            .await?;
-                            read.rebuild(&reply.events);
-                            Ok(reply.through)
+                            let mut events = Vec::new();
+                            let mut from: Option<u64> = None;
+                            let through = loop {
+                                let reply = timeline
+                                    .query(TimelineQuery {
+                                        scope: TimelineQueryScope::Branch,
+                                        include_publishing: true,
+                                        from_event: None,
+                                        from_sequence: from,
+                                        order_by: TimelineQueryOrderBy::Sequence,
+                                        direction: TimelineQueryDirection::Ascending,
+                                        kinds: vec![
+                                            "branch/create".into(),
+                                            "branch/create-failed".into(),
+                                            "branch/ended".into(),
+                                            "branch/end".into(),
+                                            "input/message".into(),
+                                            "input/applied".into(),
+                                            "input/consumed".into(),
+                                            "input/deleted".into(),
+                                            "stop/interrupt".into(),
+                                            "turn/end".into(),
+                                            "step/tool-use".into(),
+                                            "step/tool-result".into(),
+                                        ],
+                                        flags: Vec::new(),
+                                        event_id: None,
+                                        predicate: None,
+                                        limit: NonZeroU64::new(1024)
+                                            .expect("a page keeps one fact"),
+                                        offset: 0,
+                                    })
+                                    .await?;
+                                let short = (reply.events.len() as u64) < 1024;
+                                let last = reply.positions.last().map(|position| position.sequence);
+                                events.extend(reply.events);
+                                match last {
+                                    Some(last) if !short => from = Some(last + 1),
+                                    _ => break reply.through,
+                                }
+                            };
+                            read.rebuild(&events);
+                            Ok(through)
                         })
                     }),
                     Arc::new(move |event| {

@@ -25,7 +25,7 @@ use dim_agent_capabilities::{
 use dim_agent_runtime::{
     AgentBuilder, AgentError, BranchLifecycle, CollaborationRole, Dispatcher, Names, Session,
     SessionConfig, SessionHold, SessionIdentity, SessionLifecycle, Timeline, TimelineIdentity,
-    TimelineQuery, TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryScope, rebuild_facts,
+    TimelineQuery, TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::{
@@ -2997,25 +2997,46 @@ async fn restore(
     dispatcher: Arc<Dispatcher>,
     ctx: Ctx,
 ) -> dim_agent_runtime::Result<u64> {
-    let reply = rebuild_facts(
-        &timeline,
-        &[
-            "turn/start",
-            "turn/end",
-            "stop/interrupt",
-            "collaboration/request",
-            "collaboration/cancel",
-            "collaboration/close",
-            "collaboration/message",
-            "collaboration/delivered",
-            "collaboration/result",
-            "input/message",
-            "input/applied",
-            "input/deleted",
-        ],
-    )
-    .await?;
-    let events = reply.events;
+    let mut events = Vec::new();
+    let mut from: Option<u64> = None;
+    let through = loop {
+        let reply = timeline
+            .query(TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                include_publishing: true,
+                from_event: None,
+                from_sequence: from,
+                order_by: TimelineQueryOrderBy::Sequence,
+                direction: TimelineQueryDirection::Ascending,
+                kinds: vec![
+                    "turn/start".into(),
+                    "turn/end".into(),
+                    "stop/interrupt".into(),
+                    "collaboration/request".into(),
+                    "collaboration/cancel".into(),
+                    "collaboration/close".into(),
+                    "collaboration/message".into(),
+                    "collaboration/delivered".into(),
+                    "collaboration/result".into(),
+                    "input/message".into(),
+                    "input/applied".into(),
+                    "input/deleted".into(),
+                ],
+                flags: Vec::new(),
+                event_id: None,
+                predicate: None,
+                limit: NonZeroU64::new(1024).expect("a page keeps one fact"),
+                offset: 0,
+            })
+            .await?;
+        let short = (reply.events.len() as u64) < 1024;
+        let last = reply.positions.last().map(|position| position.sequence);
+        events.extend(reply.events);
+        match last {
+            Some(last) if !short => from = Some(last + 1),
+            _ => break reply.through,
+        }
+    };
     let tasks = TaskTracker::new();
     let cleanup_tasks = tasks.clone();
     let mut stale_inputs = BTreeSet::new();
@@ -3085,5 +3106,5 @@ async fn restore(
             }
         });
     }
-    Ok(reply.through)
+    Ok(through)
 }

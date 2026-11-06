@@ -1,5 +1,5 @@
 use dim_agent_capabilities::file_storage::FileStoragePlugin;
-use dim_agent_capabilities::history::{HistoryRenderer, read_context, replay_context};
+use dim_agent_capabilities::history::{HistoryRenderer, replay_context};
 use dim_agent_runtime::testing::{chain_events, timeline_events};
 use dim_agent_runtime::{
     AgentBuilder, AgentConfig, AgentError, MemoryTimelineStore, SessionConfig, StoredEvent,
@@ -38,6 +38,13 @@ fn snapshot(sequence: u64, checkpoint: &ProjectionCheckpoint) -> RecoverySnapsho
     };
     snapshot.state = (HistoryRenderer::default().encode_checkpoint)(&snapshot, checkpoint).unwrap();
     snapshot
+}
+
+async fn read_context(
+    timeline: &Timeline,
+    through: u64,
+) -> dim_agent_runtime::Result<dim_agent_runtime::ContextHistory> {
+    HistoryRenderer::default().context(timeline, through).await
 }
 
 struct Database(PathBuf);

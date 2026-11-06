@@ -4,13 +4,15 @@ use crate::{
     tool_binding::ToolBinding,
 };
 use dim_agent_runtime::{
-    AgentError, CAPABILITY_RELOADING, Dispatcher, Names, Timeline, TimelineIdentity, rebuild_facts,
+    AgentError, CAPABILITY_RELOADING, Dispatcher, Names, Timeline, TimelineIdentity, TimelineQuery,
+    TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
 use std::{
+    num::NonZeroU64,
     panic::AssertUnwindSafe,
     sync::{Arc, Mutex},
 };
@@ -112,19 +114,42 @@ impl DynPlugin for ToolExecutorPlugin {
                     let read = read.clone();
                     let timeline = read_timeline.clone();
                     Box::pin(async move {
-                        let reply = rebuild_facts(
-                            &timeline,
-                            &[
-                                "step/tool-call",
-                                "step/tool-result",
-                                "stop/interrupt",
-                                "turn/start",
-                                "turn/end",
-                            ],
-                        )
-                        .await?;
-                        rebuild(&mut read.state.lock().unwrap(), &timeline, &reply.events)?;
-                        Ok(reply.through)
+let mut events = Vec::new();
+                        let mut from: Option<u64> = None;
+                        let through = loop {
+                            let reply = timeline
+                                .query(TimelineQuery {
+                                scope: TimelineQueryScope::Branch,
+                                include_publishing: true,
+                                from_event: None,
+                                from_sequence: from,
+                                order_by: TimelineQueryOrderBy::Sequence,
+                                direction: TimelineQueryDirection::Ascending,
+                                kinds: vec![
+                                    "step/tool-call".into(),
+                                    "step/tool-result".into(),
+                                    "stop/interrupt".into(),
+                                    "turn/start".into(),
+                                    "turn/end".into(),
+                                ],
+                                flags: Vec::new(),
+                                event_id: None,
+                                predicate: None,
+                                limit: NonZeroU64::new(1024)
+                                    .expect("a page keeps one fact"),
+                                offset: 0,
+                            })
+                                .await?;
+                            let short = (reply.events.len() as u64) < 1024;
+                            let last = reply.positions.last().map(|position| position.sequence);
+                            events.extend(reply.events);
+                            match last {
+                                Some(last) if !short => from = Some(last + 1),
+                                _ => break reply.through,
+                            }
+                        };
+                        rebuild(&mut read.state.lock().unwrap(), &timeline, &events)?;
+                        Ok(through)
                     })
                 }),
                 Arc::new(move |event| {

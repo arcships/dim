@@ -10,13 +10,15 @@ use crate::{
 };
 use dim_agent_runtime::{
     AgentError, BranchLifecycle, BranchPhase, CAPABILITY_RELOADING, Dispatcher, Names, Timeline,
-    TimelineIdentity, rebuild_facts,
+    TimelineIdentity, TimelineQuery, TimelineQueryDirection, TimelineQueryOrderBy,
+    TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
 use std::{
+    num::NonZeroU64,
     panic::AssertUnwindSafe,
     sync::{Arc, Mutex},
 };
@@ -61,8 +63,9 @@ impl ConfigurationPublisher {
         inputs: impl FnOnce(&PromptSnapshot, &PromptSnapshot) -> Vec<InputBlock> + Send,
         register: impl FnOnce(&[Arc<AgentEvent>]) -> dim_agent_runtime::Result<()> + Send,
     ) -> dim_agent_runtime::Result<Option<u64>> {
-        let context =
-            crate::history::read_context(&self.timeline, self.timeline.sequence()).await?;
+        let context = crate::history::HistoryRenderer::default()
+            .context(&self.timeline, self.timeline.sequence())
+            .await?;
         let before = PromptSnapshot::from_context(&context);
         for change in &changes {
             let scope = match change {
@@ -215,8 +218,9 @@ impl ConfigurationPublisher {
         if self.closing() {
             return Ok(());
         }
-        let context =
-            crate::history::read_context(&self.timeline, self.timeline.sequence()).await?;
+        let context = crate::history::HistoryRenderer::default()
+            .context(&self.timeline, self.timeline.sequence())
+            .await?;
         let Some(previous) = context_configuration(&context) else {
             return Ok(());
         };
@@ -926,24 +930,47 @@ impl DynPlugin for ContextPreparationPlugin {
                         let read = read.clone();
                         let timeline = read_timeline.clone();
                         Box::pin(async move {
-                            let reply = rebuild_facts(
-                                &timeline,
-                                &[
-                                    "context/prepare",
-                                    "model/call",
-                                    "step/model-output-end",
-                                    "context/compaction-start",
-                                    "context/compaction",
-                                    "stop/interrupt",
-                                    "step/model-start",
-                                    "input/applied",
-                                    "turn/start",
-                                    "turn/end",
-                                ],
-                            )
-                            .await?;
-                            read.rebuild(&mut read.state.lock().unwrap(), &reply.events)?;
-                            Ok(reply.through)
+                            let mut events = Vec::new();
+                            let mut from: Option<u64> = None;
+                            let through = loop {
+                                let reply = timeline
+                                    .query(TimelineQuery {
+                                        scope: TimelineQueryScope::Branch,
+                                        include_publishing: true,
+                                        from_event: None,
+                                        from_sequence: from,
+                                        order_by: TimelineQueryOrderBy::Sequence,
+                                        direction: TimelineQueryDirection::Ascending,
+                                        kinds: vec![
+                                            "context/prepare".into(),
+                                            "model/call".into(),
+                                            "step/model-output-end".into(),
+                                            "context/compaction-start".into(),
+                                            "context/compaction".into(),
+                                            "stop/interrupt".into(),
+                                            "step/model-start".into(),
+                                            "input/applied".into(),
+                                            "turn/start".into(),
+                                            "turn/end".into(),
+                                        ],
+                                        flags: Vec::new(),
+                                        event_id: None,
+                                        predicate: None,
+                                        limit: NonZeroU64::new(1024)
+                                            .expect("a page keeps one fact"),
+                                        offset: 0,
+                                    })
+                                    .await?;
+                                let short = (reply.events.len() as u64) < 1024;
+                                let last = reply.positions.last().map(|position| position.sequence);
+                                events.extend(reply.events);
+                                match last {
+                                    Some(last) if !short => from = Some(last + 1),
+                                    _ => break reply.through,
+                                }
+                            };
+                            read.rebuild(&mut read.state.lock().unwrap(), &events)?;
+                            Ok(through)
                         })
                     }),
                     Arc::new(move |event| {

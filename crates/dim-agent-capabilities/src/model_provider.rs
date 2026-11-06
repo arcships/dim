@@ -10,13 +10,15 @@ use crate::{
 };
 use dim_agent_runtime::{
     AgentError, CAPABILITY_RELOADING, Dispatcher, ModelProgress, Names, StateCell, Timeline,
-    TimelineIdentity, rebuild_facts,
+    TimelineIdentity, TimelineQuery, TimelineQueryDirection, TimelineQueryOrderBy,
+    TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use std::{
+    num::NonZeroU64,
     panic::AssertUnwindSafe,
     sync::{Arc, Mutex},
 };
@@ -401,23 +403,46 @@ impl DynPlugin for ModelProviderPlugin {
                         let read = read.clone();
                         let timeline = read_timeline.clone();
                         Box::pin(async move {
-                            let reply = rebuild_facts(
-                                &timeline,
-                                &[
-                                    "model/call",
-                                    "step/tool-use-start",
-                                    "step/tool-use",
-                                    "step/model-output-end",
-                                    "step/model-start",
-                                    "input/applied",
-                                    "stop/interrupt",
-                                    "turn/start",
-                                    "turn/end",
-                                ],
-                            )
-                            .await?;
-                            read.rebuild(&mut read.state.lock().unwrap(), &reply.events)?;
-                            Ok(reply.through)
+                            let mut events = Vec::new();
+                            let mut from: Option<u64> = None;
+                            let through = loop {
+                                let reply = timeline
+                                    .query(TimelineQuery {
+                                        scope: TimelineQueryScope::Branch,
+                                        include_publishing: true,
+                                        from_event: None,
+                                        from_sequence: from,
+                                        order_by: TimelineQueryOrderBy::Sequence,
+                                        direction: TimelineQueryDirection::Ascending,
+                                        kinds: vec![
+                                            "model/call".into(),
+                                            "step/tool-use-start".into(),
+                                            "step/tool-use".into(),
+                                            "step/model-output-end".into(),
+                                            "step/model-start".into(),
+                                            "input/applied".into(),
+                                            "stop/interrupt".into(),
+                                            "turn/start".into(),
+                                            "turn/end".into(),
+                                        ],
+                                        flags: Vec::new(),
+                                        event_id: None,
+                                        predicate: None,
+                                        limit: NonZeroU64::new(1024)
+                                            .expect("a page keeps one fact"),
+                                        offset: 0,
+                                    })
+                                    .await?;
+                                let short = (reply.events.len() as u64) < 1024;
+                                let last = reply.positions.last().map(|position| position.sequence);
+                                events.extend(reply.events);
+                                match last {
+                                    Some(last) if !short => from = Some(last + 1),
+                                    _ => break reply.through,
+                                }
+                            };
+                            read.rebuild(&mut read.state.lock().unwrap(), &events)?;
+                            Ok(through)
                         })
                     }),
                     Arc::new(move |event| {
