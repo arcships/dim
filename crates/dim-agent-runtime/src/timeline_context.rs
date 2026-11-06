@@ -388,7 +388,7 @@ impl TimelineContext {
         data.validate()
             .map_err(|reason| AgentError::InvalidInput(reason.into()))?;
         if let Some(id) = &data.submission_id
-            && let Some((_, event)) = self.find_submission(id).await?
+            && let Some((_, event)) = self.find_submission(id, false).await?
         {
             return Ok(event);
         }
@@ -405,7 +405,7 @@ impl TimelineContext {
     }
     /// The committed input with submission id `id`, once it is published.
     pub(crate) async fn lookup(&self, id: &str) -> Result<Option<Arc<AgentEvent>>> {
-        let Some((sequence, event)) = self.find_submission(id).await? else {
+        let Some((sequence, event)) = self.find_submission(id, true).await? else {
             return Ok(None);
         };
         let _ = self
@@ -422,14 +422,19 @@ impl TimelineContext {
         Ok(Some(event))
     }
     /// The branch's input with submission id `id`: its sequence and event.
-    /// The read includes facts still publishing, so a duplicate that races
-    /// the first write finds it.
-    async fn find_submission(&self, id: &str) -> Result<Option<(u64, Arc<AgentEvent>)>> {
+    /// `include_publishing` is for lookup, which must find a committed input
+    /// before publication; input's own check relies on the commit-lock map
+    /// for ids written since the branch was built.
+    async fn find_submission(
+        &self,
+        id: &str,
+        include_publishing: bool,
+    ) -> Result<Option<(u64, Arc<AgentEvent>)>> {
         let reply = self
             .timeline
             .query(TimelineQuery {
                 scope: TimelineQueryScope::Branch,
-                include_publishing: true,
+                include_publishing,
                 from_event: None,
                 from_sequence: None,
                 order_by: TimelineQueryOrderBy::Sequence,

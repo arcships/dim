@@ -239,13 +239,13 @@ Agents takes the branch's publication watch and calls `Session::input`, which va
 | The index unloads after admission | The admitted task's own outcome |
 
 **One input per `submissionId`.** The branch accepts each `submissionId` once (A.2). `Session::input` first reads the
-branch's own `input/message` facts by `submission_id`, including facts still publishing. On a match it writes nothing
-and returns the committed input; several matches fail `ambiguous` and write nothing. With no match, it hands the input
-to the branch's Timeline, which checks the ids committed since the branch was built and appends under its commit lock,
-so of concurrent inputs with one id exactly one is written. `input` replies the input's `{inputId, sequence}` once it
-is published, even while the first write is still unpublished. The id stays taken after the input is consumed or
-withdrawn. After `publication_unknown`, `reloading` or a lost reply, the caller resubmits with the same `submissionId`,
-or reads with `lookup`.
+branch's published `input/message` facts by `submission_id`. On a match it writes nothing and returns the committed
+input; several matches fail `ambiguous` and write nothing. With no match, it hands the input to the branch's Timeline,
+which checks the ids committed since the branch was built, including an id still being published, and appends under
+its commit lock, so of concurrent inputs with one id exactly one is written. `input` replies the input's
+`{inputId, sequence}` once it is published, even while the first write is still unpublished. The id stays taken after
+the input is consumed or withdrawn. After `publication_unknown`, `reloading` or a lost reply, the caller resubmits
+with the same `submissionId`, or reads with `lookup`.
 
 **Input ownership.** Preparation validates the request,
 acquires the Session lease and obtains the publication watch. Admission is the
@@ -270,7 +270,8 @@ and no row check.
 `{sessionId, branchId, submissionId}` → `{status: "accepted", inputId, sequence}` or `{status: "unknown"}`; error
 `ambiguous`.
 
-`Session::lookup` reads the branch's own inputs by `submission_id` (§6.2). For an input it finds, it waits until that
+`Session::lookup` reads the branch's own inputs by `submission_id` (§6.2), including facts still publishing. For an
+input it finds, it waits until that
 input is published and replies it; a branch that closes or fails first ends the call with that error. Otherwise it
 replies `unknown`. Every input committed before the call is in the branch's facts, so `unknown` is final for every
 write that returned before the lookup began, without waiting for other pending events or scanning pages. After a
