@@ -4744,6 +4744,40 @@ fn runtime_calls(action: &RuntimeAction) -> Vec<(&'static str, serde_json::Value
 mod tests {
     use super::*;
 
+    fn history_event(sequence: u64) -> serde_json::Value {
+        json!({
+            "id": format!("event-{sequence}"),
+            "sequence": sequence,
+            "create_at": 1,
+            "type": "turn",
+            "name": "end",
+            "data": {"turn_id": "turn", "status": "completed", "reason": "done"},
+        })
+    }
+
+    /// A backward page names the first sequence it does not contain, and its
+    /// events ascend inside `(nextBefore, before)`.
+    #[test]
+    fn a_backward_history_page_is_checked_against_its_cursor() {
+        let page = json!({
+            "events": [history_event(6), history_event(7), history_event(8)],
+            "through": 10,
+            "nextAfter": 8,
+            "nextBefore": 6,
+            "done": false,
+        });
+        assert!(History::backward(page.clone(), Some(9), Some(10)).is_ok());
+        assert!(History::backward(page.clone(), Some(9), Some(11)).is_err());
+
+        let mut out_of_order = page.clone();
+        out_of_order["events"] = json!([history_event(8), history_event(7)]);
+        assert!(History::backward(out_of_order, Some(9), Some(10)).is_err());
+
+        let mut outside = page;
+        outside["events"] = json!([history_event(9)]);
+        assert!(History::backward(outside, Some(9), Some(10)).is_err());
+    }
+
     /// The `prompt-suggestion` document is the capability's own type: a
     /// missing or malformed document, or a missing member, is an error rather
     /// than an invented value.
