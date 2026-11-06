@@ -31907,7 +31907,6 @@
         "path Command::ListProviders",
         "path Command::ListRuntimes",
         "path Command::ListSessions",
-        "path Command::LoadEarlier",
         "path Command::LoginStatus",
         "path Command::LoginUsage",
         "path Command::Logout",
@@ -32407,7 +32406,6 @@
       "from": "dim_cli::session_host::tasks",
       "to": "dim_cli::session_host",
       "references": [
-        "path History::backward",
         "path History::decode",
         "path LineProjection",
         "path LineProjection::new",
@@ -32442,8 +32440,7 @@
         "path Event",
         "path EventContent::BranchCreate",
         "path EventContent::BranchCreateFailed",
-        "path EventContent::BranchStart",
-        "path Progress"
+        "path EventContent::BranchStart"
       ]
     },
     {
@@ -37860,7 +37857,6 @@
       "references": [
         "path Effect",
         "path Effect::Close",
-        "path Effect::LoadEarlier",
         "path Effect::None",
         "path Effect::Timeline",
         "use crate::ui::prompts::Effect"
@@ -38660,7 +38656,6 @@
         "path Command::ListPlugins",
         "path Command::ListProviders",
         "path Command::ListRuntimes",
-        "path Command::LoadEarlier",
         "path Command::LoginStatus",
         "path Command::LoginUsage",
         "path Command::Logout",
@@ -39096,7 +39091,6 @@
         "path Effect::LanguageApply",
         "path Effect::LanguagePreview",
         "path Effect::LanguageRestore",
-        "path Effect::LoadEarlier",
         "path Effect::LoginStatus",
         "path Effect::LoginUsage",
         "path Effect::Logout",

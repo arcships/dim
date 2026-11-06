@@ -16,9 +16,6 @@ pub struct Created {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Attached {
-    /// The branch head the attach pinned; absent from servers older than it.
-    #[serde(default)]
-    pub sequence: Option<u64>,
     #[serde(default)]
     pub model: Option<dim_agent_types::ModelId>,
     #[serde(default)]

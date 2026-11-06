@@ -132,7 +132,6 @@ pub enum Effect {
     Resume(String),
     /// Reload the session list.
     Refresh,
-    LoadEarlier,
     RetryApproval {
         request_id: String,
         branch_id: String,

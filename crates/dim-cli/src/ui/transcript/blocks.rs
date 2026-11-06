@@ -600,14 +600,10 @@ pub(crate) fn render_block(
         Block::Boundary(label) => vec![fg(&boundary_line(label, width), &p.muted)],
         Block::Note(text) => vec![fg(&truncate_cells(text, width), &p.muted)],
         Block::LoadMore(hidden) => {
-            let label = if *hidden == 0 {
-                t("Earlier history · Enter or click to load").to_owned()
-            } else {
-                tf(
-                    "{count} earlier messages · Enter or click to load",
-                    &[("count", &hidden.to_string())],
-                )
-            };
+            let label = tf(
+                "{count} earlier messages · Enter or click to load",
+                &[("count", &hidden.to_string())],
+            );
             gutter_text(LOAD_MORE_MARK, &label, width, &p.accent)
         }
         Block::Line { text, .. } => {

@@ -74,11 +74,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "No messages yet." => "Belum ada pesan.",
         "Already on screen above; /tui jumps to it" => "Sudah ada di atas; /tui langsung lompat",
-        "Load earlier history" => "Muat riwayat sebelumnya",
-        "Loading earlier history…" => "Memuat riwayat sebelumnya…",
-        "Earlier history · Enter or click to load" => {
-            "Riwayat sebelumnya · Enter atau klik untuk memuat"
-        }
         "{count} earlier messages · Enter or click to load" => {
             "{count} pesan lama · Enter atau klik untuk memuat"
         }

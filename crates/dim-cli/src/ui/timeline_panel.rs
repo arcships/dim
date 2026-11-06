@@ -93,7 +93,7 @@ impl TimelinePanel {
         let newest = messages
             .last()
             .map(|(index, _)| snapshot.rows[*index].row_id.clone());
-        let mut items: Vec<_> = messages
+        let items = messages
             .into_iter()
             .enumerate()
             .map(|(number, (index, reply))| {
@@ -109,20 +109,6 @@ impl TimelinePanel {
                 )
             })
             .collect();
-        if snapshot.history_earlier {
-            items.insert(
-                0,
-                Item::new(
-                    "load-earlier",
-                    t(if snapshot.history_loading {
-                        "Loading earlier history…"
-                    } else {
-                        "Load earlier history"
-                    }),
-                    "",
-                ),
-            );
-        }
         let preselect = selected.clone().or(newest);
         self.list.set_items(Ok(items), preselect.as_deref());
         if self.list.selected_id() != selected {
@@ -155,7 +141,6 @@ impl TimelinePanel {
         };
         if let Some(action) = action {
             return match self.list.selected_id() {
-                Some(row_id) if row_id == "load-earlier" => Effect::None,
                 Some(row_id) => Effect::Timeline { row_id, action },
                 None => Effect::None,
             };
@@ -183,7 +168,6 @@ impl TimelinePanel {
         match self.list.handle_key(key) {
             Event::None | Event::Refresh => Effect::None,
             Event::Close => Effect::Close,
-            Event::Pick(id) if id == "load-earlier" => Effect::LoadEarlier,
             Event::Pick(_) => {
                 let mut actions = ListPanel::new(
                     "Timeline actions",

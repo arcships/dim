@@ -70,9 +70,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "No messages yet." => "아직 메시지가 없습니다.",
         "Already on screen above; /tui jumps to it" => "이미 위에 있음. /tui 에서 바로 이동",
-        "Load earlier history" => "이전 기록 불러오기",
-        "Loading earlier history…" => "이전 기록 불러오는 중…",
-        "Earlier history · Enter or click to load" => "이전 기록 · Enter 또는 클릭으로 불러오기",
         "{count} earlier messages · Enter or click to load" => {
             "이전 메시지 {count}개 · Enter 또는 클릭으로 불러오기"
         }
