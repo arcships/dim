@@ -31807,15 +31807,14 @@
       "to": "dim_cli::goal",
       "references": [
         "path crate::goal::Call",
+        "path crate::goal::Fold",
         "path crate::goal::Fold::default",
+        "path crate::goal::Fold::goal",
         "path crate::goal::Goal",
         "path crate::goal::NOT_AVAILABLE",
-        "path crate::goal::OBJECTIVE_KEY",
         "path crate::goal::Request",
-        "path crate::goal::STATUS_KEY",
         "path crate::goal::available",
         "path crate::goal::call",
-        "path crate::goal::from_keys",
         "path crate::goal::objective",
         "path crate::goal::report"
       ]

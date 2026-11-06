@@ -341,8 +341,10 @@ struct PendingGoal {
     /// The call sent, and the sequence of the event it wrote, once the reply
     /// arrived.
     written: Option<(crate::goal::Call, u64)>,
-    /// The goal read from the line before the command chose its method.
-    goal: Option<crate::goal::Goal>,
+    /// The full fold a windowed first view cannot provide, and the head it
+    /// stopped at.
+    fold: Option<crate::goal::Fold>,
+    head: Option<u64>,
 }
 
 struct OutputWatch {
@@ -2107,27 +2109,28 @@ impl Worker {
             return;
         }
         let branch = self.focus.clone();
-        let goal = if self
+        let (fold, head) = if self
             .task_history
             .get(&branch)
             .is_some_and(|history| history.window)
         {
             match self.read_goal(&branch).await {
-                Ok(goal) => goal,
+                Ok((fold, head)) => (Some(fold), Some(head)),
                 Err(error) => {
                     self.report(format!("Goal: {error}"), true);
                     return;
                 }
             }
         } else {
-            None
+            (None, None)
         };
         self.goal_pending = Some(PendingGoal {
             request,
             branch,
             projection_id: self.projection_id,
             written: None,
-            goal,
+            fold,
+            head,
         });
         self.poll_goal().await;
     }
@@ -2147,11 +2150,22 @@ impl Worker {
         let branch = pending.branch.clone();
         if let Some((call, sequence)) = pending.written {
             if self.cursors.get(&branch).copied().unwrap_or(0) >= sequence {
-                let goal = self.goal_on(&branch).or_else(|| {
-                    self.goal_pending
-                        .as_ref()
-                        .and_then(|pending| pending.goal.clone())
-                });
+                let head = self.goal_pending.as_ref().and_then(|pending| pending.head);
+                let mut fold = self
+                    .goal_pending
+                    .as_mut()
+                    .and_then(|pending| pending.fold.take());
+                if let (Some(fold), Some(head)) = (&mut fold, head)
+                    && let Err(error) = self.read_goal_after(&branch, head, fold).await
+                {
+                    self.goal_pending = None;
+                    self.report(format!("Goal: {error}"), true);
+                    return;
+                }
+                let goal = match fold {
+                    Some(fold) => fold.goal(),
+                    None => self.goal_on(&branch),
+                };
                 self.finish_goal(&branch, goal, Some(call));
             }
             return;
@@ -2170,7 +2184,10 @@ impl Worker {
         }
         let (request, goal) = {
             let pending = self.goal_pending.as_ref().expect("parked goal");
-            (pending.request.clone(), pending.goal.clone())
+            (
+                pending.request.clone(),
+                pending.fold.as_ref().and_then(crate::goal::Fold::goal),
+            )
         };
         let goal = goal.or_else(|| self.goal_on(&branch));
         let Some(call) = crate::goal::call(&request, goal.as_ref()) else {
@@ -2215,44 +2232,21 @@ impl Worker {
         );
     }
 
-    /// Reads the line's goal from its live keyed blocks, or from a full fold
-    /// on a daemon that does not serve `session.keys`.
-    async fn read_goal(&mut self, branch: &str) -> crate::Result<Option<crate::goal::Goal>> {
-        if self.client.offers("session.keys") {
-            #[derive(Deserialize)]
-            struct Entry {
-                key: String,
-                text: String,
-            }
-            #[derive(Deserialize)]
-            struct Keys {
-                entries: Vec<Entry>,
-            }
-            let reply: Keys = self
-                .client
-                .typed(
-                    "session.keys",
-                    json!({
-                        "sessionId": self.session_id,
-                        "branchId": branch,
-                        "keys": [crate::goal::OBJECTIVE_KEY, crate::goal::STATUS_KEY],
-                    }),
-                )
-                .await?;
-            let text = |key: &str| {
-                reply
-                    .entries
-                    .iter()
-                    .find(|entry| entry.key == key)
-                    .map(|entry| entry.text.as_str())
-            };
-            return Ok(crate::goal::from_keys(
-                text(crate::goal::OBJECTIVE_KEY),
-                text(crate::goal::STATUS_KEY),
-            ));
-        }
+    /// Reads a windowed line's whole history for `/goal`, which decides from
+    /// state older than the first view.
+    async fn read_goal(&mut self, branch: &str) -> crate::Result<(crate::goal::Fold, u64)> {
         let mut fold = crate::goal::Fold::default();
-        let mut after = 0;
+        let head = self.read_goal_after(branch, 0, &mut fold).await?;
+        Ok((fold, head))
+    }
+
+    /// Folds events after `after` into `fold`, up to the server's fixed head.
+    async fn read_goal_after(
+        &mut self,
+        branch: &str,
+        mut after: u64,
+        fold: &mut crate::goal::Fold,
+    ) -> crate::Result<u64> {
         let mut through = None;
         loop {
             let mut params = json!({
@@ -2272,7 +2266,7 @@ impl Worker {
                 fold.apply(&event);
             }
             if page.done {
-                return Ok(fold.goal());
+                return Ok(page.through);
             }
             after = page.next_after;
         }

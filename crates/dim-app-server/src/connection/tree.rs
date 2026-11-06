@@ -312,9 +312,6 @@ impl Connection {
     pub(super) async fn keys(&self, rpc: &RpcService, params: Keys) -> Result<Reply, RpcError> {
         let session = self.session(rpc, &params.session_id)?;
         let branch = params.branch_id.as_deref().expect("validated branchId");
-        if params.keys.len() > KEYS_ENTRY_LIMIT {
-            return Err(RpcError::invalid("too many requested keys"));
-        }
         let head = session.sequence(branch).map_err(RpcError::from)?;
         let through = match params.through {
             Some(through) if through > head => {
@@ -327,9 +324,9 @@ impl Connection {
             let tree = session
                 .session_service::<TreeCommands>()
                 .map_err(history_error)?;
-            scan_keys(&HistoryRead::Ended(&tree), branch, through, &params.keys).await?
+            scan_keys(&HistoryRead::Ended(&tree), branch, through).await?
         } else {
-            match scan_keys(&HistoryRead::Open(&session), branch, through, &params.keys).await {
+            match scan_keys(&HistoryRead::Open(&session), branch, through).await {
                 // The line ended while the scan ran: the tree serves the same
                 // read at its fixed head (ADR 021 D2).
                 Err(error)
@@ -341,7 +338,7 @@ impl Connection {
                     let tree = session
                         .session_service::<TreeCommands>()
                         .map_err(history_error)?;
-                    scan_keys(&HistoryRead::Ended(&tree), branch, through, &params.keys).await?
+                    scan_keys(&HistoryRead::Ended(&tree), branch, through).await?
                 }
                 other => other?,
             }
@@ -711,10 +708,7 @@ async fn scan_keys(
     read: &HistoryRead<'_>,
     branch: &str,
     through: u64,
-    wanted: &[String],
 ) -> Result<Vec<wire::KeyEntry>, RpcError> {
-    let wanted: Option<HashSet<&str>> =
-        (!wanted.is_empty()).then(|| wanted.iter().map(String::as_str).collect());
     let mut found: HashMap<String, (u64, usize, wire::KeyEntry)> = HashMap::new();
     let mut closed: HashSet<String> = HashSet::new();
     let mut deleted: HashSet<String> = HashSet::new();
@@ -766,12 +760,6 @@ async fn scan_keys(
                         else {
                             continue;
                         };
-                        if wanted
-                            .as_ref()
-                            .is_some_and(|wanted| !wanted.contains(key.as_str()))
-                        {
-                            continue;
-                        }
                         if found.contains_key(key) {
                             continue;
                         }
@@ -802,14 +790,6 @@ async fn scan_keys(
                 }
                 EventKind::InputMessage(_) => {}
                 _ => {}
-            }
-            if wanted.as_ref().is_some_and(|wanted| {
-                wanted
-                    .iter()
-                    .all(|key| found.contains_key(*key) || closed.contains(*key))
-            }) {
-                done = true;
-                break;
             }
         }
         if done || exhausted {
