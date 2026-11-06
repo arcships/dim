@@ -26,7 +26,8 @@ The shapes follow [session access A.1](../contracts/session-access.md#a1-the-ses
 { "sessionId": "string",
   "branchId": "string",              // required on a v3 connection, as for every v3 session
                                      // method that names a branch; clients send "main" for the root line
-  "through?": 0 }                    // fixed read position; absent: the published head (session.sequence)
+  "through?": 0,                     // fixed read position; absent: the published head (session.sequence)
+  "keys?": ["string"] }              // absent or empty: every live key; otherwise only these keys
 ```
 
 ### 2.2 Reply
@@ -50,7 +51,9 @@ The shapes follow [session access A.1](../contracts/session-access.md#a1-the-ses
 - Empty branch, or every key retired: `{through, entries: []}`. Clients do not need to distinguish the two.
 - A fork's `main` excludes everything below its `session/forked`; a child branch excludes everything below its `branch/start`. Copied and inherited facts are not the branch's own segment.
 
-The request has no `keys` filter. The reply always lists every live key of the segment, unknown ones included; a client reads the keys it knows and ignores the rest — not an error, no re-read, no effect on other keys. A filter would not reduce the walk (a key last set a thousand messages ago still has to be found) and would add a second unknown-key rule on top of this one.
+An absent or empty `keys` lists every live key of the segment; a non-empty list restricts the reply to those keys. A requested key that is absent from the segment, or whose newest block is retired, contributes no entry, so the reply can be empty; a requested key is not an error. The filter lets a client that owns a fixed set of keys (Goal's two, for example) avoid receiving unrelated blocks, and the scan can stop once every requested key is found or closed. If a requested key is absent, the scan still reaches the branch opening.
+
+The unfiltered form keeps the unknown-key rule: a client reads the keys it knows and ignores the rest — not an error, no re-read, no effect on other keys.
 
 There is no paging. The entry count grows with the number of live keys, not with the branch's length. `key` is writer-chosen and unchecked, so the count is bounded here: more than 1024 live keys fails the call with the non-retryable application error `too_many_keys`. The read never truncates: truncation would silently lose live state. Goal contributes 2 keys and TimelineTree 2, so the bound is reached only by a producer outside the documented contracts. The reply is also bounded by size: its serialized JSON must fit the same reply-frame bound `session.history` measures against (`outbound::MAX_FRAME_BYTES` less 64 KiB of envelope), and a larger one fails `keys_too_large` instead of being dropped by the transport. A few large blocks reach that bound before the key count does. Truncation is not an answer to it either, for the same reason.
 
@@ -65,7 +68,7 @@ There is no paging. The entry count grows with the number of live keys, not with
 | Error | When |
 | --- | --- |
 | `unknown_method` | The connection is below protocol v3, like `session.history`; `input/deleted` is not visible on a v2 connection, so the projection cannot be served there |
-| `invalid_params` | `branchId` is missing or empty on a v3 connection; `through` is past the published head |
+| `invalid_params` | `branchId` is missing or empty on a v3 connection; `through` is past the published head; more than 1024 keys are requested |
 | `session_invalid_input` | The Session or the branch does not exist (the acquire and read outcomes of every session method) |
 | `session_closed`, `branch_ended`, `service_reloading` | The Session closed, the line ended before the read could run, or the serving service reloads; as `session.history` |
 | `too_many_keys` | More than 1024 live keys; not retryable, a retry answers the same |
@@ -75,7 +78,7 @@ A `through` past the published head is invalid input, never clamped to the head:
 
 ## 3. Read algorithm and cost
 
-One descending scan, `TimelineQuery` with `kinds: ["input/message", "input/deleted", "branch/start", "session/forked"]`, `TimelineQueryDirection::Descending`, ordered by sequence, `limit` 256 per page. The scan starts at `through` and stops at the first opening event; everything below it is discarded. Pages advance by `from_sequence = min_sequence - 1` of the previous page, never by `offset`: the query's offset is skipping, and the storage reader fetches `offset + limit` rows before skipping them, so a deep walk by offset is quadratic in the page count. A page shorter than the limit means the selection is exhausted (ADR 019 D2). Cost is O(input/message and input/deleted rows above the opening), one zone query per page over `(session_id, branch_id, sequence)`; a 20,000-message branch is about 80 pages.
+One descending scan, `TimelineQuery` with `kinds: ["input/message", "input/deleted", "branch/start", "session/forked"]`, `TimelineQueryDirection::Descending`, ordered by sequence, `limit` 256 per page. The scan starts at `through` and stops at the first opening event; everything below it is discarded. With a non-empty `keys` filter it also stops once every requested key is found live or retired; an absent requested key still walks to the opening. Pages advance by `from_sequence = min_sequence - 1` of the previous page, never by `offset`: the query's offset is skipping, and the storage reader fetches `offset + limit` rows before skipping them, so a deep walk by offset is quadratic in the page count. A page shorter than the limit means the selection is exhausted (ADR 019 D2). Cost is O(input/message and input/deleted rows above the opening), one zone query per page over `(session_id, branch_id, sequence)`; a 20,000-message branch is about 80 pages in the worst case. A filter stops earlier when its keys are near the head.
 
 Deletions are collected in the same pass, without a second read. The ordering that makes it correct: InputQueue writes `input/deleted` only for an input it still holds unapplied — a withdrawal is decided when the input has neither `input/applied` nor a consumption — so the deletion event is always written after the input it removes. A descending scan therefore meets the deletion before it meets the block, and a block is live only when its input id is absent from the set collected so far. A `retire` block written by a deleted input is skipped by the same check, so it cannot end a key.
 
@@ -148,6 +151,7 @@ Goal A8 is unchanged: a Goal-specific query would need a Session part to read a 
 ## 8. Acceptance
 
 - A branch with two keys set in one input, then one retired, then one set again: the reply carries the newest live block of each key, ascending by sequence and by block order inside one input, with the right `inputId` and `text`.
+- A non-empty `keys` filter returns only those keys; a requested key that is absent or retired contributes no entry, and a read that finds both live keys stops before the branch opening.
 - An `input/deleted` on the input that wrote a key: its blocks never take effect; a key falls back to an earlier live block when one exists and is absent otherwise; a retire written by a deleted input does not end the key.
 - A fork's `main` and a child branch list none of the parent's keys, and a key written on the child or the fork appears only there.
 - `through` before a later change returns the older value; a `through` past the head is `invalid_params`.

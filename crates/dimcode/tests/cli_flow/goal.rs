@@ -441,6 +441,51 @@ fn line_goal_shows_no_copied_goal_after_a_fork() {
 }
 
 #[test]
+fn tui_goal_reads_live_keys_instead_of_full_history() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&[
+            "session.methods",
+            "session.keys",
+            "session.history.latestTurn",
+        ]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let table = wire.read("session.methods");
+        wire.reply(&table, methods(true));
+        let history = wire.read("session.history");
+        wire.reply(&history, page(8, vec![]));
+        started(wire);
+
+        let keys = wire.read("session.keys");
+        assert_eq!(
+            keys["params"]["keys"],
+            json!(["goal:objective", "goal:status"])
+        );
+        wire.reply(&keys, json!({"through":8,"entries":[]}));
+
+        let write = wire.read("session.goal.set");
+        wire.reply(&write, json!({"sequence":9}));
+        change_notice(wire, "main", set(9, "Ship it"));
+
+        drained(wire);
+    });
+    let mut command = home.command();
+    command.arg("--scrollback");
+    sized(&mut command, 100, 32);
+    let mut terminal = Terminal::resume_tui(command);
+    terminal.until("test / model");
+
+    terminal.write(b"/goal Ship it\r");
+    terminal.until("Goal set on main · active");
+
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+#[test]
 fn tui_goal_shows_the_state_and_marks_the_status_area() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {

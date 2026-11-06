@@ -246,7 +246,7 @@ Exact texts: [Appendix A.5](#a5-model-visible-texts).
 | --- | --- | --- |
 | `goal_update {status, summary}` | Tool registered with `toolRegistry` (Session), risk `session` | Model reports completion or blocking; writes one change input and confirms the write |
 | `session.goal.set/edit/pause/resume/clear` | `sessionMethods` (Session, namespace `session.goal`) | User changes the goal; each writes one change input and replies with its sequence. `set` also takes `judge`, the [Pursuit](Pursuit.md) evaluator judge |
-| Reading the goal | The branch's events, or the branch's live keyed blocks when the App Server serves them (session.keys, [keyed-blocks](../appserver/keyed-blocks.md)) | The latest live `goal:objective` and `goal:status` blocks of the branch's local events are its objective and status (§2, A16), the same blocks the model sees. Clients read them from the branch history and live events they already receive, or from the keyed projection; there is no Goal query method (A8) |
+| Reading the goal | The branch's events, or the branch's live keyed blocks when the App Server serves them (session.keys, [keyed-blocks](../appserver/keyed-blocks.md)) | The latest live `goal:objective` and `goal:status` blocks of the branch's local events are its objective and status (§2, A16), the same blocks the model sees. Clients read them from the branch history and live events they already receive, or from the keyed projection filtered to the two keys; there is no Goal query method (A8) |
 | `goal` source: `maxContinuations` | Business configuration (Settings) | Optional continuation limit; each turn-end decision reads the document at use (§1); absent means no limit |
 
 Details: [Appendix A](#appendix-a-interface-details).

@@ -7,8 +7,8 @@ use crate::client::Client;
 use crate::wire::{Event, EventContent};
 
 /// The key of the objective block and of the status block (Goal §A.2).
-const OBJECTIVE_KEY: &str = "goal:objective";
-const STATUS_KEY: &str = "goal:status";
+pub(crate) const OBJECTIVE_KEY: &str = "goal:objective";
+pub(crate) const STATUS_KEY: &str = "goal:status";
 
 /// The goal in force on one branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,6 +205,18 @@ impl Fold {
             evaluator: judge,
         })
     }
+}
+
+/// The goal the branch's live keyed blocks describe.
+pub fn from_keys(objective: Option<&str>, status: Option<&str>) -> Option<Goal> {
+    let objective = objective?;
+    marker(objective)?;
+    Some(Goal {
+        objective: value(objective, "Objective:")?,
+        status: status.and_then(status_of).unwrap_or(Status::None),
+        evaluator: attribute(objective, "op").as_deref() == Some("set")
+            && attribute(objective, "judge").as_deref() == Some("evaluator"),
+    })
 }
 
 /// The status a live `goal:status` block sets (Goal A.3): a `kind="status"`
@@ -689,6 +701,23 @@ mod tests {
                 evaluator: false,
             })
         );
+    }
+
+    #[test]
+    fn live_keyed_blocks_describe_the_goal() {
+        let objective =
+            "<dim-goal kind=\"goal\" op=\"set\">\nObjective:\nShip it\n\nGoal text.\n</dim-goal>";
+        let active =
+            "<dim-goal kind=\"status\" status=\"active\">\nThe goal is active.\n</dim-goal>";
+        assert_eq!(
+            from_keys(Some(objective), Some(active)),
+            Some(Goal {
+                objective: "Ship it".into(),
+                status: Status::Active,
+                evaluator: false,
+            })
+        );
+        assert_eq!(from_keys(None, Some(active)), None);
     }
 
     #[test]

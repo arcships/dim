@@ -730,6 +730,9 @@ pub struct Keys {
     pub branch_id: Option<String>,
     #[serde(default, deserialize_with = "optional_cursor")]
     pub through: Option<u64>,
+    /// When non-empty, return only these live keys.
+    #[serde(default)]
+    pub keys: Vec<String>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

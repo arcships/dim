@@ -262,7 +262,8 @@ Withdrawn ([#24](https://github.com/arcships/dim/issues/24)): a caller withdraws
 // (appserver/keyed-blocks)
 { "sessionId": "string",
   "branchId": "string",               // required on v3, as for every v3 session read; "main" for the root line
-  "through?": 0 }                     // fixed read position; absent: the published head
+  "through?": 0,                      // fixed read position; absent: the published head
+  "keys?": ["string"] }               // absent or empty: every live key; otherwise only these keys
 // KeysResult
 { "through": 0,                       // where the projection is fixed
   "entries": [ KeyEntry ] }           // one per live key of the branch's own segment; empty, never null

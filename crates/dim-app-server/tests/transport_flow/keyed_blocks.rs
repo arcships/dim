@@ -74,6 +74,41 @@ fn entry(key: &str, event: &dim_agent_types::AgentEvent, text: &str) -> Value {
     json!({"key":key,"sequence":event.sequence,"inputId":event.id,"text":text})
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keys_filter_returns_only_requested_live_keys() {
+    let server = launch(Arc::new(MockTools), ServerConfig::default()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = create_session(&mut client, json!([])).await;
+    let session = server.agent().unwrap().get_session(&id).unwrap();
+    session
+        .input(
+            message(
+                vec![
+                    goal(OBJECTIVE_TEXT, OBJECTIVE),
+                    goal(STATUS_TEXT, STATUS),
+                    context_block::raw("other".into(), Some("page:other".into())),
+                ],
+                "start",
+            ),
+            "main",
+        )
+        .await
+        .unwrap();
+
+    let objective = read_keys(&mut client, &id, "main", json!({"keys":[OBJECTIVE]})).await;
+    assert_eq!(keys(&objective), [OBJECTIVE]);
+    let both = read_keys(
+        &mut client,
+        &id,
+        "main",
+        json!({"keys":[OBJECTIVE, STATUS]}),
+    )
+    .await;
+    assert_eq!(keys(&both), [OBJECTIVE, STATUS]);
+    let none = read_keys(&mut client, &id, "main", json!({"keys":["page:absent"]})).await;
+    assert!(entries(&none).is_empty());
+}
+
 /// A branch with two keys set in one input, then one retired, then one set
 /// again: the reply is the newest live block per key, ascending by the
 /// carrying input's sequence and by block order inside one input.
