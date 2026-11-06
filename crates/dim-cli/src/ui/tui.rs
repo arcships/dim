@@ -4276,9 +4276,7 @@ impl App {
             "lines" => {
                 if let Some(snapshot) = &self.snapshot {
                     let panel = LinesPanel::new(snapshot);
-                    let projection_id = snapshot.projection_id;
                     self.open_prompt(Prompt::Lines(Box::new(panel)));
-                    self.host.send(Command::TaskHistory { projection_id });
                 }
                 Outcome::Continue
             }
