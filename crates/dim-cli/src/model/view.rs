@@ -329,6 +329,8 @@ pub struct ViewSnapshot {
     pub projection_id: u64,
     /// The shown line's history has loaded: its transcript can be laid out.
     pub history_complete: bool,
+    pub history_earlier: bool,
+    pub history_loading: bool,
     /// Shared with the worker's projection: publishing copies pointers.
     pub rows: Vec<std::sync::Arc<ViewRow>>,
     pub running: bool,

@@ -10,12 +10,18 @@ use crate::model::view::{MemberTarget, TaskKind};
 #[derive(Default)]
 pub(super) struct BranchHistory {
     after: u64,
-    through: Option<u64>,
+    pub through: Option<u64>,
     pub done: bool,
     pub error: Option<String>,
     live: Vec<Event>,
     catch_up: bool,
     pub running: Option<bool>,
+    pub window: bool,
+    latest_turn: bool,
+    pub before: Option<u64>,
+    pub drain: bool,
+    pub events: Vec<std::sync::Arc<Event>>,
+    pub progress: Option<Progress>,
 }
 
 pub(super) struct HistoryRequest {
@@ -68,8 +74,16 @@ impl Worker {
 
     pub(super) fn discover_branch(&mut self, branch_id: &str) {
         if !self.task_history.contains_key(branch_id) {
-            self.task_history
-                .insert(branch_id.to_owned(), BranchHistory::default());
+            let drain = self.task_history.values().any(|history| history.drain);
+            self.task_history.insert(
+                branch_id.to_owned(),
+                BranchHistory {
+                    window: self.client.offers("session.history.latestTurn"),
+                    latest_turn: true,
+                    drain,
+                    ..Default::default()
+                },
+            );
             self.task_history_queue.push_back(branch_id.to_owned());
             self.changed();
         }
@@ -88,6 +102,11 @@ impl Worker {
             history.done = false;
             history.error = None;
             history.catch_up = false;
+            history.latest_turn = history.window;
+            history.before = None;
+            history.drain = false;
+            history.events.clear();
+            history.progress = None;
             if let Some(request) = &mut self.task_history_request
                 && request.branch_id == branch_id
             {
@@ -157,11 +176,27 @@ impl Worker {
 
     pub(super) fn retry_task_history(&mut self) {
         for (id, history) in &mut self.task_history {
-            if history.error.take().is_some() {
+            history.drain = true;
+            if history.error.take().is_some()
+                || history.done && history.before.is_some_and(|before| before > 1)
+            {
+                history.done = false;
                 self.task_history_queue.push_back(id.clone());
             }
         }
         self.changed();
+    }
+
+    pub(super) fn load_earlier_history(&mut self, branch: &str) {
+        if let Some(history) = self.task_history.get_mut(branch)
+            && history.done
+            && history.before.is_some_and(|before| before > 1)
+        {
+            history.done = false;
+            history.error = None;
+            self.task_history_queue.push_back(branch.to_owned());
+            self.changed();
+        }
     }
 
     pub(super) async fn poll_task_history(&mut self) -> crate::Result<()> {
@@ -176,6 +211,19 @@ impl Worker {
             "sessionId": self.session_id, "branchId": branch_id,
             "after": history.after, "limit": HISTORY_PAGE,
         });
+        if history.window {
+            params
+                .as_object_mut()
+                .expect("history params")
+                .remove("after");
+            if let Some(before) = history.before {
+                params["before"] = json!(before);
+            }
+            if history.latest_turn {
+                params["latestTurn"] = json!(true);
+                params["limit"] = json!(4096);
+            }
+        }
         if let Some(through) = history.through {
             params["through"] = json!(through);
         }
@@ -220,37 +268,71 @@ impl Worker {
             .task_history
             .get(&request.branch_id)
             .expect("current history");
-        let result = result
-            .map_err(|error| error.to_string())
-            .and_then(|value| History::decode(value, history.after, history.through));
+        let result = result.map_err(|error| error.to_string()).and_then(|value| {
+            if history.window {
+                History::backward(value, history.before, history.through)
+            } else {
+                History::decode(value, history.after, history.through)
+            }
+        });
         match result {
             Err(error) => {
-                if request.branch_id == "main" {
+                if request.branch_id == "main" && (!history.window || history.before.is_none()) {
                     return Err(format!("Main branch history: {error}").into());
                 }
+                self.send(Update::Notice(format!("History: {error}")));
                 let history = self
                     .task_history
                     .get_mut(&request.branch_id)
                     .expect("current history");
                 history.error = Some(error);
-                history.live.clear();
-                history.catch_up = history.through.is_some();
+                if history.window {
+                    history.done = true;
+                    let live = std::mem::take(&mut history.live);
+                    for event in live {
+                        self.apply(&request.branch_id, event);
+                    }
+                } else {
+                    history.live.clear();
+                    history.catch_up = history.through.is_some();
+                }
             }
             Ok(page) => {
                 let history = self
                     .task_history
                     .get_mut(&request.branch_id)
                     .expect("current history");
-                history.after = page.next_after;
+                let prepend = history.window && history.before.is_some();
+                history.after = history.after.max(page.next_after);
                 history.through = Some(page.through);
-                history.done = page.done && !history.catch_up;
-                if page.done && history.catch_up {
+                history.done = if history.window {
+                    true
+                } else {
+                    page.done && !history.catch_up
+                };
+                if history.window {
+                    history.before = page.next_before;
+                    history.latest_turn &= !page.done;
+                } else if page.done && history.catch_up {
                     history.through = None;
                     history.catch_up = false;
                 }
                 let done = history.done;
-                for event in page.events {
-                    self.apply(&request.branch_id, event);
+                if prepend {
+                    for event in page.events {
+                        self.discover_task_branches(&event);
+                        self.discover_workflow(&request.branch_id, &event);
+                        self.task_history
+                            .get_mut(&request.branch_id)
+                            .expect("history")
+                            .events
+                            .push(std::sync::Arc::new(event));
+                    }
+                    self.rebuild_history(&request.branch_id);
+                } else {
+                    for event in page.events {
+                        self.apply(&request.branch_id, event);
+                    }
                 }
                 let cursor = self.cursors.entry(request.branch_id.clone()).or_default();
                 *cursor = (*cursor).max(page.next_after);
@@ -274,6 +356,14 @@ impl Worker {
                             self.projection.set_running(running);
                         }
                     }
+                    let history = self
+                        .task_history
+                        .get_mut(&request.branch_id)
+                        .expect("history");
+                    if history.drain && history.before.is_some_and(|before| before > 1) {
+                        history.done = false;
+                        self.task_history_queue.push_back(request.branch_id);
+                    }
                 } else {
                     self.task_history_queue.push_back(request.branch_id);
                 }
@@ -281,6 +371,49 @@ impl Worker {
         }
         self.changed();
         Ok(())
+    }
+
+    pub(super) fn rebuild_history(&mut self, branch: &str) {
+        let events = &mut self
+            .task_history
+            .get_mut(branch)
+            .expect("branch history")
+            .events;
+        events.sort_by_key(|event| event.sequence);
+        events.dedup_by_key(|event| event.sequence);
+        let mut branches: Vec<_> = self.task_history.iter().collect();
+        branches.sort_by_key(|(id, _)| (id.as_str() != "main", id.as_str()));
+        self.projection
+            .rebuild(branches.iter().flat_map(|(id, history)| {
+                history
+                    .events
+                    .iter()
+                    .map(move |event| (id.as_str(), event.as_ref()))
+            }));
+        for (id, history) in branches {
+            if let Some(line) = self.lines.get_mut(id) {
+                line.projection.rebuild(
+                    history
+                        .events
+                        .iter()
+                        .map(|event| (id.as_str(), event.as_ref())),
+                );
+                if let Some(running) = history.running {
+                    line.projection.set_running(running);
+                }
+                if let Some(progress) = &history.progress {
+                    line.projection.progress(progress);
+                }
+            }
+            if id == "main" {
+                if let Some(running) = history.running {
+                    self.projection.set_running(running);
+                }
+                if let Some(progress) = &history.progress {
+                    self.projection.progress(progress);
+                }
+            }
+        }
     }
 
     pub(super) fn stop_tasks(&mut self, session_id: String, projection_id: u64) {

@@ -78,6 +78,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "No messages yet." => "Aún no hay mensajes.",
         "Already on screen above; /tui jumps to it" => "Ya está arriba; /tui salta hasta él",
+        "Load earlier history" => "Cargar historial anterior",
+        "Loading earlier history…" => "Cargando historial anterior…",
+        "Earlier history · Enter or click to load" => {
+            "Historial anterior · Enter o clic para cargar"
+        }
         "{count} earlier messages · Enter or click to load" => {
             "{count} mensajes anteriores · Enter o clic para cargar"
         }

@@ -68,6 +68,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "No messages yet." => "メッセージはまだありません。",
         "Already on screen above; /tui jumps to it" => "すでに上に表示中。/tui で移動できます",
+        "Load earlier history" => "過去の履歴を読み込む",
+        "Loading earlier history…" => "過去の履歴を読込中…",
+        "Earlier history · Enter or click to load" => "過去の履歴 · Enter かクリックで読込",
         "{count} earlier messages · Enter or click to load" => {
             "過去のメッセージ {count} 件 · Enter かクリックで読込"
         }

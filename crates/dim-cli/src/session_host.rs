@@ -556,6 +556,7 @@ struct History {
     through: u64,
     next_after: u64,
     done: bool,
+    next_before: Option<u64>,
 }
 
 impl History {
@@ -574,6 +575,37 @@ impl History {
         let mut sequence = after;
         for event in &page.events {
             if event.sequence <= sequence || event.sequence > page.next_after {
+                return Err("History event is outside its page or unordered".into());
+            }
+            sequence = event.sequence;
+        }
+        Ok(page)
+    }
+
+    fn backward(
+        value: serde_json::Value,
+        before: Option<u64>,
+        through: Option<u64>,
+    ) -> Result<Self, String> {
+        let page: Self = serde_json::from_value(value)
+            .map_err(|error| format!("Invalid history reply: {error}"))?;
+        let top = before.unwrap_or_else(|| page.through.saturating_add(1));
+        if through.is_some_and(|through| through != page.through)
+            || page.through > dim_agent_types::JS_MAX_SAFE_INTEGER
+            || page.next_after > page.through
+            || page
+                .next_before
+                .is_some_and(|next| next == 0 || next >= top)
+            || ((!page.done || !page.events.is_empty()) && page.next_before.is_none())
+        {
+            return Err("Invalid backward history cursor".into());
+        }
+        let mut sequence = page.next_before.unwrap_or(1).saturating_sub(1);
+        for event in &page.events {
+            if event.sequence <= sequence
+                || event.sequence >= top
+                || event.sequence > page.next_after
+            {
                 return Err("History event is outside its page or unordered".into());
             }
             sequence = event.sequence;
@@ -871,6 +903,12 @@ impl Worker {
         self.mcp_required.clear();
         self.model = Some(configuration.clone());
         self.discover_branch("main");
+        if self.client.offers("session.history.latestTurn") {
+            self.task_history
+                .get_mut("main")
+                .expect("main history")
+                .through = attached.sequence;
+        }
         self.poll_task_history().await?;
         let features = self.model_features(&model).await;
         self.send(Update::Ready(configuration));
@@ -1922,6 +1960,14 @@ impl Worker {
                     self.discover_workflows();
                 }
             }
+            Command::LoadEarlier {
+                projection_id,
+                branch_id,
+            } => {
+                if projection_id == self.projection_id {
+                    self.load_earlier_history(&branch_id);
+                }
+            }
             Command::StopWorkflow {
                 session_id,
                 projection_id,
@@ -2095,6 +2141,21 @@ impl Worker {
         if self.session_id.is_empty() {
             self.report(format!("Goal: {NO_SESSION}"), true);
             return;
+        }
+        let branch = self.focus.clone();
+        if let Some(history) = self.task_history.get_mut(&branch)
+            && history.window
+            && history.before.is_some_and(|before| before > 1)
+        {
+            history.drain = true;
+            history.done = false;
+            if !self
+                .task_history_queue
+                .iter()
+                .any(|queued| queued == &branch)
+            {
+                self.task_history_queue.push_back(branch.clone());
+            }
         }
         self.goal_pending = Some(PendingGoal {
             request,
@@ -2334,6 +2395,11 @@ impl Worker {
                         transcript_mut(&mut self.projection, &mut self.lines, &notice.branch_id)
                     {
                         transcript.progress(&notice);
+                    }
+                    if let Some(history) = self.task_history.get_mut(&notice.branch_id)
+                        && history.window
+                    {
+                        history.progress = Some(notice);
                     }
                     self.changed();
                 } else if notice.branch_id == "main" && self.observes_member(&notice.session_id) {
@@ -4055,6 +4121,18 @@ impl Worker {
             return;
         }
         *cursor = event.sequence;
+        let event = std::sync::Arc::new(event);
+        if let Some(history) = self.task_history.get_mut(branch_id)
+            && history.window
+        {
+            history.events.push(event.clone());
+            if matches!(
+                event.content,
+                EventContent::ModelEnd(_) | EventContent::TurnEnd(_)
+            ) {
+                history.progress = None;
+            }
+        }
         self.discover_workflow(branch_id, &event);
         if branch_id == "main"
             && let EventContent::Configuration(configuration) = &event.content
@@ -4216,6 +4294,10 @@ impl Worker {
             .task_history
             .get(&self.focus)
             .is_some_and(|branch| branch.done);
+        if let Some(history) = self.task_history.get(&self.focus) {
+            snapshot.history_earlier = history.before.is_some_and(|before| before > 1);
+            snapshot.history_loading = !history.done && history.error.is_none();
+        }
         snapshot.task_history_loading = self
             .task_history
             .values()

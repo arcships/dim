@@ -64,6 +64,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "No messages yet." => "還沒有訊息。",
         "Already on screen above; /tui jumps to it" => "已在上方；/tui 可直接跳轉",
+        "Load earlier history" => "載入更早歷史",
+        "Loading earlier history…" => "正在載入更早歷史…",
+        "Earlier history · Enter or click to load" => "更早歷史 · Enter 或點擊載入",
         "{count} earlier messages · Enter or click to load" => {
             "較早的 {count} 則訊息 · Enter 或點擊載入"
         }

@@ -1,8 +1,7 @@
 //! Folds App Server session events into the transcript the screen draws.
 //!
-//! The worker applies every event once, in sequence order, and publishes
-//! [`ViewSnapshot`]s built here. Only the rows the screen needs are kept; the
-//! durable history stays with the App Server.
+//! The worker folds loaded events in sequence order and publishes
+//! [`ViewSnapshot`]s built here. Durable history stays with the App Server.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -91,6 +90,30 @@ impl Projection {
         Self {
             owner: branch.to_owned(),
             ..Self::default()
+        }
+    }
+
+    pub fn rebuild<'a>(&mut self, events: impl IntoIterator<Item = (&'a str, &'a Event)>) {
+        let previous = std::mem::take(self);
+        self.owner = previous.owner;
+        self.agent_names = previous.agent_names;
+        self.agents_read = previous.agents_read;
+        for (branch, event) in events {
+            self.apply(branch, event);
+        }
+        self.running = previous.running;
+        self.approvals = previous.approvals;
+        for approval in &self.approvals {
+            if let Some(index) = self.tool_rows.get(&approval.request_id) {
+                Arc::make_mut(&mut self.rows[*index]).parked = true;
+            }
+        }
+        for row in &mut self.rows {
+            if row.member.is_some()
+                && let Some(old) = previous.rows.iter().find(|old| old.row_id == row.row_id)
+            {
+                Arc::make_mut(row).member = old.member.clone();
+            }
         }
     }
 

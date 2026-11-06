@@ -1852,6 +1852,34 @@ impl App {
                 if switched {
                     self.switch_line(snapshot.focus.clone());
                 }
+                let prefix = self
+                    .snapshot
+                    .as_ref()
+                    .filter(|_| !switched)
+                    .and_then(|shown| {
+                        let first = shown.rows.first()?;
+                        let offset = snapshot
+                            .rows
+                            .iter()
+                            .position(|row| row.row_id == first.row_id)?;
+                        (offset > 0).then_some((offset, first.row_id.clone()))
+                    });
+                if let Some((offset, anchor)) = prefix {
+                    if self.fullscreen {
+                        self.rebuild_window(0);
+                        self.landing = Some((anchor, false));
+                    } else {
+                        self.window_floor += offset;
+                        self.history_floor += offset;
+                    }
+                } else if self.fullscreen
+                    && self
+                        .snapshot
+                        .as_ref()
+                        .is_some_and(|shown| shown.history_earlier != snapshot.history_earlier)
+                {
+                    self.rebuild_window(self.window_floor);
+                }
                 if let Some(Prompt::Tasks(panel)) = &mut self.prompt {
                     if panel.projection_id == snapshot.projection_id {
                         panel.set_tasks(&snapshot);
@@ -3264,6 +3292,7 @@ impl App {
                 self.prompt = None;
                 self.host.send(Command::Export(format));
             }
+            Effect::LoadEarlier => self.request_earlier(),
             Effect::FocusLine(line) => {
                 self.prompt = None;
                 self.host.send(Command::FocusLine(line));
@@ -4247,7 +4276,9 @@ impl App {
             "lines" => {
                 if let Some(snapshot) = &self.snapshot {
                     let panel = LinesPanel::new(snapshot);
+                    let projection_id = snapshot.projection_id;
                     self.open_prompt(Prompt::Lines(Box::new(panel)));
+                    self.host.send(Command::TaskHistory { projection_id });
                 }
                 Outcome::Continue
             }
@@ -4482,7 +4513,12 @@ impl App {
                     .filter(|row| row.kind.is_message())
                     .count()
             });
-            if hidden > 0 {
+            if hidden > 0
+                || self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.history_earlier)
+            {
                 let block = Block::LoadMore(hidden);
                 let text = chunk(&render_block(&block, width, &self.palette, &self.markdown));
                 self.record(block);
@@ -5479,6 +5515,7 @@ impl App {
             .map(|(i, _)| i)
             .collect();
         if messages.is_empty() {
+            self.request_earlier();
             return;
         }
         let start = messages[messages.len().saturating_sub(HISTORY_WINDOW)];
@@ -5487,6 +5524,18 @@ impl App {
             .find(|row| row.kind == RowKind::UserMessage && row.line.is_none())
             .map(|row| (row.row_id.clone(), false));
         self.rebuild_window(start);
+    }
+
+    fn request_earlier(&mut self) {
+        if let Some(snapshot) = &self.snapshot
+            && snapshot.history_earlier
+            && !snapshot.history_loading
+        {
+            self.host.send(Command::LoadEarlier {
+                projection_id: snapshot.projection_id,
+                branch_id: snapshot.focus.clone(),
+            });
+        }
     }
 
     /// Entering fullscreen: the shown line is drawn again from its window,
@@ -9636,6 +9685,70 @@ mod tests {
             drawn.app.notice.as_ref().map(|(text, _)| text.as_str()),
             Some(t("Already on screen above; /tui jumps to it"))
         );
+    }
+
+    #[test]
+    fn earlier_server_history_loads_without_losing_the_timeline_or_draft() {
+        for fullscreen in [false, true] {
+            let mut drawn = Drawn::new((80, 32), None, true);
+            drawn.app.fullscreen = fullscreen;
+            resume_asks(&mut drawn, 1);
+            let mut full = FullScreen::new(drawn.size, true);
+            let mut emu = crate::ui::render::testterm::Emu::new(80, 32);
+            let mut shown = |drawn: &mut Drawn| {
+                if fullscreen {
+                    let frame = drawn.app.frame(drawn.size);
+                    emu.feed(&full.render(&frame, drawn.size, &drawn.app.palette, &drawn.app));
+                    emu.transcript().join("\n")
+                } else {
+                    drawn.draw();
+                    drawn.transcript()
+                }
+            };
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            drawn.app.host = Box::new(Recorder(sent.clone()));
+            drawn.app.composer.set_draft("unfinished draft");
+            let mut snapshot = drawn.app.snapshot.clone().unwrap();
+            snapshot.history_earlier = true;
+            drawn
+                .app
+                .apply(Update::Snapshot(Box::new(snapshot.clone())));
+            drawn.app.run_command("timeline", "");
+            drawn.key(KeyCode::Home);
+            let text = shown(&mut drawn);
+            assert!(
+                text.contains("Load earlier history"),
+                "{fullscreen}: {text}"
+            );
+            drawn.key(KeyCode::Enter);
+            assert!(
+                matches!(sent.borrow().as_slice(), [Command::LoadEarlier { branch_id, .. }] if branch_id == "main")
+            );
+            snapshot.history_loading = true;
+            drawn
+                .app
+                .apply(Update::Snapshot(Box::new(snapshot.clone())));
+            assert!(shown(&mut drawn).contains("Loading earlier history…"));
+            drawn.key(KeyCode::Enter);
+            assert_eq!(
+                sent.borrow().len(),
+                1,
+                "loading cannot enqueue the page twice"
+            );
+            let mut earlier = (*snapshot.rows[0]).clone();
+            earlier.row_id = "earlier".into();
+            earlier.text = "earlier prompt".into();
+            snapshot.rows.insert(0, std::sync::Arc::new(earlier));
+            snapshot.history_earlier = false;
+            snapshot.history_loading = false;
+            drawn.app.apply(Update::Snapshot(Box::new(snapshot)));
+            assert!(shown(&mut drawn).contains("earlier prompt"));
+            assert!(matches!(drawn.app.prompt, Some(Prompt::Timeline(_))));
+            drawn.key(KeyCode::Esc);
+            assert_eq!(drawn.app.composer.text(), "unfinished draft");
+            let text = shown(&mut drawn);
+            assert!(text.contains("unfinished draft"), "{text}");
+        }
     }
 
     #[test]
