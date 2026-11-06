@@ -5,7 +5,7 @@ use crate::{
 };
 use dim_agent_runtime::{
     AgentError, Branch, BranchDirectoryEntry, BranchDirectoryState, BranchLifecycle, BranchOptions,
-    Dispatcher, Names, Result, SessionIdentity, StoredBranch, StoredEvent, StoredKeyBlock, Timeline,
+    Dispatcher, Names, Result, SessionIdentity, StoredBranch, StoredEvent, Timeline,
     TimelineContext, TimelineFactory, TimelineIdentity, TimelineInfo, TimelineKey, TimelineQuery,
     TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryPredicate, TimelineQueryReply,
     TimelineQueryScope, TimelineStore, TimelineTreeControl, rebuild_facts,

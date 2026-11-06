@@ -5,7 +5,7 @@ use dim_agent_capabilities::input_queue::{
     append_blocks,
 };
 use dim_agent_capabilities::timeline_tree::TreeCommands;
-use dim_agent_runtime::{BranchDirectoryState, BranchOptions, StoredKeyBlock, TimelineQuery};
+use dim_agent_runtime::{BranchDirectoryState, BranchOptions, TimelineQuery};
 use dim_agent_types::{BranchSource, EventKind, InputBlock, InputMode};
 
 impl Connection {
