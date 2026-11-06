@@ -226,6 +226,10 @@ pub struct History {
     pub through: u64,
     next_after: u64,
     done: bool,
+    #[serde(default)]
+    pub next_before: Option<u64>,
+    #[serde(default)]
+    pub turn_start: Option<u64>,
 }
 impl History {
     /// Checks a page read from `after` against the read's fixed watermark
@@ -254,5 +258,36 @@ impl History {
             return Err("History ended before its fixed watermark".into());
         }
         Ok(None)
+    }
+
+    /// Checks a backward page read from `before` against the read's fixed
+    /// watermark and returns the next cursor, or `None` when the turn window
+    /// is complete.
+    pub fn backward(&self, before: Option<u64>, through: Option<u64>) -> Result<Option<u64>> {
+        let top = before.unwrap_or_else(|| self.through.saturating_add(1));
+        if through.is_some_and(|through| through != self.through)
+            || self.through > dim_agent_types::JS_MAX_SAFE_INTEGER
+            || self.next_after > self.through
+            || self
+                .next_before
+                .is_some_and(|next| next == 0 || next >= top)
+            || ((!self.done || !self.events.is_empty()) && self.next_before.is_none())
+        {
+            return Err("Invalid backward history cursor".into());
+        }
+        let mut sequence = self.next_before.unwrap_or(1).saturating_sub(1);
+        for event in &self.events {
+            let value = event["sequence"]
+                .as_u64()
+                .ok_or("Invalid history event sequence")?;
+            if value <= sequence || value >= top || value > self.next_after {
+                return Err("History event is outside its page".into());
+            }
+            sequence = value;
+        }
+        if self.done {
+            return Ok(None);
+        }
+        Ok(self.next_before)
     }
 }

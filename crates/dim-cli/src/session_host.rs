@@ -341,6 +341,10 @@ struct PendingGoal {
     /// The call sent, and the sequence of the event it wrote, once the reply
     /// arrived.
     written: Option<(crate::goal::Call, u64)>,
+    /// The full fold a windowed first view cannot provide, and the head it
+    /// stopped at.
+    fold: Option<crate::goal::Fold>,
+    head: Option<u64>,
 }
 
 struct OutputWatch {
@@ -871,6 +875,14 @@ impl Worker {
         self.mcp_required.clear();
         self.model = Some(configuration.clone());
         self.discover_branch("main");
+        if self.client.offers("session.history.latestTurn")
+            && let Some(sequence) = attached.sequence
+        {
+            self.task_history
+                .get_mut("main")
+                .expect("main history")
+                .through = Some(sequence);
+        }
         self.poll_task_history().await?;
         let features = self.model_features(&model).await;
         self.send(Update::Ready(configuration));
@@ -2096,11 +2108,29 @@ impl Worker {
             self.report(format!("Goal: {NO_SESSION}"), true);
             return;
         }
+        let branch = self.focus.clone();
+        let (fold, head) = if self
+            .task_history
+            .get(&branch)
+            .is_some_and(|history| history.window)
+        {
+            match self.read_goal(&branch).await {
+                Ok((fold, head)) => (Some(fold), Some(head)),
+                Err(error) => {
+                    self.report(format!("Goal: {error}"), true);
+                    return;
+                }
+            }
+        } else {
+            (None, None)
+        };
         self.goal_pending = Some(PendingGoal {
             request,
-            branch: self.focus.clone(),
+            branch,
             projection_id: self.projection_id,
             written: None,
+            fold,
+            head,
         });
         self.poll_goal().await;
     }
@@ -2120,7 +2150,23 @@ impl Worker {
         let branch = pending.branch.clone();
         if let Some((call, sequence)) = pending.written {
             if self.cursors.get(&branch).copied().unwrap_or(0) >= sequence {
-                self.finish_goal(&branch, Some(call));
+                let head = self.goal_pending.as_ref().and_then(|pending| pending.head);
+                let mut fold = self
+                    .goal_pending
+                    .as_mut()
+                    .and_then(|pending| pending.fold.take());
+                if let (Some(fold), Some(head)) = (&mut fold, head)
+                    && let Err(error) = self.read_goal_after(&branch, head, fold).await
+                {
+                    self.goal_pending = None;
+                    self.report(format!("Goal: {error}"), true);
+                    return;
+                }
+                let goal = match fold {
+                    Some(fold) => fold.goal(),
+                    None => self.goal_on(&branch),
+                };
+                self.finish_goal(&branch, goal, Some(call));
             }
             return;
         }
@@ -2136,14 +2182,16 @@ impl Worker {
         if !history.done {
             return;
         }
-        let request = self
-            .goal_pending
-            .as_ref()
-            .expect("parked goal")
-            .request
-            .clone();
-        let Some(call) = crate::goal::call(&request, self.goal_on(&branch).as_ref()) else {
-            self.finish_goal(&branch, None);
+        let (request, goal) = {
+            let pending = self.goal_pending.as_ref().expect("parked goal");
+            (
+                pending.request.clone(),
+                pending.fold.as_ref().and_then(crate::goal::Fold::goal),
+            )
+        };
+        let goal = goal.or_else(|| self.goal_on(&branch));
+        let Some(call) = crate::goal::call(&request, goal.as_ref()) else {
+            self.finish_goal(&branch, goal, None);
             return;
         };
         let mut params = json!({"sessionId": self.session_id, "branchId": branch});
@@ -2170,14 +2218,58 @@ impl Worker {
         }
     }
 
-    /// Reports the parked `/goal` with the fold it now holds.
-    fn finish_goal(&mut self, branch: &str, call: Option<crate::goal::Call>) {
+    /// Reports the parked `/goal` with the fold it holds.
+    fn finish_goal(
+        &mut self,
+        branch: &str,
+        goal: Option<crate::goal::Goal>,
+        call: Option<crate::goal::Call>,
+    ) {
         self.goal_pending = None;
-        let goal = self.goal_on(branch);
         self.report(
             crate::goal::report(branch, call, goal.as_ref()).join("\n"),
             false,
         );
+    }
+
+    /// Reads a windowed line's whole history for `/goal`, which decides from
+    /// state older than the first view.
+    async fn read_goal(&mut self, branch: &str) -> crate::Result<(crate::goal::Fold, u64)> {
+        let mut fold = crate::goal::Fold::default();
+        let head = self.read_goal_after(branch, 0, &mut fold).await?;
+        Ok((fold, head))
+    }
+
+    /// Folds events after `after` into `fold`, up to the server's fixed head.
+    async fn read_goal_after(
+        &mut self,
+        branch: &str,
+        mut after: u64,
+        fold: &mut crate::goal::Fold,
+    ) -> crate::Result<u64> {
+        let mut through = None;
+        loop {
+            let mut params = json!({
+                "sessionId": self.session_id,
+                "branchId": branch,
+                "after": after,
+                "limit": HISTORY_PAGE,
+            });
+            if let Some(through) = through {
+                params["through"] = json!(through);
+            }
+            let value = self.client.typed("session.history", params).await?;
+            let page = History::decode(value, after, through)
+                .map_err(|error| format!("Invalid history reply: {error}"))?;
+            through = Some(page.through);
+            for event in page.events {
+                fold.apply(&event);
+            }
+            if page.done {
+                return Ok(page.through);
+            }
+            after = page.next_after;
+        }
     }
 
     /// The goal folded on `branch`, from the projection that draws it.

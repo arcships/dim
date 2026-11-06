@@ -106,6 +106,8 @@ pub(crate) struct SessionInfo {
     title: Option<String>,
     updated_at: Option<u64>,
     title_revision: Option<u64>,
+    #[serde(default)]
+    model: Option<Model>,
 }
 
 #[derive(Deserialize)]
@@ -2279,6 +2281,83 @@ fn decode_native<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Erro
     })
 }
 
+/// Test fixtures predate the window read; production never sets this.
+fn legacy_history() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("DIMCODE_TEST_LEGACY_HISTORY").is_some()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachedModel {
+    model: Option<Model>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Model {
+    provider_id: String,
+    model_id: String,
+}
+
+fn configuration(model: Model) -> dim_client::wire::Configuration {
+    dim_client::wire::Configuration {
+        provider_id: model.provider_id,
+        model_id: model.model_id,
+        capability_snapshot: None,
+        model_preferences: None,
+    }
+}
+
+fn attached_model(attached: Option<&Value>) -> Option<dim_client::wire::Configuration> {
+    let model: AttachedModel = serde_json::from_value(attached?.clone()).ok()?;
+    model.model.map(configuration)
+}
+
+/// The first view is two to four `latestTurn` pages, or fewer when they
+/// cover the newest 100 transcript rows.
+const LATEST_WINDOW_PAGES: usize = 4;
+const LATEST_WINDOW_MESSAGES: usize = 100;
+const LATEST_WINDOW_MAX_MESSAGES: usize = 300;
+
+/// Counts the transcript rows in one page. Assistant deltas share a request
+/// id and are one row.
+fn message_rows(events: &[Value], requests: &mut HashSet<String>) -> usize {
+    events
+        .iter()
+        .filter(
+            |event| match (event["type"].as_str(), event["name"].as_str()) {
+                (Some("input"), Some("message")) | (Some("step"), Some("tool-use")) => true,
+                (Some("step"), Some("text")) => {
+                    let request = event["data"]["requestId"]
+                        .as_str()
+                        .or_else(|| event["data"]["request_id"].as_str())
+                        .unwrap_or_else(|| event["id"].as_str().unwrap_or_default());
+                    requests.insert(request.to_owned())
+                }
+                _ => false,
+            },
+        )
+        .count()
+}
+
+/// Keeps the newest transcript rows when the page that reaches 100 overruns
+/// the 300-row bound.
+fn keep_latest_messages(events: Vec<Value>) -> Vec<Value> {
+    let mut requests = HashSet::new();
+    let mut messages = 0;
+    let mut start = 0;
+    for (index, event) in events.iter().enumerate().rev() {
+        if message_rows(std::slice::from_ref(event), &mut requests) > 0 {
+            messages += 1;
+        }
+        if messages > LATEST_WINDOW_MAX_MESSAGES {
+            start = index + 1;
+            break;
+        }
+    }
+    events[start..].to_vec()
+}
+
 async fn read_history(
     rpc: &Rpc,
     id: &str,
@@ -2306,8 +2385,76 @@ async fn read_history(
     } else {
         None
     };
-    if attach {
-        rpc.call("session.attach", json!({"sessionId":id})).await?;
+    let attached = if attach {
+        Some(rpc.call("session.attach", json!({"sessionId":id})).await?)
+    } else {
+        None
+    };
+    if rpc.supports("session.history.latestTurn") {
+        let mut pages = Vec::new();
+        let mut before = None;
+        let mut through = attached
+            .as_ref()
+            .and_then(|reply| reply["sequence"].as_u64());
+        let mut messages = 0;
+        let mut requests = HashSet::new();
+        loop {
+            let mut args = json!({
+                "sessionId": id,
+                "branchId": "main",
+                "latestTurn": true,
+                "limit": 256,
+            });
+            if let Some(before) = before {
+                args["before"] = json!(before);
+            }
+            if let Some(through) = through {
+                args["through"] = json!(through);
+            }
+            let page: History = rpc.typed("session.history", args).await?;
+            if through.is_none() {
+                through = Some(page.through);
+            }
+            let next = page.backward(before, through).map_err(|_| {
+                Error::internal_error().data(json!({"code":"invalid_history_cursor"}))
+            })?;
+            messages += message_rows(&page.events, &mut requests);
+            pages.push(page.events);
+            before = next;
+            if before.is_none()
+                || pages.len() >= LATEST_WINDOW_PAGES
+                || messages >= LATEST_WINDOW_MESSAGES
+            {
+                break;
+            }
+        }
+        let through = through.ok_or_else(|| {
+            Error::internal_error().data(json!({"code":"invalid_history_cursor"}))
+        })?;
+        let mut events = Vec::new();
+        for page in pages.into_iter().rev() {
+            events.extend(page);
+        }
+        let history = keep_latest_messages(events)
+            .into_iter()
+            .map(decode_native)
+            .collect::<Result<Vec<_>, _>>()?;
+        let model = attached_model(attached.as_ref()).or_else(|| {
+            metadata
+                .as_ref()
+                .and_then(|metadata| metadata.model.clone())
+                .map(configuration)
+        });
+        let config = Config::read(rpc, id, &[], model).await?;
+        return Ok(Prepared {
+            history,
+            through,
+            config,
+            metadata,
+        });
+    }
+    if !legacy_history() {
+        return Err(Error::internal_error().data(json!({"code":"history_window_unavailable"})));
     }
     let mut history = Vec::new();
     let mut after = 0;
@@ -2328,7 +2475,7 @@ async fn read_history(
         if let Some(next) = next {
             after = next;
         } else {
-            let config = Config::read(rpc, id, &history).await?;
+            let config = Config::read(rpc, id, &history, None).await?;
             return Ok(Prepared {
                 history,
                 through: page.through,

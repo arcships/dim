@@ -303,7 +303,7 @@ pub async fn chat(
     let mut questions = Questions::default();
     let result = async {
         display.muted = !interactive;
-        display.cursor = read_history(client, &session_id, 0, &mut |value| {
+        display.cursor = read_first_view(client, &session_id, attached.sequence, &mut |value| {
             questions.history("main", &value);
             if options.json { Ok(()) } else { display.event(serde_json::from_value(value)?, true) }
         }).await?;
@@ -532,6 +532,25 @@ pub async fn read_history(
             None => return Ok(page.through),
         }
     }
+}
+
+/// Reads the first view: the newest window. A daemon without the window
+/// read is rejected rather than falling back to the whole branch.
+async fn read_first_view(
+    client: &mut Client,
+    session_id: &str,
+    through: Option<u64>,
+    sink: &mut impl HistorySink,
+) -> Result<u64> {
+    if crate::legacy_history() && !client.supports(&["session.history.latestTurn"]) {
+        return read_history(client, session_id, 0, sink).await;
+    }
+    let window = client.latest_history(session_id, "main", through).await?;
+    sink.watermark(window.through)?;
+    for value in window.events {
+        sink.event(value)?;
+    }
+    Ok(window.through)
 }
 
 async fn configure(

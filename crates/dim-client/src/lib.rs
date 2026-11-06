@@ -8,11 +8,67 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use std::{collections::VecDeque, io, path::PathBuf, time::Duration};
+use std::{
+    collections::{HashSet, VecDeque},
+    io,
+    path::PathBuf,
+    time::Duration,
+};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 const PROTOCOL_VERSION: u32 = 3;
 const FRAME_LIMIT: usize = 16 * 1024 * 1024;
+/// The first view is two to four `latestTurn` pages, or fewer when they
+/// cover the newest 100 transcript rows.
+const LATEST_WINDOW_PAGES: usize = 4;
+const LATEST_WINDOW_MESSAGES: usize = 100;
+const LATEST_WINDOW_MAX_MESSAGES: usize = 300;
+const LATEST_WINDOW_LIMIT: u64 = 256;
+
+/// Counts the transcript rows in one page. Assistant deltas share a request
+/// id and are one row.
+fn message_rows(events: &[Value], requests: &mut HashSet<String>) -> usize {
+    events
+        .iter()
+        .filter(
+            |event| match (event["type"].as_str(), event["name"].as_str()) {
+                (Some("input"), Some("message")) | (Some("step"), Some("tool-use")) => true,
+                (Some("step"), Some("text")) => {
+                    let request = event["data"]["requestId"]
+                        .as_str()
+                        .or_else(|| event["data"]["request_id"].as_str())
+                        .unwrap_or_else(|| event["id"].as_str().unwrap_or_default());
+                    requests.insert(request.to_owned())
+                }
+                _ => false,
+            },
+        )
+        .count()
+}
+
+/// Keeps the newest transcript rows when the page that reaches 100 overruns
+/// the 300-row bound.
+fn keep_latest_messages(events: Vec<Value>) -> Vec<Value> {
+    let mut requests = HashSet::new();
+    let mut messages = 0;
+    let mut start = 0;
+    for (index, event) in events.iter().enumerate().rev() {
+        if message_rows(std::slice::from_ref(event), &mut requests) > 0 {
+            messages += 1;
+        }
+        if messages > LATEST_WINDOW_MAX_MESSAGES {
+            start = index + 1;
+            break;
+        }
+    }
+    events[start..].to_vec()
+}
+
+/// The newest events a client renders as its first view, in sequence order.
+pub struct LatestWindow {
+    pub events: Vec<Value>,
+    pub through: u64,
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -323,6 +379,62 @@ impl Client {
     pub async fn typed<T: DeserializeOwned>(&mut self, method: &str, params: Value) -> Result<T> {
         let value = self.rpc(method, params).await?;
         serde_json::from_value(value).map_err(|_| format!("Invalid {method} response").into())
+    }
+
+    /// Reads the first-view window of `branch_id`: `latestTurn` pages in
+    /// sequence order, stopping after 100 transcript rows or four pages, and
+    /// at most 300 rows. A daemon without the feature is rejected.
+    pub async fn latest_history(
+        &mut self,
+        session_id: &str,
+        branch_id: &str,
+        through: Option<u64>,
+    ) -> Result<LatestWindow> {
+        if !self.supports(&["session.history.latestTurn"]) {
+            return Err("session.history.latestTurn is not advertised".into());
+        }
+        let mut pages = Vec::new();
+        let mut before = None;
+        let mut pinned = through;
+        let mut messages = 0;
+        let mut requests = HashSet::new();
+        loop {
+            let mut params = json!({
+                "sessionId": session_id,
+                "branchId": branch_id,
+                "latestTurn": true,
+                "limit": LATEST_WINDOW_LIMIT,
+            });
+            if let Some(before) = before {
+                params["before"] = json!(before);
+            }
+            if let Some(through) = pinned {
+                params["through"] = json!(through);
+            }
+            let page: wire::History = self.typed("session.history", params).await?;
+            if pinned.is_none() {
+                pinned = Some(page.through);
+            }
+            let next = page.backward(before, pinned)?;
+            messages += message_rows(&page.events, &mut requests);
+            pages.push(page.events);
+            before = next;
+            if before.is_none()
+                || pages.len() >= LATEST_WINDOW_PAGES
+                || messages >= LATEST_WINDOW_MESSAGES
+            {
+                break;
+            }
+        }
+        let through = pinned.ok_or("history reply has no watermark")?;
+        let mut events = Vec::new();
+        for page in pages.into_iter().rev() {
+            events.extend(page);
+        }
+        Ok(LatestWindow {
+            events: keep_latest_messages(events),
+            through,
+        })
     }
 
     /// Negotiates RPC v3, checks the host's explicit model profile and returns the server version.

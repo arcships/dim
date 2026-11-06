@@ -10,12 +10,14 @@ use crate::model::view::{MemberTarget, TaskKind};
 #[derive(Default)]
 pub(super) struct BranchHistory {
     after: u64,
-    through: Option<u64>,
+    pub through: Option<u64>,
     pub done: bool,
     pub error: Option<String>,
     live: Vec<Event>,
     catch_up: bool,
     pub running: Option<bool>,
+    /// The daemon advertises the first-view window read.
+    pub window: bool,
 }
 
 pub(super) struct HistoryRequest {
@@ -68,8 +70,13 @@ impl Worker {
 
     pub(super) fn discover_branch(&mut self, branch_id: &str) {
         if !self.task_history.contains_key(branch_id) {
-            self.task_history
-                .insert(branch_id.to_owned(), BranchHistory::default());
+            self.task_history.insert(
+                branch_id.to_owned(),
+                BranchHistory {
+                    window: self.client.offers("session.history.latestTurn"),
+                    ..Default::default()
+                },
+            );
             self.task_history_queue.push_back(branch_id.to_owned());
             self.changed();
         }
@@ -171,6 +178,85 @@ impl Worker {
         let Some(branch_id) = self.task_history_queue.pop_front() else {
             return Ok(());
         };
+        let (window, through) = {
+            let history = self.task_history.get(&branch_id).expect("queued branch");
+            (history.window, history.through)
+        };
+        if window {
+            let session_id = self.session_id.clone();
+            match self
+                .client
+                .latest_history(&session_id, &branch_id, through)
+                .await
+            {
+                Ok(window) => {
+                    let mut events: Vec<Event> = window
+                        .events
+                        .into_iter()
+                        .map(serde_json::from_value)
+                        .collect::<std::result::Result<_, _>>()?;
+                    events.sort_by_key(|event| event.sequence);
+                    let history = self
+                        .task_history
+                        .get_mut(&branch_id)
+                        .expect("queued branch");
+                    history.through = Some(window.through);
+                    history.after = window.through;
+                    history.done = true;
+                    history.error = None;
+                    for event in events {
+                        self.apply(&branch_id, event);
+                    }
+                    let history = self
+                        .task_history
+                        .get_mut(&branch_id)
+                        .expect("queued branch");
+                    let mut live = std::mem::take(&mut history.live);
+                    let running = history.running;
+                    live.sort_by_key(|event| event.sequence);
+                    for event in live {
+                        self.apply(&branch_id, event);
+                    }
+                    if let Some(running) = running {
+                        if branch_id != "main" {
+                            if let Some(line) = self.lines.get_mut(&branch_id) {
+                                line.projection.set_running(running);
+                            }
+                        } else {
+                            self.projection.set_running(running);
+                        }
+                    }
+                    self.changed();
+                }
+                Err(error) => {
+                    if branch_id == "main" {
+                        return Err(format!("Main branch history: {error}").into());
+                    }
+                    let history = self
+                        .task_history
+                        .get_mut(&branch_id)
+                        .expect("queued branch");
+                    history.error = Some(error.to_string());
+                    history.done = true;
+                    let live = std::mem::take(&mut history.live);
+                    for event in live {
+                        self.apply(&branch_id, event);
+                    }
+                    self.changed();
+                }
+            }
+            return Ok(());
+        }
+        if !crate::legacy_history() {
+            let history = self
+                .task_history
+                .get_mut(&branch_id)
+                .expect("queued branch");
+            history.error = Some("the daemon does not support windowed history".into());
+            history.done = true;
+            self.changed();
+            return Ok(());
+        }
         let history = self.task_history.get(&branch_id).expect("queued branch");
         let mut params = json!({
             "sessionId": self.session_id, "branchId": branch_id,

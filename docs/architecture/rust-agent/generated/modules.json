@@ -65,6 +65,7 @@
       "parent": "dim_acp",
       "file": "crates/dim-acp/src/gateway.rs",
       "unexpandedMacros": [
+        "cfg",
         "eprintln",
         "json",
         "matches",
@@ -3174,6 +3175,7 @@
       "parent": null,
       "file": "crates/dim-cli/src/lib.rs",
       "unexpandedMacros": [
+        "cfg",
         "eprintln",
         "format",
         "matches",
@@ -6320,6 +6322,7 @@
         "path EventContent::TurnEnd",
         "path History",
         "path Progress",
+        "path dim_client::wire::Configuration",
         "use dim_client::wire::Event",
         "use dim_client::wire::EventContent",
         "use dim_client::wire::History",
@@ -31306,6 +31309,7 @@
       "to": "dim_cli",
       "references": [
         "path Result",
+        "path crate::legacy_history",
         "use crate::Result"
       ]
     },
@@ -31446,6 +31450,7 @@
       "references": [
         "path Result",
         "path crate::Error",
+        "path crate::legacy_history",
         "path crate::model_adoption_error",
         "path crate::session_create_from_options",
         "use crate::Result"
@@ -31807,6 +31812,9 @@
       "to": "dim_cli::goal",
       "references": [
         "path crate::goal::Call",
+        "path crate::goal::Fold",
+        "path crate::goal::Fold::default",
+        "path crate::goal::Fold::goal",
         "path crate::goal::Goal",
         "path crate::goal::NOT_AVAILABLE",
         "path crate::goal::Request",
@@ -32301,7 +32309,8 @@
       "from": "dim_cli::session_host::member",
       "to": "dim_cli",
       "references": [
-        "path crate::Result"
+        "path crate::Result",
+        "path crate::legacy_history"
       ]
     },
     {
@@ -32369,7 +32378,8 @@
       "from": "dim_cli::session_host::tasks",
       "to": "dim_cli",
       "references": [
-        "path crate::Result"
+        "path crate::Result",
+        "path crate::legacy_history"
       ]
     },
     {
@@ -40219,7 +40229,8 @@
       "from": "dim_client",
       "to": "dim_client::wire",
       "references": [
-        "mod wire"
+        "mod wire",
+        "path wire::History"
       ]
     },
     {

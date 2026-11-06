@@ -107,7 +107,12 @@ pub(crate) async fn models(rpc: &Rpc) -> Result<Vec<Model>, Error> {
 }
 
 impl Config {
-    pub(crate) async fn read(rpc: &Rpc, id: &str, history: &[Event]) -> Result<Self, Error> {
+    pub(crate) async fn read(
+        rpc: &Rpc,
+        id: &str,
+        history: &[Event],
+        model: Option<Configuration>,
+    ) -> Result<Self, Error> {
         #[derive(Deserialize)]
         struct Methods {
             methods: Vec<Method>,
@@ -117,8 +122,12 @@ impl Config {
             name: String,
         }
         let mut config = Self::default();
-        for event in history {
-            config.event(event);
+        if let Some(model) = model {
+            config.model = Some(model);
+        } else {
+            for event in history {
+                config.event(event);
+            }
         }
         if rpc.supports("session.methods") {
             let methods: Methods = rpc
