@@ -18,6 +18,9 @@ mod exit;
 #[path = "cli_flow/goal.rs"]
 mod goal;
 
+#[path = "cli_flow/history_window.rs"]
+mod history_window;
+
 #[path = "cli_flow/hooks.rs"]
 mod hooks;
 

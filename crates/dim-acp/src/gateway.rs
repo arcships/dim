@@ -2306,8 +2306,59 @@ async fn read_history(
     } else {
         None
     };
-    if attach {
-        rpc.call("session.attach", json!({"sessionId":id})).await?;
+    let attached = if attach {
+        Some(rpc.call("session.attach", json!({"sessionId":id})).await?)
+    } else {
+        None
+    };
+    if rpc.supports("session.history.latestTurn") {
+        let mut pages = Vec::new();
+        let mut before = None;
+        let mut through = attached
+            .as_ref()
+            .and_then(|reply| reply["sequence"].as_u64());
+        loop {
+            let mut args = json!({
+                "sessionId": id,
+                "branchId": "main",
+                "latestTurn": true,
+                "limit": 256,
+            });
+            if let Some(before) = before {
+                args["before"] = json!(before);
+            }
+            if let Some(through) = through {
+                args["through"] = json!(through);
+            }
+            let page: History = rpc.typed("session.history", args).await?;
+            if through.is_none() {
+                through = Some(page.through);
+            }
+            let next = page.backward(before, through).map_err(|_| {
+                Error::internal_error().data(json!({"code":"invalid_history_cursor"}))
+            })?;
+            pages.push(page.events);
+            before = next;
+            if before.is_none() || pages.len() >= 4 {
+                break;
+            }
+        }
+        let through = through.ok_or_else(|| {
+            Error::internal_error().data(json!({"code":"invalid_history_cursor"}))
+        })?;
+        let mut history = Vec::new();
+        for page in pages.into_iter().rev() {
+            for event in page {
+                history.push(decode_native(event)?);
+            }
+        }
+        let config = Config::read(rpc, id, &history).await?;
+        return Ok(Prepared {
+            history,
+            through,
+            config,
+            metadata,
+        });
     }
     let mut history = Vec::new();
     let mut after = 0;

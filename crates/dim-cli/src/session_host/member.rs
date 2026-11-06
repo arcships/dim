@@ -33,6 +33,7 @@ struct Observation {
     through: Option<u64>,
     cursor: u64,
     live: Vec<Notice>,
+    window: bool,
 }
 
 impl Observation {
@@ -167,6 +168,7 @@ impl Worker {
                         through: None,
                         cursor: 0,
                         live: Vec::new(),
+                        window: self.client.offers("session.history.latestTurn"),
                     },
                 );
                 self.member_changed(&id);
@@ -215,6 +217,30 @@ impl Worker {
                 || observation.pending.is_some()
                 || observation.state != MemberConversationState::Loading
             {
+                continue;
+            }
+            let (window, through) = (observation.window, observation.through);
+            if window {
+                match self.client.latest_history(&id, "main", through).await {
+                    Ok(window) => {
+                        let Some(observation) = self.members.observations.get_mut(&id) else {
+                            continue;
+                        };
+                        for value in window.events {
+                            let event = serde_json::from_value(value)?;
+                            observation.apply(Notice::Event(event));
+                        }
+                        observation.after = window.through;
+                        observation.through = Some(window.through);
+                        observation.cursor = window.through;
+                        observation.state = MemberConversationState::Live;
+                        for notice in std::mem::take(&mut observation.live) {
+                            observation.apply(notice);
+                        }
+                        self.member_changed(&id);
+                    }
+                    Err(error) => self.fail_member(&id, error.to_string()),
+                }
                 continue;
             }
             let mut params = json!({

@@ -13,6 +13,16 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader
 
 const PROTOCOL_VERSION: u32 = 3;
 const FRAME_LIMIT: usize = 16 * 1024 * 1024;
+/// The first view is two to four `latestTurn` pages.
+const LATEST_WINDOW_PAGES: usize = 4;
+const LATEST_WINDOW_LIMIT: u64 = 256;
+
+/// The newest events a client renders before its full history is read, in
+/// sequence order.
+pub struct LatestWindow {
+    pub events: Vec<Value>,
+    pub through: u64,
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -323,6 +333,53 @@ impl Client {
     pub async fn typed<T: DeserializeOwned>(&mut self, method: &str, params: Value) -> Result<T> {
         let value = self.rpc(method, params).await?;
         serde_json::from_value(value).map_err(|_| format!("Invalid {method} response").into())
+    }
+
+    /// Reads the first-view window of `branch_id`: at most four `latestTurn`
+    /// pages, returned in sequence order. A daemon without the feature is
+    /// rejected; callers fall back to the forward read.
+    pub async fn latest_history(
+        &mut self,
+        session_id: &str,
+        branch_id: &str,
+        through: Option<u64>,
+    ) -> Result<LatestWindow> {
+        if !self.supports(&["session.history.latestTurn"]) {
+            return Err("session.history.latestTurn is not advertised".into());
+        }
+        let mut pages = Vec::new();
+        let mut before = None;
+        let mut pinned = through;
+        loop {
+            let mut params = json!({
+                "sessionId": session_id,
+                "branchId": branch_id,
+                "latestTurn": true,
+                "limit": LATEST_WINDOW_LIMIT,
+            });
+            if let Some(before) = before {
+                params["before"] = json!(before);
+            }
+            if let Some(through) = pinned {
+                params["through"] = json!(through);
+            }
+            let page: wire::History = self.typed("session.history", params).await?;
+            if pinned.is_none() {
+                pinned = Some(page.through);
+            }
+            let next = page.backward(before, pinned)?;
+            pages.push(page.events);
+            before = next;
+            if before.is_none() || pages.len() >= LATEST_WINDOW_PAGES {
+                break;
+            }
+        }
+        let through = pinned.ok_or("history reply has no watermark")?;
+        let mut events = Vec::new();
+        for page in pages.into_iter().rev() {
+            events.extend(page);
+        }
+        Ok(LatestWindow { events, through })
     }
 
     /// Negotiates RPC v3, checks the host's explicit model profile and returns the server version.

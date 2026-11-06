@@ -31807,6 +31807,9 @@
       "to": "dim_cli::goal",
       "references": [
         "path crate::goal::Call",
+        "path crate::goal::Fold",
+        "path crate::goal::Fold::default",
+        "path crate::goal::Fold::goal",
         "path crate::goal::Goal",
         "path crate::goal::NOT_AVAILABLE",
         "path crate::goal::Request",
@@ -40219,7 +40222,8 @@
       "from": "dim_client",
       "to": "dim_client::wire",
       "references": [
-        "mod wire"
+        "mod wire",
+        "path wire::History"
       ]
     },
     {

@@ -2225,6 +2225,59 @@ fn acp_stdio_load_coalesces_fixed_head_replay_and_rejects_unsupported_inputs() {
 }
 
 #[test]
+fn acp_load_reads_at_most_four_latest_turn_pages() {
+    let home = Home::new();
+    let cwd = fs::canonicalize(&home.0).unwrap();
+    let daemon = home.daemon(move |wire| {
+        let mut features = METHODS.to_vec();
+        features.push("session.history.latestTurn");
+        wire.hello(&features);
+        let list = wire.read("session.list");
+        wire.reply(
+            &list,
+            json!([{"sessionId":"saved","cwd":cwd,"title":"Saved title","titleRevision":2}]),
+        );
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, json!({"sequence":8}));
+        let mut before = None;
+        for page in 0..4u64 {
+            let request = wire.read("session.history");
+            assert_eq!(request["params"]["latestTurn"], true);
+            assert_eq!(request["params"]["limit"], 256);
+            assert_eq!(request["params"]["through"], 8);
+            assert!(request["params"].get("after").is_none());
+            if let Some(before) = before {
+                assert_eq!(request["params"]["before"], before);
+            }
+            let done = page == 3;
+            let next = 6 - page * 2;
+            let mut reply = json!({
+                "events": [],
+                "through": 8,
+                "nextAfter": 8,
+                "done": done,
+            });
+            if !done {
+                reply["nextBefore"] = json!(next);
+                before = Some(next);
+            }
+            wire.reply(&request, reply);
+        }
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(
+        3,
+        "session/load",
+        json!({"sessionId":"saved","cwd":home.0,"mcpServers":[]}),
+    );
+    assert!(peer.response(3).get("error").is_none());
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
 fn tui_reports_max_tokens_action_and_accepts_the_next_prompt() {
     for same_failure in [true, false] {
         let home = Home::new();
