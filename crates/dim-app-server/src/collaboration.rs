@@ -2385,11 +2385,15 @@ async fn read_tool_use_starts(
     if keys.is_empty() {
         return Ok(starts);
     }
+    let head = session.sequence("main")?;
+    if head == 0 {
+        return Ok(starts);
+    }
     let mut query = TimelineQuery {
         scope: TimelineQueryScope::Branch,
         include_publishing: false,
         from_event: None,
-        from_sequence: Some(session.sequence("main")?),
+        from_sequence: Some(head),
         order_by: TimelineQueryOrderBy::Sequence,
         direction: TimelineQueryDirection::Descending,
         kinds: vec!["step/tool-use-start".into()],
