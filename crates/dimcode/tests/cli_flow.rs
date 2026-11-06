@@ -5839,7 +5839,8 @@ fn unix_npm_wrapper_preserves_the_native_terminal_and_interrupt_flow() {
         .arg("--no-tui")
         .arg("--home")
         .arg(&home.0)
-        .env("DIMCODE_UPDATE_CHECK", "0");
+        .env("DIMCODE_UPDATE_CHECK", "0")
+        .env("DIMCODE_TEST_LEGACY_HISTORY", "1");
     let mut terminal = Terminal::launch(command);
     terminal.until("\n> ");
     terminal.write(b"hello\n");
