@@ -3772,3 +3772,97 @@ async fn mcp_configuration_keeps_a_variable_reference_as_written() {
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
+
+/// `provider.catalog` is a public `provider.*` reply. The App Server's own
+/// rule for non-conversational use decides what `modality.*` offers, and it
+/// must not ride the reply; the rule itself still excludes the entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_catalog_does_not_publish_the_modality_rule() {
+    let home = std::env::temp_dir().join(format!("dim-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let native = home.join("native");
+    std::fs::create_dir_all(&native).unwrap();
+    let (server, _) = launch_with_agent(
+        Arc::new(MockTools),
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(native),
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    const PROVIDER: &str = "00000000-0000-4000-8000-000000000051";
+    // Disabled, so the entry is `provider_unavailable`: the same rule the
+    // App Server derives its own modality reason from, which makes that
+    // reason Some for this entry.
+    let created = client
+        .rpc(
+            "provider.create",
+            json!({"providerId":PROVIDER,"displayName":"media",
+                "connection":{"driverKind":"openai-compatible","baseUrl":"http://127.0.0.1:1/v1",
+                    "auth":{"type":"anonymous"}},
+                "models":[{"modelId":"media-image","displayName":"media-image","status":"active",
+                    "capabilities":{"modalities":["image"],"toolCalling":false,"streaming":true,
+                        "structuredOutput":false,"vision":false,"audio":false,"reasoning":false},
+                    "metadata":{"raw":{"type":"image-generation",
+                        "modalityCapabilities":["image.generate"]}}}],
+                "enabled":false}),
+        )
+        .await;
+    assert_ok(&created);
+    let reply = client
+        .rpc("provider.catalog", json!({"providerId": PROVIDER}))
+        .await;
+    assert_ok(&reply);
+    let entry = reply["result"]["catalog"]["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["id"] == "media-image")
+        .unwrap();
+    assert_eq!(
+        entry["unavailableReason"], "provider_unavailable",
+        "the entry is unavailable to a modality use too: {entry}"
+    );
+    assert!(
+        entry.get("modalityUnavailableReason").is_none(),
+        "the provider reply carries no modality rule: {entry}"
+    );
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    let generate = capabilities["result"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "image")
+        .unwrap()["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|operation| operation["operation"] == "generate")
+        .unwrap();
+    assert!(
+        !generate["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|option| option["providerId"] == PROVIDER && option["modelId"] == "media-image"),
+        "the unavailable entry is not a modality option: {generate}"
+    );
+    let refused = client
+        .rpc(
+            "modality.configure",
+            json!({"expectedRevision": capabilities["result"]["revision"],
+                "category":"image","operation":"generate",
+                "model":{"providerId":PROVIDER,"modelId":"media-image"}}),
+        )
+        .await;
+    assert_eq!(
+        refused["error"]["data"]["appError"], "modality_invalid_selection",
+        "the rule still refuses the entry: {refused}"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}

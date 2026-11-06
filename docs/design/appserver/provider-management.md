@@ -45,7 +45,7 @@ with its existing owner; management never writes another owner's state.
 | --- | --- |
 | `managementMethods`, process, namespace `provider` | Local v3 Desktop/CLI and trusted process callers; §3 extends this existing namespace |
 | Provider module boundary `stored_selection` (Rust) | Native data-boundary consumers such as Migration; §3.7 adds one pure function over an admitted record, not an RPC, host port or management method |
-| Provider host port `SelectableModelsHost` (core `dim-agent-capabilities`), provided by the profile's model owner (Provider, or the configured model file) | In-process owners that route by model capability (Modality) and the `agent` tool's `models` action; §3.6 adds one read, not a management method or RPC method |
+| Provider host port `SelectableModelsHost` (core `dim-agent-capabilities`), provided by the profile's model owner (Provider, or the configured model file) | In-process owners that route by model capability (Modality) and the `agent` tool's `models` action; §3.6 adds two reads, not a management method or RPC method |
 | Existing `account`, `account.codex`, `account.grok` namespaces | Existing account operations; no new account method, event or managed host capability |
 | `ProviderConnectionResolver`, `ModelSelectionHost` | Provider implements catalog/route decisions through existing types; no new core port |
 | `auxiliaryModel.complete` | Existing caller-selected S4 contract, unchanged |
@@ -508,8 +508,8 @@ stored entry does not mark it, and only a limit no source declares is deleted.
 A process owner that routes work by model capability cannot keep its own copy of
 the availability rules of the models it routes to. The port below has one provider
 per profile — Provider in the product profile, the configured model profile
-(`dim-agent-aimux`) from its model file — and each provider owns one
-side-effect-free read of the models it would serve, with the identifiers and
+(`dim-agent-aimux`) from its model file — and each provider owns
+side-effect-free reads of the models it would serve, with the identifiers and
 declared capabilities a routing decision needs. This section defines the port and
 Provider's rules; the configured profile's rule is that page's. The read is a
 process host port, not a management method: it is not on the `provider` namespace,
@@ -536,6 +536,23 @@ limits (§3.5), so the existing `capability_snapshot` conversion always succeeds
 The caller passes its cancellation token; cancelling it cancels the read and
 returns `Cancelled`.
 
+**Second operation: `selectableForModality`.** The same port carries one more
+process read, for non-conversational uses (Modality §9.2): operation
+`selectableForModality`, asynchronous, request `{}`, reply
+`{models: ModalityModelSnapshot[]}` with each element
+`{target: {providerId, modelId}, operations: string[]}`. `operations` holds the
+`<category>.<operation>` ids the model's catalog entry declares in
+`metadata.raw.modalityCapabilities`, in that entry's order; a model that
+declares none is omitted. The read applies the same provider, account, model,
+route, credential and status rules as `selectableModels`, without its
+text-modality, chat-kind and declared-text-limit requirements: a model without
+a `text` modality, a non-chat model and a model with `limits_undeclared`
+remain candidates when they declare a modality operation, while an unavailable
+status, a disabled Provider or model, a missing route, a signed-out account and
+a missing static credential still exclude them. It carries no reason field: the
+consumer derives availability from the options and explains a persisted
+default that is no longer selectable from its own snapshot.
+
 **Rules Provider applies.** The candidates are the providers default resolution
 considers: every account provider the managed package advertises and every static
 provider `provider.list` returns. Each model comes from the same per-provider
@@ -547,7 +564,11 @@ is not in `disabledModelIds`. That reason already covers every exclusion: a mode
 with `ModelStatus::Unavailable`, a model that declares no `text` modality, a
 non-chat model on a driver other than `new-api-router`, a disabled Provider
 record, a model with no route, a signed-out account, a missing static credential,
-and an undeclared limit (`limits_undeclared`). The read adds no second predicate.
+and an undeclared limit (`limits_undeclared`). The read adds no second predicate:
+it reads the one selection already applies. The modality read is that same rule
+minus the three requirements above, and both catalog builders derive an entry's
+conversational and modality reasons from one classification of the entry, so a
+new exclusion reason states its class once and the two reads cannot drift apart.
 A model appears only if `select`, `configuration`, `apply_preferences`, the
 per-request check and `auxiliaryModel` accept it at the same read. Execution
 remains authoritative: a later write can make a model unselectable, and the
@@ -585,12 +606,19 @@ read returns no per-provider error list. A caller that needs a provider's
 diagnostic uses `provider.list` or `provider.management`.
 
 **Consumers.** Modality computes each operation's options and its automatic
-default from this read: it intersects these IDs with the operations its collected
-adapters declare and reports "no adapter for the configured model" when the
-configured model is absent. It does not call `provider.catalog` and keeps no
-availability predicate of its own. The reply carries IDs and capabilities only,
-not a display name: a client that renders an option joins the ID with the model
-list of `provider.catalog` or `provider.management`, and Modality copies no name.
+default from these reads. For a category an adapter serves, the candidates are
+both reads deduplicated, the execution-selectable models first and the modality
+read's after, each in its read's order, and an operation keeps those a collected
+adapter serves for it; a media model execution rejects therefore stays an option
+where an adapter serves it, and a selectable model that declares no operation
+stays one too. An operation no adapter serves takes the modality read's models
+whose entry declares that operation id, and `image.understand` takes the
+selectable models with `vision`. It reports "no adapter for the configured
+model" when the configured model is absent. It does not call `provider.catalog`
+and keeps no availability predicate of its own. The reply carries IDs and
+capabilities only, not a display name: a client that renders an option joins the
+ID with the model list of `provider.catalog` or `provider.management`, and
+Modality copies no name.
 Provider gains no per-consumer key, setting or filter: the read has no input, so a
 caller that wants one provider filters the reply. Collaboration's `agent` tool
 reads the same reply for its `models` action and hands the IDs to the leader's
@@ -606,7 +634,9 @@ non-chat rules. The read adds no state, cache, notification, crate or module.
 **Rust binding.** The port is defined in `crates/dim-agent-capabilities/src/host.rs`
 beside `ModelSelectionHost`. Provider provides it in `ProviderPlugin::apply`, and
 the configured model profile (`dim-agent-aimux`) provides it from the entries of
-its model file, so both deployments answer the same read. The App Server catalog
+its model file, so both deployments answer the same reads; that profile declares
+no modality operation, so its `selectableForModality` read answers none
+([aimux](../../../crates/dim-agent-aimux/README.md)). The App Server catalog
 registers it as the Rust-only name `selectableModelsHost`
 (no cross-language binding before
 [#4](https://github.com/arcships/dim/issues/4)):
@@ -617,12 +647,17 @@ pub trait SelectableModels: Send + Sync + 'static {
         &self,
         cancel: CancellationToken,
     ) -> HostFuture<'_, Vec<ModelCapabilitySnapshot>>;
+    fn selectable_for_modality(
+        &self,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, Vec<ModalityModelSnapshot>>;
 }
 pub struct SelectableModelsHost(pub Arc<dyn SelectableModels>);
 ```
 
-The owner implementation is `ProviderService::selectable_models`; `ProductResolver`
-delegates to it. A consumer that needs the read declares
+The owner implementations are `ProviderService::selectable_models` and
+`ProviderService::selectable_modality_models`; `ProductResolver` delegates to
+both. A consumer that needs the read declares
 `Keyed<SelectableModelsHost>` in its `Deps` and gates on it (Modality). A consumer
 that must load without Provider reads the name when it is provided and gates
 nothing (Collaboration's `models` action); it takes a snapshot at load, so a

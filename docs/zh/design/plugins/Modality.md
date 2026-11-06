@@ -160,9 +160,9 @@ sequenceDiagram
 
 `dimcode modality` 和 Web 设置页调用 `modality.capabilities`，返回每个类别与操作及其可用性原因、可选选项、已持久化的默认值，以及任务或使用方现在会使用的模型。不隐藏任何内容，也没有 `--all`。每个不可用的类别或操作都按维度显示原因，例如“not in this build”“OCR component not installed”“no adapter”“not configured”“no adapter for the configured model”（决策 E16）。最后一项由 Modality 已采纳的业务配置（`modality` 设置文档中的默认值或显式模型，及其 Provider 连接）对照 Modality 能解析到的适配器得出（§9.1）。
 
-图像操作是第一个实现切片，该切片只带一个 fixture 适配器：`generate`、`edit` 与 `enhance` 是适配器操作，`understand` 只做选择。产品构建中没有适配器，因此 `generate`、`edit` 与 `enhance` 以 `adapter` 原因报告 `unavailable`（“no adapter in this build”），且不能设置默认值；`understand` 能解析并显示其默认值，但在 §9.4 落地前没有运行时使用方。流程测试配置 fixture 适配器服务它们所覆盖的适配器操作，因此在那里可以为这些操作设置默认值。这是既定范围，满足 issue 的 fixture 任务验收，不是缺陷。其他类别在适配器与运行时存在之前报告 `build` 原因。
+图像操作是第一个实现切片，该切片只带一个 fixture 适配器：`generate`、`edit` 与 `enhance` 是适配器操作，`understand` 只做选择。可用性是运行时的属性：产品构建中没有适配器，因此 `generate`、`edit` 与 `enhance` 以 `adapter` 原因报告 `unavailable`（“no adapter in this build”），其他类别在适配器与运行时存在之前报告 `build` 原因。已收集的适配器若不为 Provider 列出的任何模型服务，不算缺少适配器，并如实说明：图像操作仍用 `adapter` 维度，报“the adapter serves no image model Provider lists”，其选项是已声明的模型——与任何没有适配器服务的操作相同。`understand` 能解析并显示其默认值，但在 §9.4 落地前没有运行时使用方。可配置性是设置的属性：只要模型在该操作的可选选项中，`configure` 就接受任何有默认 key 的 A.1 操作的默认值，因此默认值可以在运行时落地之前持久化；本构建不能运行的操作仍保持 `available: false` 及其 `build` 或 `adapter` 原因。流程测试配置 fixture 适配器服务它们所覆盖的适配器操作。这是既定范围，满足 issue 的 fixture 任务验收，不是缺陷。
 
-`dimcode modality set-default image.generate <provider>/<model>` 和 Web 页调用 `modality.configure`：它先校验该模型可经 Provider 选择，且对适配器操作有可用适配器服务它（对 `image.understand`，是可选的视觉模型），再经所有者写入（Settings CAS）把该操作 key 写入 Modality 自己的 `modality` 设置文档。`model: null` 清除该 key。回复与 `modality.capabilities` 返回的是同一个快照，含新的 `revision`，客户端无需再读一次。
+`dimcode modality set-default image.generate <provider>/<model>` 和 Web 页调用 `modality.configure`：它先校验该模型属于该操作的选项——适配器操作要求有可用适配器服务它；`image.understand` 要求它是可选的视觉模型；没有适配器服务的操作要求该模型在 Provider 的 modality 读取中、且其目录条目声明了 `<category>.<operation>`，这样的模型可能是执行不能选择的（非 chat 模型，或未声明文本上限的模型）——再经所有者写入（Settings CAS）把该操作 key 写入 Modality 自己的 `modality` 设置文档。`model: null` 清除该 key。回复与 `modality.capabilities` 返回的是同一个快照，含新的 `revision`，客户端无需再读一次。
 
 任务按此顺序解析模型：请求中的显式 `model`；该操作 key 已持久化的默认值；自动解析——当 Provider 的全局默认选择可选且服务该操作时用它，否则用 Provider 可选模型读取顺序中第一个可选的、服务该操作的模型。显式模型或已持久化的默认值不再可选时任务失败（`model_unavailable` 或 `default_unavailable`）；解析出的模型没有可用适配器服务时以 `unavailable` 失败。Modality 从不替换成别的模型。只有默认值缺失时才进入自动解析，因此清除默认值即恢复自动解析。解析出的模型写入任务记录，之后默认值变化不影响它。
 
@@ -283,10 +283,10 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 ### 9.2 Provider 只读契约
 
 - **问题。** `modality.capabilities` 必须从 Provider 能选择的模型中计算 `options` 与自动解析。Provider 的模型选择端口只解析单个模型，而目录读取是客户端管理方法，因此进程所有者无法枚举可选集合及其声明能力。
-- **现有机制。** 单模型选择端口无法按操作能力过滤。新增客户端方法会把管理面暴露给所有者并重复目录。Provider 侧的只读契约由 #790 单独跟踪。
-- **需要的能力。** 由 [#790](https://github.com/arcships/dim/issues/790) 跟踪的只读契约：带声明能力的可选模型枚举。Modality 使用它；本设计不定义 Provider 的内部形态。
+- **现有机制。** 单模型选择端口无法按操作能力过滤。新增客户端方法会把管理面暴露给所有者并重复目录。Provider 侧的只读契约由 [#790](https://github.com/arcships/dim/issues/790) 单独跟踪。已交付：`dim-agent-capabilities` 中的进程 host 端口 `SelectableModelsHost`，由 Provider 与配置式模型配置提供，其 `selectableModels` 读取枚举执行时接受的模型及其声明能力。
+- **需要的能力。** 该读取是按执行形态定制的：未声明 `text` modality 的模型、非 chat 模型以及未声明文本上限的模型都不会出现，因此 Modality 路由到的图像、视频、语音、音乐、音频、资产、动作与实时模型全部缺失。Provider 在同一端口上新增一次读取 `selectableForModality`，返回它为非对话用途会选择的每个模型，以及该模型目录条目声明的 `<category>.<operation>` id。它应用与 `selectableModels` 相同的 provider、账号、模型、路由、凭据与状态规则，但去掉上述三项对话要求。
 - **顺序影响。** 每次 `capabilities` 调用和任务提交时读取；不重载，不涉及 Timeline。
-- **所有者/issue。** Provider，[#790](https://github.com/arcships/dim/issues/790)。
+- **所有者/issue。** Provider，[#790](https://github.com/arcships/dim/issues/790) 与本次改动。
 
 ### 9.3 Provider 非对话连接
 
@@ -322,6 +322,8 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 
 图像理解是图像类别中的一个操作，其默认值由 Modality 解析（`modality.image.understand`）。它的使用方是 Session 图像理解路径（附件与 `read`，见 [WorkspaceTools §read results and images](../../../architecture/rust-agent/plugins/WorkspaceTools.md#read-results-and-images)）；该路径尚未读取该默认值，因此 §9.4 中 Agent/Prompt 的需求必须先落地，默认值才会改变运行时使用的模型。在此之前，理解这一行只解析与显示。图像操作使用按操作的 key，本设计中不设类别回退；其他类别先解析按操作的 key，再解析类别 key（A3）。输入之外的操作参数由各适配器声明，并在提交时校验（A4）。
 
+操作的规范能力 id 是 `<category>.<operation>`，例如 `image.generate` 与 `realtime.connect`；Provider 的 `modalityCapabilities` 声明使用同一组字符串，快照携带这两个字段而不再重复 id。不存在别名（`image.read` 不是别名），实时子调用也没有 id：`open`、`send`、`close` 与 `event` 是方法，`realtime.connect` 是唯一的实时能力。
+
 ### A.2 适配器与 OCR 节点
 
 服务 `modalityAdapter`，作用域为进程，key 为适配器名，在适配器插件的 `provides` 中声明；内置适配器提供同一服务。适配器如何注册与发现，是 [#40](https://github.com/arcships/dim/issues/40) 决定、[#861](https://github.com/arcships/dim/issues/861) 跟踪的按任务查找（§9.1）；本设计依赖它，不重复定义。在它落地之前，Modality 每次调用读取单个进程 `modalityAdapter` 服务，因此缺失或正在重载的适配器只影响其操作。落地后，Modality 在任务需要时按适配器名解析该操作的适配器。取消是一个协议动作：Modality 丢弃该调用（或发送绑定的取消请求）；适配器停止本地工作。错误是数据 `{ code, message }`，`code` 为 `invalid_input`、`unavailable`、`provider_error` 之一。
@@ -349,7 +351,7 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 | 方法 | 参数 | 结果 |
 | --- | --- | --- |
 | `modality.capabilities` | `{}` | 下方默认快照；每个类别都出现 |
-| `modality.configure` | `{ expectedRevision, category, operation?, model: {providerId, modelId} \| null }`（`model` 必填；`null` 表示清除） | 写入后的同一快照；失败时为 `modality_conflict`、`modality_invalid_selection`、`modality_unknown_operation`、`modality_unavailable` 或 `modality_failed` |
+| `modality.configure` | `{ expectedRevision, category, operation?, model: {providerId, modelId} \| null }`（`model` 必填；`null` 表示清除） | 写入后的同一快照；失败时为 `modality_conflict`、`modality_invalid_selection`、`modality_unknown_operation` 或 `modality_failed` |
 | `modality.task.submit` | `{ category, operation, params, files?: [{ name, media_type, data_base64 } \| { node_path }], model?, node?, client_task_id? }` | `{ task }`；已存在的 `client_task_id` 返回已有任务。`image.understand` 只做选择，没有任务；其使用方是 Session 图像理解路径（§9.4） |
 | `modality.task.status` | `{ task_id }` | `{ task }` |
 | `modality.task.list` | `{ state?, category?, limit? (≤100), after? }` | `{ tasks, next? }`，最新在前 |
@@ -385,9 +387,10 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 
 - `revision` 是 `modality` 设置文档的 revision；一次 CAS 覆盖该文档中的全部操作 key，因此对某个操作的 `configure` 也会让持有其他操作草稿的客户端失效。只有 `configure` 使用它。
 - `default` 是已持久化的选择或 `null`。模型不再可选、或没有可用适配器服务它时（对 `image.understand`，是它不是可选的视觉模型时），`available` 为 `false`，`reason` 说明原因。
-- `effective` 是任务或使用方现在会使用的模型。默认值可用时就是默认值。`default` 为 `null` 时它是自动解析：Provider 的全局默认选择可选且服务该操作时用它，否则用 Provider 可选模型读取顺序中第一个可选的、服务该操作的模型；`source` 为 `"automatic"`。不可用的默认值给出 `effective: null`，从不替换成别的模型。
-- `options` 列出服务该操作且 Provider 可选的模型：对 `generate`、`edit` 与 `enhance`，由可用适配器服务；对 `image.understand`，由可选的视觉模型服务。适配器的 `operations` 决定它服务哪些模型；Provider 的 `modalityCapabilities` 声明对这些操作不是路由输入，`image.understand` 需要 Provider 的 `vision` 能力。当前默认值不再可选时也会列出，并标注原因。所有者读取时从 Provider 的只读契约（#790）与可用适配器计算它们；客户端不自行推导。选项只带 `{providerId, modelId, available, reason?}`：#790 返回 id 与能力，不返回展示名，因此客户端按 `{providerId, modelId}` 从它已有的 Provider 列表或目录读取中并入名字，取不到名字时显示 id。
-- `configure` 先校验操作、Provider 可选性，以及（对适配器操作）适配器支持（对 `image.understand`，可选视觉支持），再经 Settings 的所有者写入以 CAS 写入或清除该操作 key。`model: null` 清除该 key；清除即恢复自动解析；缺少 `model` 为 `invalid_params`。类别存在但本构建未实现时以 `modality_unavailable` 失败；操作有自己的 key 时（image、speech）`operation` 必填，只有按类别划分 key 的类别可以省略。写入在回复发出之前完成，因此成功即表示默认值已持久化，且该回复与紧随其后的 `modality.capabilities` 读到的一致（除非 Provider 在此期间变化）。
+- `effective` 是该操作能运行之后，任务或使用方现在会使用的模型：即使操作本身 `available: false`（本构建没有适配器），它仍从选项解析，客户端因此无需分辨哪部分属于设置、哪部分属于运行时。默认值可用时就是默认值。`default` 为 `null` 时它是自动解析：Provider 的全局默认选择可选且服务该操作时用它，否则用 Provider 可选模型读取顺序中第一个可选的、服务该操作的模型；`source` 为 `"automatic"`。不可用的默认值给出 `effective: null`，从不替换成别的模型。
+- `options` 列出服务该操作的模型。候选来自 Provider 的非会话读取（`selectableForModality`，§9.2），因此被执行拒绝的媒体模型——非 chat 模型，或未声明文本上限的模型——只要其目录条目声明了该操作就是候选。对 `generate`、`edit` 与 `enhance`，由可用适配器决定哪些候选服务哪个操作：选项是 Provider 两次读取的去重并集，先执行可选的模型、后已声明的模型，各自按读取顺序，并保留适配器的 `operations` 为该操作服务的那些。对 `image.understand`，改由可选的视觉模型服务，取自 Provider 的 `vision` 能力。当没有适配器服务该操作的类别时，适配器不收窄任何候选，选项是其 Provider 目录条目声明了该 `<category>.<operation>` id 的模型，按 Provider 的顺序；没有任何声明的操作选项为空。所有者从 Provider 的已声明能力计算候选，客户端不自行推导。当前默认值不再是选项时也会列出，并标注原因。所有者读取时从 Provider 的只读契约（§9.2）与可用适配器计算它们。选项只带 `{providerId, modelId, available, reason?}`：读取返回 id 与能力，不返回展示名，因此客户端按 `{providerId, modelId}` 从它已有的 Provider 列表或目录读取中并入名字，取不到名字时显示 id。
+- `configure` 先校验操作以及模型在该操作的可选选项中（对 `image.understand`，可选视觉支持），再经 Settings 的所有者写入以 CAS 写入或清除该操作 key。它接受任何有默认 key 的 A.1 操作，且从不答复 `modality_unavailable`：配置是设置写入，不是运行时断言。未知类别或操作、以及操作没有默认 key 的 OCR，答复 `modality_unknown_operation`；操作有自己的 key 时（image、speech）`operation` 必填，只有按类别划分 key 的类别可以省略。`model: null` 清除该 key；清除即恢复自动解析；缺少 `model` 为 `invalid_params`。写入在回复发出之前完成，因此成功即表示默认值已持久化，且该回复与紧随其后的 `modality.capabilities` 读到的一致（除非 Provider 在此期间变化）。
+- 可配置性与可用性是两个不同的属性：前者属于设置，后者属于运行时。已持久化的默认值可以指向本构建不能运行的操作的模型；快照通过保持该操作的 `available: false` 及其 `build` 或 `adapter` 原因保持诚实，而 `effective` 仍在选项上解析（默认值可用时用默认值，否则自动解析），客户端因此无需自行实现解析。
 
 边界校验：每次提交文件至多 100 MiB，每个内联文件至多 25 MiB（A5）；按操作检查媒体类型；`node_path` 仅用于宿主执行的操作；`node` 仅用于宿主执行的类别，默认控制节点（A15）。模型选择：显式 `model`；否则操作默认值；否则自动解析；否则 `no_default_model`。不可选的显式模型以 `model_unavailable` 失败，不可用的默认值以 `default_unavailable` 失败，解析出的模型没有可用适配器服务时以 `unavailable` 失败；都不回退到其他模型。解析出的模型固定在记录中。`image.understand` 只做选择、没有任务；为它提交任务会以 `modality_unknown_operation` 失败。每个类别至多 4 个运行中任务；其余按提交顺序保持 `queued`（A6）。
 
@@ -475,7 +478,7 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 | `modality_conflict` | 设置 revision 已过期；重新读取后重试 |
 | `modality_invalid_selection` | 模型不可经 Provider 选择、没有可用适配器服务该操作，或 `image.understand` 指定的模型没有视觉能力；回复带原因 |
 | `modality_unknown_operation` | 未知操作或默认值 key |
-| `modality_unavailable` | 已知但本构建未实现的类别或操作；`modality.capabilities` 中带有其 `build` 原因 |
+| `modality_unavailable` | 由 `modality.task.submit` 对已知但本构建未实现的类别或操作答复（A.3）；`modality.capabilities` 中带有其 `build` 原因 |
 | `modality_failed` | 读写所有者配置时 Settings 或 Provider 的意外失败 |
 | `node_unavailable` | 请求的节点未配置或其 HostPlatform 不可用 |
 | `provider_error` | 适配器或提供方失败；消息已去除秘密 |

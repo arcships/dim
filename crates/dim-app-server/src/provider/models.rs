@@ -603,7 +603,7 @@ impl ProviderService {
                             let governed: Vec<String> = record
                                 .effective_models(&bundled)
                                 .into_iter()
-                                .filter(|model| model.unavailable_reason.is_none())
+                                .filter(|model| model.unavailable.is_none())
                                 .map(|model| model.entry.model_id)
                                 .collect();
                             record

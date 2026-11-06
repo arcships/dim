@@ -286,9 +286,9 @@ impl ProviderService {
                         // The account itself can be unavailable, a fact the
                         // record does not hold; that reason stands on top of
                         // the one the effective limits derive.
-                        let unavailable_reason = unavailable
-                            .map(str::to_owned)
-                            .or(effective.unavailable_reason);
+                        let unavailable_reason = unavailable.map(str::to_owned).or_else(|| {
+                            effective.unavailable.map(|unavailable| unavailable.reason)
+                        });
                         // The set governs the entries the account can use: an
                         // unavailable entry keeps the enablement it has, so the
                         // owner offers no toggle for it.

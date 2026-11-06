@@ -4,12 +4,16 @@
 //! task would use now; `modality.configure` validates one operation default and
 //! writes it to the user-scope `modality` Settings source with CAS.
 //!
-//! Adapter operations (`image.generate`, `image.edit`, `image.enhance`) need a
-//! process-scoped [`ModalityAdapter`]; the first slice ships no adapter in the
-//! product, so they report unavailable with an `adapter` reason and their
-//! defaults cannot be set. `image.understand` is selection only: its consumer
-//! is the Session image-understanding path, which does not read the default yet
-//! (§9.4). Task methods and provider connections are not part of this slice.
+//! The catalog covers every A.1 category and operation. Adapter operations
+//! (`image.generate`, `image.edit`, `image.enhance`) need a process-scoped
+//! [`ModalityAdapter`]; the first slice ships no adapter in the product, so
+//! they report unavailable with an `adapter` reason, and the other categories
+//! report `build`. A default can still be persisted for any operation with a
+//! Settings key when the model is one of its options; options of an operation
+//! no adapter serves are the models Provider declares for that operation id.
+//! `image.understand` is selection only: its consumer is the Session
+//! image-understanding path, which does not read the default yet (§9.4). Task
+//! methods and provider connections are not part of this slice.
 //!
 //! The plugin lives in this crate, which depends on the App Server for the
 //! Settings service and management methods; a host installs it with
@@ -19,7 +23,7 @@ use dim_agent_capabilities::{
     methods::{Interruption, MethodDecl, RpcError, params, reply},
 };
 use dim_agent_runtime::{AgentBuilder, Names};
-use dim_agent_types::{ModelCapabilitySnapshot, ModelId};
+use dim_agent_types::{ModalityModelSnapshot, ModelCapabilitySnapshot, ModelId};
 use dim_app_server::{
     methods::ManagementMethods,
     protocol::Empty,
@@ -52,70 +56,156 @@ pub trait ModalityAdapter: Send + Sync + 'static {
 /// unavailable operation, never a failed load.
 pub struct ModalityAdapterService(pub Arc<dyn ModalityAdapter>);
 
-/// The four image operations. Each has its own Settings key; there is no
-/// category fallback (Modality A.1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ImageOperation {
-    Generate,
-    Edit,
-    Enhance,
-    Understand,
+/// One catalog operation of Modality A.1: its id and the Settings key that
+/// holds its default, if it has one.
+struct OperationRow {
+    operation: &'static str,
+    key: Option<&'static str>,
 }
-impl ImageOperation {
-    const ALL: [Self; 4] = [Self::Generate, Self::Edit, Self::Enhance, Self::Understand];
-    fn id(self) -> &'static str {
-        match self {
-            Self::Generate => "generate",
-            Self::Edit => "edit",
-            Self::Enhance => "enhance",
-            Self::Understand => "understand",
-        }
-    }
-    fn key(self) -> &'static str {
-        match self {
-            Self::Generate => "modality.image.generate",
-            Self::Edit => "modality.image.edit",
-            Self::Enhance => "modality.image.enhance",
-            Self::Understand => "modality.image.understand",
-        }
-    }
-    fn is_adapter(self) -> bool {
-        self != Self::Understand
-    }
-    fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|operation| operation.id() == id)
+impl OperationRow {
+    /// The `<category>.<operation>` id a client names.
+    fn id(&self, category: &str) -> String {
+        format!("{}.{}", category, self.operation)
     }
 }
 
-/// One catalog operation: its default key, when it has one, and its id.
-type OperationRow = (Option<&'static str>, &'static str);
+/// One A.1 category. `category_key` says its operations share one Settings
+/// key and `configure` may omit the operation; image and speech key each
+/// operation separately, and OCR has no default key at all.
+struct CatalogCategory {
+    name: &'static str,
+    category_key: bool,
+    rows: &'static [OperationRow],
+}
 
-/// Every non-image category and operation of Modality A.1. The image category
-/// is built from [`ImageOperation`]; these report a `build` reason until their
-/// adapters and runtime exist.
-const CATALOG: [(&str, &[OperationRow]); 8] = [
-    (
-        "video",
-        &[
-            (Some("modality.video"), "generate"),
-            (Some("modality.video"), "edit"),
-            (Some("modality.video"), "enhance"),
+/// Every category and operation of Modality A.1, in its order. `image` and
+/// `speech` key each operation; the other categories share one key; OCR has
+/// none (A.1, A3).
+const CATALOG: [CatalogCategory; 9] = [
+    CatalogCategory {
+        name: "image",
+        category_key: false,
+        rows: &[
+            OperationRow {
+                operation: "generate",
+                key: Some("modality.image.generate"),
+            },
+            OperationRow {
+                operation: "edit",
+                key: Some("modality.image.edit"),
+            },
+            OperationRow {
+                operation: "enhance",
+                key: Some("modality.image.enhance"),
+            },
+            OperationRow {
+                operation: "understand",
+                key: Some("modality.image.understand"),
+            },
         ],
-    ),
-    (
-        "speech",
-        &[
-            (Some("modality.speech.synthesize"), "synthesize"),
-            (Some("modality.speech.transcribe"), "transcribe"),
+    },
+    CatalogCategory {
+        name: "video",
+        category_key: true,
+        rows: &[
+            OperationRow {
+                operation: "generate",
+                key: Some("modality.video"),
+            },
+            OperationRow {
+                operation: "edit",
+                key: Some("modality.video"),
+            },
+            OperationRow {
+                operation: "enhance",
+                key: Some("modality.video"),
+            },
         ],
-    ),
-    ("music", &[(Some("modality.music"), "generate")]),
-    ("audio", &[(Some("modality.audio"), "generate")]),
-    ("asset", &[(Some("modality.asset"), "generate")]),
-    ("motion", &[(Some("modality.motion"), "generate")]),
-    ("realtime", &[(Some("modality.realtime"), "connect")]),
-    ("ocr", &[(None, "recognize")]),
+    },
+    CatalogCategory {
+        name: "speech",
+        category_key: false,
+        rows: &[
+            OperationRow {
+                operation: "synthesize",
+                key: Some("modality.speech.synthesize"),
+            },
+            OperationRow {
+                operation: "transcribe",
+                key: Some("modality.speech.transcribe"),
+            },
+        ],
+    },
+    CatalogCategory {
+        name: "music",
+        category_key: true,
+        rows: &[OperationRow {
+            operation: "generate",
+            key: Some("modality.music"),
+        }],
+    },
+    CatalogCategory {
+        name: "audio",
+        category_key: true,
+        rows: &[OperationRow {
+            operation: "generate",
+            key: Some("modality.audio"),
+        }],
+    },
+    CatalogCategory {
+        name: "asset",
+        category_key: true,
+        rows: &[OperationRow {
+            operation: "generate",
+            key: Some("modality.asset"),
+        }],
+    },
+    CatalogCategory {
+        name: "motion",
+        category_key: true,
+        rows: &[OperationRow {
+            operation: "generate",
+            key: Some("modality.motion"),
+        }],
+    },
+    CatalogCategory {
+        name: "realtime",
+        category_key: true,
+        rows: &[OperationRow {
+            operation: "connect",
+            key: Some("modality.realtime"),
+        }],
+    },
+    CatalogCategory {
+        name: "ocr",
+        category_key: false,
+        rows: &[OperationRow {
+            operation: "recognize",
+            key: None,
+        }],
+    },
 ];
+
+fn catalog_category(name: &str) -> Option<&'static CatalogCategory> {
+    CATALOG.iter().find(|category| category.name == name)
+}
+
+/// `image.understand` is selection only: its options are selectable vision
+/// models, never the adapter (Modality §9.4).
+fn is_understand(category: &str, operation: &str) -> bool {
+    category == "image" && operation == "understand"
+}
+
+/// Whether a model's declared `<category>.<operation>` ids include this
+/// operation.
+fn declares(operations: &[String], category: &str, operation: &str) -> bool {
+    operations.iter().any(|id| {
+        id.split_once('.')
+            .is_some_and(|(declared_category, declared_operation)| {
+                declared_category == category && declared_operation == operation
+            })
+    })
+}
 
 /// A display reason, never parsed by a client (Modality A.3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -266,6 +356,9 @@ fn explicit_model<'de, D: Deserializer<'de>>(
 struct Evaluation {
     defaults: BTreeMap<String, ModelId>,
     selectable: Vec<ModelCapabilitySnapshot>,
+    /// The models Provider would select for a non-conversational use, with
+    /// the operations each declares (Modality §9.2).
+    declared: Vec<ModalityModelSnapshot>,
     global: Option<ModelId>,
     adapter: Option<Arc<ModalityAdapterService>>,
 }
@@ -275,7 +368,30 @@ impl Evaluation {
             .as_ref()
             .is_some_and(|adapter| adapter.0.available())
     }
-    fn serves(&self, model: &ModelId, operation: ImageOperation) -> bool {
+    /// Whether a process adapter is collected at all, whatever it serves: a
+    /// collected adapter that serves no candidate model is not "no adapter".
+    fn has_adapter(&self) -> bool {
+        self.adapter.is_some()
+    }
+    /// Whether the adapter serves this category for any model either read
+    /// names; its `operations` then decides the category's options.
+    fn adapter_serves(&self, category: &str) -> bool {
+        let Some(adapter) = &self.adapter else {
+            return false;
+        };
+        self.selectable
+            .iter()
+            .map(|model| &model.target)
+            .chain(self.declared.iter().map(|model| &model.target))
+            .any(|model| {
+                adapter
+                    .0
+                    .operations(model)
+                    .iter()
+                    .any(|served| served.category == category)
+            })
+    }
+    fn serves(&self, model: &ModelId, category: &str, operation: &str) -> bool {
         let Some(adapter) = &self.adapter else {
             return false;
         };
@@ -284,31 +400,76 @@ impl Evaluation {
                 .0
                 .operations(model)
                 .iter()
-                .any(|served| served.category == "image" && served.operation == operation.id())
+                .any(|served| served.category == category && served.operation == operation)
     }
     fn selectable(&self, provider_id: &str, model_id: &str) -> Option<&ModelCapabilitySnapshot> {
         self.selectable.iter().find(|model| {
             model.target.provider_id == provider_id && model.target.model_id == model_id
         })
     }
-    /// Options for `operation` in Provider's selectable-model order, after the current
-    /// default when it can no longer be selected or served.
-    fn options(&self, operation: ImageOperation) -> Vec<OptionSnapshot> {
-        let mut options: Vec<OptionSnapshot> = self
-            .selectable
-            .iter()
-            .filter(|model| match operation {
-                ImageOperation::Understand => model.capabilities.vision,
-                operation => self.serves(&model.target, operation),
-            })
-            .map(|model| OptionSnapshot {
-                provider_id: model.target.provider_id.clone(),
-                model_id: model.target.model_id.clone(),
-                available: true,
-                reason: None,
-            })
-            .collect();
-        if let Some(default) = self.defaults.get(operation.key())
+    fn declared_for(&self, provider_id: &str, model_id: &str) -> Option<&ModalityModelSnapshot> {
+        self.declared.iter().find(|model| {
+            model.target.provider_id == provider_id && model.target.model_id == model_id
+        })
+    }
+    /// Whether either Provider read names this model.
+    fn known(&self, model: &ModelId) -> bool {
+        self.selectable(&model.provider_id, &model.model_id)
+            .is_some()
+            || self
+                .declared_for(&model.provider_id, &model.model_id)
+                .is_some()
+    }
+    fn option(model: &ModelId) -> OptionSnapshot {
+        OptionSnapshot {
+            provider_id: model.provider_id.clone(),
+            model_id: model.model_id.clone(),
+            available: true,
+            reason: None,
+        }
+    }
+    /// Options for one operation: Provider's candidates narrowed by the
+    /// adapter when it serves the category, a selectable vision model for
+    /// understanding, and otherwise the models Provider declares for the
+    /// operation id (Modality §9.2), in each read's order. The candidates of
+    /// an adapter-served category are the deduplicated union of the two
+    /// Provider reads, selectable first, so a declared media model execution
+    /// rejects is still offered when the adapter serves it. The persisted
+    /// default follows when it is no longer an option.
+    fn options(&self, category: &str, row: &OperationRow) -> Vec<OptionSnapshot> {
+        let mut options: Vec<OptionSnapshot> = if is_understand(category, row.operation) {
+            self.selectable
+                .iter()
+                .filter(|model| model.capabilities.vision)
+                .map(|model| Self::option(&model.target))
+                .collect()
+        } else if self.adapter_serves(category) {
+            let mut served: Vec<OptionSnapshot> = Vec::new();
+            for model in self
+                .selectable
+                .iter()
+                .map(|model| &model.target)
+                .chain(self.declared.iter().map(|model| &model.target))
+            {
+                let (provider_id, model_id) = (model.provider_id.as_str(), model.model_id.as_str());
+                if !served
+                    .iter()
+                    .any(|option| option.model() == (provider_id, model_id))
+                    && self.serves(model, category, row.operation)
+                {
+                    served.push(Self::option(model));
+                }
+            }
+            served
+        } else {
+            self.declared
+                .iter()
+                .filter(|model| declares(&model.operations, category, row.operation))
+                .map(|model| Self::option(&model.target))
+                .collect()
+        };
+        if let Some(key) = row.key
+            && let Some(default) = self.defaults.get(key)
             && !options.iter().any(|option| {
                 option.model() == (default.provider_id.as_str(), default.model_id.as_str())
             })
@@ -317,56 +478,89 @@ impl Evaluation {
                 provider_id: default.provider_id.clone(),
                 model_id: default.model_id.clone(),
                 available: false,
-                reason: Some(self.unavailable_reason(default, operation)),
+                reason: Some(self.unavailable_reason(
+                    default,
+                    category,
+                    row.operation,
+                    &row.id(category),
+                )),
             });
         }
         options
     }
-    fn unavailable_reason(&self, model: &ModelId, operation: ImageOperation) -> Reason {
-        match self.selectable(&model.provider_id, &model.model_id) {
-            None => reason("provider", "Model is no longer selectable"),
-            Some(model)
-                if operation == ImageOperation::Understand && !model.capabilities.vision =>
-            {
-                reason("configuration", "Model is not a selectable vision model")
-            }
-            Some(_) => reason(
+    /// Why `model` is not an available option of the operation, naming it as
+    /// the client configured it: `name` is the operation id, or the category
+    /// when the write is category-wide. A persisted default and a refused
+    /// `configure` share this, so both speak one vocabulary (Modality §9.1).
+    fn unavailable_reason(
+        &self,
+        model: &ModelId,
+        category: &str,
+        operation: &str,
+        name: &str,
+    ) -> Reason {
+        if is_understand(category, operation) {
+            return match self.selectable(&model.provider_id, &model.model_id) {
+                None => reason("provider", "Model is no longer selectable"),
+                Some(model) if !model.capabilities.vision => {
+                    reason("configuration", "Model is not a selectable vision model")
+                }
+                Some(_) => reason(
+                    "adapter",
+                    "No available adapter serves the configured model",
+                ),
+            };
+        }
+        if !self.known(model) {
+            return reason("provider", "Model is no longer selectable");
+        }
+        if self.adapter_serves(category) {
+            reason(
                 "adapter",
                 "No available adapter serves the configured model",
-            ),
+            )
+        } else {
+            reason(
+                "configuration",
+                format!("The model does not declare {name}"),
+            )
         }
     }
-    fn operation(&self, operation: ImageOperation) -> OperationSnapshot {
-        let options = self.options(operation);
+    fn operation(&self, category: &str, row: &OperationRow) -> OperationSnapshot {
+        let options = self.options(category, row);
         let served = options.iter().any(|option| option.available);
-        let (available, reasons) = if operation.is_adapter() {
-            match (&self.adapter, self.adapter_available()) {
-                (None, _) => (
+        let (available, reasons) = if is_understand(category, row.operation) {
+            if served {
+                (true, vec![])
+            } else {
+                (
                     false,
-                    vec![reason("adapter", "No image adapter in this build")],
-                ),
-                (Some(_), false) => (
-                    false,
-                    vec![reason("runtime", "The image adapter is unavailable")],
-                ),
-                (Some(_), true) if !served => (
+                    vec![reason("configuration", "No selectable vision model")],
+                )
+            }
+        } else if self.adapter_serves(category) {
+            match self.adapter_available() {
+                false => (false, vec![reason("runtime", "The adapter is unavailable")]),
+                true if !served => (
                     false,
                     vec![reason(
                         "configuration",
                         "No selectable model is served by an available adapter",
                     )],
                 ),
-                (Some(_), true) => (true, vec![]),
+                true => (true, vec![]),
             }
-        } else if !served {
-            (
-                false,
-                vec![reason("configuration", "No selectable vision model")],
-            )
+        } else if category == "image" {
+            let detail = if self.has_adapter() {
+                "The adapter serves no image model Provider lists"
+            } else {
+                "No image adapter in this build"
+            };
+            (false, vec![reason("adapter", detail)])
         } else {
-            (true, vec![])
+            (false, vec![reason("build", "Not in this build")])
         };
-        let default = self.defaults.get(operation.key()).map(|model| {
+        let default = row.key.and_then(|key| self.defaults.get(key)).map(|model| {
             let (provider_id, model_id) = (model.provider_id.as_str(), model.model_id.as_str());
             options
                 .iter()
@@ -376,7 +570,12 @@ impl Evaluation {
                     provider_id: model.provider_id.clone(),
                     model_id: model.model_id.clone(),
                     available: false,
-                    reason: Some(self.unavailable_reason(model, operation)),
+                    reason: Some(self.unavailable_reason(
+                        model,
+                        category,
+                        row.operation,
+                        &row.id(category),
+                    )),
                 })
         });
         let effective = match &default {
@@ -414,8 +613,8 @@ impl Evaluation {
             }
         };
         OperationSnapshot {
-            operation: operation.id(),
-            key: Some(operation.key()),
+            operation: row.operation,
+            key: row.key,
             available,
             reasons,
             default,
@@ -423,10 +622,11 @@ impl Evaluation {
             options,
         }
     }
-    fn image(&self) -> CategorySnapshot {
-        let operations: Vec<OperationSnapshot> = ImageOperation::ALL
-            .into_iter()
-            .map(|operation| self.operation(operation))
+    fn category(&self, category: &CatalogCategory) -> CategorySnapshot {
+        let operations: Vec<OperationSnapshot> = category
+            .rows
+            .iter()
+            .map(|row| self.operation(category.name, row))
             .collect();
         let available = operations.iter().any(|operation| operation.available);
         let reasons = if available {
@@ -443,37 +643,19 @@ impl Evaluation {
                 })
         };
         CategorySnapshot {
-            category: "image",
+            category: category.name,
             available,
             reasons,
             operations,
         }
     }
     fn snapshot(&self, revision: &str) -> Snapshot {
-        let categories = std::iter::once(self.image())
-            .chain(CATALOG.iter().map(|(category, operations)| {
-                CategorySnapshot {
-                    category,
-                    available: false,
-                    reasons: vec![reason("build", "Not in this build")],
-                    operations: operations
-                        .iter()
-                        .map(|(key, operation)| OperationSnapshot {
-                            operation,
-                            key: *key,
-                            available: false,
-                            reasons: vec![reason("build", "Not in this build")],
-                            default: None,
-                            effective: None,
-                            options: vec![],
-                        })
-                        .collect(),
-                }
-            }))
-            .collect();
         Snapshot {
             revision: revision.to_owned(),
-            categories,
+            categories: CATALOG
+                .iter()
+                .map(|category| self.category(category))
+                .collect(),
         }
     }
 }
@@ -513,9 +695,14 @@ async fn evaluate(
         .read::<ModalitySettings>(SettingsScope::User, cancel)
         .await
         .map_err(settings_error)?;
-    let selectable = selectable
+    let selectable_models = selectable
         .0
         .selectable(cancel.clone())
+        .await
+        .map_err(host_error)?;
+    let declared = selectable
+        .0
+        .selectable_for_modality(cancel.clone())
         .await
         .map_err(host_error)?;
     let global = selection
@@ -531,7 +718,8 @@ async fn evaluate(
         snapshot.revision,
         Evaluation {
             defaults: snapshot.document.defaults,
-            selectable,
+            selectable: selectable_models,
+            declared,
             global,
             adapter: ctx.get::<ModalityAdapterService>(),
         },
@@ -553,25 +741,83 @@ struct Configure {
 fn unknown_operation(detail: impl Into<String>) -> RpcError {
     RpcError::app(-32000, "modality_unknown_operation", detail)
 }
-fn unavailable(detail: impl Into<String>) -> RpcError {
-    RpcError::app(-32000, "modality_unavailable", detail)
-}
 fn invalid_selection(detail: impl Into<String>) -> RpcError {
     RpcError::app(-32000, "modality_invalid_selection", detail)
 }
 
-fn configured_operation(params: &Configure) -> Result<ImageOperation, RpcError> {
-    if params.category != "image" {
-        return Err(unavailable(format!(
-            "Category {} is not in this build",
-            params.category
-        )));
-    }
-    params
-        .operation
-        .as_deref()
-        .and_then(ImageOperation::from_id)
-        .ok_or_else(|| unknown_operation("Unknown image operation"))
+/// One operation `modality.configure` writes: its category, the row whose id
+/// is named (the category's first row when the operation is omitted), the
+/// Settings key, and whether the model may come from any operation of the
+/// category.
+struct ConfiguredOperation {
+    category: &'static CatalogCategory,
+    row: &'static OperationRow,
+    key: &'static str,
+    category_wide: bool,
+}
+
+fn configured_operation(params: &Configure) -> Result<ConfiguredOperation, RpcError> {
+    let category = catalog_category(&params.category)
+        .ok_or_else(|| unknown_operation(format!("Unknown category {}", params.category)))?;
+    let (row, category_wide) = match params.operation.as_deref() {
+        Some(operation) => (
+            category
+                .rows
+                .iter()
+                .find(|row| row.operation == operation)
+                .ok_or_else(|| {
+                    unknown_operation(format!("Unknown {} operation {}", category.name, operation))
+                })?,
+            false,
+        ),
+        None if category.category_key => (
+            category
+                .rows
+                .first()
+                .ok_or_else(|| unknown_operation(format!("Unknown category {}", category.name)))?,
+            true,
+        ),
+        None => {
+            return Err(unknown_operation(format!(
+                "An operation is required for {}",
+                category.name
+            )));
+        }
+    };
+    let key = row.key.ok_or_else(|| {
+        unknown_operation(format!(
+            "{}.{} has no default",
+            category.name, row.operation
+        ))
+    })?;
+    Ok(ConfiguredOperation {
+        category,
+        row,
+        key,
+        category_wide,
+    })
+}
+
+/// The refusal for a model that is not an available option of the configured
+/// operation: the detail is the reason the snapshot would carry for that
+/// model, so a client reads one vocabulary however it learns the refusal.
+fn selection_refusal(
+    evaluation: &Evaluation,
+    configured: &ConfiguredOperation,
+    model: &ModelId,
+) -> RpcError {
+    let name = if configured.category_wide {
+        configured.category.name.to_owned()
+    } else {
+        configured.row.id(configured.category.name)
+    };
+    let reason = evaluation.unavailable_reason(
+        model,
+        configured.category.name,
+        configured.row.operation,
+        &name,
+    );
+    invalid_selection(reason.detail)
 }
 
 /// Process owner of the `modality` Settings source and the `modality.*`
@@ -629,41 +875,60 @@ impl DynPlugin for ModalityPlugin {
                             "modality.capabilities" => {
                                 let _: Empty = params(value)?;
                                 let (revision, evaluation) = evaluate(
-                                    &settings, &selectable, &selection, &context, &stopping,
+                                    &settings,
+                                    &selectable,
+                                    &selection,
+                                    &context,
+                                    &stopping,
                                 )
                                 .await?;
                                 reply(evaluation.snapshot(&revision))
                             }
                             "modality.configure" => {
                                 let params: Configure = params(value)?;
-                                let operation = configured_operation(&params)?;
+                                let configured = configured_operation(&params)?;
                                 let Some(model) = &params.model else {
                                     return Err(RpcError::invalid(
                                         "model is required; use null to clear the default",
                                     ));
                                 };
                                 let (_, mut evaluation) = evaluate(
-                                    &settings, &selectable, &selection, &context, &stopping,
+                                    &settings,
+                                    &selectable,
+                                    &selection,
+                                    &context,
+                                    &stopping,
                                 )
                                 .await?;
                                 if let Some(model) = model {
-                                    let selected = evaluation
-                                        .options(operation)
-                                        .into_iter()
-                                        .find(|option| {
-                                            option.model()
-                                                == (model.provider_id.as_str(), model.model_id.as_str())
-                                        })
-                                        .filter(|option| option.available);
-                                    if selected.is_none() {
-                                        return Err(invalid_selection(if operation.is_adapter() {
-                                            format!(
-                                                "No available adapter serves this model for image.{}",
-                                                operation.id()
-                                            )
-                                        } else {
-                                            "This model is not a selectable vision model".into()
-                                        }));
+                                    let options: Vec<OptionSnapshot> = if configured.category_wide {
+                                        configured
+                                            .category
+                                            .rows
+                                            .iter()
+                                            .flat_map(|row| {
+                                                evaluation.options(configured.category.name, row)
+                                            })
+                                            .collect()
+                                    } else {
+                                        evaluation.options(configured.category.name, configured.row)
+                                    };
+                                    // A category-wide save flattens every row,
+                                    // and each row appends the persisted
+                                    // default when it is not an option, marked
+                                    // unavailable. The model is valid when any
+                                    // row offers it as available.
+                                    let selected = options.iter().any(|option| {
+                                        option.model()
+                                            == (model.provider_id.as_str(), model.model_id.as_str())
+                                            && option.available
+                                    });
+                                    if !selected {
+                                        return Err(selection_refusal(
+                                            &evaluation,
+                                            &configured,
+                                            model,
+                                        ));
                                     }
                                 }
                                 let mut document = ModalitySettings {
@@ -673,10 +938,10 @@ impl DynPlugin for ModalityPlugin {
                                     Some(model) => {
                                         document
                                             .defaults
-                                            .insert(operation.key().into(), model.clone());
+                                            .insert(configured.key.into(), model.clone());
                                     }
                                     None => {
-                                        document.defaults.remove(operation.key());
+                                        document.defaults.remove(configured.key);
                                     }
                                 }
                                 let updated = settings

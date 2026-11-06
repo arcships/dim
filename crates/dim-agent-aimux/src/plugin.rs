@@ -77,6 +77,21 @@ impl SelectableModels for ConfiguredSelectable {
             Ok(self.models.selectable())
         })
     }
+    fn selectable_for_modality(
+        &self,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, Vec<dim_agent_types::ModalityModelSnapshot>> {
+        Box::pin(async move {
+            if cancel.is_cancelled() {
+                return Err(HostError::Cancelled(
+                    "selectable modality models cancelled".into(),
+                ));
+            }
+            // The development model configuration declares no modality
+            // operation, so no model is offered for one.
+            Ok(Vec::new())
+        })
+    }
 }
 
 struct ConfiguredConnection {

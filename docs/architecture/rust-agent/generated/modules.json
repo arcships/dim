@@ -6935,6 +6935,7 @@
       "to": "dim_agent_types::model",
       "references": [
         "path SystemPrompt::Text",
+        "path dim_agent_types::ModalityModelSnapshot",
         "path dim_agent_types::ModelCapabilitySnapshot",
         "path dim_agent_types::ModelConfig",
         "path dim_agent_types::ModelRequest",
@@ -10481,6 +10482,7 @@
         "path CompactionStrategyRecord",
         "path CompactionTrigger",
         "path CompatibleThinking",
+        "path ModalityModelSnapshot",
         "path ModelCapabilitySnapshot",
         "path ModelConfig",
         "path ModelPreferences",
@@ -24288,6 +24290,7 @@
       "to": "dim_agent_types::model",
       "references": [
         "path CatalogCapabilities",
+        "path ModalityModelSnapshot",
         "path ModelCapabilitySnapshot",
         "path ModelConfig",
         "path ModelConfig::default",
@@ -24300,6 +24303,7 @@
         "path dim_agent_types::RequestMetadata",
         "path model",
         "use crate::model_catalog::CatalogCapabilities",
+        "use dim_agent_types::ModalityModelSnapshot",
         "use dim_agent_types::ModelCapabilitySnapshot",
         "use dim_agent_types::ModelConfig",
         "use dim_agent_types::ModelPreferences",
@@ -41892,7 +41896,9 @@
       "from": "dim_modality",
       "to": "dim_agent_types::model",
       "references": [
+        "path ModalityModelSnapshot",
         "path ModelCapabilitySnapshot",
+        "use dim_agent_types::ModalityModelSnapshot",
         "use dim_agent_types::ModelCapabilitySnapshot"
       ]
     },

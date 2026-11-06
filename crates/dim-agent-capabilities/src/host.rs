@@ -566,6 +566,15 @@ pub struct CredentialVariablesHost(pub Arc<dyn CredentialVariables>);
 pub trait SelectableModels: Send + Sync + 'static {
     fn selectable(&self, cancel: CancellationToken)
     -> HostFuture<'_, Vec<ModelCapabilitySnapshot>>;
+    /// The models the owner would select for a non-conversational use, with
+    /// the modality operation ids each declares: the same provider, account,
+    /// model, route, credential and status rules as [`Self::selectable`],
+    /// without its text-modality, chat-kind and declared-text-limit
+    /// requirements. A model that declares no modality operation is omitted.
+    fn selectable_for_modality(
+        &self,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, Vec<ModalityModelSnapshot>>;
 }
 pub struct SelectableModelsHost(pub Arc<dyn SelectableModels>);
 

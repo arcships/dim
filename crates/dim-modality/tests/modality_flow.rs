@@ -255,17 +255,81 @@ fn model(model_id: &str) -> Value {
     json!({"providerId": PROVIDER, "modelId": model_id})
 }
 fn operation<'a>(snapshot: &'a Value, operation: &str) -> &'a Value {
+    operation_in(snapshot, "image", operation)
+}
+fn operation_in<'a>(snapshot: &'a Value, category: &str, operation: &str) -> &'a Value {
     snapshot["result"]["categories"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|category| category["category"] == "image")
+        .find(|entry| entry["category"].as_str() == Some(category))
         .unwrap()["operations"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|entry| entry["operation"] == operation)
+        .find(|entry| entry["operation"].as_str() == Some(operation))
         .unwrap()
+}
+
+/// One expected A.1 operation and its Settings key.
+type ExpectedOperation = (&'static str, Option<&'static str>);
+
+fn assert_operations(categories: &[Value], category: &str, expected: &[ExpectedOperation]) {
+    let entry = categories
+        .iter()
+        .find(|entry| entry["category"].as_str() == Some(category))
+        .unwrap();
+    let operations: Vec<(String, Option<String>)> = entry["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|operation| {
+            (
+                operation["operation"].as_str().unwrap().to_owned(),
+                operation["key"].as_str().map(str::to_owned),
+            )
+        })
+        .collect();
+    let wanted: Vec<(String, Option<String>)> = expected
+        .iter()
+        .map(|(operation, key)| ((*operation).to_owned(), key.map(str::to_owned)))
+        .collect();
+    assert_eq!(operations, wanted, "{category}");
+}
+
+/// A non-chat media model that declares modality operations.
+fn media(model_id: &str, operations: &[&str]) -> Value {
+    json!({
+        "modelId": model_id, "displayName": model_id, "status": "active",
+        "capabilities": {"modalities":["image"],"toolCalling":false,"streaming":true,
+            "structuredOutput":false,"vision":false,"audio":false,"reasoning":false},
+        "metadata": {"raw": {"type":"image-generation", "modalityCapabilities": operations}}
+    })
+}
+/// A chat-selectable model that also declares modality operations.
+fn chat(model_id: &str, operations: &[&str]) -> Value {
+    let capabilities = CatalogCapabilities::with_limits(128_000, 16_384);
+    json!({
+        "modelId": model_id, "displayName": model_id, "status": "active",
+        "capabilities": capabilities,
+        "metadata": {"raw": {"modalityCapabilities": operations}}
+    })
+}
+async fn create_provider_with(client: &mut Client, models: Vec<Value>) {
+    assert_ok(
+        &client
+            .rpc(
+                "provider.create",
+                json!({
+                    "providerId": PROVIDER,
+                    "displayName": "Fixture",
+                    "connection": {"driverKind": "openai-compatible", "baseUrl": "http://127.0.0.1:1/v1", "auth": {"type": "anonymous"}},
+                    "models": models,
+                    "enabled": true
+                }),
+            )
+            .await,
+    );
 }
 
 async fn start(
@@ -442,7 +506,10 @@ async fn capabilities_and_configure_resolve_defaults_through_the_fixture_adapter
             json!({"expectedRevision": stale["result"]["revision"], "category": "video", "operation": "generate", "model": model("alpha")}),
         )
         .await;
-    assert_eq!(other["error"]["data"]["appError"], "modality_unavailable");
+    assert_eq!(
+        other["error"]["data"]["appError"], "modality_invalid_selection",
+        "configuring is a settings write; a model outside the video options is refused"
+    );
     let missing_model = client
         .rpc(
             "modality.configure",
@@ -567,6 +634,84 @@ async fn capabilities_and_configure_resolve_defaults_through_the_fixture_adapter
         );
     }
 
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The new Provider read exists for the media models execution rejects: when
+/// an adapter serves one, the operation offers it instead of reporting that
+/// no selectable model is served.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_declared_media_model_served_by_the_adapter_is_an_option() {
+    let fixture = Arc::new(FixtureAdapter::default());
+    fixture.serve(&[("image-media", &["generate"])]);
+    let (server, home) = start(Some(fixture), "dm-declared-adapter").await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_provider_with(&mut client, vec![media("image-media", &["image.generate"])]).await;
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let generate = operation(&snapshot, "generate");
+    assert_eq!(
+        generate["options"],
+        json!([{"providerId": PROVIDER, "modelId": "image-media", "available": true}]),
+        "a declared model the adapter serves is an option without execution selectability: {generate}"
+    );
+    assert_eq!(generate["available"], true);
+    assert_eq!(
+        generate["effective"],
+        json!({"providerId": PROVIDER, "modelId": "image-media", "source": "automatic"})
+    );
+    let understand = operation(&snapshot, "understand");
+    assert!(
+        understand["options"].as_array().unwrap().is_empty(),
+        "the model is not in the execution read understanding uses: {understand}"
+    );
+    let configured = client
+        .rpc(
+            "modality.configure",
+            json!({"expectedRevision": snapshot["result"]["revision"], "category": "image", "operation": "generate", "model": model("image-media")}),
+        )
+        .await;
+    assert_ok(&configured);
+    assert_eq!(
+        operation(&configured, "generate")["effective"],
+        json!({"providerId": PROVIDER, "modelId": "image-media", "source": "default"})
+    );
+    let edit = operation(&snapshot, "edit");
+    assert_eq!(edit["available"], false);
+    assert_eq!(
+        edit["reasons"][0]["detail"], "No selectable model is served by an available adapter",
+        "the adapter narrows the candidates per operation"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// An adapter that serves no model either Provider read names is not the same
+/// as a build without an adapter: the operation says which case it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_adapter_serving_no_provider_model_is_not_reported_as_missing() {
+    let fixture = Arc::new(FixtureAdapter::default());
+    fixture.serve(&[("unknown-model", &["generate"])]);
+    let (server, home) = start(Some(fixture), "dm-adapter-idle").await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_provider_with(&mut client, vec![media("image-media", &["image.generate"])]).await;
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let generate = operation(&snapshot, "generate");
+    assert_eq!(generate["available"], false);
+    assert_eq!(generate["reasons"][0]["dimension"], "adapter");
+    assert_eq!(
+        generate["reasons"][0]["detail"], "The adapter serves no image model Provider lists",
+        "a collected adapter that serves no candidate is not a missing adapter: {generate}"
+    );
+    assert_eq!(
+        generate["options"],
+        json!([{"providerId": PROVIDER, "modelId": "image-media", "available": true}]),
+        "an operation no adapter serves falls back to the declared models"
+    );
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
@@ -757,6 +902,374 @@ async fn a_configured_default_survives_a_restart() {
         "the persisted default is read from the modality settings document"
     );
     assert_eq!(restored["result"]["revision"], revision);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_a1_category_and_operation_is_reported_with_its_default_key() {
+    let (server, home) = start(None, "dm-catalog").await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let categories = snapshot["result"]["categories"].as_array().unwrap();
+    let names: Vec<Option<&str>> = categories
+        .iter()
+        .map(|category| category["category"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            Some("image"),
+            Some("video"),
+            Some("speech"),
+            Some("music"),
+            Some("audio"),
+            Some("asset"),
+            Some("motion"),
+            Some("realtime"),
+            Some("ocr"),
+        ]
+    );
+    assert_operations(
+        categories,
+        "image",
+        &[
+            ("generate", Some("modality.image.generate")),
+            ("edit", Some("modality.image.edit")),
+            ("enhance", Some("modality.image.enhance")),
+            ("understand", Some("modality.image.understand")),
+        ],
+    );
+    assert_operations(
+        categories,
+        "video",
+        &[
+            ("generate", Some("modality.video")),
+            ("edit", Some("modality.video")),
+            ("enhance", Some("modality.video")),
+        ],
+    );
+    assert_operations(
+        categories,
+        "speech",
+        &[
+            ("synthesize", Some("modality.speech.synthesize")),
+            ("transcribe", Some("modality.speech.transcribe")),
+        ],
+    );
+    for (category, operation, key) in [
+        ("music", "generate", "modality.music"),
+        ("audio", "generate", "modality.audio"),
+        ("asset", "generate", "modality.asset"),
+        ("motion", "generate", "modality.motion"),
+        ("realtime", "connect", "modality.realtime"),
+    ] {
+        assert_operations(categories, category, &[(operation, Some(key))]);
+    }
+    assert_operations(categories, "ocr", &[("recognize", None)]);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn declared_models_are_the_options_of_an_operation_without_an_adapter() {
+    let (server, home) = start(None, "dm-declared").await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_provider_with(
+        &mut client,
+        vec![
+            media("video-edit", &["video.edit"]),
+            media("video-generate", &["video.generate", "video.edit"]),
+            chat("text-model", &[]),
+        ],
+    )
+    .await;
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"providerId": PROVIDER, "modelId": "text-model"}),
+            )
+            .await,
+    );
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let generate = operation_in(&snapshot, "video", "generate");
+    assert_eq!(generate["available"], false);
+    assert_eq!(generate["reasons"][0]["dimension"], "build");
+    assert_eq!(
+        generate["options"],
+        json!([{"providerId": PROVIDER, "modelId": "video-generate", "available": true}]),
+        "only a declared model is an option, in Provider's order"
+    );
+    assert_eq!(
+        generate["effective"],
+        json!({"providerId": PROVIDER, "modelId": "video-generate", "source": "automatic"}),
+        "the global selection does not serve video, so the first declared option resolves"
+    );
+    let edit = operation_in(&snapshot, "video", "edit");
+    assert_eq!(
+        edit["options"],
+        json!([
+            {"providerId": PROVIDER, "modelId": "video-edit", "available": true},
+            {"providerId": PROVIDER, "modelId": "video-generate", "available": true}
+        ])
+    );
+    let enhance = operation_in(&snapshot, "video", "enhance");
+    assert!(enhance["options"].as_array().unwrap().is_empty());
+    assert!(enhance["effective"].is_null());
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn defaults_for_category_keyed_and_per_operation_keys_survive_a_restart() {
+    let home = home("dm-keys");
+    let server = start_in(home.clone(), None).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_provider_with(
+        &mut client,
+        vec![
+            media("video-a", &["video.generate"]),
+            media("speech-a", &["speech.synthesize", "speech.transcribe"]),
+        ],
+    )
+    .await;
+    let initial = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&initial);
+    let video = client
+        .rpc(
+            "modality.configure",
+            json!({"expectedRevision": initial["result"]["revision"], "category": "video", "model": model("video-a")}),
+        )
+        .await;
+    assert_ok(&video);
+    for operation in ["generate", "edit", "enhance"] {
+        assert_eq!(
+            operation_in(&video, "video", operation)["default"]["modelId"],
+            "video-a",
+            "the category key governs every video operation"
+        );
+    }
+    let speech = client
+        .rpc(
+            "modality.configure",
+            json!({"expectedRevision": video["result"]["revision"], "category": "speech", "operation": "synthesize", "model": model("speech-a")}),
+        )
+        .await;
+    assert_ok(&speech);
+    assert_eq!(
+        operation_in(&speech, "speech", "synthesize")["default"]["modelId"],
+        "speech-a"
+    );
+    assert!(
+        operation_in(&speech, "speech", "transcribe")["default"].is_null(),
+        "speech keys each operation"
+    );
+    let conflict = client
+        .rpc(
+            "modality.configure",
+            json!({"expectedRevision": initial["result"]["revision"], "category": "video", "model": model("video-a")}),
+        )
+        .await;
+    assert_eq!(
+        conflict["error"]["data"]["appError"], "modality_conflict",
+        "a stale revision writes nothing"
+    );
+    let outside = client
+        .rpc(
+            "modality.configure",
+            json!({"expectedRevision": speech["result"]["revision"], "category": "video", "model": model("speech-a")}),
+        )
+        .await;
+    assert_eq!(
+        outside["error"]["data"]["appError"],
+        "modality_invalid_selection"
+    );
+    assert!(
+        outside["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("video"),
+        "the refusal names the operation: {outside}"
+    );
+    let revision = speech["result"]["revision"].as_str().unwrap().to_owned();
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let server = start_in(home.clone(), None).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let restored = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&restored);
+    assert_eq!(restored["result"]["revision"], revision);
+    for operation in ["generate", "edit", "enhance"] {
+        assert_eq!(
+            operation_in(&restored, "video", operation)["default"]["modelId"],
+            "video-a",
+            "{operation}"
+        );
+    }
+    assert_eq!(
+        operation_in(&restored, "speech", "synthesize")["default"]["modelId"],
+        "speech-a"
+    );
+    assert!(operation_in(&restored, "speech", "transcribe")["default"].is_null());
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A model that declares only a later operation of a category-keyed category
+/// is a valid default, so re-saving the category without `operation` keeps it
+/// even though the earlier rows carry the persisted default as unavailable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_category_wide_resave_accepts_the_default_of_its_last_operation() {
+    let (server, home) = start(None, "dm-category-resave").await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_provider_with(&mut client, vec![media("video-edit", &["video.edit"])]).await;
+    let initial = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&initial);
+    let edited = client
+        .rpc(
+            "modality.configure",
+            json!({"expectedRevision": initial["result"]["revision"], "category": "video", "operation": "edit", "model": model("video-edit")}),
+        )
+        .await;
+    assert_ok(&edited);
+    let resaved = client
+        .rpc(
+            "modality.configure",
+            json!({"expectedRevision": edited["result"]["revision"], "category": "video", "model": model("video-edit")}),
+        )
+        .await;
+    assert_ok(&resaved);
+    for operation in ["generate", "edit", "enhance"] {
+        assert_eq!(
+            operation_in(&resaved, "video", operation)["default"]["modelId"],
+            "video-edit",
+            "the category-wide save keeps the stored default: {operation}"
+        );
+    }
+    let next = client.rpc("modality.capabilities", json!({})).await;
+    assert_eq!(
+        resaved["result"], next["result"],
+        "reply equals the next read"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn operations_without_a_default_key_or_unknown_answers_are_unknown() {
+    let (server, home) = start(None, "dm-unknown").await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let revision = snapshot["result"]["revision"].clone();
+    for params in [
+        json!({"expectedRevision": revision, "category": "ocr", "operation": "recognize", "model": null}),
+        json!({"expectedRevision": revision, "category": "ocr", "model": null}),
+        json!({"expectedRevision": revision, "category": "video", "operation": "unknown", "model": null}),
+        json!({"expectedRevision": revision, "category": "image", "model": null}),
+        json!({"expectedRevision": revision, "category": "unknown", "operation": "generate", "model": null}),
+    ] {
+        let reply = client.rpc("modality.configure", params.clone()).await;
+        assert_eq!(
+            reply["error"]["data"]["appError"], "modality_unknown_operation",
+            "{params}"
+        );
+    }
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn effective_resolves_over_declared_options_and_stays_null_for_an_unavailable_default() {
+    let (server, home) = start(None, "dm-effective").await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_provider_with(
+        &mut client,
+        vec![
+            media("media-option", &["video.generate"]),
+            chat("chat-option", &["video.generate"]),
+        ],
+    )
+    .await;
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"providerId": PROVIDER, "modelId": "chat-option"}),
+            )
+            .await,
+    );
+    let initial = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&initial);
+    let generate = operation_in(&initial, "video", "generate");
+    assert!(generate["default"].is_null());
+    assert_eq!(
+        generate["effective"],
+        json!({"providerId": PROVIDER, "modelId": "chat-option", "source": "automatic"}),
+        "automatic resolution prefers the global selection when it serves the operation"
+    );
+    let configured = client
+        .rpc(
+            "modality.configure",
+            json!({"expectedRevision": initial["result"]["revision"], "category": "video", "operation": "generate", "model": model("chat-option")}),
+        )
+        .await;
+    assert_ok(&configured);
+    assert_eq!(
+        operation_in(&configured, "video", "generate")["effective"]["source"],
+        "default"
+    );
+    let catalog = client
+        .rpc("provider.catalog", json!({"providerId": PROVIDER}))
+        .await;
+    assert_ok(&catalog);
+    assert_ok(
+        &client
+            .rpc(
+                "provider.models.set_enabled",
+                json!({"providerId": PROVIDER, "expectedVersion": catalog["result"]["catalog"]["version"], "modelIds": []}),
+            )
+            .await,
+    );
+    let disabled = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&disabled);
+    let generate = operation_in(&disabled, "video", "generate");
+    assert_eq!(generate["default"]["available"], false, "{generate}");
+    assert_eq!(generate["default"]["reason"]["dimension"], "provider");
+    assert!(
+        generate["effective"].is_null(),
+        "an unavailable default never substitutes another model"
+    );
+    assert_eq!(
+        generate["options"],
+        json!([
+            {"providerId": PROVIDER, "modelId": "media-option", "available": true},
+            {"providerId": PROVIDER, "modelId": "chat-option", "available": false,
+                "reason": {"dimension": "provider", "detail": "Model is no longer selectable"}}
+        ]),
+        "the declared media model stays; the persisted default follows as unavailable"
+    );
+    let cleared = client
+        .rpc(
+            "modality.configure",
+            json!({"expectedRevision": disabled["result"]["revision"], "category": "video", "operation": "generate", "model": null}),
+        )
+        .await;
+    assert_ok(&cleared);
+    assert_eq!(
+        operation_in(&cleared, "video", "generate")["effective"],
+        json!({"providerId": PROVIDER, "modelId": "media-option", "source": "automatic"})
+    );
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();

@@ -1598,6 +1598,249 @@ async fn selectable_models_match_execution_and_hide_unavailable_models() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// The non-conversational read lists models execution rejects (text modality,
+/// chat kind, text limits) when they declare a modality operation, and keeps
+/// every other selectability rule: provider enablement, model enablement,
+/// credential, account and cancellation.
+#[tokio::test]
+async fn selectable_modality_models_carry_declared_operations_without_chat_rules() {
+    let home = std::env::temp_dir().join(format!("provider-modality-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    root.plugin(FileStoragePlugin::new(vec![home.clone()]));
+    root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
+    root.plugin(ManagedProvidersPlugin);
+    root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
+    root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
+    root.plugin(dim_agent_aimux::AimuxPlugin);
+    let view = root.plugin(provider_part(ProviderPlugin::new));
+    tokio::time::timeout(std::time::Duration::from_secs(30), active(&view))
+        .await
+        .unwrap();
+    let provider = root.get::<ProviderService>().unwrap();
+    let selectable = root.get::<SelectableModelsHost>().unwrap();
+    let cancel = CancellationToken::new();
+    const MINE: &str = "00000000-0000-4000-8000-000000000040";
+    const OFF: &str = "00000000-0000-4000-8000-000000000041";
+    const NOCRED: &str = "00000000-0000-4000-8000-000000000042";
+    let media = || -> ModelEntry {
+        serde_json::from_value(json!({
+            "modelId":"modality-media", "displayName":"modality-media", "status":"active",
+            "capabilities":{"modalities":["image"],"toolCalling":false,"streaming":true,
+                "structuredOutput":false,"vision":false,"audio":false,"reasoning":false},
+            "metadata":{"raw":{"type":"image-generation",
+                "modalityCapabilities":["image.generate","image.edit"]}}
+        }))
+        .unwrap()
+    };
+    let both: ModelEntry = serde_json::from_value(json!({
+        "modelId":"modality-both", "displayName":"modality-both", "status":"active",
+        "capabilities":{"modalities":["text","image"],"toolCalling":true,"streaming":true,
+            "structuredOutput":true,"vision":true,"audio":false,"reasoning":false,
+            "contextWindow":32000,"maxOutputTokens":1000},
+        "metadata":{"raw":{"modalityCapabilities":["image.generate"]}}
+    }))
+    .unwrap();
+    let mut mine = input(
+        MINE,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("modality-key"),
+        "modality",
+        1000,
+    );
+    mine.models = vec![media(), both, model("modality-text", 1000)];
+    let created = provider.create(mine, &cancel).await.unwrap();
+    let mut off = input(
+        OFF,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Anonymous,
+        None,
+        "off",
+        1000,
+    );
+    off.enabled = false;
+    off.models = vec![media()];
+    provider.create(off, &cancel).await.unwrap();
+    let mut nocred = input(
+        NOCRED,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("modality-key"),
+        "nocred",
+        1000,
+    );
+    nocred.models = vec![media()];
+    provider.create(nocred, &cancel).await.unwrap();
+    // Clear the credential while the provider stays enabled: the persisted
+    // record then reads as unavailable, like one written before the
+    // credential requirement existed.
+    let database = rusqlite::Connection::open(home.join("native.sqlite")).unwrap();
+    let (version, body): (u32, String) = database
+        .query_row(
+            "SELECT version,record FROM providers WHERE provider_id=?1",
+            [NOCRED],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let mut body: Value = serde_json::from_str(&body).unwrap();
+    body["credential"] = Value::Null;
+    database
+        .execute(
+            "UPDATE providers SET version=?2,record=?3 WHERE provider_id=?1",
+            rusqlite::params![NOCRED, version, body.to_string()],
+        )
+        .unwrap();
+
+    let modality = selectable
+        .0
+        .selectable_for_modality(cancel.clone())
+        .await
+        .unwrap();
+    let listed: Vec<(String, Vec<String>)> = modality
+        .iter()
+        .filter(|model| model.target.provider_id == MINE)
+        .map(|model| (model.target.model_id.clone(), model.operations.clone()))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            (
+                "modality-media".to_owned(),
+                vec!["image.generate".to_owned(), "image.edit".to_owned()]
+            ),
+            (
+                "modality-both".to_owned(),
+                vec!["image.generate".to_owned()]
+            ),
+        ],
+        "a model that declares no operation is omitted"
+    );
+    assert!(
+        !modality
+            .iter()
+            .any(|model| model.target.provider_id == OFF || model.target.provider_id == NOCRED),
+        "a disabled provider and one without a credential stay out: {modality:?}"
+    );
+    let bundled = BundledCatalog::load().unwrap();
+    assert!(
+        bundled
+            .provider("openai-codex")
+            .unwrap()
+            .models
+            .iter()
+            .find(|model| model.model_id == "gpt-image-2")
+            .unwrap()
+            .metadata
+            .as_ref()
+            .unwrap()
+            .raw
+            .contains_key("modalityCapabilities"),
+        "the bundled managed provider does declare a media model"
+    );
+    assert!(
+        !modality
+            .iter()
+            .any(|model| model.target.provider_id == "openai-codex"),
+        "an unauthenticated managed account is not selectable"
+    );
+    let chat = selectable.0.selectable(cancel.clone()).await.unwrap();
+    let chat_ids: Vec<&str> = chat
+        .iter()
+        .filter(|model| model.target.provider_id == MINE)
+        .map(|model| model.target.model_id.as_str())
+        .collect();
+    assert_eq!(chat_ids, ["modality-both", "modality-text"]);
+    assert!(
+        !chat
+            .iter()
+            .any(|model| model.target.model_id == "modality-media"),
+        "a non-chat media model stays out of execution"
+    );
+    let catalog = provider
+        .catalog_for(MINE.into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let media = catalog
+        .models
+        .iter()
+        .find(|model| model.id == "modality-media")
+        .unwrap();
+    assert!(
+        !media.missing_limits.is_empty(),
+        "the entry declares no text limits: {media:?}"
+    );
+    assert_eq!(
+        media.unavailable_reason.as_deref(),
+        Some("provider_unavailable")
+    );
+    assert!(
+        selectable
+            .0
+            .selectable_for_modality(cancel.clone())
+            .await
+            .unwrap()
+            .iter()
+            .any(|model| model.target.model_id == "modality-media"),
+        "its conversational reason does not exclude the model from modality"
+    );
+
+    provider
+        .set_enabled_models(
+            MINE.into(),
+            created.version.unwrap(),
+            vec!["modality-text".into()],
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let modality = selectable
+        .0
+        .selectable_for_modality(cancel.clone())
+        .await
+        .unwrap();
+    let listed: Vec<&str> = modality
+        .iter()
+        .filter(|model| model.target.provider_id == MINE)
+        .map(|model| model.target.model_id.as_str())
+        .collect();
+    assert_eq!(
+        listed,
+        ["modality-media"],
+        "a disabled model leaves the modality options"
+    );
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        selectable.0.selectable_for_modality(cancelled).await,
+        Err(HostError::Cancelled(_))
+    ));
+    root.shutdown().await.unwrap();
+    let error = selectable
+        .0
+        .selectable_for_modality(CancellationToken::new())
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        matches!(
+            error,
+            HostError::Failed {
+                kind: HostErrorKind::OwnerClosed,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 #[tokio::test]
 async fn remote_catalog_refresh_preserves_edits_and_rejects_stale_or_partial_results() {
     use axum::{
