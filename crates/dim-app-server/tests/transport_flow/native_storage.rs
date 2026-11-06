@@ -813,6 +813,77 @@ async fn damaged_native_records_do_not_hide_healthy_agents_or_sessions() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restored_branch_accepts_each_submission_id_once() {
+    let directory = std::env::temp_dir().join(format!("dim-submission-{}", uuid::Uuid::new_v4()));
+    let config = ServerConfig {
+        database_path: Some(directory.join("dimcode.sqlite")),
+        ..Default::default()
+    };
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), config.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client.rpc("session.create", create(json!([]))).await;
+    assert_ok(&created);
+    let session_id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let submission = uuid::Uuid::new_v4().to_string();
+    let accepted = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId":session_id,"branchId":"main","submissionId":submission,"text":"once"}),
+        )
+        .await;
+    assert_ok(&accepted);
+    let event = accepted["result"]["event"].clone();
+    assert_ok(
+        &client
+            .rpc(
+                "session.idle",
+                json!({"sessionId":session_id,"branchId":"main"}),
+            )
+            .await,
+    );
+    drop(client);
+    drop(agent);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_ok(
+        &client
+            .rpc("session.attach", json!({"sessionId":session_id}))
+            .await,
+    );
+    let session = agent.get_session(&session_id).unwrap();
+    let before = chain_events(&session, "main", ..).await.unwrap();
+    let again = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId":session_id,"branchId":"main","submissionId":submission,"text":"twice"}),
+        )
+        .await;
+    assert_ok(&again);
+    assert_eq!(again["result"]["event"], event);
+    assert_eq!(
+        chain_events(&session, "main", ..).await.unwrap().len(),
+        before.len()
+    );
+    let looked_up = client
+        .rpc(
+            "session.input_lookup",
+            json!({"sessionId":session_id,"branchId":"main","submissionId":submission}),
+        )
+        .await;
+    assert_eq!(looked_up["result"]["status"], "accepted");
+    assert_eq!(looked_up["result"]["event"], event);
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    drop(session);
+    drop(agent);
+    tokio::fs::remove_dir_all(directory).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_sessions_restore_owners_branches_and_continue_with_original_ids() {
     let directory = std::env::temp_dir().join(format!("dim-native-{}", uuid::Uuid::new_v4()));
     let config = ServerConfig {

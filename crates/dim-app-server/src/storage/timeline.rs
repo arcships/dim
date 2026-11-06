@@ -16,9 +16,8 @@ use dim_agent_capabilities::{
 use dim_agent_runtime::Names;
 use dim_agent_runtime::{
     AgentError, BoxFuture, BranchRecord, PublishCallback, Result, SessionConfig, StoredBranch,
-    StoredEvent, StoredKeyBlock, StoredSubmission, TimelineKey, TimelineQuery,
-    TimelineQueryDirection, TimelineQueryFlag, TimelineQueryPage, TimelineQueryScope,
-    TimelineStore, TimelineTrace, panic_message,
+    StoredEvent, TimelineKey, TimelineQuery, TimelineQueryDirection, TimelineQueryFlag,
+    TimelineQueryPage, TimelineQueryScope, TimelineStore, TimelineTrace, panic_message,
 };
 use dim_agent_types::{
     AgentEvent, BranchCreateAt, ContextCompactionResult, EventKind, ModelRequest, RecoverySnapshot,
@@ -2003,46 +2002,58 @@ fn query_rows(
         }
         let mut clauses = Vec::new();
         for path in paths {
-            let path = text(&path);
-            match json_text(&predicate.value) {
-                Some(literal) => {
-                    clauses.push("(body -> ?) = ?");
-                    parameters.extend([path, literal]);
+            match &predicate.value {
+                serde_json::Value::String(value) => {
+                    clauses.push(format!(
+                        "(json_valid(body) AND json_type(body, '{path}') = 'text' \
+                         AND json_extract(body, '{path}') = ?)"
+                    ));
+                    parameters.push(text(value));
                 }
-                None => {
-                    clauses.push("(json_type(body, ?) = ? AND json_extract(body, ?) IS ?)");
-                    parameters.extend([
-                        path.clone(),
-                        text(json_type_name(&predicate.value)),
-                        path,
-                        json_value(&predicate.value)?,
-                    ]);
-                }
+                _ => match json_text(&predicate.value) {
+                    Some(literal) => {
+                        clauses.push(format!("((body -> '{path}') = ?)"));
+                        parameters.push(literal);
+                    }
+                    None => {
+                        clauses.push(format!(
+                            "(json_type(body, '{path}') = ? AND json_extract(body, '{path}') IS ?)"
+                        ));
+                        parameters.extend([
+                            text(json_type_name(&predicate.value)),
+                            json_value(&predicate.value)?,
+                        ]);
+                    }
+                },
             }
         }
-        let record_path = text(&format!("$.event.data.{}", predicate.path));
-        match json_text(&predicate.value) {
-            Some(literal) => {
-                clauses.push(
-                    "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
-                       WHERE (r.value -> ?) = ? \
-                       AND json_extract(r.value, '$.event.sequence') <= ?))",
-                );
-                parameters.extend([record_path, literal, bound]);
-            }
-            None => {
-                clauses.push(
-                    "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
-                       WHERE json_type(r.value, ?) = ? AND json_extract(r.value, ?) IS ? \
-                       AND json_extract(r.value, '$.event.sequence') <= ?))",
-                );
-                parameters.extend([
-                    record_path.clone(),
-                    text(json_type_name(&predicate.value)),
-                    record_path,
-                    json_value(&predicate.value)?,
-                    bound,
-                ]);
+        if query.kinds.is_empty() || query.kinds.iter().any(|kind| output_row(kind)) {
+            let record_path = text(&format!("$.event.data.{}", predicate.path));
+            match json_text(&predicate.value) {
+                Some(literal) => {
+                    clauses.push(
+                        "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
+                           WHERE (r.value -> ?) = ? \
+                           AND json_extract(r.value, '$.event.sequence') <= ?))"
+                            .to_owned(),
+                    );
+                    parameters.extend([record_path, literal, bound]);
+                }
+                None => {
+                    clauses.push(
+                        "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
+                           WHERE json_type(r.value, ?) = ? AND json_extract(r.value, ?) IS ? \
+                           AND json_extract(r.value, '$.event.sequence') <= ?))"
+                            .to_owned(),
+                    );
+                    parameters.extend([
+                        record_path.clone(),
+                        text(json_type_name(&predicate.value)),
+                        record_path,
+                        json_value(&predicate.value)?,
+                        bound,
+                    ]);
+                }
             }
         }
         sql.push_str(&format!(" AND ({})", clauses.join(" OR ")));
@@ -3032,71 +3043,6 @@ impl TimelineStore for SqliteTimelineStore {
                     |row| Ok(RecoverySnapshot { sequence: read_sequence(row, 0)?, event_id: row.get(1)?, interpreter: row.get(2)?, state: row.get(3)? }),
                 ).optional().map_err(error)
             }).await
-        })
-    }
-    fn submission_index<'a>(
-        &'a self,
-        key: &'a TimelineKey,
-        through: u64,
-    ) -> BoxFuture<'a, Result<Vec<StoredSubmission>>> {
-        Box::pin(async move {
-            let key = key.clone();
-            self.db
-                .run_read(move |connection| {
-                    let mut statement = connection
-                        .prepare_cached(
-                            "SELECT submission_id, event_id, sequence FROM timeline_submissions \
-                             WHERE session_id=?1 AND branch_id=?2 AND sequence<=?3 ORDER BY sequence",
-                        )
-                        .map_err(error)?;
-                    let rows = statement
-                        .query_map(
-                            params![key.session_id, key.branch_id, sql_sequence(through)?],
-                            |row| {
-                                Ok(StoredSubmission {
-                                    submission_id: row.get(0)?,
-                                    event_id: row.get(1)?,
-                                    sequence: read_sequence(row, 2)?,
-                                })
-                            },
-                        )
-                        .map_err(error)?;
-                    rows.map(|row| row.map_err(error)).collect()
-                })
-                .await
-        })
-    }
-    fn live_keys<'a>(
-        &'a self,
-        key: &'a TimelineKey,
-        through: u64,
-    ) -> BoxFuture<'a, Result<Vec<StoredKeyBlock>>> {
-        Box::pin(async move {
-            let key = key.clone();
-            self.db
-                .run_read(move |connection| {
-                    let mut statement = connection
-                        .prepare_cached(
-                            "WITH latest AS (SELECT kb.key, kb.sequence, kb.block_index, kb.input_id, kb.text, kb.retire, ROW_NUMBER() OVER (PARTITION BY kb.key ORDER BY kb.sequence DESC, kb.block_index DESC) AS rn FROM timeline_key_blocks kb WHERE kb.session_id=?1 AND kb.branch_id=?2 AND kb.sequence<=?3 AND kb.sequence > COALESCE((SELECT MAX(o.sequence) FROM timeline_openings o WHERE o.session_id=kb.session_id AND o.branch_id=kb.branch_id AND o.sequence<=?3), 0) AND NOT EXISTS (SELECT 1 FROM timeline_deleted_inputs d WHERE d.session_id=kb.session_id AND d.branch_id=kb.branch_id AND d.input_id=kb.input_id)) SELECT key, sequence, block_index, input_id, text FROM latest WHERE rn=1 AND retire=0 ORDER BY sequence, block_index",
-                        )
-                        .map_err(error)?;
-                    let rows = statement
-                        .query_map(
-                            params![key.session_id, key.branch_id, sql_sequence(through)?],
-                            |row| {
-                                Ok(StoredKeyBlock {
-                                    key: row.get(0)?,
-                                    sequence: read_sequence(row, 1)?,
-                                    block_index: row.get::<_, i64>(2)? as u64,
-                                    input_id: row.get(3)?,
-                                    text: row.get(4)?,
-                                })
-                            },
-                        )
-                        .map_err(error)?;
-                    rows.map(|row| row.map_err(error)).collect()
-                })
-                .await
         })
     }
 }

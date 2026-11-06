@@ -334,10 +334,11 @@ fn same_schema(actual: &[(String, String)], mut expected: Vec<(&str, String)>) -
 }
 /// The read indexes the daemon creates at open: the latest-turn window's
 /// ([session-history-window §5.1](../../../../docs/design/appserver/session-history-window.md#51-the-derived-index)),
-/// the policy window's turn starts, and the event query's by kind, which carries
-/// the event id so a kind read needs no table body for it (ADR 019 D4). They
-/// carry no data and no decode rule, so they are not part of the format: `schema`
-/// and the format gate ignore them, and every open recreates them.
+/// the policy window's turn starts, the event query's by kind, which carries
+/// the event id so a kind read needs no table body for it (ADR 019 D4), and
+/// the input submission id, which makes the duplicate check a point read.
+/// They carry no data and no decode rule, so they are not part of the format:
+/// `schema` and the format gate ignore them, and every open recreates them.
 const DERIVED_INDEXES: &[(&str, &str)] = &[
     (
         "timeline_history_anchors",
@@ -352,90 +353,8 @@ const DERIVED_INDEXES: &[(&str, &str)] = &[
         "CREATE INDEX IF NOT EXISTS timeline_policy_turns ON timeline_events(session_id, branch_id, kind, sequence, event_id) WHERE kind = 'turn/start'",
     ),
     (
-        "timeline_submissions",
-        "CREATE TABLE IF NOT EXISTS timeline_submissions (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, submission_id TEXT NOT NULL, event_id TEXT NOT NULL, sequence INTEGER NOT NULL, PRIMARY KEY (session_id, branch_id, submission_id, event_id))",
-    ),
-    (
-        "timeline_submissions_ai",
-        "CREATE TRIGGER IF NOT EXISTS timeline_submissions_ai AFTER INSERT ON timeline_events BEGIN \
-           INSERT OR REPLACE INTO timeline_submissions(session_id, branch_id, submission_id, event_id, sequence) \
-           SELECT NEW.session_id, NEW.branch_id, json_extract(NEW.body, '$.record.event.data.submission_id'), NEW.event_id, NEW.sequence \
-           WHERE NEW.kind = 'input/message' AND NEW.event_id IS NOT NULL AND json_valid(NEW.body) \
-             AND json_extract(NEW.body, '$.record.event.data.submission_id') IS NOT NULL; \
-         END",
-    ),
-    (
-        "timeline_submissions_au",
-        "CREATE TRIGGER IF NOT EXISTS timeline_submissions_au AFTER UPDATE ON timeline_events BEGIN \
-           DELETE FROM timeline_submissions WHERE session_id = OLD.session_id AND branch_id = OLD.branch_id AND event_id = OLD.event_id; \
-           INSERT OR REPLACE INTO timeline_submissions(session_id, branch_id, submission_id, event_id, sequence) \
-           SELECT NEW.session_id, NEW.branch_id, json_extract(NEW.body, '$.record.event.data.submission_id'), NEW.event_id, NEW.sequence \
-           WHERE NEW.kind = 'input/message' AND NEW.event_id IS NOT NULL AND json_valid(NEW.body) \
-             AND json_extract(NEW.body, '$.record.event.data.submission_id') IS NOT NULL; \
-         END",
-    ),
-    (
-        "timeline_submissions_ad",
-        "CREATE TRIGGER IF NOT EXISTS timeline_submissions_ad AFTER DELETE ON timeline_events BEGIN \
-           DELETE FROM timeline_submissions WHERE session_id = OLD.session_id AND branch_id = OLD.branch_id AND event_id = OLD.event_id; \
-         END",
-    ),
-    (
-        "timeline_key_blocks",
-        "CREATE TABLE IF NOT EXISTS timeline_key_blocks (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, key TEXT NOT NULL, sequence INTEGER NOT NULL, block_index INTEGER NOT NULL, input_id TEXT NOT NULL, text TEXT NOT NULL, retire INTEGER NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY (session_id, branch_id, event_id, block_index))",
-    ),
-    (
-        "timeline_deleted_inputs",
-        "CREATE TABLE IF NOT EXISTS timeline_deleted_inputs (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, input_id TEXT NOT NULL, sequence INTEGER NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY (session_id, branch_id, event_id))",
-    ),
-    (
-        "timeline_openings",
-        "CREATE TABLE IF NOT EXISTS timeline_openings (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY (session_id, branch_id, event_id))",
-    ),
-    (
-        "timeline_key_blocks_ai",
-        "CREATE TRIGGER IF NOT EXISTS timeline_key_blocks_ai AFTER INSERT ON timeline_events BEGIN \
-           INSERT OR REPLACE INTO timeline_key_blocks(session_id, branch_id, key, sequence, block_index, input_id, text, retire, event_id) \
-           SELECT NEW.session_id, NEW.branch_id, json_extract(j.value, '$.key'), NEW.sequence, CAST(j.key AS INTEGER), NEW.event_id, json_extract(j.value, '$.text'), COALESCE(json_extract(j.value, '$.retire'), 0), NEW.event_id \
-           FROM json_each(json_extract(NEW.body, '$.record.event.data.blocks')) AS j \
-           WHERE NEW.kind = 'input/message' AND json_valid(NEW.body) \
-             AND json_type(j.value, '$.key') = 'text' AND json_type(j.value, '$.text') = 'text'; \
-           INSERT OR REPLACE INTO timeline_deleted_inputs(session_id, branch_id, input_id, sequence, event_id) \
-           SELECT NEW.session_id, NEW.branch_id, json_extract(NEW.body, '$.record.event.data.input_id'), NEW.sequence, NEW.event_id \
-           WHERE NEW.kind = 'input/deleted' AND json_valid(NEW.body) \
-             AND json_extract(NEW.body, '$.record.event.data.input_id') IS NOT NULL; \
-           INSERT OR REPLACE INTO timeline_openings(session_id, branch_id, sequence, event_id) \
-           SELECT NEW.session_id, NEW.branch_id, NEW.sequence, NEW.event_id \
-           WHERE NEW.kind IN ('branch/start', 'session/forked'); \
-         END",
-    ),
-    (
-        "timeline_key_blocks_au",
-        "CREATE TRIGGER IF NOT EXISTS timeline_key_blocks_au AFTER UPDATE ON timeline_events BEGIN \
-           DELETE FROM timeline_key_blocks WHERE session_id = OLD.session_id AND branch_id = OLD.branch_id AND event_id = OLD.event_id; \
-           DELETE FROM timeline_deleted_inputs WHERE session_id = OLD.session_id AND branch_id = OLD.branch_id AND event_id = OLD.event_id; \
-           DELETE FROM timeline_openings WHERE session_id = OLD.session_id AND branch_id = OLD.branch_id AND event_id = OLD.event_id; \
-           INSERT OR REPLACE INTO timeline_key_blocks(session_id, branch_id, key, sequence, block_index, input_id, text, retire, event_id) \
-           SELECT NEW.session_id, NEW.branch_id, json_extract(j.value, '$.key'), NEW.sequence, CAST(j.key AS INTEGER), NEW.event_id, json_extract(j.value, '$.text'), COALESCE(json_extract(j.value, '$.retire'), 0), NEW.event_id \
-           FROM json_each(json_extract(NEW.body, '$.record.event.data.blocks')) AS j \
-           WHERE NEW.kind = 'input/message' AND json_valid(NEW.body) \
-             AND json_type(j.value, '$.key') = 'text' AND json_type(j.value, '$.text') = 'text'; \
-           INSERT OR REPLACE INTO timeline_deleted_inputs(session_id, branch_id, input_id, sequence, event_id) \
-           SELECT NEW.session_id, NEW.branch_id, json_extract(NEW.body, '$.record.event.data.input_id'), NEW.sequence, NEW.event_id \
-           WHERE NEW.kind = 'input/deleted' AND json_valid(NEW.body) \
-             AND json_extract(NEW.body, '$.record.event.data.input_id') IS NOT NULL; \
-           INSERT OR REPLACE INTO timeline_openings(session_id, branch_id, sequence, event_id) \
-           SELECT NEW.session_id, NEW.branch_id, NEW.sequence, NEW.event_id \
-           WHERE NEW.kind IN ('branch/start', 'session/forked'); \
-         END",
-    ),
-    (
-        "timeline_key_blocks_ad",
-        "CREATE TRIGGER IF NOT EXISTS timeline_key_blocks_ad AFTER DELETE ON timeline_events BEGIN \
-           DELETE FROM timeline_key_blocks WHERE session_id = OLD.session_id AND branch_id = OLD.branch_id AND event_id = OLD.event_id; \
-           DELETE FROM timeline_deleted_inputs WHERE session_id = OLD.session_id AND branch_id = OLD.branch_id AND event_id = OLD.event_id; \
-           DELETE FROM timeline_openings WHERE session_id = OLD.session_id AND branch_id = OLD.branch_id AND event_id = OLD.event_id; \
-         END",
+        "timeline_input_submissions",
+        "CREATE INDEX IF NOT EXISTS timeline_input_submissions ON timeline_events(session_id, branch_id, kind, json_extract(body, '$.record.event.data.submission_id'), sequence) WHERE json_valid(body)",
     ),
 ];
 /// The schema objects of `connection`'s database that belong to the format,
@@ -449,7 +368,7 @@ fn schema(connection: &Connection) -> Result<Vec<(String, String)>> {
     let mut query = connection
         .prepare(&format!(
             "SELECT name, sql FROM sqlite_master \
-             WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE 'timeline_submissions%' AND name NOT IN ({placeholders}) ORDER BY name"
+             WHERE name NOT LIKE 'sqlite_%' AND name NOT IN ({placeholders}) ORDER BY name"
         ))
         .map_err(storage)?;
     let objects = query
@@ -815,64 +734,6 @@ impl SqliteStorage {
         }
         for (_, sql) in DERIVED_INDEXES {
             tx.execute_batch(sql).map_err(storage)?;
-        }
-        let submission_rows: i64 = tx
-            .query_row("SELECT count(*) FROM timeline_submissions", [], |row| {
-                row.get(0)
-            })
-            .map_err(storage)?;
-        if submission_rows == 0 {
-            tx.execute_batch(
-                "INSERT OR REPLACE INTO timeline_submissions(session_id, branch_id, submission_id, event_id, sequence) \
-                 SELECT session_id, branch_id, json_extract(body, '$.record.event.data.submission_id'), event_id, sequence \
-                 FROM timeline_events \
-                 WHERE kind = 'input/message' AND event_id IS NOT NULL AND json_valid(body) \
-                   AND json_extract(body, '$.record.event.data.submission_id') IS NOT NULL",
-            )
-            .map_err(storage)?;
-        }
-        let key_rows: i64 = tx
-            .query_row("SELECT count(*) FROM timeline_key_blocks", [], |row| {
-                row.get(0)
-            })
-            .map_err(storage)?;
-        if key_rows == 0 {
-            tx.execute_batch(
-                "INSERT OR REPLACE INTO timeline_key_blocks(session_id, branch_id, key, sequence, block_index, input_id, text, retire, event_id) \
-                 SELECT e.session_id, e.branch_id, json_extract(j.value, '$.key'), e.sequence, CAST(j.key AS INTEGER), e.event_id, json_extract(j.value, '$.text'), COALESCE(json_extract(j.value, '$.retire'), 0), e.event_id \
-                 FROM timeline_events e, json_each(json_extract(e.body, '$.record.event.data.blocks')) AS j \
-                 WHERE e.kind = 'input/message' AND json_valid(e.body) \
-                   AND json_type(j.value, '$.key') = 'text' AND json_type(j.value, '$.text') = 'text'",
-            )
-            .map_err(storage)?;
-        }
-        let deleted_rows: i64 = tx
-            .query_row("SELECT count(*) FROM timeline_deleted_inputs", [], |row| {
-                row.get(0)
-            })
-            .map_err(storage)?;
-        if deleted_rows == 0 {
-            tx.execute_batch(
-                "INSERT OR REPLACE INTO timeline_deleted_inputs(session_id, branch_id, input_id, sequence, event_id) \
-                 SELECT session_id, branch_id, json_extract(body, '$.record.event.data.input_id'), sequence, event_id \
-                 FROM timeline_events \
-                 WHERE kind = 'input/deleted' AND json_valid(body) \
-                   AND json_extract(body, '$.record.event.data.input_id') IS NOT NULL",
-            )
-            .map_err(storage)?;
-        }
-        let opening_rows: i64 = tx
-            .query_row("SELECT count(*) FROM timeline_openings", [], |row| {
-                row.get(0)
-            })
-            .map_err(storage)?;
-        if opening_rows == 0 {
-            tx.execute_batch(
-                "INSERT OR REPLACE INTO timeline_openings(session_id, branch_id, sequence, event_id) \
-                 SELECT session_id, branch_id, sequence, event_id FROM timeline_events \
-                 WHERE kind IN ('branch/start', 'session/forked')",
-            )
-            .map_err(storage)?;
         }
         tx.commit().map_err(storage)?;
         connection

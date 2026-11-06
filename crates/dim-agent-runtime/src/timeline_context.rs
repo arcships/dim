@@ -387,6 +387,11 @@ impl TimelineContext {
         }
         data.validate()
             .map_err(|reason| AgentError::InvalidInput(reason.into()))?;
+        if let Some(id) = &data.submission_id
+            && let Some((_, event)) = self.find_submission(id).await?
+        {
+            return Ok(event);
+        }
         let result = self.timeline.input_checked(data, || {
             if self.ended() {
                 return Err(AgentError::BranchEnded(self.id.clone()));
@@ -400,43 +405,51 @@ impl TimelineContext {
     }
     /// The committed input with submission id `id`, once it is published.
     pub(crate) async fn lookup(&self, id: &str) -> Result<Option<Arc<AgentEvent>>> {
-        let Some(input) = self.timeline.submission(id)? else {
+        let Some((sequence, event)) = self.find_submission(id).await? else {
             return Ok(None);
         };
         let _ = self
             .timeline
             .watch()
-            .wait_for(|&(published, closed)| published >= input.sequence || closed)
+            .wait_for(|&(published, closed)| published >= sequence || closed)
             .await;
-        if self.timeline.sequence() < input.sequence {
+        if self.timeline.sequence() < sequence {
             return Err(self
                 .timeline
                 .failure()
                 .unwrap_or_else(|| AgentError::Closed(self.id().into())));
         }
-        self.timeline
+        Ok(Some(event))
+    }
+    /// The branch's input with submission id `id`: its sequence and event.
+    /// The read includes facts still publishing, so a duplicate that races
+    /// the first write finds it.
+    async fn find_submission(&self, id: &str) -> Result<Option<(u64, Arc<AgentEvent>)>> {
+        let reply = self
+            .timeline
             .query(TimelineQuery {
                 scope: TimelineQueryScope::Branch,
-                include_publishing: false,
+                include_publishing: true,
                 from_event: None,
                 from_sequence: None,
                 order_by: TimelineQueryOrderBy::Sequence,
                 direction: TimelineQueryDirection::Ascending,
-                kinds: Vec::new(),
+                kinds: vec!["input/message".into()],
                 flags: Vec::new(),
-                event_id: Some(input.id),
-                predicate: None,
-                limit: std::num::NonZeroU64::MIN,
+                event_id: None,
+                predicate: Some(TimelineQueryPredicate {
+                    path: "submission_id".into(),
+                    value: serde_json::Value::String(id.into()),
+                }),
+                limit: std::num::NonZeroU64::new(2).expect("two is nonzero"),
                 offset: 0,
             })
-            .await?
-            .events
-            .into_iter()
-            .next()
-            .ok_or_else(|| {
-                AgentError::Storage(format!("committed input {} is missing", input.sequence))
-            })
-            .map(Some)
+            .await?;
+        match reply.events.as_slice() {
+            [] => Ok(None),
+            [event] => Ok(Some((event.sequence, event.clone()))),
+            _ => Err(AgentError::AmbiguousSubmission(id.into())),
+        }
     }
     /// The input at `sequence`, a submission this branch already holds. The
     /// duplicate may arrive while its first write is still in flight, so the

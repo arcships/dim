@@ -18,7 +18,7 @@ use std::{
     collections::{HashMap, VecDeque},
     num::NonZeroU64,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::watch;
@@ -79,11 +79,8 @@ struct Inner {
     restored_sequence: u64,
     data: Mutex<Data>,
     commit: Mutex<()>,
-    /// The submission ids of the inputs the branch was restored with, set
-    /// before the branch accepts input.
-    restored: OnceLock<HashMap<String, Submission>>,
-    /// The submission ids of the inputs committed since, written under the
-    /// commit lock.
+    /// The submission ids of the inputs this branch wrote since it was built,
+    /// written under the commit lock.
     submissions: Mutex<HashMap<String, Submission>>,
     changed: watch::Sender<(u64, bool)>,
     faults: FaultReporter,
@@ -91,11 +88,10 @@ struct Inner {
 /// The committed input one submission id names.
 #[derive(Debug, Clone)]
 pub(crate) struct SubmissionInput {
-    pub id: String,
     pub sequence: u64,
 }
-/// The inputs a branch holds for one submission id: one, by its event id and
-/// sequence, or several, written before the branch accepted each id once.
+/// The inputs this branch wrote for one submission id: one, by its sequence,
+/// or several, written before the branch accepted each id once.
 #[derive(Debug, Clone)]
 enum Submission {
     Input(SubmissionInput),
@@ -112,7 +108,6 @@ fn index_submission(index: &mut HashMap<String, Submission>, event: &AgentEvent)
             .and_modify(|found| *found = Submission::Ambiguous)
             .or_insert_with(|| {
                 Submission::Input(SubmissionInput {
-                    id: event.id.clone(),
                     sequence: event.sequence,
                 })
             });
@@ -209,11 +204,6 @@ impl Timeline {
                 ..Default::default()
             }),
             commit: Mutex::new(()),
-            restored: if sequence == 0 {
-                OnceLock::from(HashMap::new())
-            } else {
-                OnceLock::new()
-            },
             submissions: Mutex::default(),
             changed: watch::channel((sequence, false)).0,
             faults,
@@ -258,10 +248,11 @@ impl Timeline {
         let _commit = self.0.commit.lock().unwrap();
         self.commit(originals, register)
     }
-    /// Appends `data` as one `input/message`, unless an input with its
-    /// submission id is already committed on this branch: the branch accepts
-    /// each id once. The check and the append hold the commit lock, so of
-    /// concurrent inputs with one id exactly one is written.
+    /// Appends `data` as one `input/message`, unless this branch already wrote
+    /// an input with its submission id: the branch accepts each id once. The
+    /// check and the append hold the commit lock, so of concurrent inputs
+    /// with one id exactly one is written. Inputs from before the branch was
+    /// built are checked by the caller before this call.
     pub(crate) fn input_checked(
         &self,
         data: InputMessageData,
@@ -270,7 +261,7 @@ impl Timeline {
         let _append = AppendGuard::enter()?;
         let _commit = self.0.commit.lock().unwrap();
         if let Some(id) = &data.submission_id
-            && let Some(input) = self.submission(id)?
+            && let Some(input) = self.written_submission(id)?
         {
             return Ok(Appended::Existing(input.sequence));
         }
@@ -280,59 +271,15 @@ impl Timeline {
             events.pop().expect("single-event batch returned one event"),
         ))
     }
-    /// The committed input with submission id `id`: its event id and sequence.
-    pub(crate) fn submission(&self, id: &str) -> Result<Option<SubmissionInput>> {
-        let restored = self.0.restored.get().ok_or_else(|| {
-            AgentError::fault("timeline.input", "restored submissions are not indexed")
-        })?;
-        let committed = self.0.submissions.lock().unwrap();
-        match (restored.get(id), committed.get(id)) {
-            (None, None) => Ok(None),
-            (Some(Submission::Input(input)), None) | (None, Some(Submission::Input(input))) => {
-                Ok(Some(input.clone()))
-            }
-            _ => Err(AgentError::AmbiguousSubmission(id.into())),
+    /// The input this branch wrote with submission id `id` since it was built.
+    fn written_submission(&self, id: &str) -> Result<Option<SubmissionInput>> {
+        let submissions = self.0.submissions.lock().unwrap();
+        match submissions.get(id) {
+            None => Ok(None),
+            Some(Submission::Input(input)) => Ok(Some(input.clone())),
+            Some(Submission::Ambiguous) => Err(AgentError::AmbiguousSubmission(id.into())),
         }
     }
-    /// The live keyed raw blocks of this branch at `through`.
-    pub async fn live_keys(&self, through: u64) -> Result<Vec<crate::StoredKeyBlock>> {
-        if through > self.sequence() {
-            return Err(AgentError::InvalidInput(format!(
-                "future timeline sequence {through}"
-            )));
-        }
-        self.0.store.live_keys(&self.0.key, through).await
-    }
-
-    /// Indexes the submission ids of the inputs the branch was restored
-    /// with. The branch's build calls it before the branch accepts input, so
-    /// the published head is the restored head and nothing of this branch is
-    /// written and not yet published.
-    pub(crate) async fn index_submissions(&self) -> Result<()> {
-        if self.0.restored.get().is_some() {
-            return Ok(());
-        }
-        let rows = self
-            .0
-            .store
-            .submission_index(&self.0.key, self.sequence())
-            .await?;
-        let mut restored = HashMap::new();
-        for row in rows {
-            restored
-                .entry(row.submission_id)
-                .and_modify(|found| *found = Submission::Ambiguous)
-                .or_insert_with(|| {
-                    Submission::Input(SubmissionInput {
-                        id: row.event_id,
-                        sequence: row.sequence,
-                    })
-                });
-        }
-        let _ = self.0.restored.set(restored);
-        Ok(())
-    }
-
     /// Commits a batch; the caller holds the append guard and commit lock.
     fn commit(
         &self,

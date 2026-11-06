@@ -39,7 +39,7 @@ Each one maps onto Agents' existing Session creation and admission (`AgentIndex`
   `SessionConfig.permission_policy`.
 - **Input.** `input` writes `input/message` through `Session::input` and replies once the event is published. The
   branch accepts each `submissionId` once: a resubmission writes nothing and replies the first input's receipt.
-  `lookup` by `submissionId` reads the same index without writing.
+  `lookup` by `submissionId` reads the same branch facts without writing.
 - **Idle.** `idle` is the facade's `Session::idle`: Loop has no open turn, nothing waits for publication, and
   dispatch has reached the tail. A pending approval or question keeps a turn open, so a caller bounds its wait with
   `stop`.
@@ -85,7 +85,7 @@ the contract refinements in §12.
 | D6 | `launch` replies `{sessionId, policy}` with the effective policy | `{sessionId}` only | The caller can record the authority a run got, and see that a cap took effect, without another read |
 | D7 | `LaunchRequest.model` is `{providerId, modelId}` | A bare model id string | A model id is unique only within its provider. `{providerId, modelId}` is `ModelId`, the type of Agent profiles and of `session.create`'s explicit model |
 | D8 | `input` replies after publication | Replying at commit | `history {atLeast: sequence}` right after the reply must succeed (finding 7) |
-| D9 | `lookup` waits for pending publication, then scans; Rpc's `session.input_lookup` uses the same code | Scanning at once; a second scanner | An input that is committed but not yet published would read `unknown`, and Scheduler would mark a running input `lost` |
+| D9 | `lookup` reads the branch's own inputs by `submission_id`, waits for pending publication, then replies; Rpc's `session.input_lookup` uses the same code | Replying at once; a second reader | An input that is committed but not yet published would read `unknown`, and Scheduler would mark a running input `lost` |
 | D10 | `idle` is the facade's `Session::idle`, and S2 keeps today's behaviour: while an approval is pending, `idle` keeps waiting, and the caller ends the wait with `stop`. It takes no timeout | A "blocked" status, deciding in S2 what happens to asks in non-interactive Sessions (for example denying them), or `idle {timeoutMs}` | How asks in a non-interactive Session are handled is Approval's decision, tied to the Questions redesign. It is not designed yet, and S2 presumes no outcome: `idle` follows the turn however Approval settles it. Callers already own their deadlines and end runs with `stop` |
 | D11 | `history` pages the branch's own events with `after`, `limit` and a fixed `through`, as `AgentEvent` records | One reply with the whole history, ancestors included | That reply has no size bound across the bridge. Each branch numbers its own sequences, so one cursor cannot page across ancestors. Launched Sessions are read on `main`, which has no ancestors |
 | D12 | `sessions` has no `close` or `release`; Agents owns launched Sessions | Closing a run's Session when the caller is done; counting releases | Closing ends the Session for every user of it (design rules §4 rule 8: detaching is not closing). Unloading is a host decision, and it must cover client Sessions too (§8.6) |
@@ -238,15 +238,14 @@ Agents takes the branch's publication watch and calls `Session::input`, which va
 | The index stops before admission | `reloading`; nothing written |
 | The index unloads after admission | The admitted task's own outcome |
 
-**One input per `submissionId`.** The branch accepts each `submissionId` once (A.2). `Session::input` hands the
-input to the branch's Timeline, which checks the id and appends under its commit lock, so of concurrent inputs with one
-id exactly one is written. The check reads an index of the branch's own inputs by `submission_id`: the branch's build
-fills it from its restored history (the same copy of its own events the opening reads for its capabilities), and every
-later commit adds to it. A resubmission writes nothing; `Session::input` returns the committed input, and `input`
-replies its `{inputId, sequence}` once it is published, even while the first write is still unpublished. The id stays
-taken after the input is consumed or withdrawn. An id that several inputs share, written before branches accepted each
-id once, fails `ambiguous` and writes nothing. After `publication_unknown`, `reloading` or a lost reply, the caller
-resubmits with the same `submissionId`, or reads with `lookup`.
+**One input per `submissionId`.** The branch accepts each `submissionId` once (A.2). `Session::input` first reads the
+branch's own `input/message` facts by `submission_id`, including facts still publishing. On a match it writes nothing
+and returns the committed input; several matches fail `ambiguous` and write nothing. With no match, it hands the input
+to the branch's Timeline, which checks the ids committed since the branch was built and appends under its commit lock,
+so of concurrent inputs with one id exactly one is written. `input` replies the input's `{inputId, sequence}` once it
+is published, even while the first write is still unpublished. The id stays taken after the input is consumed or
+withdrawn. After `publication_unknown`, `reloading` or a lost reply, the caller resubmits with the same `submissionId`,
+or reads with `lookup`.
 
 **Input ownership.** Preparation validates the request,
 acquires the Session lease and obtains the publication watch. Admission is the
@@ -271,11 +270,11 @@ and no row check.
 `{sessionId, branchId, submissionId}` → `{status: "accepted", inputId, sequence}` or `{status: "unknown"}`; error
 `ambiguous`.
 
-`Session::lookup` reads the branch's index of `submission_id`s (§6.2). For an input it holds, it waits until that
+`Session::lookup` reads the branch's own inputs by `submission_id` (§6.2). For an input it finds, it waits until that
 input is published and replies it; a branch that closes or fails first ends the call with that error. Otherwise it
-replies `unknown`. Every input committed before the call is in the index, so `unknown` is final for every write that
-returned before the lookup began, without waiting for other pending events or scanning pages. After a restart it is
-also correct: the unpublished tail was lost with the process, and the index is rebuilt from the restored history.
+replies `unknown`. Every input committed before the call is in the branch's facts, so `unknown` is final for every
+write that returned before the lookup began, without waiting for other pending events or scanning pages. After a
+restart it is also correct: the unpublished tail was lost with the process, and the read covers the restored history.
 `ambiguous` answers only an id with several inputs written before branches accepted each id once. Rpc's
 `session.input_lookup` calls the same method, and its boundary keeps parsing its own parameters. The identity is a
 field of the input itself; no other record holds it ([below](#where-the-submission-identity-lives)).
@@ -313,8 +312,9 @@ Keeping it in the event meets the constraint #32 set, and needs no new mechanism
 
 - **Atomic by construction.** The identity is part of the event that the append transaction commits, so it is
   durable exactly when the input is. Publication follows the commit, and lookup waits for the input it finds.
-  After a restart, the restored history is the committed set and rebuilds the branch's index, so `input` and `lookup`
-  decide with certainty. Flow tests: `product_submit_acknowledges_only_a_committed_input` (held native writer, Rpc restart),
+  After a restart, the restored history is the committed set and the read covers it, so `input` and `lookup` decide
+  with certainty. Flow tests: `a_restored_branch_accepts_each_submission_id_once`,
+  `product_submit_acknowledges_only_a_committed_input` (held native writer, Rpc restart),
   `input_replies_after_publication_and_lookup_waits_for_committed_inputs`, and the Node-backed
   `node_workflow_reports_recover_after_complete_host_restart` and
   `node_workflow_reports_reconcile_after_host_process_restart`.
