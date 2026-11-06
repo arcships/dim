@@ -21,6 +21,10 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [ContextCompaction](ContextCompaction.md) (supplements to Loop and ContextPreparation) | — | `ContextModelHost`, summary `CompactionStrategyHost`, `session.context.*` | `context/compact` command and compaction step in Loop; K-turn cut and usage query in ContextPreparation | P2 |
 | [Prompt](Prompt.md) | — | `guideEntries`: the input guide's frame, the entries in force and their composition | `Prompt`: the System its publisher adopts carries the composition over the entries in force, and a host-prepared request carries the same composition, placed by Loop | #548 |
 | [PromptSources](PromptSources.md) | — | the named sources, their policy texts at the factory configuration, and the state and rule entries | — | #548 |
+| [EnvironmentClients](EnvironmentClients.md) | App Server read-only `sessionClientsHost` presence (Connection and UiHost) | presence snapshots as `<dim-state>` inputs | branch open and `ClientsChanged` | #1019 |
+| [EnvironmentSettings](EnvironmentSettings.md) | — (reads each setting module's read port) | settings snapshots as `<dim-state>` inputs | one snapshot at branch open and on a Settings change | #1020 |
+| [ClientView](ClientView.md) | per-connection viewed-line record in App Server | — | — | #1021, deferred for model state |
+| [AgentSettings](AgentSettings.md) | — | one `settings` tool: `list`, `get`, `set` | — | #1022 |
 | [Recall](Recall.md) | — | `recall` tool (tells the model its branch's history: turns, a turn, one thing in full, search) | — | M2; #129 |
 | [Hooks](Hooks.md) | `HooksSettings` in App Server: sources `hooks` (user), `hooks-projects` and `hooks-plugins`, the project file `.dimcode/hooks.json` read through FileStorage, `hooks.*` methods and plugin registration | hook catalog, runner, a submit check registered with `submitChecks` for the user-input entries (`UserPromptSubmit`) | tool advice, permission requests, post-tool (`PostToolUse`, `PostToolUseFailure`), Stop and Session-start hooks | M1; #755, #756, #757, #758 |
 | [Notifications](Notifications.md) | — | Session observer, `notify` tool | — | Withdrawn |
@@ -41,6 +45,6 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 
 | Scope | Parts |
 | --- | --- |
-| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source) in the daemon; AcpGateway in its client host process |
-| Session parts | Questions, ShellInput, Attachments, SessionTitle, PromptSuggestion, Goal, Web, Recall, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table) |
-| Branch parts | Goal (with Pursuit), Hooks, Prompt |
+| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source) in the daemon; AcpGateway in its client host process; ClientView (the connection's viewed line) |
+| Session parts | Questions, ShellInput, Attachments, SessionTitle, PromptSuggestion, Goal, Web, Recall, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table), SettingsTool (the one `settings` tool, registered by ExecutionSettings in v1) |
+| Branch parts | Goal (with Pursuit), Hooks, Prompt, EnvironmentClientsBranch (registered by Connection), SettingsSnapshotBranch (registered by Settings) |

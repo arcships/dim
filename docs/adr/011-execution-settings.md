@@ -54,7 +54,7 @@ approve such a write.
   replacement. The change is tracked in #691.
 - An existing `host-isolation.json` is not read; ADR 010's startup diagnostic is the visible
   channel, and the user removes the file.
-- No Timeline event or wire field is added. The source is business configuration.
+- No Timeline event or wire field is added. A branch part appends a one-time `<dim-state>` snapshot on open and on each `SettingsChanged`, and a Session part registers the read-only `settings` tool; both are inputs and tool results, not Prompt sources. The source remains business configuration.
 
 ## Non-goals
 
@@ -78,7 +78,7 @@ remains as written.
 | §4 rule 3 | No `before` callback. |
 | §4 rule 4 | No core mechanism change. |
 | §4 rule 5 | No Timeline batch. |
-| §4 rule 6 | No context-input change. |
+| §4 rule 6 | The snapshot enters the model as an appended input; no Prompt source and no second context path. |
 | §4 rule 7 | `HostPlatform` reads its port; the App Server part reads the typed `SettingsService`. |
 | §4 rule 8 | No infrastructure change; the port follows `CommandRulesHost` and `SkillSettingsHost`. |
 | §4 rule 9 | No new Timeline fact. |
