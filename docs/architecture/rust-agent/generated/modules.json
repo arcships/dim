@@ -16760,14 +16760,6 @@
     },
     {
       "from": "dim_agent_runtime::timeline_query",
-      "to": "dim_agent_runtime::core::timeline",
-      "references": [
-        "path Timeline",
-        "use crate::Timeline"
-      ]
-    },
-    {
-      "from": "dim_agent_runtime::timeline_query",
       "to": "dim_agent_runtime::error",
       "references": [
         "path AgentError::InvalidInput",
