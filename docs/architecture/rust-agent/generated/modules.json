@@ -1578,8 +1578,7 @@
       "file": "crates/dim-agent-runtime/src/timeline_query.rs",
       "unexpandedMacros": [
         "format",
-        "matches",
-        "vec"
+        "matches"
       ]
     },
     {
