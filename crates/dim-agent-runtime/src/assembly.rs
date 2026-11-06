@@ -1308,7 +1308,6 @@ impl TimelineFactory {
                 let ctx = &branch.scope.ctx;
                 let scope = branch.scope.scope;
                 required::<dyn LoopState>(ctx, scope.key::<dyn LoopState>())?;
-                branch.timeline.index_submissions().await?;
                 Ok(TimelineContext::start(
                     id,
                     ctx.clone(),

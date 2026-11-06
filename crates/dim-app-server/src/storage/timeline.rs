@@ -2002,46 +2002,58 @@ fn query_rows(
         }
         let mut clauses = Vec::new();
         for path in paths {
-            let path = text(&path);
-            match json_text(&predicate.value) {
-                Some(literal) => {
-                    clauses.push("(body -> ?) = ?");
-                    parameters.extend([path, literal]);
+            match &predicate.value {
+                serde_json::Value::String(value) => {
+                    clauses.push(format!(
+                        "(json_valid(body) AND json_type(body, '{path}') = 'text' \
+                         AND json_extract(body, '{path}') = ?)"
+                    ));
+                    parameters.push(text(value));
                 }
-                None => {
-                    clauses.push("(json_type(body, ?) = ? AND json_extract(body, ?) IS ?)");
-                    parameters.extend([
-                        path.clone(),
-                        text(json_type_name(&predicate.value)),
-                        path,
-                        json_value(&predicate.value)?,
-                    ]);
-                }
+                _ => match json_text(&predicate.value) {
+                    Some(literal) => {
+                        clauses.push(format!("((body -> '{path}') = ?)"));
+                        parameters.push(literal);
+                    }
+                    None => {
+                        clauses.push(format!(
+                            "(json_type(body, '{path}') = ? AND json_extract(body, '{path}') IS ?)"
+                        ));
+                        parameters.extend([
+                            text(json_type_name(&predicate.value)),
+                            json_value(&predicate.value)?,
+                        ]);
+                    }
+                },
             }
         }
-        let record_path = text(&format!("$.event.data.{}", predicate.path));
-        match json_text(&predicate.value) {
-            Some(literal) => {
-                clauses.push(
-                    "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
-                       WHERE (r.value -> ?) = ? \
-                       AND json_extract(r.value, '$.event.sequence') <= ?))",
-                );
-                parameters.extend([record_path, literal, bound]);
-            }
-            None => {
-                clauses.push(
-                    "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
-                       WHERE json_type(r.value, ?) = ? AND json_extract(r.value, ?) IS ? \
-                       AND json_extract(r.value, '$.event.sequence') <= ?))",
-                );
-                parameters.extend([
-                    record_path.clone(),
-                    text(json_type_name(&predicate.value)),
-                    record_path,
-                    json_value(&predicate.value)?,
-                    bound,
-                ]);
+        if query.kinds.is_empty() || query.kinds.iter().any(|kind| output_row(kind)) {
+            let record_path = text(&format!("$.event.data.{}", predicate.path));
+            match json_text(&predicate.value) {
+                Some(literal) => {
+                    clauses.push(
+                        "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
+                           WHERE (r.value -> ?) = ? \
+                           AND json_extract(r.value, '$.event.sequence') <= ?))"
+                            .to_owned(),
+                    );
+                    parameters.extend([record_path, literal, bound]);
+                }
+                None => {
+                    clauses.push(
+                        "(EXISTS (SELECT 1 FROM json_each(json_extract(body, '$.records')) AS r \
+                           WHERE json_type(r.value, ?) = ? AND json_extract(r.value, ?) IS ? \
+                           AND json_extract(r.value, '$.event.sequence') <= ?))"
+                            .to_owned(),
+                    );
+                    parameters.extend([
+                        record_path.clone(),
+                        text(json_type_name(&predicate.value)),
+                        record_path,
+                        json_value(&predicate.value)?,
+                        bound,
+                    ]);
+                }
             }
         }
         sql.push_str(&format!(" AND ({})", clauses.join(" OR ")));

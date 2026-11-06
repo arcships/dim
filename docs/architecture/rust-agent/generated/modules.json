@@ -16628,6 +16628,7 @@
       "to": "dim_agent_runtime::error",
       "references": [
         "path AgentError",
+        "path AgentError::AmbiguousSubmission",
         "path AgentError::BranchEnded",
         "path AgentError::Build",
         "path AgentError::Closed",
@@ -16691,6 +16692,7 @@
         "path TimelineQuery",
         "path TimelineQueryDirection::Ascending",
         "path TimelineQueryOrderBy::Sequence",
+        "path TimelineQueryPredicate",
         "path TimelineQueryScope::Branch"
       ]
     },

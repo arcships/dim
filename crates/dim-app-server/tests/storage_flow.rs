@@ -486,7 +486,7 @@ fn schema(connection: &Connection) -> Vec<String> {
         .prepare(
             "SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' \
              AND name NOT IN ('timeline_history_anchors', 'timeline_events_by_kind', \
-                              'timeline_policy_turns')",
+                              'timeline_policy_turns', 'timeline_input_submissions')",
         )
         .unwrap()
         .query_map([], |row| row.get(0))
@@ -7367,6 +7367,7 @@ async fn the_derived_indexes_are_created_at_open_without_a_format_step() {
     assert!(indexed(&connection, "timeline_history_anchors"));
     assert!(indexed(&connection, "timeline_policy_turns"));
     assert!(indexed(&connection, "timeline_events_by_kind"));
+    assert!(indexed(&connection, "timeline_input_submissions"));
     let columns: Vec<String> = connection
         .prepare("SELECT name FROM pragma_index_info('timeline_policy_turns')")
         .unwrap()
@@ -7395,9 +7396,32 @@ async fn the_derived_indexes_are_created_at_open_without_a_format_step() {
             .any(|step| step.contains("COVERING INDEX timeline_policy_turns")),
         "the policy index covers the columns it holds: {plan:?}"
     );
+    let plan: Vec<String> = connection
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT sequence FROM timeline_events \
+             WHERE session_id=?1 AND branch_id=?2 AND kind=?3 AND sequence<=?4 \
+             AND json_valid(body) AND json_type(body, '$.record.event.data.submission_id')='text' \
+             AND json_extract(body, '$.record.event.data.submission_id')=?5 ORDER BY sequence",
+        )
+        .unwrap()
+        .query_map(
+            params!["session", "main", "input/message", 1, "submission-1"],
+            |row| row.get(3),
+        )
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        plan.iter()
+            .any(|step| step.contains("USING INDEX timeline_input_submissions")),
+        "the submission index serves the duplicate check: {plan:?}"
+    );
     assert_eq!(marker(&connection), [i64::from(STORE_FORMAT)]);
     connection
-        .execute_batch("DROP INDEX timeline_history_anchors; DROP INDEX timeline_policy_turns")
+        .execute_batch(
+            "DROP INDEX timeline_history_anchors; DROP INDEX timeline_policy_turns; \
+             DROP INDEX timeline_input_submissions",
+        )
         .unwrap();
     drop(connection);
 
@@ -7419,6 +7443,10 @@ async fn the_derived_indexes_are_created_at_open_without_a_format_step() {
     );
     assert!(
         indexed(&connection, "timeline_events_by_kind"),
+        "a later open recreates the index"
+    );
+    assert!(
+        indexed(&connection, "timeline_input_submissions"),
         "a later open recreates the index"
     );
     assert_eq!(marker(&connection), [i64::from(STORE_FORMAT)]);

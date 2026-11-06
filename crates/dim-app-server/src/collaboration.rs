@@ -2382,13 +2382,20 @@ async fn read_tool_use_starts(
     keys: &[(String, String)],
 ) -> dim_agent_runtime::Result<HashMap<(String, String), Arc<dim_agent_types::AgentEvent>>> {
     let mut starts = HashMap::with_capacity(keys.len());
+    if keys.is_empty() {
+        return Ok(starts);
+    }
+    let head = session.sequence("main")?;
+    if head == 0 {
+        return Ok(starts);
+    }
     let mut query = TimelineQuery {
         scope: TimelineQueryScope::Branch,
         include_publishing: false,
         from_event: None,
-        from_sequence: Some(1),
+        from_sequence: Some(head),
         order_by: TimelineQueryOrderBy::Sequence,
-        direction: TimelineQueryDirection::Ascending,
+        direction: TimelineQueryDirection::Descending,
         kinds: vec!["step/tool-use-start".into()],
         flags: Vec::new(),
         event_id: None,
@@ -2413,8 +2420,8 @@ async fn read_tool_use_starts(
             break;
         }
         match last {
-            Some(last) => query.from_sequence = Some(last + 1),
-            None => break,
+            Some(last) if last > 1 => query.from_sequence = Some(last - 1),
+            _ => break,
         }
     }
     Ok(starts)
