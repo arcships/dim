@@ -243,6 +243,10 @@ impl Worker {
                 }
                 continue;
             }
+            if !crate::legacy_history() {
+                self.fail_member(&id, "the daemon does not support windowed history".into());
+                continue;
+            }
             let mut params = json!({
                 "sessionId":id,"branchId":"main",
                 "after":observation.after,"limit":HISTORY_PAGE,

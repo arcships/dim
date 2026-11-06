@@ -247,6 +247,16 @@ impl Worker {
             }
             return Ok(());
         }
+        if !crate::legacy_history() {
+            let history = self
+                .task_history
+                .get_mut(&branch_id)
+                .expect("queued branch");
+            history.error = Some("the daemon does not support windowed history".into());
+            history.done = true;
+            self.changed();
+            return Ok(());
+        }
         let history = self.task_history.get(&branch_id).expect("queued branch");
         let mut params = json!({
             "sessionId": self.session_id, "branchId": branch_id,

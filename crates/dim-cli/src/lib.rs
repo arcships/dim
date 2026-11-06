@@ -47,6 +47,11 @@ use std::sync::Arc;
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, Error>;
 
+/// Test fixtures predate the window read; production never sets this.
+pub(crate) fn legacy_history() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("DIMCODE_TEST_LEGACY_HISTORY").is_some()
+}
+
 /// Runs the CLI with the process arguments and returns its exit code. The
 /// host binary must answer `app-server` with the App Server command line,
 /// which the CLI starts as its daemon unless `--server` names another.

@@ -313,14 +313,14 @@ impl Questions {
                 self.settle(settled, display)?;
             }
             "session.state" if self.branches.insert(branch_id.to_owned()) => {
-                if client.supports(&["session.history.latestTurn"]) {
+                if crate::legacy_history() && !client.supports(&["session.history.latestTurn"]) {
+                    self.read(client, session_id, branch_id, 0, None).await?;
+                } else {
                     let window = client.latest_history(session_id, branch_id, None).await?;
                     for event in &window.events {
                         let settled = self.pending.event(branch_id, event);
                         self.settle(settled, display)?;
                     }
-                } else {
-                    self.read(client, session_id, branch_id, 0, None).await?;
                 }
             }
             _ => {}

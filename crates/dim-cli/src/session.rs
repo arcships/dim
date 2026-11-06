@@ -534,15 +534,15 @@ pub async fn read_history(
     }
 }
 
-/// Reads the first view: the newest window when the daemon offers it, and
-/// the whole branch otherwise.
+/// Reads the first view: the newest window. A daemon without the window
+/// read is rejected rather than falling back to the whole branch.
 async fn read_first_view(
     client: &mut Client,
     session_id: &str,
     through: Option<u64>,
     sink: &mut impl HistorySink,
 ) -> Result<u64> {
-    if !client.supports(&["session.history.latestTurn"]) {
+    if crate::legacy_history() && !client.supports(&["session.history.latestTurn"]) {
         return read_history(client, session_id, 0, sink).await;
     }
     let window = client.latest_history(session_id, "main", through).await?;

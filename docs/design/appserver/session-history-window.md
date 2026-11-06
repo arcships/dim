@@ -49,8 +49,10 @@ boundary. The web client and export read a branch from its start to its head,
 newest content has to find a batch boundary near the head and walk back from
 there, which is what the Desktop reader does (§1.3). The CLI TUI, CLI line
 mode, member/side-panel reads and ACP preparation open with the newest window
-instead: at most four `latestTurn` pages, in sequence order, and no older
-pages after the first view.
+instead: `latestTurn` pages in sequence order, stopping after the page that
+covers 100 transcript rows (user input, assistant response or tool call), with
+a hard cap of four pages and at most 300 rows. No older pages follow the first
+view.
 
 ### 1.2 The turn boundary and its input
 
@@ -386,7 +388,8 @@ The attach reply carries the pinned `through` for `main`
 (`SessionInfo.sequence`, [protocol.rs:913](../../../crates/dim-app-server/src/protocol.rs#L913)).
 Events after the pin arrive as `session.event`; the client applies them after the
 window pages, as it already does after forward pages. The first-view clients
-stop at the page budget: no `before` read follows the first view.
+stop at 100 transcript rows or the four-page budget: no `before` read follows
+the first view.
 
 ## 7. Compatibility
 

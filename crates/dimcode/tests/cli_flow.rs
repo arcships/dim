@@ -138,6 +138,7 @@ impl Home {
         let mut command = Command::new(env!("CARGO_BIN_EXE_dimcode"));
         command.args(["--home", self.0.to_str().unwrap()]);
         command.env("DIMCODE_UPDATE_CHECK", "0");
+        command.env("DIMCODE_TEST_LEGACY_HISTORY", "1");
         command
     }
 }
@@ -259,7 +260,24 @@ impl Wire {
         }
         panic!("{message}");
     }
-    fn reply(&mut self, request: &Value, result: Value) {
+    fn reply(&mut self, request: &Value, mut result: Value) {
+        if request["params"]["latestTurn"].as_bool() == Some(true) {
+            if let Some(through) = request["params"]["through"].as_u64() {
+                result["through"] = json!(through);
+            }
+            let events = result["events"].as_array();
+            if (result["done"].as_bool() != Some(true)
+                || events.is_some_and(|events| !events.is_empty()))
+                && result.get("nextBefore").is_none()
+            {
+                let next = events
+                    .and_then(|events| events.first())
+                    .and_then(|event| event["sequence"].as_u64())
+                    .or_else(|| result["nextAfter"].as_u64())
+                    .unwrap_or(1);
+                result["nextBefore"] = json!(next);
+            }
+        }
         self.send(json!({"jsonrpc":"2.0","id":request["id"],"result":result}));
     }
     fn notice(&mut self, method: &str, params: Value) {
@@ -3453,6 +3471,7 @@ fn interactive_input_names_its_terminal_without_listing_dev_while_terminals_clos
             "--home",
         ])
         .arg(&home.0);
+    command.env("DIMCODE_TEST_LEGACY_HISTORY", "1");
     let mut terminal = Terminal::launch(command);
     terminal.until("Ctrl+J: newline");
     drop(stop);
