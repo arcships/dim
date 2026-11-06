@@ -177,9 +177,10 @@ impl Worker {
     pub(super) fn retry_task_history(&mut self) {
         for (id, history) in &mut self.task_history {
             history.drain = true;
-            if history.error.take().is_some()
-                || history.done && history.before.is_some_and(|before| before > 1)
-            {
+            let retry = history.error.is_some()
+                || history.done && history.before.is_some_and(|before| before > 1);
+            if retry && !self.task_history_queue.iter().any(|queued| queued == id) {
+                history.error = None;
                 history.done = false;
                 self.task_history_queue.push_back(id.clone());
             }
@@ -191,6 +192,10 @@ impl Worker {
         if let Some(history) = self.task_history.get_mut(branch)
             && history.done
             && history.before.is_some_and(|before| before > 1)
+            && !self
+                .task_history_queue
+                .iter()
+                .any(|queued| queued == branch)
         {
             history.done = false;
             history.error = None;
