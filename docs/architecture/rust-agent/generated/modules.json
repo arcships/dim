@@ -25916,9 +25916,13 @@
         "path ComponentState::Failed",
         "path ComponentState::Off",
         "path ComponentState::Ready",
+        "path ComponentVerifier",
+        "path ComponentVerifierHost",
         "use dim_agent_capabilities::component::ComponentSource",
         "use dim_agent_capabilities::component::ComponentSourceHost",
-        "use dim_agent_capabilities::component::ComponentState"
+        "use dim_agent_capabilities::component::ComponentState",
+        "use dim_agent_capabilities::component::ComponentVerifier",
+        "use dim_agent_capabilities::component::ComponentVerifierHost"
       ]
     },
     {

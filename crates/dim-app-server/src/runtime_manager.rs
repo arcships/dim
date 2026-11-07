@@ -5,7 +5,9 @@
 //! starts it then; uv launches no runtime and is only installed.
 use crate::methods::ManagementMethods;
 use crate::session_typescript::{ForeignRuntime, RuntimeState, RuntimeStatus};
-use dim_agent_capabilities::component::{ComponentSource, ComponentSourceHost, ComponentState};
+use dim_agent_capabilities::component::{
+    ComponentSource, ComponentSourceHost, ComponentState, ComponentVerifier, ComponentVerifierHost,
+};
 use dim_agent_capabilities::methods::{
     Interruption, MethodCall, MethodDecl, RpcError, params, reply,
 };
@@ -1112,6 +1114,24 @@ impl RuntimeService {
                         .as_deref()
                         .and_then(|marker| marker.strip_prefix(directory).ok())
                         .map(Path::to_path_buf);
+                    // A component's owner checks the unpacked directory before
+                    // it is activated. A build with no verifier refuses the
+                    // install rather than activating bytes nothing checked.
+                    let verify = if kind.is_program() {
+                        None
+                    } else {
+                        let verifier =
+                            self.ctx.get::<ComponentVerifierHost>().ok_or_else(|| {
+                                format!(
+                                    "Nothing in this build can verify the {} component",
+                                    kind.name()
+                                )
+                            })?;
+                        Some(Verify {
+                            verifier: verifier.0.clone(),
+                            name: kind.name(),
+                        })
+                    };
                     download(
                         &client,
                         &plan.sources,
@@ -1119,6 +1139,7 @@ impl RuntimeService {
                         &sha256,
                         directory,
                         relative,
+                        verify,
                     )
                     .await?;
                 }
@@ -1231,6 +1252,13 @@ async fn checksum(client: &reqwest::Client, archive: &Archive) -> Result<String,
         .ok_or_else(|| format!("{url} lists no SHA-256 for {}", archive.file))
 }
 
+/// The check a component's owner runs on the unpacked directory before it is
+/// activated: the build's verifier and the component it answers for.
+struct Verify<'a> {
+    verifier: Arc<dyn ComponentVerifier>,
+    name: &'a str,
+}
+
 async fn download(
     client: &reqwest::Client,
     sources: &[String],
@@ -1241,6 +1269,9 @@ async fn download(
     // `.partial` directory before the rename so the archive directory never
     // exists without it.
     marker: Option<PathBuf>,
+    // A component's verifier: it runs on `.partial` once it is unpacked, and a
+    // failure removes that directory, so nothing unverified is ever activated.
+    verify: Option<Verify<'_>>,
 ) -> Result<(), String> {
     let partial = sibling(directory, ".partial");
     let archive = sibling(directory, ".download");
@@ -1275,6 +1306,12 @@ async fn download(
     if let Err(error) = unpacked {
         let _ = std::fs::remove_dir_all(&partial);
         return Err(format!("{file}: {error}"));
+    }
+    if let Some(Verify { verifier, name }) = verify
+        && let Err(reason) = verifier.verify(name, &partial).await
+    {
+        let _ = std::fs::remove_dir_all(&partial);
+        return Err(reason);
     }
     std::fs::rename(&partial, directory).map_err(|e| format!("{}: {e}", directory.display()))
 }
@@ -2014,6 +2051,7 @@ mod tests {
             &published,
             &directory,
             None,
+            None,
         )
         .await
         .unwrap_err();
@@ -2240,6 +2278,7 @@ mod tests {
             &published,
             &directory,
             Some(PathBuf::from("lib/python3.12/EXTERNALLY-MANAGED")),
+            None,
         )
         .await
         .unwrap();

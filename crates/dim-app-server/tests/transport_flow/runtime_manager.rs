@@ -1,13 +1,22 @@
 //! RuntimeManager (RuntimeManager §3): the runtimes arrive after startup and
 //! the plugin rows waiting for them start by themselves. `system` sources
 //! keep the interpreters off the network; the pinned packages are installed
-//! for real (`npm ci`, `pip install --require-hashes`).
+//! for real (`npm ci`, `pip install --require-hashes`). The OCR component's
+//! bundle is served from a loopback listener, with a stub verifier standing in
+//! for the owner that checks it.
 use super::*;
+use dim_agent_capabilities::component::{
+    ComponentSourceHost, ComponentState, ComponentVerifier, ComponentVerifierHost,
+};
+use dim_agent_capabilities::toolchain::ToolchainSourceHost;
 use dim_app_server::{
     runtime_manager::{Kind, Runtimes},
     session_typescript::SessionTypeScriptConfig,
 };
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The `runtime.list` entry of `runtime` once its status is `status`.
 async fn status(client: &mut Client, runtime: usize, status: &str) -> Value {
@@ -1050,6 +1059,817 @@ async fn python_runtime_manager_marks_the_downloaded_interpreter_as_externally_m
         std::fs::canonicalize(reported).unwrap(),
         std::fs::canonicalize(&stdlib).unwrap(),
         "the marker's directory is the interpreter's sysconfig stdlib"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The platform key the pins and the bundle use, for the machine running the
+/// test.
+fn platform() -> String {
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        other => other,
+    };
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        other => other,
+    };
+    format!("{os}-{arch}")
+}
+
+/// The repository's pins with the component served from `address`: the
+/// checksum file and the archive come from the test, so the acquisition runs
+/// without the published bundle.
+fn served_pins(address: &std::net::SocketAddr, file: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/runtimes.json");
+    let mut pins: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    pins["ocr"] = json!({
+        "version": "1",
+        "checksums": format!("http://{address}/SUMS"),
+        "sources": [format!("http://{address}/{{file}}")],
+        "files": { platform(): file },
+    });
+    pins.to_string()
+}
+
+/// The repository's pins with this host's `ocr` entries removed: a platform
+/// the component publishes no bundle for.
+fn pins_without_this_platform() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/runtimes.json");
+    let mut pins: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let platform = platform();
+    pins["ocr"]["files"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&platform);
+    pins["ocr"]["sha256"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&platform);
+    pins.to_string()
+}
+
+/// A bundle archive as the script packs one: a single top-level directory
+/// holding the manifest.
+fn bundle(platform: &str) -> Vec<u8> {
+    use std::io::Write;
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::Regular);
+    header
+        .set_path(format!("ocr-1-{platform}/manifest.json"))
+        .unwrap();
+    header.set_mode(0o644);
+    header.set_size(2);
+    header.set_cksum();
+    builder.append(&header, &b"{}"[..]).unwrap();
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gz.write_all(&builder.into_inner().unwrap()).unwrap();
+    gz.finish().unwrap()
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Serves `bytes` as `file` and their digest at `/SUMS`; the returned counter
+/// is the number of archive requests, so a second start can show it downloads
+/// nothing.
+async fn serve_component(
+    sha256: String,
+    file: String,
+    bytes: Vec<u8>,
+) -> (std::net::SocketAddr, Arc<AtomicUsize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counted = requests.clone();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut request = [0u8; 1024];
+            let read = stream.read(&mut request).await.unwrap_or(0);
+            let head = String::from_utf8_lossy(&request[..read]).into_owned();
+            let body: Vec<u8> = if head.contains("/SUMS") {
+                format!("{sha256}  {file}\n").into_bytes()
+            } else {
+                counted.fetch_add(1, Ordering::SeqCst);
+                bytes.clone()
+            };
+            let _ = stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await;
+            let _ = stream.write_all(&body).await;
+        }
+    });
+    (address, requests)
+}
+
+/// What the component's owner answers: every directory it was asked to check,
+/// whether the manifest was there, and the reason it refuses if it does.
+#[derive(Default)]
+struct StubVerifier {
+    seen: StdMutex<Vec<(String, PathBuf, bool)>>,
+    refuse: Option<String>,
+}
+
+impl ComponentVerifier for StubVerifier {
+    fn verify<'a>(&'a self, name: &'a str, root: &'a Path) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let manifest = root.join("manifest.json").is_file();
+            self.seen
+                .lock()
+                .unwrap()
+                .push((name.to_owned(), root.to_owned(), manifest));
+            match &self.refuse {
+                Some(reason) => Err(reason.clone()),
+                None => Ok(()),
+            }
+        })
+    }
+}
+
+/// The context the verifier row was applied with, for reading the ports the
+/// App Server's own rows provide.
+/// The ports the App Server's own rows provide, read while the verifier row is
+/// applied: a later read through a stored context is outside that row's scope.
+struct Ports {
+    component: Arc<ComponentSourceHost>,
+    toolchain: Arc<ToolchainSourceHost>,
+}
+
+type SharedPorts = Arc<StdMutex<Option<Ports>>>;
+
+/// The row that provides the verifier this build's owner would provide, and
+/// the handle the test reads the component and toolchain ports through. The
+/// row declares both ports as dependencies, as their real consumers do, so it
+/// applies after the rows that provide them.
+struct VerifierRow {
+    verifier: Arc<StubVerifier>,
+    ports: SharedPorts,
+    component: Key<ComponentSourceHost>,
+    toolchain: Key<ToolchainSourceHost>,
+}
+
+impl VerifierRow {
+    fn new(
+        names: &dim_agent_runtime::Names<'_>,
+        verifier: Arc<StubVerifier>,
+        ports: SharedPorts,
+    ) -> rutis::Result<Self> {
+        Ok(Self {
+            verifier,
+            ports,
+            component: names.key()?,
+            toolchain: names.key()?,
+        })
+    }
+}
+
+impl DynPlugin for VerifierRow {
+    fn name(&self) -> &str {
+        "test.ocr-verifier"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.component.erase(), self.toolchain.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a rutis::Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            *self.ports.lock().unwrap() = Some(Ports {
+                component: ctx
+                    .get_at(&self.component)
+                    .expect("the App Server provides the component source"),
+                toolchain: ctx
+                    .get_at(&self.toolchain)
+                    .expect("the App Server provides the toolchain source"),
+            });
+            ctx.provide(ComponentVerifierHost(
+                self.verifier.clone() as Arc<dyn ComponentVerifier>
+            ))?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// The verifier row as the `extra` an App Server test installs, after the two
+/// rows that provide the ports (the App Server installs them itself; these
+/// tests run a Session runtime configuration instead).
+fn verifier_row(verifier: Arc<StubVerifier>) -> (impl FnOnce(&mut AgentBuilder), SharedPorts) {
+    let ports: SharedPorts = Arc::new(StdMutex::new(None));
+    let shared = ports.clone();
+    (
+        move |builder: &mut AgentBuilder| {
+            builder.plugin(|names| {
+                Ok(
+                    Box::new(dim_app_server::runtime_manager::ToolchainSourcePlugin::new(
+                        names,
+                    )?) as Box<dyn DynPlugin>,
+                )
+            });
+            builder.plugin(|names| {
+                Ok(
+                    Box::new(dim_app_server::runtime_manager::ComponentSourcePlugin::new(
+                        names,
+                    )?) as Box<dyn DynPlugin>,
+                )
+            });
+            builder.plugin(move |names| {
+                Ok(
+                    Box::new(VerifierRow::new(names, verifier.clone(), shared.clone())?)
+                        as Box<dyn DynPlugin>,
+                )
+            });
+        },
+        ports,
+    )
+}
+
+fn component_source(ports: &SharedPorts) -> Arc<ComponentSourceHost> {
+    ports
+        .lock()
+        .unwrap()
+        .as_ref()
+        .expect("the verifier row was applied")
+        .component
+        .clone()
+}
+
+fn toolchain_source(ports: &SharedPorts) -> Arc<ToolchainSourceHost> {
+    ports
+        .lock()
+        .unwrap()
+        .as_ref()
+        .expect("the verifier row was applied")
+        .toolchain
+        .clone()
+}
+
+/// A home whose component pin is the loopback listener's, and the runtimes
+/// loaded from it.
+fn component_home(name: &str, pins: &str) -> (PathBuf, PathBuf, Arc<Runtimes>) {
+    let home = std::env::temp_dir().join(format!("drm-{name}-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let defaults = write_defaults(
+        &home,
+        r#"{"node": {"source": "download", "auto": false},
+            "python": {"source": "download", "auto": false},
+            "uv": {"source": "download", "auto": false},
+            "ocr": {"source": "download", "auto": false}}"#,
+    );
+    let runtimes = Arc::new(
+        Runtimes::load_with_pins(
+            &home,
+            &dim_app_server::plugin_manager::Defaults::read(&defaults)
+                .unwrap()
+                .runtimes,
+            pins,
+        )
+        .unwrap(),
+    );
+    (home, defaults, runtimes)
+}
+
+/// The serviced bundle is downloaded, verified on its `.partial` directory and
+/// only then activated: `runtime.list` reports the bundle root, a second start
+/// reuses the installation without downloading, and another kind still
+/// installs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_ocr_component_is_downloaded_verified_and_activated() {
+    let _path = PATH_LOCK.lock().await;
+    let fixture = FixtureUv::new("0.13.7");
+    let platform = platform();
+    let file = format!("ocr-1-{platform}.tar.gz");
+    let bytes = bundle(&platform);
+    let sha256 = hex_digest(&bytes);
+    let (address, requests) = serve_component(sha256.clone(), file.clone(), bytes).await;
+    let pins = served_pins(&address, &file);
+    let (home, defaults, runtimes) = component_home("ocr-activate", &pins);
+    let verifier = Arc::new(StubVerifier::default());
+    let (row, row_ctx) = verifier_row(verifier.clone());
+    let source = row_ctx.clone();
+    let (server, _) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            target_home: Some(home.clone()),
+            session_typescript: Some(SessionTypeScriptConfig::acquired(&home, runtimes, vec![])),
+            ..Default::default()
+        },
+        row,
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_eq!(
+        component_source(&source).0.component("ocr"),
+        Some(ComponentState::Off),
+        "nothing is installed before the install"
+    );
+    assert_ok(&client.rpc("runtime.install", json!({"name": "ocr"})).await);
+    let ready = status(&mut client, 3, "ready").await;
+    let root = home.join("runtimes").join(format!("ocr-1-{platform}"));
+    let partial = home
+        .join("runtimes")
+        .join(format!("ocr-1-{platform}.partial"));
+    assert_eq!(ready["path"], root.to_str().unwrap(), "{ready}");
+    assert_eq!(ready["version"], "1", "{ready}");
+    assert_eq!(ready["source"], "download", "{ready}");
+    assert_eq!(
+        &*verifier.seen.lock().unwrap(),
+        &[("ocr".to_owned(), partial.clone(), true)],
+        "the verifier reads the unpacked directory, manifest and all"
+    );
+    assert!(
+        !partial.exists(),
+        "the activated bundle is the renamed partial"
+    );
+    assert!(root.join("manifest.json").is_file(), "{}", root.display());
+    assert_eq!(
+        component_source(&row_ctx).0.component("ocr"),
+        Some(ComponentState::Ready {
+            root: root.clone(),
+            version: "1".to_owned(),
+        })
+    );
+    let toolchains = toolchain_source(&row_ctx).0.toolchains();
+    assert!(
+        toolchains.iter().all(
+            |toolchain| !toolchain.root.starts_with(&root) && !toolchain.bin.starts_with(&root)
+        ),
+        "a component is not on PATH: {toolchains:?}"
+    );
+    let records: Value =
+        serde_json::from_slice(&std::fs::read(home.join("runtimes/runtimes.json")).unwrap())
+            .unwrap();
+    assert_eq!(records["ocr"]["sha256"], sha256, "{records}");
+    assert!(records["ocr"].get("packages").is_none(), "{records}");
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+    // A second start finds the record and its bundle: the install is answered
+    // from the home, with no download at all.
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    let runtimes = Arc::new(
+        Runtimes::load_with_pins(
+            &home,
+            &dim_app_server::plugin_manager::Defaults::read(&defaults)
+                .unwrap()
+                .runtimes,
+            &pins,
+        )
+        .unwrap(),
+    );
+    let (row, row_ctx) = verifier_row(verifier.clone());
+    let (server, _) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            target_home: Some(home.clone()),
+            session_typescript: Some(SessionTypeScriptConfig::acquired(&home, runtimes, vec![])),
+            ..Default::default()
+        },
+        row,
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_ok(&client.rpc("runtime.install", json!({"name": "ocr"})).await);
+    status(&mut client, 3, "ready").await;
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        1,
+        "an installed bundle is not downloaded again"
+    );
+
+    // The component did not take the other kinds' place.
+    let configured = client
+        .rpc(
+            "runtime.configure",
+            json!({"name": "uv", "source": "system"}),
+        )
+        .await;
+    assert_ok(&configured);
+    let ready = status(&mut client, 2, "ready").await;
+    assert_eq!(
+        ready["path"],
+        fixture.directory.join("uv").to_str().unwrap(),
+        "{ready}"
+    );
+
+    // A bundle whose manifest is gone is not installed: the port reads off and
+    // the row drops its path.
+    std::fs::remove_file(root.join("manifest.json")).unwrap();
+    assert_eq!(
+        component_source(&row_ctx).0.component("ocr"),
+        Some(ComponentState::Off),
+        "a bundle without its manifest is not installed"
+    );
+    let listed = client.rpc("runtime.list", json!({})).await;
+    assert_ok(&listed);
+    assert!(
+        listed["result"][3]["path"].is_null(),
+        "the row drops the path: {listed}"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A verifier that refuses leaves the install failed with its reason, removes
+/// the partial directory and writes no record: nothing unverified is activated.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_component_its_verifier_refuses_is_not_activated() {
+    let platform = platform();
+    let file = format!("ocr-1-{platform}.tar.gz");
+    let bytes = bundle(&platform);
+    let (address, requests) = serve_component(hex_digest(&bytes), file.clone(), bytes).await;
+    let pins = served_pins(&address, &file);
+    let (home, _, runtimes) = component_home("ocr-refused", &pins);
+    let reason = "the bundle does not load: lib/libonnxruntime is missing";
+    let verifier = Arc::new(StubVerifier {
+        refuse: Some(reason.to_owned()),
+        ..Default::default()
+    });
+    let (row, _) = verifier_row(verifier.clone());
+    let (server, _) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            target_home: Some(home.clone()),
+            session_typescript: Some(SessionTypeScriptConfig::acquired(&home, runtimes, vec![])),
+            ..Default::default()
+        },
+        row,
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_ok(&client.rpc("runtime.install", json!({"name": "ocr"})).await);
+    let failed = status(&mut client, 3, "failed").await;
+    assert_eq!(failed["reason"], reason, "{failed}");
+    let root = home.join("runtimes").join(format!("ocr-1-{platform}"));
+    assert!(!root.exists(), "the refused bundle is not activated");
+    assert!(
+        !root
+            .with_file_name(format!("ocr-1-{platform}.partial"))
+            .exists()
+    );
+    let records: Value = std::fs::read(home.join("runtimes/runtimes.json"))
+        .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+        .unwrap_or_else(|_| json!({}));
+    assert!(records.get("ocr").is_none(), "{records}");
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A build with no verifier refuses the component before downloading anything:
+/// activating bytes nothing checked would defeat the check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_build_without_a_verifier_refuses_the_component() {
+    let platform = platform();
+    let file = format!("ocr-1-{platform}.tar.gz");
+    let bytes = bundle(&platform);
+    let (address, requests) = serve_component(hex_digest(&bytes), file.clone(), bytes).await;
+    let pins = served_pins(&address, &file);
+    let (home, _, runtimes) = component_home("ocr-unverified", &pins);
+    let server = launch(
+        Arc::new(MockTools),
+        ServerConfig {
+            target_home: Some(home.clone()),
+            session_typescript: Some(SessionTypeScriptConfig::acquired(&home, runtimes, vec![])),
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_ok(&client.rpc("runtime.install", json!({"name": "ocr"})).await);
+    let failed = status(&mut client, 3, "failed").await;
+    let reason = failed["reason"].as_str().unwrap_or_default();
+    assert!(reason.contains("can verify the ocr component"), "{failed}");
+    assert_eq!(requests.load(Ordering::SeqCst), 0, "nothing was downloaded");
+    let root = home.join("runtimes").join(format!("ocr-1-{platform}"));
+    assert!(!root.exists(), "nothing was activated");
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A start does not repair a component: its record may name a bundle the user
+/// deleted, and only `runtime.install` downloads it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_record_whose_bundle_is_gone_is_not_reinstalled_by_a_start() {
+    let platform = platform();
+    let file = format!("ocr-1-{platform}.tar.gz");
+    let bytes = bundle(&platform);
+    let (address, requests) = serve_component(hex_digest(&bytes), file.clone(), bytes).await;
+    let pins = served_pins(&address, &file);
+    let (home, defaults, runtimes) = component_home("ocr-gone", &pins);
+    let root = home.join("runtimes").join(format!("ocr-1-{platform}"));
+    let verifier = Arc::new(StubVerifier::default());
+    let (row, _) = verifier_row(verifier.clone());
+    let (server, _) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            target_home: Some(home.clone()),
+            session_typescript: Some(SessionTypeScriptConfig::acquired(&home, runtimes, vec![])),
+            ..Default::default()
+        },
+        row,
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_ok(&client.rpc("runtime.install", json!({"name": "ocr"})).await);
+    status(&mut client, 3, "ready").await;
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+    let runtimes = Arc::new(
+        Runtimes::load_with_pins(
+            &home,
+            &dim_app_server::plugin_manager::Defaults::read(&defaults)
+                .unwrap()
+                .runtimes,
+            &pins,
+        )
+        .unwrap(),
+    );
+    let (row, _) = verifier_row(verifier.clone());
+    let (server, _) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            target_home: Some(home.clone()),
+            session_typescript: Some(SessionTypeScriptConfig::acquired(&home, runtimes, vec![])),
+            ..Default::default()
+        },
+        row,
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let listed = client.rpc("runtime.list", json!({})).await;
+    assert_ok(&listed);
+    assert_eq!(listed["result"][3]["status"], "off", "{listed}");
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        1,
+        "a start does not download a component"
+    );
+
+    assert_ok(&client.rpc("runtime.install", json!({"name": "ocr"})).await);
+    status(&mut client, 3, "ready").await;
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        2,
+        "the explicit install does"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A platform the component publishes no bundle for still starts; the row
+/// reads off with the reason `runtime.install` refuses with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_platform_without_a_bundle_lists_the_reason_and_refuses_the_install() {
+    let platform = platform();
+    let pins = pins_without_this_platform();
+    let (home, _, runtimes) = component_home("ocr-unoffered", &pins);
+    let server = launch(
+        Arc::new(MockTools),
+        ServerConfig {
+            target_home: Some(home.clone()),
+            session_typescript: Some(SessionTypeScriptConfig::acquired(&home, runtimes, vec![])),
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let listed = client.rpc("runtime.list", json!({})).await;
+    assert_ok(&listed);
+    let row = &listed["result"][3];
+    assert_eq!(row["name"], "ocr", "{listed}");
+    assert_eq!(row["status"], "off", "{listed}");
+    assert_eq!(row["offered"], false, "{listed}");
+    assert_eq!(
+        row["reason"],
+        format!("No ocr bundle is published for {platform}"),
+        "{listed}"
+    );
+    assert_eq!(
+        listed["result"][2]["offered"], true,
+        "a program is always offered: {listed}"
+    );
+    let refused = client.rpc("runtime.install", json!({"name": "ocr"})).await;
+    assert_eq!(
+        refused["error"]["data"]["appError"], "runtime_configuration",
+        "{refused}"
+    );
+    assert_eq!(
+        refused["error"]["message"],
+        format!("No ocr bundle is published for {platform}"),
+        "{refused}"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A component's `source: system` and `auto: true` are refused before the file
+/// is touched, so the home keeps loading and another runtime still installs; a
+/// hand-written file is read by the component's rules.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn configuring_a_component_to_system_or_auto_is_refused_before_the_write() {
+    let _path = PATH_LOCK.lock().await;
+    let fixture = FixtureUv::new("0.13.7");
+    let home = std::env::temp_dir().join(format!("drm-ocr-configure-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(home.join("runtimes")).unwrap();
+    let defaults = write_defaults(
+        &home,
+        r#"{"node": {"source": "system", "auto": false},
+            "python": {"source": "system", "auto": false},
+            "uv": {"source": "system", "auto": false},
+            "ocr": {"source": "download", "auto": false}}"#,
+    );
+    let runtimes = load_runtimes(&home, &defaults);
+    let server = launch(
+        Arc::new(MockTools),
+        ServerConfig {
+            target_home: Some(home.clone()),
+            session_typescript: Some(SessionTypeScriptConfig::acquired(&home, runtimes, vec![])),
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let config = home.join("runtimes/config.json");
+
+    let refused = client
+        .rpc(
+            "runtime.configure",
+            json!({"name": "ocr", "source": "system"}),
+        )
+        .await;
+    assert_eq!(
+        refused["error"]["data"]["appError"], "runtime_configuration",
+        "{refused}"
+    );
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("it is only ever downloaded"),
+        "{refused}"
+    );
+    assert!(!config.exists(), "a refused configure writes nothing");
+
+    let refused = client
+        .rpc("runtime.configure", json!({"name": "ocr", "auto": true}))
+        .await;
+    assert_eq!(
+        refused["error"]["data"]["appError"], "runtime_configuration",
+        "{refused}"
+    );
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("it is installed only by `runtime.install`"),
+        "{refused}"
+    );
+    assert!(!config.exists(), "a refused configure writes nothing");
+
+    // The refusals left the home as it was: another runtime still installs and
+    // the component still reads off.
+    assert_ok(&client.rpc("runtime.install", json!({"name": "uv"})).await);
+    let ready = status(&mut client, 2, "ready").await;
+    assert_eq!(
+        ready["path"],
+        fixture.directory.join("uv").to_str().unwrap(),
+        "{ready}"
+    );
+    let listed = client.rpc("runtime.list", json!({})).await;
+    assert_ok(&listed);
+    assert_eq!(listed["result"][3]["status"], "off", "{listed}");
+    assert_eq!(listed["result"][3]["auto"], false, "{listed}");
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    // A fresh load of the same home succeeds, so a restart works.
+    let _reloaded = load_runtimes(&home, &defaults);
+
+    // A hand-written file is read by the component's rules: `auto` is false
+    // whatever it says, and `source: system` keeps failing the load.
+    std::fs::write(&config, r#"{"ocr": {"auto": true}}"#).unwrap();
+    let clamped = load_runtimes(&home, &defaults);
+    assert!(!clamped.plan(Kind::Ocr).auto, "a component's auto is false");
+    std::fs::write(&config, r#"{"ocr": {"source": "system"}}"#).unwrap();
+    let choices = dim_app_server::plugin_manager::Defaults::read(&defaults)
+        .unwrap()
+        .runtimes;
+    assert!(
+        Runtimes::load(&home, &choices).is_err(),
+        "a hand-written system source fails the load"
+    );
+
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The pinned bundle installs from the published release: the archive is
+/// downloaded, its digest checked against the pin, unpacked, offered to a
+/// verifier and only then activated. It downloads the archive, so it runs only
+/// with the other ignored flows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "downloads the OCR bundle"]
+async fn the_pinned_ocr_bundle_installs() {
+    let platform = platform();
+    let home = std::env::temp_dir().join(format!("drm-ocr-download-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let defaults = write_defaults(
+        &home,
+        r#"{"node": {"source": "system", "auto": false},
+            "python": {"source": "system", "auto": false},
+            "uv": {"source": "system", "auto": false},
+            "ocr": {"source": "download", "auto": false}}"#,
+    );
+    let runtimes = load_runtimes(&home, &defaults);
+    let ocr = runtimes.plan(Kind::Ocr).clone();
+    assert!(ocr.offered, "a bundle is published for {platform}");
+    let root = home.join("runtimes").join(format!("ocr-1-{platform}"));
+    let verifier = Arc::new(StubVerifier::default());
+    let (row, _) = verifier_row(verifier.clone());
+    let (server, _) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            target_home: Some(home.clone()),
+            session_typescript: Some(SessionTypeScriptConfig::acquired(&home, runtimes, vec![])),
+            ..Default::default()
+        },
+        row,
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_ok(&client.rpc("runtime.install", json!({"name": "ocr"})).await);
+    let ready = status(&mut client, 3, "ready").await;
+    assert_eq!(ready["path"], root.to_str().unwrap(), "{ready}");
+    assert_eq!(ready["version"], "1", "{ready}");
+    assert_eq!(
+        &*verifier.seen.lock().unwrap(),
+        &[(
+            "ocr".to_owned(),
+            home.join("runtimes")
+                .join(format!("ocr-1-{platform}.partial")),
+            true
+        )],
+        "the verifier read the unpacked directory before it was activated"
+    );
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(root.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["bundle"], "pp-ocrv6-small", "{manifest}");
+    assert_eq!(manifest["target"], platform, "{manifest}");
+    for file in manifest["files"].as_array().unwrap() {
+        let path = root.join(file["path"].as_str().unwrap());
+        let size = std::fs::metadata(&path)
+            .unwrap_or_else(|_| panic!("{} is in the bundle", path.display()))
+            .len();
+        assert_eq!(Some(size), file["bytes"].as_u64(), "{}", path.display());
+    }
+    let records: Value =
+        serde_json::from_slice(&std::fs::read(home.join("runtimes/runtimes.json")).unwrap())
+            .unwrap();
+    assert!(
+        records["ocr"]["sha256"]
+            .as_str()
+            .is_some_and(|hash| hash.len() == 64),
+        "the record carries the verified digest: {records}"
     );
 
     drop(client);
