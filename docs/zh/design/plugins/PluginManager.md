@@ -12,6 +12,7 @@ PluginManager 保存一个宿主的插件配置：装了哪些插件，它们从
 | --- | --- | --- |
 | `plugins.json`、默认配置文件、启动层（§2、§3.1） | 是 | |
 | 从本地路径或 Git 安装、更新、移除、列出（§3.2–§3.6） | 是 | marketplace |
+| 默认配置文件中的可选插件，以及插件锁定的 npm 依赖（§2.3、§3.2、§7） | 是 | |
 | 插件代码：创建、打开/关闭、替换、重新加载 loader 行（§3） | 是，TypeScript 和 Python，前提是运行时已经提供（§2.5） | |
 | `plugin.*` 管理方法和 `dimcode plugin` 命令（§6、A.1） | 是 | 变更的客户端通知 |
 | 通过 Session 部件提供的 agent 工具（§6） | 是 | |
@@ -75,12 +76,14 @@ flowchart LR
 | 键 | 种类 | 含义 |
 | --- | --- | --- |
 | `name` | — | 插件的名字。同名插件互相替换。 |
+| `version` | — | 插件自身的版本，三段以点分隔的数字，每段一位或多位。可选，可选插件（§2.3）必填，它决定安装目录名。 |
 | `code` | 代码 | rutis 行的字段（[rutis 用法 §2](../rutis-usage.md#2-插件是一行实例挂载它的部件)），`id` 和 `name` 除外：`entry` 是目录内的路径；`inject`、`provides`、`instanceNames` 原样复制到行中；`config` 是行的配置，宿主的同名补丁深合并在其上（见下）。 |
+| `dependencies` | 代码 | 插件声明的依赖所用的包管理器。今天唯一的值是 `"npm"`：目录中带有 `package.json` 与 `package-lock.json`，锁定的依赖在获取时安装到插件自己的目录（§3.2、§7）。声明了它却缺少其中任一文件时以 `invalid_manifest` 拒绝。 |
 | `skills` | skill | 插件内的一个目录，里面是 Skill 文档，登记到 SkillsCatalog。 |
 | `mcp` | MCP | 插件内的一个文件，里面是 MCP 服务器条目，登记到 Mcp。 |
 | `hooks` | hook | 插件内的一个文件，里面是一份 hooks 文档，登记到 Hooks。 |
 
-每个路径都是相对路径，在跟随符号链接之后在目录内解析；离开目录的路径在安装时和重新加载时被拒绝（`invalid_manifest`）。清单在这个边界上解析；所有者收到的是已经读好的文档。
+每个路径都是相对路径，在跟随符号链接之后在目录内解析；离开目录的路径在安装时和重新加载时被拒绝（`invalid_manifest`）。清单在这个边界上解析；所有者收到的是已经读好的文档。声明了 `dependencies` 的插件从自己的目录运行入口，依赖也在那里解析，符合 [TypeScript 插件编写指南](../../../typescript-plugin-authoring.md) 的要求。
 
 **行的配置。** 行的 `config` 是清单的 `code.config` 上深合并宿主的同名补丁：对象逐成员合并，其他值（包括数组）替换清单的值。宿主在启动前设置补丁；产品不设置，所以随产品发布的插件读到清单里的值。运行候选文本的宿主把文本放在插件作者暴露的成员上，评测工具即如此（[model-prompts §8.1](../model-prompts.md#81-规则)），两臂运行同一份插件代码。
 
@@ -109,7 +112,7 @@ flowchart LR
       "id": "hooks-plus",
       "name": "Hooks",
       "source": { "git": "https://example.com/hooks-plus.git", "ref": "main", "commit": "4f1c…" },
-      "dir": "<home>/plugins/hooks-plus/4f1c…",
+      "dir": "<home>/plugins/hooks-plus/4f1c…+a1b2c3d4e5f60718",
       "kinds": ["code", "hooks"]
     }
   ],
@@ -125,9 +128,10 @@ flowchart LR
 | --- | --- |
 | `installed[].id` | 在已安装插件中唯一；它是记录的键，也是克隆目录的名字。必须符合 `[a-z0-9_-]{1,64}`（只用小写，所以在不区分大小写的文件系统上，两个 id 不会指向同一个目录），不能是 `builtin` 或 `default`（§7）。调用方没给时，id 是清单名字转成小写（`Hooks` → `hooks`）；转小写后和已装的重复，报 `plugin_exists`，调用方再给一个别的 id。示例中的 `hooks-plus` 是调用方给的（`--id hooks-plus`）。 |
 | `installed[].name` | 安装时或上一次重新加载时清单中的名字。 |
-| `installed[].source` | 本地目录用 `{path}`，原地使用，从不复制；Git 用 `{git, ref?, commit}`。 |
-| `installed[].dir` | 被加载的目录：本地路径本身，或 `<home>/plugins/<id>/<commit>` 下的克隆。 |
+| `installed[].source` | 本地目录用 `{path}`，原地使用，从不复制；Git 用 `{git, ref?, commit}`；默认配置文件以可选方式提供的插件（§2.3）用 `{optional}`，从它随发行提供的目录复制。 |
+| `installed[].dir` | 被加载的目录：本地路径本身、`<home>/plugins/<id>/<commit>+<suffix>` 下的克隆，或 `<home>/plugins/<id>/<version>+<suffix>` 下的副本（§3.2、§7）。在后缀规则出现之前写入的记录其目录不带后缀；不做迁移。 |
 | `installed[].kinds` | 安装时或上一次重新加载时清单带有的种类。 |
+| `installed[].version` | `{optional}` 来源的已安装版本，取自其清单；其他来源没有该字段。 |
 | `names.<name>.use` | 这个名字使用哪个插件：一个已安装的 id、`"builtin"` 或 `"default"`。不存在时：如果有该名字的内置插件，就用它，否则用该名字的默认插件。 |
 | `names.<name>.off` | 用户关闭了这个名字时为 `true`。 |
 
@@ -145,11 +149,15 @@ flowchart LR
   "plugins": {
     "plugin-authoring": "plugins/plugin-authoring"
   },
+  "optional": {
+    "light-ocr": "plugins/light-ocr"
+  },
   "locked": ["PluginManager", "Rpc", "Transport"]
 }
 ```
 
 - `plugins` 把每个默认插件的名字映射到它的目录，路径相对于这个文件。默认插件和其他插件一样是一个插件目录（§2.1）。
+- `optional` 把每个可选插件的名字映射到它的目录，路径相对于这个文件。可选插件随发行提供，但不安装、不打开：在用户安装它之前没有任何东西读取它，`plugin.list` 会列出它供客户端提供（§3.6）。`plugin.install {source: {optional: "<name>"}}` 把该目录——从不含 `node_modules`——复制到 `<home>/plugins/<id>/<version>+<suffix>`，并在那里安装它声明的依赖（§3.2、§7）；随发行的目录保持不动、只读。新发行带有新的 `version`：下次启动时已安装的副本会在后台重新获取（§3.1），在成功之前旧副本继续使用并留在磁盘上，切换后的下一次启动删除它。`enable` 默认为 true，此后 `plugin.enable` 与 `plugin.disable` 与其他已安装插件相同；可选插件的名字在安装之前不记录 `off` 状态：`plugin.list` 把它报告为 off（§3.6）。
 - 内置 SessionTitle、Scheduler 和 Goal 由原生产品 profile 安装，在这个文件中没有条目。
 - `locked` 列出不能关闭、也不能切换所用插件的名字。锁定名字的其他插件仍然可以安装。锁定是产品配置；PluginManager 执行它。
 
@@ -167,6 +175,8 @@ flowchart LR
 插件代码在 Node 或 Python 的 rutis 运行时里运行。提供运行时不归 PluginManager 管：运行时怎么获取、固定哪个版本、怎么校验，运行时就绪后插件的行怎么启动，都由 [RuntimeManager](RuntimeManager.md) 决定（[#476](https://github.com/arcships/dim/issues/476)，M1）。PluginManager 只负责建行；运行时还没有时，该行在 `plugin.list` 里是 `pending`，等待运行时的连接行（`session-node` 或 `py`）。运行时本身进行到哪一步（获取中、失败、启动中、down）由 `runtime.list` 显示。reload 只重新导入入口模块（[需求第 3 条](../../../design/plugin-management.md)）。
 
 TypeScript 的行以入口文件的绝对路径命名。Python 插件通过 PluginManager 维护的链接导入：`<home>/plugins/.python/<package>` 指向插件目录，`<package>` 是插件的 id（默认插件用名字），其中 `-` 换成 `_`；它的行名是 `py:<package>.<入口模块>`，插件在自己的包内使用相对导入。PluginManager 在打开插件时创建链接，更新后把它指向新目录，移除插件时删除它。Python 运行时从 `<home>/plugins/.python/` 导入（#476）。
+
+打开名字本身从不在 PluginManager 自己的权限下安装运行时，启动也从不安装：运行时只在客户端的 `plugin.install`、`plugin.enable` 或 `plugin.update` 调用中请求，以及在可选插件的后台重新获取中请求（§3.1）。启动 reconcile、所有者打开时的 reconcile、reload，以及处于出厂状态的名字，都从不请求运行时。这类调用打开带代码的插件而运行时关闭时，PluginManager 向 RuntimeManager 请求它——`RuntimeService::install("node")` 或 `install("python")`（§9 R5）——并回复该行 `pending`，`waitingFor` 其连接行。它不在那里等待获取；运行时的进度从 `runtime.list` 读取。必须安装插件依赖是 PluginManager 等待 Node 的唯一场合，由 RuntimeManager 的 `installPackages` 负责该等待（§3.2）。
 
 ## 3. 流程
 
@@ -189,7 +199,8 @@ TypeScript 的行以入口文件的绝对路径命名。Python 插件通过 Plug
    - catalog 需要其 `instanceNames` 的名字（§4）；
    - 被关闭的内置行，App Server 把它们从变为 Active 所需的行中去掉。
 2. App Server 对 `[assembly, plugins]` 进行 reconcile。被关闭的内置插件从不启动。
-3. PluginManager 的行 apply，向 `managementMethods` 登记 `plugin`，向 `partRegistry` 登记 `PluginTools`，然后在激活之后，删除残留的暂存目录，以及没有任何已安装条目引用的 Git 克隆。
+3. PluginManager 的行 apply，向 `managementMethods` 登记 `plugin`，向 `partRegistry` 登记 `PluginTools`，然后在激活之后，删除残留的暂存目录，以及 `<home>/plugins/<id>/` 下没有任何已安装条目引用的每个目录——Git 克隆与可选副本一视同仁。该清理在第 4 步开始前执行到底，并与每次 install、update、remove 串行（§4），因此它从不删除已改名到位、但记录尚未写入的目录。
+4. 进程行就绪且内容启动完成之后，已安装的 `{optional}` 插件若记录的 `version` 与随发行清单的不同，就在后台重新获取，做法与 Git 插件的 `plugin.update` 相同：新副本进入暂存目录，安装其依赖，改名为 `<version>+<suffix>`，切换记录并 reconcile 层，旧目录留在原处交给下次启动的清理。在成功之前旧副本继续使用。失败时保留旧副本，为 `plugin.list` 记录 `update.error`，并在下次启动或 `plugin.update {id}` 时重试。重新获取不阻塞客户端接入。
 
 默认插件或已安装插件的行失败时，启动不失败；`plugin.list` 把它显示为失败，并带上 rutis 的错误。正在使用的插件，其清单无法读取时什么都不运行：它没有行，每种内容都从每个存在的所有者那里撤回。进程行全部就绪之后、接纳客户端之前，App Server 调用 PluginManager 的内容启动步骤，让每个存在的所有者与记录一致（§3.7）。
 
@@ -197,17 +208,20 @@ TypeScript 的行以入口文件的绝对路径命名。Python 插件通过 Plug
 
 `plugin.install {source, id?, enable?}`。`enable` 默认为 `true`（[需求 2](../../../design/plugin-management.md)：已安装就意味着可用）。
 
-1. 调用方给了 `id` 时，先检查它（§7），已经安装的 `id` 直接拒绝（`plugin_exists`），不做任何获取。
-2. 获取（§7）：本地路径在原地检查；Git 来源先克隆到暂存目录并读取清单；没有给 `id` 时，id 取清单名字转成小写，同样检查并拒绝已安装的 id，然后才把暂存目录改名为 `<home>/plugins/<id>/<commit>`。任何失败都会删除暂存目录。
-3. 写入 `plugins.json`，加入新条目；当 `enable` 为 true 且名字未锁定时，同时写入 `names.<name>.use = id`。
-4. 如果已打开：reconcile 推导出的层（§3）。回复带上行的状态，以及被所有者拒绝的内容。
+1. 调用方给了 `id` 时，先检查它（§7），已经安装的 `id` 无论来源都直接拒绝（`plugin_exists`），不做任何获取。对 `{optional}`，在获取任何东西之前拒绝默认配置文件不提供的名字（`optional_not_found`）。
+2. 获取（§7）：本地路径在原地检查；Git 来源克隆到暂存目录并读取清单；可选来源复制——不含 `node_modules`——到暂存目录并读取清单。没有给 `id` 时，id 取清单名字转成小写，同样检查并拒绝已安装的 id。
+3. 依赖：清单声明 `dependencies` 时，PluginManager 调用一次 RuntimeManager 的 `installPackages(staging, cancel)`（§7、§9 R5），其间该调用的进度接收器报告 `dependencies` 阶段。Node 关闭时该调用会打开 Node 并等待其获取，只在 Node 可用后运行 npm。失败会删除暂存目录且不做任何改动：Node 无法提供时是带获取原因的 `node_unavailable`，否则是带 npm 消息的 `dependencies_failed`。
+4. 把暂存目录改名为 `<home>/plugins/<id>/<key>+<suffix>`，其中 `<key>` 是 Git commit 或可选插件的 `version`，`<suffix>` 是本次获取从随机源取得的 16 个小写十六进制字符。名字不得已存在；若存在就重新抽一个后缀。任何获取都不替换或复用已有目录。任何失败都会删除暂存目录。
+5. 写入 `plugins.json`，加入新条目；当 `enable` 为 true 且名字未锁定时，同时写入 `names.<name>.use = id`。
+6. 如果已打开：reconcile 推导出的层（§3）。回复带上行的状态，以及被所有者拒绝的内容。
 
-安装名字已锁定的插件时，只记录它，不打开它，并在回复中说明这一点。
+本地路径插件原地使用，其声明的依赖不会被安装：它们是用户自己的，如编写指南打包一节所述。安装名字已锁定的插件时，只记录它，不打开它，并在回复中说明这一点。
 
 ### 3.3 打开、关闭、切换
 
-- `plugin.enable {name, use?}`：`use` 是一个已安装的 id、`"builtin"` 或 `"default"`；不给时，使用该名字当前的 `use`。对锁定的名字，当 `use` 改变时拒绝（`plugin_locked`）。写入 `names.<name>`（清除 `off`，设置 `use`），然后 reconcile 推导出的层（§3）。
+- `plugin.enable {name, use?}`：`use` 是一个已安装的 id、`"builtin"` 或 `"default"`；不给时，使用该名字当前的 `use`。对锁定的名字，当 `use` 改变时拒绝（`plugin_locked`）。写入 `names.<name>`（清除 `off`，设置 `use`），然后 reconcile 推导出的层（§3）。当该调用打开一个运行时关闭的插件时，它请求运行时（§2.5）；启动 reconcile 从不这样做。
 - `plugin.disable {name}`：对锁定的名字拒绝。写入 `off: true`，然后 reconcile 推导出的层。
+- `plugin.enable`、`plugin.disable` 与 `plugin.reload` 指名一个没有候选者的名字——没有已安装条目、没有默认插件、也没有内置插件——时，以 `plugin_not_found` 拒绝，与未知名字相同；当名字属于未安装的可选插件时，消息给出 `plugin.install {source: {optional: "<name>"}}`。什么都不安装，调用也不请求运行时：安装始终是显式的 `plugin.install`，`enable` 只打开已安装的东西，从不获取（§2.5）。有候选者的名字——内置、默认或已安装——不受影响。
 
 当一个内容所有者本身被打开时（例如 Hooks），PluginManager 登记每个正在使用、并带有该种类的插件的内容（§3.7）。
 
@@ -224,12 +238,12 @@ TypeScript 的行以入口文件的绝对路径命名。Python 插件通过 Plug
 
 ### 3.5 更新
 
-Git 插件使用 `plugin.update {id, ref?}`：像 §3.2 那样获取新 commit，检查后放入一个新目录，写入新的 `commit` 和 `dir`，然后，如果插件正在使用，就 reconcile 推导出的层（入口路径变了，层里的行带着新路径）。旧目录在之后删除。本地路径插件没有可更新的东西（`not_updatable`）；重新加载它即可。是否要求用户确认更新，是客户端的事。
+Git 插件使用 `plugin.update {id, ref?}`：像 §3.2 那样获取新 commit，检查后放入一个新目录，在记录变更前在那里安装它声明的依赖，写入新的 `commit` 和 `dir`（`<commit>+<suffix>`），然后，如果插件正在使用，就 reconcile 推导出的层（入口路径变了，层里的行带着新路径）。依赖安装失败会删除新目录，保留旧 commit 且不做任何改动。旧目录留在原处，由下次启动的清理删除。对 `{optional}` 插件，`plugin.update {id}` 按当前版本重新复制随发行的目录——修复失败的重新获取，并采用新的发行版本——步骤相同：暂存、安装依赖、改名为 `<version>+<suffix>`、切换记录、正在使用时 reconcile、旧目录交给下次启动的清理；失败保留旧副本并记录 `update.error`。因此在版本未变时，新副本会得到自己的 `<version>+<suffix>` 目录，而不是替换正在使用的那一个。本地路径插件没有可更新的东西（`not_updatable`）；重新加载它即可。是否要求用户确认更新，是客户端的事。
 
 ### 3.6 移除和列出
 
-- `plugin.remove {id}`：如果有名字在用它，这个名字就不再用它：该名字有内置插件或默认插件时，删掉 `names.<name>.use`，回到那个插件（原来是关闭的仍然关闭）；否则删掉 `names.<name>` 条目，这个名字下不运行任何插件。从 `plugins.json` 中移除条目，然后删除它的 Git 目录。本地目录从不删除。内置插件和默认插件不能移除（`not_removable`）；它们可以被关闭。
-- `plugin.list {}`：每个名字一项，由 `plugins.json`、默认配置文件和 `assembly` 行构建，列出每个候选者以及正在使用的那一个；状态在调用时从 `Loader::get` 读取。
+- `plugin.remove {id}`：如果有名字在用它，这个名字就不再用它：该名字有内置插件或默认插件时，删掉 `names.<name>.use`，回到那个插件（原来是关闭的仍然关闭）；否则删掉 `names.<name>` 条目，这个名字下不运行任何插件。从 `plugins.json` 中移除条目；它的 Git 或可选目录留在原处，由下次启动的清理删除（`<home>/plugins/<id>/` 至多保留一个进程历史产生的那些副本）。本地目录从不删除。内置插件和默认插件不能移除（`not_removable`）；它们可以被关闭。
+- `plugin.list {}`：每个名字一项，由 `plugins.json`、默认配置文件（`plugins` 与 `optional`）和 `assembly` 行构建，列出每个候选者以及正在使用的那一个；状态在调用时从 `Loader::get` 读取。未安装的可选插件有自己的一项：`{name, use: null, off: true, locked: false, candidates: [], optional: true}`，没有状态，供客户端提供安装。`off` 是报告，不是记录的状态——该名字下不运行任何东西，`plugins.json` 中也没有它的条目（§2.3）——`off: true` 让今天的客户端保持诚实：若为 `off: false`，它们会把它显示为运行中并提供 Disable 与 Reload，而这两者都会失败；`off: true` 则把它显示为惰性，TUI 的开关调用 `plugin.enable`，以 `plugin_not_found` 被拒绝（§3.3）。安装之后，它与其他已安装名字相同，可选标记只作为来源信息保留。已安装可选插件若随发行版本不同，带 `update: {version, error?}`：`version` 是它正迁往的发行版本，`error` 是最近一次重新获取的失败。
 
 ### 3.7 内容登记
 
@@ -240,6 +254,7 @@ Git 插件使用 `plugin.update {id, ref?}`：像 §3.2 那样获取新 commit�
 ## 4. 时序与冲突
 
 - PluginManager 在内存表上一步完成对 `plugins.json` 的修改，然后写文件，然后 reconcile 由它推导出的层，并向所有者下达命令。针对同一个 id 或名字的第二个操作能看到第一个操作的变更（`plugin_exists`，或者它在新状态上执行）。推导层和 reconcile 一次执行一个，每次都按当时的记录推导，所以最后 reconcile 的层来自最新的记录。rutis-loader 一次执行一个自己的操作。
+- 插件的每次文件系统改动——暂存、克隆、复制、改名、依赖安装，以及启动时的清理——都在一个队列里一次执行一个。因此清理从不落在一次获取的改名与它的记录写入之间，也从不删除另一个操作即将引用的目录。
 - rutis 拒绝的行或某个所有者拒绝的命令，不改变已写入的配置；该项在 `plugin.list` 中显示这次拒绝（例如，新插件失败，因为另一个不同名的插件提供了同一服务）。
 - `instanceNames`：rutis 需要在运行时启动之前，在 catalog 中拿到插件的部件在 Session 和分支中提供的名字（[rutis 用法 §2](../rutis-usage.md#2-插件是一行实例挂载它的部件)）。安装、切换或重新加载到一个 `instanceNames` 不在运行中 catalog 内的插件时，记录变更并回复 `restartRequired`；该行在下次启动时创建。只登记工具、方法或提示来源的插件没有这个限制。
 - 正在使用时的重新加载或替换：旧世代卸载，rutis 取消它正在运行的调用，使用它的进行中轮次可能失败（[ADR 002](../../adr/002-plugin-scope.md) 的后果）。这一点写入文档，不加以阻止。
@@ -251,7 +266,7 @@ PluginManager 除 `plugin` 工具外不向模型上下文加入任何自己的�
 ## 6. 接口（摘要）
 
 - 管理方法，命名空间 `plugin`（A.1）：`list`、`install`、`enable`、`disable`、`reload`、`update`、`remove`。
-- CLI：`dimcode plugin list | install <path|git-url> [--ref R] [--id ID] [--no-enable] | enable <name> [--use ID|builtin|default] | disable <name> | reload <name> | update <id> | remove <id>`。
+- CLI：`dimcode plugin list | install <path|git-url> [--ref R] [--id ID] [--no-enable] | install --optional <name> [--id ID] [--no-enable] | enable <name> [--use ID|builtin|default] | disable <name> | reload <name> | update <id> | remove <id>`。
 - 来自 `PluginTools` 的 agent 工具：一个工具 `plugin`，只有一个字符串参数 `command`，写法与 CLI 参数相同：空白分隔单词，单引号或双引号把内容合成一个单词（含空格的路径要加引号），反斜杠是普通字符，所以 Windows 路径照原样写：
 
   | 命令 | 作用 |
@@ -270,8 +285,10 @@ PluginManager 除 `plugin` 工具外不向模型上下文加入任何自己的�
 安装和打开是通过管理方法或工具调用完成的宿主配置；已启用的插件代码运行时不需要宿主本地审批（[ADR 003](../../adr/003-approval-scope.md)）。PluginManager 不增加作用域、审批或信任步骤（[需求](../../../design/plugin-management.md)）。它守护的是获取过程本身：
 
 - Git 来源只接受 `https://` 或 `ssh://` URL；其他协议（`file://`、`ext::`、scp 风格的路径）以及以 `-` 开头的参数，在 Git 运行之前就被拒绝。克隆时关闭子模块（`--no-recurse-submodules`），关闭 hook（`core.hooksPath` 设为一个空目录），设置 `protocol.file.allow=never`，并且不弹出终端提示。
-- **路径。** 所有为插件动文件系统的操作都用同一条规则：安装（暂存、克隆、改名）、更新、移除和启动时的清理。在任何文件系统改动之前，PluginManager 检查两件事：id（无论是调用方给的，还是取自清单名字）符合 `[a-z0-9_-]{1,64}`，且不是 `builtin` 或 `default`；它将要创建、改名或删除的每个目录，解析后恰好是 `<home>/plugins/.staging/<random>`、`<home>/plugins/.python`、`<home>/plugins/<id>` 或 `<home>/plugins/<id>/<commit>` 之一（`.staging` 和 `.python` 不可能是 id，因为 id 里没有点）。`.python` 中的 Python 链接只作为链接被替换或删除，从不改动它们指向的内容。检查不通过时，操作以 `invalid_id` 或 `path_outside_plugins` 被拒绝，什么都不改：不建目录、不写 `plugins.json`、不发 loader 命令。本地路径插件自己的目录从不被创建、改名或删除，所以这条规则不适用于它。
-- 克隆先放到 `<home>/plugins/.staging/<random>`，只有在清单和路径检查通过后才改名放到正式位置。失败时删除暂存目录；启动时删除残留目录以及没有条目引用的克隆。
+- **路径。** 所有为插件动文件系统的操作都用同一条规则：安装（暂存、克隆、改名）、更新、移除和启动时的清理。在任何文件系统改动之前，PluginManager 检查两件事：id（无论是调用方给的，还是取自清单名字）符合 `[a-z0-9_-]{1,64}`，且不是 `builtin` 或 `default`；它将要创建、改名或删除的每个目录，解析后恰好是 `<home>/plugins/.staging/<random>`、`<home>/plugins/.python`、`<home>/plugins/<id>`、`<home>/plugins/<id>/<key>` 或 `<home>/plugins/<id>/<key>+<16 个小写十六进制字符>` 之一（`.staging` 和 `.python` 不可能是 id，因为 id 里没有点）。不带后缀的 `<key>` 只在作为现有记录指名的目录以及清理时才被接受。`.python` 中的 Python 链接只作为链接被替换或删除，从不改动它们指向的内容。检查不通过时，操作以 `invalid_id` 或 `path_outside_plugins` 被拒绝，什么都不改：不建目录、不写 `plugins.json`、不发 loader 命令。本地路径插件自己的目录从不被创建、改名或删除，所以这条规则不适用于它。
+- **进程运行期间不删除任何副本。** install、update、后台重新获取与 remove 都把被替换的目录留在原处；只有启动清理删除没有已安装条目引用的目录，且它在当次启动的任何获取之前运行（§3.1）。因此读过描述的任务所指名的目录会存在到进程退出，即使插件在任务开始后被更新或移除。代价是磁盘：被替换的副本留到下次启动。曾经考虑过来自 Modality 的租约，予以拒绝：Modality 将不得不寻址 PluginManager 的状态，而[原则 §4 第 7 条](../../../architecture/rust-agent/principles.md)禁止这样做；而且崩溃仍然会把副本留给启动清理。
+- 克隆先放到 `<home>/plugins/.staging/<random>`，只有在清单和路径检查通过后才改名放到正式位置。失败时删除暂存目录；启动时删除残留目录，以及没有条目引用的克隆或副本。
+- 插件的依赖只来自它自己的 `package-lock.json`，由 RuntimeManager 在暂存目录中以 `npm ci --omit=dev --ignore-scripts --no-audit --no-fund` 安装，因此不会运行任何包的 lifecycle 脚本，也不会解析锁之外的依赖。registry 遵循 RuntimeManager 的规则（`npmRegistries`，然后 `DIMCODE_NPM_REGISTRY`，§9 R5）。随发行的可选目录从不就地安装，也从不被修改。
 - 清单中的任何路径在跟随符号链接之后都不能离开插件目录；Git 克隆内指向克隆外部的符号链接被拒绝。
 - `plugins.json` 以原子方式写入（§2.2）。
 
@@ -343,27 +360,37 @@ PluginManager 不是 Capability：它没有 Timeline 状态，不写 Timeline �
 | 对顺序、批次、中断、重载的影响 | 无。重载的行保持 fiber 身份并重新登记。 |
 | 所有者与 issue | Settings（App Server）；随 #384。 |
 
+**R5. RuntimeManager：插件的 npm 依赖与运行时请求（M1）。**
+
+| 项 | 内容 |
+| --- | --- |
+| 阻塞点 | `RuntimeService` 只提供 `list` 与 `install`：PluginManager 无法按插件的锁运行 npm，运行时请求目前只为 Python 的链接存在（[RuntimeManager](RuntimeManager.md) §4、§9 R1），调用方也没有办法在运行 npm 之前等待 Node 的获取。 |
+| 已考虑的现有机制 | PluginManager 自己运行 npm（重复 RuntimeManager 的 registry、包与失败规则；已拒绝）；要求用户先安装 Node（Python 路径已经会请求它的运行时）。 |
+| 通用能力 | 进程 `RuntimeService` 上的 `installPackages(dir, cancel)`：Node 关闭时打开 Node 并用 RuntimeManager 自己的状态等待其获取，然后在 `dir` 内用受管（或 `system`）Node 自带的 npm 按 `dir/package-lock.json` 运行 `npm ci --omit=dev --ignore-scripts --no-audit --no-fund --registry <r>`，registry 依次取自 `npmRegistries` 与 `DIMCODE_NPM_REGISTRY`，npm 退出即返回。错误：Node 无法提供时是带获取原因的 `node_unavailable`，以及 `npm_unavailable`、`install_failed {reason}`、`cancelled`。Python 路径已有的 `install(name)` 请求扩展到 `node`，只用于在 Node 关闭时打开插件的客户端调用，以及可选插件的后台重新获取——从不在启动、所有者打开时的 reconcile、reload 或出厂状态的名字上使用。 |
+| 对顺序、批次、中断、重载的影响 | 对行没有影响：安装在目录改名到位之前完成，被取消或失败的安装会删除该目录。 |
+| 所有者与 issue | RuntimeManager（App Server）；随 #476。 |
+
 ## 附录 A. 接口细节
 
 ### A.1 方法（`managementMethods`，命名空间 `plugin`）
 
 | 方法 | 参数 | 结果 |
 | --- | --- | --- |
-| `plugin.list` | `{}` | `[{name, use, off, locked, candidates: [{id \| "builtin" \| "default", source?, kinds}], status?, error?, waitingFor?, refused?}]` |
-| `plugin.install` | `{source: {path} \| {git, ref?}, id?, enable?}` | `{id, name, enabled, status?, skipped?: [kind], refused?: [{kind, error}], restartRequired?}` |
+| `plugin.list` | `{}` | `[{name, use?, off, locked, optional?, update?: {version, error?}, candidates: [{id \| "builtin" \| "default", source?, kinds}], status?, error?, waitingFor?, refused?}]` |
+| `plugin.install` | `{source: {path} \| {git, ref?} \| {optional: "<name>"}, id?, enable?}` | `{id, name, enabled, status?, skipped?: [kind], refused?: [{kind, error}], restartRequired?}` |
 | `plugin.enable` | `{name, use?}` | `{status?, skipped?, refused?, restartRequired?}` |
 | `plugin.disable` | `{name}` | `{}` |
 | `plugin.reload` | `{name}` | `{status?, skipped?, refused?, restartRequired?}` |
 | `plugin.update` | `{id, ref?}` | `{commit, status?, skipped?, refused?, restartRequired?}` |
 | `plugin.remove` | `{id}` | `{}` |
 
-名字在用的插件带代码时，`status` 是该行在 `Loader::get` 中的 `EntryStatus`：`Inactive` → `pending`（附带 `waitingFor`，即 `Loader::waits` 给出的服务；等待运行时的行给出运行时的连接行 `session-node` 或 `py`），`Unresolved` → `failed`（附带 `error`），`Running` → `running`，`Stopped` → `stopped`。关闭的名字没有在用的插件，显示 `off`，不显示状态。`install` 和 `update` 通过调用的进度接收端报告阶段 `fetch`、`check` 和 `load`。
+名字在用的插件带代码时，`status` 是该行在 `Loader::get` 中的 `EntryStatus`：`Inactive` → `pending`（附带 `waitingFor`，即 `Loader::waits` 给出的服务；等待运行时的行给出运行时的连接行 `session-node` 或 `py`），`Unresolved` → `failed`（附带 `error`），`Running` → `running`，`Stopped` → `stopped`。关闭的名字没有在用的插件，显示 `off`，不显示状态。`install` 和 `update` 通过调用的进度接收端报告阶段 `fetch`、`check`、`dependencies` 和 `load`；插件未声明依赖时没有 `dependencies`。
 
 客户端 RPC 边界对来源、状态错误和内容拒绝的投影，以及一次拒绝可能携带的全部 reason，见 A.2。
 
 ### A.2 错误
 
-`plugin_exists`、`plugin_not_found`、`invalid_id`、`path_outside_plugins`（两者都在任何文件系统改动之前，§7）、`plugin_locked`、`not_removable`、`not_reloadable`、`not_updatable`、`name_changed`、`invalid_manifest`（带字段和原因）、`invalid_source`（协议或参数被拒绝）、`acquire_failed`（Git 的消息）、`record_unreadable`（启动时）。配置写入之后 loader 或所有者的拒绝不是这次调用的错误：它在结果和 `plugin.list` 中报告。
+`plugin_exists`、`plugin_not_found`、`invalid_id`、`path_outside_plugins`（两者都在任何文件系统改动之前，§7）、`plugin_locked`、`not_removable`、`not_reloadable`、`not_updatable`、`name_changed`、`invalid_manifest`（带字段和原因）、`invalid_source`（协议或参数被拒绝）、`acquire_failed`（Git 的消息）、`optional_not_found`（默认配置文件不提供该名字的可选插件）、`node_unavailable`（无法为依赖安装提供 Node）、`dependencies_failed`（npm 的消息）、`record_unreadable`（启动时）。配置写入之后 loader 或所有者的拒绝不是这次调用的错误：它在结果和 `plugin.list` 中报告。
 
 这些 code 在各客户端之间保持稳定。客户端 RPC 错误用稳定、可操作的描述指明其 code，不包含所有者的原始诊断消息，也不回显请求字段；上面的描述指认的是所有者的错误，并不授权发布机密。
 
@@ -399,6 +426,14 @@ PluginManager 不是 Capability：它没有 Timeline 状态，不写 Timeline �
 | 所有者关闭期间插件被删除 | 所有者被打开时或下次启动时撤回它的内容 | PluginManager |
 | `instanceNames` 不在运行中的 catalog 内 | 记录配置，`restartRequired`；该行在下次启动时创建 | PluginManager |
 | Git 安装过程中进程停止 | 下次启动时删除暂存目录；`plugins.json` 未被写入 | PluginManager |
+| 安装默认配置文件不提供的可选插件 | `optional_not_found`；什么都不创建 | PluginManager |
+| 打开、关闭或重新加载一个没有候选者的名字 | `plugin_not_found`，与未知名字相同；对未安装的可选插件，消息给出 `plugin.install {source: {optional: <name>}}`；什么都不安装，也不请求运行时 | PluginManager |
+| 已安装可选插件的随发行版本变化 | 后台重新获取；只有新副本就绪后才切换记录，此前旧副本继续服务，并留在磁盘上直到下次启动的清理 | PluginManager |
+| 后台重新获取或可选插件的 `plugin.update` 失败 | 旧副本保留并继续服务；`plugin.list` 显示 `update.error`；下次启动或 `plugin.update {id}` 重试 | PluginManager |
+| 任务持有描述期间更新或移除 | 旧目录留到下次启动；任务继续读它 | PluginManager |
+| 新获取要用的目录名已存在 | 重新抽取 `<suffix>`；从不替换或复用 | PluginManager |
+| 依赖安装过程中进程停止 | 下次启动时删除暂存目录；`plugins.json` 未被写入 | PluginManager |
+| 更新时依赖安装失败 | 删除新目录，保留旧 commit、旧目录与记录 | PluginManager |
 | `plugins.json` 写入之后、loader 或所有者命令之前进程停止 | 下次启动时根据 `plugins.json` 构建行，并让所有者与它一致 | PluginManager 启动 |
 
 ## 附录 C. 验收（M1）
@@ -411,10 +446,20 @@ PluginManager 不是 Capability：它没有 Timeline 状态，不写 Timeline �
 6. 安装一个与内置插件同名的插件并启用它，会替换该内置插件；`enable <name> --use builtin` 切换回去。
 7. `disable PluginManager` 被拒绝，错误为 `plugin_locked`。
 8. 使用 `file://` URL 的 Git 安装被拒绝；失败的克隆不会在 `<home>/plugins` 下留下任何东西；id 为 `../x` 的安装以 `invalid_id` 被拒绝，什么都不创建。
-9. `dimcode plugin install <git-url>` 安装一个测试用仓库并打开其插件；仓库有第二个提交后，`dimcode plugin update <id>` 加载新提交并删除旧目录。
+9. `dimcode plugin install <git-url>` 安装一个测试用仓库并打开其插件；仓库有第二个提交后，`dimcode plugin update <id>` 把新提交加载到新的 `<commit>+<suffix>` 目录；旧目录留到下次启动，由它的清理删除。
 10. 默认插件的 Settings 来源在它启动时出现，在它被关闭时消失。
 11. 从本地路径安装的 Python 插件能登记它的工具，reload 后入口模块的修改生效（Python 运行时由 [#476](https://github.com/arcships/dim/issues/476) 提供）。
 12. 在新 Session 中 agent 能列出 `plugin-authoring` Skill；让它编写一个带 echo 工具的插件并安装，它不读 Dim 的源码就能完成。
+13. 默认配置文件提供的可选插件在 `plugin.list` 中以 `optional: true` 出现且没有状态；`dimcode plugin install --optional <name>`（一个 fixture 插件）把它的目录复制到 `<home>/plugins/<id>/<version>+<suffix>`，在那里安装其锁定的 npm 依赖，并打开它；随发行的目录中没有 `node_modules` 且未被修改；`disable` 与 `enable` 与其他已安装插件相同；移除把副本留到下次启动，由它的清理删除，并留下随发行的目录。
+14. 通过 `plugin.enable` 或 `plugin.install` 在 Node 关闭时打开一个 Node 插件，会请求运行时并以 `pending` 和 `waitingFor` 回复；运行时启动后，该行无需另一条命令即可运行。同一配置的普通启动与 reload 都不请求运行时。
+15. 声明 `dependencies` 的 Git 插件在记录变更前把依赖安装到它的克隆中；安装失败保留旧 commit 且不留新目录；声明了依赖却没有 `package-lock.json` 的清单以 `invalid_manifest` 失败。
+16. `dimcode plugin install --optional <未知名字>` 以 `optional_not_found` 失败且什么都不创建。
+17. 已安装可选 fixture 的随发行版本在两次启动之间变化：第二次启动在后台重新获取到新的 `<version>+<suffix>` 目录，记录与 `dir` 切换，插件继续从旧副本服务；两个目录都留到下次启动，由它的清理删除旧的；依赖安装失败时旧副本保留，`plugin.list` 显示 `update.error`，直到下次启动或 `plugin.update <id>` 修复。
+18. 对可选 fixture 在同版本上运行 `plugin.update <id>` 会创建第二个 `<version>+<suffix>` 目录并切换记录；旧目录在下次启动的清理之前保持不变。
+19. 在同一进程内先移除、再安装同一版本，会得到新的 `<version>+<suffix>` 目录；两者都留到下次启动，由它的清理只删除没有条目引用的那一个。
+20. `plugin.enable`、`plugin.disable` 与 `plugin.reload` 指名一个未安装的可选 fixture 时，以 `plugin_not_found` 拒绝；消息给出 `plugin.install {source: {optional: "<name>"}}`；什么都不安装，也不请求运行时。没有已安装条目的默认 fixture 名字仍然可以被关闭和打开。
+21. Phase 2 的 `dim-cli` 测试把包含未安装可选 fixture 项——`{name, use: null, off: true, locked: false, candidates: [], optional: true}`——的 `plugin.list` 回复反序列化为今天的 `PluginItem`，证明形状保持可解码。
+22. TUI 的 `/plugins` 面板与 Web 设置页为 `optional: true` 的项提供 Install 动作，调用 `plugin.install {source: {optional: "<name>"}}`；TUI 对该项的开关调用 `plugin.enable`，显示第 20 项的拒绝；Desktop 解码同样的新增字段，无需改动。
 
 ## 附录 D. 待对齐问题
 

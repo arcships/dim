@@ -15,6 +15,7 @@ RuntimeManager 提供插件代码运行所需的 Node 与 Python rutis 运行时
 | `runtime.list`、`runtime.install`、`runtime.configure`、`/runtime` 面板与 `dimcode runtime` 各形态（§5） | 是 | 状态变化通知客户端 |
 | 发布包带默认插件和默认配置文件（§6） | 是 | |
 | Python 通过 PluginManager 的链接目录导入插件（§4） | 运行时一侧在这里；链接由 PluginManager 建（[#3](https://github.com/arcships/dim/issues/3)） | |
+| `RuntimeService::installPackages`：把插件的锁定 npm 依赖安装到它自己的目录（§5、§9 R1） | 是 | |
 | 删除本版 Dim 不再使用的运行时目录 | | 是 |
 
 ## 1. 结构
@@ -135,6 +136,8 @@ Python 运行时的 project 目录是 `<home>/plugins/.python/`，归 PluginMana
 
 不执行任何未校验的东西：运行 npm 或 pip 的解释器是已校验的压缩包里的（或用户用 `system` 选的那个），npm 关闭脚本安装并按固定 lock 校验每个包，pip 拒绝任何没有固定 hash 的文件。
 
+插件的依赖由同一套 npm 流程按 PluginManager 的请求安装（§5）：已校验的（或 `system` 的）Node 自带的 npm 在插件的暂存目录中按该插件自己的 `package-lock.json` 运行，使用相同的参数和相同的 registry 顺序。该安装不写 `runtimes.json` 条目，也不在 `<home>/runtimes/` 下创建任何东西：该目录属于插件，由 PluginManager 改名或删除（§9 R1）。
+
 ### 3.3 失败与离线
 
 获取失败的运行时在 `runtime.list` 里是 `failed`，原因列出每个下载源和它的错误。没有东西被替换：半成品目录在下次尝试时删除，之前已安装的版本（如果有）保留。需要它的插件行保持 Pending，等待它的连接行的会话。下一次尝试是下次启动或 `runtime.install`（§5）；没有自动重试。
@@ -149,12 +152,12 @@ Python 运行时的 project 目录是 `<home>/plugins/.python/`，归 PluginMana
 
 ## 4. 从目录安装的 Python 插件如何导入
 
-rutis 的 Python 运行时是一个进程；行 `py:<模块>` 用 `importlib.import_module` 从运行时的 `sys.path` 导入，`sys.path` 里有它的 project 目录。插件目录可以在任何位置（本地路径原地使用；Git 安装在 `<home>/plugins/<id>/<commit>`）。
+rutis 的 Python 运行时是一个进程；行 `py:<模块>` 用 `importlib.import_module` 从运行时的 `sys.path` 导入，`sys.path` 里有它的 project 目录。插件目录可以在任何位置（本地路径原地使用；Git 安装在 `<home>/plugins/<id>/<commit>+<suffix>`，较旧的记录可能不带后缀）。
 
 - Python 运行时的 project 目录是 `<home>/plugins/.python/`，归 PluginManager；App Server 启动时创建它，让运行时的导入路径在第一个插件之前就存在。
 - 开启一个 Python 插件时，PluginManager 在那里建一个目录链接 `<包名>` 指向插件目录（`<包名>` 是插件 id 把 `-` 换成 `_`；Windows 上用 junction），并建行 `py:<包名>.<入口模块>`。正在运行的进程不重启就能导入新插件。
 - 插件内部的模块之间用相对导入（`from . import helpers`）。reload 时，入口模块文件变了就重新导入，这是 rutis 对每个 Python 行的做法（[需求第 3 条](../../../design/plugin-management.md)）。
-- PluginManager 开启 Python 插件而 Python 处于关闭时，调用 `RuntimeService::install("python")`（§5）。
+- 客户端的 `plugin.install`、`plugin.enable` 或 `plugin.update` 打开 Python 插件而 Python 处于关闭时，PluginManager 调用 `RuntimeService::install("python")`（§5）；同样的调用适用于这些客户端调用中的 Node 插件，以及 PluginManager 对可选插件的后台重新获取。启动、所有者打开时的 reconcile、reload，以及处于出厂状态的名字，都从不触发它。插件依赖必须安装时，`installPackages` 打开 Node 并等待它（§9 R1）。
 
 ## 5. 接口
 
@@ -162,7 +165,7 @@ rutis 的 Python 运行时是一个进程；行 `py:<模块>` 用 `importlib.imp
 | --- | --- |
 | 启动命令 | `nodeRuntime`、`pythonRuntime`：连接行 `session-node` 和 `py` 注入的只在 Rust 里的进程服务；运行时获取后提供。 |
 | `RuntimeStatus` | 每个连接行在以行名命名的只在 Rust 里的进程键上维护：`starting`、`ready`，或带原因的 `down`。RuntimeManager 读取它。 |
-| `RuntimeService`（Rust 进程服务） | `list() -> [RuntimeEntry]`；`install(name)`：开启运行时并开始获取；正在获取或正在运行时什么都不做；获取失败后再获取一次；连接 `down` 后重新提供启动命令。用可选依赖读取，所以 RuntimeManager reload 不会让调用方 reload。 |
+| `RuntimeService`（Rust 进程服务） | `list() -> [RuntimeEntry]`；`install(name)`：开启运行时并开始获取；正在获取或正在运行时什么都不做；获取失败后再获取一次；连接 `down` 后重新提供启动命令。`installPackages(dir, cancel)`：Node 关闭时打开 Node 并用 RuntimeManager 自己的状态等待其获取，然后在 `dir` 内用受管（或 `system`）Node 自带的 npm 安装插件的锁定 npm 依赖——按 `dir/package-lock.json` 执行 `npm ci --omit=dev --ignore-scripts --no-audit --no-fund --registry <r>`，registry 依次尝试 `npmRegistries` 与 `DIMCODE_NPM_REGISTRY`——npm 退出即返回。错误：Node 无法提供时是带获取失败原因的 `node_unavailable`、`npm_unavailable`（npm 无法启动）、`install_failed {reason}`（npm 的消息）与 `cancelled`；`cancel` 会杀死 npm，并把 `dir` 留给调用方。两者都用可选依赖读取，所以 RuntimeManager reload 不会让调用方 reload。 |
 | `runtime.list`（管理方法） | `[{name, source, auto, version, path?, status, reason?}]`；`auto` 是正在生效的配置，客户端因此不必自己存一份；`path` 是该运行时所用解释器的绝对路径，只在 §2.4 的记录按正在生效的 plan 判定为已安装时出现——与跳过下载是同一条判断——路径不是合法 UTF-8 时省略，并由 `reason` 说明；`status` 是 `off`、`acquiring`、`failed`，或提供启动命令后连接的 `RuntimeStatus`：`starting`（连接行还没启动时也是）、`ready`，或带原因的 `down`。 |
 | `runtime.install {name}`（管理方法，有修改） | `RuntimeService::install`：重读配置，`source` 变化时通过重启连接行应用（§3.3），并立即回复当前状态；配置无法读取时该调用以 `runtime_configuration` 错误返回。 |
 | `runtime.configure {name, source?, auto?}`（管理方法，有修改） | 原子地写 `<home>/runtimes/config.json`，按运行时、按字段覆盖预置（§2.2），随后按 `runtime.install` 的方式应用；写不出或读不出时该调用以 `runtime_configuration` 错误返回。该运行时正在获取时拒绝，因为获取过程中它的 plan 不能变（§3.1）。 |
@@ -175,18 +178,18 @@ rutis 的 Python 运行时是一个进程；行 `py:<模块>` 用 `importlib.imp
 ```text
 bin/dimcode[.exe]
 default-plugins.json        # PluginManager §2.3，含 `runtimes`（§2.2）
-plugins/<name>/             # plugin-authoring，没有生产依赖的 node_modules
+plugins/<name>/             # 默认插件与可选插件；可选插件没有 node_modules
 LICENSE  NOTICE  release-manifest.json
 ```
 
-`scripts/stage-plugins.mjs` 复制 `runtime/default-plugins.json` 和每个默认插件的目录（不含测试、`tsconfig.json`、`node_modules`），在每个有 `package.json` 的目录里按它固定的 lock 执行 `npm ci --omit=dev --ignore-scripts --no-bin-links`；`stage-release.mjs --plugins DIR` 把结果放在 `bin/` 旁边。默认插件从自己的 `node_modules` 解析 `@arcships/rutis`；它不能解析出自己的一份 Cordis，因为 rutis-runtime 拒绝 Cordis 与运行时不同的插件。插件入口是 TypeScript，放在 npm 包的 `node_modules` 下也可以：Node 运行时通过 tsx 加载它们，不用 Node 自带的去类型。查找这个文件（`<prefix>/default-plugins.json`，即 `bin/` 的上一级，或 `DIMCODE_DEFAULT_PLUGINS`）和 App Server 的 `--defaults` 参数归 PluginManager（[#485](https://github.com/arcships/dim/pull/485)）；RuntimeManager 读这个文件的 `runtimes` 一节。有 `--defaults` 且没有 `--node` 时，App Server 在运行时的 `auto` 开启或它已被记录为安装过时，用 RuntimeManager 获取它；否则行为与现在相同（显式的 `--node`、`--js-runtime`、`--python` 继续用于开发和测试）。
+`scripts/stage-plugins.mjs` 复制 `runtime/default-plugins.json`、每个默认插件的目录和每个可选插件的目录（都不含测试、`tsconfig.json`、`node_modules`），并在每个有 `package.json` 的默认插件里按它固定的 lock 执行 `npm ci --omit=dev --ignore-scripts --no-bin-links`——从不在可选插件里执行，因为它的依赖在安装时装入用户自己的副本（PluginManager §2.3）；`stage-release.mjs --plugins DIR` 把结果放在 `bin/` 旁边。默认插件从自己的 `node_modules` 解析 `@arcships/rutis`；它不能解析出自己的一份 Cordis，因为 rutis-runtime 拒绝 Cordis 与运行时不同的插件。插件入口是 TypeScript，放在 npm 包的 `node_modules` 下也可以：Node 运行时通过 tsx 加载它们，不用 Node 自带的去类型。查找这个文件（`<prefix>/default-plugins.json`，即 `bin/` 的上一级，或 `DIMCODE_DEFAULT_PLUGINS`）和 App Server 的 `--defaults` 参数归 PluginManager（[#485](https://github.com/arcships/dim/pull/485)）；RuntimeManager 读这个文件的 `runtimes` 一节。有 `--defaults` 且没有 `--node` 时，App Server 在运行时的 `auto` 开启或它已被记录为安装过时，用 RuntimeManager 获取它；否则行为与现在相同（显式的 `--node`、`--js-runtime`、`--python` 继续用于开发和测试）。
 
 ## 7. 安全
 
 - 每个下载的压缩包在解压或运行之前，都按官方发布方列出的 SHA-256 校验，这个 SHA-256 从固定的 HTTPS 地址读取；npm 和 pip 的包按仓库里固定的 lock 和 requirements 校验。下载源和镜像不增加信任。
 - 压缩包条目只解压到它的目录里：拒绝绝对路径和 `..`，也拒绝目标离开目录的链接（Windows 上，目录内的链接解压为副本）；zip 包里的链接条目一律拒绝。不保留 setuid、setgid、sticky 位（Unix 上权限最多为 `rwxr-xr-x`）。
 - npm 带 `--ignore-scripts` 运行；pip 只装 wheel（`--only-binary :all:`），安装期间不运行任何包的代码。
-- RuntimeManager 只写 `<home>/runtimes/`。不使用也不保存任何凭据。
+- RuntimeManager 只写 `<home>/runtimes/`，唯一例外是 `installPackages` 写入它所收到插件目录内的 `node_modules`；该目录属于 PluginManager，由它改名或删除。不使用也不保存任何凭据。
 - 完整性在获取时保证。之后启动时，RuntimeManager 信任自己的记录和已安装的目录，不再重新算 hash：它们在用户的 home 里，只有用户自己的进程会写；能改它们的进程，同样能改配置或插件本身。校验防的是网络上来的内容，不是 home。
 
 ## 8. 规则检查
@@ -214,12 +217,16 @@ RuntimeManager 不是 Capability：它没有 Timeline 状态，不写 Timeline �
 
 对 rutis 没有：连接行要等启动命令提供后才启动进程，行按 rutis-loader 0.19.3 已有的依赖等待来等它的会话。
 
-**R1. PluginManager：Python 链接和运行时请求（M1）。**
+**R1. PluginManager：Python 链接、运行时请求与插件的 npm 包（M1）。**
 
 | 项 | 内容 |
 | --- | --- |
-| 阻塞 | Python 插件的目录不在正在运行的 Python 运行时的导入路径上。 |
-| 考虑过的已有机制 | 把每个目录加到 `PYTHONPATH`、每次安装重启 Python 运行时（所有 Python 行都要重启；两个插件的同名模块会冲突）。 |
-| 通用能力 | PluginManager 维护 `<home>/plugins/.python/<包名>` 链接，Python 行命名为 `py:<包名>.<入口>`（§4）；开启 Python 插件而 Python 关闭时调用 `RuntimeService::install("python")`。 |
+| 阻塞 | Python 插件的目录不在正在运行的 Python 运行时的导入路径上；在 Node 关闭时开启的 Node 插件只能等待；声明了 npm 依赖的插件无法把它的 lock 安装到自己的目录，调用方也无法在运行 npm 前等待 Node 的获取。 |
+| 考虑过的已有机制 | 把每个目录加到 `PYTHONPATH`、每次安装重启 Python 运行时（所有 Python 行都要重启；两个插件的同名模块会冲突）；PluginManager 自己运行 npm（重复本文档的 registry、校验与失败规则）。 |
+| 通用能力 | PluginManager 维护 `<home>/plugins/.python/<包名>` 链接，Python 行命名为 `py:<包名>.<入口>`（§4）；客户端的 install、enable 或 update 打开 Python 插件而 Python 关闭时调用 `RuntimeService::install("python")`，同样的调用适用于这些客户端调用中的 Node 插件，以及 PluginManager 对可选插件的后台重新获取；启动、所有者打开时的 reconcile、reload 与出厂状态的名字从不触发它。PluginManager 每次获取调用一次 `RuntimeService::installPackages(dir, cancel)`（§5）：该调用在 Node 关闭时打开 Node 并等待其获取，然后把插件的锁定 npm 依赖安装到暂存目录，之后才把目录改名到位；失败时 PluginManager 删除该目录。 |
 | 对序列、批次、中断、reload 的影响 | 对 Timeline 没有影响。 |
 | 所有者与 issue | PluginManager，[#3](https://github.com/arcships/dim/issues/3)。 |
+
+## 附录 A. 验收（M1）
+
+1. `scripts/release.test.mjs` 把一个 fixture 可选插件与一个默认插件并排暂存：可选插件的 `package.json` 与 `package-lock.json` 指名一个依赖，暂存的 `plugins/<name>/` 只有它的文件、没有 `node_modules`，从不为它运行 `npm ci`，而默认插件仍然运行自己的 `npm ci`。流程用 `PATH` 上的桩 `npm` 证明这一点：桩把它运行所在的目录追加到日志，并在那里创建 `node_modules`（`scripts/release.test.mjs:54-64`，脚本在 `:59`）；流程断言日志只出现默认插件的暂存目录、从不出现可选插件的目录——与现有 `npm ci: none` 流程在 `:122-123` 的观察方式相同。

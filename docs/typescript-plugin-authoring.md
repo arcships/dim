@@ -968,6 +968,18 @@ to resolve it and bundle the rutis SDK/business dependencies, or include them in
 that plugin's package. Module resolution must not rely on the host repository's
 development installation. Pin the rutis SDK to the version the host supports.
 
+**Declared dependencies.** A plugin that needs npm packages declares them in its
+manifest (`"dependencies": "npm"`,
+[PluginManager §2.1](design/plugins/PluginManager.md#21-the-plugin-directory-and-its-manifest))
+and carries `package.json` and `package-lock.json`. When PluginManager installs
+it — whether from the release's optional plugins or from Git — the locked packages
+are installed into the plugin's own copy before it runs: `npm ci --omit=dev
+--ignore-scripts`, over that lock, so the plugin resolves them from its own
+directory and never from the host repository or the runtime's `node_modules`. A
+plugin installed from a local path is used in place, and its dependencies are the
+author's own: run `npm ci` in its directory before installing it. Pin every
+package in the lock; a version range the lock does not pin is not what runs.
+
 `pluginFiles` is a trusted-plugin convention, not a sandbox: Node code can still
 use `fs` directly. Dependency declarations do not isolate trusted in-process
 code. OS isolation of model commands does not sandbox plugin packages, hooks or

@@ -34,6 +34,7 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [Tui](Tui.md) | — (client tree in the CLI process: `DaemonLink`, `Tui`, `WebHold`; not daemon plugins) | — | — | P1 |
 | [RemoteGateway](RemoteGateway.md) | remote entry, devices | — | — | P3 |
 | [Modality](Modality.md) | tasks, realtime connections | — | — | P3 |
+| [light-ocr](LightOcr.md) | optional plugin: the `ocrHelper` description and the out-of-process helper, supplying Modality's `local/pp-ocr` target | — | — | P3; [#1158](https://github.com/arcships/dim/issues/1158) |
 | [Skills](Skills.md) (installation) | existing SkillsCatalog: preview of a local or Git source, selective installation into the user root, update and confirmed removal of loose Skills | — (discovery, enablement and the `skill` tool already belong to the Skills capability) | — | #740 |
 | [PluginManager](PluginManager.md) | plugin configuration (`plugins.json`), install, loader rows of plugin code, content registration | `PluginTools` (`plugin` tool) | — | M1 |
 | [RuntimeManager](RuntimeManager.md) | the Node and Python runtimes of plugin code: pinned download, verification, start; `runtime.*` | — | — | M1 (#476) |
@@ -42,6 +43,6 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 
 | Scope | Parts |
 | --- | --- |
-| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source) in the daemon; AcpGateway in its client host process |
+| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source), light-ocr in the daemon; AcpGateway in its client host process |
 | Session parts | Questions, ShellInput, Attachments, SessionTitle, PromptSuggestion, Goal, Web, Recall, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table) |
 | Branch parts | Goal (with Pursuit), ModelRecovery, Hooks, Prompt |
