@@ -21,6 +21,7 @@ mod mcp;
 mod mcp_command;
 mod member_approval;
 mod migration_command;
+mod modality;
 mod model;
 mod permission;
 mod permission_command;
@@ -786,6 +787,18 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
         }
         Action::Plugin { method, params } => {
             plugin_command::run(&mut client, method, params.clone()).await
+        }
+        Action::Modality(command) => {
+            let mut stdout = std::io::stdout();
+            let mut stderr = std::io::stderr();
+            let progress = stderr.is_terminal();
+            let mut output = modality::task::Output {
+                out: &mut stdout,
+                err: &mut stderr,
+                json: options.json,
+                progress,
+            };
+            modality::run(&mut client, &options, command, &mut output).await
         }
         Action::RuntimeList => {
             runtime_list(&mut client).await?;

@@ -143,6 +143,34 @@ fn no_default_model(detail: impl Into<String>) -> RpcError {
     RpcError::app(-32000, "no_default_model", detail)
 }
 
+/// One reason of a refusal, as `modality.capabilities` shows it: the owner's
+/// display text, never parsed by a client (A.3).
+fn reason_line(reason: &crate::Reason) -> String {
+    format!("{}: {}", reason.dimension, reason.detail)
+}
+
+/// The refusal for an operation the evaluation marks unavailable (A.3,
+/// Appendix C): the operation, then one line per reason in the snapshot's
+/// order. A `build` reason means this build does not implement the operation,
+/// which `modality_unavailable` names.
+fn operation_unavailable(
+    category: &str,
+    row: &crate::OperationRow,
+    reasons: &[crate::Reason],
+) -> RpcError {
+    let mut message = format!("{} is unavailable.", row.id(category));
+    for reason in reasons {
+        message.push('\n');
+        message.push_str(&reason_line(reason));
+    }
+    let code = if reasons.iter().any(|reason| reason.dimension == "build") {
+        "modality_unavailable"
+    } else {
+        "unavailable"
+    };
+    RpcError::app(-32000, code, message)
+}
+
 fn empty_object() -> Value {
     json!({})
 }
@@ -835,6 +863,14 @@ impl ModalityTasks {
             cancel,
         )
         .await?;
+        // Availability is the operation's own answer and comes before model
+        // resolution: a build that cannot run the operation says so with the
+        // listing's reasons instead of reporting a missing model (A.3,
+        // Appendix C).
+        let snapshot = evaluation.operation(category.name, row);
+        if !snapshot.available {
+            return Err(operation_unavailable(category.name, row, &snapshot.reasons));
+        }
         let model = match target {
             Some(target) => resolve_host_model(
                 &evaluation,
@@ -852,10 +888,23 @@ impl ModalityTasks {
         } else {
             let spec = evaluation.operation_spec(&model, category.name, row.operation);
             let Some(spec) = spec else {
-                return Err(unavailable(format!(
+                // The evaluation names why this model is no option, when it
+                // carries a reason for it; otherwise the message stands alone.
+                let message = format!(
                     "No available adapter serves {} for this model",
                     row.id(category.name)
-                )));
+                );
+                let reason = snapshot
+                    .options
+                    .iter()
+                    .find(|option| {
+                        option.model() == (model.provider_id.as_str(), model.model_id.as_str())
+                    })
+                    .and_then(|option| option.reason.as_ref());
+                return Err(unavailable(match reason {
+                    Some(reason) => format!("{message}\n{}", reason_line(reason)),
+                    None => message,
+                }));
             };
             check_spec_params(&spec, &params.params, &row.id(category.name))?;
         }

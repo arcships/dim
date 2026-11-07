@@ -319,7 +319,7 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 | `realtime` | `realtime` | `voice`、`transcribe`、`avatar` | — | 会话 | Provider | `modality.realtime` |
 | `ocr` | `ocr` | `recognize` | 图像或 PDF | `data: { pages: [{ page, text? }], textTruncated? }`，页文本合计不超过 1 MiB，超出的页面只带 `page`；`result.json`；`text.txt`；`layout` 模式下每个栅格化页面一个 `page-NNNN.png` | 宿主 helper（`dimcode ocr-helper`） | `modality.ocr` |
 
-图像理解是图像类别中的一个操作，其默认值由 Modality 解析（`modality.image.understand`）。它的使用方是 Session 图像理解路径（附件与 `read`，见 [WorkspaceTools §read results and images](../../../architecture/rust-agent/plugins/WorkspaceTools.md#read-results-and-images)）；该路径尚未读取该默认值，因此 §9.4 中 Agent/Prompt 的需求必须先落地，默认值才会改变运行时使用的模型。在此之前，理解这一行只解析与显示。图像操作使用按操作的 key，本设计中不设类别回退；其他类别先解析按操作的 key，再解析类别 key（A3）。输入之外的操作参数由各适配器声明，并在提交时校验（A4）；宿主操作自行声明其参数：`ocr.recognize` 接受 `params.outputMode`，取值为 `"text"`（默认）或 `"layout"`（A.2）。
+图像理解是图像类别中的一个操作，其默认值由 Modality 解析（`modality.image.understand`）。它的使用方是 Session 图像理解路径（附件与 `read`，见 [WorkspaceTools §read results and images](../../../architecture/rust-agent/plugins/WorkspaceTools.md#read-results-and-images)）；该路径尚未读取该默认值，因此 §9.4 中 Agent/Prompt 的需求必须先落地，默认值才会改变运行时使用的模型。在此之前，理解这一行只解析与显示。图像操作使用按操作的 key，本设计中不设类别回退；其他类别先解析按操作的 key，再解析类别 key（A3）。输入之外的操作参数由各适配器声明，并在提交时校验（A4）；宿主操作自行声明其参数：`ocr.recognize` 接受 `params.outputMode`，取值为 `"text"`（默认）或 `"layout"`（A.2）。CLI 只为 A.1 声明的输入提供具名参数——提示词或文本、输入文件、`image edit --mask`（一个输入文件，其名称写入 `params.mask`）以及 `image enhance MODE`（`params.mode`）——其余参数一律走 `--param KEY=VALUE`。
 
 操作的规范能力 id 是 `<category>.<operation>`，例如 `image.generate` 与 `realtime.voice`；Provider 的 `modalityCapabilities` 声明使用同一组字符串，快照携带这两个字段而不再重复 id。不存在别名（`image.read` 不是别名），实时子调用也没有 id：`open`、`send`、`close` 与 `event` 是方法，`realtime.voice`、`realtime.transcribe` 与 `realtime.avatar` 是实时能力。本构建通过内置适配器服务 `realtime.voice`；另外两个以 `adapter` 维度上报，其 detail 指名该操作，例如 “No available adapter serves realtime.transcribe”。
 
@@ -410,7 +410,7 @@ helper 的调用形式是 `dimcode ocr-helper --input <path> --artifacts <dir> -
 - `configure` 先校验操作以及模型在该操作的可选选项中（对 `image.understand`，可选视觉支持；对 `ocr.recognize`，本构建的宿主目标），再经 Settings 的所有者写入以 CAS 写入或清除该操作 key。它接受任何有默认 key 的 A.1 操作，且从不答复 `modality_unavailable`：配置是设置写入，不是运行时断言。未知类别或操作答复 `modality_unknown_operation`；操作有自己的 key 时（image、speech、OCR）`operation` 必填，只有按类别划分 key 的类别可以省略。`model: null` 清除该 key（对 OCR 即 `modality.ocr`）；清除即恢复自动解析；缺少 `model` 为 `invalid_params`。写入在回复发出之前完成，因此成功即表示默认值已持久化，且该回复与紧随其后的 `modality.capabilities` 读到的一致（除非 Provider 在此期间变化）。
 - 可配置性与可用性是两个不同的属性：前者属于设置，后者属于运行时。已持久化的默认值可以指向本构建不能运行的操作的模型；快照通过保持该操作的 `available: false` 及其 `build` 或 `adapter` 原因保持诚实，而 `effective` 仍在选项上解析（默认值可用时用默认值，否则自动解析），客户端因此无需自行实现解析。
 
-边界校验：每次提交的内联输入合计至多 8 MiB，更大的输入使用 `node_path`——控制节点上已存在普通文件的绝对路径，最后一个组件不得是链接（更早的链接会被解析）；读取前先将其长度与 100 MiB 提交预算的剩余量比较，记录的是规范路径，执行方在该路径读取，Modality 从不复制；每次提交的输入文件合计至多 100 MiB（A5）。媒体类型遵循 A.1 的输入列：图像操作接受 `image/*`，视频操作接受 `image/*` 与 `video/*`，`speech.transcribe` 接受 `audio/*`，`asset` 接受 `image/*`；输入不指名文件的操作拒绝文件。每个文件名是单个组件、合法的 pluginFiles 名称，且在提交内互不相同。`node` 对提供方类别以 `invalid_input` 拒绝，对宿主类别则指明执行节点，即控制节点（A15）。参数在提交时按适配器的 `params_schema` 校验；非法参数以 `invalid_input` 失败且不写入任何内容。模型选择：显式 `model`；否则操作默认值；否则自动解析；否则 `no_default_model`。不可选的显式模型以 `model_unavailable` 失败，不可用的默认值以 `default_unavailable` 失败，解析出的模型没有可用适配器服务时以 `unavailable` 失败；都不回退到其他模型。解析出的模型固定在记录中。`image.understand` 与每个 `realtime.*` 操作都不是任务：为它们提交会以 `modality_unknown_operation` 失败。`ocr.recognize` 是宿主任务（§3.2）：只接受一个输入文件，`image/*` 或 `application/pdf`，接受 `params.outputMode` `"text"`（默认）或 `"layout"`，不校验适配器 schema。其选项是宿主目标，其默认值是 `modality.ocr`；显式指定 `local`/`apple-vision` 之外的模型以 `model_unavailable` 失败，本宿主无法运行该目标时 `submit` 以 `unavailable` 失败并带该操作的 `platform` 或 `build` 原因。指明控制节点以外节点的任务以 `node_unavailable` 失败。每个类别至多 4 个运行中任务；其余按提交顺序保持 `queued`（A6）。
+边界校验：每次提交的内联输入合计至多 8 MiB，更大的输入使用 `node_path`——控制节点上已存在普通文件的绝对路径，最后一个组件不得是链接（更早的链接会被解析）；读取前先将其长度与 100 MiB 提交预算的剩余量比较，记录的是规范路径，执行方在该路径读取，Modality 从不复制；每次提交的输入文件合计至多 100 MiB（A5）。媒体类型遵循 A.1 的输入列：图像操作接受 `image/*`，视频操作接受 `image/*` 与 `video/*`，`speech.transcribe` 接受 `audio/*`，`asset` 接受 `image/*`；输入不指名文件的操作拒绝文件。每个文件名是单个组件、合法的 pluginFiles 名称，且在提交内互不相同。`node` 对提供方类别以 `invalid_input` 拒绝，对宿主类别则指明执行节点，即控制节点（A15）。参数在提交时按适配器的 `params_schema` 校验；非法参数以 `invalid_input` 失败且不写入任何内容。可用性检查先于模型解析：本构建无法运行的操作会带着 `modality.capabilities` 中该操作的原因失败（附录 C），因此缺失适配器不会被报成缺失模型。模型选择：显式 `model`；否则操作默认值；否则自动解析；否则 `no_default_model`。不可选的显式模型以 `model_unavailable` 失败，不可用的默认值以 `default_unavailable` 失败，解析出的模型没有可用适配器服务时以 `unavailable` 失败；都不回退到其他模型。解析出的模型固定在记录中。`image.understand` 与每个 `realtime.*` 操作都不是任务：为它们提交会以 `modality_unknown_operation` 失败。`ocr.recognize` 是宿主任务（§3.2）：只接受一个输入文件，`image/*` 或 `application/pdf`，接受 `params.outputMode` `"text"`（默认）或 `"layout"`，不校验适配器 schema。其选项是宿主目标，其默认值是 `modality.ocr`；显式指定 `local`/`apple-vision` 之外的模型以 `model_unavailable` 失败，本宿主无法运行该目标时 `submit` 以 `unavailable` 失败并带该操作的 `platform` 或 `build` 原因。指明控制节点以外节点的任务以 `node_unavailable` 失败。每个类别至多 4 个运行中任务；其余按提交顺序保持 `queued`（A6）。
 
 ### A.4 任务记录（`pluginFiles`（扩展），格式版本 1）
 
@@ -439,15 +439,14 @@ helper 的调用形式是 `dimcode ocr-helper --input <path> --artifacts <dir> -
 
 | 命令 | 行为 |
 | --- | --- |
-| `dimcode modality` | 全部类别与操作的表格；不可用项标注其原因；默认模型 |
-| `dimcode modality set-default <category>[.<operation>] <provider>/<model>` / `--clear` | `modality.configure` |
-| `dimcode modality settings [<key> [<value>]]` | 经 Settings 对该业务来源的类型化操作读取或写入 `modality` 设置文档（操作默认值、上限）（Settings 补充）；不是 `modality.*` 方法 |
-| `dimcode modality task list\|status\|wait\|cancel` | 任务方法；`wait --out <path>` 取回结果 |
-| `dimcode image generate\|edit\|enhance`、`video`、`speech synthesize\|transcribe`、`music`、`audio`、`asset`、`motion` | 提交；8 MiB 以内的输入内联发送，更大的用 `node_path`；默认等待并将结果写到 `--out` 或当前目录；`--no-wait` 打印 id；`--json` 打印记录 |
-| `dimcode ocr <file> [--out PATH] [--json] [--no-wait]` | 提交 `ocr.recognize`；打印文本 |
+| `dimcode modality [--json]` | 全部类别与操作的表格：可用性、以 `dimension: detail` 行给出的原因、默认模型与实际生效模型；`--json` 原样打印 `modality.capabilities` 的应答。未提供该方法的守护进程回答说它不提供 Modality |
+| `dimcode modality set-default <category>[.<operation>] <provider>/<model>` / `--clear` | 以紧接读取的 revision 调用 `modality.configure`；遇到 `modality_conflict` 时重新读取并重试一次；打印该操作的行，`--json` 时打印应答 |
+| `dimcode modality task list [--state S] [--category C] [--limit N] [--after ID]`、`task status ID`、`task wait ID [--out DIR]`、`task cancel ID` | 任务方法（A.3）。`list` 按 `ID STATE OPERATION MODEL CREATED` 打印一页，最新在前，还有下一页时在 stderr 打印 `More: --after <id>`；`status` 打印该行、进度、错误，以及每个结果文件一行；`wait` 与提交时同一套等待，只有 `--out` 给出目录时才写结果；`cancel` 报告所有者返回的状态，已是终态的任务据此说明未改变。`--json` 原样打印应答 |
+| `dimcode image generate\|edit PROMPT [FILE...]`、`image edit --mask PATH`、`image enhance MODE [FILE...]`、`video generate\|edit\|enhance PROMPT [FILE...]`、`speech synthesize TEXT`、`speech transcribe FILE`、`music\|audio\|motion generate PROMPT`、`asset generate PROMPT [FILE...]` | 提交 `modality.task.submit`：`--model PROVIDER/MODEL` 指定模型，其余适配器参数一律用 `--param KEY=VALUE`（值能解析为 JSON 时按 JSON，否则按字符串，因此本会解析为 JSON 的字符串要写成带引号的形式）；输入（含 mask）整体不超过 8 MiB 时内联发送，否则全部用 `node_path`。默认等待并把结果文件写到 `--out`（目录，默认 `.`）；绝不覆盖已有文件：一个都不写，点名这些文件，并给出 `dimcode modality task wait <id> --out <dir>` 到别处取回。`--no-wait` 打印 id；`--json` 打印记录。退出码：0 成功，1 传输、RPC、不可用、被中断或目标已存在，2 任务失败，130 Ctrl+C 或任务被取消 |
+| `dimcode ocr FILE [--output-mode text\|layout] [--out DIR]` | 提交 `ocr.recognize`。text 模式下，`text.txt` 不超过 64 KiB 且不超过 30,000 个 UTF-16 单元时打印，不写任何文件；打印的文本已去除终端控制符，写出的 `text.txt` 与 `--json` 记录保留原始字节。更长的文本会被写出（写到 `--out` 或当前目录），命令打印 2,000 字符的预览和 `Full text: <path>`。给出 `--out` 时在打印文本之外还写出结果集；`--output-mode layout` 写出页面图片并打印每个写出的路径。写入遵循上面的目标已存在规则。`--json` 打印记录，`--no-wait` 打印 id |
 | `dimcode realtime [--operation <operation>] [--model <provider>/<model>]` | `realtime.open`，`params` 为 `{}`；将 stdin 行作为 text 帧转发，事件与 `ended` 打印为 JSON 行，EOF 或 Ctrl+C 时关闭；`direct` 回复打印其 connection 并保持（[CLI 命令](../cli-commands.md#realtime-会话)） |
 
-调用不可用的类别时打印与列表相同的原因。前台等待期间第一次 Ctrl+C 停止等待并打印任务 id；任务继续（A8）。
+调用不可用的类别时打印与列表相同的原因。前台等待期间第一次 Ctrl+C 停止等待并打印任务 id；任务继续（A8）。结果传输期间的 Ctrl+C 停止传输：移除在写的临时文件，目标名一个都不写，打印 `Stopped; the task keeps its results. Fetch them with: dimcode modality task wait <id> --out <dir>`，并以 130 退出。
 
 ### A.6 任务机制
 
@@ -492,7 +491,7 @@ helper 的调用形式是 `dimcode ocr-helper --input <path> --artifacts <dir> -
 | 代码 | 含义 |
 | --- | --- |
 | `invalid_input` | 未知类别或操作、参数或文件违规 |
-| `unavailable` | 类别或操作不可用；附带来自 `modality.capabilities` 的 `reasons` |
+| `unavailable` | 类别或操作不可用；消息点名该操作，并逐行给出 `modality.capabilities` 中每个原因，形如 `dimension: detail`；客户端只显示、从不解析 |
 | `no_default_model` | 无显式模型、无操作默认值，且自动解析没有找到可服务的模型 |
 | `default_unavailable` | 已持久化的操作默认值不再可选；清除或替换它 |
 | `model_unavailable` | 显式模型不可选 |
@@ -500,7 +499,7 @@ helper 的调用形式是 `dimcode ocr-helper --input <path> --artifacts <dir> -
 | `modality_conflict` | 设置 revision 已过期；重新读取后重试 |
 | `modality_invalid_selection` | 模型不可经 Provider 选择、没有可用适配器服务该操作，或 `image.understand` 指定的模型没有视觉能力；回复带原因 |
 | `modality_unknown_operation` | 未知操作或默认值 key |
-| `modality_unavailable` | 由 `modality.task.submit` 对已知但本构建未实现的类别或操作答复（A.3）；`modality.capabilities` 中带有其 `build` 原因 |
+| `modality_unavailable` | 由 `modality.task.submit` 对已知但本构建未实现的类别或操作答复：其 `modality.capabilities` 原因中有一个是 `build` 维度，消息点名该操作并逐行给出每个原因，形如 `dimension: detail`（A.3） |
 | `modality_failed` | 读写所有者配置时 Settings 或 Provider 的意外失败 |
 | `node_unavailable` | 请求的节点不是控制节点，其 HostPlatform 是唯一可达的 |
 | `provider_error` | 适配器或提供方失败；消息已去除秘密 |

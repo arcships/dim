@@ -32,6 +32,8 @@ mod mcp;
 
 #[path = "cli_flow/migration.rs"]
 mod migration;
+#[path = "cli_flow/modality.rs"]
+mod modality;
 #[path = "cli_flow/models.rs"]
 mod models;
 #[path = "cli_flow/permission.rs"]

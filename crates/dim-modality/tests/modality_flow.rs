@@ -2702,6 +2702,93 @@ async fn progress_is_streamed_to_wait_and_written_at_most_once_per_second() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// An operation the evaluation marks unavailable is refused with the
+/// listing's own reasons, before model resolution: the `build` dimension
+/// answers `modality_unavailable`, anything else `unavailable`, and no task is
+/// written. An operation it marks available keeps the model path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unavailable_operation_answers_with_the_listings_reasons() {
+    let home = home("dm-unavailable");
+    let server = start_in(home.clone(), None).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    // `image` declares its operation, so only the adapter is missing; `music`
+    // declares nothing, so its model resolution has no answer either.
+    create_provider_with(&mut client, vec![chat("alpha", &["image.generate"])]).await;
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    for (category, operation, code) in [
+        // No adapter in this build: the operation itself is `adapter`.
+        ("image", "generate", "unavailable"),
+        // Nothing implements music: the reason is `build`.
+        ("music", "generate", "modality_unavailable"),
+    ] {
+        let entry = operation_in(&snapshot, category, operation);
+        assert_eq!(entry["available"], false, "{entry}");
+        let id = format!("{category}.{operation}");
+        let refused = client
+            .rpc(
+                "modality.task.submit",
+                json!({"category": category, "operation": operation, "params": {"prompt": "x"}}),
+            )
+            .await;
+        assert_eq!(app_error(&refused), code, "{id}: {refused}");
+        let message = refused["error"]["message"].as_str().unwrap();
+        let mut lines = message.lines();
+        assert_eq!(
+            lines.next(),
+            Some(format!("{id} is unavailable.").as_str()),
+            "{message}"
+        );
+        for reason in entry["reasons"].as_array().unwrap() {
+            let line = format!(
+                "{}: {}",
+                reason["dimension"].as_str().unwrap(),
+                reason["detail"].as_str().unwrap()
+            );
+            assert!(
+                message.lines().any(|found| found == line),
+                "{id} answers without `{line}`: {message}"
+            );
+        }
+    }
+    let list = client.rpc("modality.task.list", json!({})).await;
+    assert_ok(&list);
+    assert!(
+        list["result"]["tasks"].as_array().unwrap().is_empty(),
+        "a refused submission writes no task: {list}"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// An operation the evaluation marks available keeps the model path: with no
+/// configured default the task resolves one automatically, so the
+/// availability check refuses only what the listing refuses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_available_operation_still_resolves_its_model() {
+    let fixture = Arc::new(FixtureAdapter::default());
+    let (server, home) = start(Some(fixture), "dm-available").await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_provider_with(&mut client, vec![chat("alpha", &["image.generate"])]).await;
+    let task = submit_task(
+        &mut client,
+        json!({"category": "image", "operation": "generate", "params": {"prompt": "a"}}),
+    )
+    .await;
+    assert_eq!(
+        task["executor"]["provider"]["modelId"], "alpha",
+        "the task resolved its model: {task}"
+    );
+    assert_eq!(
+        state_of(&wait_terminal(&mut client, task["task_id"].as_str().unwrap()).await),
+        "succeeded"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unavailable_default_fails_submit() {
     let fixture = Arc::new(FixtureAdapter::default());
@@ -4562,7 +4649,26 @@ async fn ocr_is_absent_when_the_build_starts_no_helper() {
             }),
         )
         .await;
-    assert_eq!(app_error(&submit), "unavailable");
+    assert_eq!(
+        app_error(&submit),
+        "modality_unavailable",
+        "a build reason names the code: {submit}"
+    );
+    let message = submit["error"]["message"].as_str().unwrap();
+    assert_eq!(
+        message.lines().next(),
+        Some("ocr.recognize is unavailable."),
+        "{message}"
+    );
+    let reason = &recognize["reasons"][0];
+    assert!(
+        message.contains(&format!(
+            "\n{}: {}",
+            reason["dimension"].as_str().unwrap(),
+            reason["detail"].as_str().unwrap()
+        )),
+        "the refusal carries the listing's reason: {message}"
+    );
 }
 
 #[cfg(not(target_os = "macos"))]
