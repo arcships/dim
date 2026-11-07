@@ -1,6 +1,7 @@
 //! The process boundary the sandbox switch applies, before ordinary spawn/PTY.
 use super::{
-    ENVIRONMENT, HostPlatform, Isolation, ProcessSpec, ProcessSpecError, TemporaryDirectory,
+    ENVIRONMENT, HostPlatform, Isolation, ProcessSpec, ProcessSpecError, SystemServices,
+    TemporaryDirectory,
 };
 use std::path::Path;
 use std::{ffi::OsString, path::PathBuf};
@@ -144,6 +145,7 @@ impl HostPlatform {
             &read_only_files,
             &writable,
             settings.network,
+            SystemServices::None,
         )?;
         Ok((spec, temporary, Some(Isolation)))
     }
@@ -246,6 +248,7 @@ pub(super) fn prepare(
     read_only_files: &[(PathBuf, PathBuf)],
     writable: &[(PathBuf, PathBuf)],
     network: bool,
+    services: SystemServices,
 ) -> Result<ProcessSpec, ProcessSpecError> {
     let mut profile = String::from(
         "(version 1)(deny default)(allow process*)(allow sysctl-read)\
@@ -288,6 +291,14 @@ pub(super) fn prepare(
                  (allow file-read-metadata (path-ancestors (param \"{name}\")))",
                 if write { "file-write* " } else { "" }
             ));
+            if write && services == SystemServices::OnDeviceRecognition {
+                // The framework hands its writable cache to the neural-engine
+                // compiler service as a read extension of that directory.
+                profile.push_str(&format!(
+                    "(allow file-issue-extension (require-all (extension-class \
+                     \"com.apple.app-sandbox.read\") (subpath (param \"{name}\"))))"
+                ));
+            }
             if network && filter == "subpath" {
                 profile.push_str(&format!(
                     "(allow network-outbound (remote unix-socket (subpath (param \"{name}\"))))"
@@ -299,6 +310,24 @@ pub(super) fn prepare(
                 }
             }
         }
+    }
+    if services == SystemServices::OnDeviceRecognition {
+        // The recognition runtime reads the directory holding the helper
+        // while it starts.
+        if let Some(directory) = spec.executable.parent() {
+            let mut parameter = OsString::from("EXECUTABLE_DIR=");
+            parameter.push(directory);
+            args.extend(["-D".into(), parameter]);
+            profile.push_str("(allow file-read-data (literal (param \"EXECUTABLE_DIR\")))");
+        }
+        // The services the Apple Vision engine reaches: the neural-engine
+        // daemon, and the GPU and neural-engine I/O clients it opens.
+        profile.push_str(
+            "(allow mach-lookup (global-name \"com.apple.appleneuralengine\"))\
+             (allow iokit-open-user-client (iokit-user-client-class \"IOSurfaceRootUserClient\"))\
+             (allow iokit-open-user-client (iokit-user-client-class \"H1xANELoadBalancerDirectPathClient\"))\
+             (allow iokit-open-user-client (iokit-user-client-class \"AGXDeviceUserClient\"))",
+        );
     }
     if network {
         profile.push_str(
@@ -326,6 +355,7 @@ pub(super) fn prepare(
     read_only_files: &[(PathBuf, PathBuf)],
     writable: &[(PathBuf, PathBuf)],
     network: bool,
+    _services: SystemServices,
 ) -> Result<ProcessSpec, ProcessSpecError> {
     let executable = bubblewrap(&host.env).ok_or_else(|| ProcessSpecError {
         code: "isolation_unavailable",
@@ -472,14 +502,14 @@ async fn bubblewrap_unshares_the_network_only_when_the_switch_is_off() {
         cwd: "/".into(),
         env: Vec::new(),
     };
-    let isolated = prepare(&host, spec(), &[], &[], &[], false).unwrap();
+    let isolated = prepare(&host, spec(), &[], &[], &[], false, SystemServices::None).unwrap();
     assert!(
         isolated
             .args
             .iter()
             .any(|arg| arg.to_str() == Some("--unshare-net"))
     );
-    let networked = prepare(&host, spec(), &[], &[], &[], true).unwrap();
+    let networked = prepare(&host, spec(), &[], &[], &[], true, SystemServices::None).unwrap();
     assert!(
         !networked
             .args
@@ -503,14 +533,86 @@ async fn seatbelt_allows_network_only_when_the_switch_is_on() {
         cwd: "/".into(),
         env: Vec::new(),
     };
-    let isolated = prepare(&host, spec(), &[], &[], &[], false).unwrap();
+    let isolated = prepare(&host, spec(), &[], &[], &[], false, SystemServices::None).unwrap();
     assert!(!isolated.args.iter().any(|arg| {
         arg.to_str()
             .is_some_and(|arg| arg.contains("(allow network*"))
     }));
-    let networked = prepare(&host, spec(), &[], &[], &[], true).unwrap();
+    let networked = prepare(&host, spec(), &[], &[], &[], true, SystemServices::None).unwrap();
     assert!(networked.args.iter().any(|arg| {
         arg.to_str()
             .is_some_and(|arg| arg.contains("(allow network*"))
     }));
+}
+
+/// The profile text of a prepared process.
+#[cfg(all(test, target_os = "macos"))]
+fn profile_text(spec: &ProcessSpec) -> String {
+    spec.args
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The on-device recognition variant adds exactly its closed rule set, and
+/// the default profile holds none of it.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn seatbelt_grants_on_device_recognition_services_only_when_asked() {
+    let host = HostPlatform::current(super::ShellStatus::Unavailable {
+        code: "test",
+        reason: String::new(),
+    })
+    .unwrap();
+    let spec = || ProcessSpec {
+        executable: "/bin/true".into(),
+        args: Vec::new(),
+        cwd: "/".into(),
+        env: Vec::new(),
+    };
+    let writable = vec![(PathBuf::from("/work"), PathBuf::from("/work"))];
+    let open = prepare(
+        &host,
+        spec(),
+        &[],
+        &[],
+        &writable,
+        false,
+        SystemServices::OnDeviceRecognition,
+    )
+    .unwrap();
+    let text = profile_text(&open);
+    for rule in [
+        "(allow mach-lookup (global-name \"com.apple.appleneuralengine\"))",
+        "(allow iokit-open-user-client (iokit-user-client-class \"IOSurfaceRootUserClient\"))",
+        "(allow iokit-open-user-client (iokit-user-client-class \"H1xANELoadBalancerDirectPathClient\"))",
+        "(allow iokit-open-user-client (iokit-user-client-class \"AGXDeviceUserClient\"))",
+        "(allow file-read-data (literal (param \"EXECUTABLE_DIR\")))",
+        "(allow file-issue-extension (require-all (extension-class \"com.apple.app-sandbox.read\") (subpath (param \"ROOT_0_0\"))))",
+    ] {
+        assert!(text.contains(rule), "missing rule: {rule}");
+    }
+    let closed = prepare(
+        &host,
+        spec(),
+        &[],
+        &[],
+        &writable,
+        false,
+        SystemServices::None,
+    )
+    .unwrap();
+    let text = profile_text(&closed);
+    for rule in [
+        "appleneuralengine",
+        "iokit-open-user-client",
+        "file-issue-extension",
+        "EXECUTABLE_DIR",
+    ] {
+        assert!(
+            !text.contains(rule),
+            "rule present without the variant: {rule}"
+        );
+    }
 }

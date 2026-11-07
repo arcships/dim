@@ -19,6 +19,9 @@ use std::sync::{Arc, Mutex};
 pub const FORMAT_VERSION: u32 = 1;
 /// Every task directory, relative to the plugin files root.
 pub const TASKS_DIR: &str = "modality/tasks";
+/// The cache directory host targets read and write, relative to the plugin
+/// files root; a helper's HOME points at it.
+pub const OCR_CACHE_DIR: &str = "modality/ocr/cache";
 
 /// The record file of `task_id`, relative to the plugin files root.
 pub fn record_name(task_id: &str) -> String {
@@ -70,14 +73,30 @@ impl TaskState {
     }
 }
 
+/// The target a host-executed task runs (A.1, A.4): the local engine and the
+/// model this daemon runs itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostTarget {
+    pub provider_id: String,
+    pub model_id: String,
+}
+
 /// Who runs the task (A.4). `adapter` names the executor adapter; until the
 /// per-task lookup (#861) lands there is one process service and it is
-/// recorded under its service name.
+/// recorded under its service name. A host task runs on the control node
+/// itself, and its record says which target it ran.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Executor {
-    Provider { provider: ModelId, adapter: String },
-    Host { node: Option<String> },
+    Provider {
+        provider: ModelId,
+        adapter: String,
+    },
+    Host {
+        node: Option<String>,
+        target: HostTarget,
+    },
 }
 
 /// One input file of a record (A.4): an inline file under `input/`, or the

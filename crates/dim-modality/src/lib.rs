@@ -52,9 +52,9 @@ use dim_app_server::{
 };
 pub use engine::{
     Clock, DEFAULT_LIST_LIMIT, MAX_INLINE_BYTES, MAX_LIST_LIMIT, MAX_RESULT_BYTES,
-    MAX_RUNNING_PER_CATEGORY, MAX_SUBMISSION_BYTES, MAX_WAIT_MS, ModalityTasks, PROGRESS_INTERVAL,
-    SystemClock, TaskCancel, TaskInput, TaskList, TaskListReply, TaskReply, TaskResultQuery,
-    TaskResultReply, TaskStatus, TaskSubmit, TaskWait,
+    MAX_RUNNING_PER_CATEGORY, MAX_SUBMISSION_BYTES, MAX_WAIT_MS, ModalityTasks, NoPreflightHook,
+    PROGRESS_INTERVAL, PreflightHook, SystemClock, TaskCancel, TaskInput, TaskList, TaskListReply,
+    TaskReply, TaskResultQuery, TaskResultReply, TaskStatus, TaskSubmit, TaskWait,
 };
 use engine::{not_found, unavailable};
 use realtime::Realtime;
@@ -63,9 +63,33 @@ use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 pub use task::{TaskRecord, TaskState};
 use tokio_util::sync::CancellationToken;
+
+/// One target this build runs on the host itself (decision 4): the category
+/// and operation it serves, and the local model the record names.
+pub(crate) struct HostTargetSpec {
+    pub category: &'static str,
+    pub operation: &'static str,
+    pub provider_id: &'static str,
+    pub model_id: &'static str,
+}
+/// The host targets this build runs, beside the catalog they serve.
+pub(crate) const HOST_TARGETS: &[HostTargetSpec] = &[HostTargetSpec {
+    category: "ocr",
+    operation: "recognize",
+    provider_id: dim_ocr::APPLE_VISION_PROVIDER,
+    model_id: dim_ocr::APPLE_VISION_MODEL,
+}];
+
+/// The host target an operation runs, if this build runs it itself.
+pub(crate) fn host_target(category: &str, operation: &str) -> Option<&'static HostTargetSpec> {
+    HOST_TARGETS
+        .iter()
+        .find(|target| target.category == category && target.operation == operation)
+}
 
 /// The adapter service Modality reads per call. A missing service is an
 /// unavailable operation, never a failed load.
@@ -86,7 +110,7 @@ impl OperationRow {
 
 /// One A.1 category. `category_key` says its operations share one Settings
 /// key and `configure` may omit the operation; image and speech key each
-/// operation separately, and OCR has no default key at all.
+/// operation separately, and OCR keys its one operation as `modality.ocr`.
 pub(crate) struct CatalogCategory {
     name: &'static str,
     category_key: bool,
@@ -94,8 +118,8 @@ pub(crate) struct CatalogCategory {
 }
 
 /// Every category and operation of Modality A.1, in its order. `image` and
-/// `speech` key each operation; the other categories share one key; OCR has
-/// none (A.1, A3).
+/// `speech` key each operation; the other categories share one key, and OCR
+/// names its key for the category (A.1, A3).
 pub(crate) const CATALOG: [CatalogCategory; 9] = [
     CatalogCategory {
         name: "image",
@@ -206,7 +230,7 @@ pub(crate) const CATALOG: [CatalogCategory; 9] = [
         category_key: false,
         rows: &[OperationRow {
             operation: "recognize",
-            key: None,
+            key: Some("modality.ocr"),
         }],
     },
 ];
@@ -392,8 +416,33 @@ pub(crate) struct Evaluation {
     declared: Vec<ModalityModelSnapshot>,
     global: Option<ModelId>,
     adapter: Option<Arc<ModalityAdapterService>>,
+    /// Whether this daemon holds a HostPlatform, which a host task runs on
+    /// (A14).
+    host_platform: bool,
+    /// The helper this build starts for its host targets; the product's
+    /// installer passes its own executable.
+    ocr_helper: Option<PathBuf>,
 }
 impl Evaluation {
+    /// Why a host target cannot run here, or `None` when it can (decision 4):
+    /// `platform` for a host without Apple Vision, `build` for a build that
+    /// starts no helper or holds no host platform.
+    pub(crate) fn host_reason(&self) -> Option<Reason> {
+        if !dim_ocr::apple_vision_available() {
+            return Some(reason(
+                "platform",
+                "Apple Vision needs macOS 12 or later on Apple Silicon",
+            ));
+        }
+        if self.ocr_helper.is_none() {
+            return Some(reason("build", "No OCR helper in this build"));
+        }
+        if !self.host_platform {
+            return Some(reason("build", "The host platform is unavailable"));
+        }
+        None
+    }
+
     fn adapter_available(&self) -> bool {
         self.adapter
             .as_ref()
@@ -494,7 +543,21 @@ impl Evaluation {
     /// per-model answer and narrows nothing (A.3, D2). The persisted default
     /// follows when it is no longer an option.
     fn options(&self, category: &str, row: &OperationRow) -> Vec<OptionSnapshot> {
-        let mut options: Vec<OptionSnapshot> = if is_understand(category, row.operation) {
+        let mut options: Vec<OptionSnapshot> = if let Some(target) =
+            host_target(category, row.operation)
+        {
+            // A host target this platform or build cannot run is absent, never
+            // an unavailable option (decision 4).
+            match self.host_reason() {
+                Some(_) => Vec::new(),
+                None => vec![OptionSnapshot {
+                    provider_id: target.provider_id.into(),
+                    model_id: target.model_id.into(),
+                    available: true,
+                    reason: None,
+                }],
+            }
+        } else if is_understand(category, row.operation) {
             self.selectable
                 .iter()
                 .filter(|model| model.capabilities.vision)
@@ -574,6 +637,21 @@ impl Evaluation {
                 ),
             };
         }
+        if let Some(target) = host_target(category, operation) {
+            if model.provider_id != target.provider_id || model.model_id != target.model_id {
+                return reason(
+                    "configuration",
+                    format!("The model does not declare {name}"),
+                );
+            }
+            // The configured model is the host target itself: the operation's
+            // own reason is the answer when it cannot run here. An available
+            // target is never refused, so when there is no reason the shared
+            // vocabulary below answers for an unavailable model.
+            if let Some(reason) = self.host_reason() {
+                return reason;
+            }
+        }
         if !self.known(model) {
             return reason("provider", "Model is no longer selectable");
         }
@@ -623,6 +701,11 @@ impl Evaluation {
                     )],
                 ),
                 true => (true, vec![]),
+            }
+        } else if host_target(category, row.operation).is_some() {
+            match self.host_reason() {
+                Some(reason) => (false, vec![reason]),
+                None => (true, vec![]),
             }
         } else if category == "image" {
             let detail = if self.has_adapter() {
@@ -763,6 +846,7 @@ pub(crate) async fn evaluate(
     selectable: &SelectableModelsHost,
     selection: &ModelSelectionHost,
     ctx: &Ctx,
+    ocr_helper: Option<&std::path::Path>,
     cancel: &CancellationToken,
 ) -> Result<(String, Evaluation), RpcError> {
     let snapshot = settings
@@ -796,6 +880,10 @@ pub(crate) async fn evaluate(
             declared,
             global,
             adapter: ctx.get::<ModalityAdapterService>(),
+            host_platform: ctx
+                .get::<dim_agent_capabilities::host_platform::HostPlatform>()
+                .is_some(),
+            ocr_helper: ocr_helper.map(|path| path.to_owned()),
         },
     ))
 }
@@ -946,6 +1034,8 @@ impl DynPlugin for ModalityPlugin {
                 selectable.clone(),
                 ctx.clone(),
                 self.options.clock.clone(),
+                self.options.ocr_helper.clone(),
+                self.options.preflight.clone(),
             ));
             let tasks = Arc::new(ModalityTasks::new(shared.clone()));
             let task_handle = tasks.clone();
@@ -966,6 +1056,7 @@ impl DynPlugin for ModalityPlugin {
             // generation cannot continue before the methods are visible.
             shared.recover().await;
             let context = ctx.clone();
+            let ocr_helper = self.options.ocr_helper.clone();
             let mut wait = MethodDecl::new("modality.task.wait", false, Interruption::Report);
             wait.progress = true;
             let mut open = MethodDecl::new("modality.realtime.open", true, Interruption::Report);
@@ -1000,6 +1091,7 @@ impl DynPlugin for ModalityPlugin {
                     let selectable = selectable.clone();
                     let context = context.clone();
                     let tasks = task_handle.clone();
+                    let ocr_helper = ocr_helper.clone();
                     let realtime = realtime_handle.clone();
                     Box::pin(async move {
                         match method.as_str() {
@@ -1010,6 +1102,7 @@ impl DynPlugin for ModalityPlugin {
                                     &selectable,
                                     &selection,
                                     &context,
+                                    ocr_helper.as_deref(),
                                     &stopping,
                                 )
                                 .await?;
@@ -1028,6 +1121,7 @@ impl DynPlugin for ModalityPlugin {
                                     &selectable,
                                     &selection,
                                     &context,
+                                    ocr_helper.as_deref(),
                                     &stopping,
                                 )
                                 .await?;
@@ -1155,25 +1249,49 @@ pub fn install(builder: &mut AgentBuilder) {
     install_with(builder, InstallOptions::default());
 }
 
-/// What an installation varies: the clock a generation reads and the bounds
-/// on realtime sessions. `Default` is the product's set; a test injects its
-/// own so a lifetime rule or the cap can be observed without waiting.
+/// What an installation varies: the clock a generation reads, the bounds on
+/// realtime sessions and the executable host targets run. `Default` is the
+/// product's set; a test injects its own so a lifetime rule or the cap can be
+/// observed without waiting.
 #[derive(Clone)]
 pub struct InstallOptions {
+    /// The clock a generation reads; the wall clock by default. A test
+    /// injects one to control retention.
     pub clock: Arc<dyn Clock>,
+    /// The bounds on realtime sessions a generation enforces; the product's
+    /// set by default.
     pub realtime: RealtimeLimits,
+    /// The executable that serves host targets: this build's own, started
+    /// with the hidden `ocr-helper` subcommand. `None` starts none, and the
+    /// host targets are absent from the snapshot.
+    pub ocr_helper: Option<PathBuf>,
+    /// The seam between a host call's artifact size check and its copy; the
+    /// product's does nothing. A test injects one to change a work file in
+    /// that window.
+    pub preflight: Arc<dyn PreflightHook>,
 }
 impl Default for InstallOptions {
     fn default() -> Self {
         Self {
             clock: Arc::new(SystemClock),
             realtime: RealtimeLimits::default(),
+            ocr_helper: None,
+            preflight: Arc::new(NoPreflightHook),
         }
+    }
+}
+impl std::fmt::Debug for InstallOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InstallOptions")
+            .field("ocr_helper", &self.ocr_helper)
+            .finish_non_exhaustive()
     }
 }
 
 /// [`install`] with what the generation reads; a test injects a clock to
-/// control retention and short realtime bounds to observe their rules.
+/// control retention, short realtime bounds to observe their rules, and a
+/// host executable to observe the OCR path.
 pub fn install_with(builder: &mut AgentBuilder, options: InstallOptions) {
     dim_agent_runtime::names::register::<ModalityAdapterService>(builder.catalog_mut(), None);
     builder.optional_plugin(move |names| {

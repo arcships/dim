@@ -14,6 +14,7 @@ dim-agent-capabilities.workspace = true
 dim-agent-runtime.workspace = true
 dim-agent-types.workspace = true
 dim-app-server.workspace = true
+dim-ocr.workspace = true
 jsonschema = { version = "0.50.1", default-features = false }
 rutis.workspace = true
 serde = { version = "1", features = ["derive"] }

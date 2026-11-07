@@ -216,6 +216,7 @@ impl Realtime {
             &self.shared.selectable,
             &self.shared.selection,
             &self.shared.ctx,
+            self.shared.ocr_helper.as_deref(),
             cancel,
         )
         .await?;

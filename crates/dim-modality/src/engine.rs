@@ -15,13 +15,16 @@ use crate::task::{
     self, Executor, Expect, InputFile, ResultFile, TaskError, TaskRecord, TaskResult, TaskState,
     Write,
 };
-use crate::{Evaluation, catalog_category, is_understand};
+use crate::{Evaluation, HostTargetSpec, catalog_category, host_target, is_understand};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
-use dim_agent_capabilities::file_storage::EntryKind;
+use dim_agent_capabilities::file_storage::{EntryKind, FileReader};
 use dim_agent_capabilities::host::{
     ModalityConnection, ModalityConnectionHost, ModalityTarget, ModelSelectionHost,
     SelectableModelsHost,
+};
+use dim_agent_capabilities::host_platform::{
+    ConfinedError, ConfinedOutput, ConfinedSpec, Confinement, HostPlatform, SystemServices,
 };
 use dim_agent_capabilities::methods::{Progress, RpcError};
 use dim_agent_types::ModelId;
@@ -32,8 +35,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::ffi::OsString;
 use std::io::Read;
 use std::path::PathBuf;
+use std::path::{Component, Path};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -68,6 +73,17 @@ pub const SUBMIT_CANCEL_GRACE: Duration = Duration::from_secs(3);
 /// The name this build records for its single process adapter; the per-task
 /// lookup (#861) will record the resolved adapter's name instead.
 pub const ADAPTER_NAME: &str = "modalityAdapter";
+/// The time one OCR helper call may take (decision 7): a 500-page PDF at
+/// 200 dpi is the slowest input the contract accepts.
+const OCR_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// The most bytes the OCR helper may write to standard output.
+const OCR_STDOUT_LIMIT: usize = 64 * 1024;
+/// The most bytes the OCR helper may write to standard error.
+const OCR_STDERR_LIMIT: usize = 64 * 1024;
+/// The most page text `data.pages` carries in one task record; later pages
+/// keep their number only and `data.textTruncated` points at `text.txt`.
+const MAX_DATA_TEXT_BYTES: u64 = 1024 * 1024;
+
 /// Terminal tasks older than this many days are deleted (A.4, A2).
 const RETENTION_DAYS: i64 = 30;
 /// At most this many terminal tasks are kept; older ones are deleted (A.4,
@@ -85,6 +101,20 @@ impl Clock for SystemClock {
     fn now(&self) -> DateTime<Utc> {
         Utc::now()
     }
+}
+
+/// A hook a generation calls after the host path has opened and counted its
+/// artifacts and before any of them is copied: the product's does nothing,
+/// and a test injects one to change a work file in the window the size cap
+/// must cover. It is the same seam shape as [`Clock`].
+pub trait PreflightHook: Send + Sync + 'static {
+    fn after_preflight(&self, work: &Path);
+}
+/// The product's hook: it does nothing.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoPreflightHook;
+impl PreflightHook for NoPreflightHook {
+    fn after_preflight(&self, _work: &Path) {}
 }
 
 fn rfc3339(time: DateTime<Utc>) -> String {
@@ -176,6 +206,97 @@ pub(crate) fn resolve_task_model(
             row.id(category)
         ))),
     }
+}
+
+/// The model a host task runs (decision 4): the build's own target, which the
+/// caller may name explicitly and which the persisted default must also name.
+pub(crate) fn resolve_host_model(
+    evaluation: &Evaluation,
+    category: &str,
+    row: &crate::OperationRow,
+    target: &HostTargetSpec,
+    explicit: Option<&ModelId>,
+) -> Result<ModelId, RpcError> {
+    let model = ModelId {
+        provider_id: target.provider_id.to_owned(),
+        model_id: target.model_id.to_owned(),
+    };
+    if let Some(explicit) = explicit {
+        if explicit != &model {
+            let reason =
+                evaluation.unavailable_reason(explicit, category, row.operation, &row.id(category));
+            return Err(model_unavailable(reason.detail));
+        }
+        return match evaluation.host_reason() {
+            Some(reason) => Err(unavailable(reason.detail)),
+            None => Ok(model),
+        };
+    }
+    let snapshot = evaluation.operation(category, row);
+    if let Some(default) = &snapshot.default {
+        if default.available {
+            return Ok(ModelId {
+                provider_id: default.provider_id.clone(),
+                model_id: default.model_id.clone(),
+            });
+        }
+        return Err(default_unavailable(
+            default
+                .reason
+                .as_ref()
+                .map(|reason| reason.detail.clone())
+                .unwrap_or_else(|| "The configured default is unavailable".into()),
+        ));
+    }
+    match &snapshot.effective {
+        Some(effective) => Ok(ModelId {
+            provider_id: effective.provider_id.clone(),
+            model_id: effective.model_id.clone(),
+        }),
+        None => Err(match evaluation.host_reason() {
+            Some(reason) => unavailable(reason.detail),
+            None => no_default_model(format!("No model serves {}", row.id(category))),
+        }),
+    }
+}
+
+/// The parameters `ocr.recognize` accepts (A.1): the requested output mode.
+/// The record also carries the reserved `files` metadata, which is read with
+/// the record, not here.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct OcrParams {
+    #[serde(default)]
+    output_mode: dim_ocr::OutputMode,
+    /// The record's reserved input metadata; present at run time, never read
+    /// here.
+    #[allow(dead_code)]
+    #[serde(default)]
+    files: Option<Value>,
+}
+
+/// Parses and validates `ocr.recognize` parameters (decision 4).
+fn ocr_params(params: &Value) -> Result<OcrParams, RpcError> {
+    serde_json::from_value(params.clone())
+        .map_err(|error| invalid_input(format!("Invalid ocr.recognize parameters: {error}")))
+}
+
+/// The success line the helper prints: `{ "ok": true, "pageCount": N }`.
+#[derive(Debug, Deserialize)]
+struct HelperSuccess {
+    ok: bool,
+}
+
+/// A typed failure line the helper prints for exit 2.
+#[derive(Debug, Deserialize)]
+struct HelperFailure {
+    ok: bool,
+    error: HelperFailureBody,
+}
+#[derive(Debug, Deserialize)]
+struct HelperFailureBody {
+    code: dim_ocr::HelperErrorCode,
+    message: String,
 }
 
 /// Validates an operation's parameters against the schema its adapter
@@ -311,9 +432,14 @@ pub(crate) struct Shared {
     pub(crate) tasks: TaskTracker,
     pub(crate) wake: Notify,
     pub(crate) state: Mutex<State>,
+    /// The executable host targets run (`ocr-helper`), from the installer.
+    pub(crate) ocr_helper: Option<PathBuf>,
+    /// The seam a test uses between the host path's size check and its copy.
+    pub(crate) preflight: Arc<dyn PreflightHook>,
 }
 
 impl Shared {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         files: Arc<PluginFileTransactions>,
         settings: Arc<SettingsService>,
@@ -321,6 +447,8 @@ impl Shared {
         selectable: Arc<SelectableModelsHost>,
         ctx: Ctx,
         clock: Arc<dyn Clock>,
+        ocr_helper: Option<PathBuf>,
+        preflight: Arc<dyn PreflightHook>,
     ) -> Self {
         Self {
             files,
@@ -333,6 +461,8 @@ impl Shared {
             tasks: TaskTracker::new(),
             wake: Notify::new(),
             state: Mutex::new(State::default()),
+            ocr_helper,
+            preflight,
         }
     }
 
@@ -660,14 +790,8 @@ impl ModalityTasks {
                 row.id(category.name)
             )));
         }
-        if category.name == "ocr" {
-            return Err(RpcError::app(
-                -32000,
-                "modality_unavailable",
-                "Not in this build",
-            ));
-        }
-        if params.node.is_some() {
+        let target = host_target(category.name, row.operation);
+        if params.node.is_some() && target.is_none() {
             return Err(invalid_input(format!(
                 "node is only for host-executed categories, not {}",
                 category.name
@@ -707,18 +831,34 @@ impl ModalityTasks {
             &shared.selectable,
             &shared.selection,
             &shared.ctx,
+            shared.ocr_helper.as_deref(),
             cancel,
         )
         .await?;
-        let model = resolve_task_model(&evaluation, category.name, row, params.model.as_ref())?;
-        let spec = evaluation.operation_spec(&model, category.name, row.operation);
-        let Some(spec) = spec else {
-            return Err(unavailable(format!(
-                "No available adapter serves {} for this model",
-                row.id(category.name)
-            )));
+        let model = match target {
+            Some(target) => resolve_host_model(
+                &evaluation,
+                category.name,
+                row,
+                target,
+                params.model.as_ref(),
+            )?,
+            None => resolve_task_model(&evaluation, category.name, row, params.model.as_ref())?,
         };
-        check_spec_params(&spec, &params.params, &row.id(category.name))?;
+        if target.is_some() {
+            // A host operation validates its own parameters; there is no
+            // adapter schema (decision 4).
+            ocr_params(&params.params)?;
+        } else {
+            let spec = evaluation.operation_spec(&model, category.name, row.operation);
+            let Some(spec) = spec else {
+                return Err(unavailable(format!(
+                    "No available adapter serves {} for this model",
+                    row.id(category.name)
+                )));
+            };
+            check_spec_params(&spec, &params.params, &row.id(category.name))?;
+        }
         // Boundary: names, media types and sizes (decision 1, decision 2).
         let allowed = allowed_media_types(category.name, row.operation);
         let mut inline_bytes: u64 = 0;
@@ -794,6 +934,12 @@ impl ModalityTasks {
                 "Files are at most {MAX_SUBMISSION_BYTES} bytes per submission"
             )));
         }
+        if target.is_some() && inputs.len() != 1 {
+            return Err(invalid_input(format!(
+                "{} takes one input file",
+                row.id(category.name)
+            )));
+        }
         let task_id = format!("mt_{}", uuid::Uuid::new_v4());
         let created = shared.now_text();
         let mut record_params = params.params.clone();
@@ -818,9 +964,18 @@ impl ModalityTasks {
             revision: 0,
             category: category.name.to_owned(),
             operation: row.operation.to_owned(),
-            executor: Executor::Provider {
-                provider: model,
-                adapter: ADAPTER_NAME.to_owned(),
+            executor: match target {
+                Some(target) => Executor::Host {
+                    node: params.node.clone(),
+                    target: task::HostTarget {
+                        provider_id: target.provider_id.to_owned(),
+                        model_id: target.model_id.to_owned(),
+                    },
+                },
+                None => Executor::Provider {
+                    provider: model,
+                    adapter: ADAPTER_NAME.to_owned(),
+                },
             },
             params: record_params,
             state: TaskState::Queued,
@@ -1198,6 +1353,7 @@ fn allowed_media_types(category: &str, operation: &str) -> &'static [&'static st
         ("video", _) => &["image/", "video/"],
         ("speech", "transcribe") => &["audio/"],
         ("asset", _) => &["image/"],
+        ("ocr", "recognize") => &["image/", "application/pdf"],
         _ => &[],
     }
 }
@@ -1627,6 +1783,12 @@ impl Shared {
         slot: &Arc<Slot>,
         record: &TaskRecord,
     ) -> Option<Option<String>> {
+        if matches!(record.executor, Executor::Host { .. }) {
+            // A host task runs to its terminal outcome here; `None` keeps
+            // the drive from waiting on an executor handle.
+            self.run_host(slot, record).await;
+            return None;
+        }
         let Some(adapter) = self.ctx.get::<ModalityAdapterService>() else {
             if !slot.cancel_requested() {
                 self.fail(slot, "unavailable", "No adapter in this build")
@@ -1797,10 +1959,370 @@ impl Shared {
         }
     }
 
-    /// Streams the adapter's output files into `result/` and writes the
+    /// Runs one host task on the control node (A.14, decision 4): the
+    /// helper under its confinement, then the terminal write its exit status
+    /// and artifacts decide (decision 7).
+    async fn run_host(self: &Arc<Self>, slot: &Arc<Slot>, record: &TaskRecord) {
+        let Executor::Host { node, target } = &record.executor else {
+            return;
+        };
+        if node.is_some() {
+            if !slot.cancel_requested() {
+                self.fail(
+                    slot,
+                    "node_unavailable",
+                    "The task names a node this daemon does not control",
+                )
+                .await;
+            }
+            return;
+        }
+        let Some(platform) = self.ctx.get::<HostPlatform>() else {
+            if !slot.cancel_requested() {
+                self.fail(slot, "unavailable", "The host platform is unavailable")
+                    .await;
+            }
+            return;
+        };
+        let Some(helper) = self.ocr_helper.clone() else {
+            if !slot.cancel_requested() {
+                self.fail(slot, "unavailable", "No OCR helper in this build")
+                    .await;
+            }
+            return;
+        };
+        if !dim_ocr::apple_vision_available()
+            || target.provider_id != dim_ocr::APPLE_VISION_PROVIDER
+            || target.model_id != dim_ocr::APPLE_VISION_MODEL
+        {
+            if !slot.cancel_requested() {
+                self.fail(slot, "unavailable", "The host target is unavailable")
+                    .await;
+            }
+            return;
+        }
+        let params = match ocr_params(&record.params) {
+            Ok(params) => params,
+            Err(error) => {
+                if !slot.cancel_requested() {
+                    self.fail(slot, "invalid_input", error.message).await;
+                }
+                return;
+            }
+        };
+        let input = match self.job_files(record).await {
+            Ok(mut files) if files.len() == 1 => files.remove(0),
+            Ok(_) => {
+                if !slot.cancel_requested() {
+                    self.fail(slot, "invalid_input", "The OCR task needs one input file")
+                        .await;
+                }
+                return;
+            }
+            Err(error) => {
+                if !slot.cancel_requested() {
+                    self.fail(slot, "storage_error", error).await;
+                }
+                return;
+            }
+        };
+        let (work, tmp, cache) = match self.host_directories(record).await {
+            Ok(paths) => paths,
+            Err(error) => {
+                if !slot.cancel_requested() {
+                    self.fail(slot, "storage_error", error).await;
+                }
+                return;
+            }
+        };
+        // The framework resolves its cache through the user home, so the
+        // helper's HOME is the plugin's own cache directory (decision 1).
+        let spec = ConfinedSpec {
+            executable: helper,
+            args: vec![
+                OsString::from("ocr-helper"),
+                OsString::from("--input"),
+                input.path.clone().into_os_string(),
+                OsString::from("--artifacts"),
+                work.clone().into_os_string(),
+                OsString::from("--output-mode"),
+                OsString::from(params.output_mode.as_str()),
+            ],
+            env: vec![
+                (OsString::from("HOME"), cache.clone().into_os_string()),
+                (
+                    OsString::from("CFFIXED_USER_HOME"),
+                    cache.clone().into_os_string(),
+                ),
+                (OsString::from("TMPDIR"), tmp.clone().into_os_string()),
+            ],
+        };
+        let confinement = Confinement {
+            read: vec![input.path.clone()],
+            write: vec![work.clone(), tmp, cache],
+            timeout: OCR_TIMEOUT,
+            stdout_limit: OCR_STDOUT_LIMIT,
+            stderr_limit: OCR_STDERR_LIMIT,
+            services: SystemServices::OnDeviceRecognition,
+        };
+        let outcome = platform
+            .spawn_confined(spec, confinement, slot.cancel.child_token())
+            .await;
+        if slot.cancel_requested() {
+            return;
+        }
+        let output = match outcome {
+            Ok(output) => output,
+            Err(ConfinedError::Cancelled) => return,
+            Err(error) => {
+                self.fail(slot, confinement_code(&error), error.to_string())
+                    .await;
+                return;
+            }
+        };
+        self.settle_host(slot, &work, output).await;
+    }
+
+    /// The work, temporary and cache directories one host task uses.
+    async fn host_directories(
+        &self,
+        record: &TaskRecord,
+    ) -> Result<(PathBuf, PathBuf, PathBuf), String> {
+        let task_dir = task::task_dir(&record.task_id);
+        let work = self
+            .files
+            .directory(&task::work_name(&record.task_id))
+            .await
+            .map_err(|error| error.to_string())?;
+        let tmp = self
+            .files
+            .directory(&format!("{task_dir}/tmp"))
+            .await
+            .map_err(|error| error.to_string())?;
+        let cache = self
+            .files
+            .directory(task::OCR_CACHE_DIR)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok((work, tmp, cache))
+    }
+
+    /// Maps one finished helper call to a terminal outcome (decision 7):
+    /// exit 0 publishes the artifacts, exit 2 carries a typed code, anything
+    /// else is `executor_error` with the tail of standard error.
+    async fn settle_host(self: &Arc<Self>, slot: &Arc<Slot>, work: &Path, output: ConfinedOutput) {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        match output.status.code() {
+            Some(0) => {
+                let ok = serde_json::from_str::<HelperSuccess>(stdout.trim())
+                    .is_ok_and(|payload| payload.ok);
+                if !ok {
+                    self.fail(
+                        slot,
+                        "executor_error",
+                        format!(
+                            "The OCR helper printed no success line{}",
+                            stderr_tail(&output.stderr)
+                        ),
+                    )
+                    .await;
+                    return;
+                }
+                self.publish_host(slot, work).await;
+            }
+            Some(2) => {
+                let failure = serde_json::from_str::<HelperFailure>(stdout.trim())
+                    .ok()
+                    .filter(|payload| !payload.ok);
+                match failure {
+                    Some(payload) => {
+                        let code = match payload.error.code {
+                            dim_ocr::HelperErrorCode::InvalidInput
+                            | dim_ocr::HelperErrorCode::EncryptedPdf
+                            | dim_ocr::HelperErrorCode::ResourceLimitExceeded => "invalid_input",
+                            dim_ocr::HelperErrorCode::LocalRuntimeUnavailable => "unavailable",
+                            dim_ocr::HelperErrorCode::LocalRuntimeFailed => "executor_error",
+                        };
+                        self.fail(slot, code, payload.error.message).await;
+                    }
+                    None => {
+                        self.fail(
+                            slot,
+                            "executor_error",
+                            "The OCR helper printed no valid error line",
+                        )
+                        .await;
+                    }
+                }
+            }
+            _ => {
+                self.fail(
+                    slot,
+                    "executor_error",
+                    format!("The OCR helper failed{}", stderr_tail(&output.stderr)),
+                )
+                .await;
+            }
+        }
+    }
+
+    /// Publishes the artifacts one successful call wrote: `result.json`,
+    /// `text.txt` and the rasterized page images, with `data.pages` read
+    /// from `result.json` and bounded by [`MAX_DATA_TEXT_BYTES`] (decision 8).
+    /// Every artifact is opened through the plugin files storage first: that
+    /// walk never follows a link and accepts only a regular file, so a FIFO
+    /// left at an artifact name cannot block the read and a link cannot point
+    /// it outside the work directory. The opened lengths are checked against
+    /// [`dim_ocr::MAX_ARTIFACT_BYTES`] before any byte is read, and those same
+    /// readers are what `settle_files` publishes, so the bytes counted are the
+    /// bytes copied even when a late writer changes the names afterwards.
+    async fn publish_host(self: &Arc<Self>, slot: &Arc<Slot>, work: &Path) {
+        let record = self.record(slot);
+        let work_name = task::work_name(&record.task_id);
+        let result_reader = match self.open_work_file(&work_name, dim_ocr::RESULT_FILE).await {
+            Ok(Some(reader)) => reader,
+            Ok(None) => {
+                self.fail(
+                    slot,
+                    "executor_error",
+                    "The OCR helper wrote no readable result",
+                )
+                .await;
+                return;
+            }
+            Err(error) => {
+                self.fail(slot, "executor_error", error).await;
+                return;
+            }
+        };
+        let text_reader = match self.open_work_file(&work_name, dim_ocr::TEXT_FILE).await {
+            Ok(Some(reader)) => reader,
+            Ok(None) => {
+                self.fail(slot, "executor_error", "The OCR helper wrote no text")
+                    .await;
+                return;
+            }
+            Err(error) => {
+                self.fail(slot, "executor_error", error).await;
+                return;
+            }
+        };
+        let listed = match self.files.list(&work_name).await {
+            Ok(entries) => entries,
+            Err(error) => {
+                self.fail(slot, "executor_error", error.to_string()).await;
+                return;
+            }
+        };
+        let prefix = format!("{work_name}/");
+        let mut images = Vec::new();
+        for entry in listed {
+            let Some(leaf) = entry.name.strip_prefix(&prefix) else {
+                continue;
+            };
+            if leaf.starts_with(dim_ocr::PAGE_IMAGE_PREFIX) && leaf.ends_with(".png") {
+                images.push(leaf.to_owned());
+            }
+        }
+        images.sort();
+        let mut total = result_reader.len().saturating_add(text_reader.len());
+        let mut image_readers = Vec::new();
+        for name in &images {
+            let reader = match self.open_work_file(&work_name, name).await {
+                Ok(Some(reader)) => reader,
+                Ok(None) => {
+                    self.fail(slot, "executor_error", "The OCR artifacts cannot be read")
+                        .await;
+                    return;
+                }
+                Err(error) => {
+                    self.fail(slot, "executor_error", error).await;
+                    return;
+                }
+            };
+            total = total.saturating_add(reader.len());
+            image_readers.push(reader);
+        }
+        if total > dim_ocr::MAX_ARTIFACT_BYTES {
+            self.fail(
+                slot,
+                "executor_error",
+                format!(
+                    "The OCR artifacts exceed {} bytes",
+                    dim_ocr::MAX_ARTIFACT_BYTES
+                ),
+            )
+            .await;
+            return;
+        }
+        self.preflight.after_preflight(work);
+        // The readers the cap counted are the ones copied into `result/`:
+        // a write or a replacement under the same name after this point
+        // changes neither what is published nor its size.
+        let mut files = vec![
+            OutputFile {
+                name: dim_ocr::RESULT_FILE.to_owned(),
+                media_type: "application/json".to_owned(),
+                source: OutputSource::Reader(result_reader),
+            },
+            OutputFile {
+                name: dim_ocr::TEXT_FILE.to_owned(),
+                media_type: "text/plain".to_owned(),
+                source: OutputSource::Reader(text_reader),
+            },
+        ];
+        for (name, reader) in images.into_iter().zip(image_readers) {
+            files.push(OutputFile {
+                name,
+                media_type: "image/png".to_owned(),
+                source: OutputSource::Reader(reader),
+            });
+        }
+        self.settle_files(slot, files, OutputData::ResultJson).await;
+    }
+
+    /// Opens one file of the task's work directory through the plugin files
+    /// storage: `None` when it is absent, an error when it is a link, not a
+    /// regular file or unreadable. Nothing is followed and nothing blocks.
+    async fn open_work_file(
+        &self,
+        work_name: &str,
+        name: &str,
+    ) -> Result<Option<FileReader>, String> {
+        self.files
+            .open_read(&format!("{work_name}/{name}"))
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Streams an adapter's output files into `result/` and writes the
     /// terminal `succeeded` record (decision 7). A file outside the work
     /// directory fails the task with `provider_error` and writes no result.
     async fn settle_output(self: &Arc<Self>, slot: &Arc<Slot>, output: AdapterOutput) {
+        let files = output
+            .files
+            .into_iter()
+            .map(|file| OutputFile {
+                name: file.name,
+                media_type: file.media_type,
+                source: OutputSource::Path(file.path),
+            })
+            .collect();
+        self.settle_files(slot, files, OutputData::Given(output.data))
+            .await;
+    }
+
+    /// The one publication routine both paths use: copies each file into
+    /// `result/` from its source and writes the terminal `succeeded` record.
+    /// A path source is opened through the plugin files storage here; a reader
+    /// source is the host path's counted reader and is never reopened, so the
+    /// bytes published are exactly the bytes the cap counted.
+    async fn settle_files(
+        self: &Arc<Self>,
+        slot: &Arc<Slot>,
+        files: Vec<OutputFile>,
+        data: OutputData,
+    ) {
         let record = self.record(slot);
         if record.state.is_terminal() {
             return;
@@ -1819,19 +2341,7 @@ impl Shared {
                 return;
             }
         };
-        let canonical_work = match tokio::task::spawn_blocking({
-            let work = work.clone();
-            move || std::fs::canonicalize(work)
-        })
-        .await
-        {
-            Ok(Ok(path)) => path,
-            _ => {
-                self.fail(slot, "provider_error", "The work directory is unavailable")
-                    .await;
-                return;
-            }
-        };
+        let work_name = task::work_name(&record.task_id);
         if let Err(error) = self
             .files
             .directory(&task::result_dir_name(&record.task_id))
@@ -1844,8 +2354,8 @@ impl Shared {
         }
         let mut names = BTreeSet::new();
         let mut written: Vec<String> = Vec::new();
-        let mut files: Vec<ResultFile> = Vec::new();
-        for file in &output.files {
+        let mut results: Vec<ResultFile> = Vec::new();
+        for file in files {
             if !valid_file_name(&file.name) || !names.insert(file.name.clone()) {
                 self.discard_results(&record.task_id, &written).await;
                 self.fail(
@@ -1856,64 +2366,77 @@ impl Shared {
                 .await;
                 return;
             }
-            let path = file.path.clone();
-            let probe = {
-                let canonical_work = canonical_work.clone();
-                tokio::task::spawn_blocking(move || {
-                    let metadata = std::fs::symlink_metadata(&path)?;
-                    if !metadata.file_type().is_file() {
-                        return Ok::<_, std::io::Error>(None);
+            let source = match file.source {
+                OutputSource::Reader(reader) => reader,
+                OutputSource::Path(path) => {
+                    let Some(relative) = work_relative_name(&work, &path) else {
+                        self.discard_results(&record.task_id, &written).await;
+                        self.fail(
+                            slot,
+                            "provider_error",
+                            "The adapter returned a file outside its work directory",
+                        )
+                        .await;
+                        return;
+                    };
+                    match self.open_work_file(&work_name, &relative).await {
+                        Ok(Some(source)) => source,
+                        Ok(None) => {
+                            self.discard_results(&record.task_id, &written).await;
+                            self.fail(
+                                slot,
+                                "provider_error",
+                                "The adapter returned a file outside its work directory",
+                            )
+                            .await;
+                            return;
+                        }
+                        Err(error) => {
+                            self.discard_results(&record.task_id, &written).await;
+                            self.fail(slot, "provider_error", error).await;
+                            return;
+                        }
                     }
-                    let canonical = std::fs::canonicalize(&path)?;
-                    if !canonical.starts_with(&canonical_work) || canonical == canonical_work {
-                        return Ok(None);
-                    }
-                    Ok(Some(canonical))
-                })
-                .await
-            };
-            let canonical = match probe {
-                Ok(Ok(Some(path))) => path,
-                _ => {
-                    self.discard_results(&record.task_id, &written).await;
-                    self.fail(
-                        slot,
-                        "provider_error",
-                        "The adapter returned a file outside its work directory",
-                    )
-                    .await;
-                    return;
                 }
             };
-            let source = match tokio::fs::File::open(&canonical).await {
-                Ok(source) => source.into_std().await,
+            let (bytes, sha256) = match task::write_result(
+                &self.files,
+                &record.task_id,
+                &file.name,
+                ReaderSource::new(source),
+            )
+            .await
+            {
+                Ok(result) => result,
                 Err(error) => {
                     self.discard_results(&record.task_id, &written).await;
-                    self.fail(slot, "provider_error", error.to_string()).await;
+                    self.fail(slot, "storage_error", error.to_string()).await;
                     return;
                 }
             };
-            let (bytes, sha256) =
-                match task::write_result(&self.files, &record.task_id, &file.name, source).await {
-                    Ok(result) => result,
-                    Err(error) => {
-                        self.discard_results(&record.task_id, &written).await;
-                        self.fail(slot, "storage_error", error.to_string()).await;
-                        return;
-                    }
-                };
             written.push(file.name.clone());
-            files.push(ResultFile {
-                name: file.name.clone(),
-                media_type: file.media_type.clone(),
+            results.push(ResultFile {
+                name: file.name,
+                media_type: file.media_type,
                 bytes,
                 sha256,
             });
         }
+        let data = match data {
+            OutputData::Given(data) => data,
+            OutputData::ResultJson => match self.published_result_pages(&record.task_id).await {
+                Ok(data) => Some(data),
+                Err(message) => {
+                    self.discard_results(&record.task_id, &written).await;
+                    self.fail(slot, "executor_error", message).await;
+                    return;
+                }
+            },
+        };
         let _ = task::remove_work(&self.files, &record.task_id).await;
         let result = TaskResult {
-            files,
-            data: output.data,
+            files: results,
+            data,
         };
         let finished = self.now_text();
         match self
@@ -1942,6 +2465,31 @@ impl Shared {
             Write::Written(_) => {}
         }
         self.wake.notify_one();
+    }
+
+    /// The record's `data` from the `result.json` this call just published,
+    /// parsed from the published file with the same text budget, so the record
+    /// describes exactly the bytes it names (decision 8).
+    async fn published_result_pages(&self, task_id: &str) -> Result<Value, String> {
+        let name = task::result_name(task_id, dim_ocr::RESULT_FILE);
+        let reader = self
+            .files
+            .open_read(&name)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "The OCR helper wrote no readable result".to_owned())?;
+        let parsed = tokio::task::spawn_blocking(move || {
+            dim_ocr::read_pages(ReaderSource::new(reader), MAX_DATA_TEXT_BYTES)
+        })
+        .await;
+        let Ok(Ok(pages)) = parsed else {
+            return Err("The OCR helper wrote no readable result".to_owned());
+        };
+        let mut data = json!({ "pages": pages.pages });
+        if pages.text_truncated {
+            data["textTruncated"] = json!(true);
+        }
+        Ok(data)
     }
 
     async fn discard_results(&self, task_id: &str, names: &[String]) {
@@ -2006,5 +2554,126 @@ impl Shared {
                 })
                 .await;
         });
+    }
+}
+
+/// The record error code of a confinement failure (decision 7): a path the
+/// call cannot resolve is the caller's input, everything else the executor.
+fn confinement_code(error: &ConfinedError) -> &'static str {
+    match error {
+        ConfinedError::InvalidPath { .. } => "invalid_input",
+        _ => "executor_error",
+    }
+}
+
+/// The work-relative name of a `JobFile` path: the lexical remainder after the
+/// work directory, accepted only when it is non-empty and every component is
+/// normal. No filesystem call is made, so a work directory replaced by a link
+/// after the adapter ran cannot move the path this checks against.
+fn work_relative_name(work: &Path, path: &Path) -> Option<String> {
+    let mut name = String::new();
+    for component in path.strip_prefix(work).ok()?.components() {
+        let Component::Normal(part) = component else {
+            return None;
+        };
+        let part = part.to_str()?;
+        if !name.is_empty() {
+            name.push('/');
+        }
+        name.push_str(part);
+    }
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// One file to publish: its name, its media type and where its bytes come
+/// from.
+struct OutputFile {
+    name: String,
+    media_type: String,
+    source: OutputSource,
+}
+
+/// Where an output file's bytes come from: a path an adapter named, opened
+/// through the storage at copy time, or a reader the host path already opened
+/// and counted, which is never reopened.
+enum OutputSource {
+    Path(PathBuf),
+    Reader(FileReader),
+}
+
+/// Where the terminal record's `data` comes from: the adapter's own value, or
+/// the `result.json` the host path just published, parsed after publication
+/// so the record describes the published bytes.
+enum OutputData {
+    Given(Option<Value>),
+    ResultJson,
+}
+
+/// A synchronous [`Read`] over a pinned [`FileReader`]: each read blocks the
+/// calling thread on the storage's asynchronous read. Only used inside
+/// `spawn_blocking`, never on a runtime worker.
+struct ReaderSource {
+    reader: FileReader,
+    handle: tokio::runtime::Handle,
+    cancel: CancellationToken,
+    offset: u64,
+}
+
+impl ReaderSource {
+    fn new(reader: FileReader) -> Self {
+        Self {
+            reader,
+            handle: tokio::runtime::Handle::current(),
+            cancel: CancellationToken::new(),
+            offset: 0,
+        }
+    }
+}
+
+impl Read for ReaderSource {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let chunk = self
+            .handle
+            .block_on(self.reader.read_at(self.offset, buffer.len(), &self.cancel))
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let count = chunk.len().min(buffer.len());
+        buffer[..count].copy_from_slice(&chunk[..count]);
+        self.offset += count as u64;
+        Ok(count)
+    }
+}
+
+/// The tail of a helper's standard error, for a failure message.
+fn stderr_tail(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let text = text.trim();
+    if text.is_empty() {
+        return String::new();
+    }
+    let mut tail: Vec<char> = text.chars().rev().take(500).collect();
+    tail.reverse();
+    format!(": {}", tail.into_iter().collect::<String>())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::confinement_code;
+    use dim_agent_capabilities::host_platform::{ConfinedError, ConfinedStream};
+
+    #[test]
+    fn a_confinement_failure_is_the_callers_only_when_a_path_is_invalid() {
+        let gone = ConfinedError::InvalidPath {
+            path: std::path::PathBuf::from("/input.png"),
+            reason: "No such file or directory".into(),
+        };
+        assert_eq!(confinement_code(&gone), "invalid_input");
+        assert_eq!(confinement_code(&ConfinedError::TimedOut), "executor_error");
+        let limit = ConfinedError::OutputLimit {
+            stream: ConfinedStream::Stdout,
+        };
+        assert_eq!(confinement_code(&limit), "executor_error");
     }
 }

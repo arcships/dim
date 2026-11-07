@@ -6215,8 +6215,19 @@
       "unexpandedMacros": [
         "format",
         "json",
+        "matches",
         "tokio::select",
-        "tracing::warn"
+        "tracing::warn",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_modality::engine::tests",
+      "crate": "dim_modality",
+      "parent": "dim_modality::engine",
+      "file": "crates/dim-modality/src/engine.rs",
+      "unexpandedMacros": [
+        "assert_eq"
       ]
     },
     {
@@ -6249,6 +6260,72 @@
       "unexpandedMacros": [
         "assert",
         "assert_eq"
+      ]
+    },
+    {
+      "id": "dim_ocr",
+      "crate": "dim_ocr",
+      "parent": null,
+      "file": "crates/dim-ocr/src/lib.rs",
+      "unexpandedMacros": []
+    },
+    {
+      "id": "dim_ocr::args",
+      "crate": "dim_ocr",
+      "parent": "dim_ocr",
+      "file": "crates/dim-ocr/src/args.rs",
+      "unexpandedMacros": [
+        "format"
+      ]
+    },
+    {
+      "id": "dim_ocr::contract",
+      "crate": "dim_ocr",
+      "parent": "dim_ocr",
+      "file": "crates/dim-ocr/src/contract.rs",
+      "unexpandedMacros": [
+        "format",
+        "write"
+      ]
+    },
+    {
+      "id": "dim_ocr::helper",
+      "crate": "dim_ocr",
+      "parent": "dim_ocr",
+      "file": "crates/dim-ocr/src/helper.rs",
+      "unexpandedMacros": [
+        "format",
+        "writeln"
+      ]
+    },
+    {
+      "id": "dim_ocr::pdf",
+      "crate": "dim_ocr",
+      "parent": "dim_ocr",
+      "file": "crates/dim-ocr/src/pdf.rs",
+      "unexpandedMacros": [
+        "format"
+      ]
+    },
+    {
+      "id": "dim_ocr::platform",
+      "crate": "dim_ocr",
+      "parent": "dim_ocr",
+      "file": "crates/dim-ocr/src/platform.rs",
+      "unexpandedMacros": [
+        "cfg",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_ocr::vision",
+      "crate": "dim_ocr",
+      "parent": "dim_ocr",
+      "file": "crates/dim-ocr/src/vision.rs",
+      "unexpandedMacros": [
+        "format",
+        "matches",
+        "msg_send"
       ]
     },
     {
@@ -10891,7 +10968,8 @@
         "use confined::ConfinedOutput",
         "use confined::ConfinedSpec",
         "use confined::ConfinedStream",
-        "use confined::Confinement"
+        "use confined::Confinement",
+        "use confined::SystemServices"
       ]
     },
     {
@@ -11033,6 +11111,16 @@
         "use super::ProcessSpec",
         "use super::ProcessSpecError",
         "use super::TemporaryDirectory"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::host_platform::isolation",
+      "to": "dim_agent_capabilities::host_platform::confined",
+      "references": [
+        "path SystemServices",
+        "path SystemServices::None",
+        "path SystemServices::OnDeviceRecognition",
+        "use super::SystemServices"
       ]
     },
     {
@@ -43173,6 +43261,13 @@
     },
     {
       "from": "dim_modality",
+      "to": "dim_agent_capabilities::host_platform",
+      "references": [
+        "path dim_agent_capabilities::host_platform::HostPlatform"
+      ]
+    },
+    {
+      "from": "dim_modality",
       "to": "dim_agent_capabilities::methods",
       "references": [
         "path Interruption::Report",
@@ -43314,6 +43409,8 @@
         "path Clock",
         "path ModalityTasks",
         "path ModalityTasks::new",
+        "path NoPreflightHook",
+        "path PreflightHook",
         "path SystemClock",
         "path TaskCancel",
         "path TaskList",
@@ -43333,7 +43430,9 @@
         "use engine::MAX_SUBMISSION_BYTES",
         "use engine::MAX_WAIT_MS",
         "use engine::ModalityTasks",
+        "use engine::NoPreflightHook",
         "use engine::PROGRESS_INTERVAL",
+        "use engine::PreflightHook",
         "use engine::SystemClock",
         "use engine::TaskCancel",
         "use engine::TaskInput",
@@ -43378,6 +43477,15 @@
       ]
     },
     {
+      "from": "dim_modality",
+      "to": "dim_ocr::platform",
+      "references": [
+        "path dim_ocr::APPLE_VISION_MODEL",
+        "path dim_ocr::APPLE_VISION_PROVIDER",
+        "path dim_ocr::apple_vision_available"
+      ]
+    },
+    {
       "from": "dim_modality::adapter",
       "to": "dim_agent_capabilities::host",
       "references": [
@@ -43398,7 +43506,9 @@
       "to": "dim_agent_capabilities::file_storage",
       "references": [
         "path EntryKind::Directory",
-        "use dim_agent_capabilities::file_storage::EntryKind"
+        "path FileReader",
+        "use dim_agent_capabilities::file_storage::EntryKind",
+        "use dim_agent_capabilities::file_storage::FileReader"
       ]
     },
     {
@@ -43415,6 +43525,32 @@
         "use dim_agent_capabilities::host::ModalityTarget",
         "use dim_agent_capabilities::host::ModelSelectionHost",
         "use dim_agent_capabilities::host::SelectableModelsHost"
+      ]
+    },
+    {
+      "from": "dim_modality::engine",
+      "to": "dim_agent_capabilities::host_platform",
+      "references": [
+        "path HostPlatform",
+        "use dim_agent_capabilities::host_platform::HostPlatform"
+      ]
+    },
+    {
+      "from": "dim_modality::engine",
+      "to": "dim_agent_capabilities::host_platform::confined",
+      "references": [
+        "path ConfinedError",
+        "path ConfinedError::Cancelled",
+        "path ConfinedError::InvalidPath",
+        "path ConfinedOutput",
+        "path ConfinedSpec",
+        "path Confinement",
+        "path SystemServices::OnDeviceRecognition",
+        "use dim_agent_capabilities::host_platform::ConfinedError",
+        "use dim_agent_capabilities::host_platform::ConfinedOutput",
+        "use dim_agent_capabilities::host_platform::ConfinedSpec",
+        "use dim_agent_capabilities::host_platform::Confinement",
+        "use dim_agent_capabilities::host_platform::SystemServices"
       ]
     },
     {
@@ -43457,16 +43593,20 @@
       "to": "dim_modality",
       "references": [
         "path Evaluation",
+        "path HostTargetSpec",
         "path ModalityAdapterService",
         "path catalog_category",
         "path crate::OperationRow",
         "path crate::evaluate",
         "path crate::is_realtime",
         "path crate::unknown_operation",
+        "path host_target",
         "path is_understand",
         "use crate::Evaluation",
+        "use crate::HostTargetSpec",
         "use crate::ModalityAdapterService",
         "use crate::catalog_category",
+        "use crate::host_target",
         "use crate::is_understand"
       ]
     },
@@ -43488,6 +43628,13 @@
         "use crate::adapter::JobFile",
         "use crate::adapter::ProgressSink",
         "use crate::adapter::RemoteCancel"
+      ]
+    },
+    {
+      "from": "dim_modality::engine",
+      "to": "dim_modality::engine::tests",
+      "references": [
+        "mod tests"
       ]
     },
     {
@@ -43516,6 +43663,8 @@
         "path Write::Written",
         "path task",
         "path task::FORMAT_VERSION",
+        "path task::HostTarget",
+        "path task::OCR_CACHE_DIR",
         "path task::TASKS_DIR",
         "path task::create",
         "path task::hex",
@@ -43542,6 +43691,51 @@
         "use crate::task::TaskResult",
         "use crate::task::TaskState",
         "use crate::task::Write"
+      ]
+    },
+    {
+      "from": "dim_modality::engine",
+      "to": "dim_ocr::contract",
+      "references": [
+        "path dim_ocr::HelperErrorCode",
+        "path dim_ocr::HelperErrorCode::EncryptedPdf",
+        "path dim_ocr::HelperErrorCode::InvalidInput",
+        "path dim_ocr::HelperErrorCode::LocalRuntimeFailed",
+        "path dim_ocr::HelperErrorCode::LocalRuntimeUnavailable",
+        "path dim_ocr::HelperErrorCode::ResourceLimitExceeded",
+        "path dim_ocr::MAX_ARTIFACT_BYTES",
+        "path dim_ocr::OutputMode",
+        "path dim_ocr::PAGE_IMAGE_PREFIX",
+        "path dim_ocr::RESULT_FILE",
+        "path dim_ocr::TEXT_FILE",
+        "path dim_ocr::read_pages"
+      ]
+    },
+    {
+      "from": "dim_modality::engine",
+      "to": "dim_ocr::platform",
+      "references": [
+        "path dim_ocr::APPLE_VISION_MODEL",
+        "path dim_ocr::APPLE_VISION_PROVIDER",
+        "path dim_ocr::apple_vision_available"
+      ]
+    },
+    {
+      "from": "dim_modality::engine::tests",
+      "to": "dim_agent_capabilities::host_platform::confined",
+      "references": [
+        "path ConfinedError::InvalidPath",
+        "path ConfinedError::OutputLimit",
+        "path ConfinedStream::Stdout",
+        "use dim_agent_capabilities::host_platform::ConfinedError",
+        "use dim_agent_capabilities::host_platform::ConfinedStream"
+      ]
+    },
+    {
+      "from": "dim_modality::engine::tests",
+      "to": "dim_modality::engine",
+      "references": [
+        "use super::confinement_code"
       ]
     },
     {
@@ -43672,6 +43866,182 @@
         "path TaskState::Failed",
         "path TaskState::Interrupted",
         "path TaskState::Succeeded"
+      ]
+    },
+    {
+      "from": "dim_ocr",
+      "to": "dim_ocr::args",
+      "references": [
+        "mod args",
+        "use args::HelperArguments"
+      ]
+    },
+    {
+      "from": "dim_ocr",
+      "to": "dim_ocr::contract",
+      "references": [
+        "mod contract",
+        "use contract::Document",
+        "use contract::DocumentText",
+        "use contract::HelperError",
+        "use contract::HelperErrorCode",
+        "use contract::MAX_ARTIFACT_BYTES",
+        "use contract::MAX_INPUT_BYTES",
+        "use contract::MAX_PAGE_PIXELS",
+        "use contract::MAX_PDF_PAGES",
+        "use contract::OutputMode",
+        "use contract::PAGE_IMAGE_PREFIX",
+        "use contract::Page",
+        "use contract::PageText",
+        "use contract::RESULT_FILE",
+        "use contract::Region",
+        "use contract::TEXT_FILE",
+        "use contract::page_image_name",
+        "use contract::read_pages"
+      ]
+    },
+    {
+      "from": "dim_ocr",
+      "to": "dim_ocr::helper",
+      "references": [
+        "mod helper",
+        "use helper::helper_main",
+        "use helper::helper_main_with_budget"
+      ]
+    },
+    {
+      "from": "dim_ocr",
+      "to": "dim_ocr::pdf",
+      "references": [
+        "mod pdf"
+      ]
+    },
+    {
+      "from": "dim_ocr",
+      "to": "dim_ocr::platform",
+      "references": [
+        "mod platform",
+        "use platform::APPLE_VISION_MODEL",
+        "use platform::APPLE_VISION_PROVIDER",
+        "use platform::apple_vision_available",
+        "use platform::macos_version"
+      ]
+    },
+    {
+      "from": "dim_ocr",
+      "to": "dim_ocr::vision",
+      "references": [
+        "mod vision"
+      ]
+    },
+    {
+      "from": "dim_ocr::args",
+      "to": "dim_ocr::contract",
+      "references": [
+        "path HelperError",
+        "path HelperError::invalid_input",
+        "path OutputMode",
+        "path OutputMode::default",
+        "path OutputMode::parse",
+        "use crate::contract::HelperError",
+        "use crate::contract::OutputMode"
+      ]
+    },
+    {
+      "from": "dim_ocr::helper",
+      "to": "dim_ocr::args",
+      "references": [
+        "path HelperArguments",
+        "path HelperArguments::parse",
+        "use crate::args::HelperArguments"
+      ]
+    },
+    {
+      "from": "dim_ocr::helper",
+      "to": "dim_ocr::contract",
+      "references": [
+        "path Document",
+        "path HelperError",
+        "path HelperError::failed",
+        "path HelperError::invalid_input",
+        "path HelperError::limit",
+        "path HelperError::unavailable",
+        "path HelperErrorCode",
+        "path MAX_ARTIFACT_BYTES",
+        "path MAX_INPUT_BYTES",
+        "path OutputMode::Layout",
+        "path OutputMode::Text",
+        "path RESULT_FILE",
+        "path TEXT_FILE",
+        "path crate::contract::Page",
+        "path crate::contract::Region",
+        "path page_image_name",
+        "use crate::contract::Document",
+        "use crate::contract::HelperError",
+        "use crate::contract::HelperErrorCode",
+        "use crate::contract::MAX_ARTIFACT_BYTES",
+        "use crate::contract::MAX_INPUT_BYTES",
+        "use crate::contract::OutputMode",
+        "use crate::contract::RESULT_FILE",
+        "use crate::contract::TEXT_FILE",
+        "use crate::contract::page_image_name"
+      ]
+    },
+    {
+      "from": "dim_ocr::helper",
+      "to": "dim_ocr::pdf",
+      "references": [
+        "path crate::pdf::PdfDocument",
+        "path crate::pdf::PdfDocument::open"
+      ]
+    },
+    {
+      "from": "dim_ocr::helper",
+      "to": "dim_ocr::vision",
+      "references": [
+        "path crate::vision::image_source",
+        "path crate::vision::recognize_image",
+        "path crate::vision::recognize_url",
+        "path crate::vision::write_png"
+      ]
+    },
+    {
+      "from": "dim_ocr::pdf",
+      "to": "dim_ocr::contract",
+      "references": [
+        "path HelperError",
+        "path HelperError::encrypted_pdf",
+        "path HelperError::failed",
+        "path HelperError::invalid_input",
+        "path HelperError::limit",
+        "path MAX_PAGE_PIXELS",
+        "path MAX_PDF_PAGES",
+        "path RENDER_DPI",
+        "use crate::contract::HelperError",
+        "use crate::contract::MAX_PAGE_PIXELS",
+        "use crate::contract::MAX_PDF_PAGES",
+        "use crate::contract::RENDER_DPI"
+      ]
+    },
+    {
+      "from": "dim_ocr::vision",
+      "to": "dim_ocr::contract",
+      "references": [
+        "path HelperError",
+        "path HelperError::failed",
+        "path HelperError::invalid_input",
+        "path HelperError::limit",
+        "path Region",
+        "path crate::contract::MAX_PAGE_PIXELS",
+        "use crate::contract::HelperError",
+        "use crate::contract::Region"
+      ]
+    },
+    {
+      "from": "dim_ocr::vision",
+      "to": "dim_ocr::platform",
+      "references": [
+        "path crate::platform::macos_version"
       ]
     },
     {
@@ -45239,6 +45609,18 @@
     {
       "module": "dim_modality",
       "path": "D::Error"
+    },
+    {
+      "module": "dim_ocr::contract",
+      "path": "A::Error"
+    },
+    {
+      "module": "dim_ocr::contract",
+      "path": "D::Error"
+    },
+    {
+      "module": "dim_ocr::platform",
+      "path": "CStr::from_bytes_until_nul"
     }
   ]
 }

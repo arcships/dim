@@ -27,7 +27,9 @@ mod confined;
 mod exec_shell_settings;
 #[cfg(unix)]
 mod isolation;
-pub use confined::{ConfinedError, ConfinedOutput, ConfinedSpec, ConfinedStream, Confinement};
+pub use confined::{
+    ConfinedError, ConfinedOutput, ConfinedSpec, ConfinedStream, Confinement, SystemServices,
+};
 pub use exec_shell_settings::{ExecShellSettings, ExecShellSettingsError, ShellChoice};
 
 pub const EXEC_SHELL_CONFIG_INVALID: &str = "EXEC_SHELL_CONFIG_INVALID";

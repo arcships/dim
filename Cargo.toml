@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dim-agent-types", "crates/dim-agent-runtime", "crates/dim-agent-capabilities", "crates/dim-agent-aimux", "crates/dim-agent-attachments", "crates/dim-agent-questions", "crates/dim-agent-scheduler", "crates/dim-app-server", "crates/dim-client", "crates/dim-acp", "crates/dim-cli", "crates/dim-oauth", "crates/dim-session-title", "crates/dim-goal", "crates/dim-modality", "crates/dim-modality-aimux", "crates/dimcode", "crates/dim-migration", "xtask", "tests/extension-a", "tests/extension-b", "tests/integration"]
+members = ["crates/dim-agent-types", "crates/dim-agent-runtime", "crates/dim-agent-capabilities", "crates/dim-agent-aimux", "crates/dim-agent-attachments", "crates/dim-agent-questions", "crates/dim-agent-scheduler", "crates/dim-app-server", "crates/dim-client", "crates/dim-acp", "crates/dim-cli", "crates/dim-oauth", "crates/dim-session-title", "crates/dim-goal", "crates/dim-modality", "crates/dim-ocr", "crates/dim-modality-aimux", "crates/dimcode", "crates/dim-migration", "xtask", "tests/extension-a", "tests/extension-b", "tests/integration"]
 exclude = ["vendor/aimux", "vendor/grok-build"]
 
 [workspace.package]
@@ -28,6 +28,7 @@ dim-app-server = { path = "crates/dim-app-server" }
 dim-session-title = { path = "crates/dim-session-title" }
 dim-goal = { path = "crates/dim-goal" }
 dim-modality = { path = "crates/dim-modality" }
+dim-ocr = { path = "crates/dim-ocr" }
 dim-modality-aimux = { path = "crates/dim-modality-aimux" }
 dim-client = { path = "crates/dim-client" }
 dim-migration = { path = "crates/dim-migration" }
