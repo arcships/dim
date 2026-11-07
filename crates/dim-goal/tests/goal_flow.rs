@@ -18,33 +18,51 @@ async fn a_set_asks_for_the_objective_and_goal_states_it_in_a_record() {
         .await
         .unwrap();
     let writes = fixture.settled_writes("main").await;
-    assert_eq!(writes.len(), 2, "{writes:#?}");
+    // Continuation turns the set queues keep writing while the branch
+    // settles, so the flow finds the set's own writes by their markers and
+    // sequences instead of counting the list.
+    let trigger = writes
+        .iter()
+        .find(|write| write.text == texts::set("main", OBJECTIVE))
+        .unwrap_or_else(|| panic!("the set's change trigger among {writes:#?}"));
     assert_eq!(
-        writes[1].sequence, sequence,
+        trigger.sequence, sequence,
         "the method replies with the trigger's sequence"
     );
-    assert_eq!(writes[0].mode, InputMode::Append);
-    assert_eq!(writes[0].blocks, 1, "{}", writes[0].text);
+    assert_eq!(trigger.mode, InputMode::Queue);
+    assert_eq!(trigger.blocks, 1, "{}", trigger.text);
     assert_eq!(
-        writes[0].text,
-        texts::set_state("main", OBJECTIVE, &texts::trigger(&writes[1]), false)
+        trigger.marker,
+        r#"<dim-goal kind="goal" op="set" branch="main">"#
     );
-    assert_eq!(writes[1].mode, InputMode::Queue);
-    assert_eq!(writes[1].blocks, 1, "{}", writes[1].text);
-    assert_eq!(writes[1].text, texts::set("main", OBJECTIVE));
-    let all = fixture.events("main", 0).await;
-    let state = all
+    let state_text = texts::set_state("main", OBJECTIVE, &texts::trigger(trigger), false);
+    let state = writes
         .iter()
-        .find(|event| event.sequence == writes[0].sequence)
+        .find(|write| write.text == state_text)
+        .unwrap_or_else(|| panic!("the set's state record among {writes:#?}"));
+    assert_eq!(state.mode, InputMode::Append);
+    assert_eq!(state.blocks, 1, "{}", state.text);
+    assert!(
+        state.sequence < trigger.sequence,
+        "the state record precedes the trigger it answers: {writes:#?}"
+    );
+    assert!(
+        state
+            .marker
+            .starts_with(r#"<dim-goal kind="state" status="active""#),
+        "{}",
+        state.marker
+    );
+    let all = fixture.events("main", 0).await;
+    let state_event = all
+        .iter()
+        .find(|event| event.sequence == state.sequence)
         .expect("the state record");
-    let EventKind::InputMessage(data) = &state.kind else {
+    let EventKind::InputMessage(data) = &state_event.kind else {
         panic!("the state record is an input message")
     };
     let dim_agent_types::InputBlock::Raw { text, key, retire } = &data.blocks[0];
-    assert_eq!(
-        text,
-        &texts::set_state("main", OBJECTIVE, &texts::trigger(&writes[1]), false)
-    );
+    assert_eq!(text, &state_text);
     assert_eq!(key.as_deref(), Some("goal:state"));
     assert!(!retire);
     fixture.close().await;
