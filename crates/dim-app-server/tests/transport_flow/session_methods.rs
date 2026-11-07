@@ -408,6 +408,7 @@ async fn contributed_session_methods_dispatch_through_the_session_they_name() {
             {"name": "session.agent.get", "mutating": false},
             {"name": "session.agent.update", "mutating": true},
             {"name": "session.collaboration.approval.get", "mutating": false},
+            {"name": "session.collaboration.cancel", "mutating": true},
             {"name": "session.input.withdraw", "mutating": true},
         ]})
     );
@@ -488,7 +489,7 @@ async fn a_reloading_or_closed_session_namespace_answers_as_specified() {
         client
             .rpc("session.methods", json!({"sessionId": sid}))
             .await["result"],
-        json!({"methods": [{"name": "session.agent.get", "mutating": false}, {"name": "session.agent.update", "mutating": true}, {"name": "session.collaboration.approval.get", "mutating": false}, {"name": "session.input.withdraw", "mutating": true}]})
+        json!({"methods": [{"name": "session.agent.get", "mutating": false}, {"name": "session.agent.update", "mutating": true}, {"name": "session.collaboration.approval.get", "mutating": false}, {"name": "session.collaboration.cancel", "mutating": true}, {"name": "session.input.withdraw", "mutating": true}]})
     );
     gate.notify_one();
     restart.await.unwrap();

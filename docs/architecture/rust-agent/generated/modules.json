@@ -20498,7 +20498,11 @@
       "from": "dim_app_server::collaboration",
       "to": "dim_agent_capabilities::methods",
       "references": [
-        "path dim_agent_capabilities::methods::SessionMethods"
+        "path RpcError",
+        "path RpcError::invalid",
+        "path RpcError::service",
+        "path dim_agent_capabilities::methods::SessionMethods",
+        "use dim_agent_capabilities::methods::RpcError"
       ]
     },
     {
@@ -20890,6 +20894,7 @@
         "path MethodCall",
         "path RpcError",
         "path RpcError::invalid",
+        "path RpcError::unknown_method",
         "path SessionMethods",
         "path params",
         "path reply",

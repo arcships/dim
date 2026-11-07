@@ -129,6 +129,16 @@ Issue：[#593](https://github.com/arcships/dim/issues/593)。本节拥有一次�
 - “未知 id 就是公开”：缺失的关系是拒绝。
 - 关系表的进程内存权威：Collaboration 装载时从存储的 leader 重建。
 
+### 6.7 从客户端停止成员
+
+attach 到 leader 的客户端用 `session.collaboration.cancel {sessionId, branchId?, memberSessionId}` → `{"status": "cancelled" | "idle"}` 停止成员当前的回合。`sessionId` 是路由这次调用的 leader Session，因为 `session.collaboration` 是它的 Session 命名空间之一（[Session 边界 A.1](../contracts/session-boundary.md#a1-方法贡献)）；`branchId` 缺省为 `main`，与 `session.stop` 相同；`memberSessionId` 是唯一地址。以该 id 为键的 Team 关系给出成员的 Agent 与领导它的 leader（§6.1），所以客户端不发送 `agentId`；没有关系命名的 id，或属于其他 Team 的 id，都是 `team_member_not_found`（§6.2）。
+
+该方法通过该 Session 自己的 `stop` 中断成员 `main` 分支当前的回合，原因文本指明它来自客户端。调用到达时 leader 的分支对该成员持有打开的请求，则回答 `cancelled`，否则回答 `idle`；`idle` 不在任何地方写任何东西，连 `session.stop` 总是写的 `stop/interrupt` 也不写。其余拒绝：成员 Session 调用它是 `invalid_params`，文本与工具按角色的拒绝一致；未知或已结束的分支回答各自的 Session 错误（`session_invalid_input`、`branch_ended`），已关闭的回答 `session_closed`，它们都不是 `idle`；成员 Session 已关闭或无法获取是 `member_closed`。
+
+不写 `collaboration/cancel` 事实：它的数据命名 `agent` 工具调用的 turn、request 与 call id（[协作 Timeline](../../../design/collaboration-timeline.md)），客户端调用没有这些 id。效果由客户端已经读到的事实记录：成员自己的 `stop/interrupt` 与 `turn/end`，以及 leader 的 `collaboration/result` 和它的 `dim-agent-report` 输入。
+
+**与 `session.stop` 的边界。** `session.stop` 命名一个 Session 并停止它，无论是否有工作在跑，总是写 `stop/interrupt`；attach 到成员的客户端用它。`session.collaboration.cancel` 由 leader 经 Team 关系发给成员，并回答成员是否有工作可停。两者都不关闭成员、不结束委派；那是 `close` 的事（§6.3）。
+
 ## 7. 成员能运行的模型
 
 leader 在 profile 的 `model` 字段里为新成员指定模型，用户的

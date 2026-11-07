@@ -278,7 +278,7 @@ call
   provider call --> reply (an undeclared name: -32601 unknown_method)
 ```
 
-Session namespaces registered today: `session.question` (Questions), `session.goal` (Goal), `session.rename` (SessionTitle), `session.input` (InputQueue), `session.context` (ContextCompaction), `session.exec.output` (WorkspaceTools, [background task output](../background-task-output.md)), `session.agent` ([model configuration](../model-configuration.md)), `attachment` (Attachments), `shell` (ShellInput), `session.wakeup` (Scheduler, [Scheduler §10](../plugins/Scheduler.md#10-session-scoped-wakeup)). Hooks registers no Session namespace: its `hooks.*` methods are management methods ([Hooks A.7](../plugins/Hooks.md#a7-management-methods)). Each plugin document is authoritative for its methods.
+Session namespaces registered today: `session.question` (Questions), `session.goal` (Goal), `session.rename` (SessionTitle), `session.input` (InputQueue), `session.context` (ContextCompaction), `session.exec.output` (WorkspaceTools, [background task output](../background-task-output.md)), `session.agent` ([model configuration](../model-configuration.md)), `attachment` (Attachments), `shell` (ShellInput), `session.wakeup` (Scheduler, [Scheduler §10](../plugins/Scheduler.md#10-session-scoped-wakeup)), `session.collaboration` (Collaboration, [Collaboration §6.7](../plugins/Collaboration.md#67-stopping-a-member-from-the-client)). `approval.respond` is a built-in Session method, not a part registration. Hooks registers no Session namespace: its `hooks.*` methods are management methods ([Hooks A.7](../plugins/Hooks.md#a7-management-methods)). Each plugin document is authoritative for its methods.
 
 ### A.2 Call channel
 

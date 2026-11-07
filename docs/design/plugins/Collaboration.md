@@ -129,6 +129,16 @@ The producer keeps these invariants:
 - "Unknown id is public": an absent relation is a refusal.
 - Process memory as the authority for Team relations: they are rebuilt from the stored leader when Collaboration loads.
 
+### 6.7 Stopping a member from the client
+
+A client attached to the leader stops a member's current turn with `session.collaboration.cancel {sessionId, branchId?, memberSessionId}` → `{"status": "cancelled" | "idle"}`. `sessionId` is the leader Session that routes the call, because `session.collaboration` is one of its Session namespaces ([session boundary A.1](../contracts/session-boundary.md#a1-method-contributions)); `branchId` defaults to `main`, as it does for `session.stop`; and `memberSessionId` is the only address. The Team relation keyed by that id names the member's Agent and the leader that leads it (§6.1), so the client sends no `agentId`, and an id no relation names, or one belonging to another Team, is `team_member_not_found` (§6.2).
+
+The method interrupts the member's current turn through the Session's own `stop` on the member's `main` branch, with a reason that names the client. It answers `cancelled` when the leader's branch held an open request to that member when the call arrived, and `idle` when it did not; `idle` writes nothing anywhere, not even the `stop/interrupt` that `session.stop` always writes. The remaining refusals: a member Session calling the method is `invalid_params`, with the tool's role wording; an unknown or ended branch answers its own Session error (`session_invalid_input`, `branch_ended`), a closed one `session_closed`, and none of them is `idle`; and a member Session that is closed or cannot be acquired is `member_closed`.
+
+No `collaboration/cancel` fact is written. Its data names the `agent` tool call's turn, request and call ids ([collaboration timeline](../collaboration-timeline.md)), and a client call has none. The effect is recorded by facts a client already reads: the member's own `stop/interrupt` and `turn/end`, and the leader's `collaboration/result` and its `dim-agent-report` input.
+
+**Boundary with `session.stop`.** `session.stop` names a Session and stops it whether or not anything runs, always writing `stop/interrupt`; it is the form a client attached to the member uses. `session.collaboration.cancel` is addressed by a leader to a member through the Team relation and reports whether the member had work to stop. Neither closes the member or ends the delegation; `close` does that (§6.3).
+
 ## 7. The models a member can run
 
 A leader names a model for a new member in the profile's `model` field, and the user's

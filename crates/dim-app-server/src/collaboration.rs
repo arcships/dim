@@ -17,6 +17,7 @@ use crate::settings::{SettingsScope, SettingsService};
 use dim_agent_capabilities::{
     context_block,
     host::{HostError, HostFuture, SelectableModelsHost, ToolExecutionContext},
+    methods::RpcError,
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     prompt_state::PromptSnapshot,
     timeline_tree::TreeCommands,
@@ -51,6 +52,9 @@ const READ_PAGE_LIMIT: usize = 200;
 const TOOL_USE_START_PAGE: u64 = 1024;
 const INTERRUPTED: &str = "interrupted by leader";
 const CANCELLED: &str = "cancelled by leader";
+const CANCELLED_BY_CLIENT: &str = "cancelled by the client";
+/// The client surface that stops a member's current turn (Collaboration §6.7).
+const CANCEL_MEMBER: &str = "session.collaboration.cancel";
 const LEADER_CLOSED: &str = "leader closed";
 const MEMBER_CLOSED: &str = "member closed";
 const RELOADING: &str = dim_agent_runtime::CAPABILITY_RELOADING;
@@ -485,20 +489,25 @@ impl Collaboration {
         self.authorize_peer(from, agent_id, session_id)?;
         self.lookup(agent_id, session_id).await
     }
+    /// The member agent the relation records for `member` when `leader`
+    /// leads it. The member Session id keys the relation, so a caller that
+    /// names only that id learns the agent from it.
+    fn member_agent(&self, leader: &str, member: &str) -> Option<String> {
+        self.directory
+            .relations
+            .lock()
+            .unwrap()
+            .get(member)
+            .filter(|relation| relation.leader == leader)
+            .map(|relation| relation.member_agent.clone())
+    }
     async fn member(
         self: &Arc<Self>,
         leader: &str,
         agent_id: &str,
         session_id: &str,
     ) -> Result<Peer, Refusal> {
-        if !self
-            .directory
-            .relations
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .is_some_and(|relation| relation.leader == leader && relation.member_agent == agent_id)
-        {
+        if self.member_agent(leader, session_id).as_deref() != Some(agent_id) {
             return Err(Refusal::TeamMemberNotFound);
         }
         self.lookup(agent_id, session_id).await
@@ -1094,6 +1103,53 @@ impl CollaborationSession {
             "vision": model.capabilities.vision,
             "reasoning": model.capabilities.reasoning,
         })).collect::<Vec<_>>()})))
+    }
+    /// `session.collaboration.cancel`: interrupts the member's current turn
+    /// when this leader branch holds an open request to it, and says whether
+    /// anything was running. A client call has no turn, request or call id,
+    /// so no `collaboration/cancel` op is written; the effect is recorded by
+    /// the member's `stop/interrupt`, its `turn/end` and the leader's
+    /// `collaboration/result` and report (Collaboration §6.7).
+    async fn cancel_member(&self, p: CancelParams) -> Result<Value, RpcError> {
+        if p.session_id != self.session_id {
+            return Err(RpcError::invalid("sessionId must name this Session"));
+        }
+        if p.member_session_id.is_empty() {
+            return Err(RpcError::invalid("memberSessionId must not be empty"));
+        }
+        if self.role == CollaborationRole::Member {
+            return Err(RpcError::invalid("members can only message, read and list"));
+        }
+        let agent_id = self
+            .collaboration
+            .member_agent(&self.session_id, &p.member_session_id)
+            .ok_or_else(|| refusal_rpc(Refusal::TeamMemberNotFound))?;
+        let branch_id = p.branch_id.as_deref().unwrap_or("main");
+        if branch_id.is_empty() {
+            return Err(RpcError::invalid("branchId must not be empty"));
+        }
+        // An ended or unknown branch answers its own error, never `idle`.
+        let _branch = self.tree.get(branch_id)?;
+        let running = self
+            .state
+            .lock()
+            .unwrap()
+            .branches
+            .get(branch_id)
+            .is_some_and(|branch| branch.open.contains_key(&p.member_session_id));
+        if !running {
+            return Ok(json!({"status": "idle"}));
+        }
+        let peer = self
+            .collaboration
+            .lookup(&agent_id, &p.member_session_id)
+            .await
+            .map_err(refusal_rpc)?;
+        peer.session
+            .stop("main", CANCELLED_BY_CLIENT.into())
+            .await
+            .map_err(|_| refusal_rpc(Refusal::MemberClosed))?;
+        Ok(json!({"status": "cancelled"}))
     }
     async fn list(&self) -> ToolResult {
         let participants: Vec<Value> = self
@@ -2556,6 +2612,22 @@ fn explain(error: Refusal) -> &'static str {
         Refusal::Interrupted => "the operation came from a stopped turn and was not delivered",
         Refusal::Closed => "this Session is closing or its collaboration is reloading",
     }
+}
+
+/// The Rpc error a Collaboration refusal answers: its wire code and the text
+/// the tool gives the same refusal.
+fn refusal_rpc(error: Refusal) -> RpcError {
+    let code = serde_json::to_value(error).expect("error code serializes");
+    let code = code.as_str().expect("error code serializes to a string");
+    RpcError::service(code, explain(error))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CancelParams {
+    session_id: String,
+    branch_id: Option<String>,
+    member_session_id: String,
 }
 
 #[derive(Deserialize)]

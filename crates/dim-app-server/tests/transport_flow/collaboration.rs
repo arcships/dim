@@ -2767,6 +2767,230 @@ async fn a_member_stop_reports_cancellation_and_a_later_steer_does_not_reopen_th
     server.join().await.unwrap();
 }
 
+/// A client's `session.collaboration.cancel` interrupts the member's running
+/// turn: the member records `stop/interrupt` and a cancelled `turn/end`, and
+/// the leader records the cancelled `collaboration/result` and its report.
+/// Called again once nothing runs, it answers `idle` and writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_cancel_stops_a_running_member_and_writes_nothing_when_idle() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut config = ServerConfig::default();
+    config
+        .session_defaults
+        .tools
+        .get_or_insert_default()
+        .push("hold".into());
+    let (server, agent) = launch_with_agent(Arc::new(GateTools(gate.clone())), config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let lead = leader(
+        &mut client,
+        json!({"allowedTools": ["echo", "wait", "agent", "hold"]}),
+    )
+    .await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    let holder = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "request", "agentId": holder, "prompt": "tool:hold {}"})),
+        "queue",
+    )
+    .await;
+    let member = next_member(&lead_session, 0).await;
+    let member_session = agent.get_session(&member).unwrap();
+    let holds = async |session: &Session| {
+        events(session)
+            .await
+            .iter()
+            .filter(|event| {
+                matches!(&event.kind,
+                EventKind::ToolCall(data) if data.calls[0].name == "hold")
+            })
+            .count()
+    };
+    poll("the member's hold started", async || {
+        (holds(&member_session).await == 1).then_some(())
+    })
+    .await;
+
+    let cancelled = client
+        .rpc(
+            "session.collaboration.cancel",
+            json!({"sessionId": lead, "memberSessionId": member}),
+        )
+        .await;
+    assert_ok(&cancelled);
+    assert_eq!(cancelled["result"]["status"], "cancelled", "{cancelled}");
+
+    poll("the member's stop interrupt", async || {
+        events(&member_session)
+            .await
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::StopInterrupt(_)))
+            .then_some(())
+    })
+    .await;
+    poll("the member's cancelled turn", async || {
+        events(&member_session)
+            .await
+            .iter()
+            .any(|event| {
+                matches!(&event.kind, EventKind::TurnEnd(data)
+                    if matches!(data.outcome, dim_agent_types::TurnOutcome::Cancelled { .. }))
+            })
+            .then_some(())
+    })
+    .await;
+    let outcome = poll("the leader's cancelled result", async || {
+        result_of(&events(&lead_session).await, &member)
+            .into_iter()
+            .find(|outcome| matches!(outcome, CollaborationOutcome::Cancelled { .. }))
+    })
+    .await;
+    assert!(matches!(outcome, CollaborationOutcome::Cancelled { .. }));
+
+    let reported = events(&lead_session).await;
+    let result_id = reported
+        .iter()
+        .find(|event| {
+            matches!(&event.kind,
+                EventKind::CollaborationResult(data) if data.session_id == member
+                    && matches!(data.outcome, CollaborationOutcome::Cancelled { .. }))
+        })
+        .unwrap()
+        .id
+        .clone();
+    poll("the cancel's report reaches the leader", async || {
+        events(&lead_session)
+            .await
+            .iter()
+            .any(|event| {
+                matches!(&event.kind,
+                EventKind::InputMessage(data) if report(data) == Some(result_id.as_str()))
+            })
+            .then_some(())
+    })
+    .await;
+
+    let stops = async |session: &Session| {
+        events(session)
+            .await
+            .iter()
+            .filter(|event| matches!(&event.kind, EventKind::StopInterrupt(_)))
+            .count()
+    };
+    let before = stops(&member_session).await;
+    let idle = client
+        .rpc(
+            "session.collaboration.cancel",
+            json!({"sessionId": lead, "memberSessionId": member}),
+        )
+        .await;
+    assert_ok(&idle);
+    assert_eq!(idle["result"]["status"], "idle", "{idle}");
+    assert_eq!(
+        stops(&member_session).await,
+        before,
+        "an idle cancel writes no stop/interrupt"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// The Team relation decides who may cancel: another leader's member and an
+/// unknown id are both `team_member_not_found`, and a member Session answers
+/// `invalid_params`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_cancel_refuses_another_teams_member_an_unknown_id_and_a_member() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut config = ServerConfig::default();
+    config
+        .session_defaults
+        .tools
+        .get_or_insert_default()
+        .push("hold".into());
+    let (server, agent) = launch_with_agent(Arc::new(GateTools(gate.clone())), config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let lead = leader(
+        &mut client,
+        json!({"allowedTools": ["echo", "wait", "agent", "hold"]}),
+    )
+    .await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    let holder = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "request", "agentId": holder, "prompt": "tool:hold {}"})),
+        "queue",
+    )
+    .await;
+    let member = next_member(&lead_session, 0).await;
+    let member_session = agent.get_session(&member).unwrap();
+    poll("the member's hold started", async || {
+        events(&member_session)
+            .await
+            .iter()
+            .any(|event| {
+                matches!(&event.kind,
+                EventKind::ToolCall(data) if data.calls[0].name == "hold")
+            })
+            .then_some(())
+    })
+    .await;
+
+    let other = leader(&mut client, allowed()).await;
+    let foreign = client
+        .rpc(
+            "session.collaboration.cancel",
+            json!({"sessionId": other, "memberSessionId": member}),
+        )
+        .await;
+    assert_eq!(
+        foreign["error"]["data"]["appError"], "team_member_not_found",
+        "{foreign}"
+    );
+
+    let unknown = client
+        .rpc(
+            "session.collaboration.cancel",
+            json!({"sessionId": lead, "memberSessionId": "no-such-member"}),
+        )
+        .await;
+    assert_eq!(
+        unknown["error"]["data"]["appError"], "team_member_not_found",
+        "{unknown}"
+    );
+
+    let by_member = client
+        .rpc(
+            "session.collaboration.cancel",
+            json!({"sessionId": member, "memberSessionId": member}),
+        )
+        .await;
+    assert_eq!(
+        by_member["error"]["data"]["appError"], "invalid_params",
+        "{by_member}"
+    );
+    assert_eq!(
+        by_member["error"]["message"], "members can only message, read and list",
+        "{by_member}"
+    );
+
+    gate.add_permits(1);
+    idle(&mut client, &member).await;
+    idle(&mut client, &lead).await;
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 /// Echoes like the mock host, except that a request whose last message asks
 /// for `partial-call` or `many-calls` starts that many `echo` calls and
 /// streams nothing more until it is cancelled, leaving calls that only
