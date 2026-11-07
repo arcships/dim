@@ -1366,6 +1366,36 @@ pub(super) fn session_copies(
         .collect()
 }
 
+/// Waits until a Session mounts `part` and the mounted copy is Active. A
+/// Session is published before its parts mount for it (process TypeScript
+/// §2.1, #207), and a row that contributes no method has no served call to
+/// wait on: the copy turns Active once its `apply`, which registers the row's
+/// tools, returns. Callers cover a single Session per server, as
+/// `node_session_typescript_tool_only_first_request_on_create_and_restore`
+/// does.
+pub(super) async fn session_part_active(server: &RunningServer, part: &str) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let plugins = server.diagnostics().plugins;
+            let by_id = |id: rutis::host::PluginId| plugins.iter().find(|plugin| plugin.id == id);
+            let mounted = plugins.iter().any(|plugin| {
+                plugin.name == part
+                    && plugin.state == rutis::host::FiberState::Active
+                    && plugin
+                        .parent
+                        .and_then(by_id)
+                        .is_some_and(|mounter| mounter.name.starts_with("Session"))
+            });
+            if mounted {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the Session mounts an active copy of {part}"));
+}
+
 /// The one copy of `part` in the Session `session`, once it is mounted.
 pub(super) async fn session_copy(
     ctx: &rutis::Ctx,
@@ -1432,6 +1462,21 @@ async fn node_session_typescript_tools_methods_and_generation_lifetimes() {
     let mut client = Client::new_version(&server, false, 3).await;
     let first = new_session(&mut client, json!(["ts_echo", "native_slow", "echo"])).await;
     let second = new_session(&mut client, json!(["ts_echo", "echo"])).await;
+    // A published Session mounts the row's parts after it is published
+    // (process TypeScript §2.1), so the first turn must wait for them or its
+    // request goes out without the row's tools.
+    when_served(
+        &mut client,
+        "session.typescript.status",
+        json!({"sessionId": first}),
+    )
+    .await;
+    when_served(
+        &mut client,
+        "session.typescript.status",
+        json!({"sessionId": second}),
+    )
+    .await;
     submit(&mut client, &first, r#"tool:ts_echo {"text":"first"}"#).await;
     assert!(requests.recv().await.unwrap().contains(&"ts_echo".into()));
     let status = client
@@ -1629,8 +1674,18 @@ async fn node_session_typescript_restore_fork_delete_and_disabled_parts() {
         ..Default::default()
     };
     let (server, _requests, _) = start(config.clone()).await;
+    plugin_active(&server, &fixture().rows[0]).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let session_id = new_session(&mut client, json!(["ts_echo", "echo"])).await;
+    // The Session is published before the row's parts mount (process
+    // TypeScript §2.1): wait for them, or the first request carries no
+    // `ts_echo`.
+    when_served(
+        &mut client,
+        "session.typescript.status",
+        json!({"sessionId": session_id}),
+    )
+    .await;
     submit(&mut client, &session_id, r#"tool:ts_echo {"text":"saved"}"#).await;
     drop(client);
     server.shutdown();
@@ -1640,6 +1695,15 @@ async fn node_session_typescript_restore_fork_delete_and_disabled_parts() {
     plugin_active(&server, &fixture().rows[0]).await;
     assert!(server.agent().unwrap().get_session(&session_id).is_none());
     let mut client = Client::new_version(&server, false, 3).await;
+    // The call restores the Session and waits until the row's parts are
+    // mounted for it; the restored Session is published before they are
+    // (process TypeScript §2.1).
+    when_served(
+        &mut client,
+        "session.typescript.status",
+        json!({"sessionId": session_id}),
+    )
+    .await;
     submit(
         &mut client,
         &session_id,
@@ -2074,6 +2138,15 @@ async fn node_session_typescript_accepts_type_array_schemas_and_names_a_refused_
     plugin_active(&server, &fixture().rows[0]).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let session = new_session(&mut client, json!(["ts_echo", "ts_nullable", "echo"])).await;
+    // The Session is published before the row's parts mount (process
+    // TypeScript §2.1); the first request must wait for the row so it offers
+    // `ts_nullable`.
+    when_served(
+        &mut client,
+        "session.typescript.status",
+        json!({"sessionId": session}),
+    )
+    .await;
     submit(&mut client, &session, r#"tool:echo {"text":"offered"}"#).await;
     let offered = recorded.recv().await.unwrap();
     let nullable = offered
@@ -2194,9 +2267,9 @@ async fn node_session_typescript_tool_only_first_request_on_create_and_restore()
     };
     let mut saved: Option<String> = None;
     for text in ["created", "restored"] {
-        // Once the plugin row has registered its part, the part settles
-        // before a Session that opens is published (ADR 006 D3,
-        // Publication), so its tool is in the first request.
+        // A Session is published before the row's parts mount for it
+        // (process TypeScript §2.1, #207), so this flow waits for the row on
+        // each Session before the turn that must offer its tool.
         let (server, mut requests, _) = start(config.clone()).await;
         plugin_active(
             &server,
@@ -2211,6 +2284,17 @@ async fn node_session_typescript_tool_only_first_request_on_create_and_restore()
             }
             None => new_session(&mut client, json!(["ts_echo", "echo"])).await,
         };
+        // A created or restored Session is published before the row's parts
+        // mount for it (process TypeScript §2.1, #207). This row contributes
+        // no method to wait on, so load the Session (`session.methods` pins
+        // it, restoring the one the previous round saved) and wait for the
+        // copy whose `apply` registers `ts_echo`.
+        assert_ok(
+            &client
+                .rpc("session.methods", json!({"sessionId": session_id}))
+                .await,
+        );
+        session_part_active(&server, "SessionToolOnlyFixture").await;
         submit(
             &mut client,
             &session_id,
@@ -2268,6 +2352,14 @@ async fn node_session_typescript_row_reload_settles_tools_and_rejects_retained_h
     plugin_active(&server, &fixture().rows[0]).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let session_id = new_session(&mut client, json!(["ts_echo", "echo"])).await;
+    // The Session is published before the row's parts mount for it (process
+    // TypeScript §2.1), so wait for the row before reading it.
+    when_served(
+        &mut client,
+        "session.typescript.status",
+        json!({"sessionId": session_id}),
+    )
+    .await;
     let (session_instance, ctx, _, registry) = controls.recv().await.unwrap();
     let retained = registry.contributed("ts_echo").unwrap();
     let old = client
@@ -2448,6 +2540,14 @@ async fn node_session_typescript_tool_result_carries_declared_effects() {
     plugin_active(&server, &fixture().rows[0]).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let id = new_session(&mut client, json!(["ts_echo", "echo"])).await;
+    // The Session is published before the row's parts mount for it (process
+    // TypeScript §2.1), so wait for the row before the first request.
+    when_served(
+        &mut client,
+        "session.typescript.status",
+        json!({"sessionId": id}),
+    )
+    .await;
     submit(&mut client, &id, r#"tool:ts_echo {"text":"declares"}"#).await;
     assert!(requests.recv().await.unwrap().contains(&"ts_echo".into()));
     let session = server.agent().unwrap().get_session(&id).unwrap();
@@ -2497,6 +2597,14 @@ async fn node_session_typescript_sends_connection_bound_notifications() {
     let mut creator = Client::new_version(&server, false, 3).await;
     let session = new_session(&mut creator, json!(["echo"])).await;
     let mut client = Client::new_version(&server, false, 3).await;
+    // The Session is published before the row's parts mount for it (process
+    // TypeScript §2.1), so wait for the row before the first call.
+    when_served(
+        &mut client,
+        "session.typescript.status",
+        json!({"sessionId": session}),
+    )
+    .await;
     let id = client
         .send("session.typescript.channel", json!({"sessionId": session}))
         .await;
@@ -2542,6 +2650,14 @@ async fn node_session_typescript_notification_of_a_replied_call_precedes_a_later
     plugin_active(&server, &fixture().rows[0]).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let session = new_session(&mut client, json!(["echo"])).await;
+    // The Session is published before the row's parts mount for it (process
+    // TypeScript §2.1), so wait for the row before the first call.
+    when_served(
+        &mut client,
+        "session.typescript.status",
+        json!({"sessionId": session}),
+    )
+    .await;
     let first = client
         .send(
             "session.typescript.channel_after_b",
@@ -2591,6 +2707,14 @@ async fn node_session_typescript_notification_follows_its_own_call_not_the_newes
     plugin_active(&server, &fixture().rows[0]).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let session = new_session(&mut client, json!(["echo"])).await;
+    // The Session is published before the row's parts mount for it (process
+    // TypeScript §2.1), so wait for the row before the first call.
+    when_served(
+        &mut client,
+        "session.typescript.status",
+        json!({"sessionId": session}),
+    )
+    .await;
     let held = client
         .send(
             "session.typescript.channel_hold_after_b",
@@ -2643,6 +2767,14 @@ async fn node_session_typescript_call_channel_checks_the_call_and_the_connection
     plugin_active(&server, &fixture().rows[0]).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let session = new_session(&mut client, json!(["echo"])).await;
+    // The Session is published before the row's parts mount for it (process
+    // TypeScript §2.1), so wait for the row before the first call.
+    when_served(
+        &mut client,
+        "session.typescript.status",
+        json!({"sessionId": session}),
+    )
+    .await;
     let bad = client
         .rpc(
             "session.typescript.channel_bad_request",
@@ -2685,6 +2817,18 @@ async fn node_session_typescript_oversized_notification_writes_nothing_and_keeps
     plugin_active(&server, &fixture().rows[0]).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let session = new_session(&mut client, json!(["echo"])).await;
+    // The Session is published before the row's parts mount for it (process
+    // TypeScript §2.1), so wait for the row before the first call.
+    when_served(
+        &mut client,
+        "session.typescript.status",
+        json!({"sessionId": session}),
+    )
+    .await;
+    // The wait's own progress notices (`phase` started and settled, which the
+    // fixture writes before the reply) are the only frames this connection
+    // has taken; the call below must write nothing.
+    client.notices.clear();
     let reply = client
         .rpc(
             "session.typescript.channel_too_large",
@@ -2721,6 +2865,14 @@ async fn node_session_typescript_notification_after_the_reply_goes_out_in_order(
     plugin_active(&server, &fixture().rows[0]).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let session = new_session(&mut client, json!(["echo"])).await;
+    // The Session is published before the row's parts mount for it (process
+    // TypeScript §2.1), so wait for the row before the first call.
+    when_served(
+        &mut client,
+        "session.typescript.status",
+        json!({"sessionId": session}),
+    )
+    .await;
     let replied = client
         .rpc(
             "session.typescript.channel_after_reply",
@@ -2757,6 +2909,14 @@ async fn node_session_typescript_closed_connection_does_not_hide_an_undeclared_n
     let mut creator = Client::new_version(&server, false, 3).await;
     let session = new_session(&mut creator, json!(["echo"])).await;
     let mut client = Client::new_version(&server, false, 3).await;
+    // The Session is published before the row's parts mount for it (process
+    // TypeScript §2.1), so wait for the row before the first call.
+    when_served(
+        &mut client,
+        "session.typescript.status",
+        json!({"sessionId": session}),
+    )
+    .await;
     assert_ok(
         &client
             .rpc(
