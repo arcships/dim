@@ -575,6 +575,7 @@ The typed forms are the whole area, so a caller needs no panel:
 /runtime                              the same rows, in the scrollback client
 /runtime install node                 apply the configuration for node
 /runtime install uv                   install the uv tool
+/runtime install ocr                  install the OCR component's bundle
 /runtime source node system           switch node to the system interpreter and apply
 /runtime auto python on               turn python on by configuration and apply
 ```
@@ -590,7 +591,7 @@ $ dimcode runtime config python --source system --auto on
 python  system    3.12.15   off
 ```
 
-`dimcode runtime list` prints one tab-separated row per runtime or tool (node, python, uv) with the fields the panel shows.
+`dimcode runtime list` prints one tab-separated row per runtime, tool or component (node, python, uv, ocr) with the fields the panel shows.
 Which plugins wait for a runtime is `/plugins`' answer (`dimcode plugin list` in the line client), not
 this command's: one place names it per plugin, and the panel repeats it only for the runtime in view. `install` and `config` print the runtime's row after the
 call, which is `acquiring` or the state it returned to; a failed call prints the error and exits

@@ -428,6 +428,7 @@ RuntimeManager 提供插件代码运行的 Node 与 Python 运行时，以及启
 /runtime                              在 scrollback 客户端里打印同样的行
 /runtime install node                 应用 node 的配置
 /runtime install uv                   安装 uv 工具
+/runtime install ocr                  安装 OCR 组件的 bundle
 /runtime source node system           把 node 换成系统解释器并应用
 /runtime auto python on               用配置打开 python 并应用
 ```
@@ -443,7 +444,7 @@ $ dimcode runtime config python --source system --auto on
 python  system    3.12.15   off
 ```
 
-`dimcode runtime list` 每个运行时打印一行制表符分隔的字段，与面板显示的一致。哪些插件在等某个运行时是
+`dimcode runtime list` 每个运行时、工具或组件打印一行制表符分隔的字段，与面板显示的一致。哪些插件在等某个运行时是
 `/plugins` 的答案（行客户端里是 `dimcode plugin list`），不是这条命令的职责：按插件列出的地方只有一处，
 面板只就当前查看的那个运行时重复一次。
 `install` 与 `config` 在调用后打印该运行时的行，即 `acquiring` 或它回到的状态；调用失败则打印错误并以
