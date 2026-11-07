@@ -1,0 +1,10 @@
+Global:
+  model_name: fixture
+PostProcess:
+  name: CTCLabelDecode
+  character_dict:
+  - a
+  - 'b'
+  - ''''
+  - -
+  - 'e'

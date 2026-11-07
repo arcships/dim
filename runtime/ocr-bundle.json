@@ -1,0 +1,149 @@
+{
+  "bundle": "pp-ocrv6-small",
+  "version": "1",
+  "models": [
+    {
+      "path": "models/det.onnx",
+      "url": "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/28fe5895c24fd108c19eb3e8479f4ab385fbfc62/inference.onnx",
+      "sha256": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e"
+    },
+    {
+      "path": "models/det.inference.yml",
+      "url": "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/28fe5895c24fd108c19eb3e8479f4ab385fbfc62/inference.yml",
+      "sha256": "193f435274bf9f0b5f71a929bbfbcf148282df7e633b34e7c373e8f44741b516"
+    },
+    {
+      "path": "models/rec.onnx",
+      "url": "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/b8f84f0b80c529de40b4fbb3544b84fa7233a513/inference.onnx",
+      "sha256": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634"
+    },
+    {
+      "path": "models/rec.inference.yml",
+      "url": "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/b8f84f0b80c529de40b4fbb3544b84fa7233a513/inference.yml",
+      "sha256": "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1"
+    }
+  ],
+  "dictionary": {
+    "path": "models/ppocrv6_dict.txt",
+    "sha256": "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d"
+  },
+  "licenses": [
+    {
+      "path": "licenses/PADDLEOCR-APACHE-2.0.txt",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    }
+  ],
+  "targets": {
+    "darwin-arm64": {
+      "onnxruntime": {
+        "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-osx-arm64-1.31.1.tgz",
+        "sha256": "2e1344a1926ee50eb25b38153cb6992c3567515aef0e677a1a520a1798896d6f",
+        "files": {
+          "onnxruntime-osx-arm64-1.31.1/lib/libonnxruntime.1.31.1.dylib": "lib/libonnxruntime.1.31.1.dylib",
+          "onnxruntime-osx-arm64-1.31.1/LICENSE": "licenses/ONNXRUNTIME-MIT.txt",
+          "onnxruntime-osx-arm64-1.31.1/ThirdPartyNotices.txt": "licenses/ONNXRUNTIME-THIRD-PARTY.txt"
+        }
+      },
+      "pdfium": {
+        "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F8125/pdfium-mac-arm64.tgz",
+        "sha256": "4939bd935ac83ddc09a3a4f038bc43a19cea1660316a3667f26cb07a070e139d",
+        "files": {
+          "lib/libpdfium.dylib": "lib/libpdfium.dylib",
+          "LICENSE": "licenses/PDFIUM-BSD-3-Clause.txt"
+        },
+        "prefixes": {
+          "licenses/": "licenses/PDFIUM-THIRD-PARTY"
+        }
+      }
+    },
+    "linux-x64": {
+      "onnxruntime": {
+        "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-linux-x64-1.31.1.tgz",
+        "sha256": "c849e36a1ef3e22d4ff217b9d1ce4a3cf5b9467b975610913ae959ad5b16bdc9",
+        "files": {
+          "onnxruntime-linux-x64-1.31.1/lib/libonnxruntime.so.1.31.1": "lib/libonnxruntime.so.1.31.1",
+          "onnxruntime-linux-x64-1.31.1/LICENSE": "licenses/ONNXRUNTIME-MIT.txt",
+          "onnxruntime-linux-x64-1.31.1/ThirdPartyNotices.txt": "licenses/ONNXRUNTIME-THIRD-PARTY.txt"
+        }
+      },
+      "pdfium": {
+        "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F8125/pdfium-linux-x64.tgz",
+        "sha256": "e1c3ce6e270cb5e0c20816b379ad9f2c1309972697c505f508de92bf5e7d6659",
+        "files": {
+          "lib/libpdfium.so": "lib/libpdfium.so",
+          "LICENSE": "licenses/PDFIUM-BSD-3-Clause.txt"
+        },
+        "prefixes": {
+          "licenses/": "licenses/PDFIUM-THIRD-PARTY"
+        }
+      }
+    },
+    "linux-arm64": {
+      "onnxruntime": {
+        "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-linux-aarch64-1.31.1.tgz",
+        "sha256": "5317505e2da99be65f8e2775ba3c2afd6d2961fd78aba1bd8f56159f48820c78",
+        "files": {
+          "onnxruntime-linux-aarch64-1.31.1/lib/libonnxruntime.so.1.31.1": "lib/libonnxruntime.so.1.31.1",
+          "onnxruntime-linux-aarch64-1.31.1/LICENSE": "licenses/ONNXRUNTIME-MIT.txt",
+          "onnxruntime-linux-aarch64-1.31.1/ThirdPartyNotices.txt": "licenses/ONNXRUNTIME-THIRD-PARTY.txt"
+        }
+      },
+      "pdfium": {
+        "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F8125/pdfium-linux-arm64.tgz",
+        "sha256": "8b8818f2ec57d1b213d952ca6d7f0ffeca9d0110487d0e20ad83ba918bc92efa",
+        "files": {
+          "lib/libpdfium.so": "lib/libpdfium.so",
+          "LICENSE": "licenses/PDFIUM-BSD-3-Clause.txt"
+        },
+        "prefixes": {
+          "licenses/": "licenses/PDFIUM-THIRD-PARTY"
+        }
+      }
+    },
+    "windows-x64": {
+      "onnxruntime": {
+        "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-win-x64-1.31.1.zip",
+        "sha256": "5869e26bb25314375f2d5ef1877e3ea06b1543d6c710e6e4a1ec2f7177ab4b2c",
+        "files": {
+          "onnxruntime-win-x64-1.31.1/lib/onnxruntime.dll": "lib/onnxruntime.dll",
+          "onnxruntime-win-x64-1.31.1/LICENSE": "licenses/ONNXRUNTIME-MIT.txt",
+          "onnxruntime-win-x64-1.31.1/ThirdPartyNotices.txt": "licenses/ONNXRUNTIME-THIRD-PARTY.txt"
+        }
+      },
+      "pdfium": {
+        "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F8125/pdfium-win-x64.tgz",
+        "sha256": "9a964261760cff52570aabf038ab346d3a5034dd8b30d0d5fe8861235d356b8b",
+        "files": {
+          "bin/pdfium.dll": "lib/pdfium.dll",
+          "LICENSE": "licenses/PDFIUM-BSD-3-Clause.txt"
+        },
+        "prefixes": {
+          "licenses/": "licenses/PDFIUM-THIRD-PARTY"
+        }
+      }
+    },
+    "windows-arm64": {
+      "onnxruntime": {
+        "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-win-arm64-1.31.1.zip",
+        "sha256": "817f4129073f84f81cde3ff92b1a4e06d007691e7208deed08a8b6d6df143f7f",
+        "files": {
+          "onnxruntime-win-arm64-1.31.1/lib/onnxruntime.dll": "lib/onnxruntime.dll",
+          "onnxruntime-win-arm64-1.31.1/LICENSE": "licenses/ONNXRUNTIME-MIT.txt",
+          "onnxruntime-win-arm64-1.31.1/ThirdPartyNotices.txt": "licenses/ONNXRUNTIME-THIRD-PARTY.txt"
+        }
+      },
+      "pdfium": {
+        "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F8125/pdfium-win-arm64.tgz",
+        "sha256": "d394ba61991fb53f4d87f70988035f337d9e73f2bd2c3c1b966df8c43fcabb05",
+        "files": {
+          "bin/pdfium.dll": "lib/pdfium.dll",
+          "LICENSE": "licenses/PDFIUM-BSD-3-Clause.txt"
+        },
+        "prefixes": {
+          "licenses/": "licenses/PDFIUM-THIRD-PARTY"
+        }
+      }
+    }
+  }
+}
