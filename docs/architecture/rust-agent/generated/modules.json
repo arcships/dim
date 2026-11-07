@@ -401,6 +401,23 @@
       "unexpandedMacros": []
     },
     {
+      "id": "dim_agent_capabilities::component",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities",
+      "file": "crates/dim-agent-capabilities/src/component.rs",
+      "unexpandedMacros": []
+    },
+    {
+      "id": "dim_agent_capabilities::component::tests",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::component",
+      "file": "crates/dim-agent-capabilities/src/component.rs",
+      "unexpandedMacros": [
+        "assert_eq",
+        "vec"
+      ]
+    },
+    {
       "id": "dim_agent_capabilities::context_block",
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities",
@@ -7607,6 +7624,13 @@
     },
     {
       "from": "dim_agent_capabilities",
+      "to": "dim_agent_capabilities::component",
+      "references": [
+        "mod component"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities",
       "to": "dim_agent_capabilities::context_block",
       "references": [
         "mod context_block"
@@ -8575,6 +8599,22 @@
         "use dim_agent_types::EventDraft",
         "use dim_agent_types::EventKind",
         "use dim_agent_types::InputMessageData"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::component",
+      "to": "dim_agent_capabilities::component::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::component::tests",
+      "to": "dim_agent_capabilities::component",
+      "references": [
+        "path ComponentSourceHost::fixed",
+        "use super::ComponentSourceHost",
+        "use super::ComponentState"
       ]
     },
     {
