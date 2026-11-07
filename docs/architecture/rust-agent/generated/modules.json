@@ -2839,6 +2839,7 @@
         "assert",
         "assert_eq",
         "format",
+        "panic",
         "vec"
       ]
     },
@@ -7649,7 +7650,8 @@
       "from": "dim_agent_capabilities",
       "to": "dim_agent_capabilities::component",
       "references": [
-        "mod component"
+        "mod component",
+        "path component::ComponentSourceHost"
       ]
     },
     {
@@ -18750,6 +18752,7 @@
       "to": "dim_app_server::runtime_manager",
       "references": [
         "mod runtime_manager",
+        "path runtime_manager::ComponentSourcePlugin::new",
         "path runtime_manager::RuntimeManagerPlugin::new",
         "path runtime_manager::RuntimeService",
         "path runtime_manager::ToolchainSourcePlugin::new"
@@ -25904,6 +25907,22 @@
     },
     {
       "from": "dim_app_server::runtime_manager",
+      "to": "dim_agent_capabilities::component",
+      "references": [
+        "path ComponentSource",
+        "path ComponentSourceHost",
+        "path ComponentState",
+        "path ComponentState::Acquiring",
+        "path ComponentState::Failed",
+        "path ComponentState::Off",
+        "path ComponentState::Ready",
+        "use dim_agent_capabilities::component::ComponentSource",
+        "use dim_agent_capabilities::component::ComponentSourceHost",
+        "use dim_agent_capabilities::component::ComponentState"
+      ]
+    },
+    {
+      "from": "dim_app_server::runtime_manager",
       "to": "dim_agent_capabilities::methods",
       "references": [
         "path MethodCall",
@@ -25976,6 +25995,7 @@
       "to": "dim_app_server::runtime_manager",
       "references": [
         "path Archive",
+        "path Installed::Program",
         "path PINS",
         "path Pins",
         "path Plan",
@@ -25989,6 +26009,7 @@
         "path hex",
         "path unpack",
         "use super::Archive",
+        "use super::Installed",
         "use super::Kind",
         "use super::PINS",
         "use super::Pins",

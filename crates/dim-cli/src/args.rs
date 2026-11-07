@@ -119,7 +119,9 @@ Commands:\n\
   plugin update ID                 Load the latest commit of a Git plugin\n\
   plugin remove ID\n\
   runtime list                     List the plugin runtimes and their state\n\
-  runtime install node|python|uv   Turn a plugin runtime on and acquire it\n\
+  runtime install node|python|uv|ocr\n\
+                                   Turn a plugin runtime or the OCR component\n\
+                                   on and acquire it\n\
   runtime config NAME              Set a runtime's --source or --auto and apply it\n\
   daemon stop                      Gracefully stop an existing daemon\n\
   daemon vacuum [--database PATH]  Rewrite an offline database to reclaim\n\

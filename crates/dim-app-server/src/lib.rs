@@ -816,6 +816,11 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                 names,
             )?))
         })?);
+        rows.push(register_part(&mut builtins, builder.catalog(), |names| {
+            Ok(Box::new(runtime_manager::ComponentSourcePlugin::new(
+                names,
+            )?))
+        })?);
         dim_agent_runtime::names::register::<
             dim_agent_capabilities::prompt_suggestion::PromptSuggestionSettingsHost,
         >(builder.catalog_mut(), None);

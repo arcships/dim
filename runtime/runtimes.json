@@ -46,6 +46,26 @@
       "windows-x64": "uv-x86_64-pc-windows-msvc.zip"
     }
   },
+  "ocr": {
+    "version": "1",
+    "sha256": {
+      "darwin-arm64": "54ae5105854ee7ee95a18dec62fda48c22cc945b70aef471d218805cf1825a81",
+      "linux-arm64": "c49fd407c83baf8795cf3c5ece8af3ea717193ca2f699cbcb6be54143676afba",
+      "linux-x64": "f13d8ab31e64b46829bead92ab3c93647d92f97c9bcacb1c257f4087ff5d27a3",
+      "windows-arm64": "ed49ddbdb4645735c73201613d06d6872007bdce47b03b829a5b70a890ceed57",
+      "windows-x64": "8e52c2201be8e12944780ea36f938a2c7413ee00d06951caaea3ae9b1201847c"
+    },
+    "sources": [
+      "https://github.com/arcships/dim/releases/download/ocr-bundle-v1/{file}"
+    ],
+    "files": {
+      "darwin-arm64": "ocr-1-darwin-arm64.tar.gz",
+      "linux-arm64": "ocr-1-linux-arm64.tar.gz",
+      "linux-x64": "ocr-1-linux-x64.tar.gz",
+      "windows-arm64": "ocr-1-windows-arm64.zip",
+      "windows-x64": "ocr-1-windows-x64.zip"
+    }
+  },
   "npmRegistries": [
     "https://registry.npmjs.org",
     "https://registry.npmmirror.com"

@@ -85,8 +85,9 @@ async fn runtime_list_reports_a_path_only_while_its_record_matches_the_plan() {
         .unwrap(),
     );
     let node = runtimes.plan(Kind::Node).clone();
+    let node_program = node.program().expect("Node is a program").to_owned();
     std::fs::create_dir_all(node.packages.as_ref().expect("Node packages")).unwrap();
-    std::fs::create_dir_all(archive_directory(&node.interpreter)).unwrap();
+    std::fs::create_dir_all(archive_directory(&node_program)).unwrap();
     let packages = node
         .packages
         .as_ref()
@@ -116,7 +117,7 @@ async fn runtime_list_reports_a_path_only_while_its_record_matches_the_plan() {
     assert_ok(&listed);
     assert_eq!(
         listed["result"][0]["path"],
-        node.interpreter.to_str().unwrap(),
+        node_program.to_str().unwrap(),
         "the installed runtime reports the interpreter it runs with: {listed}"
     );
     assert!(
@@ -240,7 +241,8 @@ fn load_runtimes(home: &Path, defaults: &Path) -> Arc<Runtimes> {
 }
 
 /// `runtime.list` shows the uv tool, off until it is installed, after the two
-/// runtimes.
+/// runtimes, and the OCR component after it: a component is listed like a
+/// tool, with no connection of its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn runtime_list_shows_the_uv_tool_off() {
     let home = std::env::temp_dir().join(format!("drm-uv-off-{}", uuid::Uuid::new_v4()));
@@ -249,7 +251,8 @@ async fn runtime_list_shows_the_uv_tool_off() {
         &home,
         r#"{"node": {"source": "download", "auto": false},
             "python": {"source": "download", "auto": false},
-            "uv": {"source": "download", "auto": false}}"#,
+            "uv": {"source": "download", "auto": false},
+            "ocr": {"source": "download", "auto": false}}"#,
     );
     let runtimes = load_runtimes(&home, &defaults);
     let server = launch(
@@ -264,13 +267,19 @@ async fn runtime_list_shows_the_uv_tool_off() {
     let mut client = Client::new_version(&server, false, 3).await;
     let listed = client.rpc("runtime.list", json!({})).await;
     assert_ok(&listed);
-    assert_eq!(listed["result"].as_array().unwrap().len(), 3, "{listed}");
+    assert_eq!(listed["result"].as_array().unwrap().len(), 4, "{listed}");
     let uv = &listed["result"][2];
     assert_eq!(uv["name"], "uv", "{listed}");
     assert_eq!(uv["source"], "download", "{listed}");
     assert_eq!(uv["version"], "0.13.7", "{listed}");
     assert_eq!(uv["status"], "off", "{listed}");
     assert!(uv["path"].is_null(), "{listed}");
+    let ocr = &listed["result"][3];
+    assert_eq!(ocr["name"], "ocr", "{listed}");
+    assert_eq!(ocr["source"], "download", "{listed}");
+    assert_eq!(ocr["version"], "1", "{listed}");
+    assert_eq!(ocr["status"], "off", "{listed}");
+    assert!(ocr["path"].is_null(), "{listed}");
     assert_eq!(listed["result"][0]["status"], "off", "{listed}");
     assert_eq!(listed["result"][1]["status"], "off", "{listed}");
 
@@ -297,8 +306,8 @@ async fn a_system_uv_fixture_reads_ready_with_its_own_path() {
     );
     let runtimes = load_runtimes(&home, &defaults);
     assert_eq!(
-        runtimes.plan(Kind::Uv).interpreter,
-        fixture.directory.join("uv"),
+        runtimes.plan(Kind::Uv).program(),
+        Some(fixture.directory.join("uv").as_path()),
         "a system uv is the fixture the PATH names"
     );
     let server = launch(
@@ -534,10 +543,11 @@ async fn uv_runtime_manager_downloads_the_pinned_tool() {
     );
     let runtimes = load_runtimes(&home, &defaults);
     let uv = runtimes.plan(Kind::Uv).clone();
+    let uv_program = uv.program().expect("uv is a program").to_owned();
     assert!(
-        uv.interpreter.to_string_lossy().contains("uv-0.13.7-"),
+        uv_program.to_string_lossy().contains("uv-0.13.7-"),
         "the pinned version names the archive directory: {}",
-        uv.interpreter.display()
+        uv_program.display()
     );
     let server = launch(
         Arc::new(MockTools),
@@ -553,8 +563,8 @@ async fn uv_runtime_manager_downloads_the_pinned_tool() {
     let ready = status(&mut client, 2, "ready").await;
     assert_eq!(ready["source"], "download", "{ready}");
     assert_eq!(ready["version"], "0.13.7", "{ready}");
-    assert_eq!(ready["path"], uv.interpreter.to_str().unwrap(), "{ready}");
-    let output = tokio::process::Command::new(&uv.interpreter)
+    assert_eq!(ready["path"], uv_program.to_str().unwrap(), "{ready}");
+    let output = tokio::process::Command::new(&uv_program)
         .arg("--version")
         .output()
         .await
@@ -562,9 +572,7 @@ async fn uv_runtime_manager_downloads_the_pinned_tool() {
     assert!(output.status.success(), "{output:?}");
     let version = String::from_utf8_lossy(&output.stdout);
     assert!(version.contains("uv 0.13.7"), "{version}");
-    let uvx = uv
-        .interpreter
-        .with_file_name(if cfg!(windows) { "uvx.exe" } else { "uvx" });
+    let uvx = uv_program.with_file_name(if cfg!(windows) { "uvx.exe" } else { "uvx" });
     assert!(uvx.is_file(), "uvx sits beside uv: {}", uvx.display());
     let records: Value =
         serde_json::from_slice(&std::fs::read(home.join("runtimes/runtimes.json")).unwrap())
@@ -1006,7 +1014,8 @@ async fn python_runtime_manager_marks_the_downloaded_interpreter_as_externally_m
     );
     let ready = status(&mut client, 1, "ready").await;
     assert_eq!(ready["source"], "download", "{ready}");
-    let archive = archive_directory(&python.interpreter);
+    let python_program = python.program().expect("Python is a program").to_owned();
+    let archive = archive_directory(&python_program);
     let stdlib = if cfg!(windows) {
         archive.join("Lib")
     } else {
@@ -1023,7 +1032,7 @@ async fn python_runtime_manager_marks_the_downloaded_interpreter_as_externally_m
         "{text}"
     );
     assert!(stdlib.is_dir(), "the marker is in the interpreter's stdlib");
-    let output = tokio::process::Command::new(&python.interpreter)
+    let output = tokio::process::Command::new(&python_program)
         .args([
             "-c",
             "import sysconfig; print(sysconfig.get_path('stdlib'))",

@@ -8,51 +8,52 @@ flowchart LR
   subgraph process["process"]
     p1["root"]
     p2["rutis-loader"]
-    p68["Attachments"]
-    p67["goal"]
-    p66["Questions"]
-    p65["PromptSuggestion"]
-    p64["Modality"]
-    p63["PrepareModelHost"]
-    p62["ContextCompaction"]
-    p61["CommandRules"]
-    p60["PromptSources"]
-    p59["ShellInput"]
-    p58["Recall"]
-    p57["Wait"]
-    p56["WorkspaceTools"]
-    p55["BranchTool"]
-    p54["ToolExecution"]
-    p53["Permission"]
-    p52["ModelProvider"]
-    p51["Loop"]
-    p50["Prompt"]
-    p49["ContextPreparation"]
-    p48["ToolRegistry"]
-    p47["InputQueue"]
-    p46["SessionMethods"]
-    p45["TimelineTree"]
-    p44["SessionBroadcast"]
-    p43["session-title"]
-    p42["PartRegistry"]
-    p41["Transport"]
-    p40["Rpc"]
-    p39["Connection"]
-    p38["UiHost"]
-    p37["Collaboration"]
-    p36["Agents"]
-    p35["CollaborationDirectory"]
-    p34["AgentDirectory"]
-    p33["PluginManager"]
-    p32["UiExtensions"]
-    p31["CollaborationModelPolicy"]
-    p30["HooksSettings"]
-    p29["PermissionRules"]
-    p28["SkillsCatalog"]
-    p27["ExecutionBackend"]
-    p26["ExecShellSettings"]
-    p25["HostPlatform"]
-    p24["PromptSuggestionSettings"]
+    p69["Attachments"]
+    p68["goal"]
+    p67["Questions"]
+    p66["PromptSuggestion"]
+    p65["Modality"]
+    p64["PrepareModelHost"]
+    p63["ContextCompaction"]
+    p62["CommandRules"]
+    p61["PromptSources"]
+    p60["ShellInput"]
+    p59["Recall"]
+    p58["Wait"]
+    p57["WorkspaceTools"]
+    p56["BranchTool"]
+    p55["ToolExecution"]
+    p54["Permission"]
+    p53["ModelProvider"]
+    p52["Loop"]
+    p51["Prompt"]
+    p50["ContextPreparation"]
+    p49["ToolRegistry"]
+    p48["InputQueue"]
+    p47["SessionMethods"]
+    p46["TimelineTree"]
+    p45["SessionBroadcast"]
+    p44["session-title"]
+    p43["PartRegistry"]
+    p42["Transport"]
+    p41["Rpc"]
+    p40["Connection"]
+    p39["UiHost"]
+    p38["Collaboration"]
+    p37["Agents"]
+    p36["CollaborationDirectory"]
+    p35["AgentDirectory"]
+    p34["PluginManager"]
+    p33["UiExtensions"]
+    p32["CollaborationModelPolicy"]
+    p31["HooksSettings"]
+    p30["PermissionRules"]
+    p29["SkillsCatalog"]
+    p28["ExecutionBackend"]
+    p27["ExecShellSettings"]
+    p26["HostPlatform"]
+    p25["PromptSuggestionSettings"]
+    p24["ComponentSource"]
     p23["ToolchainSource"]
     p22["ExecutionSettings"]
     p21["Mcp"]
@@ -75,90 +76,90 @@ flowchart LR
     p4["FileStorage"]
     p3["ServerControl"]
   end
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p68
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p67
-  p16 -->|"dim_app_server::settings::SettingsService"| p67
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p66
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p65
-  p15 -->|"dim_agent_capabilities::host::ModelSelectionHost"| p64
-  p15 -->|"dim_agent_capabilities::host::SelectableModelsHost"| p64
-  p8 -->|"dim_app_server::methods::ManagementMethods"| p64
-  p16 -->|"dim_app_server::settings::SettingsService"| p64
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p63
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p62
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p61
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p60
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p59
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p58
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p57
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p56
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p55
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p54
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p53
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p52
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p51
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p50
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p49
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p48
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p47
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p46
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p45
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p44
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p43
-  p16 -->|"dim_app_server::settings::SettingsService"| p43
-  p39 -->|"dim_app_server::connection::ConnectionHub"| p41
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p69
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p68
+  p16 -->|"dim_app_server::settings::SettingsService"| p68
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p67
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p66
+  p15 -->|"dim_agent_capabilities::host::ModelSelectionHost"| p65
+  p15 -->|"dim_agent_capabilities::host::SelectableModelsHost"| p65
+  p8 -->|"dim_app_server::methods::ManagementMethods"| p65
+  p16 -->|"dim_app_server::settings::SettingsService"| p65
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p64
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p63
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p62
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p61
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p60
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p59
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p58
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p57
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p56
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p55
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p54
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p53
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p52
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p51
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p50
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p49
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p48
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p47
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p46
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p45
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p44
+  p16 -->|"dim_app_server::settings::SettingsService"| p44
+  p40 -->|"dim_app_server::connection::ConnectionHub"| p42
+  p3 -->|"dim_app_server::control::ServerControl"| p42
+  p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p42
+  p9 -->|"dim_agent_capabilities::methods::Callers"| p41
+  p37 -->|"dim_app_server::agents::AgentIndex"| p41
+  p38 -->|"dim_app_server::collaboration::Collaboration"| p41
+  p40 -->|"dim_app_server::connection::ConnectionHub"| p41
   p3 -->|"dim_app_server::control::ServerControl"| p41
-  p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p41
-  p9 -->|"dim_agent_capabilities::methods::Callers"| p40
-  p36 -->|"dim_app_server::agents::AgentIndex"| p40
-  p37 -->|"dim_app_server::collaboration::Collaboration"| p40
-  p39 -->|"dim_app_server::connection::ConnectionHub"| p40
+  p8 -->|"dim_app_server::methods::ManagementMethods"| p41
+  p2 -->|"rutis_loader::loader::Loader"| p41
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p40
   p3 -->|"dim_app_server::control::ServerControl"| p40
-  p8 -->|"dim_app_server::methods::ManagementMethods"| p40
-  p2 -->|"rutis_loader::loader::Loader"| p40
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p39
-  p3 -->|"dim_app_server::control::ServerControl"| p39
-  p38 -->|"dim_app_server::ui_host::UiHost"| p39
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p37
-  p36 -->|"dim_app_server::agents::AgentIndex"| p37
-  p35 -->|"dim_app_server::collaboration::CollaborationDirectory"| p37
+  p39 -->|"dim_app_server::ui_host::UiHost"| p40
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p38
+  p37 -->|"dim_app_server::agents::AgentIndex"| p38
+  p36 -->|"dim_app_server::collaboration::CollaborationDirectory"| p38
+  p16 -->|"dim_app_server::settings::SettingsService"| p38
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p37
+  p35 -->|"dim_app_server::agents::AgentDirectory"| p37
   p16 -->|"dim_app_server::settings::SettingsService"| p37
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p36
-  p34 -->|"dim_app_server::agents::AgentDirectory"| p36
-  p16 -->|"dim_app_server::settings::SettingsService"| p36
-  p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p36
-  p7 -->|"dim_app_server::storage::timeline::SessionStore"| p36
-  p2 -->|"rutis_loader::loader::Loader"| p36
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p33
+  p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p37
+  p7 -->|"dim_app_server::storage::timeline::SessionStore"| p37
+  p2 -->|"rutis_loader::loader::Loader"| p37
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p34
+  p8 -->|"dim_app_server::methods::ManagementMethods"| p34
+  p2 -->|"rutis_loader::loader::Loader"| p34
+  p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p33
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p33
   p8 -->|"dim_app_server::methods::ManagementMethods"| p33
-  p2 -->|"rutis_loader::loader::Loader"| p33
-  p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p32
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p32
   p8 -->|"dim_app_server::methods::ManagementMethods"| p32
+  p16 -->|"dim_app_server::settings::SettingsService"| p32
+  p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p31
   p8 -->|"dim_app_server::methods::ManagementMethods"| p31
   p16 -->|"dim_app_server::settings::SettingsService"| p31
-  p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p30
   p8 -->|"dim_app_server::methods::ManagementMethods"| p30
   p16 -->|"dim_app_server::settings::SettingsService"| p30
+  p26 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p29
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p29
   p8 -->|"dim_app_server::methods::ManagementMethods"| p29
   p16 -->|"dim_app_server::settings::SettingsService"| p29
-  p25 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p28
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p28
+  p26 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p28
   p8 -->|"dim_app_server::methods::ManagementMethods"| p28
-  p16 -->|"dim_app_server::settings::SettingsService"| p28
-  p25 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p27
+  p26 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p27
   p8 -->|"dim_app_server::methods::ManagementMethods"| p27
-  p25 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p26
-  p8 -->|"dim_app_server::methods::ManagementMethods"| p26
-  p22 -->|"dim_agent_capabilities::execution_settings::ExecutionSettingsHost"| p25
-  p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p25
-  p23 -->|"dim_agent_capabilities::toolchain::ToolchainSourceHost"| p25
-  p16 -->|"dim_app_server::settings::SettingsService"| p24
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p22
+  p22 -->|"dim_agent_capabilities::execution_settings::ExecutionSettingsHost"| p26
+  p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p26
+  p23 -->|"dim_agent_capabilities::toolchain::ToolchainSourceHost"| p26
+  p16 -->|"dim_app_server::settings::SettingsService"| p25
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p22
   p16 -->|"dim_app_server::settings::SettingsService"| p22
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p21
   p1 -->|"dim_agent_capabilities::host::CredentialVariablesHost"| p21
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p21
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p21
   p20 -->|"dim_app_server::mcp::publication::Publication"| p21
   p8 -->|"dim_app_server::methods::ManagementMethods"| p21
   p16 -->|"dim_app_server::settings::SettingsService"| p21
@@ -166,14 +167,14 @@ flowchart LR
   p16 -->|"dim_app_server::settings::SettingsService"| p20
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p19
   p16 -->|"dim_app_server::settings::SettingsService"| p19
-  p42 -->|"dim_agent_runtime::parts::PartRegistry"| p18
+  p43 -->|"dim_agent_runtime::parts::PartRegistry"| p18
   p16 -->|"dim_app_server::settings::SettingsService"| p18
   p8 -->|"dim_app_server::methods::ManagementMethods"| p17
   p16 -->|"dim_app_server::settings::SettingsService"| p17
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p16
   p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p16
   p5 -->|"dim_agent_capabilities::host::ModelHost"| p15
-  p36 -->|"dim_app_server::agents::AgentIndex"| p15
+  p37 -->|"dim_app_server::agents::AgentIndex"| p15
   p13 -->|"dim_app_server::codex_oauth::OpenAICodexOAuthService"| p15
   p14 -->|"dim_app_server::grok_oauth::GrokOAuthService"| p15
   p10 -->|"dim_app_server::managed_provider::ManagedProviders"| p15

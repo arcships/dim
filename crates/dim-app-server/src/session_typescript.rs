@@ -110,11 +110,15 @@ impl SessionTypeScriptConfig {
         use crate::runtime_manager::Kind;
         let python = runtimes.plan(Kind::Python);
         Self {
-            node: runtimes.plan(Kind::Node).interpreter.clone(),
+            node: runtimes
+                .plan(Kind::Node)
+                .program()
+                .expect("Node is a program")
+                .to_owned(),
             js_runtime: runtimes.js_runtime(),
             anchor: runtimes.anchor(),
             python: Some(PythonConfig {
-                interpreter: python.interpreter.clone(),
+                interpreter: python.program().expect("Python is a program").to_owned(),
                 project: home.join("plugins").join(".python"),
                 packages: python.packages.clone(),
             }),

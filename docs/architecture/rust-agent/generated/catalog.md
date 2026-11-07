@@ -18,6 +18,7 @@ Each catalog name a part of the assembly provides or injects. A name that crosse
 | `callers` | process | CallChannel | Rust-only | — |
 | `collaboration` | process | Collaboration | Rust-only | — |
 | `collaborationDirectory` | process | CollaborationDirectory | Rust-only | — |
+| `componentSourceHost` | process | ComponentSource | Rust-only | — |
 | `connectionHub` | process | Connection | Rust-only | — |
 | `credentialVariablesHost` | process | root | Rust-only | — |
 | `executionSettingsHost` | process | ExecutionSettings | Rust-only | — |
