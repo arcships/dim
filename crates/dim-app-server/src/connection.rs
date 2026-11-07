@@ -910,6 +910,34 @@ impl Connection {
                 server_version: SERVER_VERSION,
             })),
             Call::Shutdown(params) => {
+                if params.if_idle && !params.force {
+                    // The decision is atomic with hello and attach admission:
+                    // an admission either ran before it and is counted or is
+                    // refused as shutting down, so no client joins a daemon
+                    // this call is closing.
+                    let busy = {
+                        let mut admission = self.hub.idle_decision();
+                        if admission.closing_for_idle {
+                            return Some(Err(RpcError::invalid("Shutdown already requested")));
+                        }
+                        let connections = self.hub.count_except(&self.id);
+                        let attached_sessions = self.hub.attached_sessions();
+                        let running = rpc.index.running_sessions();
+                        if connections > 0 || attached_sessions > 0 || running > 0 {
+                            Some((connections, attached_sessions, running))
+                        } else {
+                            admission.closing_for_idle = true;
+                            None
+                        }
+                    };
+                    if let Some((connections, attached_sessions, running)) = busy {
+                        return Some(Err(RpcError::daemon_busy(
+                            connections,
+                            attached_sessions,
+                            running,
+                        )));
+                    }
+                }
                 if !params.force {
                     let mut reply = self.shutdown_reply.lock().expect("shutdown reply");
                     if reply.is_some() {
@@ -1850,6 +1878,10 @@ pub(crate) struct ConnectionHub {
     config: Arc<ServerConfig>,
     pub control: Arc<ServerControl>,
     connections: Mutex<HashMap<String, Weak<Connection>>>,
+    /// Serializes an idle-shutdown decision with hello and attach admission:
+    /// an admission runs before the decision and is counted, or sees it and
+    /// is refused as shutting down.
+    admission: Mutex<IdleAdmission>,
     /// Emits a client-change fact for a Session whose presence a branch observes.
     client_emitter: Mutex<Option<rutis::Ctx>>,
     pub tasks: TaskTracker,
@@ -1866,6 +1898,12 @@ pub(crate) struct ConnectionHub {
     #[cfg(feature = "testing")]
     fail_attach_before_registration: std::sync::atomic::AtomicBool,
 }
+/// What [`ConnectionHub::admission`] serializes: once an idle shutdown has
+/// found the daemon idle, no hello or attach may join it.
+#[derive(Default)]
+pub(crate) struct IdleAdmission {
+    closing_for_idle: bool,
+}
 impl ConnectionHub {
     fn new(
         config: Arc<ServerConfig>,
@@ -1876,6 +1914,7 @@ impl ConnectionHub {
             web: crate::web_entry::WebEntry::new(config.web_assets.clone()),
             ui,
             connections: Mutex::new(HashMap::new()),
+            admission: Mutex::new(IdleAdmission::default()),
             client_emitter: Mutex::new(None),
             tasks: TaskTracker::new(),
             shutdown_requests: TaskTracker::new(),
@@ -1956,6 +1995,51 @@ impl ConnectionHub {
     }
     fn count(&self) -> usize {
         self.connections.lock().expect("connection index").len()
+    }
+    /// Live connections other than `requester`.
+    pub(crate) fn count_except(&self, requester: &str) -> usize {
+        self.connections
+            .lock()
+            .expect("connection index")
+            .keys()
+            .filter(|id| id.as_str() != requester)
+            .count()
+    }
+    /// Sessions with a client attached, on any connection: the requester's
+    /// own attachment keeps the daemon too, because a concurrent attach is
+    /// either counted here or refused as shutting down.
+    pub(crate) fn attached_sessions(&self) -> usize {
+        let connections = self.connections.lock().expect("connection index");
+        let mut sessions = std::collections::HashSet::new();
+        for connection in connections.values() {
+            let Some(connection) = connection.upgrade() else {
+                continue;
+            };
+            sessions.extend(
+                connection
+                    .attachments
+                    .lock()
+                    .expect("attachments")
+                    .keys()
+                    .cloned(),
+            );
+        }
+        sessions.len()
+    }
+    /// Admits a hello or attach: refused once an idle shutdown has decided to
+    /// close the daemon. Holding the guard makes the admission and that
+    /// decision see each other.
+    pub(crate) fn admit(&self) -> Result<std::sync::MutexGuard<'_, IdleAdmission>, RpcError> {
+        let admission = self.admission.lock().expect("admission");
+        if admission.closing_for_idle {
+            return Err(RpcError::wire(-32603, "Server is shutting down"));
+        }
+        Ok(admission)
+    }
+    /// The idle-shutdown decision, with hello and attach admission held out
+    /// while it counts and commits.
+    pub(crate) fn idle_decision(&self) -> std::sync::MutexGuard<'_, IdleAdmission> {
+        self.admission.lock().expect("admission")
     }
     fn attached_clients(&self, session: &str) -> usize {
         self.connections

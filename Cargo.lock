@@ -1314,17 +1314,23 @@ dependencies = [
 name = "dim-modality"
 version = "0.1.0-alpha.18"
 dependencies = [
+ "base64 0.22.1",
+ "chrono",
  "dim-agent-capabilities",
  "dim-agent-runtime",
  "dim-agent-types",
  "dim-app-server",
  "futures-util",
+ "jsonschema",
+ "libc",
  "rutis",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "tracing",
  "uuid",
 ]
 

@@ -82,6 +82,7 @@ flowchart LR
   p15 -->|"dim_agent_capabilities::host::ModelSelectionHost"| p63
   p15 -->|"dim_agent_capabilities::host::SelectableModelsHost"| p63
   p8 -->|"dim_app_server::methods::ManagementMethods"| p63
+  p11 -->|"dim_app_server::plugin_files::PluginFileTransactions"| p63
   p16 -->|"dim_app_server::settings::SettingsService"| p63
   p41 -->|"dim_agent_runtime::parts::PartRegistry"| p62
   p41 -->|"dim_agent_runtime::parts::PartRegistry"| p61

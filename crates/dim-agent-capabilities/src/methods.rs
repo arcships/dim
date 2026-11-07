@@ -33,6 +33,18 @@ pub struct RpcError {
 #[serde(rename_all = "camelCase")]
 pub struct ErrorData {
     pub app_error: String,
+    /// What a refused `daemon.shutdown {ifIdle}` found in use; boxed so a
+    /// wire error stays small.
+    #[serde(flatten)]
+    pub daemon_busy: Option<Box<DaemonBusy>>,
+}
+/// The counts of a `daemon_busy` refusal.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonBusy {
+    pub connections: usize,
+    pub attached_sessions: usize,
+    pub running: usize,
 }
 impl RpcError {
     pub fn invalid(message: impl Into<String>) -> Self {
@@ -44,6 +56,23 @@ impl RpcError {
             message: message.into(),
             data: Some(ErrorData {
                 app_error: app_error.into(),
+                daemon_busy: None,
+            }),
+        }
+    }
+    /// `daemon.shutdown {ifIdle:true}` found the daemon in use: other client
+    /// connections, Sessions with an attached client, and running turns.
+    pub fn daemon_busy(connections: usize, attached_sessions: usize, running: usize) -> Self {
+        Self {
+            code: -32000,
+            message: "The App Server is in use".into(),
+            data: Some(ErrorData {
+                app_error: "daemon_busy".into(),
+                daemon_busy: Some(Box::new(DaemonBusy {
+                    connections,
+                    attached_sessions,
+                    running,
+                })),
             }),
         }
     }

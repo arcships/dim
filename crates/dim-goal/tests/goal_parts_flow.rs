@@ -29,8 +29,8 @@ async fn goal_reads_current_settings_and_stops_decisions_on_read_failure() {
     );
     assert_eq!(
         env.writes("main").await.len(),
-        2,
-        "set plus one continuation"
+        3,
+        "the set trigger, its state record and one continuation"
     );
 
     // An unreadable document produces no automatic input.
@@ -38,7 +38,7 @@ async fn goal_reads_current_settings_and_stops_decisions_on_read_failure() {
     env.turn("main", &[&continuation]);
     assert_eq!(
         env.settled("main").await.len(),
-        2,
+        3,
         "an unreadable limit must not produce an automatic input"
     );
 
@@ -47,7 +47,7 @@ async fn goal_reads_current_settings_and_stops_decisions_on_read_failure() {
     env.turn("main", &[]);
     assert_eq!(
         env.settled("main").await.len(),
-        2,
+        3,
         "an explicit null must not produce an automatic input"
     );
 
@@ -57,6 +57,7 @@ async fn goal_reads_current_settings_and_stops_decisions_on_read_failure() {
         pause.text,
         texts::automatic_pause(
             "main",
+            "ship it",
             "interrupted",
             "the user interrupted the turn",
             interrupt.sequence
@@ -84,7 +85,7 @@ async fn a_line_without_a_goal_reads_no_settings_at_its_turn_ends() {
 async fn the_goal_update_tool_writes_its_report_and_refuses_bad_arguments() {
     let env = Env::start().await;
     let set = env.set("ship it").await;
-    assert_eq!(set.blocks.len(), 2);
+    assert_eq!(set.blocks.len(), 1, "a change trigger is one block");
 
     let refused = env
         .tool("main", json!({"status": "elsewhere", "summary": "x"}))
@@ -94,7 +95,11 @@ async fn the_goal_update_tool_writes_its_report_and_refuses_bad_arguments() {
     let refused = env.tool("main", json!({"status": "completed"})).await;
     assert_eq!(refused.is_error, Some(true));
     assert_eq!(tool_text(&refused), texts::TOOL_INVALID);
-    assert_eq!(env.settled("main").await.len(), 1, "refusals write nothing");
+    assert_eq!(
+        env.settled("main").await.len(),
+        2,
+        "the set trigger and its record; refusals write nothing"
+    );
 
     let accepted = env
         .tool(
@@ -160,12 +165,13 @@ async fn a_completed_turn_drives_the_continuation_and_the_limit_pauses_it() {
         pause.text,
         texts::automatic_pause(
             "main",
+            "ship it",
             "limit",
             "the automatic continuation limit was reached",
             end.sequence
         )
     );
-    assert_eq!(env.settled("main").await.len(), 3);
+    assert_eq!(env.settled("main").await.len(), 4);
     env.close().await;
 }
 
@@ -195,8 +201,8 @@ async fn an_absent_limit_continues_past_twenty_turns() {
     let writes = env.settled("main").await;
     assert_eq!(
         writes.len(),
-        22,
-        "the set and 21 continuations: {writes:#?}"
+        23,
+        "the set trigger, its record and 21 continuations: {writes:#?}"
     );
     assert!(
         writes
@@ -233,6 +239,7 @@ async fn an_explicit_limit_pauses_after_the_fifth_continuation_turn() {
         pause.text,
         texts::automatic_pause(
             "main",
+            "ship it",
             "limit",
             "the automatic continuation limit was reached",
             end.sequence
@@ -240,8 +247,8 @@ async fn an_explicit_limit_pauses_after_the_fifth_continuation_turn() {
     );
     assert_eq!(
         env.settled("main").await.len(),
-        7,
-        "the set, five continuations and the pause"
+        8,
+        "the set trigger, its record, five continuations and the pause"
     );
     env.close().await;
 }
@@ -283,6 +290,7 @@ async fn three_continued_text_only_turns_pause_no_progress() {
         pause.text,
         texts::automatic_pause(
             "main",
+            "ship it",
             "no_progress",
             "the goal made no tool call in its last 3 continued turns",
             end.sequence
@@ -290,8 +298,8 @@ async fn three_continued_text_only_turns_pause_no_progress() {
     );
     assert_eq!(
         env.settled("main").await.len(),
-        5,
-        "the set, three continuations and the pause"
+        6,
+        "the set trigger, its record, three continuations and the pause"
     );
     env.close().await;
 }
@@ -360,7 +368,7 @@ async fn a_tool_call_or_operator_input_resets_the_streak() {
 async fn a_reload_keeps_the_streak_and_decides_the_turn_end_once() {
     let env = Env::start().await;
     let mut seed = env.seed_new("load-streak").await;
-    let (objective, status) = texts::set_blocks("main", "ship it");
+    let (objective, status) = texts::legacy_set_blocks("main", "ship it");
     let set = seed.append(
         "main",
         message(
@@ -442,6 +450,7 @@ async fn a_reload_keeps_the_streak_and_decides_the_turn_end_once() {
         pause.text,
         texts::automatic_pause(
             "main",
+            "ship it",
             "no_progress",
             "the goal made no tool call in its last 3 continued turns",
             end.sequence
@@ -467,13 +476,13 @@ async fn an_open_background_task_defers_the_turn_end_until_its_end() {
     env.end_turn("main", "bg", "completed");
     assert_eq!(
         env.settled("main").await.len(),
-        2,
+        3,
         "an open task defers the turn end"
     );
     env.exec_ended("main", "task-1", "completed");
     assert_eq!(
         env.settled("main").await.len(),
-        2,
+        3,
         "a completed end waits for its wake"
     );
 
@@ -510,7 +519,7 @@ async fn a_cancelled_background_end_takes_the_deferred_decision_once() {
     env.consume("main", &first.id);
     env.exec_started("main", "bg", "task-1");
     let end = env.end_turn("main", "bg", "completed");
-    assert_eq!(env.settled("main").await.len(), 2);
+    assert_eq!(env.settled("main").await.len(), 3);
 
     env.exec_ended("main", "task-1", "cancelled");
     let second = env
@@ -522,7 +531,7 @@ async fn a_cancelled_background_end_takes_the_deferred_decision_once() {
     );
     assert_eq!(
         env.settled("main").await.len(),
-        3,
+        4,
         "the deferred decision runs exactly once"
     );
     env.close().await;
@@ -532,7 +541,7 @@ async fn a_cancelled_background_end_takes_the_deferred_decision_once() {
 async fn a_reload_with_an_open_background_task_defers_the_end_once() {
     let env = Env::start().await;
     let mut seed = env.seed_new("load-open-task").await;
-    let (objective, status) = texts::set_blocks("main", "ship it");
+    let (objective, status) = texts::legacy_set_blocks("main", "ship it");
     let set = seed.append(
         "main",
         message(
@@ -646,7 +655,7 @@ async fn set_reopens_the_goal_and_the_count_restarts() {
     env.turn("main", &[&first]);
     assert_eq!(
         env.settled("main").await.len(),
-        3,
+        5,
         "a completed goal writes no continuation"
     );
 

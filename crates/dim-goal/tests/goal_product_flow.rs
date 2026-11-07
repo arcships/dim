@@ -6,16 +6,21 @@
 mod support;
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use dim_agent_capabilities::adapters::EchoModel;
+use dim_agent_capabilities::history::summary_message;
 use dim_agent_capabilities::host::{
     HostError, HostFuture, ModelChunk, ModelConnection, ModelDriver, ModelStopReason, ModelStream,
 };
 use dim_agent_capabilities::timeline_tree::TreeCommands;
-use dim_agent_runtime::BranchOptions;
-use dim_agent_types::{BranchSource, EventKind, MessageContent, ModelRequest, Role, ToolCall};
+use dim_agent_runtime::{BranchOptions, Session};
+use dim_agent_types::{
+    BranchSource, ContextBaselineEntry, ContextCompactData, ContextCompactionData,
+    ContextCompactionResult, EventKind, Message, MessageContent, ModelRequest, Role, ToolCall,
+};
 use serde_json::{Value, json};
 use support::texts;
 use support::*;
@@ -42,6 +47,24 @@ fn count_of(marker: &str) -> Option<usize> {
         .next()?
         .parse()
         .ok()
+}
+
+/// The sequence of the newest evaluator conclusion input on `branch`.
+async fn conclusion_sequence(session: &Session, branch: &str) -> u64 {
+    branch_events(session, branch, ..)
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::InputMessage(data) => data.blocks.first().and_then(|block| {
+                let dim_agent_types::InputBlock::Raw { text, .. } = block;
+                text.starts_with(r#"<dim-goal kind="report""#)
+                    .then_some(event.sequence)
+            }),
+            _ => None,
+        })
+        .next_back()
+        .unwrap_or_else(|| panic!("no conclusion input on {branch}"))
 }
 
 /// The `after` attribute of a Goal write's marker.
@@ -244,33 +267,54 @@ async fn goal_continues_to_the_limit_and_stops_on_completion() {
     wait_goal(&session, "main", r#"reason="limit""#).await;
     fixture.idle_on(&id, "main").await;
     let writes = goal_writes(&session, "main").await;
-    assert_eq!(writes.len(), 4, "{writes:#?}");
-    assert!(writes[0].marker.contains(r#"op="set""#), "{writes:#?}");
+    assert_eq!(writes.len(), 5, "{writes:#?}");
+    assert_eq!(writes[1].sequence, sequence, "the set trigger");
+    assert_eq!(writes[1].text, texts::set("main", "ship <it>"));
+    assert_eq!(
+        writes[0].mode,
+        dim_agent_types::InputMode::Append,
+        "the record commits first"
+    );
+    wait_goal(
+        &session,
+        "main",
+        &format!(
+            r#"kind="state" status="active" trigger="{}""#,
+            writes[1].submission_id.as_deref().unwrap()
+        ),
+    )
+    .await;
+    assert_eq!(
+        goal_block(&session, "main", r#"kind="state" status="active""#).await,
+        texts::set_state("main", "ship <it>", &texts::trigger(&writes[1]), false),
+        "the record that answers the set"
+    );
     assert!(
-        writes[1]
+        writes.iter().any(|block| block
             .marker
-            .contains(r#"kind="continuation" count="1" limit="2""#),
+            .contains(r#"kind="continuation" count="1" limit="2""#)),
         "{writes:#?}"
     );
     assert!(
-        writes[2]
+        writes.iter().any(|block| block
             .marker
-            .contains(r#"kind="continuation" count="2" limit="2""#),
+            .contains(r#"kind="continuation" count="2" limit="2""#)),
         "{writes:#?}"
     );
     assert!(
-        writes[3].marker.contains(r#"op="pause" reason="limit""#),
+        writes.iter().any(|block| block
+            .marker
+            .contains(r#"kind="state" status="paused" reason="limit""#)),
         "{writes:#?}"
     );
     // Every model-facing text, byte for byte. The three turns are the set's,
     // and the two continuations'.
     let ends = turn_ends(&session, "main").await;
     assert_eq!(ends.len(), 3, "three turns: {ends:?}");
-    let (set_objective, set_status) = texts::set_blocks("main", "ship <it>");
     assert_eq!(
         goal_blocks(&session, "main", r#"op="set""#).await,
-        vec![set_objective, set_status],
-        "the set input's two blocks"
+        vec![texts::set("main", "ship <it>")],
+        "the set trigger is what the model reads"
     );
     assert_eq!(
         goal_block(&session, "main", r#"count="1""#).await,
@@ -281,9 +325,15 @@ async fn goal_continues_to_the_limit_and_stops_on_completion() {
         texts::continuation("main", 2, Some(2), 1, ends[1])
     );
     assert_eq!(
-        goal_block(&session, "main", r#"reason="limit""#).await,
+        goal_block(
+            &session,
+            "main",
+            r#"kind="state" status="paused" reason="limit""#
+        )
+        .await,
         texts::automatic_pause(
             "main",
+            "ship <it>",
             "limit",
             "the automatic continuation limit was reached",
             ends[2]
@@ -310,7 +360,7 @@ async fn goal_continues_to_the_limit_and_stops_on_completion() {
     fixture.idle_on(&id, &child).await;
     let child_writes = goal_writes(&session, &child).await;
     assert_eq!(child_writes.len(), 1, "{child_writes:#?}");
-    assert_eq!(goal_writes(&session, "main").await.len(), 4);
+    assert_eq!(goal_writes(&session, "main").await.len(), 5);
     let opening = branch_events(&session, &child, ..)
         .await
         .unwrap()
@@ -318,11 +368,10 @@ async fn goal_continues_to_the_limit_and_stops_on_completion() {
         .find(|event| matches!(event.kind, EventKind::BranchStart(_)))
         .expect("the child's branch/start")
         .sequence;
-    let (clear_objective, clear_status) = texts::start_clear(&child, opening);
     assert_eq!(
         goal_blocks(&session, &child, r#"reason="new_branch""#).await,
-        vec![clear_objective, clear_status],
-        "the new-branch clear's two blocks"
+        texts::start_clear(&child, opening, (false, false)),
+        "the new-branch clear is one retired record"
     );
 
     // Completion (Appendix D 1): the model's goal_update records `completed`
@@ -346,11 +395,25 @@ async fn goal_continues_to_the_limit_and_stops_on_completion() {
         .await;
     wait_goal(&session, "main", r#"op="completed""#).await;
     fixture.idle_on(&id, "main").await;
-    let (finish_set, finish_status) = texts::set_blocks("main", "finish");
     assert_eq!(
         goal_blocks(&session, "main", r#"op="set""#).await,
-        vec![finish_set, finish_status],
+        vec![texts::set("main", "finish")],
         "the second session's set"
+    );
+    let finish_trigger = wait_goal(&session, "main", r#"op="set""#).await;
+    wait_goal(
+        &session,
+        "main",
+        &format!(
+            r#"kind="state" status="active" trigger="{}""#,
+            finish_trigger.submission_id.as_deref().unwrap()
+        ),
+    )
+    .await;
+    assert_eq!(
+        goal_block(&session, "main", r#"kind="state" status="active""#).await,
+        texts::set_state("main", "finish", &texts::trigger(&finish_trigger), false),
+        "the second session's record"
     );
     assert_eq!(
         goal_block(&session, "main", r#"op="completed""#).await,
@@ -365,8 +428,19 @@ async fn goal_continues_to_the_limit_and_stops_on_completion() {
     let completed = writes
         .iter()
         .find(|block| block.marker.contains(r#"op="completed""#))
-        .expect("the completed report")
-        .sequence;
+        .expect("the completed report");
+    assert_eq!(
+        goal_block(&session, "main", r#"status="completed""#).await,
+        texts::reported(
+            "main",
+            "finish",
+            "completed",
+            SPECIAL,
+            &texts::trigger(completed)
+        ),
+        "the record that answers the report"
+    );
+    let completed = completed.sequence;
     assert!(
         writes
             .iter()
@@ -399,10 +473,10 @@ async fn goal_continues_to_the_limit_and_stops_on_completion() {
         .await
         .unwrap_err();
     assert_eq!(dim_client::app_error(&error), Some("session_invalid_input"));
-    for method in ["pause", "resume", "clear"] {
-        fixture.goal_on(&id, method, json!({})).await.unwrap();
-    }
-    wait_goal(&session, "main", r#"op="clear""#).await;
+    fixture.goal_on(&id, "pause", json!({})).await.unwrap();
+    fixture.goal_on(&id, "resume", json!({})).await.unwrap();
+    let clear = fixture.goal_on(&id, "clear", json!({})).await.unwrap();
+    let clear_trigger = wait_goal(&session, "main", r#"op="clear""#).await;
     fixture.idle_on(&id, "main").await;
     assert_eq!(
         goal_block(&session, "main", r#"op="pause" reason="user""#).await,
@@ -412,11 +486,25 @@ async fn goal_continues_to_the_limit_and_stops_on_completion() {
         goal_block(&session, "main", r#"op="resume""#).await,
         texts::resume("main")
     );
-    let (clear_objective, clear_status) = texts::clear("main");
+    let _ = clear;
+    wait_goal(
+        &session,
+        "main",
+        &format!(
+            r#"status="cleared" trigger="{}""#,
+            clear_trigger.submission_id.as_deref().unwrap()
+        ),
+    )
+    .await;
     assert_eq!(
         goal_blocks(&session, "main", r#"op="clear""#).await,
-        vec![clear_objective, clear_status],
+        vec![texts::clear("main")],
         "the user's clear"
+    );
+    assert_eq!(
+        goal_block(&session, "main", r#"status="cleared""#).await,
+        texts::cleared("main", &texts::trigger(&clear_trigger)),
+        "the record that answers it"
     );
 
     // The tool's rejection text, and a `blocked` report.
@@ -476,18 +564,50 @@ async fn goal_restore_refolds_without_repeating_decisions() {
         SPECIAL
     );
     let edited = format!("{SPECIAL} (edited)");
-    fixture
+    let edit = fixture
         .goal_on(&id, "edit", json!({"objective": edited}))
         .await
         .unwrap();
-    wait_goal(&session, "main", r#"op="edit""#).await;
+    let edit_trigger = wait_goal(&session, "main", r#"op="edit""#).await;
     fixture.idle_on(&id, "main").await;
     assert_eq!(
         goal_block(&session, "main", r#"op="edit""#).await,
         texts::edit("main", &edited)
     );
+    // The edit is a trigger: its record states the new objective and the
+    // status the goal actually has, still the limit pause.
+    let _ = edit;
+    wait_goal(
+        &session,
+        "main",
+        &format!(
+            r#"kind="state" status="paused" reason="limit" trigger="{}""#,
+            edit_trigger.submission_id.as_deref().unwrap()
+        ),
+    )
+    .await;
+    assert_eq!(
+        goal_block(
+            &session,
+            "main",
+            &format!(
+                r#"kind="state" status="paused" reason="limit" trigger="{}""#,
+                edit_trigger.submission_id.as_deref().unwrap()
+            )
+        )
+        .await,
+        texts::paused(
+            "main",
+            &edited,
+            "limit",
+            "the automatic continuation limit was reached",
+            &texts::trigger(&edit_trigger),
+            false
+        ),
+        "the edit's record"
+    );
     let before = goal_writes(&session, "main").await;
-    assert_eq!(before.len(), 4, "{before:#?}");
+    assert_eq!(before.len(), 6, "{before:#?}");
     drop(session);
     let mut fixture = fixture.restart(Arc::new(EchoModel)).await;
     fixture.submit_on(&id, "main", "hello again").await;
@@ -601,6 +721,7 @@ async fn goal_pending_input_and_interrupts() {
         goal_block(&session, "main", r#"reason="interrupted""#).await,
         texts::automatic_pause(
             "main",
+            "ship",
             "interrupted",
             "the user interrupted the turn",
             interrupt
@@ -695,11 +816,10 @@ async fn goal_settings_resume_unload_and_fork() {
             .contains(&format!(r#"reason="new_branch" after="{opening}""#)),
         "{own:#?}"
     );
-    let (fork_clear, fork_status) = texts::start_clear("main", opening);
     assert_eq!(
         goal_blocks(&forked, "main", r#"reason="new_branch""#).await,
-        vec![fork_clear, fork_status],
-        "the fork's new-branch clear"
+        texts::start_clear("main", opening, (false, false)),
+        "the fork's new-branch clear is one retired record"
     );
     assert!(
         goal_writes(&session, "main")
@@ -758,7 +878,7 @@ async fn goal_on_a_line_behaves_as_on_main() {
         "line work",
         "the creator's prompt stays the opening input's words"
     );
-    fixture
+    let line_set = fixture
         .goal_on(
             &id,
             "set",
@@ -766,13 +886,22 @@ async fn goal_on_a_line_behaves_as_on_main() {
         )
         .await
         .unwrap();
-    wait_goal(&session, &child, r#"op="set""#).await;
-    let (line_set, line_status) = texts::set_blocks(&child, "line objective");
+    let line_trigger = wait_goal(&session, &child, r#"op="set""#).await;
     assert_eq!(
         goal_blocks(&session, &child, r#"op="set""#).await,
-        vec![line_set, line_status],
+        vec![texts::set(&child, "line objective")],
         "the line's set"
     );
+    let _ = line_set;
+    wait_goal(
+        &session,
+        &child,
+        &format!(
+            r#"kind="state" status="active" trigger="{}""#,
+            line_trigger.submission_id.as_deref().unwrap()
+        ),
+    )
+    .await;
     wait_goal(&session, &child, r#"count="1""#).await;
     fixture.idle_on(&id, &child).await;
     let operator = session
@@ -840,7 +969,7 @@ async fn goal_evaluator_judge_creates_an_evaluator_and_completes_on_done() {
     fixture.set_limit(5).await;
     let id = fixture.new_session(&["goal_update", "wait"]).await;
     let session = fixture.agent.get_session(&id).unwrap();
-    fixture
+    let judged = fixture
         .goal_on(
             &id,
             "set",
@@ -848,13 +977,22 @@ async fn goal_evaluator_judge_creates_an_evaluator_and_completes_on_done() {
         )
         .await
         .unwrap();
-    wait_goal(&session, "main", r#"op="set""#).await;
-    let (judged_set, judged_status) = texts::evaluator_set_blocks("main", "make the tests pass");
+    let judged_trigger = wait_goal(&session, "main", r#"op="set""#).await;
     assert_eq!(
         goal_blocks(&session, "main", r#"op="set""#).await,
-        vec![judged_set, judged_status],
+        vec![texts::evaluator_set("main", "make the tests pass")],
         "the judged set"
     );
+    let _ = judged;
+    wait_goal(
+        &session,
+        "main",
+        &format!(
+            r#"kind="state" status="active" judge="evaluator" trigger="{}""#,
+            judged_trigger.submission_id.as_deref().unwrap()
+        ),
+    )
+    .await;
     fixture
         .submit_report_on(&id, "completed", "all tests pass")
         .await;
@@ -881,7 +1019,7 @@ async fn goal_evaluator_judge_creates_an_evaluator_and_completes_on_done() {
     let writes = goal_writes(&session, "main").await;
     let request = writes
         .iter()
-        .find(|block| block.marker.contains(r#"op="completed""#) && !block.marker.contains("by="))
+        .find(|block| block.marker.contains(r#"kind="goal" op="completed""#))
         .unwrap_or_else(|| panic!("the worker's request: {writes:#?}"));
     assert!(
         *created > request.sequence,
@@ -900,12 +1038,19 @@ async fn goal_evaluator_judge_creates_an_evaluator_and_completes_on_done() {
         texts::evaluator_prompt("main", evaluation, "make the tests pass", "all tests pass"),
         "the evaluator's prompt"
     );
-    wait_goal(&session, "main", r#"by="evaluator""#).await;
+    wait_goal(&session, "main", r#"kind="state" status="completed""#).await;
     fixture.idle_on(&id, "main").await;
-    let done = goal_block(&session, "main", r#"by="evaluator""#).await;
+    let conclusion = conclusion_sequence(&session, "main").await;
+    let done = goal_block(&session, "main", r#"kind="state" status="completed""#).await;
     assert_eq!(
         done,
-        texts::evaluated("main", "completed", evaluation, "all tests pass"),
+        texts::evaluated(
+            "main",
+            "make the tests pass",
+            "completed",
+            "all tests pass",
+            conclusion
+        ),
         "the evaluator's completion"
     );
     // The conclusion it decides on is one input of one block, and that
@@ -938,7 +1083,7 @@ async fn goal_evaluator_judge_creates_an_evaluator_and_completes_on_done() {
     assert_eq!(
         writes
             .iter()
-            .filter(|block| block.marker.contains(r#"by="evaluator""#))
+            .filter(|block| block.marker.contains(r#"kind="state" status="completed""#))
             .count(),
         1,
         "{writes:#?}"
@@ -1040,7 +1185,7 @@ async fn goal_evaluator_restart_writes_no_second_result() {
     assert!(
         writes
             .iter()
-            .all(|block| !block.marker.contains(r#"by="evaluator""#)),
+            .all(|block| !block.marker.contains(r#"kind="state" status="completed""#)),
         "a replayed turn end reports nothing: {writes:#?}"
     );
     assert!(
@@ -1050,13 +1195,13 @@ async fn goal_evaluator_restart_writes_no_second_result() {
         "{writes:#?}"
     );
     fixture.submit_on(&id, &child, "carry on").await;
-    wait_goal(&session, "main", r#"by="evaluator""#).await;
+    wait_goal(&session, "main", r#"kind="state" status="completed""#).await;
     fixture.idle_on(&id, "main").await;
     let writes = goal_writes(&session, "main").await;
     assert_eq!(
         writes
             .iter()
-            .filter(|block| block.marker.contains(r#"by="evaluator""#))
+            .filter(|block| block.marker.contains(r#"kind="state" status="completed""#))
             .count(),
         1,
         "{writes:#?}"
@@ -1147,11 +1292,12 @@ async fn goal_evaluator_blocks_or_fails_the_evaluation() {
     .await;
     let evaluation: u64 = evaluation_of(&session, "main").await.parse().unwrap();
     let child = branch_creates(&session, "main").await[0].1.branch.clone();
-    wait_goal(&session, "main", r#"by="evaluator""#).await;
+    wait_goal(&session, "main", r#"kind="state" status="blocked""#).await;
     fixture.idle_on(&id, "main").await;
+    let conclusion = conclusion_sequence(&session, "main").await;
     assert_eq!(
-        goal_block(&session, "main", r#"by="evaluator""#).await,
-        texts::evaluated("main", "blocked", evaluation, "need credentials"),
+        goal_block(&session, "main", r#"kind="state" status="blocked""#).await,
+        texts::evaluated("main", "ship it", "blocked", "need credentials", conclusion),
         "the evaluator's block"
     );
     assert_eq!(
@@ -1189,13 +1335,15 @@ async fn goal_evaluator_blocks_or_fails_the_evaluation() {
     let child = branch_creates(&session, "main").await[0].1.branch.clone();
     wait_goal(&session, "main", r#"reason="evaluation_failed""#).await;
     fixture.idle_on(&id, "main").await;
+    let conclusion = conclusion_sequence(&session, "main").await;
     assert_eq!(
         goal_block(&session, "main", r#"reason="evaluation_failed""#).await,
-        texts::automatic_pause(
+        texts::evaluated_pause(
             "main",
+            "ship it",
             "evaluation_failed",
             "the evaluator could not check the result",
-            evaluation
+            conclusion
         ),
         "the failed evaluation"
     );
@@ -1240,7 +1388,13 @@ async fn goal_turn_failure_pauses_the_goal() {
         .expect("a turn end");
     assert_eq!(
         goal_block(&session, "main", r#"reason="turn_failed""#).await,
-        texts::automatic_pause("main", "turn_failed", "the last turn failed", failed),
+        texts::automatic_pause(
+            "main",
+            "ship",
+            "turn_failed",
+            "the last turn failed",
+            failed
+        ),
         "the failed turn's pause"
     );
     fixture.close().await;
@@ -1274,5 +1428,602 @@ async fn goal_registers_the_entry_for_the_marker_it_writes() {
     let system = last_system(&session, "main").await;
     assert!(system.contains(texts::ENTRY), "{system:?}");
 
+    fixture.close().await;
+}
+
+/// Records every request and echoes, so a change's first request can be read
+/// once the branch settles.
+struct RecordingModel {
+    requests: Mutex<Vec<Arc<ModelRequest>>>,
+}
+
+impl Default for RecordingModel {
+    fn default() -> Self {
+        Self {
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl ModelDriver for RecordingModel {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        connection: ModelConnection,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        self.requests.lock().unwrap().push(request.clone());
+        EchoModel.invoke(request, connection, cancel)
+    }
+}
+
+/// R5: a change and the record that answers it commit as one atomic batch,
+/// the record first, so the change's first turn starts with the record
+/// already ahead of its trigger. `set` on a goal-free branch and `resume`
+/// from paused; twenty runs each, because the guarantee is the order of the
+/// batch's two inputs, not one timing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn goal_a_changes_first_request_holds_its_record_before_the_trigger() {
+    let mut runs = 0;
+    for case in ["set", "resume"] {
+        for run in 0..20 {
+            let model = Arc::new(RecordingModel::default());
+            let mut fixture = Fixture::start_with(model.clone()).await;
+            fixture.set_limit(1).await;
+            let id = fixture.id.clone();
+            if case == "resume" {
+                fixture
+                    .goal("set", json!({"objective": "ship it"}))
+                    .await
+                    .unwrap();
+                fixture.idle_on(&id, "main").await;
+                fixture.goal("pause", json!({})).await.unwrap();
+                fixture.idle_on(&id, "main").await;
+            }
+            let before = model.requests.lock().unwrap().len();
+            let params = if case == "set" {
+                json!({"objective": "ship it"})
+            } else {
+                json!({})
+            };
+            let sequence = fixture
+                .goal(case, params)
+                .await
+                .unwrap_or_else(|error| panic!("{case} run {run}: {error}"));
+            fixture.idle_on(&id, "main").await;
+
+            // The trigger event names itself by submission id; the record the
+            // change wrote names that id in its `trigger` attribute.
+            let events = fixture.events("main", sequence - 1).await;
+            let trigger = events
+                .iter()
+                .find(|event| event.sequence == sequence)
+                .unwrap_or_else(|| panic!("{case} run {run}: the trigger event"));
+            let EventKind::InputMessage(data) = &trigger.kind else {
+                panic!("{case} run {run}: the trigger is not an input");
+            };
+            let submission = data
+                .submission_id
+                .clone()
+                .unwrap_or_else(|| panic!("{case} run {run}: the trigger's submission id"));
+            let record = texts::set_state(
+                "main",
+                "ship it",
+                &texts::Answer::Trigger(submission.clone()),
+                false,
+            );
+            let trigger_text = if case == "set" {
+                texts::set("main", "ship it")
+            } else {
+                texts::resume("main")
+            };
+
+            let text = {
+                let requests = model.requests.lock().unwrap();
+                let first = requests.get(before).unwrap_or_else(|| {
+                    panic!(
+                        "{case} run {run}: the change drove no request ({} recorded)",
+                        requests.len()
+                    )
+                });
+                request_text(first)
+            };
+            let record_at = text.find(&record).unwrap_or_else(|| {
+                panic!("{case} run {run}: the first request holds no record: {text}")
+            });
+            let trigger_at = text.find(&trigger_text).unwrap_or_else(|| {
+                panic!("{case} run {run}: the first request holds no trigger: {text}")
+            });
+            assert!(
+                record_at < trigger_at,
+                "{case} run {run}: the record follows its trigger: {text}"
+            );
+            runs += 1;
+            fixture.close().await;
+        }
+    }
+    assert_eq!(runs, 40, "every case ran twenty times");
+}
+
+/// The text of a request's messages, as one string: the inputs the model read.
+fn request_text(request: &ModelRequest) -> String {
+    request
+        .messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            MessageContent::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Records every request; the first holds until the flow releases it, then
+/// asks for the `wait` tool, and the later ones answer with text.
+struct OrderingModel {
+    requests: Mutex<Vec<Arc<ModelRequest>>>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    calls: AtomicUsize,
+}
+impl Default for OrderingModel {
+    fn default() -> Self {
+        Self {
+            requests: Mutex::new(Vec::new()),
+            entered: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+impl ModelDriver for OrderingModel {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        _connection: ModelConnection,
+        _cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        self.requests.lock().unwrap().push(request);
+        let entered = self.entered.clone();
+        let release = self.release.clone();
+        Box::pin(async move {
+            if call == 0 {
+                entered.notify_one();
+                release.notified().await;
+                let call = ToolCall {
+                    id: "wait-1".into(),
+                    name: "wait".into(),
+                    input: json!({"millis": 10}).as_object().unwrap().clone(),
+                };
+                return Ok(Box::pin(futures_util::stream::iter(vec![
+                    Ok(ModelChunk::MessageStart {
+                        message_id: "m1".into(),
+                    }),
+                    Ok(ModelChunk::ToolStart {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                    }),
+                    Ok(ModelChunk::ToolUse(call)),
+                    Ok(ModelChunk::MessageStop {
+                        message_id: "m1".into(),
+                        reason: ModelStopReason::ToolUse,
+                    }),
+                ])) as ModelStream);
+            }
+            Ok(Box::pin(futures_util::stream::iter(vec![
+                Ok(ModelChunk::MessageStart {
+                    message_id: "m2".into(),
+                }),
+                Ok(ModelChunk::Text("ok".into())),
+                Ok(ModelChunk::TextEnd),
+                Ok(ModelChunk::MessageStop {
+                    message_id: "m2".into(),
+                    reason: ModelStopReason::EndTurn,
+                }),
+            ])) as ModelStream)
+        })
+    }
+}
+
+/// Holds the calls whose index is in `hold`; a held call asks for the `wait`
+/// tool once released, and the others answer with text.
+struct ScheduledModel {
+    hold: Vec<usize>,
+    requests: Mutex<Vec<Arc<ModelRequest>>>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    calls: AtomicUsize,
+}
+
+impl ScheduledModel {
+    fn new(hold: Vec<usize>) -> Self {
+        Self {
+            hold,
+            requests: Mutex::new(Vec::new()),
+            entered: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl ModelDriver for ScheduledModel {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        _connection: ModelConnection,
+        _cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        let index = self.calls.fetch_add(1, Ordering::SeqCst);
+        let hold = self.hold.contains(&index);
+        self.requests.lock().unwrap().push(request);
+        let entered = self.entered.clone();
+        let release = self.release.clone();
+        Box::pin(async move {
+            let message_id = format!("m{index}");
+            if hold {
+                entered.notify_one();
+                release.notified().await;
+                let call = ToolCall {
+                    id: format!("wait-{index}"),
+                    name: "wait".into(),
+                    input: json!({"millis": 10}).as_object().unwrap().clone(),
+                };
+                return Ok(Box::pin(futures_util::stream::iter(vec![
+                    Ok(ModelChunk::MessageStart {
+                        message_id: message_id.clone(),
+                    }),
+                    Ok(ModelChunk::ToolStart {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                    }),
+                    Ok(ModelChunk::ToolUse(call)),
+                    Ok(ModelChunk::MessageStop {
+                        message_id,
+                        reason: ModelStopReason::ToolUse,
+                    }),
+                ])) as ModelStream);
+            }
+            Ok(Box::pin(futures_util::stream::iter(vec![
+                Ok(ModelChunk::MessageStart {
+                    message_id: message_id.clone(),
+                }),
+                Ok(ModelChunk::Text("ok".into())),
+                Ok(ModelChunk::TextEnd),
+                Ok(ModelChunk::MessageStop {
+                    message_id,
+                    reason: ModelStopReason::EndTurn,
+                }),
+            ])) as ModelStream)
+        })
+    }
+}
+
+/// D1/D3: a Queue `set` held behind a running turn is overtaken by an Append
+/// `pause`. The record Goal writes for the pause is the newest state the next
+/// request, the fold and the clients read; the held `set` trigger is consumed
+/// later but states no status, so nothing contradicts the record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn goal_a_queued_set_overtaken_by_a_pause_reads_as_paused_everywhere() {
+    let model = Arc::new(OrderingModel::default());
+    let mut fixture = Fixture::start_with(model.clone()).await;
+    fixture.set_limit(5).await;
+    let id = fixture.new_session(&["goal_update", "wait"]).await;
+    let session = fixture.agent.get_session(&id).unwrap();
+
+    fixture.submit_on(&id, "main", "work").await;
+    tokio::time::timeout(Duration::from_secs(15), model.entered.notified())
+        .await
+        .expect("the first request");
+
+    // The Queue `set` is held while the turn runs; the Append `pause` passes
+    // it and is released at once.
+    let set = fixture
+        .goal_on(&id, "set", json!({"objective": "ship it"}))
+        .await
+        .unwrap();
+    let pause = fixture.goal_on(&id, "pause", json!({})).await.unwrap();
+    assert!(set < pause);
+    let pause_trigger = wait_goal(&session, "main", r#"op="pause" reason="user""#).await;
+    let record = wait_goal(
+        &session,
+        "main",
+        &format!(
+            r#"kind="state" status="paused" reason="user" trigger="{}""#,
+            pause_trigger.submission_id.as_deref().unwrap()
+        ),
+    )
+    .await;
+    assert_eq!(
+        record.text,
+        texts::paused(
+            "main",
+            "ship it",
+            "user",
+            "",
+            &texts::trigger(&pause_trigger),
+            false
+        )
+    );
+
+    // The request the running turn builds next reads the paused record last,
+    // and the held `set` is not in it.
+    model.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let len = model.requests.lock().unwrap().len();
+            if len >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the second request");
+    let request = request_text(&model.requests.lock().unwrap()[1]);
+    let newest = request
+        .rsplit(r#"<dim-goal kind="state""#)
+        .next()
+        .expect("the split");
+    assert!(newest.contains(r#"status="paused""#), "{request}");
+    assert!(
+        !request.contains(r#"<dim-goal kind="goal" op="set""#),
+        "the held set stays out of the running turn: {request}"
+    );
+    let newest_at = request
+        .rfind(r#"<dim-goal kind="state""#)
+        .expect("a state record in the request");
+    if let Some(active_at) = request.find("The goal for branch main is active.") {
+        assert!(
+            active_at < newest_at,
+            "every record stating the goal active precedes the newest one: {request}"
+        );
+    }
+
+    // The fold and the clients read the same state: one live record, paused,
+    // and the held set's turn end continues nothing.
+    fixture.idle_on(&id, "main").await;
+    let reply = fixture
+        .client
+        .rpc("session.keys", json!({"sessionId":id,"branchId":"main"}))
+        .await
+        .unwrap();
+    let entries = reply["entries"].as_array().unwrap();
+    let added: Vec<&Value> = entries
+        .iter()
+        .filter(|entry| entry["key"] == "goal:state")
+        .collect();
+    assert_eq!(added.len(), 1, "{entries:#?}");
+    assert_eq!(added[0]["text"].as_str(), Some(record.text.as_str()));
+    let writes = goal_writes(&session, "main").await;
+    assert!(
+        writes
+            .iter()
+            .all(|block| !block.marker.contains(r#"kind="continuation""#)),
+        "a paused goal continues nothing: {writes:#?}"
+    );
+    fixture.close().await;
+}
+
+/// D3: a compaction inside a turn with a goal active carries the state record
+/// from the compaction baseline, and Goal writes nothing for the compaction.
+#[tokio::test]
+async fn goal_a_compaction_inside_a_turn_carries_the_record_from_the_baseline() {
+    let model = Arc::new(ScheduledModel::new(vec![0, 2, 3]));
+    let mut fixture = Fixture::start_with(model.clone()).await;
+    fixture.set_limit(1).await;
+    let id = fixture.new_session(&["goal_update", "wait"]).await;
+    let session = fixture.agent.get_session(&id).unwrap();
+
+    // Turn 1: the Queue `set` drives it, Goal answers inside it, and the
+    // turn's second request consumes the record.
+    let set = fixture
+        .goal_on(&id, "set", json!({"objective": "ship it"}))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), model.entered.notified())
+        .await
+        .expect("the request the set drove");
+    let set_trigger = wait_goal(&session, "main", r#"op="set""#).await;
+    let _ = set;
+    let record = wait_goal(
+        &session,
+        "main",
+        &format!(
+            r#"kind="state" status="active" trigger="{}""#,
+            set_trigger.submission_id.as_deref().unwrap()
+        ),
+    )
+    .await;
+    model.release.notify_one();
+    // The turn ends with the record behind it; Goal continues the goal and
+    // turn 2's first request is held.
+    tokio::time::timeout(Duration::from_secs(15), model.entered.notified())
+        .await
+        .expect("the continuation's request");
+
+    // Turn 2 runs whole: the cut is inside it and the record is behind it, so
+    // only the baseline carries the record.
+    let step = fixture
+        .probe
+        .emit("main", EventKind::ContextCompact(ContextCompactData {}));
+    let compaction = fixture.probe.emit(
+        "main",
+        EventKind::ContextCompaction(ContextCompactionData {
+            turn_id: None,
+            request_id: None,
+            command: None,
+            start: None,
+            through: step.sequence,
+            outcome: ContextCompactionResult::Completed {
+                retain_from: step.id.clone(),
+                replacement: vec![summary_message("compacted")],
+                strategy: "test".into(),
+                diagnostics: Box::new(
+                    serde_json::from_value(json!({
+                        "reason":"auto", "trigger":"threshold", "estimatedInputTokens":1,
+                        "entriesReplaced":1, "modelCallCount":1, "durationMs":1,
+                        "strategy":{"kind":"test"}
+                    }))
+                    .unwrap(),
+                ),
+                context_baseline: vec![ContextBaselineEntry {
+                    key: "goal:state".into(),
+                    source_event: record.id.clone(),
+                    message: Arc::new(Message::text(Role::User, record.text.clone())),
+                }],
+                replacement_parts: None,
+                pinned_inputs: None,
+                digest_entries: None,
+            },
+        }),
+    );
+    let writes: Vec<(u64, String)> = goal_writes(&session, "main")
+        .await
+        .into_iter()
+        .map(|block| (block.sequence, block.text))
+        .collect();
+
+    // The next request of the turn is rendered from the compaction and
+    // carries the snapshot from the baseline, exactly once.
+    model.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if model.requests.lock().unwrap().len() >= 4 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the request after the compaction");
+    let request = request_text(&model.requests.lock().unwrap()[3]);
+    assert!(request.contains("compacted"), "{request}");
+    assert_eq!(
+        request.matches(&record.text).count(),
+        1,
+        "the record is carried from the baseline once: {request}"
+    );
+
+    // Nothing about the compaction is Goal's to answer.
+    let after: Vec<(u64, String)> = goal_writes(&session, "main")
+        .await
+        .into_iter()
+        .map(|block| (block.sequence, block.text))
+        .collect();
+    assert_eq!(after, writes, "Goal wrote nothing for the compaction");
+    assert!(
+        after
+            .iter()
+            .all(|(sequence, _)| *sequence < compaction.sequence),
+        "every Goal write precedes the compaction: {after:#?}"
+    );
+
+    // Turn 2 ends; the limit pauses the goal, and the test closes on a
+    // settled branch.
+    model.release.notify_one();
+    wait_goal(
+        &session,
+        "main",
+        r#"kind="state" status="paused" reason="limit""#,
+    )
+    .await;
+    fixture.close().await;
+}
+
+/// D3: every change Goal answers leaves exactly one record, naming the change
+/// it answers, and `session.keys` shows that record as the newest state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn goal_each_change_answers_with_one_newest_state_record() {
+    let mut fixture = Fixture::start().await;
+    fixture.set_limit(5).await;
+    let id = fixture.new_session(&["goal_update", "wait"]).await;
+    let session = fixture.agent.get_session(&id).unwrap();
+
+    let steps = [
+        ("set", json!({"objective": "ship it"})),
+        ("edit", json!({"objective": "ship it twice"})),
+        ("pause", json!({})),
+        ("resume", json!({})),
+    ];
+    for (method, params) in steps {
+        let sequence = fixture.goal_on(&id, method, params).await.unwrap();
+        let trigger = wait_goal(&session, "main", &format!(r#"op="{method}""#)).await;
+        assert_eq!(trigger.sequence, sequence, "{method}: the trigger");
+        let needle = format!(r#"trigger="{}""#, trigger.submission_id.as_deref().unwrap());
+        let record = wait_goal(&session, "main", &needle).await;
+        let answers: Vec<Block> = goal_writes(&session, "main")
+            .await
+            .into_iter()
+            .filter(|block| {
+                block.marker.contains(r#"kind="state""#) && block.marker.contains(&needle)
+            })
+            .collect();
+        assert_eq!(answers.len(), 1, "{method}: {answers:#?}");
+        let reply = fixture
+            .client
+            .rpc("session.keys", json!({"sessionId":id,"branchId":"main"}))
+            .await
+            .unwrap();
+        let entries = reply["entries"].as_array().unwrap();
+        let states: Vec<&Value> = entries
+            .iter()
+            .filter(|entry| entry["key"] == "goal:state")
+            .collect();
+        assert_eq!(states.len(), 1, "{method}: {entries:#?}");
+        assert_eq!(states[0]["text"].as_str(), Some(record.text.as_str()));
+    }
+
+    // The worker's report is a change too, and its record states the result.
+    fixture.submit_report_on(&id, "completed", "done").await;
+    let report = wait_goal(&session, "main", r#"op="completed""#).await;
+    let record = wait_goal(
+        &session,
+        "main",
+        &format!(
+            r#"kind="state" status="completed" trigger="{}""#,
+            report.submission_id.as_deref().unwrap()
+        ),
+    )
+    .await;
+    assert_eq!(
+        record.text,
+        texts::reported(
+            "main",
+            "ship it twice",
+            "completed",
+            "done",
+            &texts::trigger(&report)
+        )
+    );
+
+    // The user's clear retires the record; the key holds no live entry after.
+    let clear = fixture.goal_on(&id, "clear", json!({})).await.unwrap();
+    let clear_trigger = wait_goal(&session, "main", r#"op="clear""#).await;
+    let record = wait_goal(
+        &session,
+        "main",
+        &format!(
+            r#"status="cleared" trigger="{}""#,
+            clear_trigger.submission_id.as_deref().unwrap()
+        ),
+    )
+    .await;
+    let _ = clear;
+    assert_eq!(
+        record.text,
+        texts::cleared("main", &texts::trigger(&clear_trigger))
+    );
+    let reply = fixture
+        .client
+        .rpc("session.keys", json!({"sessionId":id,"branchId":"main"}))
+        .await
+        .unwrap();
+    let entries = reply["entries"].as_array().unwrap();
+    assert!(
+        entries.iter().all(|entry| entry["key"] != "goal:state"),
+        "a retired record leaves no live entry: {entries:#?}"
+    );
     fixture.close().await;
 }

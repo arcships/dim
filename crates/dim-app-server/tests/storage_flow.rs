@@ -7541,6 +7541,72 @@ async fn a_v31_store_upgrades_in_place_once() {
     upgrades_in_place_once(&database, connection, 31).await;
 }
 
+/// A store upgrade that outlives `startup_timeout` still opens while it
+/// reports progress, and the CLI's progress note exists while it runs and is
+/// gone after the successful open.
+#[tokio::test]
+async fn a_slow_store_upgrade_reports_progress_and_keeps_the_opening_alive() {
+    use dim_app_server::storage::set_upgrade_report_delay;
+    use tokio_util::sync::CancellationToken;
+
+    /// Clears the delay even when an assertion fails.
+    struct Delay;
+    impl Drop for Delay {
+        fn drop(&mut self) {
+            set_upgrade_report_delay(None);
+        }
+    }
+
+    let database = Database::new();
+    drop(v13_store(&database.0));
+
+    let _delay = Delay;
+    set_upgrade_report_delay(Some(Duration::from_millis(200)));
+    let note = startup_note(&database.0);
+    let path = database.0.clone();
+    let waiting = tokio::spawn(async move {
+        let root = rutis::Ctx::root().unwrap();
+        let view = root.plugin(dim_app_server::storage::SqliteStoragePlugin::new(path));
+        let result = dim_agent_runtime::wait_active(
+            &root,
+            std::slice::from_ref(&view),
+            Duration::from_millis(1_000),
+            &CancellationToken::new(),
+        )
+        .await;
+        root.shutdown().await.unwrap();
+        result
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen = None;
+    while Instant::now() < deadline && seen.is_none() {
+        seen = std::fs::read_to_string(&note).ok().filter(|text| {
+            text.starts_with(&format!(
+                "dimcode-startup-progress v1 pid={}\n",
+                std::process::id()
+            ))
+        });
+        if seen.is_none() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    let seen = seen.expect("the upgrade wrote its progress note while it ran");
+    assert!(
+        seen.contains("store-upgrade from=13 to=34 progress="),
+        "{seen}"
+    );
+    waiting
+        .await
+        .unwrap()
+        .expect("reported progress keeps the opening inside its inactivity bound");
+    assert!(
+        !note.exists(),
+        "a successful open removes the progress note"
+    );
+    let connection = Connection::open(&database.0).unwrap();
+    assert_eq!(marker(&connection), vec![i64::from(STORE_FORMAT)]);
+}
+
 /// Grants upsert without downgrading write, survive a restart, are absent
 /// from a fork, and remove takes the same path it added.
 #[tokio::test]

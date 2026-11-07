@@ -33,6 +33,26 @@ impl rutis::Event for OpeningAdvanced {
     type Value = ();
 }
 
+/// Reports that the opening this context's plugin belongs to advanced: the
+/// plugin made real progress in its `apply`. Any plugin whose opening can run
+/// long may call it; it renews the [`StartupProgress`] inactivity interval of
+/// every opening whose subtree contains the plugin's row, and changes nothing
+/// else about the opening. A report is a synchronous event, so a plugin whose
+/// work runs on a blocking thread reports from there. A context whose plugin
+/// has no live fiber reports nothing: the report would be dropped anyway.
+pub fn opening_advanced(ctx: &Ctx) {
+    let instance = ctx.instance();
+    let id = ctx
+        .diagnostics()
+        .plugins
+        .into_iter()
+        .find(|plugin| plugin.instance == instance)
+        .map(|plugin| plugin.id);
+    if let Some(id) = id {
+        let _ = ctx.emit(OpeningAdvanced(id));
+    }
+}
+
 /// Bounds an opening by inactivity in its own fiber subtrees, including rows
 /// created while the opening is in flight. Other scopes cannot extend it.
 pub struct StartupProgress {

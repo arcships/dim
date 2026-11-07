@@ -6,7 +6,10 @@ use dim_agent_types::InputBlock;
 use crate::client::Client;
 use crate::wire::{Event, EventContent};
 
-/// The key of the objective block and of the status block (Goal §A.2).
+/// The key of Goal's state record (Goal §2, A.2).
+const STATE_KEY: &str = "goal:state";
+/// The keys of the objective and the status blocks, read only on a history
+/// written before the state record existed (Goal §3, A.3).
 const OBJECTIVE_KEY: &str = "goal:objective";
 const STATUS_KEY: &str = "goal:status";
 
@@ -66,6 +69,15 @@ enum Block {
     },
     /// `goal:status`, retired.
     StatusRetire { input: String },
+    /// `goal:state`, the record in force (Goal §2). A retired one says the
+    /// branch has no goal.
+    State {
+        input: String,
+        retire: bool,
+        objective: Option<String>,
+        status: Option<Status>,
+        evaluator: bool,
+    },
 }
 
 impl Block {
@@ -74,7 +86,8 @@ impl Block {
             Self::Objective { input, .. }
             | Self::ObjectiveRetire { input }
             | Self::Status { input, .. }
-            | Self::StatusRetire { input } => input,
+            | Self::StatusRetire { input }
+            | Self::State { input, .. } => input,
         }
     }
 }
@@ -104,13 +117,23 @@ impl Fold {
                     let InputBlock::Raw { text, key, retire } = block;
                     let Some(key) = key
                         .as_deref()
-                        .filter(|key| [OBJECTIVE_KEY, STATUS_KEY].contains(key))
+                        .filter(|key| [STATE_KEY, OBJECTIVE_KEY, STATUS_KEY].contains(key))
                     else {
                         continue;
                     };
                     // Goal reads a block only when it opens with a marker, the
                     // retired ones included, whatever its `kind` says.
                     if marker(text).is_none() {
+                        continue;
+                    }
+                    if key == STATE_KEY {
+                        self.blocks.push(Block::State {
+                            input: event.id.clone(),
+                            retire: *retire,
+                            objective: (!*retire).then(|| objective_of(text)).flatten(),
+                            status: (!*retire).then(|| state_of(text)).flatten(),
+                            evaluator: attribute(text, "judge").as_deref() == Some("evaluator"),
+                        });
                         continue;
                     }
                     if *retire {
@@ -161,6 +184,37 @@ impl Fold {
     }
 
     pub fn goal(&self) -> Option<Goal> {
+        // The newest live `goal:state` record is the state in force; the two
+        // old keys are read only by a history written before it existed (D6).
+        let mut record = None;
+        for block in &self.blocks {
+            if self.deleted.contains(block.input()) {
+                continue;
+            }
+            if matches!(block, Block::State { .. }) {
+                record = Some(block);
+            }
+        }
+        if let Some(Block::State {
+            retire,
+            objective,
+            status,
+            evaluator,
+            ..
+        }) = record
+        {
+            if *retire {
+                return None;
+            }
+            let objective = objective
+                .clone()
+                .filter(|objective| !objective.is_empty())?;
+            return Some(Goal {
+                objective,
+                status: status.clone().unwrap_or(Status::None),
+                evaluator: *evaluator,
+            });
+        }
         let mut objective = None;
         let mut judge = false;
         let mut status = None;
@@ -197,6 +251,9 @@ impl Fold {
                     status = Some(value.clone());
                 }
                 Block::StatusRetire { .. } => status = None,
+                // Read before this loop: a state record is the goal itself,
+                // never part of the old-key fallback.
+                Block::State { .. } => {}
             }
         }
         objective.map(|objective| Goal {
@@ -205,6 +262,34 @@ impl Fold {
             evaluator: judge,
         })
     }
+}
+
+/// The status a live `goal:state` record states.
+fn state_of(text: &str) -> Option<Status> {
+    Some(match attribute(text, "status").as_deref()? {
+        "active" => Status::Active,
+        "paused" => Status::Paused(attribute(text, "reason").unwrap_or_else(|| "user".into())),
+        "completed" => Status::Completed,
+        "blocked" => Status::Blocked,
+        "none" => Status::None,
+        _ => return None,
+    })
+}
+
+/// The objective a live `goal:state` record carries: its own element, read
+/// between the tags and unescaped, so a value that contains a heading, a
+/// closing tag or a blank line round-trips byte for byte (R1).
+fn objective_of(text: &str) -> Option<String> {
+    tagged(text, "objective")
+}
+
+/// The escaped content between `<tag>` and `</tag>`, unescaped; `None` when the
+/// element is absent (Goal's `tagged`).
+fn tagged(text: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>\n");
+    let start = text.find(&open)? + open.len();
+    let end = start + text[start..].find(&format!("\n</{tag}>"))?;
+    Some(unescape(&text[start..end]))
 }
 
 /// The status a live `goal:status` block sets (Goal A.3): a `kind="status"`
@@ -596,6 +681,29 @@ mod tests {
                 "<dim-goal kind=\"goal\" op=\"set\" branch=\"main\">\nObjective:\n&lt;/dim-goal&gt; &amp; &quot;quoted&quot;\n\nGoal.\n</dim-goal>"}]),
         ));
         assert_eq!(fold.goal().unwrap().objective, "</dim-goal> & \"quoted\"");
+    }
+
+    /// R1: each free-text field of a state record sits in its own element, so
+    /// an objective carrying a heading, a closing tag or a blank line reads
+    /// back byte for byte.
+    #[test]
+    fn a_state_record_objective_reads_back_byte_for_byte() {
+        let objective = "Keep the heading.\n\nResult:\nInclude details.\n\nBlocker:\n</objective>\n&lt;\n\nafter.";
+        let escaped = objective
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;");
+        let mut fold = Fold::default();
+        fold.apply(&input(
+            10,
+            json!([{"type":"raw","key":STATE_KEY,"text":format!(
+                "<dim-goal kind=\"state\" status=\"completed\" after=\"10\" branch=\"main\">\n<objective>\n{escaped}\n</objective>\nThe policy.\nThe goal is completed.\n<result>\nDone.\n</result>\n</dim-goal>"
+            )}]),
+        ));
+        let goal = fold.goal().expect("the record is a goal");
+        assert_eq!(goal.objective, objective);
+        assert_eq!(goal.status, Status::Completed);
     }
 
     #[test]

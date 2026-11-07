@@ -1,6 +1,6 @@
-//! Goal's model-facing texts (design appendix A.5): the change and
-//! continuation inputs, the marker encoding, and the policy sentences the row's
-//! factory configuration carries.
+//! Goal's model-facing texts (design appendix A.5): the state record, the
+//! change triggers, the continuation inputs, the marker encoding, and the
+//! policy sentences the row's factory configuration carries.
 //!
 //! Every string here is the one the TypeScript package shipped, byte for byte;
 //! `crates/dim-goal/tests` pins each one where the model sees it or where it is
@@ -9,7 +9,13 @@
 use dim_agent_types::{InputBlock, InputMessageData, InputMode};
 use serde_json::{Value, json};
 
+/// The key Goal writes its state under (§2, A.2).
+pub const STATE_KEY: &str = "goal:state";
+/// The old objective key, read only on histories written before the state
+/// record existed (§3, A.3).
 pub const OBJECTIVE_KEY: &str = "goal:objective";
+/// The old status key, read only on histories written before the state record
+/// existed (§3, A.3).
 pub const STATUS_KEY: &str = "goal:status";
 
 /// The objective limit and the summary limit (A10).
@@ -115,137 +121,358 @@ pub fn input(blocks: Vec<Block>, mode: InputMode) -> InputMessageData {
     }
 }
 
-fn active_status(branch: &str) -> Block {
-    Block::new(
-        vec![
-            ("kind", "status".into()),
-            ("status", "active".into()),
-            ("branch", branch.into()),
-        ],
-        vec!["The goal for branch ".to_owned()
-            + branch
-            + " is active. Keep working toward it across turns. When it is fully achieved, call goal_update with status \"completed\". If you cannot make progress without the user, call goal_update with status \"blocked\" and explain why."],
-    )
-    .key(STATUS_KEY)
+/// The status a state record states (A.5). `None` is an objective without a
+/// status, which `edit` on a branch with no goal leaves.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum State {
+    Active,
+    Paused(String),
+    Completed(String),
+    Blocked(String),
+    #[default]
+    None,
 }
 
-fn cleared(branch: &str, mut attrs: Vec<(&'static str, String)>, text: &str) -> InputMessageData {
-    let mut objective = vec![("kind", "goal".to_owned()), ("op", "clear".to_owned())];
-    objective.append(&mut attrs);
-    objective.push(("branch", branch.to_owned()));
-    input(
-        vec![
-            Block::new(objective, vec![text.to_owned()])
-                .key(OBJECTIVE_KEY)
-                .retire(),
+impl State {
+    /// The `status` attribute's value.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Paused(_) => "paused",
+            Self::Completed(_) => "completed",
+            Self::Blocked(_) => "blocked",
+            Self::None => "none",
+        }
+    }
+    /// The pause reason, when the state is paused.
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Paused(reason) => Some(reason),
+            _ => None,
+        }
+    }
+    /// The result summary, when the state is completed or blocked.
+    pub fn summary(&self) -> Option<&str> {
+        match self {
+            Self::Completed(summary) | Self::Blocked(summary) => Some(summary),
+            _ => None,
+        }
+    }
+}
+
+/// Which of Goal's keys the inherited prefix left live (§3.4). A state record
+/// retires `goal:state`; the start clear also retires the old keys when they
+/// are still live.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Live {
+    pub state: bool,
+    pub objective: bool,
+    pub status: bool,
+}
+
+impl Live {
+    pub fn any(&self) -> bool {
+        self.state || self.objective || self.status
+    }
+}
+
+fn active_sentence(branch: &str) -> String {
+    format!(
+        "The goal for branch {branch} is active. Keep working toward it across turns. When it is fully achieved, call goal_update with status \"completed\". If you cannot make progress without the user, call goal_update with status \"blocked\" and explain why."
+    )
+}
+
+fn paused_sentence(branch: &str, reason: &str) -> String {
+    if reason == "user" {
+        format!(
+            "The user set the goal status for branch {branch} to paused. Do not continue working toward a goal for branch {branch} on your own; respond only to the user's latest input."
+        )
+    } else {
+        format!(
+            "The goal is paused ({}). Do not continue working toward it on your own; respond only to the user's latest input.",
+            reason_phrase(reason)
+        )
+    }
+}
+
+fn result_sentence(branch: &str, state: &State, judge: Judge) -> String {
+    match state {
+        State::Completed(_) if judge == Judge::Evaluator => format!(
+            "An evaluator verified that the goal for branch {branch} is completed. Do not continue working toward it on your own."
+        ),
+        State::Blocked(_) if judge == Judge::Evaluator => format!(
+            "An evaluator found that the goal for branch {branch} cannot proceed without the user. Do not continue working toward it on your own."
+        ),
+        State::Completed(_) => format!(
+            "goal_update set the goal status for branch {branch} to completed. Do not continue working toward a goal for branch {branch} on your own."
+        ),
+        _ => format!(
+            "goal_update set the goal status for branch {branch} to blocked. Do not continue working toward a goal for branch {branch} on your own."
+        ),
+    }
+}
+
+/// The fact a state record answers (D3, R5): the change trigger it states,
+/// named by submission id when the record commits in the trigger's atomic
+/// batch, or the sequence of the fact it answers. A restatement names the
+/// rebuild's cutoff it recomputed against and answers no fact (R6.1).
+#[derive(Clone, Copy)]
+pub enum Answered<'a> {
+    Sequence(u64),
+    Trigger(&'a str),
+    Restated(u64),
+}
+
+impl Answered<'_> {
+    /// The record's attributes naming the answered fact, or that it answers
+    /// none and names the cutoff it restated.
+    fn attributes(&self) -> Vec<(&'static str, String)> {
+        match self {
+            Self::Sequence(after) => vec![("after", after.to_string())],
+            Self::Trigger(trigger) => vec![("trigger", (*trigger).to_owned())],
+            Self::Restated(cutoff) => {
+                vec![("after", cutoff.to_string()), ("restated", "true".into())]
+            }
+        }
+    }
+}
+
+/// The state record Goal writes (A.5): one `goal:state` block, Append, keyed so
+/// compaction replays it and `session.keys` shows it (§2, D1).
+///
+/// The body names the objective and its policy, then states the status; the
+/// attributes carry only what a reader parses, because the block's whole text
+/// enters the model's context (D2). Each free-text field sits in its own
+/// element with escaped content, so a value that contains a heading or a
+/// closing tag cannot be read short (R1). The old keys the fold still holds
+/// live are retired in the same input (R1): the record is the branch's only
+/// state, so a compaction baseline copied after it carries no stale old block.
+pub fn state(
+    branch: &str,
+    objective: Option<&str>,
+    state: State,
+    judge: Judge,
+    answered: Answered,
+    live: Live,
+    texts: &GoalTexts,
+) -> InputMessageData {
+    let Some(objective) = objective.filter(|objective| !objective.is_empty()) else {
+        return cleared(branch, answered, live);
+    };
+    let mut attrs = vec![
+        ("kind", "state".to_owned()),
+        ("status", state.word().to_owned()),
+    ];
+    if let Some(reason) = state.reason() {
+        attrs.push(("reason", reason.to_owned()));
+    }
+    if judge == Judge::Evaluator {
+        attrs.push(("judge", "evaluator".to_owned()));
+    }
+    attrs.extend(answered.attributes());
+    attrs.push(("branch", branch.to_owned()));
+    let mut body = vec![
+        "<objective>".to_owned(),
+        escape(objective),
+        "</objective>".to_owned(),
+        branch_text(&texts.objective, branch),
+    ];
+    match &state {
+        State::Active => body.push(active_sentence(branch)),
+        State::Paused(reason) => body.push(paused_sentence(branch, reason)),
+        State::Completed(summary) | State::Blocked(summary) => {
+            let (open, close) = if matches!(state, State::Completed(_)) {
+                ("<result>", "</result>")
+            } else {
+                ("<blocker>", "</blocker>")
+            };
+            body.push(result_sentence(branch, &state, judge));
+            body.push(open.to_owned());
+            body.push(escape(summary));
+            body.push(close.to_owned());
+        }
+        State::None => body.push(format!("The goal for branch {branch} has no status.")),
+    }
+    let text = body.join("\n");
+    let mut blocks = vec![Block::new(attrs, body).key(STATE_KEY)];
+    blocks.extend(retire_old_keys(branch, &text, live));
+    input(blocks, InputMode::Append)
+}
+
+/// A state record that says the branch has no goal: one retired `goal:state`
+/// block (§2, A.5), and the old keys too when the fold still holds them live.
+fn cleared(branch: &str, answered: Answered, live: Live) -> InputMessageData {
+    retire_blocks(
+        branch,
+        answered,
+        None,
+        format!("The goal for branch {branch} is not in effect."),
+        live,
+    )
+}
+
+/// The start clear (§3.4, A11): one input retiring `goal:state`, and the old
+/// keys too when the inherited prefix still has them live.
+pub fn start_clear(branch: &str, after: u64, live: Live) -> InputMessageData {
+    retire_blocks(
+        branch,
+        Answered::Sequence(after),
+        Some("new_branch"),
+        format!(
+            "Any goal above belongs to another branch, not to branch {branch}. Disregard it; branch {branch} has no goal."
+        ),
+        live,
+    )
+}
+
+fn retire_blocks(
+    branch: &str,
+    answered: Answered,
+    reason: Option<&str>,
+    body: String,
+    live: Live,
+) -> InputMessageData {
+    let mut attrs = vec![
+        ("kind", "state".to_owned()),
+        ("status", "cleared".to_owned()),
+    ];
+    if let Some(reason) = reason {
+        attrs.push(("reason", reason.to_owned()));
+    }
+    attrs.extend(answered.attributes());
+    attrs.push(("branch", branch.to_owned()));
+    let mut blocks = vec![
+        Block::new(attrs, vec![body.clone()])
+            .key(STATE_KEY)
+            .retire(),
+    ];
+    blocks.extend(retire_old_keys(branch, &body, live));
+    input(blocks, InputMode::Append)
+}
+
+/// The retire blocks that end the old keys a history written before the state
+/// record left live (§3): they ride in the same input as the record that
+/// supersedes them, so the branch then holds only `goal:state`.
+fn retire_old_keys(branch: &str, body: &str, live: Live) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    if live.objective {
+        blocks.push(
+            Block::new(
+                vec![
+                    ("kind", "goal".to_owned()),
+                    ("op", "clear".to_owned()),
+                    ("branch", branch.to_owned()),
+                ],
+                vec![body.to_owned()],
+            )
+            .key(OBJECTIVE_KEY)
+            .retire(),
+        );
+    }
+    if live.status {
+        blocks.push(
             Block::new(
                 vec![
                     ("kind", "status".to_owned()),
                     ("status", "cleared".to_owned()),
                     ("branch", branch.to_owned()),
                 ],
-                vec![format!("The goal for branch {branch} has no status.")],
+                vec![body.to_owned()],
             )
             .key(STATUS_KEY)
             .retire(),
-        ],
-        InputMode::Append,
-    )
+        );
+    }
+    blocks
 }
 
-/// The change inputs (A.5); each is one `input/message`.
-pub fn set(branch: &str, objective: &str, texts: &GoalTexts, judge: Judge) -> InputMessageData {
+/// The change triggers (A.5, D3): each says what was asked, never what the
+/// state is; the state record that follows states the state.
+pub fn set(branch: &str, objective: &str, judge: Judge) -> InputMessageData {
     let mut attrs = vec![("kind", "goal".to_owned()), ("op", "set".to_owned())];
     if judge == Judge::Evaluator {
         attrs.push(("judge", "evaluator".to_owned()));
     }
     attrs.push(("branch", branch.to_owned()));
     input(
-        vec![
-            Block::new(
-                attrs,
-                vec![
-                    "Objective:".to_owned(),
-                    escape(objective),
-                    String::new(),
-                    branch_text(&texts.objective, branch),
-                ],
-            )
-            .key(OBJECTIVE_KEY),
-            active_status(branch),
-        ],
+        vec![Block::new(
+            attrs,
+            vec![
+                "Objective:".to_owned(),
+                escape(objective),
+                String::new(),
+                format!("The user asked to set the goal for branch {branch} to this objective."),
+            ],
+        )],
         InputMode::Queue,
     )
 }
 
 pub fn edit(branch: &str, objective: &str) -> InputMessageData {
     input(
-        vec![
-            Block::new(
-                vec![
-                    ("kind", "goal".to_owned()),
-                    ("op", "edit".to_owned()),
-                    ("branch", branch.to_owned()),
-                ],
-                vec![
-                    "Objective:".to_owned(),
-                    escape(objective),
-                    String::new(),
-                    format!(
-                        "The user set the objective of the goal for branch {branch}. This does not change its status."
-                    ),
-                ],
-            )
-            .key(OBJECTIVE_KEY),
-        ],
+        vec![Block::new(
+            vec![
+                ("kind", "goal".to_owned()),
+                ("op", "edit".to_owned()),
+                ("branch", branch.to_owned()),
+            ],
+            vec![
+                "Objective:".to_owned(),
+                escape(objective),
+                String::new(),
+                format!("The user asked to edit the objective of the goal for branch {branch}."),
+            ],
+        )],
         InputMode::Append,
     )
 }
 
 pub fn pause(branch: &str) -> InputMessageData {
     input(
-        vec![
-            Block::new(
-                vec![
-                    ("kind", "goal".to_owned()),
-                    ("op", "pause".to_owned()),
-                    ("reason", "user".to_owned()),
-                    ("branch", branch.to_owned()),
-                ],
-                vec![format!(
-                    "The user set the goal status for branch {branch} to paused. Do not continue working toward a goal for branch {branch} on your own; respond only to the user's latest input."
-                )],
-            )
-            .key(STATUS_KEY),
-        ],
+        vec![Block::new(
+            vec![
+                ("kind", "goal".to_owned()),
+                ("op", "pause".to_owned()),
+                ("reason", "user".to_owned()),
+                ("branch", branch.to_owned()),
+            ],
+            vec![format!(
+                "The user asked to pause the goal for branch {branch}."
+            )],
+        )],
         InputMode::Append,
     )
 }
 
 pub fn resume(branch: &str) -> InputMessageData {
     input(
-        vec![
-            Block::new(
-                vec![
-                    ("kind", "goal".to_owned()),
-                    ("op", "resume".to_owned()),
-                    ("branch", branch.to_owned()),
-                ],
-                vec![format!(
-                    "The user set the goal status for branch {branch} to active. If branch {branch} has a goal objective, keep working toward it across turns; when it is completed or blocked, call goal_update."
-                )],
-            )
-            .key(STATUS_KEY),
-        ],
+        vec![Block::new(
+            vec![
+                ("kind", "goal".to_owned()),
+                ("op", "resume".to_owned()),
+                ("branch", branch.to_owned()),
+            ],
+            vec![format!(
+                "The user asked to resume the goal for branch {branch}."
+            )],
+        )],
         InputMode::Queue,
     )
 }
 
 pub fn clear(branch: &str) -> InputMessageData {
-    cleared(
-        branch,
-        vec![],
-        "The previous goal was cleared by the user. Disregard it.",
+    input(
+        vec![Block::new(
+            vec![
+                ("kind", "goal".to_owned()),
+                ("op", "clear".to_owned()),
+                ("branch", branch.to_owned()),
+            ],
+            vec![format!(
+                "The user asked to clear the goal for branch {branch}."
+            )],
+        )],
+        InputMode::Append,
     )
 }
 
@@ -256,29 +483,24 @@ pub fn report(branch: &str, status: &str, summary: &str) -> InputMessageData {
         ("Blocker:", "blocked")
     };
     input(
-        vec![
-            Block::new(
-                vec![
-                    ("kind", "goal".to_owned()),
-                    ("op", op.to_owned()),
-                    ("branch", branch.to_owned()),
-                ],
-                vec![
-                    label.to_owned(),
-                    escape(summary),
-                    String::new(),
-                    format!(
-                        "goal_update set the goal status for branch {branch} to {op}. Do not continue working toward a goal for branch {branch} on your own."
-                    ),
-                ],
-            )
-            .key(STATUS_KEY),
-        ],
+        vec![Block::new(
+            vec![
+                ("kind", "goal".to_owned()),
+                ("op", op.to_owned()),
+                ("branch", branch.to_owned()),
+            ],
+            vec![
+                label.to_owned(),
+                escape(summary),
+                String::new(),
+                format!("goal_update reported the goal for branch {branch} as {op}."),
+            ],
+        )],
         InputMode::Append,
     )
 }
 
-/// Goal's own writes, each marked with the sequence that decided it. `limit`
+/// Goal's continuations, each marked with the sequence that decided it. `limit`
 /// is the explicit `maxContinuations`; the marker omits it when there is none.
 pub fn continuation(
     branch: &str,
@@ -307,7 +529,7 @@ pub fn continuation(
     )
 }
 
-/// The reason phrases an automatic pause states (A.5).
+/// The reason phrases a pause states (A.5).
 pub fn reason_phrase(reason: &str) -> String {
     match reason {
         "interrupted" => "the user interrupted the turn".to_owned(),
@@ -320,41 +542,6 @@ pub fn reason_phrase(reason: &str) -> String {
         "evaluation_failed" => "the evaluator could not check the result".to_owned(),
         _ => String::new(),
     }
-}
-
-pub fn automatic_pause(branch: &str, reason: &str, after: u64) -> InputMessageData {
-    input(
-        vec![
-            Block::new(
-                vec![
-                    ("kind", "goal".to_owned()),
-                    ("op", "pause".to_owned()),
-                    ("reason", reason.to_owned()),
-                    ("after", after.to_string()),
-                    ("branch", branch.to_owned()),
-                ],
-                vec![format!(
-                    "The goal is paused ({}). Do not continue working toward it on your own; respond only to the user's latest input.",
-                    reason_phrase(reason)
-                )],
-            )
-            .key(STATUS_KEY),
-        ],
-        InputMode::Append,
-    )
-}
-
-pub fn start_clear(branch: &str, after: u64) -> InputMessageData {
-    cleared(
-        branch,
-        vec![
-            ("reason", "new_branch".to_owned()),
-            ("after", after.to_string()),
-        ],
-        &format!(
-            "Any goal above belongs to another branch, not to branch {branch}. Disregard it; branch {branch} has no goal."
-        ),
-    )
 }
 
 /// Pursuit's follow-up on the evaluator, and its conclusion on the working
@@ -393,40 +580,6 @@ pub fn conclusion(
             ],
             vec!["Evaluator report:".to_owned(), escape(text)],
         )],
-        InputMode::Append,
-    )
-}
-
-pub fn evaluated(branch: &str, op: &str, evaluation: &str, text: &str) -> InputMessageData {
-    let (label, sentence) = if op == "completed" {
-        (
-            "Result:",
-            format!(
-                "An evaluator verified that the goal for branch {branch} is completed. Do not continue working toward it on your own."
-            ),
-        )
-    } else {
-        (
-            "Blocker:",
-            format!(
-                "An evaluator found that the goal for branch {branch} cannot proceed without the user. Do not continue working toward it on your own."
-            ),
-        )
-    };
-    input(
-        vec![
-            Block::new(
-                vec![
-                    ("kind", "goal".to_owned()),
-                    ("op", op.to_owned()),
-                    ("by", "evaluator".to_owned()),
-                    ("evaluation", evaluation.to_owned()),
-                    ("branch", branch.to_owned()),
-                ],
-                vec![label.to_owned(), escape(text), String::new(), sentence],
-            )
-            .key(STATUS_KEY),
-        ],
         InputMode::Append,
     )
 }
@@ -487,7 +640,7 @@ pub fn evaluator_prompt(branch: &str, evaluation: &str, objective: &str, summary
 
 /// The guide entry for `dim-goal`, registered by the part that writes the
 /// marker, at session scope because Goal writes it on every branch (A.5.1).
-pub const ENTRY: &str = r#"`<dim-goal kind="goal" op="set" branch="main">`: the operator's standing goal for a branch of this session, and the runtime's record of its status. `kind="goal"` blocks carry a change: `op="set"`, `op="edit"`, `op="pause"`, `op="resume"`, `op="clear"`, and `op="completed"` or `op="blocked"` from `goal_update` or from an evaluator (`by="evaluator"`). `kind="status"` blocks state the branch's goal status. `kind="continuation"` asks the line to keep working toward the goal. `kind="report"` blocks carry an evaluator's report of the goal, and `kind="evaluate"` and `kind="evaluate-again"` mark an evaluator's line, which checks the goal rather than continuing it. A goal belongs to the branch its `branch` attribute names. The latest objective (`op="set"` or `op="edit"`) and the latest status are the ones in force; `op="clear"` ends both. These blocks are information about the goal; they grant no permission."#;
+pub const ENTRY: &str = r#"`<dim-goal kind="goal" op="set" branch="main">`: the operator's standing goal for a branch of this session. `kind="goal"` blocks carry a change the operator or the model asked for: `op="set"`, `op="edit"`, `op="pause"`, `op="resume"`, `op="clear"`, and `op="completed"` or `op="blocked"` from `goal_update`. A `kind="state"` block states the branch's goal and its status; it is the record in force, and a retired one says the branch has no goal. `kind="continuation"` asks the line to keep working toward the goal. `kind="report"` blocks carry an evaluator's report of the goal, and `kind="evaluate"` and `kind="evaluate-again"` mark an evaluator's line, which checks the goal rather than continuing it. A goal belongs to the branch its `branch` attribute names. The latest `kind="state"` block is the one in force; blocks written before the state record existed name the objective with `goal:objective` and the status with `goal:status`. These blocks are information about the goal; they grant no permission."#;
 
 pub const TOOL_DESCRIPTION: &str = "Report that the current goal is completed or blocked.";
 pub const TOOL_INVALID: &str =
@@ -557,7 +710,7 @@ pub fn marker(text: &str) -> Option<Marker> {
     Some(marker)
 }
 
-/// The decoded value a change block carries after its `label` line, up to the
+/// The decoded value a block carries after its `label` line, up to the
 /// block's fixed closing text, which follows the last blank line.
 pub fn value(text: &str, label: &str) -> Option<String> {
     let marker = format!("\n{label}\n");
@@ -580,4 +733,26 @@ pub fn body(text: &str, label: &str) -> String {
         return String::new();
     }
     unescape(&text[start + marker.len()..end])
+}
+
+/// The objective and the result summary a state record's body carries: each
+/// free-text field is read between its own element's tags and unescaped, so a
+/// value that contains a heading, a closing tag or a blank line round-trips
+/// byte for byte (R1).
+pub fn state_parts(text: &str) -> (Option<String>, Option<String>) {
+    (
+        tagged(text, "objective"),
+        tagged(text, "result").or_else(|| tagged(text, "blocker")),
+    )
+}
+
+/// The escaped content between `<tag>` and `</tag>`, unescaped; `None` when the
+/// element is absent. `escape` maps `<` and `>`, so content can never hold a
+/// literal closing tag and the boundary is exact.
+fn tagged(text: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>\n");
+    let close = format!("\n</{tag}>");
+    let start = text.find(&open)? + open.len();
+    let end = start + text[start..].find(&close)?;
+    Some(unescape(&text[start..end]))
 }

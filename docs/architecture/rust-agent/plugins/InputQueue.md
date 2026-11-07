@@ -74,12 +74,29 @@ observable input queue.
 ### Events and lifetime
 
 Consumes `input/message`, `input/consumed`, `turn/start`, `turn/end`,
-`stop/interrupt`; produces `input/applied`. It does not run a model itself.
+`stop/interrupt`; produces `input/applied` and, for a handover input,
+`input/deleted`. It does not run a model itself.
 It registers with `Dispatcher::consume`; the rebuild writes owed application
 decisions, without duplicating already committed ones, before any live event. No background tasks or
 external resources. Reload reconstructs state from local history. An idle append
 is pending until a driving input; an interrupt is not permission to start a new
 turn from previously unapplied input.
+
+### Handover inputs
+
+A handover input is an `input/message` whose `handover` is `{turn_id,
+request_id}`: it is addressed to one handover's continuation and is
+model-readable only if that continuation consumes it. InputQueue never releases
+one (it writes no `input/applied`) and does not count it in the published queue
+size. It deletes one with `input/deleted` when its turn ends without consuming
+it, or on arrival when its turn is not open. These are the only InputQueue
+rules for it; the Loop consumes it only in the batch that starts its handover's
+continuation. Its instruction is a raw block with no `user`, like Goal's
+automatic inputs; clients that show the operator's words never show it as the
+operator's message.
+
+A handover input is never a [state input](../../../design/model-prompts.md#5-scopes),
+so an ordering rule for state inputs leaves it last.
 
 ### Tests
 

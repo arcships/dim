@@ -153,11 +153,13 @@ impl SessionPort for SessionHost {
 impl SessionHost {
     /// Runs the session on `client`, the connection the composition root
     /// took from the client tree, composing management text in `language`,
-    /// the interface's language code.
+    /// the interface's language code. `notice` is shown once before the
+    /// Session opens; it says a daemon of another build was kept in use.
     pub fn start(
         options: Options,
         client: Client,
         language: &'static str,
+        notice: Option<String>,
         ctx: rutis::Ctx,
         leaf_end: tokio::sync::oneshot::Sender<()>,
     ) -> Self {
@@ -177,7 +179,9 @@ impl SessionHost {
                         return;
                     }
                 };
-                runtime.block_on(run(options, client, command_rx, update_tx, ctx, leaf_end));
+                runtime.block_on(run(
+                    options, client, notice, command_rx, update_tx, ctx, leaf_end,
+                ));
             })
             .expect("spawn session thread");
         Self {
@@ -386,11 +390,15 @@ struct McpCallback {
 async fn run(
     options: Options,
     client: Client,
+    notice: Option<String>,
     mut commands: UnboundedReceiver<Command>,
     updates: mpsc::Sender<Update>,
     ctx: rutis::Ctx,
     leaf_end: tokio::sync::oneshot::Sender<()>,
 ) {
+    if let Some(notice) = notice {
+        let _ = updates.send(Update::Notice(notice));
+    }
     if update::enabled() {
         let offers = updates.clone();
         let home = options.home.clone();
@@ -2119,6 +2127,12 @@ impl Worker {
         }
         let branch = pending.branch.clone();
         if let Some((call, sequence)) = pending.written {
+            // The method writes a change input and replies with its sequence.
+            // The report is released at that sequence for every daemon, as on
+            // main: a daemon that publishes the old keys answers with the same
+            // sequence but writes no record, and must not leave the command
+            // parked (R6). The displayed goal follows the newest record or the
+            // old-key state as it arrives through the keyed projection.
             if self.cursors.get(&branch).copied().unwrap_or(0) >= sequence {
                 self.finish_goal(&branch, Some(call));
             }

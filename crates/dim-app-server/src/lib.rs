@@ -151,7 +151,7 @@ impl ServerConfig {
 pub enum ServerError {
     #[error("server I/O: {0}")]
     Io(#[from] std::io::Error),
-    #[error("session cleanup: {0}")]
+    #[error("App Server runtime: {0}")]
     Runtime(#[from] dim_agent_runtime::AgentError),
     #[error("server task: {0}")]
     Join(#[from] tokio::task::JoinError),

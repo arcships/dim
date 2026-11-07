@@ -498,6 +498,9 @@ Carried from [#6](https://github.com/arcships/dim/issues/6):
   reconcile, required rows becoming Active and opening replay. A row's first activation during the
   opening, advancement of its branch's dispatch sequence, or completion of an opening receipt resets
   that interval. Restarting the same row does not renew it; activity in another Session does not.
+  A plugin whose own `apply` runs long may report real progress with `opening_advanced(ctx)`
+  (`dim_agent_runtime::assembly`), which resets the same interval; a plugin whose work runs on a
+  blocking thread reports from there.
   There is no fixed total startup deadline. The
   same rule applies to Session and branch opening, process startup and restart. A branch waiting for
   its parent follows that parent's bounded opening rather than imposing another total deadline.

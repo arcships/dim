@@ -188,7 +188,7 @@ impl RecallTool {
         let head = branch.sequence();
         // Newest first and bounded at that head: the kinds the narrative
         // folds, over the whole chain.
-        let mut query = TimelineQuery {
+        let query = TimelineQuery {
             scope: TimelineQueryScope::Chain,
             include_publishing: false,
             from_event: None,
@@ -202,14 +202,27 @@ impl RecallTool {
             limit: std::num::NonZeroU64::new(PAGE_EVENTS as u64).expect("a page holds an event"),
             offset: 0,
         };
+        let mut from_event: Option<String> = None;
+        let mut repeated = false;
         let mut exhausted = false;
         while !exhausted {
-            let page = branch
-                .query(query.clone())
-                .await
-                .map_err(Self::facade_error)?;
-            query.offset += page.events.len() as u64;
-            exhausted = read.push(page);
+            let mut page_query = query.clone();
+            if let Some(from) = &from_event {
+                page_query.from_event = Some(from.clone());
+                page_query.from_sequence = None;
+            }
+            let mut page = branch.query(page_query).await.map_err(Self::facade_error)?;
+            let complete = page.events.len() < PAGE_EVENTS;
+            if repeated && !page.events.is_empty() {
+                page.events.remove(0);
+                page.positions.remove(0);
+            }
+            let next = page.events.last().map(|event| event.id.clone());
+            exhausted = read.push(page, complete);
+            if let Some(next) = next {
+                from_event = Some(next);
+                repeated = true;
+            }
             check_cancel(&cancel)?;
             if !read.reached(&arguments) {
                 continue;
@@ -225,12 +238,23 @@ impl RecallTool {
         // from a fold the answer already reached, and a call folds at most
         // twice however many pages it reads.
         while !exhausted {
-            let page = branch
-                .query(query.clone())
-                .await
-                .map_err(Self::facade_error)?;
-            query.offset += page.events.len() as u64;
-            exhausted = read.push(page);
+            let mut page_query = query.clone();
+            if let Some(from) = &from_event {
+                page_query.from_event = Some(from.clone());
+                page_query.from_sequence = None;
+            }
+            let mut page = branch.query(page_query).await.map_err(Self::facade_error)?;
+            let complete = page.events.len() < PAGE_EVENTS;
+            if repeated && !page.events.is_empty() {
+                page.events.remove(0);
+                page.positions.remove(0);
+            }
+            let next = page.events.last().map(|event| event.id.clone());
+            exhausted = read.push(page, complete);
+            if let Some(next) = next {
+                from_event = Some(next);
+                repeated = true;
+            }
             check_cancel(&cancel)?;
         }
         let narrative = read.fold();
@@ -357,9 +381,10 @@ impl<'a> Read<'a> {
     }
 
     /// Folds one descending page and says whether the selection is exhausted:
-    /// a page shorter than the read asked for ends it.
-    fn push(&mut self, page: TimelineQueryReply) -> bool {
-        self.complete = page.events.len() < PAGE_EVENTS;
+    /// the caller reports a page shorter than the read asked for before any
+    /// repeated cursor event is removed.
+    fn push(&mut self, page: TimelineQueryReply, complete: bool) -> bool {
+        self.complete = complete;
         self.own_oldest = page
             .positions
             .last()

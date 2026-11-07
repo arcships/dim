@@ -54,6 +54,7 @@ flowchart TB
     Rec["tasks/id/task.json：记录 v1，含 revision"]
     In["tasks/id/input/：内联输入文件（二进制）"]
     Res["tasks/id/result/：结果文件（二进制）"]
+    Work["tasks/id/work/：适配器的工作目录"]
   end
   subgraph SET["Settings 业务来源 modality"]
     Cfg["操作默认值 modality.image.*，<br/>每节点 OCR 组件路径，<br/>并发与保留上限"]
@@ -67,6 +68,7 @@ flowchart TB
   Mod["Modality"] -->|"在每任务锁下原子替换"| Rec
   Mod --> In
   Mod --> Res
+  Mod -->|"每个任务一个工作目录"| Work
   Mod -->|"modality.configure 经 Settings 所有者写入（CAS）"| Cfg
   Rec -->|"apply 时重建"| Idx
   Cfg -->|"使用时读取"| Mod
@@ -231,7 +233,7 @@ sequenceDiagram
 - 经认证的 loopback Web 入口只被提供 `modality.capabilities` 与 `modality.configure`；任务、实时与结果方法对浏览器客户端保持不可用。回复包含模型标识、可用性原因与设置 revision，从不包含凭据、任务记录或结果。
 - 凭据由 Provider 每次调用时解析；从不出现在记录、结果、诊断或错误中。
 - OCR 组件是已安装的可执行文件，而非项目内容；通过执行节点的 HostPlatform 以该节点的隔离启动，仅有输入读权限，无网络（A14）。其路径来自 `modality` 设置文档，使用时读取，从不来自请求数据。
-- 内联输入经过大小检查，存放在任务目录下；`node_path` 由组件在其节点上以该节点的权限读取。Modality 从不在其存储根目录之外写入；文件仅所有者可访问。
+- 内联输入经过大小检查，存放在任务目录下；`node_path` 由组件在其节点上以该节点的权限读取，或由提供方任务的适配器在控制节点进程中就地读取。Modality 从不在其存储根目录之外写入；文件仅所有者可访问。
 - 实时事件只发往发起连接。
 
 ## 8. 规则检查
@@ -292,7 +294,7 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 
 - **问题。** 图像生成与编辑适配器需要按调用取得模型的端点、协议与凭据材料。Provider 只为 `ModelRequest` 解析连接。
 - **现有机制。** `ProviderConnectionResolver` 绑定 `ModelRequest`；适配器不能拥有 Provider 凭据，Modality 也不能存储它们。
-- **需要的能力。** 由 Provider 拥有的、按调用解析模型非对话连接的能力，只用于该次调用，从不持久化，也不返回给客户端。Provider 在其自己的页面上定义该合同（[provider management §3.6](../appserver/provider-management.md#36-供进程-owner-读取的可选模型)）：输入、回复、可选性与凭据规则以及生命周期。适配器调用它，不持有凭据。
+- **需要的能力。** 由 Provider 拥有的、按调用解析模型非对话连接的能力，只用于该次调用，从不持久化，也不返回给客户端。Provider 在其自己的页面上定义该合同（[provider management §3.6](../appserver/provider-management.md#36-供进程-owner-读取的可选模型)）：输入、回复、可选性与凭据规则以及生命周期。端口是 `dim-agent-capabilities` 中的 `ResolveModalityConnection` 与 `ModalityConnectionHost`，`ModalityTarget` 携带模型标识与操作；Modality 按适配器调用（`submit`、`wait`、`cancel_remote`）解析它并把连接传给适配器。适配器调用它，不持有凭据。
 - **顺序影响。** 提交时解析；不重载；凭据从不进入任务记录、结果、诊断或错误。
 - **所有者/issue。** Provider，[#799](https://github.com/arcships/dim/issues/799)。
 
@@ -334,15 +336,15 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 | `connectionKinds` | 同步 | `{}` | `string[]`（所服务的 Provider 连接类型） |
 | `operations` | 同步 | `{ model: {providerId, modelId} }` | `[{ category, operation, params_schema }]` |
 | `submit` | 异步 | `{ job: Job, connection: ResolvedConnection }` | `{ remote_handle? }` |
-| `wait` | 异步 | `{ remote_handle?, connection }`；进度以该调用上的 `{ fraction?, message? }` 通知送达 | `{ files: [{ name, media_type, path }], data? }`；`path` 位于作业的工作目录内 |
+| `wait` | 异步 | `{ task_id, remote_handle?, connection }`；进度以该调用上的 `{ fraction?, message? }` 通知送达 | `{ files: [{ name, media_type, path }], data? }`；`path` 位于作业的工作目录内 |
 | `cancelRemote` | 异步 | `{ remote_handle, connection }` | `{ outcome: "cancelled" \| "unsupported" \| "already_finished" }` |
 | `realtimeOpen` | 异步 | `{ connection, params }`；提供方事件以该调用上的 `{ channel_id, event }` 通知送达，直到关闭 | `{ channel_id } \| null`（不支持） |
 | `realtimeSend` | 异步 | `{ channel_id, frame }` | `{}` |
 | `realtimeClose` | 异步 | `{ channel_id }` | `{}` |
 
-`Job` 为 `{ task_id, category, operation, model: {providerId, modelId}, params, files: [{ name, media_type, path }], work_dir }`。`ResolvedConnection` 是 Provider 非对话连接解析返回的数据形态（`kind`、`provider_id`、`model`、端点与凭据材料），每次调用传入，从不存储或记录日志。
+`Job` 为 `{ task_id, category, operation, model: {providerId, modelId}, params, files: [{ name, media_type, path }], work_dir }`。内联输入的 `path` 是 Modality 存放在 `modality/tasks/<task_id>/input/<name>` 的文件的绝对路径；通过 `node_path` 给出的输入记录 Modality 得到的规范路径（最后一个组件不得是链接；更早的链接会被解析），Modality 只读取一次以取得 `bytes` 与 `sha256`，从不复制，执行方就地读取。`work_dir` 是任务的 `modality/tasks/<task_id>/work` 目录，调用前创建；每个结果文件解析为其中的普通文件。`ResolvedConnection` 是 Provider 非对话连接解析返回的数据形态（`kind`、`provider_id`、`model`、端点与凭据材料），每次调用传入，从不存储或记录日志。
 
-`available` 在不重载的情况下报告运行时可用性（例如提供方端点不可达）。若某个操作的可用适配器都不服务已配置或显式指定的模型，则报告为“no adapter for the configured model”，其提交以 `unavailable` 失败。`image.understand` 不是适配器操作：它由一个可选的视觉模型服务，且只做选择。OCR 不是适配器：对每个任务，Modality 使用目标节点的 HostPlatform（缺失或不可用：`node_unavailable`），探测 `modality` 设置文档为该节点给出的 OCR 组件路径，并在那里 spawn 它；离线的对端节点使调用以 `node_unavailable` 失败，且不发生任何重载（§3.2）。带已存储 `remote_handle` 的 `wait` 必须能在新一代中工作；不返回句柄的适配器无法恢复。
+`available` 在不重载的情况下报告运行时可用性（例如提供方端点不可达）。若某个操作的可用适配器都不服务已配置或显式指定的模型，则报告为“no adapter for the configured model”，其提交以 `unavailable` 失败。`image.understand` 不是适配器操作：它由一个可选的视觉模型服务，且只做选择。OCR 不是适配器：对每个任务，Modality 使用目标节点的 HostPlatform（缺失或不可用：`node_unavailable`），探测 `modality` 设置文档为该节点给出的 OCR 组件路径，并在那里 spawn 它；离线的对端节点使调用以 `node_unavailable` 失败，且不发生任何重载（§3.2）。`wait` 以 `task_id` 指名它等待的作业；当 `submit` 返回了 `remote_handle` 时，适配器可以改用它。带已存储 `remote_handle` 的 `wait` 必须能在新一代中工作；不返回句柄的适配器以 `task_id` 记录自己进行中的工作，且仅限同一代内，因此无法恢复。
 
 ### A.3 方法
 
@@ -392,7 +394,7 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 - `configure` 先校验操作以及模型在该操作的可选选项中（对 `image.understand`，可选视觉支持），再经 Settings 的所有者写入以 CAS 写入或清除该操作 key。它接受任何有默认 key 的 A.1 操作，且从不答复 `modality_unavailable`：配置是设置写入，不是运行时断言。未知类别或操作、以及操作没有默认 key 的 OCR，答复 `modality_unknown_operation`；操作有自己的 key 时（image、speech）`operation` 必填，只有按类别划分 key 的类别可以省略。`model: null` 清除该 key；清除即恢复自动解析；缺少 `model` 为 `invalid_params`。写入在回复发出之前完成，因此成功即表示默认值已持久化，且该回复与紧随其后的 `modality.capabilities` 读到的一致（除非 Provider 在此期间变化）。
 - 可配置性与可用性是两个不同的属性：前者属于设置，后者属于运行时。已持久化的默认值可以指向本构建不能运行的操作的模型；快照通过保持该操作的 `available: false` 及其 `build` 或 `adapter` 原因保持诚实，而 `effective` 仍在选项上解析（默认值可用时用默认值，否则自动解析），客户端因此无需自行实现解析。
 
-边界校验：每次提交文件至多 100 MiB，每个内联文件至多 25 MiB（A5）；按操作检查媒体类型；`node_path` 仅用于宿主执行的操作；`node` 仅用于宿主执行的类别，默认控制节点（A15）。模型选择：显式 `model`；否则操作默认值；否则自动解析；否则 `no_default_model`。不可选的显式模型以 `model_unavailable` 失败，不可用的默认值以 `default_unavailable` 失败，解析出的模型没有可用适配器服务时以 `unavailable` 失败；都不回退到其他模型。解析出的模型固定在记录中。`image.understand` 只做选择、没有任务；为它提交任务会以 `modality_unknown_operation` 失败。每个类别至多 4 个运行中任务；其余按提交顺序保持 `queued`（A6）。
+边界校验：每次提交的内联输入合计至多 8 MiB，更大的输入使用 `node_path`——控制节点上已存在普通文件的绝对路径，最后一个组件不得是链接（更早的链接会被解析）；读取前先将其长度与 100 MiB 提交预算的剩余量比较，记录的是规范路径，执行方在该路径读取，Modality 从不复制；每次提交的输入文件合计至多 100 MiB（A5）。媒体类型遵循 A.1 的输入列：图像操作接受 `image/*`，视频操作接受 `image/*` 与 `video/*`，`speech.transcribe` 接受 `audio/*`，`asset` 接受 `image/*`；输入不指名文件的操作拒绝文件。每个文件名是单个组件、合法的 pluginFiles 名称，且在提交内互不相同。`node` 对提供方类别以 `invalid_input` 拒绝，否则默认为控制节点（A15）。参数在提交时按适配器的 `params_schema` 校验；非法参数以 `invalid_input` 失败且不写入任何内容。模型选择：显式 `model`；否则操作默认值；否则自动解析；否则 `no_default_model`。不可选的显式模型以 `model_unavailable` 失败，不可用的默认值以 `default_unavailable` 失败，解析出的模型没有可用适配器服务时以 `unavailable` 失败；都不回退到其他模型。解析出的模型固定在记录中。`image.understand` 与 `realtime.connect` 不是任务：为它们提交会以 `modality_unknown_operation` 失败。`ocr.recognize` 在本构建中不是适配器任务，以 `modality_unavailable` 及其 `build` 原因失败。每个类别至多 4 个运行中任务；其余按提交顺序保持 `queued`（A6）。
 
 ### A.4 任务记录（`pluginFiles`（扩展），格式版本 1）
 
@@ -404,7 +406,7 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 | `revision` | 整数，每次写入递增 |
 | `category`、`operation` | A.1 中的标识符 |
 | `executor` | `{ kind: "provider", provider, adapter }`，其中 `provider` 为 `{providerId, modelId}`；或 `{ kind: "host", node }` |
-| `params` | 已校验的对象；输入文件替换为 `{ name, media_type, bytes, sha256 }`，存放在 `input/` 下 |
+| `params` | 已校验的对象；输入文件替换为 `{ name, media_type, bytes, sha256 }`（存放在 `input/` 下）或 `{ name, media_type, bytes, sha256, node_path }`（规范路径，就地读取） |
 | `state` | `queued`、`running`、`succeeded`、`failed`、`cancelled`、`interrupted` |
 | `remote_handle` | 字符串或 null；在报告 `running` 进度之前写入 |
 | `progress` | `{ fraction?, message? }` 或 null；每秒至多写入一次（A10） |
@@ -413,7 +415,9 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 | `remote_cancel` | `"cancelled"`、`"unsupported"`、`"already_finished"` 或 null |
 | `created_at`、`updated_at`、`finished_at` | RFC 3339 |
 
-记录与结果文件使用 `pluginFiles`（扩展）：每插件根目录、UTF-8 与二进制原子替换、锁、格式版本。保留：终态任务在 30 天后或超出 200 个终态任务时连同文件删除，最旧的先删（A2）；非终态任务从不删除。
+记录与结果文件使用 `pluginFiles`（扩展）：每插件根目录、UTF-8 与二进制原子替换、锁、格式版本。保留：每次 `apply` 时以及每次终态写入之后，早于 30 天或超出最新 200 个的终态任务连同文件删除，最旧的先删（A2）；非终态任务从不删除。
+
+记录是 `modality/tasks/<task_id>/task.json`，采用宿主的版本 1 文本信封。每次写入都持有该文件的锁并比较 `revision`：第一个终态写入获胜，较晚的终态结果连同它写出的结果文件一起丢弃。`params` 以 `files` 数组携带输入文件的元数据；内联文件存放在 `input/` 下，调用方的 `node_path` 只记录路径并就地读取。`files` 键是保留的：调用方的 `params.files` 以 `invalid_input` 拒绝；记录总是携带已校验的元数据，提交没有文件时为空数组。`wait` 把适配器返回的文件从任务的工作目录流式写入 `result/<name>`，同时计算 `bytes` 与 `sha256`，随后删除工作目录。
 
 ### A.5 CLI
 
@@ -423,7 +427,7 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 | `dimcode modality set-default <category>[.<operation>] <provider>/<model>` / `--clear` | `modality.configure` |
 | `dimcode modality settings [<key> [<value>]]` | 经 Settings 对该业务来源的类型化操作读取或写入 `modality` 设置文档（每节点 OCR 组件路径、上限）（Settings 补充）；不是 `modality.*` 方法 |
 | `dimcode modality task list\|status\|wait\|cancel` | 任务方法；`wait --out <path>` 取回结果 |
-| `dimcode image generate\|edit\|enhance`、`video`、`speech synthesize\|transcribe`、`music`、`audio`、`asset`、`motion` | 提交；默认等待并将结果写到 `--out` 或当前目录；`--no-wait` 打印 id；`--json` 打印记录 |
+| `dimcode image generate\|edit\|enhance`、`video`、`speech synthesize\|transcribe`、`music`、`audio`、`asset`、`motion` | 提交；8 MiB 以内的输入内联发送，更大的用 `node_path`；默认等待并将结果写到 `--out` 或当前目录；`--no-wait` 打印 id；`--json` 打印记录 |
 | `dimcode ocr <file> [--node <id>]` | 提交 `ocr.recognize`；打印文本 |
 | `dimcode realtime` | 打开连接，将 stdin 行作为文本帧转发，打印事件 |
 
@@ -433,10 +437,11 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 
 | 步骤 | 机制 |
 | --- | --- |
-| 提交 | 在边界校验；写入 `queued`（revision 1）与输入文件；返回。通过 `ctx.effect` 注册的调度任务在有空闲槽位时启动它 |
+| 提交 | 在边界校验；写入 `queued`（revision 1）与输入文件；返回。通过 `ctx.effect`（Cordis 的 effect 机制，[rutis 生命周期](../rutis-usage.md#4-rutis-提供的生命周期)）注册的调度器在有空闲槽位时启动它；调度器与每个运行中的任务都是 effect 工作，插件卸载时由它清理 |
 | 启动 | 写入 `running` 及已解析的执行方；解析该操作的适配器（[#861](https://github.com/arcships/dim/issues/861) 落地后按任务按名解析；在此之前来自单个进程服务）；调用 `submit`；一旦得知即写入 `remote_handle` |
-| 终态 | 在每任务锁下一次写入并比较 `revision`；第一个终态写入胜出；之后的结果被丢弃，其文件被删除 |
-| 取消 | 标记已请求；取消本地令牌（中止 HTTP，或通过 HostPlatform 终止组件的进程树）；有句柄时调用 `cancel_remote`；释放资源；然后写入 `cancelled`（含 `remote_cancel`） |
+| 终态 | 在每任务锁下一次写入并比较 `revision`；第一个终态写入胜出；之后的结果被丢弃，其文件被删除。保留在写入之后、状态对 `wait`/`status` 可见之前执行 |
+| 保留 | 每次 `apply` 时以及每次终态写入之后：早于 30 天或超出最新 200 个的终态任务连同其文件删除，最旧的先删（A.4，A2） |
+| 取消 | 标记已请求；取消本地令牌（中止 HTTP，或通过 HostPlatform 终止组件的进程树）。取消后 drive 继续等待 `submit`，使执行方已接受的作业交出句柄；取消等待提交阶段结束（两者都以 3 秒为界，低于 rutis 的 10 秒卸载上限）。然后重读记录；有句柄时调用 `cancel_remote`（与调用令牌和本代 stop 竞速，挂起的提供方既拖不住客户端也拖不住卸载）；释放资源；写入 `cancelled`，带执行方的答复或 `null` |
 | 卸载（自身重载或 Provider 重载） | disposer 取消本地工作，终止 OCR 进程，关闭实时连接，为宿主任务和无句柄的提供方任务写入 `interrupted`；有句柄的任务保持 `running` |
 | 启动（每次 `apply`） | `queued` → `interrupted`（之后从不启动，A11）；`running` 宿主任务 → `interrupted`；有句柄且其适配器可用的 `running` 提供方任务 → 继续 `wait`（仅观察，A12）；否则 `interrupted`“did not survive recovery” |
 | 配置变更 | `modality` 设置变更（含默认值）：数据更新与通知，下次使用时读取；重新计算可用性；已有任务保留其已解析的执行方；不重载 |
@@ -519,9 +524,9 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 | A2 | 保留 30 天或 200 个终态任务 | 判断 | 磁盘占用不同 |
 | A3 | 操作默认值：image 与 speech 使用按操作的 key，其他类别使用类别 key。本设计中图像不设类别回退 | Overview §4；判断 | 图像操作共用一个默认值，或回退掩盖被清除的操作 key |
 | A4 | 操作参数由适配器声明，在提交时校验 | 判断 | 每个操作固定 schema |
-| A5 | 每个内联文件 25 MiB，每次提交 100 MiB | 判断 | 上限改变 |
+| A5 | 每次提交内联输入 8 MiB，更大的用 `node_path`，每次提交 100 MiB | 判断 | 上限改变 |
 | A6 | 每个类别至多 4 个运行中任务 | 判断 | 采用其他并发度 |
-| A7 | CLI 以内联方式发送输入并写出输出；Modality 只写其存储根目录 | Overview §4；判断 | Modality 需要对调用方路径的写权限 |
+| A7 | CLI 以小输入内联、大输入用 `node_path` 发送并写出输出；Modality 只写其存储根目录 | Overview §4；判断 | Modality 需要对调用方路径的写权限 |
 | A8 | CLI 等待期间的 Ctrl+C 是脱离而非取消 | 判断 | Ctrl+C 会取消高成本任务 |
 | A9 | 实时空闲超时 10 分钟 | 判断 | 连接比客户端存活更久 |
 | A10 | 进度每秒至多写入一次 | 判断 | 存储写入更多 |
@@ -534,23 +539,60 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 
 ## 附录 G. Rust 绑定
 
-Rust 适配器插件可以实现生成的绑定，而不直接处理命名服务；A.2 中的中立形式是规范性的。
+Rust 适配器插件可以实现生成的绑定，而不直接处理命名服务；A.2 中的中立形式是规范性的。以下类型位于 `dim-modality`；连接是 Provider 的非对话式解析每次调用返回的那个，传给适配器后不存储、不记录、不返回。
 
 ```rust
 /// Binding for service `modalityAdapter` (process, key adapter name).
-pub trait ModalityAdapter: Send + Sync + 'static {
-    fn available(&self) -> Availability;
-    fn connection_kinds(&self) -> Vec<String>;
-    fn operations(&self, model: &ModelRef) -> Vec<OperationSpec>;
-    fn submit(&self, job: Job, conn: ResolvedConnection, cancel: CancellationToken)
-        -> HostFuture<'_, Result<Submitted, AdapterError>>;
-    fn wait(&self, handle: Option<&str>, conn: ResolvedConnection, progress: ProgressSink,
-        cancel: CancellationToken) -> HostFuture<'_, Result<AdapterOutput, AdapterError>>;
-    fn cancel_remote(&self, handle: &str, conn: ResolvedConnection) -> HostFuture<'_, RemoteCancel>;
-    fn realtime(&self, conn: ResolvedConnection, params: JsonObject, cancel: CancellationToken)
-        -> HostFuture<'_, Option<RealtimeChannel>>;   // maps realtimeOpen/Send/Close
+pub type AdapterFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AdapterError>> + Send + 'a>>;
+pub struct AdapterOperation { pub category: String, pub operation: String, pub params_schema: Value }
+pub struct JobFile { pub name: String, pub media_type: String, pub path: PathBuf }
+pub struct Job {
+    pub task_id: String,
+    pub category: String,
+    pub operation: String,
+    pub model: ModelId,
+    pub params: Value,
+    pub files: Vec<JobFile>,
+    pub work_dir: PathBuf,
 }
+pub struct Submitted { pub remote_handle: Option<String> }
+pub struct AdapterOutput { pub files: Vec<JobFile>, pub data: Option<Value> }
+pub struct AdapterError { pub code: AdapterErrorCode, pub message: String }
+pub enum AdapterErrorCode { InvalidInput, Unavailable, ProviderError }
 pub enum RemoteCancel { Cancelled, Unsupported, AlreadyFinished }
+pub struct AdapterProgress { pub fraction: Option<f64>, pub message: Option<String> }
+pub struct ProgressSink(Arc<dyn Fn(AdapterProgress) + Send + Sync>);
+
+pub trait ModalityAdapter: Send + Sync + 'static {
+    fn available(&self) -> bool;
+    fn connection_kinds(&self) -> Vec<String>;
+    fn operations(&self, model: &ModelId) -> Vec<AdapterOperation>;
+    fn submit(&self, job: Job, connection: ModalityConnection, cancel: CancellationToken)
+        -> AdapterFuture<'_, Submitted>;
+    fn wait(&self, task_id: &str, handle: Option<&str>, connection: ModalityConnection,
+        progress: ProgressSink, cancel: CancellationToken) -> AdapterFuture<'_, AdapterOutput>;
+    fn cancel_remote(&self, handle: &str, connection: ModalityConnection)
+        -> AdapterFuture<'_, RemoteCancel>;
+}
 ```
 
-在 Rust 中注册以 `TypeKey::named("modalityAdapter")` 提供 `ModalityAdapter`，以适配器名作为实例 key。适配器如何注册与发现，遵循 [#40](https://github.com/arcships/dim/issues/40) 决定并由 [#861](https://github.com/arcships/dim/issues/861) 跟踪的按任务查找；本附录只绑定各操作。Modality 自身的 `managementMethods` 与 `modalityTasks` 使用[方法](../contracts/session-boundary.md)契约的绑定，以及上面的句柄。
+A.2 中的实时操作映射到实时方法，随它们一起绑定。在 Rust 中注册以 `TypeKey::named("modalityAdapter")` 提供 `ModalityAdapter`，以适配器名作为实例 key。适配器如何注册与发现，遵循 [#40](https://github.com/arcships/dim/issues/40) 决定并由 [#861](https://github.com/arcships/dim/issues/861) 跟踪的按任务查找；本附录只绑定各操作。
+
+Modality 自身的 `managementMethods` 使用[方法](../contracts/session-boundary.md)契约的绑定。`modalityTasks` 服务由同一实现以 `TypeKey::named("modalityTasks")` 提供，每个 `modality.task.*` 声明对应一个方法，请求与回复类型相同：
+
+```rust
+impl ModalityTasks {
+    pub async fn submit(&self, params: TaskSubmit, cancel: &CancellationToken)
+        -> Result<TaskReply, RpcError>;
+    pub async fn status(&self, params: TaskStatus) -> Result<TaskReply, RpcError>;
+    pub async fn list(&self, params: TaskList) -> Result<TaskListReply, RpcError>;
+    pub async fn wait(&self, params: TaskWait, cancel: &CancellationToken,
+        progress: Option<&Progress>) -> Result<TaskReply, RpcError>;
+    pub async fn cancel(&self, params: TaskCancel, cancel: &CancellationToken)
+        -> Result<TaskReply, RpcError>;
+    pub async fn result(&self, params: TaskResultQuery, cancel: &CancellationToken)
+        -> Result<TaskResultReply, RpcError>;
+}
+```
+
+这些类型就是各方法使用的 serde 类型。该绑定仅限 Rust：没有外部形式，因为非 Rust 使用方只能经按名暴露运行时服务的要求（[#4](https://github.com/arcships/dim/issues/4)，§9）访问命名服务。

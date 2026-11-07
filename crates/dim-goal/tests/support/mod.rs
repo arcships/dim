@@ -448,6 +448,8 @@ async fn wait_goal_ready(client: &mut Client, session: &str) {
 pub struct Block {
     pub id: String,
     pub sequence: u64,
+    /// The input's submission id (`goal:<uuid>` for every Goal write).
+    pub submission_id: Option<String>,
     /// The `<dim-goal ...>` marker line.
     pub marker: String,
     pub text: String,
@@ -488,6 +490,7 @@ fn block_of(event: &dim_agent_types::AgentEvent) -> Option<Block> {
     text.starts_with("<dim-goal ").then(|| Block {
         id: event.id.clone(),
         sequence: event.sequence,
+        submission_id: data.submission_id.clone(),
         marker: text.lines().next().unwrap().to_owned(),
         text: text.clone(),
         blocks: data.blocks.len(),

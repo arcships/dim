@@ -12,6 +12,12 @@ mod catalog;
 #[path = "cli_flow/context.rs"]
 mod context;
 
+#[path = "cli_flow/daemon_replace.rs"]
+mod daemon_replace;
+
+#[path = "cli_flow/daemon_startup_progress.rs"]
+mod daemon_startup_progress;
+
 #[path = "cli_flow/exit.rs"]
 mod exit;
 
@@ -967,7 +973,9 @@ fn a_daemon_of_another_version_is_stopped_and_replaced() {
     let socket = home.0.join("rust/daemon.sock");
     let daemon = home.daemon(move |wire| {
         let hello = wire.read("hello");
-        wire.reply(&hello,json!({"instanceId":"old","serverVersion":"0.0.1-old","protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","daemon.shutdown.completed"]}));
+        wire.reply(&hello,json!({"instanceId":"old","serverVersion":"0.0.1-old","protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.summaries","daemon.shutdown.completed"]}));
+        let summaries = wire.read("session.summaries");
+        wire.reply(&summaries, json!([]));
         let shutdown = wire.read("daemon.shutdown");
         fs::remove_file(&socket).unwrap();
         let successor = UnixListener::bind(&socket).unwrap();
@@ -4692,10 +4700,7 @@ fn home_after_new_drops_the_previous_sessions_effort() {
     );
     let resized_at = terminal.transcript.len();
     terminal.signal(libc::SIGWINCH);
-    // The repaint of a resize clears the screen first; its status line is
-    // the last row of the frame, so wait for the label on that row and for
-    // the frame to close behind it before reading either.
-    terminal.until("\u{1b}[2J\u{1b}[H\u{1b}[3J");
+    terminal.until("\u{1b}[3J\u{1b}[H");
     terminal.until("test / model");
     terminal.until("\u{1b}[?2026l");
     let screen = &terminal.transcript[resized_at..];
@@ -4709,6 +4714,88 @@ fn home_after_new_drops_the_previous_sessions_effort() {
     );
     terminal.write(b"hello\r");
     terminal.until("next reply");
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn tui_resizing_during_thinking_preserves_multiline_history() {
+    let home = Home::new();
+    fs::write(
+        home.0.join("config.json"),
+        r#"{"locale":"en","tuiThinkingDetailsExpanded":true}"#,
+    )
+    .unwrap();
+    let (stop, stopped) = std::sync::mpsc::channel();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&[]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let submit = wire.read("session.submit");
+        wire.reply(&submit, json!({"event":{}}));
+        wire.notice("session.event", json!({"sessionId":"session","branchId":"main",
+            "event":{"id":"in-1","sequence":9,"create_at":1,"type":"input","name":"message",
+                "data":{"user":{"content":[{"type":"text","text":submit["params"]["text"]}]},"mode":"queue"}}}));
+        wire.notice("session.event", json!({"sessionId":"session","branchId":"main",
+            "event":{"id":"ap-1","sequence":10,"create_at":1,"type":"input","name":"applied",
+                "data":{"input_id":"in-1","mode":"queue"}}}));
+        wire.notice("session.event", json!({"sessionId":"session","branchId":"main",
+            "event":{"id":"consumed","sequence":11,"create_at":1,"type":"input","name":"consumed",
+                "data":{"input_id":"in-1"}}}));
+        wire.notice("session.state", json!({"sessionId":"session","branchId":"main","running":true}));
+        let mut thinking = "First thought\nSecond thought\nThird thought".to_owned();
+        while stopped.try_recv() == Err(std::sync::mpsc::TryRecvError::Empty) {
+            thinking.push_str(" checking");
+            wire.notice(
+                "session.model.progress",
+                json!({"sessionId":"session","branchId":"main","requestId":"working",
+                    "textOffset":0,"text":"","thinkingOffset":0,"thinking":thinking}),
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        wire.hold();
+    });
+    let mut command = home.command();
+    command.env("TMUX", "resize-test");
+    sized(&mut command, 100, 36);
+    let mut terminal = Terminal::resume_tui(command);
+    terminal.until("Ask anything...");
+    terminal.raw(b"first user line\nsecond user line\nlast user line\r");
+    terminal.until("Thinking…");
+    for (cols, rows) in [(100, 24), (60, 24), (120, 40), (45, 18), (100, 36)] {
+        terminal.consumed = terminal.transcript.len();
+        let size = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        assert_eq!(
+            unsafe {
+                libc::ioctl(
+                    terminal.master.as_ref().unwrap().as_raw_fd(),
+                    libc::TIOCSWINSZ,
+                    &size,
+                )
+            },
+            0
+        );
+        terminal.signal(libc::SIGWINCH);
+        terminal.until("first user line");
+        terminal.until("second user line");
+        terminal.until("last user line");
+        terminal.until("Ask anything...");
+    }
+    stop.send(()).unwrap();
     home.kill(&terminal);
     terminal.wait();
     daemon.join().unwrap();
@@ -7713,7 +7800,9 @@ fn tui_stays_up_when_the_daemon_leaves_and_restores_the_terminal_on_exit() {
         wire.reply(&providers, json!([]));
         wait_release.recv_timeout(PATIENCE).unwrap();
     });
-    let mut terminal = Terminal::resume_tui(home.command());
+    let mut command = home.command();
+    sized(&mut command, 100, 36);
+    let mut terminal = Terminal::resume_tui(command);
     terminal.until("test / model");
     terminal.write(b"keep this draft");
     terminal.until("keep this draft");
@@ -7735,6 +7824,33 @@ fn tui_stays_up_when_the_daemon_leaves_and_restores_the_terminal_on_exit() {
     terminal.write(b"\r");
     terminal.until("Disconnected; draft kept");
     assert!(!home.0.join("input-history.json").exists());
+    for (cols, rows) in [(45, 18), (100, 36)] {
+        let start = terminal.transcript.len();
+        terminal.consumed = start;
+        let size = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        assert_eq!(
+            unsafe {
+                libc::ioctl(
+                    terminal.master.as_ref().unwrap().as_raw_fd(),
+                    libc::TIOCSWINSZ,
+                    &size,
+                )
+            },
+            0
+        );
+        terminal.signal(libc::SIGWINCH);
+        terminal.until("\x1b[3J");
+        terminal.until("keep this draft");
+        let rewritten = strip_ansi(&terminal.transcript[start..]);
+        assert!(rewritten.contains("Error: App Server connection closed"));
+        assert!(rewritten.contains("Disconnected; draft kept."));
+        assert!(rewritten.contains("dimcode --resume session"));
+    }
     terminal.write(b"\x04");
     terminal.until("Bye!");
     terminal.until("\x1b[?2004l");

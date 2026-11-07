@@ -482,6 +482,11 @@ impl Connection {
         if self.hub.take_attach_failure_before_registration() {
             return Err(RpcError::closed());
         }
+        // An idle shutdown that has decided to close the daemon refuses the
+        // attach; before that decision, the attachment below is registered
+        // and counted. The guard covers the registration only, so it is
+        // dropped before the previous subscription settles.
+        let admitted = self.hub.admit()?;
         let listener = host
             .ctx
             .listen::<SessionBroadcast>()
@@ -578,6 +583,7 @@ impl Connection {
             }
             previous
         };
+        drop(admitted);
         // The previous subscription settles before this attach returns, but
         // after the new one is in place: its own listeners and tasks cannot
         // strand an event committed from now on.

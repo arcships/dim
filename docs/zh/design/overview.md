@@ -69,6 +69,7 @@ flowchart TB
 | --- | --- | --- | --- | --- |
 | Questions | — | `ask_user` 工具；`session.question.*` 方法；非交互 Session 中 `ask_user` 回答当前没有可以回答的对象 | —（运行中 `ask_user` 调用的等待者在 Session 部分；没有事件，回答就是工具结果） | 等待者就是 Session 级工具处理函数自己的调用 |
 | Goal | — | `goal_update` 工具与 `session.goal.*` 方法，只写一条带 `goal:objective` 和/或 `goal:status` 块的 `input/message` | 目标状态由已消费的目标变更块按序号折叠得出；Goal 经 Dispatcher 消费 `turn/end`、`stop/interrupt` 或 `input/deleted` 时自己决定续跑 | 一个目标只属于一个分支：折叠只用该分支自己的事件，因此子分支和分叉 Session 从没有目标开始；续跑按序跟随其事件 |
+| ModelRecovery | — | — | 注册到 Loop 端口的处置方；它经分支输入入口写的 handover 输入 | 该部分只依据已提交的分支事实决定并写一条输入；Loop 保留 turn 与批次 |
 | Hooks | App Server 中的配置（Settings 来源 `hooks`、`hooks-projects` 与 `hooks-plugins`，管理方法 `hooks.*` 与插件 `register`/`withdraw`/`plugins()`，`HookSources` 端口） | Hook 文档（用户、项目与插件）；执行器；向 Session 的 `submitChecks` 登记、由操作者输入入口调用的提交检查（`UserPromptSubmit`） | 向 Permission 登记的建议（`PreToolUse`）；经 Approval 回答 `PermissionRequest`；从 Dispatcher 运行 `PostToolUse`、`PostToolUseFailure`、`Stop`、`SessionStart`、`Notification` | 规则属于 Session；执行发生在分支 |
 | ShellInput | — | `shell.*` Session 方法；在 Session 的工作区中运行并写入其输入 | — | 命令属于 Session |
 | Attachments | — | `attachment.put`；通过 SessionStore 管理 Session 文件 | — | 附件是 Session 数据 |

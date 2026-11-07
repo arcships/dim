@@ -508,10 +508,15 @@ pub enum ClientKind {
     Other,
 }
 #[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Shutdown {
     #[serde(default)]
     pub force: bool,
+    /// Refuse (`daemon_busy`) instead of stopping while another client
+    /// connection is open or a Session has an attached client or a running
+    /// turn. Advertised as `daemon.shutdown.ifIdle`.
+    #[serde(default)]
+    pub if_idle: bool,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

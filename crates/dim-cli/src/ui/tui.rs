@@ -439,8 +439,8 @@ fn run_terminal(
         }
         let due = last_frame.is_none_or(|at| now.duration_since(at) >= FRAME_INTERVAL)
             && !terminal.writing();
-        if dirty && due {
-            let size = terminal.size();
+        if dirty && due && resize.is_none() {
+            let size = current;
             let frame = app.frame(size);
             let bytes = match &mut full {
                 Some(full) => full.render(&frame, size, &app.palette, &app),
@@ -462,7 +462,7 @@ fn run_terminal(
                 dirty = true;
             }
         }
-        let wait = match (dirty, last_frame) {
+        let wait = match (dirty && resize.is_none(), last_frame) {
             (true, Some(at)) if !terminal.writing() => {
                 FRAME_INTERVAL.saturating_sub(now.duration_since(at))
             }
@@ -4590,10 +4590,20 @@ impl App {
             } else {
                 format!("dimcode --resume {}", self.session_id)
             };
-            frame.commits.push(pad_block(&[tf(
-                "Disconnected; draft kept. Exit and run: {command}",
-                &[("command", &resume)],
-            )]));
+            let block = Block::Status {
+                text: tf(
+                    "Disconnected; draft kept. Exit and run: {command}",
+                    &[("command", &resume)],
+                ),
+                tone: Tone::Muted,
+            };
+            frame.commits.push(chunk(&render_block(
+                &block,
+                width,
+                &self.palette,
+                &self.markdown,
+            )));
+            self.record(block);
         }
 
         let mut live = tail;

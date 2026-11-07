@@ -21,84 +21,10 @@ mod zh_hant;
 
 use std::cell::Cell;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Locale {
-    En,
-    ZhCn,
-    Ja,
-    Ko,
-    ZhHant,
-    Id,
-    De,
-    Fr,
-    Es,
-    PtBr,
-    PtPt,
-}
-
-/// Every locale in picker order: `(locale, code, label)`.
-pub const LOCALES: [(Locale, &str, &str); 11] = [
-    (Locale::En, "en", "English"),
-    (Locale::ZhCn, "zh-CN", "简体中文"),
-    (Locale::Ja, "ja", "日本語"),
-    (Locale::Ko, "ko", "한국어"),
-    (Locale::ZhHant, "zh-Hant", "繁體中文"),
-    (Locale::Id, "id", "Bahasa Indonesia"),
-    (Locale::De, "de", "Deutsch"),
-    (Locale::Fr, "fr", "Français"),
-    (Locale::Es, "es", "Español"),
-    (Locale::PtBr, "pt-BR", "Português (Brasil)"),
-    (Locale::PtPt, "pt-PT", "Português (Portugal)"),
-];
+pub use crate::locale::{LOCALES, Locale};
 
 /// `config.json` key of the saved locale; absent means the system default.
 pub const LOCALE_KEY: &str = "locale";
-
-impl Locale {
-    fn entry(self) -> &'static (Locale, &'static str, &'static str) {
-        LOCALES
-            .iter()
-            .find(|(l, ..)| *l == self)
-            .unwrap_or(&LOCALES[0])
-    }
-
-    pub fn code(self) -> &'static str {
-        self.entry().1
-    }
-
-    pub fn label(self) -> &'static str {
-        self.entry().2
-    }
-
-    pub fn from_code(code: &str) -> Option<Self> {
-        LOCALES
-            .iter()
-            .find(|(_, c, _)| *c == code)
-            .map(|(l, ..)| *l)
-    }
-
-    /// A locale from an environment value such as `zh_CN.UTF-8` (the TS
-    /// `normalizeLocale`); `C`, `POSIX` and unknown languages give none.
-    pub fn from_env_value(value: &str) -> Option<Self> {
-        let base = value.split('.').next()?.replace('_', "-").to_lowercase();
-        let lang = base.split('-').next()?;
-        Some(match (lang, base.as_str()) {
-            ("en", _) => Self::En,
-            ("zh", "zh-tw" | "zh-hk" | "zh-mo") => Self::ZhHant,
-            ("zh", b) if b.starts_with("zh-hant") => Self::ZhHant,
-            ("zh", _) => Self::ZhCn,
-            ("ja", _) => Self::Ja,
-            ("ko", _) => Self::Ko,
-            ("id" | "in", _) => Self::Id,
-            ("de", _) => Self::De,
-            ("fr", _) => Self::Fr,
-            ("es", _) => Self::Es,
-            ("pt", "pt-br") => Self::PtBr,
-            ("pt", _) => Self::PtPt,
-            _ => return None,
-        })
-    }
-}
 
 /// The locale the environment asks for (`LC_ALL`, `LC_MESSAGES`, `LANG`),
 /// English when none names a known language.
@@ -137,7 +63,14 @@ pub fn active() -> Locale {
 
 /// `english` in the active locale.
 pub fn t(english: &str) -> &str {
-    let lookup = match active() {
+    t_in(active(), english)
+}
+
+/// `english` in `locale`, without the interface thread's active locale: for a
+/// task that may run on another thread and carries the interface language as
+/// a value instead.
+pub fn t_in(locale: Locale, english: &str) -> &str {
+    let lookup = match locale {
         Locale::En => return english,
         Locale::ZhCn => zh_cn::lookup,
         Locale::Ja => ja::lookup,
@@ -155,7 +88,12 @@ pub fn t(english: &str) -> &str {
 
 /// `english` in the active locale with each `{name}` replaced by its value.
 pub fn tf(english: &'static str, args: &[(&str, &str)]) -> String {
-    let mut text = t(english).to_owned();
+    tf_in(active(), english, args)
+}
+
+/// [`tf`] in `locale` instead of the active one.
+pub fn tf_in(locale: Locale, english: &'static str, args: &[(&str, &str)]) -> String {
+    let mut text = t_in(locale, english).to_owned();
     for (name, value) in args {
         text = text.replace(&format!("{{{name}}}"), value);
     }
@@ -281,6 +219,50 @@ mod tests {
             ];
             for (key, args) in placeholders {
                 let text = tf(key, args);
+                for (_, value) in args {
+                    assert!(text.contains(value), "{code} drops {value} from {key:?}");
+                }
+            }
+        }
+        set(previous);
+    }
+
+    #[test]
+    fn every_locale_translates_the_daemon_notice_strings() {
+        // The strings the notice prints, so a changed text cannot pass here
+        // while every locale silently falls back to English.
+        const PLAIN: &str = crate::DAEMON_BUSY;
+        const COUNTS: &str = crate::DAEMON_BUSY_COUNTS;
+        const UPGRADING: &str = crate::DAEMON_UPGRADING;
+        let previous = active();
+        for (locale, code, _) in LOCALES {
+            if locale == Locale::En {
+                continue;
+            }
+            for key in [PLAIN, COUNTS, UPGRADING] {
+                let translated = table(locale, key);
+                assert!(translated.is_some(), "{code} lacks {key:?}");
+                assert_ne!(translated.unwrap(), key, "{code} copies {key:?}");
+            }
+            set(locale);
+            for (key, args) in [
+                (
+                    PLAIN,
+                    vec![("server", "9.9.9-old"), ("client", "9.9.9-new")],
+                ),
+                (
+                    COUNTS,
+                    vec![
+                        ("server", "9.9.9-old"),
+                        ("client", "9.9.9-new"),
+                        ("connections", "2"),
+                        ("attached", "1"),
+                        ("running", "1"),
+                    ],
+                ),
+                (UPGRADING, vec![("from", "33"), ("to", "34")]),
+            ] {
+                let text = tf(key, &args);
                 for (_, value) in args {
                     assert!(text.contains(value), "{code} drops {value} from {key:?}");
                 }

@@ -58,7 +58,6 @@ pub(crate) fn newest_chain(
 pub(crate) fn rising_chain(
     from_event: Option<&str>,
     kinds: Vec<String>,
-    offset: u64,
     limit: u64,
 ) -> TimelineQuery {
     TimelineQuery {
@@ -73,7 +72,7 @@ pub(crate) fn rising_chain(
         event_id: None,
         predicate: None,
         limit: NonZeroU64::new(limit).expect("a page keeps at least one event"),
-        offset,
+        offset: 0,
     }
 }
 

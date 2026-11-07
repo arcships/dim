@@ -5,7 +5,7 @@ Scope: the protocol v3 `session.keys` read over a branch's own events. It adds n
 
 ## 1. Purpose and boundary
 
-Keyed raw input blocks are core block data. A raw block carries an optional key ([session access A.1](../contracts/session-access.md#a1-the-sessions-service) `RawBlock.key {use: live | retire, name}`); keys live per branch Timeline, each writer chooses its own key, and nothing checks it (A.2). Producers write them through the ordinary input path: Goal writes `goal:objective` and `goal:status` ([Goal](../plugins/Goal.md) §2, A2), TimelineTree writes `branch:line` and `branch:parent`.
+Keyed raw input blocks are core block data. A raw block carries an optional key ([session access A.1](../contracts/session-access.md#a1-the-sessions-service) `RawBlock.key {use: live | retire, name}`); keys live per branch Timeline, each writer chooses its own key, and nothing checks it (A.2). Producers write them through the ordinary input path: Goal writes `goal:state` ([Goal](../plugins/Goal.md) §2, A2), and histories written before that record carry Goal's old `goal:objective` and `goal:status`; TimelineTree writes `branch:line` and `branch:parent`.
 
 A client that shows live keyed state folds it from the branch history it loads and the live `session.event` notifications it receives. A bounded history window (the newest turn, [session-history-window](session-history-window.md)) can start after the input that set a key, so a client that reopens a Session from a window can lose live state it never loaded. The same fold exists once per client, and each one has to rediscover the very same rules (opening reset, retire, deleted input).
 
@@ -52,7 +52,7 @@ The shapes follow [session access A.1](../contracts/session-access.md#a1-the-ses
 
 The request has no `keys` filter. The reply always lists every live key of the segment, unknown ones included; a client reads the keys it knows and ignores the rest — not an error, no re-read, no effect on other keys. A filter would not reduce the walk (a key last set a thousand messages ago still has to be found) and would add a second unknown-key rule on top of this one.
 
-There is no paging. The entry count grows with the number of live keys, not with the branch's length. `key` is writer-chosen and unchecked, so the count is bounded here: more than 1024 live keys fails the call with the non-retryable application error `too_many_keys`. The read never truncates: truncation would silently lose live state. Goal contributes 2 keys and TimelineTree 2, so the bound is reached only by a producer outside the documented contracts. The reply is also bounded by size: its serialized JSON must fit the same reply-frame bound `session.history` measures against (`outbound::MAX_FRAME_BYTES` less 64 KiB of envelope), and a larger one fails `keys_too_large` instead of being dropped by the transport. A few large blocks reach that bound before the key count does. Truncation is not an answer to it either, for the same reason.
+There is no paging. The entry count grows with the number of live keys, not with the branch's length. `key` is writer-chosen and unchecked, so the count is bounded here: more than 1024 live keys fails the call with the non-retryable application error `too_many_keys`. The read never truncates: truncation would silently lose live state. Goal contributes one key, `goal:state`, plus the old keys on a history written before the record until the first record retires them, and TimelineTree 2, so the bound is reached only by a producer outside the documented contracts. The reply is also bounded by size: its serialized JSON must fit the same reply-frame bound `session.history` measures against (`outbound::MAX_FRAME_BYTES` less 64 KiB of envelope), and a larger one fails `keys_too_large` instead of being dropped by the transport. A few large blocks reach that bound before the key count does. Truncation is not an answer to it either, for the same reason.
 
 ### 2.3 Rules
 
@@ -114,7 +114,11 @@ projection(through) = delivered_state(through)
                       that are neither consumed nor deleted at through
 ```
 
-The two sides agree exactly at a quiescent point: a `through` where no keyed input is written but unconsumed, for example the end of a settled turn or a compaction cut. At such a point every entry satisfies, per key:
+The two sides agree exactly at a quiescent point: a `through` where no keyed input is written but unconsumed, for example the end of a settled turn or a compaction cut. The relation holds **per key**, and only when that key's blocks are consumed in sequence order: the projection takes the newest block by sequence, and the baseline the last one consumed, so a Queue input consumed after a later input of the same key would invert them. A key written only in Append mode by one writer meets this, because InputQueue releases each block at its commit and the model baseline consumes them in that order.
+
+Who meets it: Goal's key is `goal:state`, written only by the branch part and only in Append mode. TimelineTree writes `branch:line` in Append mode, or Steer when the block carries a line end notice, and `branch:parent` in Append mode; `branch:parent`'s opening block rides the line's first input, which is Queue and is applied before any later block of that key can exist. Each is released at commit or as that first input, so each key's blocks are consumed in sequence order and the relation holds for all three.
+
+At such a point every entry satisfies, per key:
 
 - `entry.key` equals the baseline entry's `key`;
 - the baseline entry's `message` is one text part, and its bytes equal `entry.text` — `render_input` builds `Message::text(Role::User, text)` from the same `RawBlock.text`, with no escaping or rendering on either side;

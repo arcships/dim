@@ -234,6 +234,7 @@ ModelRecovery 的计数、决定和结算属于本分支事实，内存只是其
 - **缺失与取消**：必须在交接前确定是否有可用的处置方；交接后失去处置方要有确定的终态。不能“广播后永远等回复”，也不能依赖订阅顺序让 Recovery 抢在 Loop 前面。
 - **序号、批次、中断、重载**：接收方按序检查 stop/steer 与工作身份；需要一起生效的事实由所有者原子提交；重载结算未完成交接，不重发请求。
 - **所有者与议题**：Loop 业务所有者。此项需要在 [#1210](https://github.com/arcships/dim/issues/1210) 中达成一致，再更新 Loop 自己的合同。不是要求 Timeline、Dispatcher、Session 门面或 rutis 增加基础设施特例。
+- **合同落点**：[Loop 的失败处置交接](../../architecture/rust-agent/plugins/Loop.md#a-failed-model-step-and-its-disposer)。
 
 ### R2. 输出结算、安全续接与跨请求预算
 
@@ -243,6 +244,7 @@ ModelRecovery 的计数、决定和结算属于本分支事实，内存只是其
 - **工具边界**：Loop、请求准备与工具执行所有者须按 §6.1 保证续接请求只有文本输出。Loop 接受处置前确认历史工具批次已结算，请求准备不为本次请求声明或绑定可执行工具，工具执行入口拒绝该请求发出的任何调用。已提交的工具结果仍可作为上下文。
 - **影响**：原失败和续接请求保持独立身份，预算关联可从事实重建；取消及重载不恢复旧请求。禁止策略必须覆盖原请求及其续接，不能被新 request 绕过。
 - **所有者与议题**：ModelProvider、Loop、输出/历史所有者共同在 [#1210](https://github.com/arcships/dim/issues/1210) 定义边界，各自修改自己的合同。类型和持久化扩展按第 8 节作显式兼容决定。
+- **合同落点**：[ModelProvider 的失败链](../../architecture/rust-agent/plugins/ModelProvider.md#failure-chain) 与 [ToolExecution 的执行器拒绝](../../architecture/rust-agent/plugins/ToolExecution.md#toolexecutor)。
 
 ### R3. 模型可读恢复输入
 
@@ -251,6 +253,7 @@ ModelRecovery 的计数、决定和结算属于本分支事实，内存只是其
 - **所需能力**：InputQueue/Loop 明确 Recovery 输入何时采用、如何关联处置、取消后如何保证不再驱动请求；若现有输入合同已能完整表达，则直接复用，不增加新输入模式。
 - **影响**：只在输入采用后开始下一请求；失败、取消和重载收敛输入与交接，旧输入不得在未来一次用户提交时意外复活。
 - **所有者与议题**：InputQueue 和 Loop，在 [#1210](https://github.com/arcships/dim/issues/1210) 定义合同。在该合同证明成立前，不用隐藏消息模拟同一 turn 恢复。
+- **合同落点**：[InputQueue 的 handover 输入](../../architecture/rust-agent/plugins/InputQueue.md#handover-inputs) 与 [interrupt 的第二条采用路径](../../architecture/rust-agent/interrupt.md#2-事件契约)。
 
 ### R4. 客户端展示
 

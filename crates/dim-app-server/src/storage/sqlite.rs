@@ -456,10 +456,9 @@ fn single_marker(markers: &[i64]) -> Option<i64> {
     (markers.len() == 1).then(|| markers[0])
 }
 
-/// Best effort: the rejection and its error text do not depend on the note.
-fn write_startup_failure(path: &std::path::Path, failure: StartupFailure) {
-    let note = failure.note(path);
-    let target = startup_note_path(path);
+/// The note's body is written beside it and renamed over it, so a reader sees
+/// one complete note. Best effort: the caller's error does not depend on it.
+fn write_note(target: &Path, note: &str) {
     let temp = target.with_file_name(format!(
         "{}.{}.tmp",
         target
@@ -478,11 +477,113 @@ fn write_startup_failure(path: &std::path::Path, failure: StartupFailure) {
     let written = options.open(&temp).and_then(|mut file| {
         file.write_all(note.as_bytes())?;
         drop(file);
-        let _ = std::fs::remove_file(&target);
-        std::fs::rename(&temp, &target)
+        let _ = std::fs::remove_file(target);
+        std::fs::rename(&temp, target)
     });
     if written.is_err() {
         let _ = std::fs::remove_file(&temp);
+    }
+}
+
+/// Best effort: the rejection and its error text do not depend on the note.
+fn write_startup_failure(path: &std::path::Path, failure: StartupFailure) {
+    write_note(&startup_note_path(path), &failure.note(path));
+}
+
+/// The note a running store upgrade leaves for the CLI waiting on its daemon:
+/// the phase, the formats, and a counter that rises with each rewrite. The
+/// first line binds it to the process that wrote it, like the failure note.
+fn write_startup_progress(path: &std::path::Path, from: u32, to: u32, counter: u64) {
+    write_note(
+        &startup_note_path(path),
+        &format!(
+            "dimcode-startup-progress v1 pid={}\nstore-upgrade from={from} to={to} progress={counter}\n",
+            std::process::id()
+        ),
+    );
+}
+
+/// How often the SQLite progress handler reports a running store upgrade: it
+/// renews the opening's inactivity interval and rewrites the note. Each
+/// upgrade step reports again as it finishes, so a step made of short
+/// statements still advances.
+const UPGRADE_REPORT_INTERVAL: Duration = Duration::from_secs(1);
+/// Virtual-machine instructions between progress callbacks.
+const UPGRADE_PROGRESS_OPS: std::ffi::c_int = 1000;
+
+/// Reports one store format upgrade while its transaction runs. Only an
+/// upgrade registers it: a fresh store and a store at the current format run
+/// no progress callback at all.
+struct UpgradeProgress {
+    ctx: Ctx,
+    database: PathBuf,
+    /// The format this upgrade started from.
+    from: u32,
+    state: Mutex<UpgradeState>,
+}
+struct UpgradeState {
+    counter: u64,
+    last: Option<std::time::Instant>,
+}
+impl UpgradeProgress {
+    fn new(ctx: &Ctx, database: &Path, from: u32) -> Self {
+        Self {
+            ctx: ctx.clone(),
+            database: database.to_path_buf(),
+            from,
+            state: Mutex::new(UpgradeState {
+                counter: 0,
+                last: None,
+            }),
+        }
+    }
+    /// Reports real progress when a second passed since the last report or
+    /// when `force`d at a step boundary.
+    fn report(&self, force: bool) {
+        let now = std::time::Instant::now();
+        let counter = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if !force
+                && state
+                    .last
+                    .is_some_and(|last| now.duration_since(last) < UPGRADE_REPORT_INTERVAL)
+            {
+                return;
+            }
+            state.counter += 1;
+            state.last = Some(now);
+            state.counter
+        };
+        #[cfg(feature = "testing")]
+        slow_upgrade_report();
+        // Reporting is best effort; the opening's own outcome does not
+        // depend on it.
+        dim_agent_runtime::opening_advanced(&self.ctx);
+        write_startup_progress(&self.database, self.from, FORMAT, counter);
+    }
+}
+
+/// Slows each upgrade progress report by this delay, so a flow test can make
+/// an upgrade outlast a short `startup_timeout`. Feature `testing` only.
+#[cfg(feature = "testing")]
+static UPGRADE_REPORT_DELAY: Mutex<Option<Duration>> = Mutex::new(None);
+
+/// Sets the delay added to every upgrade progress report; `None` clears it.
+/// Feature `testing` only.
+#[cfg(feature = "testing")]
+pub fn set_upgrade_report_delay(delay: Option<Duration>) {
+    *UPGRADE_REPORT_DELAY
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = delay;
+}
+
+#[cfg(feature = "testing")]
+fn slow_upgrade_report() {
+    let delay = *UPGRADE_REPORT_DELAY
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(delay) = delay {
+        std::thread::sleep(delay);
     }
 }
 
@@ -585,6 +686,11 @@ impl Drop for Operation {
 }
 impl SqliteStorage {
     pub fn open(path: PathBuf) -> Result<Arc<Self>> {
+        Self::open_reporting(path, None)
+    }
+    /// Opens the store; with `ctx`, a format upgrade reports its progress to
+    /// that plugin's opening and keeps the CLI's progress note current.
+    pub(crate) fn open_reporting(path: PathBuf, ctx: Option<&Ctx>) -> Result<Arc<Self>> {
         let parent = path
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -651,6 +757,22 @@ impl SqliteStorage {
                 tx.execute_batch("DROP TABLE agent_store_format")
                     .map_err(storage)?;
                 tx.execute_batch(&format_table(FORMAT)).map_err(storage)?;
+                // Only an upgrade registers the report, and it clears it
+                // again after the commit: an ordinary open runs no progress
+                // callback.
+                let progress = ctx.map(|ctx| Arc::new(UpgradeProgress::new(ctx, &path, version)));
+                if let Some(progress) = &progress {
+                    let reports = Arc::clone(progress);
+                    tx.progress_handler(
+                        UPGRADE_PROGRESS_OPS,
+                        Some(move || {
+                            reports.report(false);
+                            false
+                        }),
+                    )
+                    .map_err(storage)?;
+                    progress.report(true);
+                }
                 for (from, added) in UPGRADES.iter().filter(|(from, _)| *from >= version) {
                     if *from == 26 {
                         tx.execute_batch(V27_COLUMNS).map_err(storage)?;
@@ -702,6 +824,9 @@ impl SqliteStorage {
                     if *from == 33 {
                         super::catalog::backfill(&tx)?;
                     }
+                    if let Some(progress) = &progress {
+                        progress.report(true);
+                    }
                 }
                 tx.execute("INSERT INTO agent_store_format VALUES (?1)", [FORMAT])
                     .map_err(storage)?;
@@ -731,6 +856,11 @@ impl SqliteStorage {
             tx.execute_batch(sql).map_err(storage)?;
         }
         tx.commit().map_err(storage)?;
+        if upgraded_from.is_some() {
+            connection
+                .progress_handler(0, None::<fn() -> bool>)
+                .map_err(storage)?;
+        }
         connection
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(storage)?;
@@ -1159,9 +1289,12 @@ impl Plugin for SqliteStoragePlugin {
     }
     async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
         let path = self.path.clone();
-        let storage = tokio::task::spawn_blocking(move || SqliteStorage::open(path))
-            .await
-            .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))??;
+        let reports = ctx.clone();
+        let storage = tokio::task::spawn_blocking(move || {
+            SqliteStorage::open_reporting(path, Some(&reports))
+        })
+        .await
+        .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))??;
         if let Some(from) = storage.upgraded_from() {
             eprintln!(
                 "Upgraded native store {} from format v{from} to v{FORMAT}; earlier dimcode versions cannot open it.",

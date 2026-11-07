@@ -54,6 +54,7 @@ flowchart TB
     Rec["tasks/id/task.json: record v1 with revision"]
     In["tasks/id/input/: inline input files (binary)"]
     Res["tasks/id/result/: result files (binary)"]
+    Work["tasks/id/work/: the adapter's work directory"]
   end
   subgraph SET["Settings business source modality"]
     Cfg["Operation defaults modality.image.*,<br/>OCR component path per node,<br/>concurrency and retention limits"]
@@ -67,6 +68,7 @@ flowchart TB
   Mod["Modality"] -->|"atomic replace under per-task lock"| Rec
   Mod --> In
   Mod --> Res
+  Mod -->|"one work directory per job"| Work
   Mod -->|"modality.configure via Settings owner write (CAS)"| Cfg
   Rec -->|"rebuilt on apply"| Idx
   Cfg -->|"read at use time"| Mod
@@ -231,7 +233,7 @@ Details in Appendix A.
 - The authenticated loopback Web entry is served exactly `modality.capabilities` and `modality.configure`; task, realtime and result methods stay unavailable to browser clients. Replies contain model identities, availability reasons and the settings revision, never credentials, task records or results.
 - Credentials are resolved by Provider per call; never in records, results, diagnostics or errors.
 - The OCR component is an installed executable, not project content; started through the executing node's HostPlatform with that node's isolation, input read access only, no network (A14). Its path comes from the `modality` settings document, read at use time, never from request data.
-- Inline inputs are size-checked and stored under the task directory; `node_path` is read by the component on its node with that node's permissions. Modality never writes outside its storage root; files are owner-only.
+- Inline inputs are size-checked and stored under the task directory; `node_path` is read by the component on its node with that node's permissions, or in place by a provider task's adapter in the control node's process. Modality never writes outside its storage root; files are owner-only.
 - Realtime events go only to the opening connection.
 
 ## 8. Rule check
@@ -292,7 +294,7 @@ The Settings business source and the `pluginFiles` supplement are changes to oth
 
 - **Problem.** Image generation and editing adapters need a model's endpoint, protocol and credential material per call. Provider resolves connections only for a `ModelRequest`.
 - **Existing mechanisms.** `ProviderConnectionResolver` is tied to `ModelRequest`; adapters cannot own Provider credentials, and Modality must not store them.
-- **Needed capability.** A per-call resolution of a model's non-conversational connection, owned by Provider, used only for that call and never persisted or returned to a client. Provider defines the contract on its own page ([provider management §3.6](../appserver/provider-management.md#36-selectable-models-for-process-owners)): the input, the reply, the selectability and credential rules, and the lifetime. Adapters call it and hold no credentials.
+- **Needed capability.** A per-call resolution of a model's non-conversational connection, owned by Provider, used only for that call and never persisted or returned to a client. Provider defines the contract on its own page ([provider management §3.6](../appserver/provider-management.md#36-selectable-models-for-process-owners)): the input, the reply, the selectability and credential rules, and the lifetime. The port is `ResolveModalityConnection` and `ModalityConnectionHost` in `dim-agent-capabilities` with `ModalityTarget` carrying the model identity and the operation; Modality resolves it per adapter call (`submit`, `wait`, `cancel_remote`) and passes the connection to the adapter. Adapters call it and hold no credentials.
 - **Ordering impact.** Resolved at submit; no reload; credentials never enter task records, results, diagnostics or errors.
 - **Owner/issue.** Provider, [#799](https://github.com/arcships/dim/issues/799).
 
@@ -334,15 +336,15 @@ Service `modalityAdapter`, scope process, key adapter name, declared in the adap
 | `connectionKinds` | sync | `{}` | `string[]` (Provider connection kinds served) |
 | `operations` | sync | `{ model: {providerId, modelId} }` | `[{ category, operation, params_schema }]` |
 | `submit` | async | `{ job: Job, connection: ResolvedConnection }` | `{ remote_handle? }` |
-| `wait` | async | `{ remote_handle?, connection }`; progress as `{ fraction?, message? }` notifications on the call | `{ files: [{ name, media_type, path }], data? }`; `path` inside the job's work directory |
+| `wait` | async | `{ task_id, remote_handle?, connection }`; progress as `{ fraction?, message? }` notifications on the call | `{ files: [{ name, media_type, path }], data? }`; `path` inside the job's work directory |
 | `cancelRemote` | async | `{ remote_handle, connection }` | `{ outcome: "cancelled" \| "unsupported" \| "already_finished" }` |
 | `realtimeOpen` | async | `{ connection, params }`; provider events as `{ channel_id, event }` notifications on the call until closed | `{ channel_id } \| null` (unsupported) |
 | `realtimeSend` | async | `{ channel_id, frame }` | `{}` |
 | `realtimeClose` | async | `{ channel_id }` | `{}` |
 
-`Job` is `{ task_id, category, operation, model: {providerId, modelId}, params, files: [{ name, media_type, path }], work_dir }`. `ResolvedConnection` is the data shape Provider's non-conversational connection resolution returns (`kind`, `provider_id`, `model`, endpoint and credential material), passed per call and never stored or logged.
+`Job` is `{ task_id, category, operation, model: {providerId, modelId}, params, files: [{ name, media_type, path }], work_dir }`. An inline input's `path` is the absolute path of the file Modality stored at `modality/tasks/<task_id>/input/<name>`; an input supplied by `node_path` carries the canonical path Modality recorded (its last component must not be a link; earlier links are resolved), which Modality read once for `bytes` and `sha256` and never copies, and the executor reads it in place. `work_dir` is the task's `modality/tasks/<task_id>/work` directory, created before the call; every result file resolves to a regular file inside it. `ResolvedConnection` is the data shape Provider's non-conversational connection resolution returns (`kind`, `provider_id`, `model`, endpoint and credential material), passed per call and never stored or logged.
 
-`available` reports runtime availability without a reload (for example, a provider endpoint unreachable). An operation whose available adapters do not serve the configured or explicit model is reported as "no adapter for the configured model", and its submits fail `unavailable`. `image.understand` is not an adapter operation: it is served by a selectable vision model and is selection-only. OCR is not an adapter: per task, Modality uses the HostPlatform of the target node (absent or unavailable: `node_unavailable`), probes the OCR component path the `modality` settings document gives for that node, and spawns it there; an offline peer node fails the call with `node_unavailable` and nothing reloads (§3.2). `wait` with a stored `remote_handle` must work in a new generation; an adapter that returns no handle cannot be resumed.
+`available` reports runtime availability without a reload (for example, a provider endpoint unreachable). An operation whose available adapters do not serve the configured or explicit model is reported as "no adapter for the configured model", and its submits fail `unavailable`. `image.understand` is not an adapter operation: it is served by a selectable vision model and is selection-only. OCR is not an adapter: per task, Modality uses the HostPlatform of the target node (absent or unavailable: `node_unavailable`), probes the OCR component path the `modality` settings document gives for that node, and spawns it there; an offline peer node fails the call with `node_unavailable` and nothing reloads (§3.2). `wait` names its job by `task_id`; when `submit` returned a `remote_handle`, the adapter may use it instead. `wait` with a stored `remote_handle` must work in a new generation; an adapter that returns no handle keys its own in-flight work by `task_id`, and only within one generation, so it cannot be resumed.
 
 ### A.3 Methods
 
@@ -392,7 +394,7 @@ The default snapshot is the one shape both methods return. A model reference is 
 - `configure` validates the operation and that the model is in that operation's options (for `image.understand`, selectable vision support), then writes or clears the operation key through Settings' owner write with CAS. It accepts every A.1 operation that has a default key and never answers `modality_unavailable`: configuring is a settings write, not a runtime claim. An unknown category or operation, and OCR, whose operation has no default key, answer `modality_unknown_operation`; `operation` is required where the operation has its own key (image, speech) and may be absent only for a category-keyed category. `model: null` clears that key; clearing restores automatic resolution, and a missing `model` is `invalid_params`. The write happens before the reply is sent, so a success means the default is persisted, and the reply is the same snapshot a following `modality.capabilities` call returns unless Provider changed in between.
 - Configurable and available are different properties: the first belongs to settings, the second to the runtime. A persisted default can name a model of an operation this build cannot run; the snapshot stays honest by keeping that operation's `available: false` and its `build` or `adapter` reason, and `effective` still resolves over the options (the default when available, otherwise automatic) so clients do not implement resolution themselves.
 
-Boundary validation: files at most 100 MiB per submission and 25 MiB per inline file (A5); media types checked per operation; `node_path` only for host-executed operations; `node` only for host-executed categories, default control node (A15). Model selection: explicit `model`; else the operation default; else automatic resolution; else `no_default_model`. An explicit model that is not selectable fails `model_unavailable`, an unavailable default fails `default_unavailable`, and a resolved model no available adapter serves fails `unavailable`; none of them falls back to another model. The resolved model is fixed in the record. `image.understand` is selection-only and has no task; a task submission for it fails `modality_unknown_operation`. At most 4 running tasks per category; others stay `queued` in submission order (A6).
+Boundary validation: inline inputs at most 8 MiB in total per submission, larger inputs by `node_path`, an absolute path of an existing regular file on the control node whose last component is not a link (earlier links are resolved); its length is compared with what is left of the 100 MiB submission budget before it is read, the recorded path is the canonical one, the executor reads it there and Modality never copies it; all input files at most 100 MiB per submission (A5). Media types follow A.1's input column: image operations accept `image/*`, video operations `image/*` and `video/*`, `speech.transcribe` `audio/*`, and `asset` `image/*`; an operation whose input names no file refuses files. Each file name is one component, a valid pluginFiles name, distinct within the submission. `node` is refused `invalid_input` for a provider category, and defaults to the control node otherwise (A15). Parameters are validated at submission against the adapter's `params_schema`; invalid parameters fail `invalid_input` and write nothing. Model selection: explicit `model`; else the operation default; else automatic resolution; else `no_default_model`. An explicit model that is not selectable fails `model_unavailable`, an unavailable default fails `default_unavailable`, and a resolved model no available adapter serves fails `unavailable`; none of them falls back to another model. The resolved model is fixed in the record. `image.understand` and `realtime.connect` are not tasks: a submission for either fails `modality_unknown_operation`. `ocr.recognize` is not an adapter task in this build and fails `modality_unavailable` with its `build` reason. At most 4 running tasks per category; others stay `queued` in submission order (A6).
 
 ### A.4 Task record (`pluginFiles` (extended), format version 1)
 
@@ -404,7 +406,7 @@ Boundary validation: files at most 100 MiB per submission and 25 MiB per inline 
 | `revision` | integer, incremented on every write |
 | `category`, `operation` | identifiers from A.1 |
 | `executor` | `{ kind: "provider", provider, adapter }` where `provider` is `{providerId, modelId}`, or `{ kind: "host", node }` |
-| `params` | validated object; input files replaced by `{ name, media_type, bytes, sha256 }`, stored under `input/` |
+| `params` | validated object; input files replaced by `{ name, media_type, bytes, sha256 }` for a file stored under `input/`, or by `{ name, media_type, bytes, sha256, node_path }` for the canonical `node_path` read in place |
 | `state` | `queued`, `running`, `succeeded`, `failed`, `cancelled`, `interrupted` |
 | `remote_handle` | string or null; written before `running` progress is reported |
 | `progress` | `{ fraction?, message? }` or null; written at most once per second (A10) |
@@ -413,7 +415,9 @@ Boundary validation: files at most 100 MiB per submission and 25 MiB per inline 
 | `remote_cancel` | `"cancelled"`, `"unsupported"`, `"already_finished"` or null |
 | `created_at`, `updated_at`, `finished_at` | RFC 3339 |
 
-Records and result files use `pluginFiles` (extended): per-plugin root, UTF-8 and binary atomic replace, lock, format version. Retention: terminal tasks deleted with their files after 30 days or beyond 200 terminal tasks, oldest first (A2); non-terminal tasks never.
+Records and result files use `pluginFiles` (extended): per-plugin root, UTF-8 and binary atomic replace, lock, format version. Retention: on every `apply` and after every terminal write, terminal tasks older than 30 days or beyond the newest 200 are deleted with their files, oldest first (A2); non-terminal tasks never.
+
+The record is `modality/tasks/<task_id>/task.json` in the host's version 1 text envelope. Every write takes that file's lock and compares `revision`: the first terminal write wins, and a later terminal outcome is discarded together with the result files it wrote. `params` carries the input files as a `files` array of their metadata; an inline file is stored under `input/` and a caller's `node_path` is recorded by its path and read in place. The `files` key is reserved: a caller's `params.files` is refused with `invalid_input`, and the record always carries the validated metadata, an empty array when the submission has no files. `wait` streams the files an adapter returns from the job's work directory into `result/<name>` while computing `bytes` and `sha256`, and the work directory is removed afterwards.
 
 ### A.5 CLI
 
@@ -423,7 +427,7 @@ Records and result files use `pluginFiles` (extended): per-plugin root, UTF-8 an
 | `dimcode modality set-default <category>[.<operation>] <provider>/<model>` / `--clear` | `modality.configure` |
 | `dimcode modality settings [<key> [<value>]]` | Reads or writes the `modality` settings document (OCR component path per node, limits) through Settings' typed operations on that business source (Settings supplement); not a `modality.*` method |
 | `dimcode modality task list\|status\|wait\|cancel` | Task methods; `wait --out <path>` retrieves results |
-| `dimcode image generate\|edit\|enhance`, `video`, `speech synthesize\|transcribe`, `music`, `audio`, `asset`, `motion` | Submit; by default waits and writes results to `--out` or the current directory; `--no-wait` prints the id; `--json` prints the record |
+| `dimcode image generate\|edit\|enhance`, `video`, `speech synthesize\|transcribe`, `music`, `audio`, `asset`, `motion` | Submit; inputs up to 8 MiB are sent inline and larger ones by `node_path`; by default waits and writes results to `--out` or the current directory; `--no-wait` prints the id; `--json` prints the record |
 | `dimcode ocr <file> [--node <id>]` | Submit `ocr.recognize`; prints text |
 | `dimcode realtime` | Open, relay stdin lines as text frames, print events |
 
@@ -433,10 +437,11 @@ Invoking an unavailable category prints the same reason as the listing. The firs
 
 | Step | Mechanism |
 | --- | --- |
-| Submit | Validate at the boundary; write `queued` (revision 1) and input files; return. The scheduler task registered with `ctx.effect` starts it when a slot frees |
+| Submit | Validate at the boundary; write `queued` (revision 1) and input files; return. The scheduler registered with `ctx.effect` (Cordis's effect mechanism, [rutis lifecycle](../rutis-usage.md#4-lifecycle-rutis-provides)) starts it when a slot frees; the scheduler and every running task are effect work, so the plugin's unload cleans them up |
 | Start | Write `running` with the resolved executor; resolve the operation's adapter (by adapter name per task after [#861](https://github.com/arcships/dim/issues/861) lands; from the single process service until then); call `submit`; write `remote_handle` as soon as known |
-| Terminal | One write under the per-task lock comparing `revision`; first terminal write wins; later outcomes discarded and their files removed |
-| Cancel | Mark requested; cancel the local token (aborts HTTP, or terminates the component's process tree through HostPlatform); `cancel_remote` when a handle exists; release resources; then write `cancelled` (with `remote_cancel`) |
+| Terminal | One write under the per-task lock comparing `revision`; first terminal write wins; later outcomes discarded and their files removed. Retention applies after the write, before the state is visible to `wait`/`status` |
+| Retention | On every `apply` and after every terminal write: terminal tasks older than 30 days or beyond the newest 200, deleted with their files, oldest first (A.4, A2) |
+| Cancel | Mark requested; cancel the local token (aborts HTTP, or terminates the component's process tree through HostPlatform). A drive keeps waiting for `submit` after a cancel, so a job the executor accepted yields its handle; the cancel waits for the submit phase to end (both bounded by 3 s, below rutis's unload bound of 10 s). Then re-read the record, `cancel_remote` when a handle exists (raced against the call's token and the generation's stop, so a hung provider neither holds the client nor an unload), release resources, and write `cancelled` with the executor's answer or `null` |
 | Unload (own reload or Provider reload) | Disposer cancels local work, terminates OCR processes, closes realtime connections, writes `interrupted` for host tasks and provider tasks without handle; tasks with handle stay `running` |
 | Startup (every `apply`) | `queued` → `interrupted` (never started later, A11); `running` host task → `interrupted`; `running` provider task with handle and its adapter available → continue `wait` (observation only, A12); otherwise `interrupted` "did not survive recovery" |
 | Configuration change | `modality` settings change (defaults included): data update and notification, read at next use; availability recomputed; existing tasks keep their resolved executor; no reload |
@@ -519,9 +524,9 @@ Flow tests through `modality.*` methods with a fake adapter plugin (controllable
 | A2 | Retention 30 days or 200 terminal tasks | Judgment | Disk use differs |
 | A3 | Operation defaults: image and speech use per-operation keys; other categories use a category key. Image has no category fallback in this design | Overview §4; judgment | Image operations would share one default, or a fallback would hide a cleared operation key |
 | A4 | Operation parameters declared by adapters, validated at submission | Judgment | Fixed schema per operation |
-| A5 | 25 MiB per inline file, 100 MiB per submission | Judgment | Limits change |
+| A5 | 8 MiB of inline inputs per submission, larger inputs by `node_path`, 100 MiB per submission | Judgment | Limits change |
 | A6 | At most 4 running tasks per category | Judgment | Other concurrency |
-| A7 | The CLI sends inputs inline and writes outputs; Modality writes only its storage root | Overview §4; judgment | Modality needs write access to caller paths |
+| A7 | The CLI sends small inputs inline and larger ones by `node_path`, and writes outputs; Modality writes only its storage root | Overview §4; judgment | Modality needs write access to caller paths |
 | A8 | Ctrl+C during a CLI wait detaches rather than cancels | Judgment | Ctrl+C cancels costly tasks |
 | A9 | Realtime idle timeout 10 minutes | Judgment | Connections outlive clients |
 | A10 | Progress written at most once per second | Judgment | More storage writes |
@@ -534,23 +539,60 @@ Flow tests through `modality.*` methods with a fake adapter plugin (controllable
 
 ## Appendix G. Rust binding
 
-A Rust adapter plugin may implement the generated binding instead of handling the named service directly; the neutral form in A.2 is normative.
+A Rust adapter plugin may implement the generated binding instead of handling the named service directly; the neutral form in A.2 is normative. The types below live in `dim-modality`; the connection is the one Provider's non-conversational resolution returns per call, passed to the adapter and never stored, logged or returned.
 
 ```rust
 /// Binding for service `modalityAdapter` (process, key adapter name).
-pub trait ModalityAdapter: Send + Sync + 'static {
-    fn available(&self) -> Availability;
-    fn connection_kinds(&self) -> Vec<String>;
-    fn operations(&self, model: &ModelRef) -> Vec<OperationSpec>;
-    fn submit(&self, job: Job, conn: ResolvedConnection, cancel: CancellationToken)
-        -> HostFuture<'_, Result<Submitted, AdapterError>>;
-    fn wait(&self, handle: Option<&str>, conn: ResolvedConnection, progress: ProgressSink,
-        cancel: CancellationToken) -> HostFuture<'_, Result<AdapterOutput, AdapterError>>;
-    fn cancel_remote(&self, handle: &str, conn: ResolvedConnection) -> HostFuture<'_, RemoteCancel>;
-    fn realtime(&self, conn: ResolvedConnection, params: JsonObject, cancel: CancellationToken)
-        -> HostFuture<'_, Option<RealtimeChannel>>;   // maps realtimeOpen/Send/Close
+pub type AdapterFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AdapterError>> + Send + 'a>>;
+pub struct AdapterOperation { pub category: String, pub operation: String, pub params_schema: Value }
+pub struct JobFile { pub name: String, pub media_type: String, pub path: PathBuf }
+pub struct Job {
+    pub task_id: String,
+    pub category: String,
+    pub operation: String,
+    pub model: ModelId,
+    pub params: Value,
+    pub files: Vec<JobFile>,
+    pub work_dir: PathBuf,
 }
+pub struct Submitted { pub remote_handle: Option<String> }
+pub struct AdapterOutput { pub files: Vec<JobFile>, pub data: Option<Value> }
+pub struct AdapterError { pub code: AdapterErrorCode, pub message: String }
+pub enum AdapterErrorCode { InvalidInput, Unavailable, ProviderError }
 pub enum RemoteCancel { Cancelled, Unsupported, AlreadyFinished }
+pub struct AdapterProgress { pub fraction: Option<f64>, pub message: Option<String> }
+pub struct ProgressSink(Arc<dyn Fn(AdapterProgress) + Send + Sync>);
+
+pub trait ModalityAdapter: Send + Sync + 'static {
+    fn available(&self) -> bool;
+    fn connection_kinds(&self) -> Vec<String>;
+    fn operations(&self, model: &ModelId) -> Vec<AdapterOperation>;
+    fn submit(&self, job: Job, connection: ModalityConnection, cancel: CancellationToken)
+        -> AdapterFuture<'_, Submitted>;
+    fn wait(&self, task_id: &str, handle: Option<&str>, connection: ModalityConnection,
+        progress: ProgressSink, cancel: CancellationToken) -> AdapterFuture<'_, AdapterOutput>;
+    fn cancel_remote(&self, handle: &str, connection: ModalityConnection)
+        -> AdapterFuture<'_, RemoteCancel>;
+}
 ```
 
-Registration in Rust provides `ModalityAdapter` at `TypeKey::named("modalityAdapter")` with the adapter name as instance key. How the adapter is registered and found follows the per-task lookup [#40](https://github.com/arcships/dim/issues/40) decided and [#861](https://github.com/arcships/dim/issues/861) tracks; this appendix binds only the operations. Modality's own `managementMethods` and `modalityTasks` use the bindings of the [methods](../contracts/session-boundary.md) contract and the handles above.
+The realtime operations of A.2 map to the realtime methods and bind with them. Registration in Rust provides `ModalityAdapter` at `TypeKey::named("modalityAdapter")` with the adapter name as instance key. How the adapter is registered and found follows the per-task lookup [#40](https://github.com/arcships/dim/issues/40) decided and [#861](https://github.com/arcships/dim/issues/861) tracks; this appendix binds only the operations.
+
+Modality's own `managementMethods` use the bindings of the [methods](../contracts/session-boundary.md) contract. The `modalityTasks` service is provided by the same implementation at `TypeKey::named("modalityTasks")`, with one method per `modality.task.*` declaration and the same request and reply types:
+
+```rust
+impl ModalityTasks {
+    pub async fn submit(&self, params: TaskSubmit, cancel: &CancellationToken)
+        -> Result<TaskReply, RpcError>;
+    pub async fn status(&self, params: TaskStatus) -> Result<TaskReply, RpcError>;
+    pub async fn list(&self, params: TaskList) -> Result<TaskListReply, RpcError>;
+    pub async fn wait(&self, params: TaskWait, cancel: &CancellationToken,
+        progress: Option<&Progress>) -> Result<TaskReply, RpcError>;
+    pub async fn cancel(&self, params: TaskCancel, cancel: &CancellationToken)
+        -> Result<TaskReply, RpcError>;
+    pub async fn result(&self, params: TaskResultQuery, cancel: &CancellationToken)
+        -> Result<TaskResultReply, RpcError>;
+}
+```
+
+The types are the serde types the methods use. This binding is Rust-only: there is no foreign form, because a non-Rust consumer reaches named runtime services only through the runtime-services-by-name requirement ([#4](https://github.com/arcships/dim/issues/4), §9).

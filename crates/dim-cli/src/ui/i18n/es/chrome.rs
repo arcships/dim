@@ -596,6 +596,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The first message was not sent; your new draft was kept." => {
             "El primer mensaje no se envió; se conservó tu nuevo borrador."
         }
+        "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "El App Server sigue siendo {server} porque otros clientes lo están usando; este cliente {client} también lo usa. Ejecuta `dimcode daemon stop` cuando terminen; el próximo inicio ejecutará {client}."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "El App Server sigue siendo {server} porque otros clientes lo están usando (conexiones: {connections}, sesiones adjuntas: {attached}, turnos en ejecución: {running}); este cliente {client} también lo usa. Ejecuta `dimcode daemon stop` cuando terminen; el próximo inicio ejecutará {client}."
+        }
+        "Upgrading the local store from format v{from} to v{to}; this can take a while on a large store." => {
+            "Se está actualizando el almacén local del formato v{from} al v{to}; esto puede tardar un rato en un almacén grande."
+        }
         _ => return None,
     })
 }

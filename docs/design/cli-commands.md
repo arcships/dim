@@ -315,13 +315,17 @@ a goal an evaluator judges keeps its judge through `/goal edit`, which writes on
 A `/pursue` form is Pursuit's later option (§10) and is not part of this contract.
 
 **Reading the goal.** The client folds the goal from the branch events it already reads, by Goal
-A.3's rule: the latest live `goal:objective` block is the objective, the latest live `goal:status`
-block is the status, `clear` retires both, `edit` keeps the judge, and an input the InputQueue
-deleted leaves the fold. It adds no query method and asks Goal no question. `/goal` with no
-arguments prints usage before that fold. Before it picks between `set` and `edit` the client reads the line
-up to its published head. After a write, it folds the events that write produced before printing: the
-line prompt reads them again, and the terminal UI waits for them among the line's live events. The
-state shown and the method chosen come from the events, never from a guess taken from the reply. The
+A.3's rule: the newest live `goal:state` record is the goal; on a history written before the record,
+the latest live `goal:objective` block is the objective and the latest live `goal:status` block is
+the status, `clear` retires both, `edit` keeps the judge, and an input the InputQueue deleted leaves
+the fold. It adds no query method and asks Goal no question. `/goal` with no arguments prints usage
+before that fold. Before it picks between `set` and `edit` the client reads the line up to its
+published head. After a write, it folds the events that write produced before printing: the line
+prompt reads them again, and the terminal UI waits for them among the line's live events. The
+report is released at the `sequence` the method returned, for every daemon: a daemon built from main
+answers with the same sequence and publishes the old keys, and the command must not stay parked
+waiting for a record such a daemon never writes. The state shown and the method chosen come from the
+events, never from a guess taken from the reply. The
 fold starts over at the line's own opening — its
 `branch/start`, or the `session/forked` a fork writes after the facts it copied — so a new line has
 no goal and a forked Session's `main` never shows the copied one (Goal §2, A11). A v3 client
@@ -1494,6 +1498,21 @@ the flag must name a standalone `dim-app-server` binary. The failed launch
 removes the note after reading; a successful connection removes any note. The
 CLI never prints `daemon.log`, never deletes, recreates, downgrades or rewrites
 the store, and exits 1.
+
+While a store format upgrade runs, the daemon writes the same note as a
+progress kind, `dimcode-startup-progress v1 pid=<pid>` with
+`store-upgrade from=<from> to=<to> progress=<n>`, at most once a second and
+after each upgrade step; a fresh store or one at the current format writes
+none. Both startup waits read it: the spawn wait counts only its child's pid,
+the start-lock wait any pid, and each new counter moves the wait's bound
+forward by the bound itself (10 s for the spawn, one verified shutdown plus
+one startup plus a margin for the lock). A store format upgrade is the long
+phase that reports progress and moves the bound; every other phase of
+startup is bounded by the client's fixed value. The first such
+note prints, once on stderr in every mode, `Upgrading the local store from
+format v<from> to v<to>; this can take a while on a large store.`; stdout and
+JSON output stay unchanged. A client that only knows the failure kind ignores
+the progress kind and falls back to the generic messages above.
 Development documentation continues to use `./dev` and its isolated home; the
 terminal note itself names a compatible build or `--home PATH`.
 

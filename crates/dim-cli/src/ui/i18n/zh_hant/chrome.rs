@@ -518,6 +518,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The first message was not sent; your new draft was kept." => {
             "首條訊息未傳送；已保留你的新草稿。"
         }
+        "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因為其他用戶端正在使用它；這個 {client} 用戶端也使用它。等它們結束後執行 `dimcode daemon stop`，下次啟動就會執行 {client}。"
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因為其他用戶端正在使用它（連線：{connections}，已附加工作階段：{attached}，執行中的回合：{running}）；這個 {client} 用戶端也使用它。等它們結束後執行 `dimcode daemon stop`，下次啟動就會執行 {client}。"
+        }
+        "Upgrading the local store from format v{from} to v{to}; this can take a while on a large store." => {
+            "正在把本機資料庫從格式 v{from} 升級到 v{to}；大型資料庫可能需要一段時間。"
+        }
         _ => return None,
     })
 }

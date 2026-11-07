@@ -12,6 +12,7 @@ mod goal_command;
 mod images;
 mod input;
 mod leaf;
+mod locale;
 mod login;
 mod maintenance;
 mod management;
@@ -98,10 +99,12 @@ async fn daemon_link(
     root: &rutis::Ctx,
     options: &Options,
     start: bool,
+    locale: locale::Locale,
 ) -> Result<(rutis::host::FiberView, Arc<plugins::Connection>)> {
     let link = root.plugin(plugins::DaemonLink {
         options: options.clone(),
         start,
+        locale,
     });
     (&link).await.map_err(plugin_error)?;
     let connection = root
@@ -116,8 +119,9 @@ async fn open_tui(
     root: &rutis::Ctx,
     options: &Options,
     initial: Option<ui::Initial>,
+    locale: locale::Locale,
 ) -> Result<i32> {
-    let (link, _connection) = daemon_link(root, options, true).await?;
+    let (link, _connection) = daemon_link(root, options, true, locale).await?;
     let env = ui::Env {
         home: options.home.clone(),
         workspace: options.workspace().as_str().to_owned(),
@@ -151,7 +155,7 @@ async fn open_tui(
     link.dispose().await?;
     match leave {
         ui::tui::Leave::Exit(code) => Ok(code),
-        ui::tui::Leave::Restart(restart) => relaunch(root, options, restart).await,
+        ui::tui::Leave::Restart(restart) => relaunch(root, options, restart, locale).await,
     }
 }
 
@@ -161,8 +165,13 @@ async fn open_tui(
 /// which follows the one in use, the session, which is the one left, and
 /// the first message (`--prompt` with its `--image`), which was already
 /// sent; a resumed session keeps its model, so the model flags drop with it.
-async fn relaunch(root: &rutis::Ctx, options: &Options, restart: ui::tui::Restart) -> Result<i32> {
-    let (link, connection) = daemon_link(root, options, false).await?;
+async fn relaunch(
+    root: &rutis::Ctx,
+    options: &Options,
+    restart: ui::tui::Restart,
+    locale: locale::Locale,
+) -> Result<i32> {
+    let (link, connection) = daemon_link(root, options, false, locale).await?;
     if let Some(client) = connection.take() {
         client::shutdown(client).await?;
     }
@@ -216,8 +225,12 @@ async fn hold_web(
     options: &Options,
     port: Option<u16>,
     open_browser: bool,
+    locale: locale::Locale,
 ) -> Result<i32> {
-    daemon_link(root, options, true).await?;
+    let (_, connection) = daemon_link(root, options, true, locale).await?;
+    if let Some(notice) = connection.take_notice() {
+        eprintln!("{}", daemon_notice(&notice));
+    }
     let (done, held) = tokio::sync::oneshot::channel();
     let hold = root.plugin(plugins::WebHold {
         port,
@@ -232,8 +245,8 @@ async fn hold_web(
 
 /// `dimcode web --off`: clear the daemon-owned switch without disconnecting a
 /// foreground holder.
-async fn disable_web(root: &rutis::Ctx, options: &Options) -> Result<i32> {
-    let (link, connection) = daemon_link(root, options, false).await?;
+async fn disable_web(root: &rutis::Ctx, options: &Options, locale: locale::Locale) -> Result<i32> {
+    let (link, connection) = daemon_link(root, options, false, locale).await?;
     let Some(mut client) = connection.take() else {
         println!("Daemon is not running.");
         let _ = link.dispose().await;
@@ -261,6 +274,53 @@ fn plugin_error(error: Arc<rutis::host::ErrorKind>) -> Error {
     match &*error {
         rutis::host::ErrorKind::PluginFailed(source) => source.to_string().into(),
         other => other.to_string().into(),
+    }
+}
+
+/// The line a client prints when it keeps a busy daemon of another build:
+/// line mode and `exec` put it on stderr, and the TUI shows it once in its
+/// notice area; stdout and JSON output stay unchanged.
+pub(crate) const DAEMON_BUSY: &str = "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
+/// [`DAEMON_BUSY`] with the counts a `daemon_busy` refusal carried.
+pub(crate) const DAEMON_BUSY_COUNTS: &str = "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
+
+/// The line a client prints once when a daemon reports a store upgrade while
+/// it starts; both waits then follow the daemon's progress instead of a fixed
+/// startup budget.
+pub(crate) const DAEMON_UPGRADING: &str = "Upgrading the local store from format v{from} to v{to}; this can take a while on a large store.";
+
+/// [`DAEMON_UPGRADING`] with the formats the progress note named.
+pub(crate) fn store_upgrade_line(locale: locale::Locale, upgrade: &client::StoreUpgrade) -> String {
+    let from = upgrade.from.to_string();
+    let to = upgrade.to.to_string();
+    crate::ui::i18n::tf_in(locale, DAEMON_UPGRADING, &[("from", &from), ("to", &to)])
+}
+
+/// The notice for a kept daemon of another build, with the refusal's counts
+/// when it sent them.
+pub(crate) fn daemon_notice(notice: &client::DaemonNotice) -> String {
+    let server = sanitize::safe(&notice.server);
+    let client_version = env!("CARGO_PKG_VERSION");
+    match &notice.counts {
+        Some(counts) => {
+            let connections = counts.connections.to_string();
+            let attached = counts.attached_sessions.to_string();
+            let running = counts.running.to_string();
+            crate::ui::i18n::tf(
+                DAEMON_BUSY_COUNTS,
+                &[
+                    ("server", &server),
+                    ("client", client_version),
+                    ("connections", &connections),
+                    ("attached", &attached),
+                    ("running", &running),
+                ],
+            )
+        }
+        None => crate::ui::i18n::tf(
+            DAEMON_BUSY,
+            &[("server", &server), ("client", client_version)],
+        ),
     }
 }
 
@@ -418,11 +478,20 @@ fn prepare() -> Result<Option<Options>> {
     Ok(Some(options))
 }
 
-async fn run_acp(root: &rutis::Ctx, options: &Options, agent_id: Option<String>) -> Result<i32> {
+async fn run_acp(
+    root: &rutis::Ctx,
+    options: &Options,
+    agent_id: Option<String>,
+    locale: locale::Locale,
+) -> Result<i32> {
     let mut signals = plugins::Signals::listen()?;
-    let client = client::connect_inner(options, true)
+    let linked = client::connect_inner(options, true, locale)
         .await?
         .ok_or("App Server did not start")?;
+    if let Some(notice) = &linked.notice {
+        eprintln!("{}", daemon_notice(notice));
+    }
+    let client = linked.client;
     let (gateway, finished) = dim_acp::AcpGateway::new(
         client,
         dim_acp::Io {
@@ -479,25 +548,32 @@ async fn run_acp(root: &rutis::Ctx, options: &Options, agent_id: Option<String>)
 }
 
 async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
-    // `block_on` polls `act` on this thread, so the thread-local language holds.
-    crate::ui::i18n::set(crate::ui::i18n::interface_locale(&options.home));
+    // `block_on` polls `act` on this thread, so the thread-local language
+    // holds; the connection code may run on another thread, so it carries the
+    // same language as a value.
+    let locale = crate::ui::i18n::interface_locale(&options.home);
+    crate::ui::i18n::set(locale);
     if let Action::Migration(command) = &options.action {
-        return migration_command::run(root, &options, command).await;
+        return migration_command::run(root, &options, command, locale).await;
     }
     if let Action::Acp {
         auth_setup: Some(method),
         ..
     } = &options.action
     {
-        let mut client = client::connect_inner(&options, true)
+        let linked = client::connect_inner(&options, true, locale)
             .await?
             .ok_or("App Server did not start")?;
+        if let Some(notice) = &linked.notice {
+            eprintln!("{}", daemon_notice(notice));
+        }
+        let mut client = linked.client;
         let (provider, device) = dim_acp::auth::terminal_method(&mut client, method).await?;
         options.device = device;
         return login::login(&mut client, &options, Some(&provider)).await;
     }
     if let Action::Acp { agent_id, .. } = &options.action {
-        return run_acp(root, &options, agent_id.clone()).await;
+        return run_acp(root, &options, agent_id.clone(), locale).await;
     }
     let starts_tui = match options.action {
         Action::Tui => true,
@@ -516,7 +592,7 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
             }),
             _ => None,
         };
-        return open_tui(root, &options, initial).await;
+        return open_tui(root, &options, initial, locale).await;
     }
     if matches!(options.action, Action::WebInstall) {
         if !version::RELEASE {
@@ -540,9 +616,9 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
     } = options.action
     {
         if off {
-            return disable_web(root, &options).await;
+            return disable_web(root, &options, locale).await;
         }
-        return hold_web(root, &options, port, open_browser).await;
+        return hold_web(root, &options, port, open_browser, locale).await;
     }
 
     if let Action::Timeline {
@@ -560,9 +636,12 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
     }
     let images = images::load(&options.images)?;
     let stop = matches!(options.action, Action::DaemonStop);
-    let (_, connection) = daemon_link(root, &options, !stop).await?;
+    let (_, connection) = daemon_link(root, &options, !stop, locale).await?;
     if stop {
         return client::stop(connection.take()).await;
+    }
+    if let Some(notice) = connection.take_notice() {
+        eprintln!("{}", daemon_notice(&notice));
     }
     let mut client = connection.take().ok_or("App Server did not start")?;
     match &options.action {

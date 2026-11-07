@@ -384,7 +384,7 @@ impl Client {
     }
 
     /// Waits for transport EOF and the authenticated Windows bridge to exit.
-    pub async fn wait_closed(mut self) -> Result<()> {
+    pub async fn wait_closed(&mut self) -> Result<()> {
         loop {
             let buffer = self.read.fill_buf().await?;
             if buffer.is_empty() {

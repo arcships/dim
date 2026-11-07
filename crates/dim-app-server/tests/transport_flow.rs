@@ -106,6 +106,9 @@ mod model_switch;
 #[path = "transport_flow/summaries.rs"]
 mod summaries;
 
+#[path = "transport_flow/shutdown_idle.rs"]
+mod shutdown_idle;
+
 #[path = "transport_flow/management.rs"]
 mod management;
 

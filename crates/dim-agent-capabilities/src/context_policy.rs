@@ -504,19 +504,24 @@ impl ContextPolicy {
             .collect();
         let window = cut_window(&view.history, model);
         let mut events = Vec::new();
-        let mut offset = 0;
+        let mut from_event = window.map(|entry| entry.event_id.clone());
+        let mut repeated = false;
         loop {
-            let page = self
+            let mut page = self
                 .timeline
                 .query(rising_chain(
-                    window.map(|entry| entry.event_id.as_str()),
+                    from_event.as_deref(),
                     vec!["turn/start".into()],
-                    offset,
                     CUT_PAGE,
                 ))
                 .await
                 .map_err(|error| HostError::failed(error.to_string()))?;
-            let short = (page.events.len() as u64) < CUT_PAGE;
+            let complete = (page.events.len() as u64) < CUT_PAGE;
+            if repeated && !page.events.is_empty() {
+                page.events.remove(0);
+                page.positions.remove(0);
+            }
+            let next = page.events.last().map(|event| event.id.clone());
             events.extend(
                 page.events
                     .into_iter()
@@ -528,10 +533,14 @@ impl ContextPolicy {
                         boundary: false,
                     }),
             );
-            if short {
+            if complete {
                 break;
             }
-            offset += CUT_PAGE;
+            let Some(next) = next else {
+                break;
+            };
+            from_event = Some(next);
+            repeated = true;
         }
         let page = self
             .timeline
@@ -659,19 +668,24 @@ impl ContextPolicy {
                 "input/consumed".to_owned(),
             ]
             .to_vec();
-            let mut offset = 0;
+            let mut from_event = Some(turn.id.clone());
+            let mut repeated = false;
             loop {
-                let page = self
+                let mut page = self
                     .timeline
                     .query(rising_chain(
-                        Some(turn.id.as_str()),
+                        from_event.as_deref(),
                         window.clone(),
-                        offset,
                         WINDOW_PAGE,
                     ))
                     .await
                     .map_err(|error| HostError::failed(error.to_string()))?;
-                let short = (page.events.len() as u64) < WINDOW_PAGE;
+                let complete = (page.events.len() as u64) < WINDOW_PAGE;
+                if repeated && !page.events.is_empty() {
+                    page.events.remove(0);
+                    page.positions.remove(0);
+                }
+                let next = page.events.last().map(|event| event.id.clone());
                 let mut passed = false;
                 for (event, position) in page.events.into_iter().zip(page.positions) {
                     if later(&branches, &position, at) {
@@ -680,28 +694,36 @@ impl ContextPolicy {
                     }
                     events.push((position, event));
                 }
-                if short || passed {
+                if complete || passed {
                     break;
                 }
-                offset += WINDOW_PAGE;
+                let Some(next) = next else {
+                    break;
+                };
+                from_event = Some(next);
+                repeated = true;
             }
             self.supply_inputs(&mut events).await?;
         }
-        let tools = previous.as_ref().map(|(cut, _)| cut.as_str());
+        let mut from_event = previous.as_ref().map(|(cut, _)| cut.clone());
         let mut tool_results = Vec::new();
-        let mut offset = 0;
+        let mut repeated = false;
         loop {
-            let page = self
+            let mut page = self
                 .timeline
                 .query(rising_chain(
-                    tools,
+                    from_event.as_deref(),
                     vec!["step/tool-result".to_owned()],
-                    offset,
                     WINDOW_PAGE,
                 ))
                 .await
                 .map_err(|error| HostError::failed(error.to_string()))?;
-            let short = (page.events.len() as u64) < WINDOW_PAGE;
+            let complete = (page.events.len() as u64) < WINDOW_PAGE;
+            if repeated && !page.events.is_empty() {
+                page.events.remove(0);
+                page.positions.remove(0);
+            }
+            let next = page.events.last().map(|event| event.id.clone());
             let mut passed = false;
             for (event, position) in page.events.into_iter().zip(page.positions) {
                 if let Some(at) = &cut_position
@@ -712,10 +734,14 @@ impl ContextPolicy {
                 }
                 tool_results.push((position, event));
             }
-            if short || passed {
+            if complete || passed {
                 break;
             }
-            offset += WINDOW_PAGE;
+            let Some(next) = next else {
+                break;
+            };
+            from_event = Some(next);
+            repeated = true;
         }
         events.sort_by_key(|(position, _)| {
             let rank = branches

@@ -84,13 +84,14 @@ async fn completion_requested_with(env: &Env, limit: Option<u64>) -> (u64, Branc
 
 /// Writes one conclusion about `evaluation` on `branch`, as the evaluator's
 /// line reports it.
-fn write_conclusion(env: &Env, evaluator: &str, evaluation: u64, result: &str, text: &str) {
+fn write_conclusion(env: &Env, evaluator: &str, evaluation: u64, result: &str, text: &str) -> u64 {
     let conclusion = texts::conclusion("main", evaluator, evaluation, result, text);
     env.write_message(
         "main",
         vec![raw(&conclusion, None, false)],
         InputMode::Append,
-    );
+    )
+    .sequence
 }
 
 /// The Goal writes on `branch`, newest first, that contain `needle`.
@@ -142,7 +143,7 @@ async fn pursuit_1_the_judge_is_recorded_kept_by_edit_and_a_completion_is_a_requ
         .await
         .expect("set writes");
     let set = env.wait_for("main", r#"op="set""#).await;
-    assert_eq!(set.text, texts::evaluator_set_blocks("main", "ship it").0);
+    assert_eq!(set.text, texts::evaluator_set("main", "ship it"));
 
     env.goal("edit", json!({"objective": "ship it twice"}))
         .await
@@ -169,7 +170,7 @@ async fn pursuit_1_the_judge_is_recorded_kept_by_edit_and_a_completion_is_a_requ
     let end = env.end_turn("main", "work", "completed");
     let create = next_create(&env, "main", 0).await;
     assert!(
-        writes_with(&env, "main", r#"by="evaluator""#)
+        writes_with(&env, "main", r#"status="completed""#)
             .await
             .is_empty(),
         "a request does not complete the goal"
@@ -204,7 +205,7 @@ async fn pursuit_1_the_judge_is_recorded_kept_by_edit_and_a_completion_is_a_requ
         .rev()
         .find(|block| block.text.contains(r#"op="set""#))
         .expect("the second set");
-    assert_eq!(again.text, texts::set_blocks("main", "again").0);
+    assert_eq!(again.text, texts::set("main", "again"));
     env.turn_start("main", "model");
     env.tool("main", json!({"status": "completed", "summary": "done"}))
         .await;
@@ -222,17 +223,23 @@ async fn pursuit_2_7_10_a_conclusion_decides_once_from_its_own_evaluator() {
     let env = Env::start().await;
     let (evaluation, create) = completion_requested(&env).await;
     let evaluator = create.branch.clone();
-    write_conclusion(
+    let conclusion_sequence = write_conclusion(
         &env,
         &evaluator,
         evaluation,
         "done",
         "DONE: all 3 tests pass",
     );
-    let completed = env.wait_for("main", r#"by="evaluator""#).await;
+    let completed = env.wait_for("main", r#"status="completed""#).await;
     assert_eq!(
         completed.text,
-        texts::evaluated("main", "completed", evaluation, "all 3 tests pass")
+        texts::evaluated(
+            "main",
+            "ship it",
+            "completed",
+            "all 3 tests pass",
+            conclusion_sequence
+        )
     );
     env.wait_for("main", r#"kind="report""#).await;
     let conclusion = env.written_input("main", r#"kind="report""#).await;
@@ -259,17 +266,23 @@ async fn pursuit_2_7_10_a_conclusion_decides_once_from_its_own_evaluator() {
     // blocked.
     let env = Env::start().await;
     let (evaluation, create) = completion_requested(&env).await;
-    write_conclusion(
+    let conclusion_sequence = write_conclusion(
         &env,
         &create.branch,
         evaluation,
         "blocked",
         "BLOCKED: a deploy key",
     );
-    let blocked = env.wait_for("main", r#"op="blocked""#).await;
+    let blocked = env.wait_for("main", r#"status="blocked""#).await;
     assert_eq!(
         blocked.text,
-        texts::evaluated("main", "blocked", evaluation, "a deploy key")
+        texts::evaluated(
+            "main",
+            "ship it",
+            "blocked",
+            "a deploy key",
+            conclusion_sequence
+        )
     );
     env.close().await;
 
@@ -295,7 +308,7 @@ async fn pursuit_2_7_10_a_conclusion_decides_once_from_its_own_evaluator() {
     // failed: the evaluation fails.
     let env = Env::start().await;
     let (evaluation, create) = completion_requested(&env).await;
-    write_conclusion(
+    let conclusion_sequence = write_conclusion(
         &env,
         &create.branch,
         evaluation,
@@ -305,11 +318,12 @@ async fn pursuit_2_7_10_a_conclusion_decides_once_from_its_own_evaluator() {
     let pause = env.wait_for("main", r#"reason="evaluation_failed""#).await;
     assert_eq!(
         pause.text,
-        texts::automatic_pause(
+        texts::evaluated_pause(
             "main",
+            "ship it",
             "evaluation_failed",
             "the evaluator could not check the result",
-            evaluation
+            conclusion_sequence
         )
     );
     env.close().await;
@@ -355,7 +369,7 @@ async fn pursuit_4_8_the_report_is_the_last_conclusion_line_cut_to_4000() {
 
     // An earlier conclusion line loses to the last one.
     let env = Env::start().await;
-    let (evaluation, create) = completion_requested(&env).await;
+    let (_, create) = completion_requested(&env).await;
     line_turn(
         &env,
         &create.branch,
@@ -366,10 +380,17 @@ async fn pursuit_4_8_the_report_is_the_last_conclusion_line_cut_to_4000() {
         )],
     )
     .await;
-    let blocked = env.wait_for("main", r#"op="blocked""#).await;
+    let report = env.wait_for("main", r#"kind="report""#).await;
+    let blocked = env.wait_for("main", r#"status="blocked""#).await;
     assert_eq!(
         blocked.text,
-        texts::evaluated("main", "blocked", evaluation, "the build host is offline")
+        texts::evaluated(
+            "main",
+            "ship it",
+            "blocked",
+            "the build host is offline",
+            report.sequence
+        )
     );
     env.close().await;
 
@@ -451,9 +472,10 @@ async fn pursuit_1_a_completion_request_creates_one_evaluator_and_continues_noth
     let env = Env::start().await;
     let (evaluation, create) = completion_requested(&env).await;
     assert_eq!(env.creates("main").await.len(), 1);
-    assert!(
-        matches!(create.at, BranchCreateAt::Create {}),
-        "the evaluator opens at the head the request ended at"
+    assert_eq!(
+        create.at,
+        BranchCreateAt::Create {},
+        "the evaluator opens at the branch head, the turn end it evaluates: {evaluation}"
     );
     assert_eq!(
         create.prompt,
@@ -461,11 +483,11 @@ async fn pursuit_1_a_completion_request_creates_one_evaluator_and_continues_noth
     );
     assert_eq!(
         env.settled("main").await.len(),
-        3,
-        "the request's turn writes no continuation"
+        5,
+        "the set trigger and its record, one continuation, the request and its record"
     );
     assert!(
-        writes_with(&env, "main", r#"by="evaluator""#)
+        writes_with(&env, "main", r#"status="completed""#)
             .await
             .is_empty(),
         "the goal stays active until the evaluator decides"
@@ -477,17 +499,23 @@ async fn pursuit_1_a_completion_request_creates_one_evaluator_and_continues_noth
 async fn pursuit_1_the_evaluator_done_completes_the_goal_by_the_evaluator() {
     let env = Env::start().await;
     let (evaluation, create) = completion_requested(&env).await;
-    write_conclusion(
+    let conclusion_sequence = write_conclusion(
         &env,
         &create.branch,
         evaluation,
         "done",
         "DONE: all 3 tests pass",
     );
-    let completed = env.wait_for("main", r#"by="evaluator""#).await;
+    let completed = env.wait_for("main", r#"status="completed""#).await;
     assert_eq!(
         completed.text,
-        texts::evaluated("main", "completed", evaluation, "all 3 tests pass")
+        texts::evaluated(
+            "main",
+            "ship it",
+            "completed",
+            "all 3 tests pass",
+            conclusion_sequence
+        )
     );
     // The completed goal writes no continuation at the next turn end.
     let before = env.settled("main").await.len();
@@ -602,21 +630,26 @@ async fn pursuit_13_e2_a_superseded_evaluation_ends_its_evaluator() {
 async fn pursuit_13_e3_an_outside_end_before_the_conclusion_fails_the_evaluation() {
     let env = Env::start().await;
     let (evaluation, create) = completion_requested(&env).await;
-    env.end_branch(
-        &create.branch,
-        BranchSource::Host {
-            operation_id: "user".into(),
-        },
-    )
-    .await;
+    let outside = env.emit(
+        "main",
+        dim_agent_types::EventKind::BranchEnded(BranchEndedData {
+            branch: create.branch.clone(),
+            end_event: 0,
+            source: BranchSource::Host {
+                operation_id: "user".into(),
+            },
+            ancestor: None,
+        }),
+    );
     let pause = env.wait_for("main", r#"reason="evaluation_failed""#).await;
     assert_eq!(
         pause.text,
-        texts::automatic_pause(
+        texts::evaluated_pause(
             "main",
+            "ship it",
             "evaluation_failed",
             "the evaluator could not check the result",
-            evaluation
+            outside.sequence
         )
     );
     let ended = env.ended("main").await;
@@ -640,7 +673,7 @@ async fn pursuit_13_e3_an_outside_end_after_the_conclusion_decides_nothing() {
     let env = Env::start().await;
     let (evaluation, create) = completion_requested(&env).await;
     write_conclusion(&env, &create.branch, evaluation, "done", "DONE: verified");
-    env.wait_for("main", r#"by="evaluator""#).await;
+    env.wait_for("main", r#"status="completed""#).await;
     let ended = env.ended("main").await;
     assert_eq!(ended.len(), 1, "the conclusion ends the evaluator");
     let before = env.settled("main").await.len();
@@ -692,23 +725,29 @@ async fn pursuit_4_5_a_report_without_a_valid_evaluation_or_evaluator_decides_no
         "no malformed report decides anything"
     );
     assert!(
-        writes_with(&env, "main", r#"by="evaluator""#)
+        writes_with(&env, "main", r#"status="completed""#)
             .await
             .is_empty(),
         "no malformed report completes the goal"
     );
 
-    write_conclusion(
+    let conclusion_sequence = write_conclusion(
         &env,
         &evaluator,
         evaluation,
         "done",
         "DONE: all 3 tests pass",
     );
-    let completed = env.wait_for("main", r#"by="evaluator""#).await;
+    let completed = env.wait_for("main", r#"status="completed""#).await;
     assert_eq!(
         completed.text,
-        texts::evaluated("main", "completed", evaluation, "all 3 tests pass")
+        texts::evaluated(
+            "main",
+            "ship it",
+            "completed",
+            "all 3 tests pass",
+            conclusion_sequence
+        )
     );
     env.close().await;
 }
@@ -730,7 +769,7 @@ async fn pursuit_4_a_report_outside_the_first_block_decides_nothing() {
         env.settled("main")
             .await
             .iter()
-            .all(|block| !block.text.contains(r#"by="evaluator""#)),
+            .all(|block| !block.text.contains(r#"status="completed""#)),
         "no conclusion after the first block"
     );
     env.close().await;
@@ -759,7 +798,7 @@ async fn pursuit_2_a_continue_conclusion_writes_one_continuation_or_pauses_at_th
     let env = Env::start().await;
     env.set_limit(1);
     let (evaluation, create) = completion_requested_with(&env, Some(1)).await;
-    write_conclusion(
+    let conclusion = write_conclusion(
         &env,
         &create.branch,
         evaluation,
@@ -769,11 +808,12 @@ async fn pursuit_2_a_continue_conclusion_writes_one_continuation_or_pauses_at_th
     let pause = env.wait_for("main", r#"reason="limit""#).await;
     assert_eq!(
         pause.text,
-        texts::automatic_pause(
+        texts::evaluated_pause(
             "main",
+            "ship it",
             "limit",
             "the automatic continuation limit was reached",
-            evaluation
+            conclusion
         )
     );
     env.close().await;
@@ -849,7 +889,7 @@ async fn pursuit_8_a_continue_conclusion_waits_for_a_cancelled_background_task()
 /// committed, and restores the Session. Returns the evaluation sequence.
 async fn deferred_conclusion(env: Env, cancelled: bool) -> (Env, u64) {
     let mut seed = env.seed_new("load-deferred").await;
-    let (objective, status) = texts::evaluator_set_blocks("main", "ship it");
+    let (objective, status) = texts::legacy_evaluator_set_blocks("main", "ship it");
     let set = seed.append(
         "main",
         message(
@@ -887,7 +927,7 @@ async fn deferred_conclusion(env: Env, cancelled: bool) -> (Env, u64) {
         "main",
         message(
             vec![raw(
-                &texts::report("main", "completed", "all tests pass"),
+                &texts::legacy_report("main", "completed", "all tests pass"),
                 Some("goal:status"),
                 false,
             )],
@@ -1004,7 +1044,7 @@ async fn pursuit_5_a_failed_conclusion_or_a_failed_creation_gives_one_pause() {
     // A failed conclusion.
     let env = Env::start().await;
     let (evaluation, create) = completion_requested(&env).await;
-    write_conclusion(
+    let conclusion_sequence = write_conclusion(
         &env,
         &create.branch,
         evaluation,
@@ -1014,18 +1054,19 @@ async fn pursuit_5_a_failed_conclusion_or_a_failed_creation_gives_one_pause() {
     let pause = env.wait_for("main", r#"reason="evaluation_failed""#).await;
     assert_eq!(
         pause.text,
-        texts::automatic_pause(
+        texts::evaluated_pause(
             "main",
+            "ship it",
             "evaluation_failed",
             "the evaluator could not check the result",
-            evaluation
+            conclusion_sequence
         )
     );
     env.close().await;
 
     // A creation that failed after the fact.
     let env = Env::start().await;
-    let (evaluation, create) = completion_requested(&env).await;
+    let (_evaluation, create) = completion_requested(&env).await;
     let create_event = env
         .all_events("main")
         .await
@@ -1033,7 +1074,7 @@ async fn pursuit_5_a_failed_conclusion_or_a_failed_creation_gives_one_pause() {
         .find(|event| matches!(event.kind, dim_agent_types::EventKind::BranchCreate(_)))
         .expect("the create fact")
         .sequence;
-    env.emit(
+    let failed = env.emit(
         "main",
         dim_agent_types::EventKind::BranchCreateFailed(BranchCreateFailedData::Failed {
             branch: create.branch.clone(),
@@ -1044,11 +1085,12 @@ async fn pursuit_5_a_failed_conclusion_or_a_failed_creation_gives_one_pause() {
     let pause = env.wait_for("main", r#"reason="evaluation_failed""#).await;
     assert_eq!(
         pause.text,
-        texts::automatic_pause(
+        texts::evaluated_pause(
             "main",
+            "ship it",
             "evaluation_failed",
             "the evaluator could not check the result",
-            evaluation
+            failed.sequence
         )
     );
     env.close().await;
@@ -1145,7 +1187,7 @@ async fn pursuit_5_a_failed_or_cancelled_evaluator_turn_reports_failed() {
         let pending = pending_refs(&env, &create.branch).await;
         let pending: Vec<&str> = pending.iter().map(String::as_str).collect();
         env.turn_steps(&create.branch, "eval-1", &pending, status, &[]);
-        env.wait_for("main", r#"kind="report""#).await;
+        let reported = env.wait_for("main", r#"kind="report""#).await;
         let report = env.written_input("main", r#"kind="report""#).await;
         assert_eq!(
             match &report.blocks[0] {
@@ -1163,11 +1205,12 @@ async fn pursuit_5_a_failed_or_cancelled_evaluator_turn_reports_failed() {
         let pause = env.wait_for("main", r#"reason="evaluation_failed""#).await;
         assert_eq!(
             pause.text,
-            texts::automatic_pause(
+            texts::evaluated_pause(
                 "main",
+                "ship it",
                 "evaluation_failed",
                 "the evaluator could not check the result",
-                evaluation
+                reported.sequence
             ),
             "{status}"
         );

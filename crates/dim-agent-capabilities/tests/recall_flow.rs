@@ -3034,7 +3034,11 @@ impl TimelineStore for PageReads {
                 && query.direction == TimelineQueryDirection::Descending
                 && !query.kinds.is_empty()
             {
-                ids.extend(page.events.iter().map(|event| event.id.clone()));
+                for event in &page.events {
+                    if ids.last() != Some(&event.id) {
+                        ids.push(event.id.clone());
+                    }
+                }
             }
             if let Some((session, branch)) = pinned {
                 let event = session

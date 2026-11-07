@@ -182,6 +182,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_app_server::plugin_files::PluginFileTransactions",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_app_server::settings::SettingsService",
             "scope": null,
             "status": "Ready"
@@ -207,6 +212,12 @@
             "generation": 1
           },
           {
+            "service": "dim_app_server::plugin_files::PluginFileTransactions",
+            "scope": null,
+            "provider": 11,
+            "generation": 1
+          },
+          {
             "service": "dim_app_server::settings::SettingsService",
             "scope": null,
             "provider": 16,
@@ -229,6 +240,12 @@
           {
             "service": "dim_app_server::methods::ManagementMethods",
             "provider": 8,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_app_server::plugin_files::PluginFileTransactions",
+            "provider": 11,
             "declared": true,
             "external": true
           },
@@ -2954,6 +2971,12 @@
       {
         "service": "dim_app_server::ui_host::UiHost",
         "provider": 37,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dim_modality::engine::ModalityTasks#modalityTasks",
+        "provider": 63,
         "generation": 1,
         "removing": false
       },

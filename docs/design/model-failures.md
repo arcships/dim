@@ -14,7 +14,7 @@ normalized codes and the `AiMuxError` variant. It never matches message text.
 | `network` | `ApiCall`, origin Transport, no HTTP status | yes | could not reach the provider, or the connection dropped | check the network or proxy |
 | `rate_limited` | 429, rate-limit codes | yes; `Retry-After` is used while it fits the wait budget | the provider is rate limiting requests | wait and try again |
 | `server_error` | 408, 5xx except 501 and 505, server and overload codes, transient stream-event codes | yes | the provider reported a server error | try again later or choose another model |
-| `malformed_response` | `InvalidResponseData`, `JsonParse`, `InvalidToolInput`, `NoSuchTool`, `TypeValidation`, an undecodable stream | no | the provider sent a response Dim could not use | try again; if it repeats, choose another model or check the proxy or gateway |
+| `malformed_response` | `InvalidResponseData`, `JsonParse`, `InvalidToolInput`, `NoSuchTool`, `TypeValidation`, an undecodable stream | once | the provider sent a response Dim could not use | try again; if it repeats, choose another model or check the proxy or gateway |
 | `auth_rejected` | 401, 403, invalid-key/auth codes | no (the existing one credential recovery stays) | the provider rejected the credentials | sign in again or check the API key |
 | `quota_exhausted` | 402, quota/billing codes | no | the account has no quota left | check the plan or billing |
 | `not_found` | 404 | no | the provider did not find the model or endpoint | check the model and the provider's base URL |
@@ -60,6 +60,7 @@ ModelFailure {
   cause: string[],  // the chain, outermost first; each one line, at most 200 chars, at most 6 frames
   attempts,         // at least 1
   waitedMs,         // total backoff slept
+  retryForbidden?,  // true only when the failure policy forbids retrying
   retryAfterMs?     // the provider asked to wait longer than the budget left, so Dim stopped
 }
 ```
@@ -69,6 +70,9 @@ ModelFailure {
   unsettled-call failure on a reload (`agent_loop.rs`) and a context preparation
   failure (`context_preparation.rs`). The field follows `presentation`'s casing
   and `optional_non_null` handling.
+- `retryForbidden` is present only when true. ModelProvider sets it when its
+  failure policy forbids retrying the failure that ended the request, and a
+  continuation declines it, so the prohibition covers the continuation.
 - `reason` is the provider's error message for a response or stream-event
   failure, and the innermost frame of the cause chain for a transport failure.
   A JSON parse message embeds the body text it could not read, so its `reason`
@@ -174,9 +178,46 @@ starts, the call ends, or the sleep is cancelled. It is not a Timeline fact: no
 later decision reads it, and the terminal fact keeps `attempts` and
 `waitedMs`.
 
+### The failure chain
+
+A continuation request continues the request that failed before it. Its
+`context/prepare` and `model/call` carry
+`failure_chain {from_request_id, attempts, waited_ms}`: the failed request, the
+attempts it spent and the backoff it slept. ModelProvider seeds the
+continuation's retry state from them, so its first call is the chain's next
+attempt and the chain keeps one budget of 8 calls and 300 s of sleep. With no
+attempt or wait budget left, the request settles failed without a call. A
+chain-carrying request's terminal `failure` reports the chain totals, so the
+failed line's `Tried N times over M s` covers the whole chain. That holds for a
+provider failure, for the stream's refusal of an undeclared tool start settled
+through `invoke`'s `map_err`, for a failure before or outside the invocation,
+and on a reload. A continuation whose `context/prepare` fails never reaches
+ModelProvider: its `step/model-output-end` carries no `failure`, and the turn
+ends Failed. Only the attempt count and the wait budget are shared: the backoff
+curve and the one `malformed_response` retry are request-local and restart in
+the continuation. A request without the field gets a fresh budget; a normal
+request after a tool step is never part of a chain.
+
+The 8 attempts and the 300 s are ModelProvider's public limits: a disposer
+reads them and declines a spent chain without reading ModelProvider's state.
+ModelProvider sets `failure.retryForbidden` when its failure policy forbids
+retrying the failure that ended the request; the field is written only when
+true, and a continuation declines it.
+
 ## 5. Compatibility
 
 The fields are additive. A binary without `failure` cannot decode an event
 written with it, because `ModelOutputOutcome` denies unknown fields. That is the
 same forward-compatibility limit `presentation` has, so a downgrade across this
 change is unsupported, as it already was for `presentation`.
+
+The same decision covers the continuation fields, the retry prohibition and
+the new kind. The optional `failure_chain` on `ContextPrepareData` and
+`ModelCallData`, the optional `handover` on `InputMessageData`, and the optional
+`retryForbidden` on `ModelFailure` are additive, and a binary without them
+cannot read a record that carries them, so a downgrade across this change is
+unsupported. The new `step/disposition` kind is additive for the native store
+and absent from v1: the outbound boundary filters it like `input/consumed`, so
+the frozen v1 notification set is unchanged. Each addition registers the
+decision in the contract tests with its compatibility cases; the frozen
+fixtures stay unchanged.
