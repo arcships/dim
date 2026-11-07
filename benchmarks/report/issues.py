@@ -235,12 +235,18 @@ def tracking(suite: str, run: dict, analysis: dict, repo: str) -> Tracking:
             return ["", f"#### `{f['task']}` — not analyzed{since}", f"{f['error']}"]
         suspects = "; ".join(f"{link(s['pr'])} ({s['confidence']}): {s['reason']}"
                              for s in f["suspects"]) or "none"
-        return ["", f"#### `{f['task']}` — {f['category']}{since}",
-                f"**Cause:** {f['cause']}", f"**Evidence:** {f['evidence']}",
-                f"**Suspected PRs:** {suspects}"]
+        lines = ["", f"#### `{f['task']}` — {f['category']}{since}",
+                 f"**Cause:** {f['cause']}", f"**Evidence:** {f['evidence']}"]
+        if f.get("agent_gap"):
+            lines.append(f"**Agent gap:** {f['agent_gap']}")
+        if f.get("improvement"):
+            lines.append(f"**Improvement:** {f['improvement']}")
+        lines.append(f"**Suspected PRs:** {suspects}")
+        return lines
 
-    footer = [f"<sub>Causes and suspects are judgements by `{analysis['model']}` from one "
-              f"run of each task (k={run['k']}), not verdicts.</sub>"]
+    footer = [f"<sub>Causes, suspects, agent gaps and improvements are judgements by "
+              f"`{analysis['model']}` from one run of each task (k={run['k']}), not "
+              f"verdicts.</sub>"]
     lines = [f"**{suite}** · last updated by run `{run['run_id']}` · head "
              f"[`{head[:9]}`](https://github.com/{repo}/commit/{head})", "",
              f"{len(tracked)} tracked failure(s): tasks that pass in the baseline, or that "

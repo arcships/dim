@@ -285,10 +285,15 @@ class NightlyAnalysisFlowTest(unittest.TestCase):
 
     def test_failures_are_explained_and_known_causes_are_not_news(self) -> None:
         regression = {"category": "agent", "cause": "The grep output was cut off.",
-                      "evidence": "result: output truncated", "same_as_known": False,
+                      "evidence": "result: output truncated",
+                      "agent_gap": "The agent never ran the failing test after editing.",
+                      "improvement": "Run the task's test command before finishing.",
+                      "same_as_known": False,
                       "suspects": [{"pr": "#548", "confidence": "medium", "reason": "Lowers LIMIT."},
                                    {"pr": "#999", "confidence": "high", "reason": "Not in the window."}]}
         hard = {"category": "agent", "cause": "Never finds the key.", "evidence": "step 3",
+                "agent_gap": "not visible in the shown excerpt",
+                "improvement": "should be dropped",
                 "same_as_known": True, "suspects": []}
         known = {"tb/hard": {"category": "agent", "cause": "Never finds the key.",
                              "first_seen": "2026-10-20", "nights": 4},
@@ -301,6 +306,7 @@ class NightlyAnalysisFlowTest(unittest.TestCase):
         self.assertEqual(set(by_task), {"tb/regex", "tb/hard"})
         self.assertEqual([s["pr"] for s in by_task["tb/regex"].suspects], ["#548"])
         self.assertTrue(by_task["tb/hard"].known)
+        self.assertEqual(by_task["tb/hard"].improvement, "")
         self.assertEqual(updated["tb/hard"]["nights"], 5)
         self.assertEqual(updated["tb/regex"]["first_seen"], "2026-10-30")
         self.assertNotIn("tb/fixed", updated)
@@ -310,6 +316,10 @@ class NightlyAnalysisFlowTest(unittest.TestCase):
         self.assertEqual(track.title, "[eval] frontier: 2 tracked failure(s)")
         self.assertIn("There is no baseline yet", track.body)
         self.assertIn("#548 (medium): Lowers LIMIT.", track.body)
+        self.assertIn("**Agent gap:** The agent never ran the failing test after editing.", track.body)
+        self.assertIn("**Improvement:** Run the task's test command before finishing.", track.body)
+        self.assertIn("**Agent gap:** not visible in the shown excerpt", track.body)
+        self.assertNotIn("**Improvement:** should be dropped", track.body)
         self.assertIn("#### `tb/hard` — agent · failing since 2026-10-20 (5 night(s))", track.body)
         self.assertIn("tb/regex", track.news)
         self.assertNotIn("tb/hard", track.news)
@@ -349,9 +359,14 @@ class NightlyAnalysisFlowTest(unittest.TestCase):
 
     def test_environment_failures_are_tracked_whatever_the_baseline(self) -> None:
         reply = {"category": "environment", "cause": "uv download failed.",
-                 "evidence": "curl: (28)", "same_as_known": False, "suspects": []}
+                 "evidence": "curl: (28)",
+                 "agent_gap": "should be ignored",
+                 "improvement": "should be ignored",
+                 "same_as_known": False, "suspects": []}
         *_, done = self.night({"hard": 0.0}, {"hard": reply}, {}, {"hard": 0})
         self.assertEqual(done, ["opened #1 (frontier/tracking)"])
+        self.assertNotIn("**Agent gap:**", self.github.issues[1]["body"])
+        self.assertNotIn("**Improvement:**", self.github.issues[1]["body"])
 
     def test_an_unscoreable_night_does_not_close_the_issue(self) -> None:
         """Exit 6: nothing was scored, so nothing failed, and nothing was measured."""

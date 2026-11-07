@@ -112,8 +112,10 @@ review 的改动，不是 cron 的副产品；跑完后先分析失败、再提 
 但没通过的 trial 交给模型（默认与 L1 judge 相同的 DeepSeek）：题目、判分输出末尾、dimcode
 Timeline 的末段，以及窗口内影响模型的 PR 改了什么。模型给出失败类型（agent / environment /
 timeout / model_api / harness / unknown）、原因、证据和可疑 PR（只能从窗口内的 PR 里选，带
-置信度），并判断原因是否与上次记录的相同。没打出分的 trial 不算失败，它属于下面的
-「打不出分」。
+置信度），并判断原因是否与上次记录的相同。当类型是 agent 或 timeout、且 Timeline 片段里
+看得到 agent 的行为时，再给出 agent 自身的问题（`agent_gap`）和一条具体、可验证的改进
+（`improvement`）；environment / model_api / harness / unknown 失败不要求这两项，模型返回
+空字符串。没打出分的 trial 不算失败，它属于下面的「打不出分」。
 
 每个语料一个跟踪 issue，生命周期是「一个问题窗口」。被跟踪的失败是：
 
@@ -124,7 +126,8 @@ timeout / model_api / harness / unknown）、原因、证据和可疑 PR（只�
 [report/issues.py](report/issues.py) 据此：
 
 ```
-有被跟踪的失败、当前没有打开的跟踪 issue   ─► 开 issue（正文：每题的原因、证据与可疑 PR）
+有被跟踪的失败、当前没有打开的跟踪 issue   ─► 开 issue（正文：每题的原因、证据、可疑 PR，
+                                              以及 agent/timeout 失败的 agent gap 与改进）
 又出现了新的被跟踪失败（或原因变了）       ─► 评论一条，只列新增的
 被跟踪的失败没有新增                       ─► 静默（只更新正文）
 一次测出了结果的运行里没有被跟踪的失败     ─► 关 issue；之后再出现就开新的
