@@ -24,7 +24,7 @@ agent loop, a persistent REPL or a Workflow engine.
 | --- | --- | --- |
 | `CodeModeSettings` | Process | The `codemode` Settings source (`codemode.json`): authoritative code, time, call, concurrency, memory and output caps. The `codemode` declaration's outer risk is fixed at package load; package enablement remains PluginManager's structural configuration. |
 | `CodeModeSession` | Session | The `codemode` tool declaration and Session-side runtime factory. It reads validated `CodeModeSettings` through the declared `settings` service at call time and has no branch business state. Its registered handler is invoked by the core with the current branch execution context; it does not discover a branch by reading Session state. |
-| `CodeModeBranch` | branch | One-shot executions associated with the current branch, their cancellation and their correlation with programmatic tool results. It writes no duplicate fact for the outer `step/tool-call`; that fact remains ToolExecutor's contract. |
+| `CodeModeBranch` | branch | One-shot executions associated with the current branch, their cancellation and their correlation with programmatic tool results. It writes no duplicate fact for the outer `step/tool-call`; that fact remains the core turn/tool batch contract, written by Loop and consumed by ToolExecutor. |
 | generic invocation mechanism | branch, mechanism owner | The generic programmatic invocation command/result contract and its normal Permission, Approval, ToolBinding and settlement semantics. This is not Code Mode business state. |
 | isolated program host | runtime host | The execution boundary and resource limits for model-supplied code. It receives only the declared tool bridge. |
 
@@ -285,6 +285,10 @@ generation opens history. The typed decoder must add these `step/*` keys explici
 context projection must keep both keys out of its render/state key sets, just as it does for other
 execution-only facts; they remain execution facts and are not adopted as model messages.
 
+`v1::EventRef` must exclude both keys, as it already excludes `step/model-content` and
+`context/configured`: a frozen v1 client's closed `StepEvent` cannot decode them. A v1 projection test
+verifies that neither key reaches a v1 connection.
+
 The events must contain enough correlation to settle after cancellation or reload without consulting
 runtime heap state. In particular, the result must identify the invocation and parent request, and a
 terminal result must distinguish `notExecuted` from `cancelled`/`reloading` where the call may have
@@ -382,22 +386,23 @@ see the actual pinned tool call and its risk, not the outer Code Mode declaratio
 
 ## 4. Dependencies
 
-| Dependency | Scope | Purpose |
-| --- | --- | --- |
-| `settings` | Process | Register the `codemode` source. `CodeModeSession` reads the validated source through this service at each call and adds no defaults. |
-| `partRegistry` | Process | Register `CodeModeSession` and `CodeModeBranch` from the package row. |
-| `toolRegistry` | Session | Register `codemode` and obtain the adopted tool declaration source. Code Mode does not obtain handlers. |
-| invocation-scoped `ToolBinding` | branch | Supply the fixed declarations and handlers for the outer request. |
-| generic programmatic invocation service | branch | Submit `step/tool-invoke`, receive terminal results and retain parent correlation. This is the requirement tracked by [#1276](https://github.com/arcships/dim/issues/1276). |
-| `Timeline` | branch | CodeModeBranch commits the invocation command; ToolExecutor commits the terminal result through the same branch timeline service. |
-| `Dispatcher` | branch | Consume terminal invocation results in sequence order. |
-| `BranchLifecycle` | branch | Delay background execution until publication and stop admission at closing. |
-| `Approval` and `Permission` | branch | Reuse the existing nested authorization decision for each actual tool. |
-| isolated program host | runtime | Execute one program under hard limits; the requirement is [#1276](https://github.com/arcships/dim/issues/1276). |
+| Dependency | Scope | Consumer | Purpose |
+| --- | --- | --- | --- |
+| `settings` | Process | `CodeModeSettings`, `CodeModeSession` | Register the `codemode` source. The Session part reads the validated source at each call and adds no defaults. |
+| `partRegistry` | Process | package row | Register `CodeModeSession` and `CodeModeBranch`. |
+| `toolRegistry` | Session | `CodeModeSession` | Register the `codemode` tool. The cross-language service exposes registration only; the code bridge does not read the live registry. |
+| pinned `ToolBinding` (ToolExecutor mechanism) | branch | invocation mechanism | Resolve the fixed declarations and handlers for the outer request. The plugin does not receive handlers. |
+| `Approval` and `Permission` (ToolExecutor mechanism) | branch | invocation mechanism | Apply the invoked tool's risk to each child. The plugin does not call them directly. |
+| generic programmatic invocation service | branch | `CodeModeBranch` | Submit `step/tool-invoke`, receive terminal results, retain parent correlation, and serve `list`/`describe` from the pinned snapshot. This is the requirement tracked by [#1276](https://github.com/arcships/dim/issues/1276). |
+| `Timeline` | branch | `CodeModeBranch` (command), ToolExecutor (terminal) | Commit the invocation command and the terminal result through the same branch timeline service. |
+| `Dispatcher` | branch | `CodeModeBranch` | Consume terminal invocation results in sequence order. |
+| `BranchLifecycle` | branch | `CodeModeBranch` | Delay background execution until publication and stop admission at closing. |
+| isolated program host | runtime | `CodeModeBranch` | Execute one program under hard limits; the requirement is [#1276](https://github.com/arcships/dim/issues/1276). |
 
 The plugin does not depend on `ToolHost`, a handler registry, a second event bus, or direct Session
 facade access. A TypeScript binding must expose the generic service as a declared branch dependency;
-undeclared access is not an optional lookup.
+undeclared access is not an optional lookup. The host bridge's `list` and `describe` are served by the
+generic invocation mechanism from the request-pinned snapshot, not by the live `toolRegistry`.
 
 ## 5. Requirements raised to mechanism owners
 
@@ -467,12 +472,15 @@ CodeModeSession.apply(ctx):
       risk: declared_outer_risk,
       inputSchema: { code, timeoutMs?, maxCalls? }
     },
-    execute = (call, cancelled) => currentBranchCodeMode.run(call.arguments, cancelled)
+    execute = (call, cancelled, branchPort) =>
+      branchPort.codeMode.run(call.arguments, cancelled)
   )
 ```
 
 The actual binding must use the existing Session tool registration contract and return the normal
-`{content, isError?}` result shape. It must validate external input once at the boundary.
+`{content, isError?}` result shape. It must validate external input once at the boundary. `branchPort`
+is the per-call, branch-bound data port from R1: it carries this invocation's service and is the only
+branch handle the handler receives. The Session part never resolves a branch from Session state.
 
 ### 7.2 Branch invocation service
 
