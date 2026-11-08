@@ -15,6 +15,38 @@ outside this boundary ([ADR 003 D1](../adr/003-approval-scope.md)). The App Serv
 connections, MCP servers and trusted plugins are outside it. Hooks and MCP commands run because of
 configuration and need no host-local approval ([ADR 003](../adr/003-approval-scope.md)).
 
+## Host-owned helpers
+
+A process plugin may start a helper of its own — an OCR component, for example — through
+`HostPlatform::spawn_confined` ([HostPlatform](../../architecture/rust-agent/plugins/HostPlatform.md#confined-helpers)).
+That is a second boundary, not the switch: the switch governs agent-decided commands, while a
+host-owned helper is always confined where the platform can confine, whatever the user selected.
+The helper reads the system baseline that runs a program and the files its caller grants, writes
+only the caller's directories, has no network, receives the minimal environment plus the caller's
+own entries, and runs in the caller's first write directory. The timeout, either output cap and
+the caller's cancellation kill the helper's process tree with the existing tree-kill. When the
+root exits, the call ends its tree and then drains what the pipes still hold until EOF or a fixed
+drain bound, whichever comes first; bytes already read are returned with the root's status, so a
+descendant holding a pipe cannot turn a completed helper into a timeout. `Ok` means the helper's
+tree was confirmed ended; a failed confirmation is `Cleanup`. On Linux with bubblewrap the helper
+runs in its own PID namespace (`--unshare-pid --die-with-parent`), so every descendant ends with
+it, including one that left the process group. On Windows the job object holds every descendant,
+with no breakaway limit, and terminating the job ends them all. On macOS, and on Linux without
+bubblewrap, the process group ends; a descendant that leaves the group with `setsid` or `setpgrp`
+is not reached, and on macOS it stays under the same Seatbelt profile. A caller that publishes
+results or deletes its work directory must not rely on the directory being quiescent on macOS or
+unconfined Linux: a process that left the group may still write to the `write` directories after
+`Ok`. Windows and a Linux host without bubblewrap run the helper with the same limits and report
+that it was not confined; the caller decides whether that is acceptable. No setting, policy
+default or user-facing control changes for this operation.
+
+The Linux guarantee rests on documented behaviour. bwrap exits when the helper it started exits,
+reporting the helper's status (bwrap(1), DESCRIPTION). With `--die-with-parent`, bwrap's death
+kills every process in the sandbox (bwrap(1), `--die-with-parent`). When the namespace's init
+process terminates, the kernel ends the rest of the namespace (`pid_namespaces(7)`). The minimal
+PID 1 that DESCRIPTION also describes exits only once no other process is left, so it is not what
+ends a descendant that outlives the helper.
+
 ## Process isolation
 
 The TUI's single `Process isolation` control replaces `Settings > Execution` and any separate

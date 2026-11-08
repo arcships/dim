@@ -46,6 +46,7 @@ with its existing owner; management never writes another owner's state.
 | `managementMethods`, process, namespace `provider` | Local v3 Desktop/CLI and trusted process callers; §3 extends this existing namespace |
 | Provider module boundary `stored_selection` (Rust) | Native data-boundary consumers such as Migration; §3.7 adds one pure function over an admitted record, not an RPC, host port or management method |
 | Provider host port `SelectableModelsHost` (core `dim-agent-capabilities`), provided by the profile's model owner (Provider, or the configured model file) | In-process owners that route by model capability (Modality) and the `agent` tool's `models` action; §3.6 adds two reads, not a management method or RPC method |
+| Provider host port `ModalityConnectionHost` (core `dim-agent-capabilities`), provided by the profile's model owner | Modality's process adapters for image generation, editing and enhancement; §3.6 defines one per-call resolution, not a management method or RPC method |
 | Existing `account`, `account.codex`, `account.grok` namespaces | Existing account operations; no new account method, event or managed host capability |
 | `ProviderConnectionResolver`, `ModelSelectionHost` | Provider implements catalog/route decisions through existing types; no new core port |
 | `auxiliaryModel.complete` | Existing caller-selected S4 contract, unchanged |
@@ -666,6 +667,72 @@ A non-Rust consumer reaches the port by name when the runtime-services-by-name r
 ([#4](https://github.com/arcships/dim/issues/4)) is delivered; that requirement is
 raised once in [Modality §9](../plugins/Modality.md#9-requirements-raised-to-mechanism-owners)
 and is not raised again here.
+
+**Connection contract: `resolveModalityConnection`.** The same owner resolves the
+connection one non-conversational call uses, so an adapter holds no Provider
+credential and reads no Provider record. It is a second process host port beside
+`ProviderConnectionResolver`, not a management method: operation
+`resolveModalityConnection`, asynchronous, request `{target: {providerId,
+modelId}, operation: string}`, reply `{connection, protocol, model, realtime}`.
+
+`connection` is the existing `ResolvedModelConnection` a chat call to the same
+model would get — the connection facts, the failure policy and, on a managed
+account, the credential recovery — so an adapter runs the same one-recovery rule
+execution does. `protocol` is the route the catalog carries for the model, and
+`model` is the id a request sends. Both ports run one resolution: it resolves the
+static or managed record, builds the catalog, selects and leases the managed
+credential in one place, and only the selectability rule and the request facts
+differ. The chat path's temporary startup connection and adopted capability
+snapshot do not apply; the caller passes a catalog identity and an operation.
+
+**Rules.** It applies exactly the rules of the `selectableForModality` read —
+provider, account, model, route, credential and status — and additionally
+requires the model's catalog entry to declare `operation` in its
+`metadata.raw.modalityCapabilities`. A model that fails any of these is refused
+before any network call: the availability cases with the reason execution reports
+for that model, and an undeclared operation as an invalid request that names it.
+The read and the connection cannot disagree, because they share the catalog and
+its selection predicate. The managed account's credential lease reads the same
+rule: it refuses only a reason that excludes every use, so a media model the
+catalog marks as non-chat still leases for this call. That boundary rule reads
+the stored reason together with the entry's status: an `unavailable` status
+excludes every use whatever reason was stored, so a record an older projection
+wrote for such a model is listed by neither read and leases nothing.
+
+**Realtime declaration.** An entry that serves a realtime operation declares the
+transport it speaks in `metadata.raw.realtime: {protocol, path}`. Provider parses
+it into `RealtimeDeclaration` and carries it on the connection reply as
+`realtime`; an entry that declares none replies `null`, and the configured model
+profile replies `null` for every target, because a model file has no catalog
+entry. The operation is still declared in `metadata.raw.modalityCapabilities`
+with every other one, so a model that lists `realtime.voice` without a transport
+resolves a connection whose `realtime` is `null`: Modality refuses that model's
+`open` before any network call instead of guessing a URL. `protocol` is the
+adapter's name for the wire protocol it accepts, and `path` is appended to the
+route's base URL by that adapter.
+
+**Credential rule and lifetime.** The connection lives for that one call. Provider
+never persists it, never returns it to a client and never writes it to a task
+record, result, diagnostic or error. Its `Debug` prints the model, the route, the
+base URL, header names and whether a credential is present, and never a header
+value, bearer or key; `ModelConnection` implements no `Debug` today, so no other
+connection formats one. A managed account's connection carries the same
+`RecoverModelConnection` a chat call gets. `recovery::invoke` is the chat
+execution path over `ModelHost`, a `ModelRequest` and a `ModelStream`, so an
+adapter cannot reuse it as is; it runs the rule itself: map a provider rejection
+into the `HostError` the recovery interprets, ask `rejection` with the current
+phase, then `recover` once and retry on a recoverable rejection, or
+`finish_rejected` on a terminal one.
+
+**Rust binding.** The port is `ResolveModalityConnection` and
+`ModalityConnectionHost` in `dim-agent-capabilities`, with `ModalityTarget`
+carrying the model identity and the operation. Provider provides it in
+`ProviderPlugin::apply`, and the configured model profile provides it from its
+model file, whose entries declare no operation and therefore answer every target
+with the declaration refusal. The App Server catalog registers the Rust-only name
+`modalityConnectionHost`. The reply reuses `ResolvedModelConnection` and
+`ModelProtocol` and adds `RealtimeDeclaration`, the entry's declared transport;
+it adds no credential type.
 
 ### 3.7 Offline validation of a stored selection
 

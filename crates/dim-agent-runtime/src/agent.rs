@@ -478,6 +478,21 @@ impl Session {
         }
         self.published(branch)?.input(data).await
     }
+    /// Appends a validated batch of input to `branch` as one atomic commit;
+    /// see [`Branch::inputs`] for the contract.
+    pub async fn inputs(
+        &self,
+        inputs: Vec<InputMessageData>,
+        branch: &str,
+    ) -> Result<Vec<Arc<AgentEvent>>> {
+        if let Some(error) = self.0.owner.faults.failure() {
+            return Err(error);
+        }
+        if self.0.owner.closing.is_cancelled() {
+            return Err(AgentError::Closed(self.id().into()));
+        }
+        self.published(branch)?.inputs(inputs).await
+    }
     /// See [`Branch::lookup`].
     pub async fn lookup(&self, branch: &str, id: &str) -> Result<Option<Arc<AgentEvent>>> {
         self.published(branch)?.lookup(id).await

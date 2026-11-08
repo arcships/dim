@@ -649,6 +649,19 @@ async fn run_connection(
                     if (1..=PROTOCOL_VERSION).contains(&params.protocol_version)
                         && (entry != Entry::Web || params.protocol_version == PROTOCOL_VERSION) =>
                 {
+                    // An idle shutdown that found the daemon idle has decided
+                    // to close it; the handshake is refused instead of joining
+                    // a daemon that is leaving. Before the decision, this
+                    // connection is counted by it.
+                    let _admitted = match hub.admit() {
+                        Ok(admitted) => admitted,
+                        Err(error) => {
+                            let _ = connection
+                                .sender
+                                .send(Outbound::result(request.id, Err(error)), false);
+                            break;
+                        }
+                    };
                     let declared = match &params.client_kind {
                         ClientKind::Cli => DeclaredClientKind::Cli,
                         ClientKind::Web => DeclaredClientKind::Web,
@@ -708,22 +721,24 @@ async fn run_connection(
                                 daemon_profile: hub.config().daemon_profile.clone(),
                                 features: (params.protocol_version >= 3).then(|| {
                                     let trusted = entry != Entry::Bare;
-                                    let mut features = if trusted
-                                        || !hub.config().protected_profile()
-                                    {
-                                        let mut methods =
-                                            vec!["session.summaries", "daemon.shutdown.completed"];
-                                        if hub.config().database_path.is_some() {
-                                            methods.push("session.catalog");
-                                            methods.push("session.catalog.cancel");
-                                            methods.push("session.catalog.origins");
-                                            methods.push("session.catalog.workspaces");
-                                            methods.push("session.catalog.includeClosed");
-                                        }
-                                        methods
-                                    } else {
-                                        vec![]
-                                    };
+                                    let mut features =
+                                        if trusted || !hub.config().protected_profile() {
+                                            let mut methods = vec![
+                                                "session.summaries",
+                                                "daemon.shutdown.completed",
+                                                "daemon.shutdown.ifIdle",
+                                            ];
+                                            if hub.config().database_path.is_some() {
+                                                methods.push("session.catalog");
+                                                methods.push("session.catalog.cancel");
+                                                methods.push("session.catalog.origins");
+                                                methods.push("session.catalog.workspaces");
+                                                methods.push("session.catalog.includeClosed");
+                                            }
+                                            methods
+                                        } else {
+                                            vec![]
+                                        };
                                     if hub.config().session_execution
                                         && (trusted || !hub.config().protected_profile())
                                     {

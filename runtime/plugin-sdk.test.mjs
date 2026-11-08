@@ -44,7 +44,7 @@ test('packed plugin service types compile the author guide and enforce the publi
     .replace("'../../npm/plugin.js'", "'dimcode/plugin'"));
   const calls = path.join(directory, 'calls.mts');
   writeFileSync(calls, `
-import type { Settings, SettingsResult, Sessions, WorkflowFiles, WorkflowFileEntry, WorkflowFilesErrorThrown, SessionPermissions, PermissionState, PermissionPolicy, SessionsErrorThrown, SessionMetadata, SessionMetadataResult, AuxiliaryModel, AuxiliaryReply, FileScope, FileResult, ToolRegistry, ToolExecute, ToolResult, SessionMethods, SessionMethodHandler, ManagementMethods, MethodHandler, MethodDeclaration, SessionConfig, SessionBroadcast, BranchEvent, Services, AgentErrorThrown, MethodReply } from 'dimcode/plugin';
+import type { Settings, SettingsResult, Sessions, WorkflowFiles, WorkflowFileEntry, WorkflowFilesErrorThrown, SessionPermissions, PermissionState, PermissionPolicy, SessionsErrorThrown, SessionMetadata, SessionMetadataResult, AuxiliaryModel, AuxiliaryReply, FileScope, FileResult, ToolRegistry, ToolExecute, ToolResult, SessionMethods, SessionMethodHandler, ManagementMethods, MethodHandler, MethodDeclaration, SessionConfig, SessionBroadcast, BranchEvent, Services, AgentErrorThrown, MethodReply, CallChannel, CallChannelError } from 'dimcode/plugin';
 declare const settings: Settings;
 declare const sessions: Sessions;
 declare const permissions: SessionPermissions;
@@ -162,6 +162,20 @@ void sessionHandler({ callId: 'call', method: 'session.example.echo', params: { 
   Promise.resolve(), () => {});
 // @ts-expect-error a Session method call names its Session.
 void sessionHandler({ callId: 'call', method: 'session.example.echo', params: {} }, Promise.resolve(), () => {});
+void handler({ callId: 'call', method: 'example.status', params: [1, true],
+  origin: { connectionId: 'connection' } }, Promise.resolve(), () => {});
+const notificationOrigin: MethodDeclaration = { name: 'example.status', mutating: false,
+  interruption: 'report', progress: false, notifications: ['example.changed'] };
+void notificationOrigin;
+declare const channel: CallChannel;
+const notification = await channel.notify({
+  connectionId: 'connection', callId: 'call', method: 'example.changed', params: { step: 'done' } });
+const closedConnection: void = await channel.closed({ connectionId: 'connection' });
+void notification; void closedConnection;
+// @ts-expect-error a notification names its call, the declared method and JSON params.
+void channel.notify({ connectionId: 'connection', method: 'example.changed' });
+const channelCode: 'undeclared' | 'gone' | 'too_large' = (undefined as unknown as CallChannelError).code;
+void channelCode;
 const result: ToolResult = { content: [{ type: 'text', text: 'handle: owned-id' }],
   structuredContent: { handle: 'owned-id' }, backgroundTask: { taskId: 'task', wakePolicy: 'manual' },
   blobRefs: [{ blobId: 'blob', sessionId: 'session', kind: 'text', path: '/files/result' }],

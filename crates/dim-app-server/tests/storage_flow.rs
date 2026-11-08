@@ -714,6 +714,7 @@ async fn committed_history_round_trips_requests_outputs_traces_and_branch_direct
         configuration: None,
         prompt: None,
         recovery: None,
+        failure_chain: None,
     });
     let call = EventKind::ModelCall(ModelCallData {
         turn_id: "turn".into(),
@@ -721,6 +722,7 @@ async fn committed_history_round_trips_requests_outputs_traces_and_branch_direct
         request,
         configuration: None,
         prompt: None,
+        failure_chain: None,
     });
     let mut first = record(1, prepare.clone());
     first.batch_end = 2;
@@ -1920,6 +1922,7 @@ fn request_history() -> Vec<(&'static str, StoredEvent)> {
             configuration: None,
             prompt: None,
             recovery: None,
+            failure_chain: None,
         })
     };
     let call = |request: &Arc<ModelRequest>| {
@@ -1929,6 +1932,7 @@ fn request_history() -> Vec<(&'static str, StoredEvent)> {
             request: request.clone(),
             configuration: None,
             prompt: None,
+            failure_chain: None,
         })
     };
     let created = |branch: &str, at| {
@@ -2404,6 +2408,7 @@ fn model_call(sequence: u64, messages: Vec<Message>) -> StoredEvent {
             request: Arc::new(ModelRequest::new("mock", "test", messages)),
             configuration: None,
             prompt: None,
+            failure_chain: None,
         }),
     )
 }
@@ -2508,9 +2513,7 @@ async fn reads_rebuild_lists_from_where_they_start_in_bounded_holds() {
         assert!(loads.max_per_hold <= 256);
         store.branches("long").await.unwrap();
         let validation = store.take_node_loads();
-        if budget.is_none() {
-            assert_eq!(validation.loads, nodes);
-        }
+        assert_eq!(validation.loads, 0, "validation decodes no request body");
         let page = store
             .read_page(&main, 3 * 280 - 1, 30, 3 * 295 - 1)
             .await
@@ -3068,6 +3071,7 @@ async fn recovery_rejects_corrupt_records_and_preserves_them() {
                 configuration: None,
                 prompt: None,
                 recovery: None,
+                failure_chain: None,
             }),
         )
     };
@@ -3080,6 +3084,7 @@ async fn recovery_rejects_corrupt_records_and_preserves_them() {
                 request: request.clone(),
                 configuration: None,
                 prompt: None,
+                failure_chain: None,
             }),
         )
     };
@@ -3168,80 +3173,95 @@ async fn recovery_rejects_corrupt_records_and_preserves_them() {
         )
     };
     let quoted = |hash: &str| format!("\"{hash}\"");
-    for (table, intact, damaged, failure) in [
+    for (case, (table, intact, damaged, failure, refused)) in [
         (
             "timeline_events",
             event.clone(),
             damaged_refs(&quoted(&last.to_uppercase()), "3", &tools, &system),
             "missing request content",
+            true,
         ),
         (
             "timeline_content",
             node.clone(),
             node.replace("m 1", "m one"),
             "request content hash mismatch",
+            false,
         ),
         (
             "timeline_events",
             event.clone(),
             damaged_refs(&quoted(&system), "3", &tools, &system),
             "request list references wrong content kind",
+            false,
         ),
         (
             "timeline_events",
             event.clone(),
             damaged_refs(&quoted(&unparseable_hash), "1", &tools, &system),
             "expected",
+            false,
         ),
         (
             "timeline_events",
             event.clone(),
             damaged_refs(&quoted(&last), "2", &tools, &system),
             "request list length mismatch",
+            false,
         ),
         (
             "timeline_events",
             event.clone(),
             damaged_refs(&quoted(&last), "4", &tools, &system),
             "request list length mismatch",
+            false,
         ),
         (
             "timeline_events",
             event.clone(),
             damaged_refs("null", "3", &tools, &system),
             "request list length mismatch",
+            false,
         ),
         (
             "timeline_events",
             event.clone(),
             event.replace(r#","length":3"#, ""),
             "request references are neither messages nor a list",
+            true,
         ),
         (
             "timeline_events",
             event.clone(),
             event.replace(r#","length":3"#, r#","length":3,"messages":[]"#),
             "request references are neither messages nor a list",
+            true,
         ),
         (
             "timeline_events",
             event.clone(),
             event.replace(r#","length":3"#, r#","length":3,"next":null"#),
             "unknown field",
+            true,
         ),
         (
             "timeline_events",
             event.clone(),
             damaged_refs(&quoted(&last), "3", &system, &system),
             "request tools reference wrong content kind",
+            false,
         ),
         (
             "timeline_events",
             event.clone(),
             damaged_refs(&quoted(&last), "3", &tools, &tools),
             "request system references wrong content kind",
+            false,
         ),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         assert_ne!(damaged, intact);
         let set = format!("UPDATE {table} SET body = ?1 WHERE session_id = 'lists' AND body = ?2");
         assert_eq!(connection.execute(&set, [&damaged, &intact]).unwrap(), 1);
@@ -3256,10 +3276,23 @@ async fn recovery_rejects_corrupt_records_and_preserves_them() {
             store.read_page(&key("lists", "main"), 0, 2, 2).await,
             Err(AgentError::Storage(message)) if message.contains(failure)
         ));
-        assert!(matches!(
-            store.branches("lists").await,
-            Err(AgentError::Storage(message)) if message.contains(failure)
-        ));
+        // Validation checks that every reference resolves; a body that would
+        // fail its hash or kind check is only caught when a read loads it.
+        // A fresh store each time: a successful pass is cached per directory,
+        // and every case must run the pass.
+        let checking = SqliteTimelineStore::new(db.clone());
+        if refused {
+            assert!(
+                matches!(
+                    checking.branches("lists").await,
+                    Err(AgentError::Storage(message)) if message.contains(failure)
+                ),
+                "validation refused {failure} in case {case}"
+            );
+        } else {
+            checking.branches("lists").await.unwrap();
+        }
+        checking.close().await.unwrap();
         assert_eq!(connection.execute(&set, [&intact, &damaged]).unwrap(), 1);
     }
     store.branches("lists").await.unwrap();
@@ -3281,10 +3314,9 @@ async fn recovery_rejects_corrupt_records_and_preserves_them() {
             Err(AgentError::Storage(message)) if message.contains("request content hash mismatch")
         ));
     }
-    assert!(matches!(
-        store.branches("long").await,
-        Err(AgentError::Storage(message)) if message.contains("request content hash mismatch")
-    ));
+    // The damaged body is caught by the reads that load it; validation only
+    // checks that its reference resolves.
+    store.branches("long").await.unwrap();
     let later = store.read(&key("long", "main"), 3..=5).await.unwrap();
     assert_eq!(later[2].event.kind, call(5, &after).event.kind);
     assert_eq!(
@@ -3297,6 +3329,343 @@ async fn recovery_rejects_corrupt_records_and_preserves_them() {
     );
     assert_eq!(connection.execute(set, [&node, &damaged]).unwrap(), 1);
     store.branches("long").await.unwrap();
+    drop(connection);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+/// [#713] Restore validation decodes no request body: it checks that every
+/// content reference a record names resolves, and a read that loads a body
+/// checks its hash. A missing row still fails the validation; a damaged body
+/// passes it and fails the read that loads it.
+#[tokio::test]
+async fn restore_validation_checks_references_and_reads_check_bodies() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let request = || {
+        let mut request = ModelRequest::new(
+            "mock",
+            "test",
+            (0..3)
+                .map(|index| Message::text(Role::User, format!("m {index}")))
+                .collect(),
+        );
+        request.system = Some(Arc::new(SystemPrompt::Text("system".into())));
+        Arc::new(request)
+    };
+    for session in ["corrupt", "missing"] {
+        let prepare = record(
+            1,
+            EventKind::ContextPrepare(ContextPrepareData {
+                turn_id: "turn".into(),
+                request_id: "request".into(),
+                through: 0,
+                request: request(),
+                configuration: None,
+                prompt: None,
+                recovery: None,
+                failure_chain: None,
+            }),
+        );
+        let call = record(
+            2,
+            EventKind::ModelCall(ModelCallData {
+                turn_id: "turn".into(),
+                request_id: "request".into(),
+                request: request(),
+                configuration: None,
+                prompt: None,
+                failure_chain: None,
+            }),
+        );
+        store
+            .create_session(session, &SessionConfig::default())
+            .await
+            .unwrap();
+        append(&store, key(session, "main"), vec![prepare, call])
+            .await
+            .unwrap();
+    }
+    let connection = Connection::open(&database.0).unwrap();
+    let system = |session: &str| -> String {
+        connection
+            .query_row(
+                "SELECT hash FROM timeline_content WHERE session_id = ?1 AND kind = 'system'",
+                [session],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        connection
+            .execute(
+                "UPDATE timeline_content SET body = 'not the prompt' \
+                 WHERE session_id = 'corrupt' AND kind = 'system'",
+                [],
+            )
+            .unwrap(),
+        1
+    );
+    store.branches("corrupt").await.unwrap();
+    assert!(matches!(
+        store.read(&key("corrupt", "main"), 1..=2).await,
+        Err(AgentError::Storage(message)) if message.contains("request content hash mismatch")
+    ));
+    let missing = system("missing");
+    assert_eq!(
+        connection
+            .execute(
+                "DELETE FROM timeline_content WHERE session_id = 'missing' AND kind = 'system'",
+                [],
+            )
+            .unwrap(),
+        1
+    );
+    assert!(matches!(
+        store.branches("missing").await,
+        Err(AgentError::Storage(message))
+            if message == format!("missing request content {missing}")
+    ));
+    drop(connection);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+/// [#713] The reference check runs once per batch of 64 physical rows: a
+/// Session larger than one batch validates while every reference resolves,
+/// and a row removed from a later batch still fails the pass.
+#[tokio::test]
+async fn restore_validation_checks_references_across_batches() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("batches", &SessionConfig::default())
+        .await
+        .unwrap();
+    let mut records = Vec::new();
+    for index in 0..200u64 {
+        let mut request = ModelRequest::new(
+            "mock",
+            "test",
+            vec![Message::text(Role::User, format!("m {index}"))],
+        );
+        request.system = Some(Arc::new(SystemPrompt::Text(format!("system {index}"))));
+        let request = Arc::new(request);
+        let (turn, id) = (format!("turn-{index}"), format!("request-{index}"));
+        records.push(record(
+            index * 2 + 1,
+            EventKind::ContextPrepare(ContextPrepareData {
+                turn_id: turn.clone(),
+                request_id: id.clone(),
+                through: 0,
+                request: request.clone(),
+                configuration: None,
+                prompt: None,
+                recovery: None,
+                failure_chain: None,
+            }),
+        ));
+        records.push(record(
+            index * 2 + 2,
+            EventKind::ModelCall(ModelCallData {
+                turn_id: turn,
+                request_id: id,
+                request,
+                configuration: None,
+                prompt: None,
+                failure_chain: None,
+            }),
+        ));
+    }
+    append(&store, key("batches", "main"), records)
+        .await
+        .unwrap();
+    // 400 physical rows: more than six batches of 64. Every reference
+    // resolves, so the pass succeeds.
+    let checking = SqliteTimelineStore::new(db.clone());
+    checking.branches("batches").await.unwrap();
+    checking.close().await.unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    let last: String = connection
+        .query_row(
+            "SELECT hash FROM timeline_content WHERE session_id = 'batches' \
+             AND kind = 'system' AND body LIKE '%system 199%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        connection
+            .execute(
+                "DELETE FROM timeline_content WHERE session_id = 'batches' AND hash = ?1",
+                [&last],
+            )
+            .unwrap(),
+        1
+    );
+    // The reference is in the last batch; the pass still checks it.
+    let checking = SqliteTimelineStore::new(db.clone());
+    assert!(matches!(
+        checking.branches("batches").await,
+        Err(AgentError::Storage(message))
+            if message == format!("missing request content {last}")
+    ));
+    checking.close().await.unwrap();
+    drop(connection);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+/// [#713] Restore refuses a missing node anywhere in a message list: a v17
+/// record names only the last node, so the pass also checks that every node's
+/// parent resolves, not only the direct references.
+#[tokio::test]
+async fn restore_validation_refuses_a_missing_middle_node() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let request = || {
+        let mut request = ModelRequest::new(
+            "mock",
+            "test",
+            (0..3)
+                .map(|index| Message::text(Role::User, format!("middle message {index}")))
+                .collect(),
+        );
+        request.system = Some(Arc::new(SystemPrompt::Text("middle system".into())));
+        Arc::new(request)
+    };
+    store
+        .create_session("middle", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(
+        &store,
+        key("middle", "main"),
+        vec![
+            record(
+                1,
+                EventKind::ContextPrepare(ContextPrepareData {
+                    turn_id: "turn".into(),
+                    request_id: "request".into(),
+                    through: 0,
+                    request: request(),
+                    configuration: None,
+                    prompt: None,
+                    recovery: None,
+                    failure_chain: None,
+                }),
+            ),
+            record(
+                2,
+                EventKind::ModelCall(ModelCallData {
+                    turn_id: "turn".into(),
+                    request_id: "request".into(),
+                    request: request(),
+                    configuration: None,
+                    prompt: None,
+                    failure_chain: None,
+                }),
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    let middle: String = connection
+        .query_row(
+            "SELECT hash FROM timeline_content WHERE session_id = 'middle' \
+             AND kind = 'node' AND body LIKE '%middle message 1%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        connection
+            .execute(
+                "DELETE FROM timeline_content WHERE session_id = 'middle' AND hash = ?1",
+                [&middle],
+            )
+            .unwrap(),
+        1
+    );
+    // The last node, the tools and the system rows stay: the record's direct
+    // reference resolves, and only the parent check can refuse the restore.
+    let result = store.branches("middle").await;
+    assert!(
+        matches!(&result, Err(AgentError::Storage(message))
+            if message == &format!("missing request content {middle}")),
+        "restore accepted the missing middle node: {result:?}"
+    );
+    drop(connection);
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+/// [#713] The parent check reads every node row of the Session, not one batch:
+/// a chain deeper than a batch of 64 rows fails when a node near its start is
+/// missing while the last node the record references stays.
+#[tokio::test]
+async fn restore_validation_refuses_a_missing_parent_across_batches() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let request = Arc::new(ModelRequest::new(
+        "mock",
+        "test",
+        (0..70)
+            .map(|index| Message::text(Role::User, format!("chain message {index:02}")))
+            .collect(),
+    ));
+    store
+        .create_session("chain", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(
+        &store,
+        key("chain", "main"),
+        vec![record(
+            1,
+            EventKind::ContextPrepare(ContextPrepareData {
+                turn_id: "turn".into(),
+                request_id: "request".into(),
+                through: 0,
+                request: request.clone(),
+                configuration: None,
+                prompt: None,
+                recovery: None,
+                failure_chain: None,
+            }),
+        )],
+    )
+    .await
+    .unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    let second: String = connection
+        .query_row(
+            "SELECT hash FROM timeline_content WHERE session_id = 'chain' \
+             AND kind = 'node' AND body LIKE '%chain message 01%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        connection
+            .execute(
+                "DELETE FROM timeline_content WHERE session_id = 'chain' AND hash = ?1",
+                [&second],
+            )
+            .unwrap(),
+        1
+    );
+    let result = store.branches("chain").await;
+    assert!(
+        matches!(&result, Err(AgentError::Storage(message))
+            if message == &format!("missing request content {second}")),
+        "restore accepted the missing parent across batches: {result:?}"
+    );
     drop(connection);
     store.close().await.unwrap();
     db.close().await.unwrap();
@@ -4079,6 +4448,7 @@ async fn upgrades_in_place_once(database: &Database, connection: Connection, fro
             request: Arc::new(request),
             configuration: None,
             prompt: None,
+            failure_chain: None,
         }),
     );
     let content = rows(&connection, "timeline_content").len();
@@ -4222,6 +4592,7 @@ async fn a_v21_store_upgrades_in_place_once_and_restores_typeless_tool_schemas()
             request: Arc::new(request),
             configuration: None,
             prompt: None,
+            failure_chain: None,
         }),
     );
     let db = SqliteStorage::open(database.0.clone()).unwrap();
@@ -4321,6 +4692,7 @@ async fn a_type_array_tool_schema_round_trips_on_the_current_store_without_an_up
             request: Arc::new(request),
             configuration: None,
             prompt: None,
+            failure_chain: None,
         }),
     );
     let database = Database::new();
@@ -5806,7 +6178,9 @@ async fn a_cold_read_failure_preserves_the_record_and_other_session_progress() {
         assert!(chain_events(&good, "main", ..).await.unwrap().iter().any(|event| matches!(&event.kind, EventKind::Text(data) if data.delta.contains("healthy progress"))));
         assert_eq!(connection.query_row("SELECT body FROM timeline_content WHERE session_id = ?1 LIMIT 1", [bad.id()], |row| row.get::<_, String>(0)).unwrap(), "unreadable external bytes");
         agent.close().await.unwrap();
-        assert!(matches!(store.branches(bad.id()).await, Err(AgentError::Storage(_))));
+        // Every reference still resolves, so validation passes; the damaged
+        // bodies are caught by the reads that load them (#713).
+        store.branches(bad.id()).await.unwrap();
         store.branches(good.id()).await.unwrap();
         drop(connection);
         store.close().await.unwrap();
@@ -5841,6 +6215,7 @@ async fn reads_share_bounded_content_across_pages_and_still_check_every_load() {
                     request: request.clone(),
                     configuration: None,
                     prompt: None,
+                    failure_chain: None,
                 }),
             )
         })
@@ -5917,18 +6292,20 @@ async fn reads_share_bounded_content_across_pages_and_still_check_every_load() {
             "SELECT body FROM timeline_content WHERE session_id = ?1 AND kind IN ('node', 'message') AND body LIKE '%first%'",
             session,
         );
-        for (table, intact, damaged, failure) in [
+        for (table, intact, damaged, failure, refused) in [
             (
                 "timeline_events",
                 event.clone(),
                 event.replace(&reference, &reference.to_uppercase()),
                 "missing request content",
+                true,
             ),
             (
                 "timeline_content",
                 first.clone(),
                 first.replace("first", "fir5t"),
                 "request content hash mismatch",
+                false,
             ),
         ] {
             let set = format!("UPDATE {table} SET body = ?1 WHERE session_id = ?2 AND body = ?3");
@@ -5947,10 +6324,16 @@ async fn reads_share_bounded_content_across_pages_and_still_check_every_load() {
                     reader.read(&key(session, "main"), 1..=300).await,
                     Err(AgentError::Storage(message)) if message.contains(failure)
                 ));
+            }
+            // A missing reference fails validation; a body that would fail its
+            // hash check is only caught when a read loads it.
+            if refused {
                 assert!(matches!(
                     checking.branches(session).await,
                     Err(AgentError::Storage(message)) if message.contains(failure)
                 ));
+            } else {
+                checking.branches(session).await.unwrap();
             }
             assert_eq!(
                 connection
@@ -6323,6 +6706,7 @@ async fn native_continuation_survives_sqlite_checkpoint_request_and_child_restor
                         )),
                         configuration: None,
                         prompt: None,
+                        failure_chain: None,
                     }),
                 ),
                 record(
@@ -6442,6 +6826,7 @@ async fn a_fork_copies_main_through_the_cut_with_its_content_and_snapshots() {
                 )),
                 configuration: None,
                 prompt: None,
+                failure_chain: None,
             }),
         )
     };
@@ -7181,6 +7566,72 @@ async fn a_v31_store_upgrades_in_place_once() {
         .unwrap();
     assert_eq!(schema(&connection), schema_of(31));
     upgrades_in_place_once(&database, connection, 31).await;
+}
+
+/// A store upgrade that outlives `startup_timeout` still opens while it
+/// reports progress, and the CLI's progress note exists while it runs and is
+/// gone after the successful open.
+#[tokio::test]
+async fn a_slow_store_upgrade_reports_progress_and_keeps_the_opening_alive() {
+    use dim_app_server::storage::set_upgrade_report_delay;
+    use tokio_util::sync::CancellationToken;
+
+    /// Clears the delay even when an assertion fails.
+    struct Delay;
+    impl Drop for Delay {
+        fn drop(&mut self) {
+            set_upgrade_report_delay(None);
+        }
+    }
+
+    let database = Database::new();
+    drop(v13_store(&database.0));
+
+    let _delay = Delay;
+    set_upgrade_report_delay(Some(Duration::from_millis(200)));
+    let note = startup_note(&database.0);
+    let path = database.0.clone();
+    let waiting = tokio::spawn(async move {
+        let root = rutis::Ctx::root().unwrap();
+        let view = root.plugin(dim_app_server::storage::SqliteStoragePlugin::new(path));
+        let result = dim_agent_runtime::wait_active(
+            &root,
+            std::slice::from_ref(&view),
+            Duration::from_millis(1_000),
+            &CancellationToken::new(),
+        )
+        .await;
+        root.shutdown().await.unwrap();
+        result
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen = None;
+    while Instant::now() < deadline && seen.is_none() {
+        seen = std::fs::read_to_string(&note).ok().filter(|text| {
+            text.starts_with(&format!(
+                "dimcode-startup-progress v1 pid={}\n",
+                std::process::id()
+            ))
+        });
+        if seen.is_none() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    let seen = seen.expect("the upgrade wrote its progress note while it ran");
+    assert!(
+        seen.contains("store-upgrade from=13 to=34 progress="),
+        "{seen}"
+    );
+    waiting
+        .await
+        .unwrap()
+        .expect("reported progress keeps the opening inside its inactivity bound");
+    assert!(
+        !note.exists(),
+        "a successful open removes the progress note"
+    );
+    let connection = Connection::open(&database.0).unwrap();
+    assert_eq!(marker(&connection), vec![i64::from(STORE_FORMAT)]);
 }
 
 /// Grants upsert without downgrading write, survive a restart, are absent

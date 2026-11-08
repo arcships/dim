@@ -12,7 +12,9 @@
 use crate::{
     context_block::{element, raw, text},
     host_platform::{HostPlatform, ProcessTree},
-    methods::{Interruption, MethodDecl, Progress, RpcError, SessionMethods, params, reply},
+    methods::{
+        Interruption, MethodCall, MethodDecl, Progress, RpcError, SessionMethods, params, reply,
+    },
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     timeline_tree::TreeCommands,
     workspace_tools::exec::{
@@ -625,7 +627,12 @@ impl DynPlugin for ShellInputPlugin {
                     MethodDecl::new("shell.stop", true, Interruption::Report),
                     MethodDecl::new("shell.list", false, Interruption::Report),
                 ],
-                Arc::new(move |method, value, cancel, progress| {
+                Arc::new(move |call, cancel, progress| {
+                    let MethodCall {
+                        method,
+                        params: value,
+                        ..
+                    } = call;
                     let shell = shell.clone();
                     Box::pin(async move {
                         match method.as_str() {

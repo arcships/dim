@@ -1,5 +1,5 @@
 use super::*;
-use dim_agent_capabilities::methods::{Interruption, MethodDecl};
+use dim_agent_capabilities::methods::{Interruption, MethodCall, MethodDecl};
 use dim_app_server::methods::ManagementMethods;
 use rutis::host::{BoxFuture, DynPlugin, Effect, Key, TypeKey};
 use tokio::io::AsyncReadExt;
@@ -33,7 +33,7 @@ impl DynPlugin for ScheduleMethods {
                     .chain(["schedule.unreviewed"])
                     .map(|method| MethodDecl::new(method, false, Interruption::Report))
                     .collect(),
-                Arc::new(|method, params, _, _| {
+                Arc::new(|MethodCall { method, params, .. }, _, _| {
                     Box::pin(async move { Ok(json!({"method":method,"params":params})) })
                 }),
             )?;

@@ -431,6 +431,7 @@ impl SummaryStrategy {
         let (text, complete) = invoke_with_recovery(
             &host,
             &request,
+            None,
             resolved,
             cancel,
             stats,
@@ -447,6 +448,10 @@ impl SummaryStrategy {
         Ok(Some(text))
     }
 }
+
+/// The summarizer runs without a display, so a retry it waits through
+/// reports nowhere.
+impl crate::model_provider::RetryObserver for Stats {}
 
 /// One compaction's counters and the summarizer settings it ran with; they
 /// become its diagnostics object.

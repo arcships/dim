@@ -2081,6 +2081,41 @@ fn acp_stdio_recognizes_max_tokens_before_a_late_submit_reply() {
 }
 
 #[test]
+fn acp_stdio_reads_the_output_limit_from_the_failure_kind() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(METHODS);
+        wire.created();
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, json!({}));
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+        let submit = wire.read("session.submit");
+        let input = event(9, "limited-input", "input", "message", json!({"submission_id":submit["params"]["submissionId"],"user":{"content":[{"type":"text","text":"Hello"}]},"mode":"queue"}));
+        let notice = |wire: &mut Wire, value: Value| wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":value}));
+        notice(wire, event(10,"start","turn","start",json!({"turn_id":"limited"})));
+        notice(wire, event(11,"consumed","input","consumed",json!({"input_id":"limited-input"})));
+        notice(wire, event(12,"model-end","step","model-output-end",json!({"turn_id":"limited","request_id":"model","status":"failed","error":"opaque internal detail","failure":{"kind":"output_limit","attempts":1,"waitedMs":0}})));
+        notice(wire, event(13,"end","turn","end",json!({"turn_id":"limited","status":"failed","error":"opaque internal detail"})));
+        wire.reply(&submit, json!({"event":input}));
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    assert_eq!(peer.response(2)["result"]["sessionId"], "session");
+    peer.send(
+        3,
+        "session/prompt",
+        json!({"sessionId":"session","prompt":[{"type":"text","text":"Hello"}]}),
+    );
+    let limited = peer.response(3);
+    assert_eq!(limited["result"]["stopReason"], "max_tokens", "{limited}");
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
 fn acp_stdio_correlates_the_consumed_input_and_deduplicates_unicode_progress() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {

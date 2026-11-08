@@ -283,6 +283,7 @@ async function fork(): Promise<void> {
     <TimelineView
       :rows="view.rows"
       :running="view.running"
+      :retry="view.retry"
       :quotable="!approval && questions.length === 0"
       :branchable="branchable && !approval && questions.length === 0"
       @branch="branch"

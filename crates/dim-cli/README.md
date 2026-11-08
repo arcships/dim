@@ -541,6 +541,74 @@ entry to still exist.
 
 See the [MCP OAuth contract](../../docs/design/appserver/mcp-oauth.md#13-requirements-raised-to-mechanism-owners).
 
+## Modality
+
+`dimcode modality` prints one row per operation of the daemon's Modality, read over
+`modality.capabilities`: category, operation, whether it is available, its default model, the model
+that would be used, and the owner's reasons as `dimension: detail` entries. The table renders the
+owner's snapshot and never guesses: a category or operation this build does not implement still has
+a row, with its reason. `--json` prints the reply unchanged. A daemon that does not advertise
+`modality.capabilities` — one older than Modality, or one whose Modality is reloading — answers
+every `dimcode modality` command with `This daemon serves no Modality.` and exit code 1, and the
+command calls nothing else.
+
+`dimcode modality set-default <category>[.<operation>] <provider>/<model>` writes one default over
+`modality.configure`, carrying the revision read immediately before the write. A category alone
+writes the category-keyed default, which is what every category except `image` and `speech` uses;
+those two name the operation. `--clear` sends `model: null` and restores automatic resolution. A
+`modality_conflict` means another client saved between the read and the write, so the revision is
+read again and the write retried once; a second conflict fails with the owner's message. The
+command prints the operation's row from the reply, or the reply under `--json`.
+
+`dimcode image generate|edit PROMPT [FILE...]`, `image enhance MODE [FILE...]`, `video
+generate|edit|enhance PROMPT [FILE...]`, `speech synthesize TEXT`, `speech transcribe FILE`,
+`music|audio|motion generate PROMPT` and `asset generate PROMPT [FILE...]` each submit one task
+over `modality.task.submit`. The CLI types only the inputs the design declares: the prompt or text
+positional, the input files, `image edit --mask` and `image enhance MODE`. Everything else an
+operation takes is the adapter's, passed as a repeatable `--param KEY=VALUE`: the value is JSON
+when it parses as JSON and a string otherwise, so a string that would parse as JSON is written
+quoted, as in `--param 'label="true"'`. The mask is itself an input file, and `params.mask` names
+it. `--model PROVIDER/MODEL` picks the model; without it the daemon resolves the operation default.
+
+Every input is read from the local file system, which is the daemon's own: the submission sends
+them all inline when the whole set fits 8 MiB and all by their canonical `node_path` above it. The
+media type comes from the extension; an operation that does not accept it is the daemon's
+`invalid_input`, not a second rule here. The command then waits over `modality.task.wait`, drawing
+progress on stderr only when stderr is a terminal, and writes the result files to `--out`, a
+directory that defaults to `.` and is created when missing. It never replaces an existing file:
+when a target exists, nothing is written, the files are named, and the message gives `dimcode
+modality task wait <id> --out <dir>` for fetching them into another directory; the task keeps its
+files. Each file is transferred in 4 MiB chunks into a temporary sibling and hard-linked into
+place, so a file created at the target while the transfer ran is refused, not replaced; where the
+file system has no hard links, the file is copied into a target created without replacement
+instead, which may show the target incomplete while the copy runs, and a failed or stopped
+transfer removes the temporary. `--no-wait` stops after the submission and prints the
+id; `--json` prints the record instead of the command's own lines. The first Ctrl+C during a wait
+stops waiting, prints the id and exits 130, and the task continues; a Ctrl+C during a result
+transfer stops the transfer, removes the partial file and exits 130, printing `Stopped; the task
+keeps its results. Fetch them with: dimcode modality task wait <id> --out <dir>`. A failed task
+prints its `code: message` and exits 2; a cancelled one exits 130.
+
+`dimcode modality task list [--state S] [--category C] [--limit N] [--after ID]` prints one page
+of tasks over `modality.task.list`, newest first, as `ID STATE OPERATION MODEL CREATED`; when the
+reply names a further page, `More: --after <id>` goes to stderr so stdout stays a table.
+`dimcode modality task status ID` prints the same row, then the task's progress, its error and one
+line per result file. `dimcode modality task wait ID [--out DIR]` is the submission's wait on its
+own: the task's results are written only when `--out` names a directory, so checking on a task
+never litters the working directory. `dimcode modality task cancel ID` reports the state the owner
+returned; an already-terminal task says it is unchanged. `--json` prints the reply unchanged for
+all four.
+
+`dimcode ocr FILE [--output-mode text|layout] [--out DIR]` submits one `ocr.recognize` host task.
+In text mode, a `text.txt` of at most 64 KiB and at most 30,000 UTF-16 units is printed and
+nothing is written, so the common case leaves no files behind; the printed text has terminal
+controls removed, while a written `text.txt` and the `--json` record keep the exact bytes. A longer
+text is written — to `--out` when it names a directory, to the current directory otherwise — and
+the command prints a 2,000-character preview followed by `Full text: <path>`. `--out` with a short
+text asks for the result set beside the printed text, and `--output-mode layout` writes the
+rasterized page images and prints every written path. Writing follows the same rule as every
+Modality command: no target is ever replaced. `--json` prints the record and `--no-wait` the id.
+
 ## Permission presets and approvals
 
 The App Server decides each tool call; the CLI selects settings and never decides a call itself.
@@ -886,7 +954,21 @@ Interactive recovery displays main-branch history. Noninteractive recovery emits
 
 ## Terminal UI modes
 
-The interactive terminal UI has two modes over the same session. Scrollback (the default) commits the transcript into the terminal's native scrollback and repaints only the composer region at the bottom. Its ground rule: a committed row is never taken back. Nothing above the live region is erased, shortened or redrawn to fewer rows, because the composer sits at the bottom of the screen and the terminal would pull it up by every row removed; corrections append or rewrite a row in place, never shrink. Inside the live region the composer (or the question or approval in its place) is the anchor and never moves up while the region has room below: fewer rows above it (the live tail, the queue strip) give back the region's top rows, blank, as a gap above it, and fewer rows below it (a menu or picker closing, a question changing tab or answered) give back its bottom rows, blank, under the status row. Scrolling the screen cannot be undone, so the region grows into those blank rows first, below or back up into the gap, and scrolls only for rows that fit nowhere; a menu or question opened and closed again and again scrolls history once, the first time. The next commit fills the gap, so no blank rows are left in history. No row is ever blanked and then drawn again in the same frame: rows are written over in place, a row wider than the screen is written once and wrapped by the terminal over the rows below it, and a row exactly as wide as the screen gets no trailing erase (it would blank its last cell). Fullscreen takes the alternate screen, keeps the transcript itself and scrolls it in a viewport above a dock that never moves. A transcript shorter than the viewport sits on the dock and grows upwards:
+The interactive terminal UI has two modes over the same session. Scrollback (the default) commits the transcript into the terminal's native scrollback and repaints only the composer region at the bottom. Its ground rule: a committed row is never taken back. Nothing above the live region is erased, shortened or redrawn to fewer rows, because the composer sits at the bottom of the screen and the terminal would pull it up by every row removed; corrections append or rewrite a row in place, never shrink. Inside the live region the composer (or the question or approval in its place) is the anchor and never moves up while the region has room below: fewer rows above it (the live tail, the queue strip) leave their released space between the live transcript and the dock, and fewer rows below it (a menu or picker closing, a question changing tab or answered) give back its bottom rows, blank, under the status row. The live transcript stays directly after committed history with its normal one-row block separators. Scrolling the screen cannot be undone, so the region consumes that released space before scrolling and scrolls only for rows that fit nowhere; a menu or question opened and closed again and again scrolls history once, the first time. Commits start directly after history, so temporary layout space never enters history. No row is ever blanked and then drawn again in the same frame: rows are written over in place, including inside tmux without synchronized output, a row wider than the screen is written once and wrapped by the terminal over the rows below it, and a row exactly as wide as the screen gets no trailing erase (it would blank its last cell).
+
+```text
+ user message
+                          one normal separator row
+ ◆ Thinking… · text
+                          released layout space, if any
+ ╭─ · thinking… ─────────────────────────────╮
+ │ › Ask anything...                        │   composer stays anchored
+ ╰──────────────────────────────────────────╯
+```
+
+While a terminal resize is pending, scrollback pauses frame painting until the existing resize debounce settles; model and input processing continue. The settled resize rebuilds native scrollback from the recorded blocks at the new width and overwrites visible rows in place, without clearing the screen first. No full row above the final live region is cleared: shorter rewritten rows erase their stale suffix in place, and unused rows below the final live region are erased. This keeps the normal one-row message separators and removes old composer and thinking rows without a blank-screen flash, including in tmux without synchronized output.
+
+Fullscreen takes the alternate screen, keeps the transcript itself and scrolls it in a viewport above a dock that never moves. A transcript shorter than the viewport sits on the dock and grows upwards:
 
 ```text
  answer row                                                     ▁   scrollbar: last column,
@@ -1128,6 +1210,8 @@ dimcode --scrollback default    # save the default mode and exit
 ```
 
 The default is saved as `tuiMode` in `<home>/config.json`.
+
+On Windows the terminal UI exchanges its text with the console as UTF-16 through the wide-character console functions (`WriteConsoleW` and `ReadConsoleW`), so it neither reads nor changes the console's code pages. Those pages belong to the console and are shared with every process attached to it: a console left on a legacy OEM page such as CP437 or CP850 shows the frame and delivers typed characters unchanged, and closing the CLI leaves the console as it was found. The Windows job runs a ConPTY flow that paints a frame and types into a console running CP437.
 
 ## Background task inventory
 
@@ -1482,7 +1566,7 @@ The terminal UI's `/connect` row for a described account opens the same flow: a 
 
 `models PROVIDER` reads the cached catalog; `--refresh` obtains and persists a fresh catalog through the provider. Each line contains the model ID, display name and `available`, `disabled`, `unavailable` or `undeclared`, separated by tabs; `undeclared` means no source declares the model's context window or maximum output, either of which keeps it from being selected. `--set-limits MODEL --context-window N --max-output-tokens N` declares both for one model, and `--set-missing-limits --context-window N --max-output-tokens N` declares them for every model the list marks `undeclared` — an enabled model whose missing limits are its only blocker, so a disabled model or one unavailable for another reason is not written; both named values are required with either form, both write through `models.edit` at the current record version, and both print the catalog afterwards. When a listed model still needs a window, the command names the declaration below its rows. Credential/account fields and private failure details are not printed. A missing cached catalog gives sign-in and refresh guidance, and a cached catalog that holds no models is named on standard error with the refresh command that fills it; a `--refresh` that lists nothing says the provider listed none. Select an available model with `--provider PROVIDER --model MODEL_ID` for a new session.
 
-An existing shared daemon of the CLI's own version is reused. A daemon of another version that this executable would start (one left running across an upgrade) is stopped with verified shutdown and replaced, which disconnects other clients attached to it; one without verified shutdown is reported for `dimcode daemon stop` from its matching CLI. A `--server PATH` daemon is reused whatever its version. Plugin paths apply when starting a new product daemon; use an isolated home when changing a plugin/runtime configuration. Explicit `--model-config` and account plugin options cannot be combined.
+An existing shared daemon of the CLI's own version is reused. One client at a time decides what to do with the daemon (`<home>/rust/daemon.start.lock`), so two clients starting together start or replace it once and both connect. A daemon of another version that this executable would start (one left running across an upgrade) is replaced only while it is idle: no other client connection is open and no Session has an attached client or a running turn. An idle one is stopped with verified shutdown and replaced; one in use is kept, the client prints a line on standard error (the TUI shows it once as a notice) naming `dimcode daemon stop` as the way to upgrade when those clients are done, and the next start after that runs the new version. A daemon without verified shutdown is reported for `dimcode daemon stop` from its matching CLI. A `--server PATH` daemon is reused whatever its version and is never started or replaced by the CLI. Plugin paths apply when starting a new product daemon; use an isolated home when changing a plugin/runtime configuration. Explicit `--model-config` and account plugin options cannot be combined.
 
 The repository root `./dev` prepares the local provider package, builds incrementally and restarts only its development daemon. See [local development](../../docs/architecture/development.md) for setup and source selection.
 
@@ -1522,8 +1606,8 @@ JSON escaping can make a prompt exceed this limit even when its original text fi
 | Exit code | Meaning |
 | --- | --- |
 | `0` | Completed, or normal interactive exit |
-| `1` | Invalid configuration, incompatible daemon, login or transport error |
-| `2` | Model or turn failed |
+| `1` | Invalid configuration, incompatible daemon, login or transport error, or a result file that already exists |
+| `2` | Model or turn failed, or a failed Modality task |
 | `3` | Interactive approval or answer required |
 | `130` | Interrupted noninteractive turn or login |
 
@@ -1538,6 +1622,8 @@ TUI  -> model failed: Model local/model stopped at max_tokens. Increase the outp
 ACP  -> stopReason: max_tokens -> next prompt on the same Session
 ```
 
+A provider failure that carries a `failure` fact prints one line built from its kind, `<meaning>: <reason>. <action>` with `: <reason>` left out when there is none, and no `model failed:` prefix; line mode and `exec` print it once, `exec` with `[failed] ` in front. When the request already showed text, thinking or a tool row, the line starts with "The response above is incomplete." A turn-end error equal to a model failure already shown in the same turn is not printed again; a turn failure that is not a model failure still prints. When the failure records more than one attempt, the line ends with `Tried N times over M s.` (whole seconds); the details keep `tried N times over M s`. While a request waits to retry, line mode writes one line per attempt where it writes its other status lines (stdout in the interactive line interface, stderr otherwise), `retrying 3/8 in 4 s: <meaning>: <reason>`, `exec` writes no retry lines, and the TUI replaces its working line with `Retrying 3/8 in 4 s · <meaning>: <reason> · Esc stops`, and once the retry time has passed it says `Waiting for the provider` with the kind's meaning. An error row's details (kind, status, provider code, request id, `tried N times over M s`, the provider's requested wait and the cause chain) join the `/tools` cycle and click-to-expand, collapsed by default. A retry adds no transcript row and a later success adds none either; the failure line's `tried N times` is the persistent record.
+
 ## Focused checks
 
 The public CLI flow tests exercise the real native binary and NDJSON boundary. Unix PTY checks cover default-deny approval, questions, discarded typeahead, stopping while a frame is fragmented, prompt recovery and hidden callback input:
@@ -1546,6 +1632,8 @@ The public CLI flow tests exercise the real native binary and NDJSON boundary. U
 cargo test --locked -p dimcode --test cli_flow
 cargo clippy --locked -p dim-cli --all-targets -- -D warnings
 ```
+
+Two debug-only variables shorten the daemon startup waits for the flow tests: `DIM_TEST_DAEMON_START_TIMEOUT_MS` replaces the spawn wait's 10 s bound and `DIM_TEST_START_LOCK_TIMEOUT_MS` the start-lock wait's derived bound, so a test reaches an inactivity bound without waiting the production time. Only a debug build reads them, a release build ignores them, and the tests that set them compile only in debug builds.
 
 The production-model flow uses the actual App Server, an API-key environment reference and a local OpenAI-compatible HTTP stream fixture. It checks the production tool list, a real file read reaching the model, and continued input on the same persisted session:
 
@@ -1582,6 +1670,6 @@ DIM_TEST_NPM_WRAPPER="$PWD/npm/bin/dimcode.mjs" \
   -- --ignored
 ```
 
-The test uses an isolated home and explicitly shuts down only the daemon it started. The external model service is a fixture; it does not spend a real provider's quota. Windows CI runs native clipboard and ConPTY editing flows; compiling another target is not a substitute for them. The named-pipe bridge still requires its separate native acceptance.
+The test uses an isolated home and explicitly shuts down only the daemon it started. The external model service is a fixture; it does not spend a real provider's quota. Windows CI runs native clipboard, ConPTY editing and legacy code-page console flows; compiling another target is not a substitute for them. The named-pipe bridge still requires its separate native acceptance.
 
 Unix socket paths have an operating-system length limit, including the canonical home path. On macOS, `/var` resolves to `/private/var`, which adds bytes. Use a short isolated home such as `/tmp/dim-dev` for development/tests if the daemon reports `path must be shorter than SUN_LEN`; the CLI preserves that failure in `rust/daemon.log`.

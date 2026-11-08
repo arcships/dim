@@ -83,6 +83,33 @@ pub struct ViewRow {
     pub line: Option<String>,
     /// A compaction row's state and detail.
     pub compaction: Option<CompactionView>,
+    /// A model failure's details, shown when the row is expanded.
+    pub failure: Option<FailureDetail>,
+}
+
+/// A model failure as its error row's details print it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailureDetail {
+    pub kind: dim_agent_types::ModelFailureKind,
+    pub status: Option<u16>,
+    pub provider_code: Option<String>,
+    pub request_id: Option<String>,
+    pub attempts: u8,
+    pub waited_ms: u64,
+    pub retry_after_ms: Option<u64>,
+    pub cause: Vec<String>,
+}
+
+/// A retry a request waits for, as the working line shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryView {
+    /// The attempt about to run, at least 2.
+    pub attempt: u8,
+    pub max_attempts: u8,
+    /// Unix milliseconds at which the attempt starts.
+    pub retry_at_ms: u64,
+    pub kind: dim_agent_types::ModelFailureKind,
+    pub reason: Option<String>,
 }
 
 /// A context compaction as its transcript row shows it (compaction
@@ -361,6 +388,8 @@ pub struct ViewSnapshot {
     /// The goal in force on the shown line, folded from its events (Goal
     /// §A.3); none when the line has no goal.
     pub goal: Option<crate::goal::Goal>,
+    /// The retry the running request waits for, while it sleeps.
+    pub retry: Option<RetryView>,
 }
 
 /// A line the side panel follows (timeline UI §4.7).

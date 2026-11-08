@@ -439,8 +439,8 @@ fn run_terminal(
         }
         let due = last_frame.is_none_or(|at| now.duration_since(at) >= FRAME_INTERVAL)
             && !terminal.writing();
-        if dirty && due {
-            let size = terminal.size();
+        if dirty && due && resize.is_none() {
+            let size = current;
             let frame = app.frame(size);
             let bytes = match &mut full {
                 Some(full) => full.render(&frame, size, &app.palette, &app),
@@ -462,7 +462,7 @@ fn run_terminal(
                 dirty = true;
             }
         }
-        let wait = match (dirty, last_frame) {
+        let wait = match (dirty && resize.is_none(), last_frame) {
             (true, Some(at)) if !terminal.writing() => {
                 FRAME_INTERVAL.saturating_sub(now.duration_since(at))
             }
@@ -3781,6 +3781,7 @@ impl App {
             match block {
                 Block::ToolGroup(group) => group.detail = detail,
                 Block::Compaction { expanded, .. } => *expanded = detail == Detail::Expanded,
+                Block::Error { expanded, .. } => *expanded = detail != Detail::Collapsed,
                 _ => {}
             }
         }
@@ -4589,10 +4590,20 @@ impl App {
             } else {
                 format!("dimcode --resume {}", self.session_id)
             };
-            frame.commits.push(pad_block(&[tf(
-                "Disconnected; draft kept. Exit and run: {command}",
-                &[("command", &resume)],
-            )]));
+            let block = Block::Status {
+                text: tf(
+                    "Disconnected; draft kept. Exit and run: {command}",
+                    &[("command", &resume)],
+                ),
+                tone: Tone::Muted,
+            };
+            frame.commits.push(chunk(&render_block(
+                &block,
+                width,
+                &self.palette,
+                &self.markdown,
+            )));
+            self.record(block);
         }
 
         let mut live = tail;
@@ -4709,6 +4720,37 @@ impl App {
             let started = self.run_started.unwrap_or_else(Instant::now);
             let elapsed = started.elapsed();
             let beat = (elapsed.as_millis() / PULSE.as_millis()) as usize;
+            let retry = self
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.retry.as_ref());
+            if let Some(retry) = retry {
+                let seconds = crate::projection::retry_seconds(retry.retry_at_ms);
+                let reason = crate::projection::failure_phrase(retry.kind, retry.reason.as_deref());
+                if seconds == 0 {
+                    return format!(
+                        "{} {}",
+                        FRAMES[beat % FRAMES.len()],
+                        tf(
+                            "Waiting for the provider · {reason} · Esc stops",
+                            &[("reason", &reason)]
+                        )
+                    );
+                }
+                return format!(
+                    "{} {}",
+                    FRAMES[beat % FRAMES.len()],
+                    tf(
+                        "Retrying {attempt}/{max} in {seconds} s · {reason} · Esc stops",
+                        &[
+                            ("attempt", &retry.attempt.to_string()),
+                            ("max", &retry.max_attempts.to_string()),
+                            ("seconds", &seconds.to_string()),
+                            ("reason", &reason),
+                        ]
+                    )
+                );
+            }
             let thinking = self.snapshot.as_ref().is_some_and(|snapshot| {
                 snapshot.rows.iter().any(|row| {
                     row.kind == RowKind::Thinking && row.streaming && !row.text.trim().is_empty()
@@ -5558,9 +5600,11 @@ impl App {
         let index = id.checked_sub(self.dropped);
         match index.and_then(|index| self.history.get_mut(index)) {
             Some(Block::ToolGroup(group)) => group.detail = group.detail.next(),
-            Some(Block::Thinking { expanded, .. } | Block::Compaction { expanded, .. }) => {
-                *expanded = !*expanded
-            }
+            Some(
+                Block::Thinking { expanded, .. }
+                | Block::Compaction { expanded, .. }
+                | Block::Error { expanded, .. },
+            ) => *expanded = !*expanded,
             _ => return false,
         }
         self.mark_rewritten(id);
@@ -8214,6 +8258,7 @@ mod tests {
 
         let row = |kind, text: &str, tool: Option<&str>| {
             std::sync::Arc::new(ViewRow {
+                failure: None,
                 row_id: text.into(),
                 kind,
                 text: text.into(),
@@ -8597,6 +8642,7 @@ mod tests {
                 .iter()
                 .map(|(id, text)| {
                     std::sync::Arc::new(ViewRow {
+                        failure: None,
                         row_id: (*id).into(),
                         kind: RowKind::AssistantMessage,
                         text: (*text).into(),
@@ -8970,6 +9016,7 @@ mod tests {
         drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
             session_id: "s1".into(),
             rows: vec![std::sync::Arc::new(ViewRow {
+                failure: None,
                 row_id: "r1".into(),
                 kind: RowKind::UserMessage,
                 text: "line work".into(),
@@ -9093,6 +9140,7 @@ mod tests {
         let rows = (0..count)
             .map(|n| {
                 std::sync::Arc::new(ViewRow {
+                    failure: None,
                     row_id: format!("u{n}"),
                     kind: RowKind::UserMessage,
                     text: format!("ask {n}"),
@@ -9130,6 +9178,7 @@ mod tests {
     /// gives it.
     fn message(pending: bool) -> std::sync::Arc<ViewRow> {
         std::sync::Arc::new(ViewRow {
+            failure: None,
             display: None,
             row_id: "u1".into(),
             kind: RowKind::UserMessage,
@@ -9156,6 +9205,7 @@ mod tests {
     /// The status row a cancelled turn settles after a stop.
     fn stopped() -> std::sync::Arc<ViewRow> {
         std::sync::Arc::new(ViewRow {
+            failure: None,
             display: None,
             row_id: "stopped-1".into(),
             kind: RowKind::Status,
@@ -11617,5 +11667,127 @@ mod tests {
             "the kept draft keeps the seed it was opened with, not the edited text"
         );
         assert_eq!(kept.path(), path.as_path());
+    }
+
+    fn drawn_text(drawn: &mut Drawn) -> String {
+        use crate::ui::render::panel::strip_escapes;
+        strip_escapes(&drawn.app.reflow_history(100).join("\n"))
+            + &strip_escapes(&drawn.app.frame(drawn.size).live.join("\n"))
+            + &strip_escapes(&drawn.emu.rows_text().join("\n"))
+    }
+
+    fn retry_at(offset_ms: i64) -> u64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        now.saturating_add_signed(offset_ms)
+    }
+
+    #[test]
+    fn the_working_line_shows_a_running_retry() {
+        use crate::model::view::RetryView;
+        use dim_agent_types::ModelFailureKind;
+        let mut drawn = Drawn::new((160, 40), None, true);
+        drawn
+            .app
+            .switch_session("s1".into(), crate::model::session::SwitchKind::Resumed);
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            running: true,
+            focus: "main".into(),
+            history_complete: true,
+            retry: Some(RetryView {
+                attempt: 3,
+                max_attempts: 8,
+                retry_at_ms: retry_at(60_000),
+                kind: ModelFailureKind::ServerError,
+                reason: Some("The server is overloaded".into()),
+            }),
+            ..ViewSnapshot::default()
+        })));
+        drawn.draw();
+        let shown = drawn_text(&mut drawn);
+        assert!(
+            shown.contains("Retrying 3/8 in 60 s · The provider reported a server error: The server is overloaded · Esc stops"),
+            "{shown}"
+        );
+
+        // The countdown never goes below zero.
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            running: true,
+            focus: "main".into(),
+            history_complete: true,
+            retry: Some(RetryView {
+                attempt: 2,
+                max_attempts: 8,
+                retry_at_ms: 0,
+                kind: ModelFailureKind::Network,
+                reason: None,
+            }),
+            ..ViewSnapshot::default()
+        })));
+        drawn.draw();
+        let shown = drawn_text(&mut drawn);
+        assert!(
+            shown.contains(
+                "Waiting for the provider · Could not reach the provider, or the connection dropped · Esc stops"
+            ),
+            "{shown}"
+        );
+
+        // Clearing the retry brings the working line back.
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            running: true,
+            focus: "main".into(),
+            history_complete: true,
+            ..ViewSnapshot::default()
+        })));
+        drawn.draw();
+        let shown = drawn_text(&mut drawn);
+        assert!(!shown.contains("Retrying"), "{shown}");
+        assert!(shown.contains("working…"), "{shown}");
+    }
+
+    #[test]
+    fn an_error_rows_details_join_the_tools_cycle() {
+        use crate::model::view::FailureDetail;
+        use dim_agent_types::ModelFailureKind;
+        let mut error = (*message(false)).clone();
+        error.row_id = "error-1".into();
+        error.kind = RowKind::Error;
+        error.text = "The provider reported a server error: The server is overloaded. Try again later or choose another model.".into();
+        error.tone = Some(crate::model::view::RowTone::Danger);
+        error.failure = Some(FailureDetail {
+            kind: ModelFailureKind::ServerError,
+            status: Some(503),
+            provider_code: Some("overloaded".into()),
+            request_id: Some("req-provider".into()),
+            attempts: 3,
+            waited_ms: 4200,
+            retry_after_ms: Some(60_000),
+            cause: vec!["upstream 503".into()],
+        });
+        let mut drawn = attached();
+        show(&mut drawn, vec![error.into()]);
+        let collapsed = drawn_text(&mut drawn);
+        assert!(!collapsed.contains("kind: server_error"), "{collapsed}");
+        drawn.app.run_command("tools", "");
+        drawn.draw();
+        let expanded = drawn_text(&mut drawn);
+        for line in [
+            "kind: server_error",
+            "status: 503",
+            "provider code: overloaded",
+            "request id: req-provider",
+            "tried 3 times over 4.2 s",
+            "the provider asked to wait 60 s",
+            "cause:",
+            "upstream 503",
+        ] {
+            assert!(expanded.contains(line), "{line:?} missing: {expanded}");
+        }
     }
 }

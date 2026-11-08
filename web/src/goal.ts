@@ -5,7 +5,9 @@
  */
 import type { RawBlock, SessionEvent } from "./rpc/protocol"
 
-/** The keys of the objective block and of the status block (Goal §A.2). */
+/** The key of Goal's state record (Goal §2, A.2). */
+const STATE_KEY = "goal:state"
+/** The keys of the objective and status blocks, read only on a history written before the state record existed (Goal §3, A.3). */
 const OBJECTIVE_KEY = "goal:objective"
 const STATUS_KEY = "goal:status"
 const MARKER = "<dim-goal "
@@ -35,6 +37,7 @@ type Block =
   | { kind: "objective-retire"; input: string }
   | { kind: "status"; input: string; status: GoalStatus; byEvaluator: boolean }
   | { kind: "status-retire"; input: string }
+  | { kind: "state"; input: string; retire: boolean; objective: string | undefined; status: GoalStatus | undefined; evaluator: boolean }
 
 /**
  * The goal of one branch: the latest live block of each key decides, `clear`
@@ -63,6 +66,17 @@ export class GoalFold {
   }
 
   goal(): Goal | undefined {
+    // The newest live `goal:state` record is the state in force; the two old
+    // keys are read only by a history written before it existed (Goal D6).
+    let record: Block | undefined
+    for (const block of this.blocks) {
+      if (this.deleted.has(block.input)) continue
+      if (block.kind === "state") record = block
+    }
+    if (record !== undefined && record.kind === "state") {
+      if (record.retire || record.objective === undefined || record.objective === "") return undefined
+      return { objective: record.objective, status: record.status ?? { kind: "none" }, evaluator: record.evaluator }
+    }
     let objective: string | undefined
     let judge = false
     let status: GoalStatus | undefined
@@ -93,8 +107,19 @@ export class GoalFold {
 
   private add(input: string, block: RawBlock): void {
     const { text } = block
-    if (block.key !== OBJECTIVE_KEY && block.key !== STATUS_KEY) return
+    if (block.key !== STATE_KEY && block.key !== OBJECTIVE_KEY && block.key !== STATUS_KEY) return
     if (marker(text) === undefined) return
+    if (block.key === STATE_KEY) {
+      this.blocks.push({
+        kind: "state",
+        input,
+        retire: block.retire ?? false,
+        objective: block.retire ? undefined : objectiveOf(text),
+        status: block.retire ? undefined : stateOf(text),
+        evaluator: attribute(text, "judge") === "evaluator",
+      })
+      return
+    }
     if (block.retire) {
       this.blocks.push(block.key === OBJECTIVE_KEY ? { kind: "objective-retire", input } : { kind: "status-retire", input })
       return
@@ -112,6 +137,34 @@ export class GoalFold {
     const status = statusOf(text)
     if (status !== undefined) this.blocks.push({ kind: "status", input, status, byEvaluator: attribute(text, "by") === "evaluator" })
   }
+}
+
+/** The status a live `goal:state` record states (Goal A.5). */
+function stateOf(text: string): GoalStatus | undefined {
+  switch (attribute(text, "status")) {
+    case "active": return { kind: "active" }
+    case "paused": return { kind: "paused", reason: attribute(text, "reason") ?? "user" }
+    case "completed": return { kind: "completed" }
+    case "blocked": return { kind: "blocked" }
+    case "none": return { kind: "none" }
+    default: return undefined
+  }
+}
+
+/** The objective a live `goal:state` record carries: its own element, read between the tags and unescaped, so a value that contains a heading, a closing tag or a blank line round-trips byte for byte (R1). */
+function objectiveOf(text: string): string | undefined {
+  return tagged(text, "objective")
+}
+
+/** The escaped content between `<tag>` and `</tag>`, unescaped; `undefined` when the element is absent. */
+function tagged(text: string, tag: string): string | undefined {
+  const open = `<${tag}>\n`
+  const start = text.indexOf(open)
+  if (start === -1) return undefined
+  const from = start + open.length
+  const end = text.indexOf(`\n</${tag}>`, from)
+  if (end === -1) return undefined
+  return unescape(text.slice(from, end))
 }
 
 /** The status a live `goal:status` block sets (Goal A.3). */

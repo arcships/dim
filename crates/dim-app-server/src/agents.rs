@@ -632,6 +632,15 @@ impl AgentIndex {
             .map(|host| host.agent.sessions().len())
             .sum()
     }
+    /// Loaded Sessions with a running turn on `main`: work an idle shutdown
+    /// must not disturb.
+    pub(crate) fn running_sessions(&self) -> usize {
+        self.hosts()
+            .iter()
+            .flat_map(|host| host.agent.sessions())
+            .filter(|session| session.state("main").is_ok_and(|state| state.running))
+            .count()
+    }
     /// The public directory: the default Agent and the Agents
     /// `agent.create` made. An owned Agent belongs to one Team and is reached
     /// through Collaboration's tool.

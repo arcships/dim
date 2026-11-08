@@ -1,7 +1,7 @@
 use super::{AgentIndex, SESSION_NAMESPACE};
 use crate::connection::{configuration_outcome, provider_error};
 use dim_agent_capabilities::{
-    methods::{Interruption, MethodDecl, RpcError, SessionMethods, params, reply},
+    methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     prompt::Prompt,
     prompt_sources,
     prompt_state::PromptSnapshot,
@@ -50,7 +50,12 @@ impl DynPlugin for AgentsSessionPlugin {
                     MethodDecl::new("session.agent.update", true, Interruption::Report),
                     MethodDecl::new("session.agent.get", false, Interruption::Report),
                 ],
-                Arc::new(move |method, value, cancel, _| {
+                Arc::new(move |call, cancel, _| {
+                    let MethodCall {
+                        method,
+                        params: value,
+                        ..
+                    } = call;
                     let index = index.clone();
                     let tree = tree.clone();
                     Box::pin(async move {

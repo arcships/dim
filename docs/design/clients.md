@@ -191,6 +191,12 @@ Desktop lives in its own repository. This repository owns the App Server contrac
 | Local tools, edit/retry, usage, subagent relations | Client-run MCP server; `session.fork` + `session.submit`; client-side usage; `collaboration/*` facts ([#281](https://github.com/arcships/dim/issues/281)) |
 | MCP App views (widget document, a view's tool call, its message) | The Session's own MCP connection through `session.mcp.app.*`; rendering and sandboxing stay in the client ([MCP Apps](appserver/mcp-apps.md), [#451](https://github.com/arcships/dim/issues/451)) |
 | UI extension assets and Session media without a byte-stream entry | Protocol page reads `ui.extensions.read` and `session.ui.resources.read` ([client UI extensions](client-ui-extensions.md), [#1170](https://github.com/arcships/dim/issues/1170)) |
+| Assistant model (the default for new conversations) | Provider's scoped selection: read `provider.selection {cwd?}`, write `provider.select {cwd?, providerId, modelId, expectedVersion?}` ([provider management](appserver/provider-management.md#3-management-contract)). `version` is the CAS token and a stale one is `provider_conflict`; `cwd` absent is the global default, and a workspace selection wins over it at `session.create` |
+| Custom instructions (global) | The user's `~/AGENTS.md`, which PromptSources reads at branch load and re-checks every 60 s ([PromptSources](plugins/PromptSources.md#13-content)); a local client may open or edit that file, and no App Server method or setting holds it. A per-conversation instruction is `session.create {systemPrompt?, appendSystemPrompt?}` |
+| Subagent max concurrency | Declined: Dim has no member-concurrency setting ([Collaboration](plugins/Collaboration.md)), so a client renders the control unavailable and never saves it locally |
+| External agents (enabled state, executable path) | `external_agents.list`, `external_agents.set_enabled` and `external_agents.configure`, with the document revision they CAS ([ExternalAgent A.1](plugins/ExternalAgent.md#a1-management-methods)); a client offers these controls only while `hello.features` lists their methods |
+
+A setting with no owner here is rendered unavailable by the client, never saved locally as if it applied.
 
 Desktop's own feature coverage and UI acceptance are tracked in its repository. A capability that this repository's contracts cannot back becomes an issue here, under the same rule.
 

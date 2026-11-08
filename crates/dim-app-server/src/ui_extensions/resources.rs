@@ -1,7 +1,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dim_agent_capabilities::{
     file_storage::{FileReader, FileStorage, FileStorageError},
-    methods::{Interruption, MethodDecl, RpcError, SessionMethods, params, reply},
+    methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
 };
 use dim_agent_runtime::{Names, PublicService, SessionIdentity, SessionLifecycle, SessionPhase};
 use rutis::{
@@ -432,7 +432,12 @@ impl DynPlugin for UiResourcesPlugin {
                     false,
                     Interruption::Report,
                 )],
-                Arc::new(move |method, value, stop, _progress| {
+                Arc::new(move |call, stop, _progress| {
+                    let MethodCall {
+                        method,
+                        params: value,
+                        ..
+                    } = call;
                     let reader = reader.clone();
                     Box::pin(async move {
                         match method.as_str() {

@@ -181,6 +181,72 @@ async fn model_agent(models: Arc<AimuxModels>, custom: Option<AgentBuilder>) -> 
         .plugin(move |_| Ok(Box::new(ConfiguredModelsPlugin(models.clone()))));
     MinimalHost::start(&builder).await.unwrap()
 }
+
+/// The configured model profile declares no modality operation, so its
+/// connection port refuses every target before building one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_configured_profile_resolves_no_modality_connection() {
+    let server = TestServer::start().await;
+    let host = model_agent(server.models(), None).await;
+    let selectable = host.root().get::<SelectableModelsHost>().unwrap();
+    assert!(
+        selectable
+            .0
+            .selectable_for_modality(CancellationToken::new())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let modality = host.root().get::<ModalityConnectionHost>().unwrap();
+    let refused = modality
+        .0
+        .resolve_for_modality(
+            ModalityTarget {
+                target: ModelId {
+                    provider_id: "local".into(),
+                    model_id: "test-model".into(),
+                },
+                operation: "image.generate".into(),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .err()
+        .unwrap();
+    assert!(matches!(
+        refused,
+        HostError::Failed {
+            kind: HostErrorKind::InvalidRequest,
+            ..
+        }
+    ));
+    assert_eq!(
+        refused.to_string(),
+        "Model does not declare the image.generate operation"
+    );
+    let unknown = modality
+        .0
+        .resolve_for_modality(
+            ModalityTarget {
+                target: ModelId {
+                    provider_id: "local".into(),
+                    model_id: "missing".into(),
+                },
+                operation: "image.generate".into(),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        unknown.to_string().starts_with("Model is not configured"),
+        "{unknown}"
+    );
+    host.close().await.unwrap();
+    server.close().await;
+}
+
 fn session_config() -> SessionConfig {
     SessionConfig {
         model: ModelSelection {

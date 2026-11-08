@@ -53,6 +53,10 @@ pub struct WebSocketRequest {
     /// session establishment, `chunk_ms` bounds the gap between events,
     /// `total_ms` bounds the whole connection lifetime.
     pub timeout: Option<TimeoutConfiguration>,
+    /// The largest message tungstenite accepts from the peer, in bytes;
+    /// `None` keeps tungstenite's own limit. A message over it fails the read
+    /// at the socket, before it is buffered.
+    pub max_message_bytes: Option<usize>,
     /// Transport that performs the handshake. `None` uses a
     /// [`TungsteniteConnector`] with the default HTTP transport's proxy
     /// settings, read at connect time. Injection point for tests, for a
@@ -76,6 +80,7 @@ impl WebSocketRequest {
             subprotocols: Vec::new(),
             abort_signal: options.abort_signal.clone(),
             timeout: options.timeout,
+            max_message_bytes: None,
             connector,
         }
     }
@@ -215,6 +220,7 @@ async fn connect_with_timeout(
     request: tokio_tungstenite::tungstenite::http::Request<()>,
     proxy: Option<ProxyTunnel>,
     timeout: Option<std::time::Duration>,
+    max_message_bytes: Option<usize>,
 ) -> Result<
     (
         WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
@@ -223,12 +229,17 @@ async fn connect_with_timeout(
     ConnectError,
 > {
     let fut = async {
+        let config = max_message_bytes.map(|max| {
+            let mut config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
+            config.max_message_size = Some(max);
+            config
+        });
         let Some(proxy) = proxy else {
-            return tokio_tungstenite::connect_async(request)
+            return tokio_tungstenite::connect_async_with_config(request, config, false)
                 .await
                 .map_err(ConnectError::Tungstenite);
         };
-        connect_through_proxy(request, &proxy).await
+        connect_through_proxy(request, &proxy, config).await
     };
     match timeout {
         Some(d) => match tokio::time::timeout(d, fut).await {
@@ -399,6 +410,7 @@ fn no_proxy_matches(no_proxy: &str, host: &str, port: u16) -> bool {
 async fn connect_through_proxy(
     request: tokio_tungstenite::tungstenite::http::Request<()>,
     proxy: &ProxyTunnel,
+    config: Option<tokio_tungstenite::tungstenite::protocol::WebSocketConfig>,
 ) -> Result<
     (
         WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
@@ -489,7 +501,7 @@ async fn connect_through_proxy(
     };
 
     let (websocket, response) =
-        tokio_tungstenite::client_async_tls_with_config(request, stream, None, Some(connector))
+        tokio_tungstenite::client_async_tls_with_config(request, stream, config, Some(connector))
             .await
             .map_err(ConnectError::Tungstenite)?;
     Ok((websocket, response))
@@ -610,7 +622,7 @@ async fn connect_tungstenite(
         _ = abort_future(&req.abort_signal) => {
             return Err(abort_error(&req.abort_signal));
         }
-        res = connect_with_timeout(http_req, proxy, connect_deadline.map(|d| d - tokio::time::Instant::now())) => match res {
+        res = connect_with_timeout(http_req, proxy, connect_deadline.map(|d| d - tokio::time::Instant::now()), req.max_message_bytes) => match res {
             Ok(v) => v,
             Err(ConnectError::Timeout) => {
                 return Err(AiMuxError::Timeout("websocket connect timed out".into()));

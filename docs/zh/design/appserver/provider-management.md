@@ -42,6 +42,7 @@ Provider 拥有进程配置、目录、覆盖、偏好、校验、安全投影�
 | `managementMethods`，process，命名空间 `provider` | 本地 v3 Desktop/CLI 和受信任进程调用者；§3 沿既有命名空间扩展 |
 | Provider 模块边界 `stored_selection`（Rust） | Migration 等原生数据边界消费方；§3.7 增加一个基于已准入记录的无副作用函数，不是 RPC、host 端口或管理方法 |
 | Provider host 端口 `SelectableModelsHost`（core `dim-agent-capabilities`），由该配置的模型拥有方提供（Provider，或配置式模型文件） | 按模型能力路由的进程内 owner（Modality）与 `agent` 工具的 `models` 动作；§3.6 增加两次读取，不是管理方法或 RPC 方法 |
+| Provider host 端口 `ModalityConnectionHost`（core `dim-agent-capabilities`），由该配置的模型拥有方提供 | Modality 的图像生成、编辑与增强进程适配器；§3.6 定义一次按调用的解析，不是管理方法或 RPC 方法 |
 | `account`、`account.codex`、`account.grok` | 复用账号调用，不新增账号方法、事件或 managed host capability |
 | `ProviderConnectionResolver`、`ModelSelectionHost` | Provider 沿现有类型处理目录和路由，不增加 core 端口 |
 | `auxiliaryModel.complete` | S4 由调用者显式选模型的合同不变 |
@@ -437,6 +438,51 @@ owner 实现是 `ProviderService::selectable_models` 与
 重载不会重载它。消费方不直接读取 `ProviderService`。非 Rust 消费方在
 运行时按名暴露服务的要求（[#4](https://github.com/arcships/dim/issues/4)）交付后按名访问；
 该要求已在 [Modality §9](../plugins/Modality.md#9-向机制所有者提出的需求) 提出，这里不重复提出。
+
+**连接合同：`resolveModalityConnection`。** 同一个 owner 解析一次非对话调用所用的连接，
+适配器因此不持有 Provider 凭据，也不读取 Provider 记录。它是 `ProviderConnectionResolver`
+旁边的第二个进程 host 端口，不是管理方法：操作 `resolveModalityConnection`，异步，请求
+`{target: {providerId, modelId}, operation: string}`，回复 `{connection, protocol,
+model, realtime}`。
+
+`connection` 是同一模型的对话调用会取得的既有 `ResolvedModelConnection`——连接事实、失败
+策略，以及托管账号上的凭据恢复——因此适配器执行与执行时相同的一次恢复规则。`protocol` 是
+目录为该模型携带的路由，`model` 是请求发送的 id。两个端口共用一次解析：静态或托管记录的
+读取、目录构建、选择与托管凭据租约都在同一处完成，只有可选性规则与请求事实不同。对话路径的
+临时启动连接与已采用能力快照不适用；调用者传入目录标识与操作。
+
+**规则。** 它应用 `selectableForModality` 读取的同一组规则——provider、账号、模型、路由、
+凭据与状态——并要求模型目录条目在其 `metadata.raw.modalityCapabilities` 中声明 `operation`。
+任何一条不满足的模型都在任何网络调用之前被拒绝：可用性类失败带执行对该模型报告的原因，
+未声明的操作作为指明它的 invalid request 拒绝。读取与连接不会给出不同结论，因为二者共用
+目录与其选择判定。托管账号的凭据租约读取同一条规则：只拒绝排除所有用途的原因，因此目录标记为
+非 chat 的媒体模型仍会为这次调用发放租约。该边界规则同时读取存储的原因与条目状态：
+`unavailable` 状态无论存储了何种原因都排除所有用途，因此旧投影为这类模型写下的记录不会被
+任一读取列出，也不会发放任何租约。
+
+**实时声明。** 提供实时操作的条目在 `metadata.raw.realtime: {protocol, path}` 中声明它所说的
+传输。Provider 将其解析为 `RealtimeDeclaration`，并作为 `realtime` 随连接回复携带；未声明的
+条目回复 `null`，配置式配置因为没有目录条目，对每个目标都回复 `null`。该操作仍与其余操作一样
+声明在 `metadata.raw.modalityCapabilities` 中，因此一个列出 `realtime.voice` 却没有传输声明的
+模型会解析出 `realtime` 为 `null` 的连接：Modality 在任何网络调用之前拒绝该模型的 `open`，
+而不是猜测 URL。`protocol` 是适配器为该线上协议使用的名字，`path` 由该适配器追加到路由的
+base URL 之后。
+
+**凭据规则与生命周期。** 连接只活在那一次调用中。Provider 从不持久化它，从不把它返回给
+客户端，也从不写进任务记录、结果、诊断或错误。它的 `Debug` 打印模型、路由、base URL、头名
+以及是否存在凭据，从不打印头的值、bearer 或 key；`ModelConnection` 当前未实现 `Debug`，
+因此没有其他连接会格式化凭据。托管账号的连接携带与对话调用相同的
+`RecoverModelConnection`。`recovery::invoke` 是基于 `ModelHost`、`ModelRequest` 与
+`ModelStream` 的对话执行路径，适配器不能原样复用；它自行执行该规则：把 provider 的拒绝
+映射为恢复逻辑可解释的 `HostError`，以当前阶段询问 `rejection`，可恢复时 `recover` 一次并
+重试，终止时 `finish_rejected`。
+
+**Rust binding。** 端口是 `dim-agent-capabilities` 中的 `ResolveModalityConnection` 与
+`ModalityConnectionHost`，`ModalityTarget` 携带模型标识与操作。Provider 在
+`ProviderPlugin::apply` 提供它，配置式模型配置从模型文件提供它，其条目未声明任何操作，
+因此对每个 target 都以声明拒绝作答。App Server catalog 以 Rust-only 名
+`modalityConnectionHost` 注册它。回复复用 `ResolvedModelConnection` 与 `ModelProtocol`，并新增
+`RealtimeDeclaration`（条目声明的传输）；不新增凭据类型。
 
 ### 3.7 已存选择的离线校验
 

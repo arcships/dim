@@ -8,7 +8,7 @@ use crate::{
 };
 use dim_agent_capabilities::{
     host::{HostFuture, ToolExecutionContext},
-    methods::{Interruption, MethodDecl, RpcError, SessionMethods, params, reply},
+    methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
 };
@@ -267,7 +267,12 @@ fn wire_scheduled(wakeup: &crate::wakeups::Wakeup) -> Value {
 /// The `session.wakeup.*` handler: parses at the wire boundary, forwards to
 /// the process owner, and maps its errors.
 fn wakeup_handler(wakeups: Arc<Wakeups>) -> dim_agent_capabilities::methods::Handler {
-    Arc::new(move |method, value, _cancel, _progress| {
+    Arc::new(move |call, _cancel, _progress| {
+        let MethodCall {
+            method,
+            params: value,
+            ..
+        } = call;
         let wakeups = wakeups.clone();
         Box::pin(async move {
             match method.as_str() {

@@ -4,8 +4,8 @@
 //! depends on no provider, so a provider that is reloading, Pending or Failed
 //! affects only its own namespace. Accepted calls belong to their provider.
 use dim_agent_capabilities::methods::{
-    Accepted, Check, ForeignMethods, MethodDecl, MethodProvider, MethodTable, Owner, RpcError,
-    SessionMethods, valid_name, within,
+    Accepted, CallSite, Check, ForeignMethods, MethodDecl, MethodProvider, MethodTable, Owner,
+    RpcError, SessionMethods, valid_name, within,
 };
 use dim_agent_runtime::Session;
 use rutis::host::{CtxHost, ErrorKind, FiberState, Key, Snapshot};
@@ -65,10 +65,13 @@ impl ManagementMethods {
     fn check() -> Check {
         Arc::new(|namespace, declarations| {
             Self::check_namespace(namespace)?;
-            if declarations
-                .iter()
-                .any(|decl| crate::protocol::is_builtin_method(&decl.name))
-            {
+            if declarations.iter().any(|decl| {
+                crate::protocol::is_builtin_method(&decl.name)
+                    || decl
+                        .notifications
+                        .iter()
+                        .any(|name| crate::protocol::is_builtin_notification(name))
+            }) {
                 return Err(rutis::Error::from(ErrorKind::PluginFailed(
                     "Invalid management contribution".into(),
                 )));
@@ -116,13 +119,18 @@ impl Plugin for ManagementMethodsPlugin {
 /// built-ins (methods contract A.1). A Session namespace may lie under
 /// `session`, but never equals, contains or lies inside an exact built-in.
 pub(crate) fn reserved_for_sessions() -> Check {
-    Arc::new(|namespace, _| {
+    Arc::new(|namespace, declarations| {
         let overlaps = |other: &str| within(namespace, other) || within(other, namespace);
         if !valid_name(namespace)
             || ["hello", "daemon", "agent", "approval"]
                 .iter()
                 .any(|root| within(namespace, root))
             || crate::protocol::builtin_methods().any(overlaps)
+            || declarations.iter().any(|decl| {
+                decl.notifications
+                    .iter()
+                    .any(|name| crate::protocol::is_builtin_notification(name))
+            })
         {
             return Err(rutis::Error::from(ErrorKind::PluginFailed(
                 format!("invalid Session namespace {namespace}").into(),
@@ -189,17 +197,19 @@ pub(crate) fn management_provider(
     }
 }
 
-/// Admits a management call through its provider (§3.2).
+/// Admits a management call through its provider (§3.2). `site` is the
+/// calling connection, when a client connection made the call.
 pub(crate) fn dispatch(
     table: &ManagementMethods,
     loader: &Loader,
     method: String,
     params: Value,
+    site: Option<CallSite>,
     entry_stopping: CancellationToken,
     progress: impl Fn(Value) + Send + Sync + 'static,
 ) -> Result<Accepted, RpcError> {
     let provider = management_provider(table, loader, &method)?;
-    provider.accept(method, params, entry_stopping, progress)
+    provider.accept(method, params, site, entry_stopping, progress)
 }
 
 /// The provider that serves Session method `method` in `session`. A

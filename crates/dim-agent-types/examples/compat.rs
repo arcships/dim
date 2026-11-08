@@ -98,6 +98,7 @@ fn native_events() -> Vec<AgentEvent> {
             configuration: None,
             prompt: None,
             recovery: None,
+            failure_chain: None,
         }),
         EventKind::ContextCompaction(ContextCompactionData {
             turn_id: Some(turn()),
@@ -127,6 +128,7 @@ fn native_events() -> Vec<AgentEvent> {
             request,
             configuration: None,
             prompt: None,
+            failure_chain: None,
         }),
         EventKind::ModelUsage(ModelUsageData {
             turn_id: turn(),

@@ -1,5 +1,8 @@
 //! The process boundary the sandbox switch applies, before ordinary spawn/PTY.
-use super::{HostPlatform, Isolation, ProcessSpec, ProcessSpecError, TemporaryDirectory};
+use super::{
+    ENVIRONMENT, HostPlatform, Isolation, ProcessSpec, ProcessSpecError, SystemServices,
+    TemporaryDirectory,
+};
 use std::path::Path;
 use std::{ffi::OsString, path::PathBuf};
 
@@ -98,57 +101,16 @@ impl HostPlatform {
         if !settings.sandbox {
             return Ok((spec, None, None));
         }
-        let environment: Vec<String> = [
-            "PATH",
-            "HOME",
-            "LANG",
-            "LC_ALL",
-            "LC_CTYPE",
-            "TERM",
-            "NO_COLOR",
-            "PAGER",
-            "GIT_PAGER",
-            "GH_PAGER",
-            #[cfg(target_os = "macos")]
-            "DEVELOPER_DIR",
-            #[cfg(target_os = "macos")]
-            "XDG_CONFIG_HOME",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-        let (read_only_paths, default_files) = {
-            let mut installed = Vec::new();
-            for path in &self.platform_roots {
-                match tokio::fs::metadata(path).await {
-                    Ok(_) => installed.push(path.clone()),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => {
-                        return Err(invalid(format!(
-                            "System isolation root {}: {error}",
-                            path.display()
-                        )));
-                    }
-                }
-            }
-            #[cfg(target_os = "macos")]
-            {
-                let developer = received(&environment, &spec.env, "DEVELOPER_DIR")
-                    .unwrap_or_else(|| "/var/select/developer_dir".into());
-                if developer.is_absolute()
-                    && tokio::fs::metadata(&developer)
-                        .await
-                        .is_ok_and(|metadata| metadata.is_dir())
-                {
-                    installed.push(developer);
-                }
-            }
-            #[cfg(target_os = "macos")]
-            let files = git_configuration(&environment, &spec.env).await;
-            #[cfg(not(target_os = "macos"))]
-            let files = Vec::new();
-            (installed, files)
-        };
+        let mut read_only_paths = baseline_read_paths(self, &spec.env)
+            .await
+            .map_err(invalid)?;
+        read_only_paths.extend(toolchain_roots(self));
+        read_only_paths.sort();
+        read_only_paths.dedup();
+        #[cfg(target_os = "macos")]
+        let default_files = git_configuration(ENVIRONMENT, &spec.env).await;
+        #[cfg(not(target_os = "macos"))]
+        let default_files = Vec::new();
         let (read_only, mut read_only_files) =
             roots(read_only_paths, true).await.map_err(invalid)?;
         let writable_paths: Vec<PathBuf> = workspaces
@@ -161,7 +123,7 @@ impl HostPlatform {
         validate_overlap(&read_only, &read_only_files, &writable).map_err(invalid)?;
         read_only_files.extend(default_files);
         spec.env
-            .retain(|(name, _)| environment.iter().any(|allowed| name == allowed.as_str()));
+            .retain(|(name, _)| ENVIRONMENT.iter().any(|allowed| name == allowed));
         let temporary = if cfg!(target_os = "macos") {
             let temporary = temporary_directory()
                 .await
@@ -186,15 +148,68 @@ impl HostPlatform {
             &read_only_files,
             &writable,
             settings.network,
+            SystemServices::None,
         )?;
         Ok((spec, temporary, Some(Isolation)))
     }
 }
 
+/// The archive directory of each downloaded runtime: the read-only roots a
+/// confined command needs to run it. They are never the reported home, its
+/// `runtimes` directory, or writable; a `system` interpreter contributes none,
+/// because the user's own `PATH` already reaches it.
+fn toolchain_roots(platform: &HostPlatform) -> Vec<PathBuf> {
+    let runtimes = platform.home.join("runtimes");
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for toolchain in platform.installed_toolchains() {
+        let root = toolchain.root;
+        if root == platform.home || root == runtimes || !root.is_dir() {
+            continue;
+        }
+        if !roots.iter().any(|known| known == &root) {
+            roots.push(root);
+        }
+    }
+    roots
+}
+
+/// The system roots installed on this host, with the developer directory that
+/// runs the `/usr/bin` shims: what a process may read to run a program. The
+/// sandbox switch grants them to agent commands, and a host-owned confined
+/// helper reads them without the switch.
+pub(super) async fn baseline_read_paths(
+    platform: &HostPlatform,
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] env: &[(OsString, OsString)],
+) -> Result<Vec<PathBuf>, String> {
+    let mut installed = Vec::new();
+    for path in &platform.platform_roots {
+        match tokio::fs::metadata(path).await {
+            Ok(_) => installed.push(path.clone()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!("System isolation root {}: {error}", path.display()));
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let developer = received(ENVIRONMENT, env, "DEVELOPER_DIR")
+            .unwrap_or_else(|| "/var/select/developer_dir".into());
+        if developer.is_absolute()
+            && tokio::fs::metadata(&developer)
+                .await
+                .is_ok_and(|metadata| metadata.is_dir())
+        {
+            installed.push(developer);
+        }
+    }
+    Ok(installed)
+}
+
 /// A nonempty value that `environment` passes to the command from `env`.
 #[cfg(target_os = "macos")]
-fn received(environment: &[String], env: &[(OsString, OsString)], name: &str) -> Option<PathBuf> {
-    if !environment.iter().any(|allowed| allowed == name) {
+fn received(environment: &[&str], env: &[(OsString, OsString)], name: &str) -> Option<PathBuf> {
+    if !environment.contains(&name) {
         return None;
     }
     env.iter()
@@ -210,7 +225,7 @@ fn received(environment: &[String], env: &[(OsString, OsString)], name: &str) ->
 /// whole because git's credential store also reads it.
 #[cfg(target_os = "macos")]
 async fn git_configuration(
-    environment: &[String],
+    environment: &[&str],
     env: &[(OsString, OsString)],
 ) -> Vec<(PathBuf, PathBuf)> {
     let home = received(environment, env, "HOME");
@@ -248,13 +263,14 @@ async fn temporary_directory() -> std::io::Result<TemporaryDirectory> {
 }
 
 #[cfg(target_os = "macos")]
-fn prepare(
+pub(super) fn prepare(
     _host: &HostPlatform,
     mut spec: ProcessSpec,
     read_only: &[(PathBuf, PathBuf)],
     read_only_files: &[(PathBuf, PathBuf)],
     writable: &[(PathBuf, PathBuf)],
     network: bool,
+    services: SystemServices,
 ) -> Result<ProcessSpec, ProcessSpecError> {
     let mut profile = String::from(
         "(version 1)(deny default)(allow process*)(allow sysctl-read)\
@@ -297,6 +313,14 @@ fn prepare(
                  (allow file-read-metadata (path-ancestors (param \"{name}\")))",
                 if write { "file-write* " } else { "" }
             ));
+            if write && services == SystemServices::OnDeviceRecognition {
+                // The framework hands its writable cache to the neural-engine
+                // compiler service as a read extension of that directory.
+                profile.push_str(&format!(
+                    "(allow file-issue-extension (require-all (extension-class \
+                     \"com.apple.app-sandbox.read\") (subpath (param \"{name}\"))))"
+                ));
+            }
             if network && filter == "subpath" {
                 profile.push_str(&format!(
                     "(allow network-outbound (remote unix-socket (subpath (param \"{name}\"))))"
@@ -308,6 +332,24 @@ fn prepare(
                 }
             }
         }
+    }
+    if services == SystemServices::OnDeviceRecognition {
+        // The recognition runtime reads the directory holding the helper
+        // while it starts.
+        if let Some(directory) = spec.executable.parent() {
+            let mut parameter = OsString::from("EXECUTABLE_DIR=");
+            parameter.push(directory);
+            args.extend(["-D".into(), parameter]);
+            profile.push_str("(allow file-read-data (literal (param \"EXECUTABLE_DIR\")))");
+        }
+        // The services the Apple Vision engine reaches: the neural-engine
+        // daemon, and the GPU and neural-engine I/O clients it opens.
+        profile.push_str(
+            "(allow mach-lookup (global-name \"com.apple.appleneuralengine\"))\
+             (allow iokit-open-user-client (iokit-user-client-class \"IOSurfaceRootUserClient\"))\
+             (allow iokit-open-user-client (iokit-user-client-class \"H1xANELoadBalancerDirectPathClient\"))\
+             (allow iokit-open-user-client (iokit-user-client-class \"AGXDeviceUserClient\"))",
+        );
     }
     if network {
         profile.push_str(
@@ -328,13 +370,14 @@ fn prepare(
 }
 
 #[cfg(not(target_os = "macos"))]
-fn prepare(
+pub(super) fn prepare(
     host: &HostPlatform,
     mut spec: ProcessSpec,
     read_only: &[(PathBuf, PathBuf)],
     read_only_files: &[(PathBuf, PathBuf)],
     writable: &[(PathBuf, PathBuf)],
     network: bool,
+    _services: SystemServices,
 ) -> Result<ProcessSpec, ProcessSpecError> {
     let executable = bubblewrap(&host.env).ok_or_else(|| ProcessSpecError {
         code: "isolation_unavailable",
@@ -481,14 +524,14 @@ async fn bubblewrap_unshares_the_network_only_when_the_switch_is_off() {
         cwd: "/".into(),
         env: Vec::new(),
     };
-    let isolated = prepare(&host, spec(), &[], &[], &[], false).unwrap();
+    let isolated = prepare(&host, spec(), &[], &[], &[], false, SystemServices::None).unwrap();
     assert!(
         isolated
             .args
             .iter()
             .any(|arg| arg.to_str() == Some("--unshare-net"))
     );
-    let networked = prepare(&host, spec(), &[], &[], &[], true).unwrap();
+    let networked = prepare(&host, spec(), &[], &[], &[], true, SystemServices::None).unwrap();
     assert!(
         !networked
             .args
@@ -512,14 +555,86 @@ async fn seatbelt_allows_network_only_when_the_switch_is_on() {
         cwd: "/".into(),
         env: Vec::new(),
     };
-    let isolated = prepare(&host, spec(), &[], &[], &[], false).unwrap();
+    let isolated = prepare(&host, spec(), &[], &[], &[], false, SystemServices::None).unwrap();
     assert!(!isolated.args.iter().any(|arg| {
         arg.to_str()
             .is_some_and(|arg| arg.contains("(allow network*"))
     }));
-    let networked = prepare(&host, spec(), &[], &[], &[], true).unwrap();
+    let networked = prepare(&host, spec(), &[], &[], &[], true, SystemServices::None).unwrap();
     assert!(networked.args.iter().any(|arg| {
         arg.to_str()
             .is_some_and(|arg| arg.contains("(allow network*"))
     }));
+}
+
+/// The profile text of a prepared process.
+#[cfg(all(test, target_os = "macos"))]
+fn profile_text(spec: &ProcessSpec) -> String {
+    spec.args
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The on-device recognition variant adds exactly its closed rule set, and
+/// the default profile holds none of it.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn seatbelt_grants_on_device_recognition_services_only_when_asked() {
+    let host = HostPlatform::current(super::ShellStatus::Unavailable {
+        code: "test",
+        reason: String::new(),
+    })
+    .unwrap();
+    let spec = || ProcessSpec {
+        executable: "/bin/true".into(),
+        args: Vec::new(),
+        cwd: "/".into(),
+        env: Vec::new(),
+    };
+    let writable = vec![(PathBuf::from("/work"), PathBuf::from("/work"))];
+    let open = prepare(
+        &host,
+        spec(),
+        &[],
+        &[],
+        &writable,
+        false,
+        SystemServices::OnDeviceRecognition,
+    )
+    .unwrap();
+    let text = profile_text(&open);
+    for rule in [
+        "(allow mach-lookup (global-name \"com.apple.appleneuralengine\"))",
+        "(allow iokit-open-user-client (iokit-user-client-class \"IOSurfaceRootUserClient\"))",
+        "(allow iokit-open-user-client (iokit-user-client-class \"H1xANELoadBalancerDirectPathClient\"))",
+        "(allow iokit-open-user-client (iokit-user-client-class \"AGXDeviceUserClient\"))",
+        "(allow file-read-data (literal (param \"EXECUTABLE_DIR\")))",
+        "(allow file-issue-extension (require-all (extension-class \"com.apple.app-sandbox.read\") (subpath (param \"ROOT_0_0\"))))",
+    ] {
+        assert!(text.contains(rule), "missing rule: {rule}");
+    }
+    let closed = prepare(
+        &host,
+        spec(),
+        &[],
+        &[],
+        &writable,
+        false,
+        SystemServices::None,
+    )
+    .unwrap();
+    let text = profile_text(&closed);
+    for rule in [
+        "appleneuralengine",
+        "iokit-open-user-client",
+        "file-issue-extension",
+        "EXECUTABLE_DIR",
+    ] {
+        assert!(
+            !text.contains(rule),
+            "rule present without the variant: {rule}"
+        );
+    }
 }

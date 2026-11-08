@@ -42,11 +42,21 @@ export type InputBlock = { type: "raw"; text: string; key?: string | null; retir
 
 export type InputMode = "queue" | "steer" | "append"
 
+/**
+ * The handover one input is addressed to: only the continuation of that
+ * handover consumes it, and InputQueue deletes it otherwise.
+ */
+export interface InputHandover {
+  turn_id: string
+  request_id: string
+}
+
 export interface InputMessageData {
   submission_id?: string | null
   user?: UserInput | null
   blocks?: InputBlock[]
   mode?: InputMode | null
+  handover?: InputHandover | null
 }
 
 /** Which branches a query covers. */
@@ -533,7 +543,7 @@ export interface UiResources {
 }
 
 /** What a method returning `Err(AgentError)` throws. */
-export type AgentErrorThrown = RustError<"AgentError", "InvalidInput" | "Closed" | "UnknownBranch" | "BranchEnded" | "Storage" | "Build" | "Cancelled" | "Reloading" | "AmbiguousSubmission" | "Fault" | "Framework" | "Multiple", undefined>
+export type AgentErrorThrown = RustError<"AgentError", "InvalidInput" | "Closed" | "UnknownBranch" | "BranchEnded" | "Storage" | "Build" | "Cancelled" | "Reloading" | "AmbiguousSubmission" | "PartialSubmission" | "Fault" | "Framework" | "Multiple", undefined>
 
 /** What a method returning `Err(ResourceError)` throws. */
 export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceError>

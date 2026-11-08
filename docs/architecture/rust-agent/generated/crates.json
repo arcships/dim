@@ -169,6 +169,10 @@
   },
   {
     "from": "dim-modality",
+    "to": "dim-ocr"
+  },
+  {
+    "from": "dim-modality",
     "to": "rutis"
   },
   {
@@ -272,6 +276,10 @@
     "to": "rutis"
   },
   {
+    "from": "dim-oauth",
+    "to": "dim-agent-types"
+  },
+  {
     "from": "dim-session-title",
     "to": "dim-agent-capabilities"
   },
@@ -346,6 +354,34 @@
   {
     "from": "dim-goal",
     "to": "dim-client"
+  },
+  {
+    "from": "dim-modality-aimux",
+    "to": "dim-agent-aimux"
+  },
+  {
+    "from": "dim-modality-aimux",
+    "to": "dim-agent-capabilities"
+  },
+  {
+    "from": "dim-modality-aimux",
+    "to": "dim-agent-runtime"
+  },
+  {
+    "from": "dim-modality-aimux",
+    "to": "dim-agent-types"
+  },
+  {
+    "from": "dim-modality-aimux",
+    "to": "dim-modality"
+  },
+  {
+    "from": "dim-modality-aimux",
+    "to": "rutis"
+  },
+  {
+    "from": "dim-modality-aimux",
+    "to": "dim-app-server"
   },
   {
     "from": "dimcode",
@@ -373,7 +409,15 @@
   },
   {
     "from": "dimcode",
+    "to": "dim-modality-aimux"
+  },
+  {
+    "from": "dimcode",
     "to": "dim-oauth"
+  },
+  {
+    "from": "dimcode",
+    "to": "dim-ocr"
   },
   {
     "from": "dimcode",

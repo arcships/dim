@@ -34,6 +34,7 @@ impl From<PluginFileError> for SchedulerError {
         match error {
             PluginFileError::InvalidData => Self::invalid_data(error.to_string()),
             PluginFileError::Io(_) => Self::new("io", error.to_string()),
+            PluginFileError::Locked => Self::new("locked", error.to_string()),
             PluginFileError::Closed | PluginFileError::InvalidPath => {
                 Self::new("service_unavailable", error.to_string())
             }

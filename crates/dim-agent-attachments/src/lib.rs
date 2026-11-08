@@ -4,7 +4,7 @@
 //! reads the file with `read` like any file; images need no plugin.
 use dim_agent_capabilities::{
     host::{SessionFileError, SessionFileErrorCode, SessionFilesHost},
-    methods::{self, Interruption, MethodDecl, RpcError, SessionMethods},
+    methods::{self, Interruption, MethodCall, MethodDecl, RpcError, SessionMethods},
 };
 use dim_agent_runtime::{AgentBuilder, Names, SessionIdentity};
 use rutis::Ctx;
@@ -93,7 +93,8 @@ impl DynPlugin for AttachmentsPlugin {
                 ctx,
                 NAMESPACE,
                 vec![MethodDecl::new("attachment.put", true, Interruption::Drain)],
-                Arc::new(move |_, value, cancel, _| {
+                Arc::new(move |call, cancel, _| {
+                    let MethodCall { params: value, .. } = call;
                     let (files, session_id) = (files.clone(), session_id.clone());
                     Box::pin(async move {
                         let PutParams { name, text, .. } = methods::params(value)?;

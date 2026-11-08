@@ -17,6 +17,7 @@
 | [PromptSuggestion](PromptSuggestion.md) | App Server 中的 `PromptSuggestionSettings`：`prompt-suggestion` Settings 来源 | 观察完成轮次的事件、`session.suggestion.request` 与 `session.suggestion.respond`、在途请求与正在显示的提示；没有事件 | — | P1；[#943](https://github.com/arcships/dim/issues/943) |
 | [Goal](Goal.md) | — | `goal_update` 工具、`session.goal.*` | 由 `goal:objective` 与 `goal:status` 块折叠出的目标状态、续跑 | P2 |
 | [Pursuit](Pursuit.md)（Goal 的评审裁判模式） | — | `session.goal.set` 的 `judge` | 由评审分支决定的完成请求；结论输入与 Goal 的结局 | M2；#422 |
+| [ModelRecovery](ModelRecovery.md) | — | — | 注册到 Loop 端口的处置方；它写的 handover 输入 | [#1210](https://github.com/arcships/dim/issues/1210) |
 | [Web](Web.md) | — | `web_search`、`web_fetch` 工具 | — | P2；可选包 |
 | [ContextCompaction](ContextCompaction.md)（Loop 与 ContextPreparation 的补充） | — | `ContextModelHost`、摘要 `CompactionStrategyHost`、`session.context.*` | Loop 中的 `context/compact` 指令与压缩步骤；ContextPreparation 中的 K 轮切点与用量查询 | P2 |
 | [Prompt](Prompt.md) | — | `guideEntries`：输入指南的框架、生效的条目及其组合 | `Prompt`：它发布的配置所采用的 System 携带按生效条目组合出的指南；宿主准备的请求承载同一份组合，由 Loop 放置 | #548 |
@@ -32,6 +33,7 @@
 | [TemporaryMcp](../../../design/plugins/TemporaryMcp.md) | 由既有 MCP 功能注册 | 临时绑定、MCP server 子插件和工具；不写持久配置 | — | 已实现；#436 的客户端 MCP 接入 |
 | [RemoteGateway](RemoteGateway.md) | 远程入口、设备 | — | — | P3 |
 | [Modality](Modality.md) | 任务、实时连接 | — | — | P3 |
+| [light-ocr](LightOcr.md) | 可选插件：`ocrHelper` 描述与进程外辅助程序，提供 Modality 的 `local/pp-ocr` 目标 | — | — | P3；[#1158](https://github.com/arcships/dim/issues/1158) |
 | [Skills](../../../design/plugins/Skills.md)（安装） | 既有 SkillsCatalog：预览本地目录或 Git 来源、按选择安装到用户根、更新与确认后移除松散的技能 | —（发现、启用和 `skill` 工具已归 Skills 能力） | — | #740 |
 | [PluginManager](PluginManager.md) | 插件配置（`plugins.json`）、安装、插件代码的 loader 行、内容登记 | `PluginTools`（`plugin` 工具） | — | M1 |
 | [RuntimeManager](RuntimeManager.md) | 插件代码的 Node 与 Python 运行时：固定版本下载、校验、启动；`runtime.*` | — | — | M1（#476） |
@@ -40,6 +42,6 @@
 
 | 作用域 | 部分 |
 | --- | --- |
-| 进程部件 | daemon 内的 Provider（管理补充提案）、Scheduler、Workflow、ExternalAgent、Modality、PluginManager、RuntimeManager、RemoteGateway、Skills（安装）、PromptSuggestion（Settings 来源）；接入方宿主进程内的 AcpGateway |
+| 进程部件 | daemon 内的 Provider（管理补充提案）、Scheduler、Workflow、ExternalAgent、Modality、PluginManager、RuntimeManager、RemoteGateway、Skills（安装）、PromptSuggestion（Settings 来源）、light-ocr；接入方宿主进程内的 AcpGateway |
 | Session 部件 | Questions、ShellInput、Attachments、SessionTitle、PromptSuggestion、Goal、Web、Recall、Hooks、Scheduler、Workflow、PromptSources、Prompt（条目表） |
-| 分支部件 | Goal（含 Pursuit）、Hooks、Prompt |
+| 分支部件 | Goal（含 Pursuit）、ModelRecovery、Hooks、Prompt |

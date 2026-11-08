@@ -177,6 +177,28 @@ impl AgentLoop {
         });
         Ok(sequence)
     }
+    /// Stops one turn if it is still the open one: commits the same
+    /// `stop/interrupt` a stop of the running turn writes, with the same
+    /// scope and effect, decided under the lock that opens and closes turns.
+    /// A turn that already ended, or an id that is not the open turn's,
+    /// writes nothing and answers `None`.
+    pub fn stop_turn(&self, turn_id: &str, reason: String) -> Result<Option<u64>> {
+        let slot = self.turn.lock().unwrap();
+        if !slot
+            .as_ref()
+            .is_some_and(|turn| turn.id == turn_id && !turn.ending)
+        {
+            return Ok(None);
+        }
+        let interrupt = self.timeline.append(
+            EventKind::StopInterrupt(StopInterruptData {
+                reason,
+                scope: InterruptScope::Turn,
+            })
+            .into(),
+        )?;
+        Ok(Some(interrupt.sequence))
+    }
     /// Starts a turn when idle and an applied input drives one; nothing
     /// starts while a compaction step runs.
     fn try_start(&self, slot: &mut Option<Turn>) -> Result<()> {
@@ -741,6 +763,7 @@ impl AgentLoop {
                     }),
                     prompt,
                     recovery: None,
+                    failure_chain: None,
                 })
             }).catch_unwind();
             let result = tokio::select! {

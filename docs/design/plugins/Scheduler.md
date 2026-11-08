@@ -129,10 +129,11 @@ handlers follow the current unavailable-provider and retry contract in the
 Scheduler does not hard-code that binding's error text or assume a particular
 provider reattachment path.
 
-The declarations the process row registers are A.3's six literal methods. `list` and
-`history` are non-mutating, `interruption:"report"`; the other four are
-mutating, `interruption:"drain"`. All use `progress:false`. Their JSON values
-and errors use existing `MethodReply`; the tool maps A.2's reply into
+The declarations the process row registers are A.3's seven literal methods. `list`,
+`history` and `watch` are non-mutating, `interruption:"report"`; the other four are
+mutating, `interruption:"drain"`. All but `watch` use `progress:false`; `watch`
+declares progress, and its items are the watch's changes (§11.2, A.3). Their JSON
+values and errors use existing `MethodReply`; the tool maps A.2's reply into
 `ToolResult.content` and `isError`. No new App Server method is added.
 
 Live-policy reads use the delivered generated interface directly:
@@ -537,6 +538,49 @@ A wakeup in an active Goal flows in like a user input: it is an ordinary Queue i
 
 Rule check: the timer writes only `input/message` through the public `sessions` service (§4 rule 1); the wakeup input reaches the model only as a consumed Queue input (§4 rule 6); nothing structural or business lives in core — the record is Scheduler's own business store (D4) and the surface is the specified `sessionMethods` namespace (D5); and no ADR is needed because D1's scope rule and D2's client-method row already decide the placement.
 
+## 11. Client change notices
+
+Scheduler's records are process state with no Timeline fact, so a client that shows them reads the owner's query — `session.wakeup.list` for wakeups, `schedule.list` and `schedule.history` for jobs — and otherwise polls. A committed change is announced as a Session notice ([session broadcast notices](../appserver/session-notices.md)): `{source: "Scheduler", kind: "wakeup", data: {branchId, wakeupId, state}}` on the target Session's channel, sent with `session_broadcast::notify` from Scheduler's own context after the record's write commits. The notice reports that the record changed; the owner's query is its truth, and a client that does not handle `source` or `kind` ignores it.
+
+### 11.1 Wakeups
+
+| Change | Notice | When |
+| --- | --- | --- |
+| `create` stores a record | `state` is the state the record was created with: `scheduled`, or `expired` when the instant is already past the grace | After the file write commits |
+| `cancel` settles a `scheduled` record | `cancelled` | After the file write commits; a cancel of a terminal record changes nothing and sends nothing |
+| The timer pass settles records | One notice per settled record: `fired`, `cancelled` (the target Session or branch is gone), or `expired` | After the pass's settle write commits |
+| Retention pruning | None | A pruned record's last readable change was announced when it settled |
+
+- A `fired` notice is a committed-state notice. The pass publishes the input to the Timeline, settles the record, then announces it after the settle commits. It is not ordered against the input's `session.event`, which the Session emits when it dispatches the input, so either may reach a client first ([session notices §4](../appserver/session-notices.md#4-emitting); the contract's Order rule covers an owner that reacts to an event it observed through the broadcast). A client relates the notice and the input by the input's submission id `wakeup:<wakeup_id>`.
+- The notice names `branchId` because the record targets one branch, but it travels on the Session's channel: every client attached to the Session receives it, whichever branch it views.
+- No Timeline event and no `hello.features` entry: a notice is not a fact later decisions use, and notifications are not methods ([session broadcast notices §5](../appserver/session-notices.md#5-rpc-forwarding)). Protocol v3 connections receive it; v1 and v2 never do.
+- Delivery follows the notice contract: a Session that is not loaded, or that no client observes, has no listener, so the notice is dropped and nothing is replayed. A client reads `session.wakeup.list` when it attaches and on every notice.
+
+### 11.2 Jobs and runs
+
+A management client has no Session, so the jobs-and-runs half is a connection-bound change stream on the calling connection instead of a Session notice. `schedule.watch {}` declares `progress`, stays open while it watches, and sends every item as the call's progress: `management.progress {id, method: "schedule.watch", data}`, written before the reply and never held behind it. Each watch numbers its items from 0:
+
+| Item | When |
+| --- | --- |
+| `{seq: 0, kind: "watching"}` | Once, after the connection's watch is registered and before any change can be sent to it |
+| `{seq: n, kind: "jobs"}` | A write to the `schedule` Settings document commits: a job save, delete or pause/resume, and a run's write of the job's `session_id`, from the `schedule` source's `settings.changed` event |
+| `{seq: n, kind: "run", jobId, runId, state, terminal}` | A run's record changes: one item for each state the record took in that write, in the order the writes happened; `terminal` is true exactly on a state that ends the run: `completed`, `failed`, `cancelled`, `timed_out`, `lost`, `skipped` or `missed` |
+
+- Items go only to the connections that watched: there is no broadcast, and a connection that did not watch receives nothing.
+- One watch per connection: a second `schedule.watch` on the same connection answers the earlier call `{}` and takes over, so one change sends one item. The earlier call's progress ends at its reply.
+- A watch belongs to the generation that admitted it. The call ends in one of three ways, as the client sees it:
+
+  | Event | The open `schedule.watch` call answers |
+  | --- | --- |
+  | The Scheduler generation unloads (reload, disable, shutdown) | `operation_interrupted`, sent by the existing call admission. The client calls `schedule.watch` again; while the namespace reloads, that call answers `service_reloading`, which is retryable |
+  | The same connection calls `schedule.watch` again | `{}`, and the new call takes over |
+  | The connection closes | `{}`, which nobody receives. A disconnect cancels nothing, so the handler ends on `caller.closed()` |
+
+- A watch ends as the call's reply, not as a notice: rutis cancels a consumer's generation token at the provider's withdrawal, before any listener or task of the stopping generation can run, and its callers answer `gone` from then on (A.2).
+- Progress is best effort: a delivery the connection cannot take is dropped, and an item can be lost. Every item carries its per-watch `seq`; a gap tells the client to re-read.
+- The client's rules: call `schedule.watch`, then read `schedule.list` and `schedule.history` after `seq: 0` arrives, which closes the race between registering and reading; re-read on each item; re-read everything on a `seq` gap; on `operation_interrupted`, call `schedule.watch` again. `schedule.list` and `schedule.history` are the truth.
+- No notification name is declared: `hello.features` lists `schedule.watch` with the namespace's other methods, and the items are the call's progress, not a notification.
+
 ## Appendix A. Interface details
 
 ### A.1 Records
@@ -599,7 +643,7 @@ Specified `scheduleJobs`, process scope: `call(JobRequest): async -> JobReply`, 
 
 ### A.3 Management methods
 
-Namespace `schedule`, registered with `managementMethods`: its declarations list the methods below (`mutating` for all but `list` and `history`); its `call(MethodCall, cancelled, progress): async -> MethodReply` dispatches them. Parameters and results are JSON objects; errors are `{code, message}` with business codes from Appendix C. Rpc owns their JSON-RPC error mapping.
+Namespace `schedule`, registered with `managementMethods`: its declarations list the methods below (`mutating` for all but `list`, `history` and `watch`); its `call(MethodCall, cancelled, progress): async -> MethodReply` dispatches them. Parameters and results are JSON objects; errors are `{code, message}` with business codes from Appendix C. Rpc owns their JSON-RPC error mapping. `schedule.watch` declares `progress` and no notification (§11.2).
 
 | Method | Parameters | Result |
 | --- | --- | --- |
@@ -609,8 +653,9 @@ Namespace `schedule`, registered with `managementMethods`: its declarations list
 | `schedule.set_enabled` | `{job_id, enabled}` | Pause/resume |
 | `schedule.run_now` | `{job_id}` | The `Run` record it accepted or skipped (A.1): `run_id`, `job_id`, `window`, `state`, `detail`, `created_at`, `ended_at`, `submission_id`, plus the optional fields A.1 defines, as that run has them |
 | `schedule.history` | `{job_id, limit?}` | Runs, newest first |
+| `schedule.watch` | `{}` | `{}`. Registers the calling connection's watch and stays open while it watches (§11.2); a second watch on the same connection answers the earlier call `{}` and takes over |
 
-The process row's `schedule` namespace (§1.3) uses existing method admission: `list`/`history` are `report`; mutations are `drain` so accepted operations settle before unload. Rpc returns `service_reloading` for a Pending/reloading owner, `service_unavailable` for a Failed/Unresolved owner, and `unknown_method` when disabled/absent.
+The process row's `schedule` namespace (§1.3) uses existing method admission: `list`/`history`/`watch` are `report`; mutations are `drain` so accepted operations settle before unload. Rpc returns `service_reloading` for a Pending/reloading owner, `service_unavailable` for a Failed/Unresolved owner, and `unknown_method` when disabled/absent.
 
 ### A.4 Schedule formats
 

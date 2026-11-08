@@ -506,22 +506,42 @@ impl FileStorage {
         let relative = path.relative.clone();
         self.run(path, cancel, move |root, owner, cancel| {
             let (parent, name) = native::parent(root, &relative)?;
-            let (locks, _temporary) = native::directories(&parent)?;
-            if native::linked(&parent, &name, &locks)? {
-                return Err(FileStorageError::InvalidPath("reserved storage directory"));
-            }
-            let marker = native::create_key(&locks, OsStr::new("auth.json.lock"))?;
-            match native::open_key(&locks, &name) {
-                Ok(key) if native::same_identity(&key, &marker)? => {
-                    return Err(FileStorageError::InvalidPath("reserved storage lock"));
+            create_business_directory(&parent, &name, &owner, &cancel)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Makes `path` an existing business directory and every missing parent
+    /// beneath the authorized root one, level by level, with the mode and
+    /// durability [`create_directory`](Self::create_directory) gives each, and
+    /// returns the absolute path that names the result. An existing business
+    /// directory counts as created; a link, file or other non-directory at any
+    /// existing component fails `InvalidPath` and is left untouched, so the
+    /// returned path names the result without following a link. Aliases of the
+    /// reserved directory or the account marker fail `InvalidPath` too.
+    /// Cancellation is checked before each level.
+    pub async fn create_directories(
+        self: &Arc<Self>,
+        path: &FilePath,
+        cancel: &CancellationToken,
+    ) -> Result<PathBuf> {
+        let relative = path.relative.clone();
+        let root_path = self.root_path(path.root)?;
+        self.run(path, cancel, move |mut parent, owner, cancel| {
+            for component in relative.components() {
+                let Component::Normal(name) = component else {
+                    return Err(FileStorageError::InvalidPath(
+                        "expected a relative directory path",
+                    ));
+                };
+                match native::entry_kind(&parent, name)? {
+                    None | Some(EntryKind::Directory) => {}
+                    Some(_) => return Err(FileStorageError::InvalidPath("expected a directory")),
                 }
-                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error.into()),
-                _ => {}
+                parent = create_business_directory(&parent, name, &owner, &cancel)?;
             }
-            owner.check(&cancel)?;
-            native::create_directory(&parent, &name)?;
-            native::open_directory(&parent, &name)?;
-            native::sync_directory(&parent).map_err(FileStorageError::Unsynced)
+            Ok(root_path.join(&relative))
         })
         .await
     }
@@ -647,8 +667,18 @@ impl FileLease {
     }
 
     pub async fn read(&mut self, cancel: &CancellationToken) -> Result<Vec<u8>> {
-        self.run(cancel, |parent, name, owner, cancel| {
-            read(&parent, &name, &owner, &cancel, usize::MAX)
+        self.read_limited(usize::MAX, cancel).await
+    }
+
+    /// The lease's [`FileStorage::read_limited`]: the file's contents, refusing
+    /// one over `limit` before allocating them.
+    pub async fn read_limited(
+        &mut self,
+        limit: usize,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<u8>> {
+        self.run(cancel, move |parent, name, owner, cancel| {
+            read(&parent, &name, &owner, &cancel, limit)
         })
         .await
     }
@@ -695,38 +725,95 @@ impl FileLease {
         cancel: &CancellationToken,
     ) -> Result<()> {
         self.run(cancel, move |parent, name, owner, cancel| {
-            let permissions = permissions.or(native::permissions(&parent, &name)?);
-            let (temporary_directory, mut temp) =
-                create_temporary(&parent, &name, permissions.as_ref())?;
-            let result = (|| {
-                for chunk in bytes.chunks(64 * 1024) {
-                    owner.check(&cancel)?;
-                    temp.write_all(chunk)?;
-                }
-                if let Some(permissions) = permissions {
-                    temp.set_permissions(permissions)?;
-                }
-                temp.sync_all()?;
-                owner.check(&cancel)?;
-                native::replace(&temp, &temporary_directory, &name, &parent, &name)?;
-                native::sync_replacement(&temp, &temporary_directory, &parent)
-                    .map_err(FileStorageError::Unsynced)
-            })();
-            if result
-                .as_ref()
-                .is_err_and(|error| !matches!(error, FileStorageError::Unsynced(_)))
-                && let Err(cleanup) = native::remove(&temporary_directory, &name)
-                && cleanup.kind() != io::ErrorKind::NotFound
-            {
-                return Err(FileStorageError::Cleanup {
-                    operation: Box::new(result.unwrap_err()),
-                    cleanup,
-                });
-            }
-            result
+            replace_file(
+                &parent,
+                &name,
+                permissions,
+                &owner,
+                &cancel,
+                |temp, owner, cancel| {
+                    for chunk in bytes.chunks(64 * 1024) {
+                        owner.check(cancel)?;
+                        temp.write_all(chunk)?;
+                    }
+                    Ok(())
+                },
+            )
         })
         .await
     }
+
+    /// [`replace`](Self::replace) from a reader, which is read to its end one
+    /// 64 KiB chunk at a time on the blocking worker, so the replacement need
+    /// not be held whole. The temporary file, permissions, atomic rename,
+    /// durability and cancellation rules are the same.
+    pub async fn replace_from<R: Read + Send + 'static>(
+        &mut self,
+        mut source: R,
+        permissions: Option<Permissions>,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        self.run(cancel, move |parent, name, owner, cancel| {
+            replace_file(
+                &parent,
+                &name,
+                permissions,
+                &owner,
+                &cancel,
+                |temp, owner, cancel| {
+                    let mut chunk = [0; 64 * 1024];
+                    loop {
+                        owner.check(cancel)?;
+                        let count = source.read(&mut chunk)?;
+                        if count == 0 {
+                            return Ok(());
+                        }
+                        temp.write_all(&chunk[..count])?;
+                    }
+                },
+            )
+        })
+        .await
+    }
+}
+
+/// Writes the replacement of `name` in `parent` through `write` and makes it
+/// `name`, with the permissions and durability rules [`FileLease::replace`]
+/// documents. A failure before the rename removes the temporary file and
+/// leaves `name` as it was.
+fn replace_file(
+    parent: &File,
+    name: &OsString,
+    permissions: Option<Permissions>,
+    owner: &Arc<FileStorage>,
+    cancel: &CancellationToken,
+    write: impl FnOnce(&mut File, &FileStorage, &CancellationToken) -> Result<()>,
+) -> Result<()> {
+    let permissions = permissions.or(native::permissions(parent, name)?);
+    let (temporary_directory, mut temp) = create_temporary(parent, name, permissions.as_ref())?;
+    let result = (|| {
+        write(&mut temp, owner, cancel)?;
+        if let Some(permissions) = permissions {
+            temp.set_permissions(permissions)?;
+        }
+        temp.sync_all()?;
+        owner.check(cancel)?;
+        native::replace(&temp, &temporary_directory, name, parent, name)?;
+        native::sync_replacement(&temp, &temporary_directory, parent)
+            .map_err(FileStorageError::Unsynced)
+    })();
+    if result
+        .as_ref()
+        .is_err_and(|error| !matches!(error, FileStorageError::Unsynced(_)))
+        && let Err(cleanup) = native::remove(&temporary_directory, name)
+        && cleanup.kind() != io::ErrorKind::NotFound
+    {
+        return Err(FileStorageError::Cleanup {
+            operation: Box::new(result.unwrap_err()),
+            cleanup,
+        });
+    }
+    result
 }
 
 fn read(
@@ -757,6 +844,34 @@ fn read(
         }
         bytes.extend_from_slice(&chunk[..count]);
     }
+}
+
+/// Makes `name` in `parent` an existing business directory, one level, as
+/// [`FileStorage::create_directory`] documents, and returns the opened
+/// directory so a caller creating several levels holds it.
+fn create_business_directory(
+    parent: &File,
+    name: &OsStr,
+    owner: &Arc<FileStorage>,
+    cancel: &CancellationToken,
+) -> Result<File> {
+    let (locks, _temporary) = native::directories(parent)?;
+    if native::linked(parent, name, &locks)? {
+        return Err(FileStorageError::InvalidPath("reserved storage directory"));
+    }
+    let marker = native::create_key(&locks, OsStr::new("auth.json.lock"))?;
+    match native::open_key(&locks, name) {
+        Ok(key) if native::same_identity(&key, &marker)? => {
+            return Err(FileStorageError::InvalidPath("reserved storage lock"));
+        }
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
+    }
+    owner.check(cancel)?;
+    native::create_directory(parent, name)?;
+    let directory = native::open_directory(parent, name)?;
+    native::sync_directory(parent).map_err(FileStorageError::Unsynced)?;
+    Ok(directory)
 }
 
 /// Locks a regular or missing file under the name its filesystem resolves.

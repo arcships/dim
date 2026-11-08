@@ -110,8 +110,9 @@ sessionPermissions 与 sessions 由同一稳定 Agents 目录提供，按调用�
 开始清理后，保留的 handler 使用[已确认功能绑定](../../../design/process-typescript.md#51-p6p7-access-through-declared-feature-dependencies)
 的当前不可用提供者与重试合同，不固化其错误文本，也不假定具体的提供者重新接入路径。
 
-进程行注册的声明只有 A.3 的六个字面方法：list/history 不修改状态并使用 report；
-其余四个修改方法使用 drain；全部 progress:false。结果与错误使用既有 MethodReply；
+进程行注册的声明只有 A.3 的七个字面方法：list、history 和 watch 不修改状态并使用 report；
+其余四个修改方法使用 drain；除 watch 外都使用 progress:false，watch 声明 progress，
+其项就是这次观察的变化（§11.2、A.3）。结果与错误使用既有 MethodReply；
 工具把 A.2 回复放入 ToolResult.content 与 isError，不新增 App Server 方法。
 
 | 决定点 | 必需读取 |
@@ -495,6 +496,49 @@ Settings 在外部边界统一应用默认值并校验文档。非法文档返�
 
 规则检查：定时器只经公共 `sessions` 服务写 `input/message`（§4 规则 1）；唤醒输入只作为已消费的 Queue 输入到达模型（§4 规则 6）；core 中不新增任何结构或业务——记录是 Scheduler 自己的业务存储（D4），表面是指定的 `sessionMethods` 命名空间（D5）；无需 ADR，因为 D1 的作用域规则与 D2 的客户端方法行已决定归属。
 
+## 11. 客户端变更通知
+
+Scheduler 的记录是进程状态，没有 Timeline 事实，因此要展示它们的客户端读取所有者自己的查询——唤醒读 `session.wakeup.list`，任务读 `schedule.list` 与 `schedule.history`——否则只能轮询。已提交的变更以 Session 通知的形式公告（[Session 广播通知](../appserver/session-notices.md)）：`{source: "Scheduler", kind: "wakeup", data: {branchId, wakeupId, state}}` 发往目标 Session 的通道，在记录写入提交之后由 Scheduler 自己的上下文调用 `session_broadcast::notify` 发出。通知报告记录已经改变；所有者自己的查询才是真相，不认识 `source` 或 `kind` 的客户端直接忽略。
+
+### 11.1 一次性唤醒
+
+| 变更 | 通知 | 时机 |
+| --- | --- | --- |
+| `create` 存入记录 | `state` 是记录创建时的状态：`scheduled`；时刻已超出宽限期时为 `expired` | 文件写入提交之后 |
+| `cancel` 结算一条 `scheduled` 记录 | `cancelled` | 文件写入提交之后；对终态记录的 cancel 不改变任何东西，也不发通知 |
+| 定时器通道结算记录 | 每条被结算的记录一条通知：`fired`、`cancelled`（目标 Session 或分支已不存在）或 `expired` | 这一趟的结算写入提交之后 |
+| 保留期清理 | 无 | 被清理记录最后一次可读的变化在它结算时就已公告 |
+
+- `fired` 通知是已提交状态的通知。通道先把输入发布到 Timeline，再结算记录，然后在结算写入提交之后公告。它与输入被 Session 分派时发出的 `session.event` 没有顺序关系，两者都可能先到达客户端（[Session 通知 §4](../appserver/session-notices.md#4-发出)；契约的 Order 规则只覆盖通过广播观察到事件后再响应的事件所有者）。客户端用输入的 submission id `wakeup:<wakeup_id>` 把通知与输入对应起来。
+- 通知带 `branchId`，因为记录指向一个分支；但它在 Session 的通道上传递：attach 到该 Session 的每个客户端都会收到，与它查看哪个分支无关。
+- 不写 Timeline 事件，也不加入 `hello.features`：通知不是后续决策使用的事实，通知也不是方法（[Session 广播通知 §5](../appserver/session-notices.md#5-rpc-转发)）。协议 v3 连接会收到它；v1 与 v2 永远不会。
+- 投递遵循通知契约：没有装载、或没有客户端观察的 Session 没有监听者，通知被丢弃，也不会重放。客户端在 attach 之后、以及收到每条通知时读取 `session.wakeup.list`。
+
+### 11.2 任务与运行
+
+管理客户端没有 Session，因此任务与运行这一半是调用连接上的连接绑定变化流，而不是 Session 通知。`schedule.watch {}` 声明 `progress`，在观察期间保持调用打开，并把每一项作为该调用的 progress 发送：`management.progress {id, method: "schedule.watch", data}`，在回复之前写出，绝不会被回复扣住。每个观察从 0 开始编号：
+
+| 项 | 时机 |
+| --- | --- |
+| `{seq: 0, kind: "watching"}` | 一次，在连接上的观察注册之后、任何变化能发给它之前 |
+| `{seq: n, kind: "jobs"}` | `schedule` Settings 文档的一次写入提交：任务保存、删除、暂停/恢复，以及运行对任务 `session_id` 的一次写入；来自 `schedule` 来源的 `settings.changed` 事件 |
+| `{seq: n, kind: "run", jobId, runId, state, terminal}` | 一次运行的记录改变：该次写入中记录经历的每个状态一项，按写入发生的顺序；`terminal` 恰在结束运行的状态上为 true：`completed`、`failed`、`cancelled`、`timed_out`、`lost`、`skipped` 或 `missed` |
+
+- 项只发给观察过的连接：没有广播，未观察的连接什么也收不到。
+- 每个连接一个观察：同一连接上的第二次 `schedule.watch` 让前一个调用回答 `{}` 并接管，因此一次变化只发一项。前一个调用的 progress 在其回复处结束。
+- 观察属于接纳它的那一代。调用按客户端看到的方式以三种之一结束：
+
+  | 事件 | 打开的 `schedule.watch` 调用回答 |
+  | --- | --- |
+  | Scheduler 这一代卸载（重载、禁用、关闭） | `operation_interrupted`，由现有调用准入发出。客户端再次调用 `schedule.watch`；命名空间重载期间，该调用回答 `service_reloading`，可重试 |
+  | 同一连接再次调用 `schedule.watch` | `{}`，新调用接管 |
+  | 连接关闭 | `{}`，无人收到。断开本身不取消任何东西，因此处理器在 `caller.closed()` 上结束 |
+
+- 观察以调用的回复结束，而不是以通知结束：被注入行的绑定被撤销时，rutis 取消消费者的代令牌，早于正在停止的这一代任何监听者或任务运行，此后它的 caller 一律回答 `gone`（A.2）。
+- progress 是尽力而为：连接承受不了的投递会被丢弃，项可能丢失。每一项都带自己的 `seq`；缺口告诉客户端重新读取。
+- 客户端规则：调用 `schedule.watch`，在 `seq: 0` 到达之后用 `schedule.list` 与 `schedule.history` 读取，从而关闭注册与读取之间的竞态；每收到一项就重新读取；遇到 `seq` 缺口就全部重新读取；收到 `operation_interrupted` 后再次调用 `schedule.watch`。`schedule.list` 与 `schedule.history` 才是真相。
+- 不声明通知名：`hello.features` 与命名空间的其他方法一起列出 `schedule.watch`，这些项是该调用的 progress，不是通知。
+
 ## 附录 A. 接口细节
 
 ### A.1 记录
@@ -550,7 +594,7 @@ cwd 默认取调用方 Session 配置；P3 前没有 resource_node，使用控�
 
 ### A.3 管理方法
 
-命名空间 `schedule` 注册到 `managementMethods`：其声明列出下列方法（除 `list` 和 `history` 外均为 `mutating`）；其 `call(MethodCall, cancelled, progress): async -> MethodReply` 分派它们。参数和结果是 JSON 对象；错误为 `{code, message}`，业务代码见附录 C，JSON-RPC 错误映射归 Rpc。
+命名空间 `schedule` 注册到 `managementMethods`：其声明列出下列方法（除 `list`、`history` 和 `watch` 外均为 `mutating`）；其 `call(MethodCall, cancelled, progress): async -> MethodReply` 分派它们。参数和结果是 JSON 对象；错误为 `{code, message}`，业务代码见附录 C，JSON-RPC 错误映射归 Rpc。`schedule.watch` 声明 `progress`，不声明通知（§11.2）。
 
 | 方法 | 参数 | 结果 |
 | --- | --- | --- |
@@ -560,8 +604,9 @@ cwd 默认取调用方 Session 配置；P3 前没有 resource_node，使用控�
 | `schedule.set_enabled` | `{job_id, enabled}` | 暂停/恢复 |
 | `schedule.run_now` | `{job_id}` | 它接受或跳过的 `Run` 记录（A.1）：`run_id`、`job_id`、`window`、`state`、`detail`、`created_at`、`ended_at`、`submission_id`，以及该运行实际具备的 A.1 可选字段 |
 | `schedule.history` | `{job_id, limit?}` | 运行列表，最新在前 |
+| `schedule.watch` | `{}` | `{}`。注册调用连接的观察并在观察期间保持打开（§11.2）；同一连接的第二次观察让前一个调用回答 `{}` 并接管 |
 
-进程行的 schedule 命名空间（§1.3）复用现有准入：list/history 为 report，变更为 drain，使已接受工作在卸载前结算。Pending/重载 owner 返回 service_reloading，Failed/Unresolved 返回 service_unavailable，禁用/不存在返回 unknown_method。
+进程行的 schedule 命名空间（§1.3）复用现有准入：list/history/watch 为 report，变更为 drain，使已接受工作在卸载前结算。Pending/重载 owner 返回 service_reloading，Failed/Unresolved 返回 service_unavailable，禁用/不存在返回 unknown_method。
 
 ### A.4 调度格式
 

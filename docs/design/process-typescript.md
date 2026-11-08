@@ -191,9 +191,11 @@ The management table checks each registration as it checks a native owner's
 ([management methods](appserver/management-methods.md)): the name grammar, at
 least one method, each unique and inside the namespace; no reserved root
 (`hello`, `daemon`, `agent`, `approval`, `session`) and no prefix equal to an
-exact built-in (`Invalid management namespace`); no declaration equal to a
-built-in (`Invalid management contribution`); and no namespace registered
-already (`<namespace> is registered already`). The row sees a refusal as a
+exact built-in (`Invalid management namespace`); no declaration or declared
+notification equal to a built-in (`Invalid management contribution`); and no
+namespace registered already (`<namespace> is registered already`). The shared
+method owner also refuses a notification name outside the grammar or namespace,
+declared twice or equal to a method's name (A.2). The row sees a refusal as a
 rejected Promise; a row that lets it propagate from `apply` fails, and only its
 own namespaces are affected. Rows may own namespaces nested in each other's or
 a native owner's: a name belongs to the longest namespace in the table that
@@ -206,14 +208,30 @@ The language-neutral payloads are the implemented subset of
 
 | Function | Input | Output |
 | --- | --- | --- |
-| `register(namespace, declarations, call)` | A namespace; `MethodDecl[]`: `name`, `mutating`, `interruption` (`report` / `drain`), `progress`, each required; the row's `call` function. | A Promise that resolves once registered and rejects when refused. |
-| `call(call, cancelled, progress)` (the row's function) | `{callId, method, params}`, a by-reference cancellation `Promise<void>`, and a callback receiving one JSON value. | `{kind:"value", value?}` or `{code, message}`, whose `code` is the `appError`. Omitted value means JSON `null`. |
+| `register(namespace, declarations, call)` | A namespace; `MethodDecl[]`: `name`, `mutating`, `interruption` (`report` / `drain`), `progress`, each required, and optional `notifications`; the row's `call` function. | A Promise that resolves once registered and rejects when refused. |
+| `call(call, cancelled, progress)` (the row's function) | `{callId, method, params, origin}`, a by-reference cancellation `Promise<void>`, and a callback receiving one JSON value; `origin` carries `connectionId` when a client connection made the call. | `{kind:"value", value?}` or `{code, message}`, whose `code` is the `appError`. Omitted value means JSON `null`. |
 
 `callId` is the binding's opaque correlation id. Preserve the client's params
-without adding a Session id or inventing origin fields. Notifications, handoff,
-paired-device management, a generic `callChannel` service and new discovery
-endpoints are outside this subset. Unsupported declarations or replies fail
-explicitly, as in C4; they are never accepted and then ignored.
+without adding a Session id or inventing origin fields: `origin` carries only
+`connectionId`, the calling client connection (A.2). Connection-bound
+notifications, including the `callChannel` process service, are in this subset;
+handoff, `takeFinalReply`, paired-device management and new discovery endpoints
+are outside it. Unsupported declarations or replies fail explicitly, as in C4;
+they are never accepted and then ignored.
+
+A provider sends a declared notification through `callChannel`: its declarations
+name `notifications`, `call` reads `origin.connectionId` and `callId`, and
+`await ctx.use<CallChannel>('callChannel').notify({connectionId, callId, method, params})`
+writes on the calling connection only. `callId` is the `MethodCall.callId` of
+the work the notification reports: while that call's reply is not written its
+notifications are held and follow it, in order, and once the reply is written,
+or the id is not in flight, they are written directly. The bridge binds the
+service call to the calling row's instance, so a row reaches only connections it
+served and only names a generation that served it declared. `notify` rejects
+with `undeclared`, `gone` (the connection closed, the admitting Rpc unloaded, or
+the row received no call from that connection) or `too_large`, and
+`closed({connectionId})` resolves on disconnect or admitting Rpc unload; delivery
+follows A.2, and the same call's sink serves this binding and the Rust one.
 
 The table registers the namespace on behalf of the calling row, inside that
 row's own apply: it decodes the declarations once at the bridge boundary and
@@ -424,14 +442,37 @@ a product home or `--home` ([PluginManager §2.1](plugins/PluginManager.md#21-th
 so the plugin files root and the plugin manager never disagree. A host started
 with only a database file therefore runs no PluginManager either.
 
-This changes only native composition. Keep `pluginFiles.open`, the scope/lease
-API, S10 outer v1, errors, FileStorage authority and provider lifetime unchanged.
-No row field, SDK method, dependency registry, optional lookup or rutis/core
-mechanism is added. The managed plugin keeps its existing binding; public rows
-use their own ordinary runtime and declarations, without a managed-plugin slot.
-The provider depends only on FileStorage, preserving §5.1's stable boundary.
-Session and branch parts resolve this same shared service through the existing
-catalog; a Session-only configuration must not require a dummy process row.
+This changes only native composition: `pluginFiles.open`, S10 outer v1,
+FileStorage authority and provider lifetime are unchanged, and the scope and
+lease offer the operations below. No row field, dependency registry, optional
+lookup or rutis/core mechanism is added. The managed plugin keeps its existing
+binding; public rows use their own ordinary runtime and declarations, without a
+managed-plugin slot. The provider depends only on FileStorage, preserving §5.1's
+stable boundary. Session and branch parts resolve this same shared service
+through the existing catalog; a Session-only configuration must not require a
+dummy process row.
+
+The scope offers `withLock`, `list(prefix)` and `remove(name)`; the lease offers
+`read`, `replace`, `backup`, `readBytes` and `replaceBytes`. `list` returns one
+level of a directory prefix, sorted, each entry its name relative to the
+authorized root and its kind, and never enters a directory entry; a returned
+name is the resolved components joined by `/`, so it can be passed straight to
+another operation, and on Unix a backslash is part of a name while on Windows
+it separates. `remove` takes a file or a directory tree and reports `locked`
+while a lease holds it or a file beneath it. Text and binary are separate operations on the same names:
+`read` and `replace` use the v1 text envelope, `readBytes` and `replaceBytes`
+carry raw bytes. A text read of a raw file fails `invalid_data` and leaves it
+untouched, and a binary read of a text file returns its envelope bytes. The byte
+operations are whole-buffer and capped at 8 MiB, below the 12 MiB raw ceiling
+the base64-encoded runtime frame implies; there is no streaming in JavaScript.
+A buffer large enough that its call message would exceed the runtime's 16 MiB
+frame is refused by the plugin's own runtime before it is sent, failing only
+that call with a `RangeError` coded `bad-value` while the row and the file
+store stay up, and the same holds for any call argument, a large text
+`replace` included.
+Streaming and work directories belong to the typed Rust API and have no
+JavaScript binding: `directory` creates missing parents for a helper process,
+while `withLock` still does not, so provisioning stays with installation.
 
 All trusted consumers use that same host-authorized root. A FileScope owns
 operations and cleanup; it is not a per-package directory sandbox. Consumers

@@ -566,8 +566,16 @@ pub(crate) fn render_block(
                 p,
             )
         }
-        Block::Error(text) => {
-            gutter_text(ERROR_MARK, &crate::sanitize::safe(text), width, &p.danger)
+        Block::Error {
+            text,
+            details,
+            expanded,
+        } => {
+            let mut rows = gutter_text(ERROR_MARK, &crate::sanitize::safe(text), width, &p.danger);
+            if *expanded && let Some(details) = details {
+                rows.extend(detail_rows(details, width, p));
+            }
+            rows
         }
         Block::Status { text, tone } => {
             let color = match tone {
@@ -617,6 +625,50 @@ pub(crate) fn width_of(text: &str) -> usize {
     clip(text, usize::MAX).1
 }
 
+/// A model failure's details, one per line under its error row.
+fn detail_rows(
+    details: &crate::model::view::FailureDetail,
+    width: usize,
+    p: &Palette,
+) -> Vec<String> {
+    use crate::ui::i18n::{t, tf};
+    let mut lines = vec![tf("kind: {kind}", &[("kind", details.kind.keyword())])];
+    if let Some(status) = details.status {
+        lines.push(tf("status: {status}", &[("status", &status.to_string())]));
+    }
+    if let Some(code) = &details.provider_code {
+        lines.push(tf("provider code: {code}", &[("code", code)]));
+    }
+    if let Some(id) = &details.request_id {
+        lines.push(tf("request id: {id}", &[("id", id)]));
+    }
+    if details.attempts > 1 {
+        let seconds = format!("{:.1}", details.waited_ms as f64 / 1000.0);
+        lines.push(tf(
+            "tried {count} times over {seconds} s",
+            &[
+                ("count", &details.attempts.to_string()),
+                ("seconds", &seconds),
+            ],
+        ));
+    }
+    if let Some(wait) = details.retry_after_ms {
+        lines.push(tf(
+            "the provider asked to wait {seconds} s",
+            &[("seconds", &(wait / 1000).to_string())],
+        ));
+    }
+    if !details.cause.is_empty() {
+        lines.push(t("cause:").to_owned());
+        lines.extend(details.cause.iter().cloned());
+    }
+    lines
+        .iter()
+        .map(|line| crate::sanitize::safe_line(line))
+        .flat_map(|line| gutter_text(" ", &line, width, &p.muted))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -627,6 +679,28 @@ mod tests {
         assert_eq!(gutter_width(40), 2);
         assert_eq!(gutter_mark("◆", 1), "◆");
         assert_eq!(gutter_mark("◆", 2), "◆ ");
+    }
+
+    #[test]
+    fn failure_details_are_sanitized() {
+        use crate::model::view::FailureDetail;
+        use crate::ui::theme::{Appearance, ColorMode, Theme};
+        let details = FailureDetail {
+            kind: dim_agent_types::ModelFailureKind::ServerError,
+            status: Some(503),
+            provider_code: Some("bad\x1b[31mcode".into()),
+            request_id: Some("req-1".into()),
+            attempts: 3,
+            waited_ms: 4200,
+            retry_after_ms: None,
+            cause: vec!["upstream \x1b[31mframe".into()],
+        };
+        let mut palette = Theme::system(ColorMode::TrueColor, Appearance::Dark, None).palette;
+        palette.muted.clear();
+        let rows = detail_rows(&details, 80, &palette).join("\n");
+        assert!(!rows.contains('\x1b'), "{rows:?}");
+        assert!(rows.contains("bad") && rows.contains("code"), "{rows:?}");
+        assert!(rows.contains("frame"), "{rows:?}");
     }
 
     #[test]

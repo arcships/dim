@@ -15,7 +15,7 @@
 //! drops its sender.
 use dim_agent_capabilities::{
     host::{HostError, HostFuture, ToolExecutionContext},
-    methods::{Interruption, MethodDecl, RpcError, SessionMethods, params},
+    methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params},
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
 };
 use dim_agent_runtime::{AgentBuilder, CAPABILITY_RELOADING, Names, SessionConfig};
@@ -485,7 +485,8 @@ impl DynPlugin for QuestionsPlugin {
                 ctx,
                 NAMESPACE,
                 vec![MethodDecl::new(RESPOND, true, Interruption::Report)],
-                Arc::new(move |_, value, _, _| {
+                Arc::new(move |call, _, _| {
+                    let MethodCall { params: value, .. } = call;
                     let result = questions.respond(value);
                     Box::pin(async move { result })
                 }),

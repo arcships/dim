@@ -441,6 +441,7 @@ impl ContextPreparation {
                 request,
                 configuration: source.configuration,
                 prompt: source.prompt,
+                failure_chain: source.failure_chain,
             }),
             Err(error) => EventKind::ModelOutputEnd(ModelOutputEndData {
                 turn_id: source.turn_id,

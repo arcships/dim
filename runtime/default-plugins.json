@@ -5,6 +5,7 @@
   "locked": ["PluginManager", "Rpc", "Transport"],
   "runtimes": {
     "node": { "source": "download", "auto": false },
-    "python": { "source": "download", "auto": false }
+    "python": { "source": "download", "auto": false },
+    "uv": { "source": "download", "auto": false }
   }
 }

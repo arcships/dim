@@ -947,7 +947,7 @@ impl Inner {
         let model = catalog
             .models
             .iter()
-            .find(|m| m.entry.model_id == model && m.unavailable_reason.is_none())
+            .find(|m| m.entry.model_id == model && !m.excluded_from_every_use())
             .cloned()
             .ok_or(ManagedError::UnknownModel)?;
         if !same_account(&catalog.account, &current.account) {

@@ -2,7 +2,7 @@
 //! `session.grants.*` methods that manage them.
 use crate::storage::SessionStore;
 use dim_agent_capabilities::{
-    methods::{Interruption, MethodDecl, RpcError, SessionMethods, params, reply},
+    methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     session_grants::{ReadSessionGrants, SessionGrantsHost, resolve_grant_path},
 };
 use dim_agent_runtime::{AgentBuilder, Names, SessionConfig, SessionIdentity};
@@ -92,7 +92,12 @@ impl DynPlugin for SessionGrantsPlugin {
                     .into_iter()
                     .map(|name| MethodDecl::new(name, true, Interruption::Report))
                     .collect(),
-                Arc::new(move |method, value, _, _| {
+                Arc::new(move |call, _, _| {
+                    let MethodCall {
+                        method,
+                        params: value,
+                        ..
+                    } = call;
                     let store = owner.clone();
                     let session_id = session_id.clone();
                     let cwd = cwd.clone();

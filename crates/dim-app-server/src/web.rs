@@ -14,7 +14,6 @@ use dim_agent_runtime::{Names, PartRegistry, PartScope};
 use dim_agent_types::{ToolCall, ToolContent, ToolDefinition, ToolResult, ToolSource};
 use network::{
     DOWNLOAD_LIMIT, Diagnostic, NetworkConfig, WebError, domain, get, hostname, parse_url,
-    proxy_url,
 };
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -39,6 +38,8 @@ pub struct WebDocument {
     pub allow_private_hosts: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
+    #[serde(default)]
+    pub proxy_dns: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_service: Option<SearchServiceConfig>,
 }
@@ -93,10 +94,18 @@ pub fn source_declaration() -> SourceDeclaration {
                     "type": "string",
                     "format": "uri",
                     "writeOnly": true
+                },
+                "proxyDns": {
+                    "type": "boolean",
+                    "default": false
                 }
             }
         }),
-        user_only: vec!["/searchService".into(), "/allowPrivateHosts".into()],
+        user_only: vec![
+            "/searchService".into(),
+            "/allowPrivateHosts".into(),
+            "/proxyDns".into(),
+        ],
     }
 }
 
@@ -439,10 +448,11 @@ impl SessionState {
         url.set_fragment(None);
         let start = parse_integer(args.get("start_char"), 0, 0, MAX_SAFE_INTEGER)? as usize;
         let count = parse_integer(args.get("max_chars"), 20_000, 1_000, 50_000)? as usize;
-        let config = NetworkConfig {
-            allow_private_hosts: document.allow_private_hosts.clone(),
-            proxy: proxy_url(document.proxy.as_deref())?,
-        };
+        let config = NetworkConfig::new(
+            document.allow_private_hosts.clone(),
+            document.proxy.as_deref(),
+            document.proxy_dns,
+        )?;
         let key = document
             .search_service
             .as_ref()
@@ -729,7 +739,12 @@ impl SessionState {
                     "The configured search service is unusable.",
                 )
             })?;
-            let proxy = proxy_url(document.proxy.as_deref()).map_err(|_| {
+            let config = NetworkConfig::new(
+                document.allow_private_hosts.clone(),
+                document.proxy.as_deref(),
+                document.proxy_dns,
+            )
+            .map_err(|_| {
                 WebError::new(
                     "search_unavailable",
                     "The configured search service is unusable.",
@@ -746,10 +761,6 @@ impl SessionState {
             url.query_pairs_mut()
                 .append_pair("q", &effective_query)
                 .append_pair("count", &count.to_string());
-            let config = NetworkConfig {
-                allow_private_hosts: document.allow_private_hosts.clone(),
-                proxy,
-            };
             let headers = HashMap::from([("X-Subscription-Token".to_owned(), api_key.to_owned())]);
             let response = get(&url, &config, cancel, diagnostics, &headers).await?;
             if !(200..300).contains(&response.status) || response.download_limited {

@@ -222,7 +222,7 @@ SessionTitle 不在范围内：它的 `SYSTEM`（`crates/dim-session-title/src/l
 
 **所有者：** Goal；在 [#553](https://github.com/arcships/dim/issues/553) 下实现。
 
-- **措辞。** 一条线不是被委派的工作：它是同一个 agent 在本 Session 的另一条线上（[Timeline 分支 §1](timeline-branches.md#1-分支用来做什么)）。要求：目标块与续跑块的句子（[Goal §A.5](plugins/Goal.md#a5-模型可见文本)），以及 [Goal §3.4](plugins/Goal.md#34-新分支清除继承的目标) 和 [Goal §5](plugins/Goal.md#5-上下文映射) 子分支那一行里的陈述，都写 "on another line of this Session"，含义不变——目标属于另一条线，这条线既不续跑它，也不为它调用 `goal_update`。任一句的改动都是一次策略改动，按 §8 判定（[Goal §A.5.2](plugins/Goal.md#a52-评估)）。
+- **措辞。** 一条线不是被委派的工作：它是同一个 agent 在本 Session 的另一条线上（[Timeline 分支 §1](timeline-branches.md#1-分支用来做什么)）。要求：状态记录正文中的目标句子与续跑块的句子（[Goal §A.5](plugins/Goal.md#a5-模型可见文本)），以及 [Goal §3.4](plugins/Goal.md#34-新分支清除继承的目标) 和 [Goal §5](plugins/Goal.md#5-上下文映射) 子分支那一行里的陈述，都写 "on another line of this Session"，含义不变——目标属于另一条线，这条线既不续跑它，也不为它调用 `goal_update`。任一句的改动都是一次策略改动，按 §8 判定（[Goal §A.5.2](plugins/Goal.md#a52-评估)）。
 - **分类。** 标记名、`kind` 取值与 key 是协议；上面那些句子是策略。
 - **指南。** Goal 在写它的标记时贡献对应的条目（§6.2、§9.2）。
 - **评估。** 一套目标场景——在 `main` 上设的目标会续跑；一条线不续跑它继承的目标；已完成或受阻的目标停下——当前对照候选（§8）。

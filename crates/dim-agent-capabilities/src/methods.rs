@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
+    future::Future,
+    sync::{Arc, Mutex, Weak},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
@@ -32,6 +33,18 @@ pub struct RpcError {
 #[serde(rename_all = "camelCase")]
 pub struct ErrorData {
     pub app_error: String,
+    /// What a refused `daemon.shutdown {ifIdle}` found in use; boxed so a
+    /// wire error stays small.
+    #[serde(flatten)]
+    pub daemon_busy: Option<Box<DaemonBusy>>,
+}
+/// The counts of a `daemon_busy` refusal.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonBusy {
+    pub connections: usize,
+    pub attached_sessions: usize,
+    pub running: usize,
 }
 impl RpcError {
     pub fn invalid(message: impl Into<String>) -> Self {
@@ -43,6 +56,23 @@ impl RpcError {
             message: message.into(),
             data: Some(ErrorData {
                 app_error: app_error.into(),
+                daemon_busy: None,
+            }),
+        }
+    }
+    /// `daemon.shutdown {ifIdle:true}` found the daemon in use: other client
+    /// connections, Sessions with an attached client, and running turns.
+    pub fn daemon_busy(connections: usize, attached_sessions: usize, running: usize) -> Self {
+        Self {
+            code: -32000,
+            message: "The App Server is in use".into(),
+            data: Some(ErrorData {
+                app_error: "daemon_busy".into(),
+                daemon_busy: Some(Box::new(DaemonBusy {
+                    connections,
+                    attached_sessions,
+                    running,
+                })),
             }),
         }
     }
@@ -165,20 +195,322 @@ pub fn within(name: &str, namespace: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('.'))
 }
 
-/// Serves one call: `(method, params, cancellation token, progress)`. The
-/// token fires when the provider's generation or the calling load unloads.
+/// One admitted call as its handler receives it (methods contract A.1,
+/// `MethodCall`): the declared name, the raw params and who called.
+#[derive(Clone)]
+pub struct MethodCall {
+    pub method: String,
+    pub params: Value,
+    pub origin: Origin,
+}
+
+/// Who called (methods contract A.1, `origin`): the connection that made the
+/// call, when a client connection did. An in-process call, and a call a test
+/// admits without a connection, has no caller.
+#[derive(Clone, Default)]
+pub struct Origin {
+    pub caller: Option<Caller>,
+}
+
+/// Serves one call: `(call, cancellation token, progress)`. The token fires
+/// when the provider's generation or the calling load unloads.
 pub type Handler = Arc<
-    dyn Fn(
-            String,
-            Value,
-            CancellationToken,
-            Progress,
-        ) -> BoxFuture<'static, Result<Value, RpcError>>
+    dyn Fn(MethodCall, CancellationToken, Progress) -> BoxFuture<'static, Result<Value, RpcError>>
         + Send
         + Sync,
 >;
 
 type Sink = Box<dyn Fn(Value) + Send + Sync>;
+
+/// Why a connection-bound notification was not written (methods contract
+/// A.2). `Undeclared` is a name the provider generation did not declare,
+/// `Gone` a connection that has closed or a generation or load that has
+/// unloaded, and `TooLarge` an encoded notification over the frame limit.
+/// An unloaded generation answers `Gone` for every name; while it is loaded,
+/// `Undeclared` is decided before the connection's state, in both bindings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotifyError {
+    Undeclared,
+    Gone,
+    TooLarge,
+}
+impl NotifyError {
+    /// The stable code a foreign caller reads.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Undeclared => "undeclared",
+            Self::Gone => "gone",
+            Self::TooLarge => "too_large",
+        }
+    }
+}
+impl std::fmt::Display for NotifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+/// The host side of the connection a call arrived on; Rpc implements it. A
+/// `Caller` holds no strong reference to the connection, so a provider that
+/// keeps one does not keep a closed connection alive.
+pub trait CallerConnection: Send + Sync + 'static {
+    /// The contract's `connectionId`.
+    fn id(&self) -> &str;
+    /// Writes the notification to this connection only, in order with
+    /// replies and other notices.
+    fn notify(
+        &self,
+        method: &str,
+        params: serde_json::Map<String, Value>,
+    ) -> Result<(), NotifyError>;
+    /// Resolves once the connection closes or the Rpc load that admitted the
+    /// call unloads.
+    fn closed(&self) -> BoxFuture<'static, ()>;
+}
+
+/// The Rust binding of `callChannel` (methods contract A.2): the calling
+/// connection of one admitted call, bound to the notifications the serving
+/// provider generation declared. The provider may keep it after the call
+/// returns.
+#[derive(Clone)]
+pub struct Caller(Arc<CallerInner>);
+
+struct CallerInner {
+    connection: Arc<dyn CallerConnection>,
+    notifications: Arc<HashSet<String>>,
+    /// The serving generation's stopping signal: after it fires, a
+    /// notification is `Gone`, as it is for the foreign binding, whose
+    /// entries the same unload removes (A.2).
+    stopping: CancellationToken,
+    /// The foreign binding's `callId` of the call that produced this caller;
+    /// `None` for a native provider, which never records into [`Callers`].
+    call: Option<String>,
+}
+impl Caller {
+    /// The contract's `connectionId`.
+    pub fn id(&self) -> &str {
+        self.0.connection.id()
+    }
+    /// The foreign binding's `callId` of this call. A part of another
+    /// language sends its notifications with it so they follow its own
+    /// reply, not a later call's.
+    pub(crate) fn call_id(&self) -> Option<&str> {
+        self.0.call.as_deref()
+    }
+    /// Sends a connection-bound notification. A generation that has unloaded
+    /// is `Gone` for every name; while it is loaded, a name it did not
+    /// declare is `Undeclared` and nothing is written, whatever the
+    /// connection's state; a closed connection is `Gone`; an encoded
+    /// notification over the frame limit is `TooLarge` and the connection
+    /// stays open.
+    pub fn notify(
+        &self,
+        method: &str,
+        params: serde_json::Map<String, Value>,
+    ) -> Result<(), NotifyError> {
+        if self.0.stopping.is_cancelled() {
+            return Err(NotifyError::Gone);
+        }
+        if !self.0.notifications.contains(method) {
+            return Err(NotifyError::Undeclared);
+        }
+        self.0.connection.notify(method, params)
+    }
+    /// Resolves once the caller's connection closes or the calling load
+    /// unloads (methods contract A.2, `closed`).
+    pub fn closed(&self) -> impl Future<Output = ()> + Send + 'static {
+        self.0.connection.closed()
+    }
+}
+
+/// The client connection a call arrived on, its direct writer, and the
+/// process's caller index: what lets a part of another language name a call
+/// and a connection long after the call returned.
+#[derive(Clone)]
+pub struct CallSite {
+    /// This call's channel: notifications sent before its reply are held.
+    pub connection: Arc<dyn CallerConnection>,
+    /// The same connection without this call's hold, for a notification whose
+    /// call has finished.
+    pub direct: Arc<dyn CallerConnection>,
+    pub callers: Arc<Callers>,
+    /// The calling connection's close signal, cancelled before the index
+    /// forgets the connection: a call admitted in that window records
+    /// nothing.
+    pub closed: CancellationToken,
+}
+
+/// One row instance's calls on one connection: the connection's direct
+/// writer and the calls whose replies are not written yet.
+struct ConnectionEntry {
+    connection: Arc<dyn CallerConnection>,
+    calls: HashMap<String, Weak<dyn CallerConnection>>,
+}
+
+/// The caller index under [`Callers`]' one lock.
+#[derive(Default)]
+struct CallerIndex {
+    /// Per row instance, the notification names its generation declared.
+    /// They outlive the connections that called it, so a name the provider
+    /// did not declare answers `Undeclared` rather than `Gone`.
+    declared: HashMap<InstanceId, HashSet<String>>,
+    /// Per row instance and connection id, the connection's direct writer
+    /// and its unfinished calls.
+    entries: HashMap<(InstanceId, String), ConnectionEntry>,
+}
+
+/// The calls a row of another language has in flight, by row instance and
+/// connection id (methods contract A.2, foreign `notify`): the process's only
+/// caller index. A native provider keeps its own [`Caller`] and records
+/// nothing here. Entries are removed when the connection closes, when the
+/// admitting Rpc load unloads and when the row's generation unloads; the
+/// instance's declared names are removed with its generation. No write
+/// happens under this index's lock: `notify` looks up and clones the target
+/// connection and lets go of the lock before it encodes or sends anything.
+#[derive(Default)]
+pub struct Callers(Mutex<CallerIndex>);
+
+/// One foreign call's record in [`Callers`]: its entry exists exactly while
+/// its sink holds frames, and [`finish`](Self::finish) removes it after the
+/// reply is written.
+pub struct CallRegistration {
+    callers: Arc<Callers>,
+    instance: InstanceId,
+    connection: String,
+    call: String,
+}
+impl CallRegistration {
+    /// The call's reply is written: a later `notify` with its `callId` is
+    /// written directly, and the index no longer holds the call.
+    pub fn finish(self) {
+        let Self {
+            callers,
+            instance,
+            connection,
+            call,
+        } = self;
+        let mut index = callers.0.lock().expect("caller index");
+        if let Some(entry) = index.entries.get_mut(&(instance, connection)) {
+            entry.calls.remove(&call);
+        }
+    }
+}
+
+impl Callers {
+    /// Records one foreign call of the provider generation `instance`:
+    /// `connection` holds its frames until the reply, `direct` writes without
+    /// that hold, and `notifications` are the names the serving generation
+    /// declared. A connection that closed before this call reached the index
+    /// gets no entry: the close already removed its entries and will not run
+    /// again. The returned registration removes the call from the index.
+    pub fn record(
+        self: &Arc<Self>,
+        instance: InstanceId,
+        connection: &Arc<dyn CallerConnection>,
+        direct: Arc<dyn CallerConnection>,
+        call: &str,
+        notifications: &HashSet<String>,
+        closed: &CancellationToken,
+    ) -> CallRegistration {
+        let connection_id = connection.id().to_owned();
+        let mut index = self.0.lock().expect("caller index");
+        index
+            .declared
+            .entry(instance)
+            .or_default()
+            .extend(notifications.iter().cloned());
+        if !closed.is_cancelled() {
+            let entry = index
+                .entries
+                .entry((instance, connection_id.clone()))
+                .or_insert_with(|| ConnectionEntry {
+                    connection: direct.clone(),
+                    calls: HashMap::new(),
+                });
+            entry.connection = direct;
+            entry
+                .calls
+                .insert(call.to_owned(), Arc::downgrade(connection));
+        }
+        CallRegistration {
+            callers: self.clone(),
+            instance,
+            connection: connection_id,
+            call: call.to_owned(),
+        }
+    }
+    /// Writes `method` for the call `call`: through that call while its reply
+    /// is not written, and directly once it is or when the id is not in
+    /// flight. A name the generation did not declare is `Undeclared` before
+    /// the connection is looked at; a connection the generation received no
+    /// call from, or one that closed, is `Gone`.
+    pub fn notify(
+        &self,
+        instance: InstanceId,
+        connection: &str,
+        call: &str,
+        method: &str,
+        params: serde_json::Map<String, Value>,
+    ) -> Result<(), NotifyError> {
+        // Only look up and clone under the lock: encoding a large frame and
+        // taking the sink's lock must not hold the process's index.
+        let target = {
+            let index = self.0.lock().expect("caller index");
+            let Some(declared) = index.declared.get(&instance) else {
+                return Err(NotifyError::Gone);
+            };
+            if !declared.contains(method) {
+                return Err(NotifyError::Undeclared);
+            }
+            let Some(entry) = index.entries.get(&(instance, connection.to_owned())) else {
+                return Err(NotifyError::Gone);
+            };
+            match entry.calls.get(call).and_then(Weak::upgrade) {
+                Some(sink) => sink,
+                None => entry.connection.clone(),
+            }
+        };
+        target.notify(method, params)
+    }
+    /// The connection to await for `closed({connectionId})`; an id the
+    /// generation never received a call from is `Gone`.
+    pub fn closed(
+        &self,
+        instance: InstanceId,
+        connection: &str,
+    ) -> Result<BoxFuture<'static, ()>, NotifyError> {
+        let index = self.0.lock().expect("caller index");
+        let entry = index
+            .entries
+            .get(&(instance, connection.to_owned()))
+            .ok_or(NotifyError::Gone)?;
+        Ok(entry.connection.closed())
+    }
+    /// The admitting Rpc load unloaded: no call it admitted can be named.
+    pub fn clear(&self) {
+        *self.0.lock().expect("caller index") = CallerIndex::default();
+    }
+    /// `connection` closed: every generation's entries for it are gone. The
+    /// declared names stay until their generation unloads.
+    pub fn close_connection(&self, connection: &str) {
+        self.0
+            .lock()
+            .expect("caller index")
+            .entries
+            .retain(|(_, id), _| id != connection);
+    }
+    /// The row generation `instance` unloaded: its entries and declared names
+    /// are gone.
+    pub fn forget_instance(&self, instance: InstanceId) {
+        let mut index = self.0.lock().expect("caller index");
+        index.declared.remove(&instance);
+        index.entries.retain(|(owner, _), _| *owner != instance);
+    }
+    #[cfg(test)]
+    fn count(&self) -> usize {
+        self.0.lock().expect("caller index").entries.len()
+    }
+}
 
 /// The progress channel of one call (methods contract A.2, `progress`): the
 /// provider sends progress data on the call it serves, and the caller's entry
@@ -223,15 +555,20 @@ pub struct MethodDecl {
     /// Whether the caller receives the progress the provider sends.
     #[serde(skip_serializing)]
     pub progress: bool,
+    /// The notification names inside the namespace the provider may send on
+    /// this method's caller (A.2). Checked once when the generation is built.
+    #[serde(default, skip_serializing)]
+    pub notifications: Vec<String>,
 }
 impl MethodDecl {
-    /// A method without progress.
+    /// A method without progress or notifications.
     pub fn new(name: &str, mutating: bool, interruption: Interruption) -> Self {
         Self {
             name: name.into(),
             mutating,
             interruption,
             progress: false,
+            notifications: Vec::new(),
         }
     }
 }
@@ -243,6 +580,19 @@ impl MethodDecl {
 pub struct MethodProvider {
     declarations: Vec<MethodDecl>,
     handler: Handler,
+    /// The notification names of the whole declaration set: a notification
+    /// belongs to the generation, not to one of its methods, so it is
+    /// declared once.
+    notifications: Arc<HashSet<String>>,
+    /// The provider generation's own fiber, which ties it to the row that
+    /// registered it.
+    instance: InstanceId,
+    /// Whether the handler belongs to a part of another language: only those
+    /// record their calls in [`Callers`].
+    foreign: bool,
+    /// The caller index this generation first recorded into, for the unload
+    /// effect that removes the instance's entries.
+    index: Mutex<Option<Arc<Callers>>>,
     gate: Mutex<()>,
     stopping: CancellationToken,
     calls: TaskTracker,
@@ -250,8 +600,10 @@ pub struct MethodProvider {
 
 impl MethodProvider {
     /// Rejects an invalid namespace or declarations (A.1: grammar, at least
-    /// one method, each unique and inside the namespace), then registers the
-    /// unload effect on `ctx`, which waits for every admitted call.
+    /// one method, each unique and inside the namespace; and its declared
+    /// notifications: grammar, inside the namespace, unique across the set
+    /// and never a method's name), then registers the unload effect on
+    /// `ctx`, which waits for every admitted call.
     ///
     /// The generation of `ctx` stops admitting and interrupts its calls when
     /// it is cancelled, the first step of its unload, before any of its
@@ -264,14 +616,24 @@ impl MethodProvider {
         namespace: &str,
         declarations: Vec<MethodDecl>,
         handler: Handler,
+        foreign: bool,
     ) -> Result<Arc<Self>, Error> {
         let mut unique = HashSet::new();
+        let mut notifications = HashSet::new();
         if !valid_name(namespace)
             || declarations.is_empty()
             || declarations.iter().any(|decl| {
                 !valid_name(&decl.name)
                     || !within(&decl.name, namespace)
                     || !unique.insert(&decl.name)
+            })
+            || declarations.iter().any(|decl| {
+                decl.notifications.iter().any(|name| {
+                    !valid_name(name)
+                        || !within(name, namespace)
+                        || unique.contains(name)
+                        || !notifications.insert(name.clone())
+                })
             })
         {
             return Err(rutis::Error::from(ErrorKind::PluginFailed(
@@ -281,6 +643,10 @@ impl MethodProvider {
         let provider = Arc::new(Self {
             declarations,
             handler,
+            notifications: Arc::new(notifications),
+            instance: ctx.instance(),
+            foreign,
+            index: Mutex::new(None),
             gate: Mutex::new(()),
             stopping: ctx.cancellation_token().child_token(),
             calls: TaskTracker::new(),
@@ -293,6 +659,9 @@ impl MethodProvider {
                 owner.calls.close();
             }
             owner.calls.wait().await;
+            if let Some(index) = owner.index.lock().unwrap().take() {
+                index.forget_instance(owner.instance);
+            }
             Ok(())
         })?;
         Ok(provider)
@@ -309,11 +678,18 @@ impl MethodProvider {
     /// handler's token fires on either unload. A caller's disconnect cancels
     /// nothing. `progress` delivers the call's progress to its caller when
     /// the method declares it; the channel closes before the reply is handed
-    /// over.
+    /// over. `site` is the client connection the call arrived on: the handler
+    /// receives its [`Caller`] bound to this generation's declared
+    /// notifications; once this generation unloads, the caller answers
+    /// `Gone`, like the foreign binding's index entry. A provider of another
+    /// language also records the call
+    /// under its `callId`, so a notification follows this call's reply until
+    /// [`Accepted::registration`] ends it.
     pub fn accept(
         &self,
         method: String,
         params: Value,
+        site: Option<CallSite>,
         entry_stopping: CancellationToken,
         progress: impl Fn(Value) + Send + Sync + 'static,
     ) -> Result<Accepted, RpcError> {
@@ -330,6 +706,33 @@ impl MethodProvider {
         if self.stopping.is_cancelled() {
             return Err(RpcError::reloading());
         }
+        let mut registration = None;
+        let caller = site.map(|site| {
+            let call = self.foreign.then(|| uuid::Uuid::new_v4().to_string());
+            let caller = Caller(Arc::new(CallerInner {
+                connection: site.connection.clone(),
+                notifications: self.notifications.clone(),
+                stopping: self.stopping.clone(),
+                call: call.clone(),
+            }));
+            if let Some(call) = call {
+                *self.index.lock().unwrap() = Some(site.callers.clone());
+                registration = Some(site.callers.record(
+                    self.instance,
+                    &site.connection,
+                    site.direct,
+                    &call,
+                    &self.notifications,
+                    &site.closed,
+                ));
+            }
+            caller
+        });
+        let call = MethodCall {
+            method,
+            params,
+            origin: Origin { caller },
+        };
         let (send, reply) = tokio::sync::oneshot::channel();
         let (settle, settled) = tokio::sync::oneshot::channel::<()>();
         let (handler, stopping, cancel) = (
@@ -339,7 +742,7 @@ impl MethodProvider {
         );
         self.calls.spawn(async move {
             let _settle = settle;
-            let operation = handler(method, params, cancel.clone(), progress.clone());
+            let operation = handler(call, cancel.clone(), progress.clone());
             tokio::pin!(operation);
             let unloading = async {
                 tokio::select! {
@@ -368,7 +771,11 @@ impl MethodProvider {
             progress.close();
             let _ = send.send(result);
         });
-        Ok(Accepted { reply, settled })
+        Ok(Accepted {
+            reply,
+            settled,
+            registration,
+        })
     }
 }
 
@@ -377,6 +784,9 @@ impl MethodProvider {
 pub struct Accepted {
     pub reply: tokio::sync::oneshot::Receiver<Result<Value, RpcError>>,
     pub settled: tokio::sync::oneshot::Receiver<()>,
+    /// The caller-index entry a foreign call holds until its reply is
+    /// written; `None` for a native provider.
+    pub registration: Option<CallRegistration>,
 }
 
 #[derive(Deserialize)]
@@ -421,54 +831,71 @@ fn rethrown(error: &rutis_bridge::session::Error) -> Option<RpcError> {
 /// reply: it is `operation_interrupted`, and it may already have taken
 /// effect (rutis usage R6).
 pub fn foreign_handler(call: Reference) -> Handler {
-    Arc::new(move |method, params, cancel, progress| {
-        let call = call.clone();
-        Box::pin(async move {
-            let interrupted = cancel.clone();
-            let _finish = cancel.clone().drop_guard();
-            let cancelled = BridgeValue::future(async move {
-                cancel.cancelled().await;
-                Ok(BridgeValue::Undefined)
-            });
-            let progress = BridgeValue::callback(move |args| {
-                let [data]: [BridgeValue; 1] = args
-                    .list()?
-                    .try_into()
-                    .map_err(|_| BridgeError::Value("progress needs one argument".into()))?;
-                progress.send(data.json()?);
-                Ok(BridgeValue::Undefined)
-            });
-            let request = json!({"callId": uuid::Uuid::new_v4().to_string(), "method": method, "params": params});
-            let reply = async {
-                let value = call
-                    .call_async(BridgeValue::List(vec![request.into(), cancelled, progress]))
-                    .await?;
-                settle(value).await?.json()
-            }
-            .await;
-            let reply = reply
-                .and_then(|value| {
-                    serde_json::from_value::<ForeignReply>(value)
-                        .map_err(|error| BridgeError::Value(error.to_string()))
-                })
-                .map_err(|error| {
-                    rethrown(&error).unwrap_or_else(|| {
-                        if interrupted.is_cancelled() {
-                            return RpcError::interrupted();
-                        }
-                        tracing::warn!(%error, "foreign method failed");
-                        RpcError::wire(-32603, "Method binding failed")
+    Arc::new(
+        move |MethodCall {
+                  method,
+                  params,
+                  origin,
+              }: MethodCall,
+              cancel,
+              progress| {
+            let call = call.clone();
+            Box::pin(async move {
+                let interrupted = cancel.clone();
+                let _finish = cancel.clone().drop_guard();
+                let cancelled = BridgeValue::future(async move {
+                    cancel.cancelled().await;
+                    Ok(BridgeValue::Undefined)
+                });
+                let progress = BridgeValue::callback(move |args| {
+                    let [data]: [BridgeValue; 1] = args
+                        .list()?
+                        .try_into()
+                        .map_err(|_| BridgeError::Value("progress needs one argument".into()))?;
+                    progress.send(data.json()?);
+                    Ok(BridgeValue::Undefined)
+                });
+                let call_id = origin
+                    .caller
+                    .as_ref()
+                    .and_then(Caller::call_id)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                let mut request = json!({"callId": call_id, "method": method, "params": params});
+                if let Some(caller) = &origin.caller {
+                    request["origin"] = json!({ "connectionId": caller.id() });
+                }
+                let reply = async {
+                    let value = call
+                        .call_async(BridgeValue::List(vec![request.into(), cancelled, progress]))
+                        .await?;
+                    settle(value).await?.json()
+                }
+                .await;
+                let reply = reply
+                    .and_then(|value| {
+                        serde_json::from_value::<ForeignReply>(value)
+                            .map_err(|error| BridgeError::Value(error.to_string()))
                     })
-                })?;
-            match reply {
-                ForeignReply::Value {
-                    kind: DirectReply::Value,
-                    value,
-                } => Ok(value),
-                ForeignReply::Error { code, message } => Err(RpcError::service(&code, message)),
-            }
-        })
-    })
+                    .map_err(|error| {
+                        rethrown(&error).unwrap_or_else(|| {
+                            if interrupted.is_cancelled() {
+                                return RpcError::interrupted();
+                            }
+                            tracing::warn!(%error, "foreign method failed");
+                            RpcError::wire(-32603, "Method binding failed")
+                        })
+                    })?;
+                match reply {
+                    ForeignReply::Value {
+                        kind: DirectReply::Value,
+                        value,
+                    } => Ok(value),
+                    ForeignReply::Error { code, message } => Err(RpcError::service(&code, message)),
+                }
+            })
+        },
+    )
 }
 
 /// Checks a namespace and its declarations before they are registered: the
@@ -521,9 +948,20 @@ impl MethodTable {
         declarations: Vec<MethodDecl>,
         handler: Handler,
     ) -> Result<(), Error> {
+        self.register_with(ctx, namespace, declarations, handler, false)
+    }
+
+    fn register_with(
+        &self,
+        ctx: &Ctx,
+        namespace: &str,
+        declarations: Vec<MethodDecl>,
+        handler: Handler,
+        foreign: bool,
+    ) -> Result<(), Error> {
         (self.check)(namespace, &declarations)?;
         let row = ctx.row();
-        let provider = MethodProvider::new(ctx, namespace, declarations, handler)?;
+        let provider = MethodProvider::new(ctx, namespace, declarations, handler, foreign)?;
         self.entries.register(ctx, namespace, Entry { provider })?;
         self.left.lock().unwrap().remove(namespace);
         let (left, namespace) = (Arc::downgrade(&self.left), namespace.to_owned());
@@ -617,7 +1055,7 @@ impl MethodTable {
     ) -> Result<(), Error> {
         let declarations: Vec<MethodDecl> = serde_json::from_value(declarations)
             .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
-        self.register(ctx, namespace, declarations, foreign_handler(call))
+        self.register_with(ctx, namespace, declarations, foreign_handler(call), true)
     }
 }
 
@@ -732,5 +1170,215 @@ impl DynPlugin for SessionMethodsPlugin {
             ctx.provide_at(self.table.clone(), Arc::new(SessionMethods(table)))?;
             Ok(Effect::Done)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A connection stand-in that records which handle wrote a notification.
+    struct Channel {
+        id: &'static str,
+        tag: &'static str,
+        writes: Arc<Mutex<Vec<String>>>,
+    }
+    impl CallerConnection for Channel {
+        fn id(&self) -> &str {
+            self.id
+        }
+        fn notify(
+            &self,
+            method: &str,
+            _: serde_json::Map<String, Value>,
+        ) -> Result<(), NotifyError> {
+            self.writes
+                .lock()
+                .unwrap()
+                .push(format!("{}:{method}", self.tag));
+            Ok(())
+        }
+        fn closed(&self) -> BoxFuture<'static, ()> {
+            Box::pin(std::future::pending())
+        }
+    }
+    fn channel(
+        id: &'static str,
+        tag: &'static str,
+        writes: &Arc<Mutex<Vec<String>>>,
+    ) -> Arc<dyn CallerConnection> {
+        Arc::new(Channel {
+            id,
+            tag,
+            writes: writes.clone(),
+        })
+    }
+    fn names() -> HashSet<String> {
+        HashSet::from(["notes.changed".to_owned()])
+    }
+
+    /// F2: the index holds a connection entry only until the connection
+    /// closes or the row unloads, and a call entry only until its reply is
+    /// written. A finished call's id writes directly.
+    #[tokio::test]
+    async fn the_index_forgets_finished_calls_closed_connections_and_unloaded_rows() {
+        let first = Ctx::root().unwrap();
+        let second = Ctx::root().unwrap();
+        let callers = Arc::new(Callers::default());
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let sink = channel("first", "held", &writes);
+        let registration = callers.record(
+            first.instance(),
+            &sink,
+            channel("first", "direct", &writes),
+            "call-1",
+            &names(),
+            &CancellationToken::new(),
+        );
+        assert_eq!(callers.count(), 1);
+        callers
+            .notify(
+                first.instance(),
+                "first",
+                "call-1",
+                "notes.changed",
+                Default::default(),
+            )
+            .unwrap();
+        callers
+            .notify(
+                first.instance(),
+                "first",
+                "finished",
+                "notes.changed",
+                Default::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            *writes.lock().unwrap(),
+            ["held:notes.changed", "direct:notes.changed"]
+        );
+        assert_eq!(
+            callers.notify(
+                first.instance(),
+                "absent",
+                "call-1",
+                "notes.changed",
+                Default::default()
+            ),
+            Err(NotifyError::Gone)
+        );
+        assert_eq!(
+            callers.notify(
+                first.instance(),
+                "first",
+                "call-1",
+                "notes.other",
+                Default::default()
+            ),
+            Err(NotifyError::Undeclared)
+        );
+        // The reply is written: the call entry is gone and later ids write
+        // directly.
+        registration.finish();
+        callers
+            .notify(
+                first.instance(),
+                "first",
+                "call-1",
+                "notes.changed",
+                Default::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            writes.lock().unwrap().last().unwrap(),
+            "direct:notes.changed"
+        );
+        // Closing one connection leaves another row's entries; unloading the
+        // row removes its own.
+        let other = channel("second", "held", &writes);
+        callers.record(
+            second.instance(),
+            &other,
+            channel("second", "direct", &writes),
+            "call-2",
+            &names(),
+            &CancellationToken::new(),
+        );
+        assert_eq!(callers.count(), 2);
+        callers.close_connection("first");
+        assert_eq!(callers.count(), 1);
+        // A closed connection answers a name the generation declared `Gone`,
+        // and an undeclared name `Undeclared`: the provider's error comes
+        // first in both bindings (A.2).
+        assert_eq!(
+            callers.notify(
+                first.instance(),
+                "first",
+                "call-1",
+                "notes.changed",
+                Default::default()
+            ),
+            Err(NotifyError::Gone)
+        );
+        assert_eq!(
+            callers.notify(
+                first.instance(),
+                "first",
+                "call-1",
+                "notes.other",
+                Default::default()
+            ),
+            Err(NotifyError::Undeclared)
+        );
+        callers.forget_instance(second.instance());
+        assert_eq!(callers.count(), 0);
+        // The generation that unloaded declared nothing any more: its names
+        // are `Gone`, as they are for a native caller after the same unload.
+        assert_eq!(
+            callers.notify(
+                second.instance(),
+                "second",
+                "call-2",
+                "notes.other",
+                Default::default()
+            ),
+            Err(NotifyError::Gone)
+        );
+        first.shutdown().await.unwrap();
+        second.shutdown().await.unwrap();
+    }
+
+    /// F6: a call admitted as its connection closes records no entry, so the
+    /// index keeps nothing for a connection that will never see `finish` run
+    /// against it again.
+    #[tokio::test]
+    async fn a_call_recorded_after_its_connection_closed_leaves_no_entry() {
+        let root = Ctx::root().unwrap();
+        let callers = Arc::new(Callers::default());
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let closed = CancellationToken::new();
+        closed.cancel();
+        callers.record(
+            root.instance(),
+            &channel("first", "held", &writes),
+            channel("first", "direct", &writes),
+            "call-1",
+            &names(),
+            &closed,
+        );
+        assert_eq!(callers.count(), 0);
+        assert_eq!(
+            callers.notify(
+                root.instance(),
+                "first",
+                "call-1",
+                "notes.other",
+                Default::default()
+            ),
+            Err(NotifyError::Undeclared)
+        );
+        assert!(writes.lock().unwrap().is_empty());
+        root.shutdown().await.unwrap();
     }
 }

@@ -1,13 +1,14 @@
 //! Session-scoped wakeups through a real App Server (design §10): create,
 //! list, cancel and fire; restart and expiry; an unloaded target and a
-//! deleted one. Timing follows `timer_flow.rs`: a real clock, an instant two
-//! or three seconds ahead, and a short poll with a hard timeout.
+//! deleted one; the change notices an attached client receives (design §11.1).
+//! Timing follows `timer_flow.rs`: a real clock, an instant two or three
+//! seconds ahead, and a short poll with a hard timeout.
 use dim_agent_capabilities::{defaults, history::HistoryRenderer, host::*};
 use dim_agent_runtime::{Agent, AgentBuilder, AgentConfig};
 use dim_agent_scheduler::install;
 use dim_agent_types::*;
 use dim_app_server::{RunningServer, ServerConfig, serve};
-use dim_client::{Client, ConnectionConfig, Server};
+use dim_client::{Client, ConnectionConfig, Message, Server};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
@@ -1304,6 +1305,321 @@ async fn the_tool_schedules_a_wakeup_for_the_caller_and_refuses_elsewhere() {
         "the refused tool wrote nothing"
     );
 
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Reads notifications in arrival order until `accept` takes one, returning
+/// its params; `before` sees every notification read on the way.
+async fn wait_notice(
+    client: &mut Client,
+    what: &str,
+    mut before: impl FnMut(&str, &Value),
+    mut accept: impl FnMut(&str, &Value) -> bool,
+) -> Value {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let Message::Notice { method, params } = client.next().await.unwrap() else {
+                continue;
+            };
+            if accept(&method, &params) {
+                return params;
+            }
+            before(&method, &params);
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+}
+
+/// Whether a `session.notice` announces the wakeup record's `state`.
+fn wakeup_state(method: &str, params: &Value, wakeup_id: &str, state: &str) -> bool {
+    method == "session.notice"
+        && params["source"] == json!("Scheduler")
+        && params["kind"] == json!("wakeup")
+        && params["data"]["wakeupId"] == json!(wakeup_id)
+        && params["data"]["state"] == json!(state)
+}
+
+/// Whether a `session.event` notification is the wakeup input the pass wrote,
+/// named by its submission id `wakeup:<wakeup_id>`.
+fn wakeup_input_event(method: &str, params: &Value, wakeup_id: &str) -> bool {
+    method == "session.event"
+        && params["event"]["type"] == json!("input")
+        && params["event"]["name"] == json!("message")
+        && params["event"]["data"]["submission_id"] == json!(format!("wakeup:{wakeup_id}"))
+}
+
+/// A committed record change is announced as `session.notice`. A `fired`
+/// notice is a committed-state notice, not ordered against the input's
+/// `session.event`; a client relates them by the input's submission id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wakeup_changes_reach_an_attached_client_as_session_notices() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &[], true).await;
+    client
+        .rpc("session.attach", json!({"sessionId": session}))
+        .await
+        .unwrap();
+
+    let created: Value = client
+        .rpc(
+            "session.wakeup.create",
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(3),
+                "prompt": "Announce me."}),
+        )
+        .await
+        .unwrap();
+    let wakeup_id = created["wakeupId"].as_str().unwrap().to_owned();
+
+    let scheduled = wait_notice(
+        &mut client,
+        "the scheduled notice",
+        |_, _| {},
+        |method, params| wakeup_state(method, params, &wakeup_id, "scheduled"),
+    )
+    .await;
+    assert_eq!(scheduled["sessionId"], json!(session), "{scheduled}");
+    assert_eq!(scheduled["data"]["branchId"], json!("main"), "{scheduled}");
+
+    // The notice is not ordered against the input's event: collect both
+    // without assuming which arrives first.
+    let mut input_event = None;
+    let fired = wait_notice(
+        &mut client,
+        "the fired notice",
+        |method, params| {
+            if wakeup_input_event(method, params, &wakeup_id) {
+                input_event = Some(params.clone());
+            }
+        },
+        |method, params| wakeup_state(method, params, &wakeup_id, "fired"),
+    )
+    .await;
+    assert_eq!(fired["data"]["state"], json!("fired"), "{fired}");
+    let input = match input_event {
+        Some(input) => input,
+        None => {
+            wait_notice(
+                &mut client,
+                "the input event",
+                |_, _| {},
+                |method, params| wakeup_input_event(method, params, &wakeup_id),
+            )
+            .await
+        }
+    };
+    assert_eq!(
+        input["event"]["data"]["submission_id"],
+        json!(format!("wakeup:{wakeup_id}")),
+        "{input}"
+    );
+
+    // The notice reports the committed record; the owner's query is the truth
+    // once the notice has arrived.
+    let listed: Value = client
+        .rpc("session.wakeup.list", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    assert_eq!(listed["wakeups"][0]["state"], json!("fired"), "{listed}");
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A cancel that settles a scheduled record announces `cancelled`; a cancel
+/// of the terminal record changes nothing and announces nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_settling_cancel_announces_and_a_terminal_cancel_does_not() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &[], true).await;
+    client
+        .rpc("session.attach", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    let created: Value = client
+        .rpc(
+            "session.wakeup.create",
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(120),
+                "prompt": "Cancel me."}),
+        )
+        .await
+        .unwrap();
+    let wakeup_id = created["wakeupId"].as_str().unwrap().to_owned();
+    wait_notice(
+        &mut client,
+        "the scheduled notice",
+        |_, _| {},
+        |method, params| wakeup_state(method, params, &wakeup_id, "scheduled"),
+    )
+    .await;
+
+    let cancelled: Value = client
+        .rpc(
+            "session.wakeup.cancel",
+            json!({"sessionId": session, "wakeupId": wakeup_id}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cancelled, json!({}), "{cancelled}");
+    wait_notice(
+        &mut client,
+        "the cancelled notice",
+        |_, _| {},
+        |method, params| wakeup_state(method, params, &wakeup_id, "cancelled"),
+    )
+    .await;
+
+    let again: Value = client
+        .rpc(
+            "session.wakeup.cancel",
+            json!({"sessionId": session, "wakeupId": wakeup_id}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(again["state"], json!("cancelled"), "{again}");
+    let quiet = tokio::time::timeout(Duration::from_millis(1500), async {
+        loop {
+            let Message::Notice { method, params } = client.next().await.unwrap() else {
+                continue;
+            };
+            if method == "session.notice"
+                && params["kind"] == json!("wakeup")
+                && params["data"]["wakeupId"] == json!(wakeup_id)
+            {
+                return params;
+            }
+        }
+    })
+    .await;
+    assert!(
+        quiet.is_err(),
+        "a terminal cancel announces nothing: {quiet:?}"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A record the pass settles `expired` announces that state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_expiry_announces_expired_to_an_attached_client() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &[], true).await;
+    client
+        .rpc("session.attach", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    let created: Value = client
+        .rpc(
+            "session.wakeup.create",
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(120),
+                "prompt": "Too late."}),
+        )
+        .await
+        .unwrap();
+    let wakeup_id = created["wakeupId"].as_str().unwrap().to_owned();
+    wait_notice(
+        &mut client,
+        "the scheduled notice",
+        |_, _| {},
+        |method, params| wakeup_state(method, params, &wakeup_id, "scheduled"),
+    )
+    .await;
+
+    // The same edit the restart expiry test uses stands in for the elapsed
+    // grace: the pass classifies a `scheduled` record past the window.
+    edit_wakeups(home.path(), |wakeups| {
+        wakeups[0]["at"] = json!(instant_after(-120));
+    });
+    let expired = wait_notice(
+        &mut client,
+        "the expired notice",
+        |_, _| {},
+        |method, params| wakeup_state(method, params, &wakeup_id, "expired"),
+    )
+    .await;
+    assert_eq!(expired["data"]["branchId"], json!("main"), "{expired}");
+    assert_eq!(model.count(), 0, "an expired wakeup starts no turn");
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A notice is Session-level: a client attached while the record targets
+/// another branch of the same Session receives it too, and `data.branchId`
+/// names that branch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wakeup_notices_reach_a_client_attached_to_the_whole_session() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &["branch"], true).await;
+    let mut other = connect(&server).await;
+    client
+        .rpc("session.attach", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    other
+        .rpc("session.attach", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    let agent: Agent = server.agent().expect("the default Agent");
+    let at = agent
+        .get_session(&session)
+        .unwrap()
+        .sequence("main")
+        .unwrap();
+    let child = client
+        .rpc(
+            "session.branch_create",
+            json!({"sessionId": session, "parentBranchId": "main", "at": at,
+                "prompt": "Child work."}),
+        )
+        .await
+        .unwrap()["branch"]["branchId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let created: Value = client
+        .rpc(
+            "session.wakeup.create",
+            json!({"sessionId": session, "branchId": child, "at": instant_after(120),
+                "prompt": "Into the child."}),
+        )
+        .await
+        .unwrap();
+    let wakeup_id = created["wakeupId"].as_str().unwrap().to_owned();
+
+    for (client, who) in [
+        (&mut client, "the creating client"),
+        (&mut other, "the other client"),
+    ] {
+        let notice = wait_notice(
+            client,
+            &format!("{who}'s scheduled notice"),
+            |_, _| {},
+            |method, params| wakeup_state(method, params, &wakeup_id, "scheduled"),
+        )
+        .await;
+        assert_eq!(notice["data"]["branchId"], json!(child), "{notice}");
+    }
+
+    drop(other);
     drop(client);
     server.shutdown();
     server.join().await.unwrap();

@@ -508,6 +508,7 @@ impl OpenAITranscriptionModel {
             subprotocols,
             abort_signal: abort.clone(),
             timeout: options.timeout,
+            max_message_bytes: None,
             connector: self.web_socket.clone(),
         };
         let mut ws = ws_connect(&req).await?;

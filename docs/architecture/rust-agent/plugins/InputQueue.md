@@ -74,19 +74,44 @@ observable input queue.
 ### Events and lifetime
 
 Consumes `input/message`, `input/consumed`, `turn/start`, `turn/end`,
-`stop/interrupt`; produces `input/applied`. It does not run a model itself.
+`stop/interrupt`; produces `input/applied` and, for a handover input,
+`input/deleted`. It does not run a model itself.
 It registers with `Dispatcher::consume`; the rebuild writes owed application
 decisions, without duplicating already committed ones, before any live event. No background tasks or
 external resources. Reload reconstructs state from local history. An idle append
 is pending until a driving input; an interrupt is not permission to start a new
 turn from previously unapplied input.
 
+### Handover inputs
+
+A handover input is an `input/message` whose `handover` is `{turn_id,
+request_id}`: it is addressed to one handover's continuation and is
+model-readable only if that continuation consumes it. InputQueue never releases
+one (it writes no `input/applied`) and does not count it in the published queue
+size. It deletes one with `input/deleted` when its turn ends without consuming
+it, or on arrival when its turn is not open. These are the only InputQueue
+rules for it; the Loop consumes it only in the batch that starts its handover's
+continuation. Its instruction is a raw block with no `user`, like Goal's
+automatic inputs; clients that show the operator's words never show it as the
+operator's message.
+
+A handover input is never a [state input](../../../design/model-prompts.md#5-scopes),
+so an ordering rule for state inputs leaves it last.
+
 ### Tests
 
 [host_flows.rs](../../../../crates/dim-agent-capabilities/tests/host_flows.rs):
-`steer_and_append_enter_the_current_turn_at_tool_result_while_queue_waits`;
+`steer_and_append_enter_the_current_turn_at_tool_result_while_queue_waits`,
+`a_handover_input_is_held_without_being_applied_or_counted`,
+`a_handover_input_is_deleted_at_its_turn_end_and_never_reaches_the_model`,
+`a_handover_input_for_no_open_turn_is_deleted_on_arrival`,
+`a_consumed_handover_input_is_not_deleted_at_turn_end`,
+`a_held_handover_input_does_not_steal_the_next_queued_input`,
+`a_handover_input_written_while_idle_starts_no_turn`,
+`a_withdrawn_handover_input_is_deleted_once`;
 [context_flow.rs](../../../../crates/dim-agent-capabilities/tests/context_flow.rs):
-`restoring_pending_inputs_runs_each_queued_input_in_its_own_turn`.
+`restoring_pending_inputs_runs_each_queued_input_in_its_own_turn`,
+`a_restored_queue_writes_one_owed_deletion_for_a_handover_input`.
 
 <!-- generated:plugin InputQueue — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |

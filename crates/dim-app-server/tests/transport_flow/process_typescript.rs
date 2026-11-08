@@ -144,6 +144,47 @@ async fn node_public_plugin_files_process_storage_and_close_drain() {
     );
     assert_eq!(std::fs::read(invalid).unwrap(), bytes);
 
+    assert_eq!(
+        client.rpc("files.bytes", json!({})).await["result"],
+        json!({"ok":true,"value":{"ok":true,"value":[0,1,2,250,255,128]}})
+    );
+    assert_eq!(
+        std::fs::read(home.join("public-files/blob.bin")).unwrap(),
+        vec![0, 1, 2, 250, 255, 128]
+    );
+    assert_eq!(
+        client.rpc("files.envelope", json!({})).await["result"],
+        json!({"ok":true,"value":{"ok":true,"value":"{\"version\":1,\"text\":\"public process text\"}"}})
+    );
+    assert_eq!(
+        client.rpc("files.list", json!({})).await["result"],
+        json!({"ok":true,"value":[
+            {"name":"public-files/blob.bin","kind":"file"},
+            {"name":"public-files/invalid.json","kind":"file"},
+            {"name":"public-files/state.json","kind":"file"},
+        ]})
+    );
+    assert_eq!(
+        client.rpc("files.invalid_names", json!({})).await["result"],
+        json!([
+            {"ok":false,"error":"invalid_path"},
+            {"ok":false,"error":"invalid_path"},
+            {"ok":false,"error":"invalid_path"},
+        ])
+    );
+    assert_eq!(
+        client.rpc("files.remove", json!({})).await["result"],
+        json!({"ok":true,"value":null})
+    );
+    assert!(!home.join("public-files/blob.bin").exists());
+    assert_eq!(
+        client.rpc("files.list", json!({})).await["result"],
+        json!({"ok":true,"value":[
+            {"name":"public-files/invalid.json","kind":"file"},
+            {"name":"public-files/state.json","kind":"file"},
+        ]})
+    );
+
     let held = client.send("files.hold", json!({})).await;
     let (mut release, _) = tokio::time::timeout(Duration::from_secs(10), gate.accept())
         .await

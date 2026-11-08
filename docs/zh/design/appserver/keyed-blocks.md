@@ -5,7 +5,7 @@
 
 ## 1. 目的与边界
 
-带 key 的 raw 输入块是核心块数据。raw 块携带可选的 key（[session access A.1](../contracts/session-access.md#a1-sessions-服务) 的 `RawBlock.key {use: live | retire, name}`）；key 按分支 Timeline 生效，每个写入方自选 key，无人检查（A.2）。生产者通过普通输入路径写入：Goal 写 `goal:objective` 与 `goal:status`（[Goal](../plugins/Goal.md) §2，A2），TimelineTree 写 `branch:line` 与 `branch:parent`。
+带 key 的 raw 输入块是核心块数据。raw 块携带可选的 key（[session access A.1](../contracts/session-access.md#a1-sessions-服务) 的 `RawBlock.key {use: live | retire, name}`）；key 按分支 Timeline 生效，每个写入方自选 key，无人检查（A.2）。生产者通过普通输入路径写入：Goal 写 `goal:state`（[Goal](../plugins/Goal.md) §2，A2），记录出现之前写成的历史带 Goal 的旧 key `goal:objective` 与 `goal:status`；TimelineTree 写 `branch:line` 与 `branch:parent`。
 
 需要展示存活带 key 状态的客户端，从它加载的分支历史与收到的 `session.event` 实时通知中折叠这些块。有界的历史窗口（最新一轮，[session-history-window](session-history-window.md)）可能从写下某个 key 的输入之后开始，于是从窗口重开会话的客户端会丢掉它从未加载过的存活状态。同一个折叠在每个客户端各写一份，各自都要重新发现同样的规则（opening 重置、retire、已删除输入）。
 
@@ -50,7 +50,7 @@
 
 请求没有 `keys` 过滤参数。回复总是列出该段全部存活 key，包括陌生的；客户端只读它认识的 key，其余忽略——不是错误、不触发重读、不影响其他 key。过滤不会减少扫描（一千条消息之前写下的 key 仍要找到），只会在这条规则之上再加一条未知 key 规则。
 
-没有分页。entry 数随存活 key 数增长，与分支长度无关。`key` 由写入方自选且无人检查，所以计数在此处设上界：超过 1024 个存活 key 以不可重试的应用错误 `too_many_keys` 失败。本读从不截断：截断会悄悄丢掉存活状态。Goal 贡献 2 个 key、TimelineTree 2 个，只有文档合同之外的生产者才会触及该上界。回复同样有大小上界：其序列化 JSON 必须落在 `session.history` 所用的同一回复帧上界之内（`outbound::MAX_FRAME_BYTES` 减去 64 KiB 信封余量），超出即以 `keys_too_large` 失败，而不是被传输层丢弃。几个大块就会先于 key 数触及该上界。截断同样不是答案，理由同上。
+没有分页。entry 数随存活 key 数增长，与分支长度无关。`key` 由写入方自选且无人检查，所以计数在此处设上界：超过 1024 个存活 key 以不可重试的应用错误 `too_many_keys` 失败。本读从不截断：截断会悄悄丢掉存活状态。Goal 贡献一个 key `goal:state`（记录出现之前写成的历史上还有旧 key，直到第一条记录退役它们）、TimelineTree 2 个，只有文档合同之外的生产者才会触及该上界。回复同样有大小上界：其序列化 JSON 必须落在 `session.history` 所用的同一回复帧上界之内（`outbound::MAX_FRAME_BYTES` 减去 64 KiB 信封余量），超出即以 `keys_too_large` 失败，而不是被传输层丢弃。几个大块就会先于 key 数触及该上界。截断同样不是答案，理由同上。
 
 ### 2.3 规则
 
@@ -112,7 +112,11 @@ projection(through) = delivered_state(through)
                       输入的各 key 的带 key 块
 ```
 
-两侧在静止点上完全相等：`through` 处没有「写而未消费」的带 key 输入，例如已稳定的轮末或压缩切点。此时对每个 key：
+两侧在静止点上完全相等：`through` 处没有「写而未消费」的带 key 输入，例如已稳定的轮末或压缩切点。该关系**按 key** 成立，且只有该 key 的块按序号顺序被消费时才成立：投影取序号最新的一块，基线取最后被消费的一块，因此一个被更晚的同 key 输入超过的 Queue 输入会颠倒二者。由单一写入方只以 Append 模式写的 key 满足这一点，因为 InputQueue 在提交时释放每个块，模型基线按该顺序消费它们。
+
+谁满足它：Goal 的 key 是 `goal:state`，只由分支部件写入，且只以 Append 模式写入。TimelineTree 以 Append 模式写 `branch:line`（当块带线结束通知时改用 Steer），以 Append 模式写 `branch:parent`；`branch:parent` 的开场块搭载该线的第一条输入，它为 Queue，且在该 key 的任何更晚块出现之前就被应用。每个块在提交时或作为那条首输入被释放，因此三个 key 的块都按序号顺序消费，关系对三者都成立。
+
+此时对每个 key：
 
 - `entry.key` 等于 baseline entry 的 `key`；
 - baseline entry 的 `message` 是一个文本部分，其字节等于 `entry.text`——`render_input` 用同一个 `RawBlock.text` 构造 `Message::text(Role::User, text)`，两侧都不转义、不渲染；

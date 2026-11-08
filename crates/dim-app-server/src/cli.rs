@@ -400,7 +400,7 @@ pub fn run_with(
             .ok_or("--defaults needs --product-home or --home")?;
         let home = std::path::absolute(home)?;
         let preset = crate::plugin_manager::Defaults::read(defaults)?.runtimes;
-        let runtimes = Arc::new(Runtimes::load(&home, &preset)?);
+        let runtimes = Arc::new(Runtimes::load(&home, &preset, None)?);
         config.session_typescript =
             Some(SessionTypeScriptConfig::acquired(&home, runtimes, vec![]));
     }

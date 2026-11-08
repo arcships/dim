@@ -761,6 +761,7 @@ async fn reads() -> std::result::Result<(), Error> {
                         )),
                         configuration: None,
                         prompt: None,
+                        failure_chain: None,
                     }),
                 ),
                 record(
@@ -1059,6 +1060,7 @@ fn interrupted_batch() -> Vec<EventDraft> {
             configuration: None,
             prompt: None,
             recovery: None,
+            failure_chain: None,
         })
         .into(),
     ]
@@ -1119,6 +1121,7 @@ async fn continue_after_recovery(path: &Path, label: &str) -> std::result::Resul
             request: interrupted_request(3),
             configuration: None,
             prompt: None,
+            failure_chain: None,
         }),
     );
     committed(&store, "interrupted", vec![next.clone()]).await?;

@@ -29,7 +29,9 @@ use crate::{
     codex_oauth::OpenAICodexOAuthService,
     grok_oauth::GrokOAuthService,
     managed_oauth,
-    managed_provider::{AccountSnapshot, CredentialLease, ManagedModel, ManagedProviders},
+    managed_provider::{
+        AccountSnapshot, CredentialLease, ManagedModel, ManagedProviders, reason_excludes_modality,
+    },
     model_catalog::{
         BundledCatalog, CatalogCapabilities, CatalogProvider, ModelEdit, ModelEntry, ModelMetadata,
         ModelSource, NewApiEndpoint, ProviderProjection, declarations_hold, declare,
@@ -455,6 +457,11 @@ impl ProviderRecord {
     /// derived from the effective limits, so a supplied limit makes the
     /// model available again, while the stored value stays for the reset
     /// that puts the base entry back in force.
+    ///
+    /// The boundary rule classifies the entry, not only its reason: an
+    /// `unavailable` status excludes every use, so the catalog publishes the
+    /// stored reason (or the generic every-use one when the status alone is
+    /// the cause) for both uses and neither selection lists it.
     pub(crate) fn effective_models(&self, bundled: &BundledCatalog) -> Vec<EffectiveModel<'_>> {
         self.models
             .iter()
@@ -469,7 +476,19 @@ impl ProviderRecord {
                 };
                 fill_bundled_limits(bundled, &mut entry);
                 let missing_limits = entry.capabilities.missing_limits();
-                let unavailable = limits_reason(source.unavailable_reason.clone(), &missing_limits);
+                let unavailable = if source.excluded_from_every_use() {
+                    // A stored limits reason is the weaker derived fact and
+                    // does not name an entry the status excludes.
+                    Some(Unavailable::every_use(
+                        source
+                            .unavailable_reason
+                            .as_deref()
+                            .filter(|reason| *reason != "limits_undeclared")
+                            .unwrap_or("provider_unavailable"),
+                    ))
+                } else {
+                    limits_reason(source.unavailable_reason.clone(), &missing_limits)
+                };
                 EffectiveModel {
                     source,
                     entry,
@@ -560,20 +579,12 @@ impl Unavailable {
         }
     }
 
-    /// The class of a reason a managed record stored. Discovery names a reason
-    /// once, for a conversational use; the two it stores that leave a
-    /// non-conversational use open are `unsupported_model_type` (the non-chat
-    /// kind) and `limits_undeclared` (the text limits). A new reason that
-    /// excludes only a conversational use is added here, so it reaches
-    /// modality instead of dropping the model.
+    /// The class of a reason a managed record stored, through the one rule the
+    /// managed contract states.
     fn of(reason: String) -> Self {
-        let excludes_modality = !matches!(
-            reason.as_str(),
-            "unsupported_model_type" | "limits_undeclared"
-        );
         Self {
+            excludes_modality: reason_excludes_modality(&reason),
             reason,
-            excludes_modality,
         }
     }
 
@@ -663,6 +674,23 @@ impl ProviderModel {
             .map(str::to_owned)
             .collect();
         (!operations.is_empty()).then_some(operations)
+    }
+
+    /// The realtime transport this entry's `metadata.raw.realtime` declares,
+    /// parsed here where the catalog's external data enters (§3.6); `None`
+    /// when the entry declares none.
+    fn realtime(&self) -> Result<Option<RealtimeDeclaration>, String> {
+        let Some(value) = self.metadata.as_ref().and_then(|metadata| {
+            metadata
+                .raw
+                .get("realtime")
+                .filter(|value| !value.is_null())
+        }) else {
+            return Ok(None);
+        };
+        serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(|_| "The model's realtime declaration needs a protocol and a path".to_owned())
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2239,6 +2267,307 @@ impl ProviderService {
         })
     }
 }
+/// What a connection is resolved for.
+#[derive(Clone, Copy)]
+enum ConnectionUse<'a> {
+    /// A chat request: the catalog's chat selection rule, plus the request
+    /// facts that shape its wire connection.
+    Chat(&'a ModelRequest),
+    /// One non-conversational call of `operation`: the modality selection rule
+    /// and the operation the model must declare, with no request facts.
+    Modality { operation: &'a str },
+}
+impl ConnectionUse<'_> {
+    /// The catalog entry `model_id` selects under this use's rule, or the
+    /// refusal execution reports for it.
+    fn select<'a>(
+        &self,
+        catalog: &'a ProviderCatalog,
+        model_id: &str,
+    ) -> Result<&'a ProviderModel, HostError> {
+        match self {
+            Self::Chat(_) => catalog.selectable(model_id).ok_or_else(|| {
+                let message = catalog
+                    .models
+                    .iter()
+                    .find(|model| model.id == model_id)
+                    .filter(|model| !model.missing_limits.is_empty())
+                    .map(|model| undeclared_limits(&model.capabilities))
+                    .unwrap_or_else(|| "Model is unavailable".into());
+                failure(message)
+            }),
+            Self::Modality { operation } => {
+                let model = catalog
+                    .selectable_modality(model_id)
+                    .ok_or_else(|| failure("Model is unavailable"))?;
+                if !model
+                    .modality_operations()
+                    .is_some_and(|operations| operations.iter().any(|id| id == operation))
+                {
+                    return Err(undeclared_modality_operation(operation));
+                }
+                Ok(model)
+            }
+        }
+    }
+
+    /// The declared limits a chat request's temporary startup connection
+    /// supplies; no other use has them.
+    fn startup_limits(&self) -> Option<(u64, u64)> {
+        let Self::Chat(request) = self else {
+            return None;
+        };
+        let snapshot = request.capability_snapshot.as_ref()?;
+        request.metadata.as_ref()?.startup.as_ref()?;
+        Some((
+            snapshot.capabilities.context_window,
+            snapshot.capabilities.max_output_tokens,
+        ))
+    }
+
+    /// The protocol a chat request adopted for its route, which a route change
+    /// must keep. Only a chat request records one.
+    fn adopted_protocol(&self) -> Option<&serde_json::Value> {
+        let Self::Chat(request) = self else {
+            return None;
+        };
+        request
+            .metadata
+            .as_ref()?
+            .extensions
+            .get("providerProtocol")
+    }
+
+    /// The Session a chat request reports to the OpenCode Go gateway. A
+    /// non-conversational call reports none.
+    fn session_id(&self) -> Option<&str> {
+        let Self::Chat(request) = self else {
+            return None;
+        };
+        request.metadata.as_ref()?.session_id.as_deref()
+    }
+
+    /// The realtime transport the selected entry declares, for a `realtime.*`
+    /// operation only. A declaration that does not parse is an invalid request
+    /// naming the field, never a silent absence.
+    fn realtime(&self, model: &ProviderModel) -> Result<Option<RealtimeDeclaration>, HostError> {
+        match self {
+            Self::Modality { operation } if operation.starts_with("realtime.") => model
+                .realtime()
+                .map_err(|message| HostError::classified(HostErrorKind::InvalidRequest, message)),
+            _ => Ok(None),
+        }
+    }
+}
+
+/// What one resolution produced: the connection both ports hand out, the route
+/// the catalog carries, and a Modality model's declared realtime transport.
+struct Resolution {
+    connection: ResolvedModelConnection,
+    protocol: ModelProtocol,
+    realtime: Option<RealtimeDeclaration>,
+}
+
+impl ProviderService {
+    /// The one resolution both connection ports run: the static vs managed
+    /// (OAuth) split, the record read, the catalog build, selection and the
+    /// managed credential lease. `use_` decides the selectability rule; the
+    /// temporary startup connection and the adopted capability snapshot stay
+    /// with the chat port.
+    async fn resolve_connection(
+        self: &Arc<Self>,
+        provider_id: &str,
+        model_id: &str,
+        use_: ConnectionUse<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<Resolution, HostError> {
+        if !self
+            .oauth
+            .contains(provider_id, cancel)
+            .await
+            .map_err(failure)?
+        {
+            let lookup = provider_id.to_owned();
+            let db = self.db.clone();
+            let record = self
+                .owned(cancel, move |_| {
+                    Box::pin(async move {
+                        db.run_read(move |connection| read_static(connection, &lookup))
+                            .await
+                            .map_err(failure)
+                    })
+                })
+                .await?
+                .ok_or_else(|| failure("Provider not found"))?;
+            self.check(cancel)?;
+            let mut catalog = static_catalog(&self.bundled, provider_id, &record, true);
+            if let Some((window, output)) = use_.startup_limits() {
+                catalog.apply_startup_limits(Some(window), Some(output));
+            }
+            let model = use_.select(&catalog, model_id)?;
+            let protocol = model
+                .endpoint
+                .ok_or_else(|| failure("Model is unavailable"))?;
+            let realtime = use_.realtime(model)?;
+            if record.driver_kind == "new-api-router"
+                && use_
+                    .adopted_protocol()
+                    .is_some_and(|adopted| adopted != &serde_json::json!(protocol))
+            {
+                return Err(HostError::classified(
+                    HostErrorKind::InvalidRequest,
+                    "Model route changed; select the model again",
+                ));
+            }
+            if record.credential_authority != CredentialAuthority::Static {
+                let lease = self
+                    .managed_credential(record.credential_authority, None, cancel)
+                    .await?;
+                let recovered = managed_connection(
+                    self.clone(),
+                    record.credential_authority,
+                    lease,
+                    record.network,
+                );
+                return Ok(Resolution {
+                    connection: ResolvedModelConnection {
+                        connection: recovered.connection,
+                        recovery: Some(recovered.recovery),
+                        failure_policy: None,
+                    },
+                    protocol,
+                    realtime,
+                });
+            }
+            let credential = self
+                .credential(provider_id, &record.credential, &record.auth, cancel)
+                .await?;
+            let mut headers = record.headers;
+            let mut bearer = None;
+            match record.auth {
+                StaticAuth::Anonymous => {}
+                StaticAuth::Bearer => {
+                    let ProviderSecret::Token(value) =
+                        credential.ok_or_else(|| failure("Provider credential is required"))?
+                    else {
+                        return Err(failure("Invalid provider credential type"));
+                    };
+                    bearer = Some(value)
+                }
+                StaticAuth::ApiKey {
+                    header_name,
+                    prefix,
+                } => {
+                    let ProviderSecret::Token(value) =
+                        credential.ok_or_else(|| failure("Provider credential is required"))?
+                    else {
+                        return Err(failure("Invalid provider credential type"));
+                    };
+                    if header_name.eq_ignore_ascii_case("authorization") && prefix == "Bearer " {
+                        bearer = Some(value);
+                    } else {
+                        headers.insert(header_name, format!("{prefix}{value}"));
+                    }
+                }
+                StaticAuth::CustomHeader { header_name } => {
+                    let ProviderSecret::Token(value) =
+                        credential.ok_or_else(|| failure("Provider credential is required"))?
+                    else {
+                        return Err(failure("Invalid provider credential type"));
+                    };
+                    headers.insert(header_name, value);
+                }
+                StaticAuth::AwsBedrock => {
+                    let auth = match credential
+                        .ok_or_else(|| failure("Provider credential is required"))?
+                    {
+                        ProviderSecret::Token(value) => BedrockAuth::Bearer(value),
+                        ProviderSecret::Aws(credentials) => BedrockAuth::SigV4 {
+                            credentials,
+                            region: record
+                                .bedrock_region
+                                .ok_or_else(|| failure("Amazon Bedrock region is missing"))?,
+                        },
+                    };
+                    return Ok(Resolution {
+                        connection: ResolvedModelConnection {
+                            connection: ModelConnection::Bedrock(BedrockModelConnection {
+                                base_url: record.base_url,
+                                network: record.network,
+                                headers,
+                                auth,
+                            }),
+                            failure_policy: None,
+                            recovery: None,
+                        },
+                        protocol,
+                        realtime,
+                    });
+                }
+            }
+            let mut connection =
+                drivers::connection(&record.driver_kind, protocol, &record.base_url, headers);
+            if provider_id == "opencode-go" {
+                let session_id = use_
+                    .session_id()
+                    .filter(|id| {
+                        !id.is_empty()
+                            && id.trim() == *id
+                            && id.bytes().all(|b| (0x20..=0x7e).contains(&b))
+                    })
+                    .ok_or_else(|| failure("OpenCode Go requires a printable session ID"))?;
+                connection
+                    .headers
+                    .retain(|name, _| !name.eq_ignore_ascii_case("x-opencode-session"));
+                connection
+                    .headers
+                    .insert("x-opencode-session".into(), session_id.into());
+            }
+            connection.bearer = bearer;
+            connection.network = record.network;
+            return Ok(Resolution {
+                connection: ResolvedModelConnection {
+                    connection: ModelConnection::Http(connection),
+                    failure_policy: None,
+                    recovery: None,
+                },
+                protocol,
+                realtime,
+            });
+        }
+        let mut catalog = self
+            .catalog(provider_id.to_owned(), cancel)
+            .await?
+            .ok_or_else(|| failure("No current managed catalog"))?;
+        if let Some((window, output)) = use_.startup_limits() {
+            catalog.apply_startup_limits(Some(window), Some(output));
+        }
+        let model = use_.select(&catalog, model_id)?;
+        let realtime = use_.realtime(model)?;
+        let lease = self
+            .oauth
+            .credential(provider_id, model_id, cancel)
+            .await
+            .map_err(failure)?;
+        if catalog.account.as_ref() != Some(&lease.account)
+            || model.endpoint != Some(lease.protocol)
+        {
+            return Err(failure("Managed account or model route changed"));
+        }
+        let protocol = lease.protocol;
+        let recovered = plugin_connection(self.clone(), lease);
+        Ok(Resolution {
+            connection: ResolvedModelConnection {
+                connection: recovered.connection,
+                recovery: Some(recovered.recovery),
+                failure_policy: None,
+            },
+            protocol,
+            realtime,
+        })
+    }
+}
+
 struct ProductResolver(Arc<ProviderService>);
 impl ResolveModelConnection for ProductResolver {
     fn resolve(
@@ -2274,218 +2603,42 @@ impl ResolveModelConnection for ProductResolver {
                     failure_policy: None,
                 });
             }
-            if !self
-                .0
-                .oauth
-                .contains(&request.provider_id, &cancel)
+            self.0
+                .resolve_connection(
+                    &request.provider_id,
+                    &request.model_id,
+                    ConnectionUse::Chat(&request),
+                    &cancel,
+                )
                 .await
-                .map_err(failure)?
-            {
-                let provider_id = request.provider_id.clone();
-                let model_id = request.model_id.clone();
-                let db = self.0.db.clone();
-                let record = self
-                    .0
-                    .owned(&cancel, move |_| {
-                        Box::pin(async move {
-                            db.run_read(move |connection| read_static(connection, &provider_id))
-                                .await
-                                .map_err(failure)
-                        })
-                    })
-                    .await?
-                    .ok_or_else(|| failure("Provider not found"))?;
-                self.0.check(&cancel)?;
-                let mut catalog =
-                    static_catalog(&self.0.bundled, &request.provider_id, &record, true);
-                if request
-                    .metadata
-                    .as_ref()
-                    .is_some_and(|metadata| metadata.startup.is_some())
-                {
-                    catalog.apply_startup_limits(
-                        Some(snapshot.capabilities.context_window),
-                        Some(snapshot.capabilities.max_output_tokens),
-                    );
-                }
-                if catalog.selectable(&model_id).is_none() {
-                    let message = catalog
-                        .models
-                        .iter()
-                        .find(|model| model.id == model_id)
-                        .filter(|model| !model.missing_limits.is_empty())
-                        .map(|model| undeclared_limits(&model.capabilities))
-                        .unwrap_or_else(|| "Model is unavailable".into());
-                    return Err(failure(message));
-                }
-                let protocol = record.routes[&model_id];
-                if record.driver_kind == "new-api-router"
-                    && request
-                        .metadata
-                        .as_ref()
-                        .and_then(|metadata| metadata.extensions.get("providerProtocol"))
-                        .is_some_and(|adopted| adopted != &serde_json::json!(protocol))
-                {
-                    return Err(HostError::classified(
-                        HostErrorKind::InvalidRequest,
-                        "Model route changed; select the model again",
-                    ));
-                }
-                if record.credential_authority != CredentialAuthority::Static {
-                    let lease = self
-                        .0
-                        .managed_credential(record.credential_authority, None, &cancel)
-                        .await?;
-                    let recovered = managed_connection(
-                        self.0.clone(),
-                        record.credential_authority,
-                        lease,
-                        record.network,
-                    );
-                    return Ok(ResolvedModelConnection {
-                        connection: recovered.connection,
-                        recovery: Some(recovered.recovery),
-                        failure_policy: None,
-                    });
-                }
-                let credential = self
-                    .0
-                    .credential(
-                        &request.provider_id,
-                        &record.credential,
-                        &record.auth,
-                        &cancel,
-                    )
-                    .await?;
-                let mut headers = record.headers;
-                let mut bearer = None;
-                match record.auth {
-                    StaticAuth::Anonymous => {}
-                    StaticAuth::Bearer => {
-                        let ProviderSecret::Token(value) =
-                            credential.ok_or_else(|| failure("Provider credential is required"))?
-                        else {
-                            return Err(failure("Invalid provider credential type"));
-                        };
-                        bearer = Some(value)
-                    }
-                    StaticAuth::ApiKey {
-                        header_name,
-                        prefix,
-                    } => {
-                        let ProviderSecret::Token(value) =
-                            credential.ok_or_else(|| failure("Provider credential is required"))?
-                        else {
-                            return Err(failure("Invalid provider credential type"));
-                        };
-                        if header_name.eq_ignore_ascii_case("authorization") && prefix == "Bearer "
-                        {
-                            bearer = Some(value);
-                        } else {
-                            headers.insert(header_name, format!("{prefix}{value}"));
-                        }
-                    }
-                    StaticAuth::CustomHeader { header_name } => {
-                        let ProviderSecret::Token(value) =
-                            credential.ok_or_else(|| failure("Provider credential is required"))?
-                        else {
-                            return Err(failure("Invalid provider credential type"));
-                        };
-                        headers.insert(header_name, value);
-                    }
-                    StaticAuth::AwsBedrock => {
-                        let auth = match credential
-                            .ok_or_else(|| failure("Provider credential is required"))?
-                        {
-                            ProviderSecret::Token(value) => BedrockAuth::Bearer(value),
-                            ProviderSecret::Aws(credentials) => BedrockAuth::SigV4 {
-                                credentials,
-                                region: record
-                                    .bedrock_region
-                                    .ok_or_else(|| failure("Amazon Bedrock region is missing"))?,
-                            },
-                        };
-                        return Ok(ResolvedModelConnection {
-                            connection: ModelConnection::Bedrock(BedrockModelConnection {
-                                base_url: record.base_url,
-                                network: record.network,
-                                headers,
-                                auth,
-                            }),
-                            failure_policy: None,
-                            recovery: None,
-                        });
-                    }
-                }
-                let mut connection =
-                    drivers::connection(&record.driver_kind, protocol, &record.base_url, headers);
-                if request.provider_id == "opencode-go" {
-                    let session_id = request
-                        .metadata
-                        .as_ref()
-                        .and_then(|m| m.session_id.as_deref())
-                        .filter(|id| {
-                            !id.is_empty()
-                                && id.trim() == *id
-                                && id.bytes().all(|b| (0x20..=0x7e).contains(&b))
-                        })
-                        .ok_or_else(|| failure("OpenCode Go requires a printable session ID"))?;
-                    connection
-                        .headers
-                        .retain(|name, _| !name.eq_ignore_ascii_case("x-opencode-session"));
-                    connection
-                        .headers
-                        .insert("x-opencode-session".into(), session_id.into());
-                }
-                connection.bearer = bearer;
-                connection.network = record.network;
-                return Ok(ResolvedModelConnection {
-                    connection: ModelConnection::Http(connection),
-                    failure_policy: None,
-                    recovery: None,
-                });
-            }
-            let mut catalog = self
+                .map(|resolution| resolution.connection)
+        })
+    }
+}
+impl ResolveModalityConnection for ProductResolver {
+    fn resolve_for_modality(
+        &self,
+        target: ModalityTarget,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModalityConnection> {
+        Box::pin(async move {
+            self.0.check(&cancel)?;
+            let resolution = self
                 .0
-                .catalog(request.provider_id.clone(), &cancel)
-                .await?
-                .ok_or_else(|| failure("No current managed catalog"))?;
-            if request
-                .metadata
-                .as_ref()
-                .is_some_and(|metadata| metadata.startup.is_some())
-            {
-                catalog.apply_startup_limits(
-                    Some(snapshot.capabilities.context_window),
-                    Some(snapshot.capabilities.max_output_tokens),
-                );
-            }
-            let model = catalog.selectable(&request.model_id).ok_or_else(|| {
-                let message = catalog
-                    .models
-                    .iter()
-                    .find(|model| model.id == request.model_id)
-                    .filter(|model| !model.missing_limits.is_empty())
-                    .map(|model| undeclared_limits(&model.capabilities))
-                    .unwrap_or_else(|| "Model is unavailable".into());
-                failure(message)
-            })?;
-            let lease = self
-                .0
-                .oauth
-                .credential(&request.provider_id, &request.model_id, &cancel)
-                .await
-                .map_err(failure)?;
-            if catalog.account.as_ref() != Some(&lease.account)
-                || model.endpoint != Some(lease.protocol)
-            {
-                return Err(failure("Managed account or model route changed"));
-            }
-            let recovered = plugin_connection(self.0.clone(), lease);
-            Ok(ResolvedModelConnection {
-                connection: recovered.connection,
-                recovery: Some(recovered.recovery),
-                failure_policy: None,
+                .resolve_connection(
+                    &target.target.provider_id,
+                    &target.target.model_id,
+                    ConnectionUse::Modality {
+                        operation: &target.operation,
+                    },
+                    &cancel,
+                )
+                .await?;
+            Ok(ModalityConnection {
+                resolved: resolution.connection,
+                protocol: resolution.protocol,
+                model: target.target.model_id,
+                realtime: resolution.realtime,
             })
         })
     }
@@ -2807,6 +2960,7 @@ impl DynPlugin for ProviderPlugin {
             let resolver = Arc::new(ProductResolver(service.clone()));
             ctx.provide(ProviderConnectionResolver(resolver.clone()))?;
             ctx.provide(ModelSelectionHost(resolver.clone()))?;
+            ctx.provide(ModalityConnectionHost(resolver.clone()))?;
             ctx.provide(SelectableModelsHost(resolver))?;
             let auxiliary = Arc::new(auxiliary::AuxiliaryModel {
                 owner: service.clone(),

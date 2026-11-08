@@ -67,7 +67,7 @@ impl Fixture {
             _ => panic!("{method} has no active provider"),
         };
         provider
-            .accept(method.to_owned(), params, self.cancel.clone(), |_| {})
+            .accept(method.to_owned(), params, None, self.cancel.clone(), |_| {})
             .unwrap()
             .reply
             .await

@@ -1850,3 +1850,44 @@ async fn read_refuses_formats_it_cannot_decode_and_other_binaries() {
         "binary_unsupported"
     );
 }
+
+/// The process index keeps only the roots still being searched: a search
+/// drops every root whose walk is past the TTL before it reads or adds one,
+/// so the index holds one root after a second root is searched, and a stale
+/// root is walked again instead of answering from an old walk. The TTL is
+/// shortened through `MentionIndex::with_ttl`; the product uses ten seconds
+/// and no knob.
+#[test]
+fn the_mention_index_drops_roots_whose_walk_is_past_its_ttl() {
+    use dim_agent_capabilities::workspace_tools::mentions::MentionIndex;
+    use std::time::Duration;
+    let index = MentionIndex::with_ttl(Duration::from_millis(50));
+    let first = std::env::temp_dir().join(format!("dim-mentions-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&first).unwrap();
+    let first = fs::canonicalize(&first).unwrap();
+    let second = std::env::temp_dir().join(format!("dim-mentions-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&second).unwrap();
+    let second = fs::canonicalize(&second).unwrap();
+    fs::write(first.join("gone.txt"), "x").unwrap();
+    fs::write(second.join("kept.txt"), "x").unwrap();
+
+    assert_eq!(index.search(&first, "gone.txt", 10).len(), 1);
+    assert_eq!(index.walked_roots(), 1);
+    fs::remove_file(first.join("gone.txt")).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    // A search of another root is the call that drops the first root's expired
+    // walk; without that drop the index keeps every root ever searched.
+    assert_eq!(index.search(&second, "kept.txt", 10).len(), 1);
+    assert_eq!(
+        index.walked_roots(),
+        1,
+        "the expired root is dropped, not kept"
+    );
+    assert!(
+        index.search(&first, "gone.txt", 10).is_empty(),
+        "the expired root is walked again"
+    );
+
+    let _ = fs::remove_dir_all(&first);
+    let _ = fs::remove_dir_all(&second);
+}

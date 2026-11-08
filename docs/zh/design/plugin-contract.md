@@ -233,8 +233,8 @@ Capability 是按序号从分支的事实折叠状态，或写自己领域的事
 示例：
 
 - Goal 的分支部件折叠事实并决定是否续写，所以是 Capability。
-- Goal 的 Session 部件提供 `goal_update` 和 `session.goal.*`，并按分支 id 写变更输入。它不持有 Goal 状态，
-  所以不是 Capability。
+- Goal 的 Session 部件提供 `goal_update` 和 `session.goal.*`，并按分支 id 写变更触发器。它不持有 Goal 状态，
+  所以不是 Capability；状态是分支部件写入的 `goal:state` 记录，模型、客户端与折叠读到的都是它（Goal §2、A.5）。
 - Questions 提供 `ask_user` 和 `session.question.*`。它的等待者是它自己的工具调用，它不写事实，所以不是
   Capability。
 

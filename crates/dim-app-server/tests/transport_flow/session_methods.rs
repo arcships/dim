@@ -1,5 +1,5 @@
 use super::*;
-use dim_agent_capabilities::methods::{Interruption, MethodDecl, SessionMethods};
+use dim_agent_capabilities::methods::{Interruption, MethodCall, MethodDecl, SessionMethods};
 use rutis::host::CtxHost;
 
 /// Registers one Session namespace with the Session's method table and
@@ -49,7 +49,7 @@ impl rutis::host::DynPlugin for Claim {
                         false,
                         Interruption::Drain,
                     )],
-                    Arc::new(move |_, _, _, _| {
+                    Arc::new(move |_, _, _| {
                         called.store(true, std::sync::atomic::Ordering::SeqCst);
                         Box::pin(async { Ok(json!({})) })
                     }),
@@ -325,7 +325,8 @@ impl Plugin for NotesProvider {
                     ..MethodDecl::new("notes.flood", false, Interruption::Drain)
                 },
             ],
-            Arc::new(move |method, params, cancel, progress| {
+            Arc::new(move |call, cancel, progress| {
+                let MethodCall { method, params, .. } = call;
                 let state = state.clone();
                 Box::pin(async move {
                     match method.as_str() {
@@ -407,6 +408,7 @@ async fn contributed_session_methods_dispatch_through_the_session_they_name() {
             {"name": "session.agent.get", "mutating": false},
             {"name": "session.agent.update", "mutating": true},
             {"name": "session.collaboration.approval.get", "mutating": false},
+            {"name": "session.collaboration.cancel", "mutating": true},
             {"name": "session.input.withdraw", "mutating": true},
         ]})
     );
@@ -487,7 +489,7 @@ async fn a_reloading_or_closed_session_namespace_answers_as_specified() {
         client
             .rpc("session.methods", json!({"sessionId": sid}))
             .await["result"],
-        json!({"methods": [{"name": "session.agent.get", "mutating": false}, {"name": "session.agent.update", "mutating": true}, {"name": "session.collaboration.approval.get", "mutating": false}, {"name": "session.input.withdraw", "mutating": true}]})
+        json!({"methods": [{"name": "session.agent.get", "mutating": false}, {"name": "session.agent.update", "mutating": true}, {"name": "session.collaboration.approval.get", "mutating": false}, {"name": "session.collaboration.cancel", "mutating": true}, {"name": "session.input.withdraw", "mutating": true}]})
     );
     gate.notify_one();
     restart.await.unwrap();

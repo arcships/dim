@@ -187,25 +187,32 @@ The data contract is the implemented subset of
 [Session boundary A.1](contracts/session-boundary.md#a1-method-contributions). A Session row
 injects `sessionMethods` and, from its `apply`, calls
 `await ctx.use<SessionMethods>('sessionMethods').register(namespace, declarations, call)` once per
-namespace. C4 does not implement connection-bound notifications, handoff, RemoteGateway origin or
-a new process `callChannel` service.
+namespace. Connection-bound notifications are implemented
+([A.2](contracts/session-boundary.md#a2-call-channel)): a declaration may name the notifications
+it sends, and the `callChannel` process service sends them to the calling connection. Handoff,
+`takeFinalReply`, RemoteGateway origin, `origin.entry` and `origin.peer` are not implemented.
 
 `declarations` is `MethodDecl[]`: `name`, `mutating`, `interruption` (`report` or `drain`) and
-`progress`, each required. They are decoded once, at registration; a declaration with another
-field, such as notification or handoff behavior, is refused rather than accepted as work it cannot
-honor. `register` also refuses what existing C1 validation refuses (the name grammar, at least one
+`progress`, each required, and `notifications`, an optional array of the notification names this
+generation may send (A.2). They are decoded once, at registration; a declaration with another
+field, such as handoff behavior, is refused rather than accepted as work it cannot honor.
+`register` also refuses what existing C1 validation refuses (the name grammar, at least one
 method, each unique and inside the namespace), a namespace the host reserves (its roots, and one
-that equals, contains or lies inside an exact built-in; Session boundary A.1) and a namespace
-registered already in this Session (`<namespace> is registered already`). The row sees a refusal as
+that equals, contains or lies inside an exact built-in; Session boundary A.1), a namespace
+registered already in this Session (`<namespace> is registered already`) and a notification name
+outside the grammar, outside the namespace, declared twice or equal to a method's name; the table
+refuses one equal to a built-in notification's wire name. The row sees a refusal as
 a rejected Promise; a row that lets it propagate from `apply` fails. The registration belongs to
 the calling row (the bridge's `caller_row`) and is withdrawn when that row unloads.
 
 `call(call, cancelled, progress)` is the row's own asynchronous function, which the host calls back
-through the bridge. `call` is the existing neutral `{callId, method, params}` data; `cancelled` is
+through the bridge. `call` is the existing neutral `{callId, method, params}` data plus `origin`,
+which carries `connectionId` when a client connection made the call (A.2); `cancelled` is
 the bridge's by-reference cancellation Promise and `progress` a per-call callback taking one JSON
 value. `params` includes the original `sessionId` and optional `branchId`. `callId` is an opaque
 runtime correlation identity for this accepted call, not a durable business identity or the
-client's JSON-RPC id. No unimplemented `origin` fields are invented. A reply is
+client's JSON-RPC id. No unimplemented `origin` fields are invented: `origin.entry` and
+`origin.peer` are not provided. A reply is
 `{kind: "value", value}`; an omitted `value` (including JavaScript `undefined` omitted during JSON
 serialization) becomes JSON `null`. `{kind: "handedOff"}` is unsupported in this subset.
 Errors are data, `{code, message}`, decoded once into C1's wire error
@@ -216,6 +223,19 @@ may instead rethrow a service error it received; one with a `code` maps the same
 preserved rather than replaced with a success value or leaked runtime exception; C1's Rust error
 storage must own the decoded string. A thrown exception without a code is a binding failure, not a
 provider-defined application error, and exposes no stack or runtime internals to the client.
+
+A part sends its declared notifications through the `callChannel` process service, injected like
+any other: `ctx.use<CallChannel>('callChannel').notify({connectionId, callId, method, params})`
+writes one to that connection, and `closed({connectionId})` resolves when the connection goes away
+([authoring](../typescript-plugin-authoring.md#connection-bound-notifications)). `callId` is the
+`MethodCall.callId` of the work the notification reports: while that call's reply is not written
+its notifications are held and follow it, in order, and once the reply is written, or the id is
+not in flight, they are written directly. The bridge binds the service call to the calling row's
+instance, so a part reaches only connections its row served and only names a generation that
+served it declared. `notify` rejects with an error whose `code` is `undeclared`, `gone` (the
+connection closed, the admitting Rpc unloaded, or the row received no call from that connection)
+or `too_large`; delivery is the one A.2 states, through the same call's sink as the Rust binding,
+on the calling connection only.
 
 The Session's method table registers the namespace on behalf of the calling row, inside that
 row's own apply, with one handler for the generation; the call admission's unload effect belongs

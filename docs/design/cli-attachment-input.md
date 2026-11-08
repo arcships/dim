@@ -442,7 +442,11 @@ descriptor with `F_GETPATH`: `ttyname_r` scans `/dev` and can miss this terminal
 terminal's entry is removed. The CLI flow also verifies
 complete model output while a terminal reader pauses. Windows input uses virtual-terminal mode with the existing console
 record reader. Its ConPTY flow exercises Unicode/grapheme editing, arrow/delete input,
-bracketed paste boundaries and raw Ctrl+C clearing through the real console. It reuses the
+bracketed paste boundaries and raw Ctrl+C clearing through the real console. The terminal UI
+writes and reads its console text as UTF-16 through the wide-character console functions, so a
+console running a legacy OEM code page shows the frame and delivers typed text unchanged without
+reading or changing either code page; its own ConPTY flow paints a frame and types into such a
+console. It reuses the
 workspace's portable-pty version as a Windows-only development dependency. Native clipboard checks
 use a unique AppKit pasteboard and a private Windows window station.
 The Windows boundary flow runs on the disposable Windows CI job; its execution must pass before

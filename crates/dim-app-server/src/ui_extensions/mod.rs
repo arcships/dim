@@ -6,7 +6,7 @@ pub use resources::{PublishFile, ResourceRef, UiResources};
 use crate::methods::ManagementMethods;
 use dim_agent_capabilities::{
     file_storage::{EntryKind, FileStorage},
-    methods::{Interruption, MethodDecl, params, reply},
+    methods::{Interruption, MethodCall, MethodDecl, params, reply},
 };
 use dim_agent_runtime::{Names, PartRegistry, PartScope};
 use manifest::{Package, Panel};
@@ -507,7 +507,12 @@ impl DynPlugin for UiExtensionsPlugin {
                     MethodDecl::new("ui.extensions.list", false, Interruption::Report),
                     MethodDecl::new("ui.extensions.read", false, Interruption::Report),
                 ],
-                Arc::new(move |method, value, stop, _progress| {
+                Arc::new(move |call, stop, _progress| {
+                    let MethodCall {
+                        method,
+                        params: value,
+                        ..
+                    } = call;
                     let service = handler.clone();
                     Box::pin(async move {
                         match method.as_str() {

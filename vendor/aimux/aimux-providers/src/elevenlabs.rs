@@ -1185,6 +1185,7 @@ impl ElevenLabsTranscriptionModel {
             subprotocols: Vec::new(),
             abort_signal: options.abort_signal.clone(),
             timeout: options.timeout,
+            max_message_bytes: None,
             connector: self.web_socket.clone(),
         };
         let mut ws = ws_connect(&req).await?;

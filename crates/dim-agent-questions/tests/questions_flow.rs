@@ -210,6 +210,7 @@ async fn respond(session: &Session, params: Value) -> Result<Value, RpcError> {
     let accepted = methods.accept(
         "session.question.respond".into(),
         params,
+        None,
         CancellationToken::new(),
         |_| {},
     )?;

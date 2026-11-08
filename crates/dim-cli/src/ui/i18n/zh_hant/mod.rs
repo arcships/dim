@@ -2,6 +2,7 @@
 //! interface.
 
 mod chrome;
+mod failures;
 pub(super) mod management;
 mod plugins;
 mod prompts;
@@ -10,6 +11,7 @@ mod runtime;
 
 pub fn lookup(english: &str) -> Option<&'static str> {
     chrome::lookup(english)
+        .or_else(|| failures::lookup(english))
         .or_else(|| prompts::lookup(english))
         .or_else(|| providers::lookup(english))
         .or_else(|| plugins::lookup(english))

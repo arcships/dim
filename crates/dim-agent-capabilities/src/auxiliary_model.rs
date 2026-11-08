@@ -84,6 +84,7 @@ pub async fn complete(
     invoke_with_recovery(
         host,
         &model_request,
+        None,
         resolved,
         cancel,
         &mut (),

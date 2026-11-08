@@ -401,6 +401,7 @@ fn classify(failure: &AiMuxError) -> (HostErrorKind, ModelFailureFacts) {
                 attempts: 1,
                 waited: std::time::Duration::ZERO,
                 retry_after_stop: None,
+                retry_forbidden: false,
             };
             (
                 HostErrorKind::Http {
@@ -447,6 +448,7 @@ fn classify(failure: &AiMuxError) -> (HostErrorKind, ModelFailureFacts) {
                 attempts: 1,
                 waited: std::time::Duration::ZERO,
                 retry_after_stop: None,
+                retry_forbidden: false,
             };
             (classification, facts)
         }

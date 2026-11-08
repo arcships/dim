@@ -129,6 +129,16 @@ Issue：[#593](https://github.com/arcships/dim/issues/593)。本节拥有一次�
 - “未知 id 就是公开”：缺失的关系是拒绝。
 - 关系表的进程内存权威：Collaboration 装载时从存储的 leader 重建。
 
+### 6.7 从客户端停止成员
+
+attach 到 leader 的客户端用 `session.collaboration.cancel {sessionId, branchId?, memberSessionId}` → `{"status": "cancelled" | "idle"}` 停止成员当前的回合。`sessionId` 是路由这次调用的 leader Session，因为 `session.collaboration` 是它的 Session 命名空间之一（[Session 边界 A.1](../contracts/session-boundary.md#a1-方法贡献)）；`branchId` 缺省为 `main`，与 `session.stop` 相同；`memberSessionId` 是唯一地址。以该 id 为键的 Team 关系给出成员的 Agent 与领导它的 leader（§6.1），所以客户端不发送 `agentId`；没有关系命名的 id，或属于其他 Team 的 id，都是 `team_member_not_found`（§6.2）。
+
+该方法在请求输入的每个阶段都把 `cancelled` 的答复落实。调用分支自己对该成员的请求打开时——正在投递或等待结果——回答 `cancelled`，其余情况回答 `idle`，包括成员正在为同一 leader 的另一个分支工作，以及本分支的请求尚未投递。回答 `cancelled` 意味着该请求的取消已经落实：InputQueue 仍持有未应用的输入时将其撤回，成员记录 `input/deleted`、不为它运行回合，leader 把该请求的 `collaboration/result` 写为 cancelled；否则停止会等待该输入的 `input/consumed`，通过 Loop 自己的按回合停止（原因文本指明来自客户端）停止消费该请求输入的回合——该回合已结束时什么也不写——或对已在运行的回合立即停止。在停止落地前就结束的回合按其自身结局结算。leader 的 `collaboration/result` 是客户端读到的结果。判断与停止对请求替换做了线性化：停止进行期间，对该成员的新请求被拒绝为 `busy`，因此停止只会结束它被决定时所针对的那个请求所服务的回合。覆盖该请求的领导者中断优先于客户端的原因。`idle` 不在任何地方写任何东西，连 `session.stop` 总是写的 `stop/interrupt` 也不写。其余拒绝：成员 Session 调用它是 `invalid_params`，文本与工具按角色的拒绝一致；未知或已结束的分支回答各自的 Session 错误（`session_invalid_input`、`branch_ended`），已关闭的回答 `session_closed`，它们都不是 `idle`；成员 Session 已关闭是 `member_closed`，其他失败则回答 Session 的内部错误。
+
+不写 `collaboration/cancel` 事实：它的数据命名 `agent` 工具调用的 turn、request 与 call id（[协作 Timeline](../../../design/collaboration-timeline.md)），客户端调用没有这些 id。效果由客户端已经读到的事实记录：成员自己的 `stop/interrupt` 与 `turn/end`，以及 leader 的 `collaboration/result` 和它的 `dim-agent-report` 输入。
+
+**与 `session.stop` 的边界。** `session.stop` 命名一个 Session 并停止它，无论是否有工作在跑，总是写 `stop/interrupt`；attach 到成员的客户端用它。`session.collaboration.cancel` 由 leader 经 Team 关系发给成员，并回答成员是否有工作可停。两者都不关闭成员、不结束委派；那是 `close` 的事（§6.3）。
+
 ## 7. 成员能运行的模型
 
 leader 在 profile 的 `model` 字段里为新成员指定模型，用户的

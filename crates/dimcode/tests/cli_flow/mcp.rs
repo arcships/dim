@@ -63,7 +63,10 @@ fn resumed_mcp_line_commands_use_the_session_workspace_in_both_clients() {
         terminal.until("Disabled");
         if tui {
             terminal.write(b"/new\r");
-            terminal.until("new session");
+            // The palette's own row ("start a new session") shows the words
+            // before `/new` runs; the boundary rule is painted once the
+            // switch cleared the composer.
+            terminal.until("─ new session ─");
             terminal.write(b"/mcp list\r");
             terminal.until("launch-only");
         }

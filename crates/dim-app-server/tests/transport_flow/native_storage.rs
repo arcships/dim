@@ -1465,3 +1465,128 @@ async fn vacuum_mode_reclaims_an_offline_store_and_refuses_a_held_one() {
     drop(db);
     tokio::fs::remove_dir_all(directory).await.unwrap();
 }
+
+/// `storage.report` answers the store's own bytes and the space an offline
+/// `VACUUM` returns; the vacuum is the one-shot the daemon refuses while it
+/// serves (`native-storage-format.md`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_report_counts_the_pages_the_offline_vacuum_returns() {
+    async fn vacuum(database: &std::path::Path) -> std::process::Output {
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_dim-app-server"))
+            .args(["--vacuum", "--database"])
+            .arg(database)
+            .output()
+            .await
+            .unwrap()
+    }
+
+    let directory = std::env::temp_dir().join(format!("dim-report-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let database = directory.join("dimcode.sqlite");
+    let config = ServerConfig {
+        database_path: Some(database.clone()),
+        ..Default::default()
+    };
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), config.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert!(
+        client
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("storage.report")),
+        "{:?}",
+        client.features
+    );
+    let created = client.rpc("session.create", create(json!([]))).await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    assert_ok(
+        &client
+            .rpc(
+                "session.submit",
+                json!({"sessionId":id,"branchId":"main","text":"x".repeat(100_000)}),
+            )
+            .await,
+    );
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    assert_ok(&client.rpc("session.delete", json!({"sessionId":id})).await);
+    drop(client);
+    drop(agent);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    // A restart folds the WAL into the file, so both reports are about the
+    // committed store rather than a checkpoint in flight.
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), config.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let before = client.rpc("storage.report", json!({})).await;
+    assert_ok(&before);
+    let before = before["result"].clone();
+    assert!(
+        before["reclaimableBytes"].as_u64().unwrap() > 0,
+        "a deleted Session leaves free pages: {before}"
+    );
+    drop(client);
+    drop(agent);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let vacuumed = vacuum(&database).await;
+    assert!(
+        vacuumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&vacuumed.stderr)
+    );
+
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let after = client.rpc("storage.report", json!({})).await;
+    assert_ok(&after);
+    let after = &after["result"];
+    assert_eq!(
+        after["reclaimableBytes"], 0,
+        "the vacuum returned every free page: {after}"
+    );
+    assert!(
+        after["databaseBytes"].as_u64().unwrap() < before["databaseBytes"].as_u64().unwrap(),
+        "the rewritten store is smaller: {before} -> {after}"
+    );
+    drop(client);
+    drop(agent);
+    server.shutdown();
+    server.join().await.unwrap();
+    tokio::fs::remove_dir_all(directory).await.unwrap();
+}
+
+/// A profile with no native storage registers no store owner, so the name is
+/// not served. `--model-config` is not such a profile: it requires `--home` or
+/// `--database` (`lib.rs` configuration), so every daemon this repository
+/// starts has a store; an embedded host may start without one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_report_needs_native_storage() {
+    let server = launch(Arc::new(MockTools), ServerConfig::default()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert!(
+        !client
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("storage.report")),
+        "{:?}",
+        client.features
+    );
+    let reply = client.rpc("storage.report", json!({})).await;
+    assert_eq!(reply["error"]["code"], -32601, "{reply}");
+    assert_eq!(
+        reply["error"]["data"]["appError"], "unknown_method",
+        "{reply}"
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}

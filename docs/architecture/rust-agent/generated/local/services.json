@@ -2057,6 +2057,36 @@
         ]
       },
       {
+        "id": 19,
+        "parent": 2,
+        "name": "WorkspaceToolsOwner",
+        "state": "Active",
+        "generation": 1,
+        "injects": [
+          {
+            "service": "dim_agent_runtime::parts::PartRegistry",
+            "scope": null,
+            "status": "Ready"
+          }
+        ],
+        "resolved": [
+          {
+            "service": "dim_agent_runtime::parts::PartRegistry",
+            "scope": null,
+            "provider": 3,
+            "generation": 1
+          }
+        ],
+        "reads": [
+          {
+            "service": "dim_agent_runtime::parts::PartRegistry",
+            "provider": 3,
+            "declared": true,
+            "external": true
+          }
+        ]
+      },
+      {
         "id": 5,
         "parent": 2,
         "name": "HostPlatform",
@@ -2070,6 +2100,11 @@
           },
           {
             "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
+            "service": "dim_agent_capabilities::toolchain::ToolchainSourceHost",
             "scope": null,
             "status": "Ready"
           }
@@ -2086,11 +2121,23 @@
             "scope": null,
             "provider": 4,
             "generation": 1
+          },
+          {
+            "service": "dim_agent_capabilities::toolchain::ToolchainSourceHost",
+            "scope": null,
+            "provider": 1,
+            "generation": 0
           }
         ],
         "reads": [
           {
             "service": "dim_agent_capabilities::execution_settings::ExecutionSettingsHost",
+            "provider": 1,
+            "declared": true,
+            "external": false
+          },
+          {
+            "service": "dim_agent_capabilities::toolchain::ToolchainSourceHost",
             "provider": 1,
             "declared": true,
             "external": false
@@ -2124,6 +2171,12 @@
       {
         "service": "dim_agent_capabilities::skills::catalog::SkillsCatalog",
         "provider": 28,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dim_agent_capabilities::workspace_tools::mentions::MentionIndex",
+        "provider": 19,
         "generation": 1,
         "removing": false
       },
@@ -2245,6 +2298,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_agent_capabilities::workspace_tools::mentions::MentionIndex",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_runtime::config::SessionConfig@session",
             "scope": null,
             "status": "Ready"
@@ -2272,6 +2330,12 @@
             "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
             "scope": null,
             "provider": 51,
+            "generation": 1
+          },
+          {
+            "service": "dim_agent_capabilities::workspace_tools::mentions::MentionIndex",
+            "scope": null,
+            "provider": 19,
             "generation": 1
           },
           {
@@ -2309,6 +2373,12 @@
           {
             "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
             "provider": 51,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_agent_capabilities::workspace_tools::mentions::MentionIndex",
+            "provider": 19,
             "declared": true,
             "external": true
           },

@@ -13,7 +13,7 @@ use dim_agent_capabilities::{
         HookGroup, HookSourceId, HookSourceSnapshot, HookSourceState, HookSourcesHost,
         HookSourcesSnapshot, HooksDocument, ReadHookSources, entries,
     },
-    methods::{Interruption, MethodDecl, RpcError, params, reply},
+    methods::{Interruption, MethodCall, MethodDecl, RpcError, params, reply},
 };
 use dim_agent_runtime::{AgentBuilder, Feature, Names};
 use rutis::Ctx;
@@ -593,7 +593,12 @@ impl DynPlugin for HooksSettingsPlugin {
                         MethodDecl::new(name, name != "hooks.catalog", Interruption::Report)
                     })
                     .collect(),
-                Arc::new(move |method, value, stopping, _| {
+                Arc::new(move |call, stopping, _| {
+                    let MethodCall {
+                        method,
+                        params: value,
+                        ..
+                    } = call;
                     let settings = settings.clone();
                     let reader = reader.clone();
                     Box::pin(async move {

@@ -485,7 +485,11 @@ fn tui_rename_without_a_session_sends_nothing() {
         let mut terminal = Terminal::resume_tui(command);
         terminal.until("test / model");
         terminal.write(b"/new\r");
-        terminal.until("new session");
+        // The palette lists `/new` as "start a new session" while it is
+        // typed, so "new session" is on screen before the command runs; the
+        // rule the boundary commits is painted only after `switch_session`
+        // cleared the composer.
+        terminal.until("─ new session ─");
         terminal.write(b"/rename Foo\r");
         terminal.until("/rename needs a session");
         terminal.write(b"/exit\r");

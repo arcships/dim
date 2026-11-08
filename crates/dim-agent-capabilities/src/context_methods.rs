@@ -3,7 +3,7 @@
 use crate::{
     agent_loop::AgentLoop,
     context_preparation::{ContextOpError, ContextPreparation},
-    methods::{Interruption, MethodDecl, RpcError, SessionMethods, params, reply},
+    methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     timeline_tree::TreeCommands,
 };
 use dim_agent_runtime::{
@@ -49,7 +49,12 @@ impl DynPlugin for ContextMethodsPlugin {
                     MethodDecl::new("session.context.compact", true, Interruption::Report),
                     MethodDecl::new("session.context.usage", false, Interruption::Report),
                 ],
-                Arc::new(move |method, value, cancel, _| {
+                Arc::new(move |call, cancel, _| {
+                    let MethodCall {
+                        method,
+                        params: value,
+                        ..
+                    } = call;
                     let tree = tree.clone();
                     Box::pin(async move {
                         #[derive(serde::Deserialize)]

@@ -421,8 +421,11 @@ fn normal_dimcode_is_the_leaf_until_it_leaves() {
         }
     }
     // `/new` goes home; the first message starts the Session the leaf moves to.
+    // The palette row ("start a new session") carries the words before `/new`
+    // runs, so wait for the boundary rule the switch paints after it cleared
+    // the composer.
     pty.write(b"/new\r");
-    pty.read_until("new session");
+    pty.read_until("─ new session ─");
     pty.write(b"leaf-switch-proof\r");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

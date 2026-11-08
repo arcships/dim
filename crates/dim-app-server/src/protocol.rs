@@ -508,10 +508,15 @@ pub enum ClientKind {
     Other,
 }
 #[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Shutdown {
     #[serde(default)]
     pub force: bool,
+    /// Refuse (`daemon_busy`) instead of stopping while another client
+    /// connection is open or a Session has an attached client or a running
+    /// turn. Advertised as `daemon.shutdown.ifIdle`.
+    #[serde(default)]
+    pub if_idle: bool,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -831,6 +836,14 @@ pub(crate) fn builtin_methods() -> impl Iterator<Item = &'static str> {
 
 pub(crate) fn is_builtin_method(method: &str) -> bool {
     builtin_methods().any(|builtin| builtin == method)
+}
+
+/// Whether `name` is one of [`Notification`]'s wire names, the built-ins a
+/// contributed notification may not take (methods contract A.1, "Reserved
+/// names"): a provider cannot impersonate a notification its connection
+/// already reads.
+pub(crate) fn is_builtin_notification(name: &str) -> bool {
+    BUILTIN_NOTIFICATIONS.contains(&name)
 }
 
 /// Validates the envelope and built-in calls. Runtime contributions retain raw
@@ -1331,41 +1344,47 @@ pub struct ProgressNotice {
     pub method: String,
     pub data: Value,
 }
-#[derive(Debug, Serialize)]
-#[serde(tag = "method", content = "params")]
-pub enum Notification {
-    #[serde(rename = "ui.extensions.changed")]
-    UiExtensionsChanged { revision: u64 },
-    #[serde(rename = "session.mcp.state")]
-    McpState(McpStateResult),
-    #[serde(rename = "ui.shutdown")]
-    UiShutdown(UiShutdownNotice),
-    #[serde(rename = "session.event")]
-    Event(EventNotice),
-    #[serde(rename = "session.state")]
-    State(StateNotice),
-    #[serde(rename = "approval.request")]
-    ApprovalRequest(ApprovalRequest),
-    #[serde(rename = "approval.cancelled")]
-    ApprovalCancelled(ApprovalCancelled),
-    #[serde(rename = "session.closed")]
-    Closed(ClosedNotice),
-    #[serde(rename = "session.event")]
-    TreeEvent(crate::tree_protocol::EventNotice),
-    #[serde(rename = "session.state")]
-    BranchState(crate::tree_protocol::StateNotice),
-    #[serde(rename = "approval.request")]
-    TreeApprovalRequest(crate::tree_protocol::ApprovalRequest),
-    #[serde(rename = "approval.cancelled")]
-    TreeApprovalCancelled(crate::tree_protocol::ApprovalCancelled),
-    #[serde(rename = "approval.resolved")]
-    TreeApprovalResolved(crate::tree_protocol::ApprovalResolved),
-    #[serde(rename = "session.model.progress")]
-    ModelProgress(crate::tree_protocol::ModelProgressNotice),
-    #[serde(rename = "session.notice")]
-    Notice(crate::tree_protocol::ForwardedNotice),
-    #[serde(rename = "management.progress")]
-    Progress(ProgressNotice),
+/// One built-in notification: its variant, payload and wire name in one
+/// entry. The [`Notification`] enum and [`BUILTIN_NOTIFICATIONS`] are both
+/// derived from this table, so a variant cannot be added without naming its
+/// wire name, and the name a provider may not take is the name it serializes
+/// under.
+macro_rules! notifications {
+    ($(
+        $(#[$doc:meta])*
+        $variant:ident $( { $($field:ident : $ty:ty),* } )? $( ( $payload:ty ) )? = $wire:literal
+    ),+ $(,)?) => {
+        #[derive(Debug, Serialize)]
+        #[serde(tag = "method", content = "params")]
+        pub enum Notification {
+            $(
+                $(#[$doc])*
+                #[serde(rename = $wire)]
+                $variant $( { $($field : $ty),* } )? $( ( $payload ) )?,
+            )+
+        }
+        /// The wire name of every [`Notification`] variant, in the same order:
+        /// a contributed notification name may not collide with one.
+        pub(crate) const BUILTIN_NOTIFICATIONS: &[&str] = &[$($wire),+];
+    };
+}
+notifications! {
+    UiExtensionsChanged { revision: u64 } = "ui.extensions.changed",
+    McpState(McpStateResult) = "session.mcp.state",
+    UiShutdown(UiShutdownNotice) = "ui.shutdown",
+    Event(EventNotice) = "session.event",
+    State(StateNotice) = "session.state",
+    ApprovalRequest(ApprovalRequest) = "approval.request",
+    ApprovalCancelled(ApprovalCancelled) = "approval.cancelled",
+    Closed(ClosedNotice) = "session.closed",
+    TreeEvent(crate::tree_protocol::EventNotice) = "session.event",
+    BranchState(crate::tree_protocol::StateNotice) = "session.state",
+    TreeApprovalRequest(crate::tree_protocol::ApprovalRequest) = "approval.request",
+    TreeApprovalCancelled(crate::tree_protocol::ApprovalCancelled) = "approval.cancelled",
+    TreeApprovalResolved(crate::tree_protocol::ApprovalResolved) = "approval.resolved",
+    ModelProgress(crate::tree_protocol::ModelProgressNotice) = "session.model.progress",
+    Notice(crate::tree_protocol::ForwardedNotice) = "session.notice",
+    Progress(ProgressNotice) = "management.progress",
 }
 
 #[derive(Debug, Serialize)]
@@ -1385,6 +1404,14 @@ pub enum Outbound {
         jsonrpc: &'static str,
         #[serde(flatten)]
         notification: Notification,
+    },
+    /// A notification a provider contributed through `callChannel.notify`
+    /// (methods contract A.2): its declared name, written to the calling
+    /// connection only.
+    Message {
+        jsonrpc: &'static str,
+        method: String,
+        params: serde_json::Map<String, Value>,
     },
 }
 impl Outbound {
@@ -1406,6 +1433,14 @@ impl Outbound {
         Self::Notice {
             jsonrpc: "2.0",
             notification,
+        }
+    }
+    /// A contributed notification, `{"jsonrpc":"2.0","method","params"}`.
+    pub fn message(method: String, params: serde_json::Map<String, Value>) -> Self {
+        Self::Message {
+            jsonrpc: "2.0",
+            method,
+            params,
         }
     }
 }

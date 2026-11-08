@@ -6,6 +6,7 @@
 //! time. Shell problems are returned as data, never raised during assembly.
 use crate::execution_settings::{ExecutionSettingsHost, ExecutionSettingsSource};
 use crate::file_storage::{FileStorage, FileStorageError};
+use crate::toolchain::{InstalledToolchain, ToolchainSource, ToolchainSourceHost};
 use dim_agent_runtime::Names;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
@@ -23,9 +24,13 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+mod confined;
 mod exec_shell_settings;
 #[cfg(unix)]
 mod isolation;
+pub use confined::{
+    ConfinedError, ConfinedOutput, ConfinedSpec, ConfinedStream, Confinement, SystemServices,
+};
 pub use exec_shell_settings::{ExecShellSettings, ExecShellSettingsError, ShellChoice};
 
 pub const EXEC_SHELL_CONFIG_INVALID: &str = "EXEC_SHELL_CONFIG_INVALID";
@@ -186,6 +191,27 @@ fn platform_roots() -> Vec<PathBuf> {
     roots
 }
 
+/// The environment names a prepared process keeps from the captured host
+/// environment: agent commands take them by this list, and a host-owned
+/// confined helper starts from them. Everything else the service holds is
+/// dropped.
+const ENVIRONMENT: &[&str] = &[
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "NO_COLOR",
+    "PAGER",
+    "GIT_PAGER",
+    "GH_PAGER",
+    #[cfg(target_os = "macos")]
+    "DEVELOPER_DIR",
+    #[cfg(target_os = "macos")]
+    "XDG_CONFIG_HOME",
+];
+
 /// Process facts and the source of the exec shell preference.
 #[derive(Clone)]
 pub struct HostPlatform {
@@ -204,6 +230,9 @@ pub struct HostPlatform {
     shell: Arc<Mutex<ResolvedShell>>,
     shell_file: Option<(Arc<FileStorage>, usize, PathBuf)>,
     pub(crate) execution: Option<Arc<dyn ExecutionSettingsSource>>,
+    /// The installed runtimes a started process finds at the end of its
+    /// `PATH`; `None` is a host that installs none.
+    pub(crate) toolchain: Option<Arc<dyn ToolchainSource>>,
 }
 
 struct ResolvedShell {
@@ -330,6 +359,7 @@ impl HostPlatform {
             })),
             shell_file: None,
             execution: None,
+            toolchain: None,
         })
     }
     /// Uses `host` for the execution switches at each process preparation. The
@@ -337,6 +367,13 @@ impl HostPlatform {
     /// preparation instead of running unsandboxed (ADR 011 D1).
     pub fn with_execution_settings(mut self, host: ExecutionSettingsHost) -> Self {
         self.execution = Some(host.0);
+        self
+    }
+    /// Uses `host` for the installed runtimes at each process start. The
+    /// HostPlatform plugin wires it; a platform without it starts processes
+    /// with the PATH they would have without any runtime.
+    pub fn with_toolchain_source(mut self, host: ToolchainSourceHost) -> Self {
+        self.toolchain = Some(host.0);
         self
     }
     /// Reads the configured exec shell for this invocation without reloading
@@ -467,6 +504,37 @@ const RUNTIME_BIN_ENV_KEYS: [&str; 5] = [
 const PLUGIN_BIN_DIRS_ENV: &str = "DIMCODE_PLUGIN_BIN_DIRS";
 
 impl HostPlatform {
+    /// The downloaded runtimes installed under the plan in effect, node first;
+    /// empty without the port. An entry whose bin directory is not inside its
+    /// archive directory is skipped: the sandbox grant is the root, so the two
+    /// must nest.
+    pub fn installed_toolchains(&self) -> Vec<InstalledToolchain> {
+        self.toolchain
+            .as_ref()
+            .map(|source| source.toolchains())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|toolchain| toolchain.bin.starts_with(&toolchain.root))
+            .collect()
+    }
+
+    /// The PATH a child gets: the host's embedding `directories` first, then
+    /// `base` (the PATH it would get with no installed runtime), then the
+    /// toolchain bin directories not already in either. `None` when nothing is
+    /// appended, so the caller leaves the child's PATH as it is. `base` may be
+    /// a login shell's literal `$PATH`, which is only expanded when the
+    /// command runs.
+    pub fn child_path(&self, directories: &[String], base: &OsStr) -> Option<OsString> {
+        let windows = self.os == Os::Windows;
+        let bins: Vec<PathBuf> = self
+            .installed_toolchains()
+            .into_iter()
+            .map(|toolchain| toolchain.bin)
+            .collect();
+        let additions = new_path_entries(directories, base, &bins, windows);
+        (!additions.is_empty()).then(|| compose_path(directories, base, &additions, windows))
+    }
+
     /// Builds a command with the current exec shell and returns that same shell.
     /// Tool policies and cwd argument resolution belong to the caller.
     pub async fn build_process_spec(
@@ -498,7 +566,12 @@ impl HostPlatform {
                 reason: format!("Working directory not found: {}", cwd.display()),
             });
         }
-        let env = build_env(self);
+        let mut env = build_env(self);
+        let toolchain: Vec<PathBuf> = self
+            .installed_toolchains()
+            .into_iter()
+            .map(|toolchain| toolchain.bin)
+            .collect();
         let command = if kind == ShellKind::Posix {
             prepend_runtime_path(
                 command,
@@ -507,6 +580,7 @@ impl HostPlatform {
                 &shell.executable_path,
                 shell.edition,
                 cwd,
+                &toolchain,
             )
             .await
             .map_err(|reason| ProcessSpecError {
@@ -514,6 +588,7 @@ impl HostPlatform {
                 reason,
             })?
         } else {
+            append_toolchain_path(&mut env, &toolchain);
             command.to_owned()
         };
         let args: &[&str] = match kind {
@@ -605,6 +680,86 @@ fn quote_posix(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// Whether two PATH entries name the same directory. Windows compares case
+/// insensitively, as its environment does.
+fn path_entry_matches(entry: &OsStr, directory: &Path, windows: bool) -> bool {
+    if windows {
+        entry
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&directory.to_string_lossy())
+    } else {
+        entry == directory.as_os_str()
+    }
+}
+
+/// `directories` not already among `host` or `base`'s entries, in their order.
+/// A base that is a login shell's literal `$PATH` matches nothing, because its
+/// entries are only known when the command runs.
+fn new_path_entries(
+    host: &[String],
+    base: &OsStr,
+    directories: &[PathBuf],
+    windows: bool,
+) -> Vec<PathBuf> {
+    let mut added: Vec<PathBuf> = Vec::new();
+    for directory in directories {
+        let present = host
+            .iter()
+            .any(|entry| path_entry_matches(OsStr::new(entry), directory, windows))
+            || std::env::split_paths(base)
+                .any(|entry| path_entry_matches(entry.as_os_str(), directory, windows))
+            || added.iter().any(|entry| entry == directory);
+        if !present {
+            added.push(directory.clone());
+        }
+    }
+    added
+}
+
+/// The child's PATH in its fixed order: `host`, then `base`, then
+/// `directories`.
+fn compose_path(host: &[String], base: &OsStr, directories: &[PathBuf], windows: bool) -> OsString {
+    let separator = if windows { ";" } else { ":" };
+    let mut segments: Vec<OsString> = host.iter().map(OsString::from).collect();
+    if !base.is_empty() {
+        segments.push(base.to_owned());
+    }
+    segments.extend(
+        directories
+            .iter()
+            .map(|directory| directory.as_os_str().to_owned()),
+    );
+    let mut value = OsString::new();
+    for (index, segment) in segments.iter().enumerate() {
+        if index > 0 {
+            value.push(separator);
+        }
+        value.push(segment);
+    }
+    value
+}
+
+/// Appends the toolchain directories to the child environment's `PATH`; the
+/// PowerShell and cmd shells, and every process they start, resolve commands
+/// from it. Their separator is `;`.
+fn append_toolchain_path(env: &mut Vec<(OsString, OsString)>, directories: &[PathBuf]) {
+    if directories.is_empty() {
+        return;
+    }
+    match env.iter_mut().find(|(key, _)| key == "PATH") {
+        Some((_, value)) => {
+            let additions = new_path_entries(&[], value, directories, true);
+            if !additions.is_empty() {
+                *value = compose_path(&[], value, &additions, true);
+            }
+        }
+        None => env.push((
+            "PATH".into(),
+            compose_path(&[], OsStr::new(""), directories, true),
+        )),
+    }
+}
+
 /// TS `prependRuntimePathForPosixCommand`.
 async fn prepend_runtime_path(
     command: &str,
@@ -613,9 +768,17 @@ async fn prepend_runtime_path(
     shell: &Path,
     edition: ShellEdition,
     cwd: &Path,
+    toolchain: &[PathBuf],
 ) -> Result<String, String> {
     let git_bash = edition == ShellEdition::GitBash;
-    let entries = runtime_path_entries(env, git_bash);
+    let host = runtime_path_entries(env, git_bash);
+    let additions: Vec<String> = new_path_entries(&host, OsStr::new("$PATH"), toolchain, git_bash)
+        .into_iter()
+        .map(|directory| directory.to_string_lossy().into_owned())
+        .collect();
+    let mut entries = host;
+    let host = entries.len();
+    entries.extend(additions);
     if entries.is_empty() {
         return Ok(command.to_owned());
     }
@@ -624,11 +787,11 @@ async fn prepend_runtime_path(
     } else {
         entries
     };
-    let prefix: Vec<String> = mapped.iter().map(|entry| quote_posix(entry)).collect();
-    Ok(format!(
-        "export PATH={}:\"$PATH\"; {command}",
-        prefix.join(":")
-    ))
+    let (host, additions) = mapped.split_at(host);
+    let mut path: Vec<String> = host.iter().map(|entry| quote_posix(entry)).collect();
+    path.push("\"$PATH\"".into());
+    path.extend(additions.iter().map(|entry| quote_posix(entry)));
+    Ok(format!("export PATH={}; {command}", path.join(":")))
 }
 
 async fn map_git_bash_entries(
@@ -803,6 +966,10 @@ pub struct HostPlatformConfig {
     /// The execution switches, provided by the App Server's `ExecutionSettings`
     /// part. Every assembly that starts processes declares it (ADR 011 D1).
     pub execution: Key<ExecutionSettingsHost>,
+    /// The installed runtimes, provided by the App Server's `ToolchainSource`
+    /// part. An assembly that installs none declares a fixed source with no
+    /// directories.
+    pub toolchain: Key<ToolchainSourceHost>,
     /// `exec-shell.json`: FileStorage root index and relative path. `None`
     /// means the profile has no home; the shell is resolved automatically.
     pub exec_shell_file: Option<(usize, PathBuf)>,
@@ -818,6 +985,7 @@ pub struct HostPlatformPlugin {
     /// File storage only when a local configuration source is configured.
     storage: Option<Key<FileStorage>>,
     execution: Key<ExecutionSettingsHost>,
+    toolchain: Key<ToolchainSourceHost>,
 }
 impl HostPlatformPlugin {
     pub fn new(names: &Names<'_>, config: HostPlatformConfig) -> rutis::Result<Self> {
@@ -825,10 +993,12 @@ impl HostPlatformPlugin {
             .then(|| names.key::<FileStorage>())
             .transpose()?;
         let execution = config.execution.clone();
+        let toolchain = config.toolchain.clone();
         Ok(Self {
             config,
             storage,
             execution,
+            toolchain,
         })
     }
 }
@@ -845,6 +1015,7 @@ impl DynPlugin for HostPlatformPlugin {
             .iter()
             .map(|storage| storage.erase())
             .chain(std::iter::once(self.execution.erase()))
+            .chain(std::iter::once(self.toolchain.erase()))
             .collect()
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -873,6 +1044,8 @@ impl DynPlugin for HostPlatformPlugin {
             platform.shell_file = shell_file;
             let execution = ctx.require_at(&self.execution)?;
             platform.execution = Some(execution.0.clone());
+            let toolchain = ctx.require_at(&self.toolchain)?;
+            platform.toolchain = Some(toolchain.0.clone());
             platform.shell.lock().await.config = config;
             ctx.provide_as::<HostPlatform>(Arc::new(platform))?;
             Ok(Effect::Done)
@@ -1219,6 +1392,11 @@ mod unix {
 
     pub async fn terminate(tree: &mut ProcessTree) -> io::Result<()> {
         let pid = tree.pid;
+        // An empty group keeps no member, so its id is free for reuse: do not
+        // signal it. A tree that left nothing costs one probe, no grace.
+        if group_gone(tree, pid, Duration::ZERO).await {
+            return Ok(());
+        }
         signal(pid, libc::SIGTERM);
         if group_gone(tree, pid, TERMINATE_GRACE).await {
             return Ok(());
@@ -2126,4 +2304,225 @@ fn find_executable(name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn host_with(
+        env: &[(&str, &str)],
+        toolchains: Option<Vec<InstalledToolchain>>,
+    ) -> HostPlatform {
+        let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+            code: "test",
+            reason: String::new(),
+        })
+        .unwrap();
+        platform.env = env
+            .iter()
+            .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+            .collect();
+        match toolchains {
+            Some(toolchains) => {
+                platform.with_toolchain_source(ToolchainSourceHost::fixed(toolchains))
+            }
+            None => platform,
+        }
+    }
+
+    /// A toolchain whose archive directory is `bin`'s parent.
+    fn toolchain(bin: &str) -> InstalledToolchain {
+        let bin = PathBuf::from(bin);
+        let root = bin.parent().expect("a parent").to_path_buf();
+        InstalledToolchain { bin, root }
+    }
+
+    /// `entries` as a PATH, in the platform's own separator.
+    fn joined(entries: &[&str]) -> String {
+        std::env::join_paths(entries)
+            .expect("the entries are PATH components")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn the_child_path_is_the_embedding_directories_then_the_base_path_then_the_toolchain() {
+        let platform = host_with(
+            &[],
+            Some(vec![
+                toolchain("/runtimes/node/bin"),
+                toolchain("/runtimes/python/bin"),
+            ]),
+        );
+        let base = joined(&["/base/a", "/base/b"]);
+        let composed = platform
+            .child_path(&["/host/bin".into()], OsStr::new(&base))
+            .unwrap();
+        assert_eq!(
+            composed.to_str().unwrap(),
+            joined(&[
+                "/host/bin",
+                "/base/a",
+                "/base/b",
+                "/runtimes/node/bin",
+                "/runtimes/python/bin"
+            ])
+        );
+    }
+
+    #[test]
+    fn a_toolchain_directory_already_on_the_path_is_not_added_twice() {
+        let platform = host_with(
+            &[],
+            Some(vec![toolchain("/base/a"), toolchain("/runtimes/node/bin")]),
+        );
+        let base = joined(&["/base/a", "/base/b"]);
+        let composed = platform.child_path(&[], OsStr::new(&base)).unwrap();
+        assert_eq!(
+            composed.to_str().unwrap(),
+            joined(&["/base/a", "/base/b", "/runtimes/node/bin"])
+        );
+        let base = joined(&["/base", "/runtimes/node/bin"]);
+        let installed = host_with(&[], Some(vec![toolchain("/runtimes/node/bin")]));
+        assert!(
+            installed.child_path(&[], OsStr::new(&base)).is_none(),
+            "a runtime already on the PATH changes nothing"
+        );
+    }
+
+    #[test]
+    fn a_platform_without_the_port_leaves_the_path_as_it_is() {
+        assert!(
+            host_with(&[], None)
+                .child_path(&[], OsStr::new("/base"))
+                .is_none()
+        );
+        assert!(
+            host_with(&[], Some(vec![]))
+                .child_path(&[], OsStr::new("/base"))
+                .is_none()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_posix_command_gets_the_toolchain_after_the_login_shell_path() {
+        let shell = ShellStatus::Available(ExecShellRuntime {
+            executable_path: "/bin/sh".into(),
+            edition: ShellEdition::Sh,
+            source: ShellSource::Login,
+            output_encoding: OutputEncoding::Utf8,
+        });
+        let platform = HostPlatform::current(shell.clone()).unwrap();
+        let (spec, _) = platform
+            .build_process_spec("true", Path::new("/"))
+            .await
+            .unwrap();
+        assert_eq!(
+            spec.args.last().unwrap(),
+            "true",
+            "without the port the command is unchanged"
+        );
+
+        let mut installed = HostPlatform::current(shell).unwrap();
+        installed.env = vec![];
+        let installed =
+            installed.with_toolchain_source(ToolchainSourceHost::fixed(vec![toolchain(
+                "/runtimes/node/bin",
+            )]));
+        let (spec, _) = installed
+            .build_process_spec("true", Path::new("/"))
+            .await
+            .unwrap();
+        assert_eq!(
+            spec.args.last().unwrap(),
+            "export PATH=\"$PATH\":'/runtimes/node/bin'; true"
+        );
+    }
+
+    /// The sandbox grants the installed runtime's directory read-only, so a
+    /// confined command runs a program Dim downloaded. Without the grant
+    /// Seatbelt denies the read.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_confined_command_reads_the_installed_runtimes_directory() {
+        use crate::execution_settings::ExecutionSettings;
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!(
+            "dim-toolchain-confined-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let archive = base.join("runtimes").join("node-v-test");
+        let bin = archive.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let tool = bin.join("fixturetool");
+        std::fs::write(&tool, "#!/bin/sh\necho confined-fixture\n").unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let workspace = base.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut platform = HostPlatform::current(ShellStatus::Available(ExecShellRuntime {
+            executable_path: "/bin/sh".into(),
+            edition: ShellEdition::Sh,
+            source: ShellSource::Login,
+            output_encoding: OutputEncoding::Utf8,
+        }))
+        .unwrap();
+        platform.env = vec![];
+        let platform = platform
+            .with_execution_settings(ExecutionSettingsHost::fixed(ExecutionSettings {
+                sandbox: true,
+                network: false,
+            }))
+            .with_toolchain_source(ToolchainSourceHost::fixed(vec![InstalledToolchain {
+                bin: bin.clone(),
+                root: archive.clone(),
+            }]));
+        let (spec, _) = platform
+            .build_process_spec("fixturetool", &workspace)
+            .await
+            .unwrap();
+        let (spec, temporary, _) = platform
+            .prepare_isolated_process(spec, std::slice::from_ref(&workspace), None)
+            .await
+            .unwrap();
+        let canonical = |path: &Path| std::fs::canonicalize(path).unwrap();
+        let granted: Vec<PathBuf> = spec
+            .args
+            .iter()
+            .filter_map(|arg| arg.to_str())
+            .filter_map(|arg| arg.strip_prefix("ROOT_"))
+            .filter_map(|rest| rest.split_once('='))
+            .map(|(_, path)| {
+                let path = PathBuf::from(path);
+                std::fs::canonicalize(&path).unwrap_or(path)
+            })
+            .collect();
+        let mut tree = platform.spawn(spec).unwrap();
+        tree.hold(temporary);
+        let mut stdout = tree.stdout();
+        let mut stderr = tree.stderr();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let (read, wrote) =
+            tokio::join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err));
+        read.unwrap();
+        wrote.unwrap();
+        assert!(
+            tree.wait().await.unwrap().success(),
+            "stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&out),
+            String::from_utf8_lossy(&err)
+        );
+        assert_eq!(String::from_utf8_lossy(&out).trim(), "confined-fixture");
+        assert!(
+            granted.iter().any(|path| path == &canonical(&archive)),
+            "the archive directory is the granted root: {granted:?}"
+        );
+        assert!(
+            !granted.iter().any(|path| path == &canonical(&bin)),
+            "the bin directory is not a root of its own: {granted:?}"
+        );
+        std::fs::remove_dir_all(base).unwrap();
+    }
 }

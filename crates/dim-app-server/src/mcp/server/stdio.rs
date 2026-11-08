@@ -1,5 +1,6 @@
 //! Server-owned stdio only; client-local processes require a separate bridge.
 use super::{DIAGNOSTIC_BYTES, McpServerError, Result};
+use dim_agent_capabilities::host_platform::HostPlatform;
 use futures_util::{SinkExt, StreamExt};
 use rmcp::{
     RoleClient,
@@ -8,6 +9,7 @@ use rmcp::{
 };
 use std::{
     collections::{BTreeMap, VecDeque},
+    ffi::{OsStr, OsString},
     process::Stdio,
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
@@ -129,7 +131,40 @@ impl Config {
         })
     }
 
-    pub fn spawn(&self, failure: Arc<StdMutex<Option<String>>>) -> Result<StdioTransport> {
+    /// The child's `PATH`: the entry's own `PATH` if it sets one, otherwise the
+    /// daemon's, with the downloaded runtimes' bin directories appended after
+    /// it. `None` when there is nothing to append, so the child keeps the
+    /// `PATH` it would have had. On Unix the program lookup reads the child's
+    /// `PATH`. On Windows Rust resolves the program itself before
+    /// `CreateProcessW`: with a `PATH` set on the command, a bare name is
+    /// searched in the child's `PATH`, then the application's directory, the
+    /// system and Windows directories, and the parent's `PATH`, with `.exe`
+    /// appended when the name has no extension. A `.cmd` shim such as
+    /// `npx.cmd` is found only by its full name.
+    fn child_path(&self, platform: Option<&HostPlatform>) -> Option<OsString> {
+        let platform = platform?;
+        let base = self
+            .env
+            .iter()
+            .find(|(key, _)| same_env_key(OsStr::new(key), "PATH"))
+            .map(|(_, value)| OsString::from(value))
+            .or_else(|| {
+                platform
+                    .env
+                    .iter()
+                    .rev()
+                    .find(|(key, _)| same_env_key(key, "PATH"))
+                    .map(|(_, value)| value.clone())
+            })
+            .unwrap_or_default();
+        platform.child_path(&[], &base)
+    }
+
+    pub fn spawn(
+        &self,
+        failure: Arc<StdMutex<Option<String>>>,
+        platform: Option<&HostPlatform>,
+    ) -> Result<StdioTransport> {
         let mut command = Command::new(&self.command);
         command
             .args(&self.args)
@@ -138,6 +173,9 @@ impl Config {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        if let Some(path) = self.child_path(platform) {
+            command.env("PATH", path);
+        }
         if let Some(cwd) = &self.cwd {
             command.current_dir(cwd);
         }
@@ -166,6 +204,16 @@ impl Config {
             tail,
             drained: Some(drained_done),
         })
+    }
+}
+
+/// Whether an environment name is `name`; Windows environment names compare
+/// case insensitively.
+fn same_env_key(key: &OsStr, name: &str) -> bool {
+    if cfg!(windows) {
+        key.to_string_lossy().eq_ignore_ascii_case(name)
+    } else {
+        key == OsStr::new(name)
     }
 }
 

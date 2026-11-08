@@ -46,6 +46,8 @@ pub struct ModelFailureFacts {
     /// Set only when the provider asked to wait longer than the budget left,
     /// which is why the request stopped.
     pub retry_after_stop: Option<std::time::Duration>,
+    /// The failure policy forbids retrying this failure.
+    pub retry_forbidden: bool,
 }
 impl ModelFailureFacts {
     /// A failure from a host with no provider boundary: nothing is known
@@ -64,6 +66,7 @@ impl ModelFailureFacts {
             attempts: 1,
             waited: std::time::Duration::ZERO,
             retry_after_stop: None,
+            retry_forbidden: false,
         }
     }
 }
@@ -567,6 +570,104 @@ pub trait ResolveModelConnection: Send + Sync + 'static {
     ) -> HostFuture<'_, ResolvedModelConnection>;
 }
 pub struct ProviderConnectionResolver(pub Arc<dyn ResolveModelConnection>);
+
+/// One non-conversational call of a model: the catalogued model a process
+/// adapter routes work to, and the `<category>.<operation>` it serves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModalityTarget {
+    pub target: ModelId,
+    pub operation: String,
+}
+
+/// The realtime transport a catalog model declares in its entry's
+/// `metadata.raw.realtime`: the protocol the adapter speaks and the path under
+/// the connection's base URL. The path is declared, never derived from the
+/// base URL.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RealtimeDeclaration {
+    pub protocol: String,
+    pub path: String,
+}
+
+/// A model's connection for one non-conversational call. The adapter holds it
+/// for that call only: its owner never persists it, never returns it to a
+/// client and never formats its credential material.
+pub struct ModalityConnection {
+    /// The connection a chat call to the same model would use, with its
+    /// failure policy and a managed account's credential recovery.
+    pub resolved: ResolvedModelConnection,
+    /// The route the catalog carries for this model.
+    pub protocol: ModelProtocol,
+    /// The model id a request sends to the provider.
+    pub model: String,
+    /// The realtime transport the model's catalog entry declares, for a
+    /// `realtime.*` operation. `None` on every other use, and on a model that
+    /// declares no transport.
+    pub realtime: Option<RealtimeDeclaration>,
+}
+impl std::fmt::Debug for ModalityConnection {
+    /// Redacted: only the identifying facts and whether a credential is
+    /// present, never a header value, bearer or key.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ModalityConnection")
+            .field("model", &self.model)
+            .field("protocol", &self.protocol)
+            .field("connection", &RedactedConnection(&self.resolved.connection))
+            .field("recovery", &self.resolved.recovery.is_some())
+            .field("failure_policy", &self.resolved.failure_policy.is_some())
+            .field("realtime", &self.realtime)
+            .finish()
+    }
+}
+struct RedactedConnection<'a>(&'a ModelConnection);
+impl std::fmt::Debug for RedactedConnection<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn header_names(headers: &HashMap<String, String>) -> Vec<&str> {
+            let mut names: Vec<&str> = headers.keys().map(String::as_str).collect();
+            names.sort_unstable();
+            names
+        }
+        match self.0 {
+            ModelConnection::Local => formatter.write_str("Local"),
+            ModelConnection::Http(http) => formatter
+                .debug_struct("Http")
+                .field("protocol", &http.protocol)
+                .field("base_url", &http.base_url)
+                .field("header_names", &header_names(&http.headers))
+                .field("bearer", &http.bearer.is_some())
+                .field("api_key", &http.api_key.is_some())
+                .finish(),
+            ModelConnection::Bedrock(bedrock) => formatter
+                .debug_struct("Bedrock")
+                .field("base_url", &bedrock.base_url)
+                .field("header_names", &header_names(&bedrock.headers))
+                .finish(),
+        }
+    }
+}
+
+/// Resolves a model's connection for one non-conversational call. The owner
+/// applies the rules of its [`SelectableModels::selectable_for_modality`] read
+/// and additionally requires the model to declare [`ModalityTarget::operation`],
+/// refusing every model it would not serve before any network call.
+pub trait ResolveModalityConnection: Send + Sync + 'static {
+    fn resolve_for_modality(
+        &self,
+        target: ModalityTarget,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModalityConnection>;
+}
+pub struct ModalityConnectionHost(pub Arc<dyn ResolveModalityConnection>);
+
+/// The refusal for a model whose catalog entry does not declare `operation`.
+pub fn undeclared_modality_operation(operation: &str) -> HostError {
+    HostError::classified(
+        HostErrorKind::InvalidRequest,
+        format!("Model does not declare the {operation} operation"),
+    )
+}
 
 /// Resolves a configuration once. Executing an adopted request must not call
 /// this port again to replace its capabilities with the latest catalog.

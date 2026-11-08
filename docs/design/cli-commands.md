@@ -315,13 +315,17 @@ a goal an evaluator judges keeps its judge through `/goal edit`, which writes on
 A `/pursue` form is Pursuit's later option (§10) and is not part of this contract.
 
 **Reading the goal.** The client folds the goal from the branch events it already reads, by Goal
-A.3's rule: the latest live `goal:objective` block is the objective, the latest live `goal:status`
-block is the status, `clear` retires both, `edit` keeps the judge, and an input the InputQueue
-deleted leaves the fold. It adds no query method and asks Goal no question. `/goal` with no
-arguments prints usage before that fold. Before it picks between `set` and `edit` the client reads the line
-up to its published head. After a write, it folds the events that write produced before printing: the
-line prompt reads them again, and the terminal UI waits for them among the line's live events. The
-state shown and the method chosen come from the events, never from a guess taken from the reply. The
+A.3's rule: the newest live `goal:state` record is the goal; on a history written before the record,
+the latest live `goal:objective` block is the objective and the latest live `goal:status` block is
+the status, `clear` retires both, `edit` keeps the judge, and an input the InputQueue deleted leaves
+the fold. It adds no query method and asks Goal no question. `/goal` with no arguments prints usage
+before that fold. Before it picks between `set` and `edit` the client reads the line up to its
+published head. After a write, it folds the events that write produced before printing: the line
+prompt reads them again, and the terminal UI waits for them among the line's live events. The
+report is released at the `sequence` the method returned, for every daemon: a daemon built from main
+answers with the same sequence and publishes the old keys, and the command must not stay parked
+waiting for a record such a daemon never writes. The state shown and the method chosen come from the
+events, never from a guess taken from the reply. The
 fold starts over at the line's own opening — its
 `branch/start`, or the `session/forked` a fork writes after the facts it copied — so a new line has
 no goal and a forked Session's `main` never shows the copied one (Goal §2, A11). A v3 client
@@ -459,7 +463,7 @@ commands.
 
 ## Plugin runtimes
 
-RuntimeManager supplies the Node and Python runtimes that plugin code runs in
+RuntimeManager supplies the Node and Python runtimes that plugin code runs in, and the uv tool that launches Python MCP servers
 ([RuntimeManager](plugins/RuntimeManager.md)). The daemon reads its configuration when an
 action applies it (RuntimeManager §3.3), so a client can turn a runtime on, say where it comes
 from and show what it is doing, without editing `<home>/runtimes/config.json` by hand and without
@@ -468,11 +472,13 @@ restarting anything. `/runtime` opens one panel in both terminal modes and the s
 
 ### The panel
 
-Rows are the two runtimes, always node then python. A row shows its name, the configured source
+Rows are the two runtimes and the uv tool, always node, then python, then uv. A row shows its name,
+the configured source
 (`download` or `system`), the version in effect (the fixed version for `download`, the checked
 interpreter's version for `system`, empty while it is `off` and nothing has been checked), `auto`
 when it is on, and the status `runtime.list` gives: `off`, `acquiring`, `starting`, `ready`, `down` with its reason, or
-`failed` with the reason that lists every source and its error.
+`failed` with the reason that lists every source and its error. uv launches no runtime, so it never
+shows `starting` or `down`: it is `ready` once installed under the plan in effect.
 
 Below the rows the panel names what waits on the runtime — the plugin rows that are Pending because
 one is `off` or `down` ([PluginManager §2.5](plugins/PluginManager.md#25-runtimes)) — so "why is
@@ -484,6 +490,7 @@ as `runtime.list` reports it.
 ╭─ Plugin runtimes ─────────────────────────────────────────────────────────╮
 │ › node      download  24.21.0    ready                                    │
 │   python    system    3.12.15    off      not installed                   │
+│   uv        download  0.13.7     off                                      │
 │                                                                           │
 │   1 plugin waits for node: workflow                                       │
 ╰─ Enter install or apply · s source · a auto · r retry · Esc close ────────╯
@@ -571,6 +578,7 @@ The typed forms are the whole area, so a caller needs no panel:
 ```text
 /runtime                              the same rows, in the scrollback client
 /runtime install node                 apply the configuration for node
+/runtime install uv                   install the uv tool
 /runtime source node system           switch node to the system interpreter and apply
 /runtime auto python on               turn python on by configuration and apply
 ```
@@ -586,7 +594,7 @@ $ dimcode runtime config python --source system --auto on
 python  system    3.12.15   off
 ```
 
-`dimcode runtime list` prints one tab-separated row per runtime with the fields the panel shows.
+`dimcode runtime list` prints one tab-separated row per runtime or tool (node, python, uv) with the fields the panel shows.
 Which plugins wait for a runtime is `/plugins`' answer (`dimcode plugin list` in the line client), not
 this command's: one place names it per plugin, and the panel repeats it only for the runtime in view. `install` and `config` print the runtime's row after the
 call, which is `acquiring` or the state it returned to; a failed call prints the error and exits
@@ -1337,6 +1345,7 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode acp [--agent ID]` | Serve ACP over stdin/stdout through the client-host [AcpGateway](plugins/AcpGateway.md); lifecycle and unsupported features follow its contract. |
 | `dimcode exec [-p TEXT] [--image PATH ...] [--json]` | Run text and/or local images and exit; read redirected stdin when `-p` is absent. |
 | `dimcode exec resume SESSION_ID [-p TEXT] [--image PATH ...] [--json]` | Continue the named persisted Session with text and/or images. |
+| `dimcode realtime [--operation voice] [--model PROVIDER/MODEL]` | Open one realtime session and stream it as JSON lines ([Realtime sessions](#realtime-sessions)): stdin lines are text frames, events and the end print to stdout, and EOF or Ctrl+C closes it. |
 | `dimcode session export SESSION_ID --format markdown\|json [--output PATH]` | Export the main branch; write to stdout when no output path is supplied. |
 | `dimcode session rename SESSION TITLE` | Set the Session's manual title through `session.rename` and print the title the server returns. |
 | `dimcode session rename SESSION --clear` | Clear the manual title, so the Session is untitled again. |
@@ -1351,6 +1360,12 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode migration [run\|inspect] [--source OLD_HOME]` | Import by default, or inspect, a stopped legacy data home through the shared [Migration plugin](../../crates/dim-migration/README.md). |
 | `dimcode migration list\|show TASK\|cancel TASK` | Query durable results or request cancellation without a daemon. |
 | `dimcode migration retry TASK [--source OLD_HOME]` | Reconcile a previous task's source again; return a new task linked to the old report. |
+| `dimcode modality [--json]` | Table of every Modality category and operation over `modality.capabilities` ([Modality](plugins/Modality.md#a5-cli)): availability, the owner's reasons as `dimension: detail` lines, the default and the effective model; `--json` prints the reply unchanged. A daemon that does not advertise the method says it serves no Modality and exits 1. |
+| `dimcode modality set-default <category>[.<operation>] <provider>/<model>` / `--clear` | Write one operation default over `modality.configure` with the revision read immediately before, retried once after a `modality_conflict`; `--clear` sends `model: null`; prints the operation's row, or the reply under `--json`. |
+| `dimcode image generate\|edit PROMPT [FILE...]`, `image enhance MODE [FILE...]`, `video generate\|edit\|enhance PROMPT [FILE...]`, `speech synthesize TEXT`, `speech transcribe FILE`, `music\|audio\|motion generate PROMPT`, `asset generate PROMPT [FILE...]` | Submit one task over `modality.task.submit` ([Modality](plugins/Modality.md#a5-cli)): `--mask` sends the mask as an input file named by `params.mask`, `--param KEY=VALUE` adds one adapter parameter (JSON when it parses as JSON, a string otherwise), and the inputs go inline when the whole set fits 8 MiB and by `node_path` above it. Waits and writes the result files to `--out`, a directory that defaults to `.`, refusing to replace an existing file; `--no-wait` prints the id, `--json` the record. |
+| `dimcode modality task list [--state S] [--category C] [--limit N] [--after ID]` | List one page of Modality tasks over `modality.task.list` ([Modality](plugins/Modality.md#a5-cli)), newest first, as `ID STATE OPERATION MODEL CREATED`, with `More: --after <id>` on stderr when another page exists; `--json` prints the reply unchanged. |
+| `dimcode modality task status\|wait\|cancel ID` | Print one task's row, progress, error and result files over `modality.task.status`; wait for it over `modality.task.wait`, writing results only with `--out DIR`; or cancel it over `modality.task.cancel`, reporting the state the owner returned. |
+| `dimcode ocr FILE [--output-mode text\|layout] [--out DIR]` | Submit `ocr.recognize` over `modality.task.submit` ([Modality](plugins/Modality.md#a5-cli)) and wait for it: a text within 64 KiB and 30,000 UTF-16 units prints inline and writes nothing, a longer one is written with a 2,000-character preview and its path, `--output-mode layout` writes the page images, and `--out` asks for the result set beside the printed text. |
 | `dimcode skills list` | List the Skills of the workspace over `skills.catalog`: each entry's name, source, state, file and description, then the catalog's issues. |
 | `dimcode skills enable\|disable ID` | Enable or disable one Skill over `skills.set_enabled`, then report the catalog again. |
 | `dimcode skills reload` | Rescan the user and project roots over `skills.refresh` and report what it found, through the [Skills management surface](#management-surfaces). |
@@ -1428,8 +1443,8 @@ available. Existing piped stdin and `--resume` calls retain their behavior, and
 sends the first message
 ([starting with a first message](#starting-with-a-first-message)).
 `exec resume` also accepts the same existing global options. Supplying the Session twice or the prompt twice is an
-argument error. `--json` serves `exec` and `migration`, and `tui` requires a
-terminal. Help/version and argument errors do not start the daemon.
+argument error. `--json` serves `exec`, `migration` and the Modality commands (`modality`,
+the category commands and `ocr`), and `tui` requires a terminal. Help/version and argument errors do not start the daemon.
 
 ### Starting with a first message
 
@@ -1494,6 +1509,21 @@ the flag must name a standalone `dim-app-server` binary. The failed launch
 removes the note after reading; a successful connection removes any note. The
 CLI never prints `daemon.log`, never deletes, recreates, downgrades or rewrites
 the store, and exits 1.
+
+While a store format upgrade runs, the daemon writes the same note as a
+progress kind, `dimcode-startup-progress v1 pid=<pid>` with
+`store-upgrade from=<from> to=<to> progress=<n>`, at most once a second and
+after each upgrade step; a fresh store or one at the current format writes
+none. Both startup waits read it: the spawn wait counts only its child's pid,
+the start-lock wait any pid, and each new counter moves the wait's bound
+forward by the bound itself (10 s for the spawn, one verified shutdown plus
+one startup plus a margin for the lock). A store format upgrade is the long
+phase that reports progress and moves the bound; every other phase of
+startup is bounded by the client's fixed value. The first such
+note prints, once on stderr in every mode, `Upgrading the local store from
+format v<from> to v<to>; this can take a while on a large store.`; stdout and
+JSON output stay unchanged. A client that only knows the failure kind ignores
+the progress kind and falls back to the generic messages above.
 Development documentation continues to use `./dev` and its isolated home; the
 terminal note itself names a compatible build or `--home PATH`.
 
@@ -1985,6 +2015,29 @@ JSON encoding escapes control characters; the terminal text filter does not
 rewrite data in machine output. The CLI adds no synthetic lifecycle events or
 second event schema. Notification delivery keeps the daemon's existing
 best-effort semantics; consumers needing a fixed complete record use export.
+
+## Realtime sessions
+
+`dimcode realtime [--operation voice] [--model PROVIDER/MODEL]` opens one session over
+`modality.realtime.open` with `params: {}`
+([Modality A.3](plugins/Modality.md#a3-methods)). The operation defaults to `voice`; `--model`
+names the provider and model as every CLI model reference does. The command names no workspace.
+
+The provider session is configured by the client, not the command: each stdin line is one JSON
+value sent as a text frame over `modality.realtime.send`, so the first line a pipe carries can be
+the provider's own `session.update`. Blank lines are skipped; a line that is not JSON ends the
+command with exit code 1.
+
+Each `modality.realtime.event` notification prints its `event` as one compact JSON line on
+stdout, and `modality.realtime.ended` prints its params, so a consumer reads one JSON value per
+line and keeps the `reason` of the end. Errors stay off stdout: an error reply prints its message
+on stderr and the command exits 1.
+
+Stdin EOF closes the session over `modality.realtime.close` and exits 0; so does Ctrl+C once the
+session is open. Ctrl+C before the open reply exits 130 and opens nothing. A `direct` session
+prints its `connection` object as the first line and then holds: the caller talks to the
+provider's own transport, stdin lines are ignored, and EOF or Ctrl+C still closes the session
+over `modality.realtime.close`.
 
 ## Conversation export
 

@@ -1,6 +1,8 @@
 mod images;
 mod recovery;
-pub use recovery::{Consume, invoke as invoke_with_recovery};
+pub use recovery::{
+    Consume, MAX_ATTEMPTS, RetryObserver, RetryWaiting, WAIT_BUDGET, invoke as invoke_with_recovery,
+};
 
 use crate::{
     context_preparation::ContextPreparation,
@@ -62,6 +64,7 @@ fn model_failure(facts: ModelFailureFacts) -> ModelFailure {
         retry_after_ms: facts
             .retry_after_stop
             .map(|wait| u64::try_from(wait.as_millis()).unwrap_or(u64::MAX)),
+        retry_forbidden: facts.retry_forbidden,
     }
 }
 
@@ -95,8 +98,14 @@ impl ModelProvider {
                 model,
                 ..
             }) => {
-                let facts = model
-                    .unwrap_or_else(|| Box::new(ModelFailureFacts::unknown(Some(message.clone()))));
+                let facts = model.unwrap_or_else(|| {
+                    let mut facts = ModelFailureFacts::unknown(Some(message.clone()));
+                    if let Some(chain) = &call.failure_chain {
+                        facts.attempts = chain.attempts;
+                        facts.waited = std::time::Duration::from_millis(chain.waited_ms);
+                    }
+                    Box::new(facts)
+                });
                 tracing::error!(
                     session_id = %self.identity.session_id,
                     branch_id = %self.identity.branch_id,
@@ -231,6 +240,7 @@ impl ModelProvider {
                 recovery::invoke(
                     &self.host,
                     &request,
+                    call.failure_chain.as_ref(),
                     resolved,
                     &cancel,
                     &mut output,

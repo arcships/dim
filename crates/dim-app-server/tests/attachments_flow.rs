@@ -442,7 +442,7 @@ impl Contract {
 }
 /// One `attachment.put` admitted under the calling load's token `stopping`.
 async fn put(
-    methods: &MethodProvider,
+    methods: &Arc<MethodProvider>,
     session: &str,
     stopping: CancellationToken,
 ) -> Result<Value, RpcError> {
@@ -450,6 +450,7 @@ async fn put(
         .accept(
             "attachment.put".into(),
             json!({"sessionId": session, "text": "pasted"}),
+            None,
             stopping,
             |_| {},
         )

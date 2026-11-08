@@ -77,9 +77,11 @@ async fn write(
             db.path.display()
         )));
     }
+    // Export rebuilds every request body in the preflight and checks its
+    // hash, so a damaged body is refused before the first line is written.
     let mut reader = Reader::new(CONTENT_BUDGET);
     let directory = read_directory(db, session).await?;
-    let branches = validate_session(db, &mut reader, session, &directory).await?;
+    let branches = validate_session(db, session, &directory, &mut reader).await?;
     line(
         out,
         &Line::Header {

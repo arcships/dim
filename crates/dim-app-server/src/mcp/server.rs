@@ -4,6 +4,7 @@ mod stdio;
 
 use super::auth::{Credential, McpAuth, Refusal, credential_key};
 use super::config::{BearerAuth, McpServerSettings, RemoteTransport};
+use dim_agent_capabilities::host_platform::HostPlatform;
 use dim_agent_runtime::StateCell;
 use dim_agent_types::{
     ContentBlock, ImageSource, ImageSourceType, JsonObject, JsonSchema, ToolContent, ToolResult,
@@ -577,6 +578,10 @@ fn request_limit(request: &ClientRequest, entry: Option<Duration>) -> RequestLim
 
 pub struct McpServer {
     transport: TransportConfig,
+    /// The host a stdio child takes its `PATH` from: the entry's own, else
+    /// this host's, with the installed runtimes appended. Read optionally, so
+    /// a host without HostPlatform spawns as before.
+    platform: Option<Arc<HostPlatform>>,
     tool_call_timeout: Option<Duration>,
     authorization: Option<Authorization>,
     state: StateCell<McpServerState>,
@@ -1020,7 +1025,7 @@ impl McpServer {
             }
             TransportConfig::Stdio(config) => {
                 self.initialize(
-                    config.spawn(self.failure.clone())?,
+                    config.spawn(self.failure.clone(), self.platform.as_deref())?,
                     cancel,
                     handshake_cancel,
                     deadline,
@@ -1389,6 +1394,7 @@ impl Plugin for McpServerPlugin {
         let state = StateCell::new(McpServerState::Disconnected);
         let service = Arc::new(McpServer {
             transport: self.transport.clone(),
+            platform: ctx.get_at(&Key::<HostPlatform>::of()),
             tool_call_timeout: self.tool_call_timeout,
             authorization: self.oauth.clone().map(|(key, server)| Authorization {
                 credential: auth.credential(key),

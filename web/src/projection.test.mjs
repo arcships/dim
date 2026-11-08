@@ -100,3 +100,69 @@ test("a user row carries the Skills its message loaded", () => {
     cut: 4,
   }])
 })
+
+function failure(fields = {}) {
+  return {
+    kind: "server_error",
+    status: 503,
+    providerCode: "overloaded",
+    requestId: "req_1",
+    reason: "The server is overloaded",
+    cause: [],
+    attempts: 1,
+    waitedMs: 0,
+    ...fields,
+  }
+}
+
+test("a failure row is one line and keeps its details", () => {
+  const projection = new Projection()
+  projection.apply(event(2, { kind: "model-end", requestId: "r1", error: "boom", failure: failure() }))
+  const row = projection.rows.at(-1)
+  assert.equal(row.kind, "error")
+  assert.equal(row.text, "The provider reported a server error: The server is overloaded. Try again later or choose another model.")
+  assert.equal(row.details.kind, "server_error")
+})
+
+test("a failure after a text row starts with the incomplete sentence", () => {
+  const projection = new Projection()
+  projection.apply(event(2, { kind: "text", requestId: "r1", delta: "partial" }))
+  projection.apply(event(3, { kind: "model-end", requestId: "r1", error: "boom", failure: failure() }))
+  const row = projection.rows.at(-1)
+  assert.equal(row.kind, "error")
+  assert.ok(row.text.startsWith("The response above is incomplete. The provider reported a server error"), row.text)
+})
+
+test("a shown model failure is forgotten at every turn end", () => {
+  const projection = new Projection()
+  projection.apply(event(2, { kind: "model-end", requestId: "r1", error: "boom", failure: failure() }))
+  projection.apply(event(3, { kind: "turn-end", outcome: "completed" }))
+  projection.apply(event(4, { kind: "turn-end", outcome: "failed", error: "boom" }))
+  assert.equal(projection.rows.filter((row) => row.kind === "error").length, 2)
+})
+
+test("a cancelled turn end forgets the model failure too", () => {
+  const projection = new Projection()
+  projection.apply(event(2, { kind: "model-end", requestId: "r1", error: "boom", failure: failure() }))
+  projection.apply(event(3, { kind: "turn-end", outcome: "cancelled" }))
+  projection.apply(event(4, { kind: "turn-end", outcome: "failed", error: "boom" }))
+  assert.deepEqual(
+    projection.rows.filter((row) => row.kind === "error" || row.kind === "stopped").map((row) => row.kind),
+    ["error", "stopped", "error"],
+  )
+})
+
+test("the turn repeat of a model failure is dropped", () => {
+  const projection = new Projection()
+  projection.apply(event(2, { kind: "model-end", requestId: "r1", error: "boom", failure: failure() }))
+  projection.apply(event(3, { kind: "turn-end", outcome: "failed", error: "boom" }))
+  assert.equal(projection.rows.filter((row) => row.kind === "error").length, 1)
+})
+
+test("a turn failure that is not the model failure still prints", () => {
+  const projection = new Projection()
+  projection.apply(event(2, { kind: "model-end", requestId: "r1", error: "boom", failure: failure() }))
+  projection.apply(event(3, { kind: "turn-end", outcome: "failed", error: "tool crashed" }))
+  const errors = projection.rows.filter((row) => row.kind === "error")
+  assert.deepEqual(errors.map((row) => row.text), ["The provider reported a server error: The server is overloaded. Try again later or choose another model.", "tool crashed"])
+})

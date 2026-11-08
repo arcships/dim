@@ -122,7 +122,6 @@ const IDENTITY: &str = "You are DimAgent. You and the user work together in thei
 const DEFAULTS: &str = "Safety:
 Never introduce code that exposes, logs, or commits secrets, tokens, or credentials.
 Do not weaken existing authentication, authorization, or input validation unless the user explicitly asks.
-Refuse work clearly intended to attack or compromise systems the user does not own. For ambiguous security work, proceed only when there is a clear legitimate purpose.
 
 Tone and communication:
 Think and respond in the same language as the user unless asked otherwise.

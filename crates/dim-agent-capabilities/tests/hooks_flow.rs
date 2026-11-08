@@ -2604,6 +2604,7 @@ async fn withdraw(
         .accept(
             "session.input.withdraw".into(),
             params,
+            None,
             CancellationToken::new(),
             |_| {},
         )

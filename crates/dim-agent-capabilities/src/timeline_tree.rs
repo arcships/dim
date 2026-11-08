@@ -171,6 +171,17 @@ impl TreeCommands {
     ) -> std::result::Result<Arc<AgentEvent>, AgentError> {
         self.get(&id)?.input(input).await
     }
+    /// Commits `inputs` to branch `id` as one atomic batch through its
+    /// validating `Branch::inputs`: the given order, contiguous sequences and
+    /// one publication. Rust only: no other language has a consumer.
+    #[service(skip)]
+    pub async fn inputs(
+        &self,
+        id: String,
+        inputs: Vec<InputMessageData>,
+    ) -> std::result::Result<Vec<Arc<AgentEvent>>, AgentError> {
+        self.get(&id)?.inputs(inputs).await
+    }
     /// Ends the line `id` with `source`; only the target is checked (§10).
     pub async fn end(
         &self,

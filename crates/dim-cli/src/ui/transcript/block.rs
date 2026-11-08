@@ -53,7 +53,13 @@ pub enum Block {
         insufficient: Vec<CompactionPartSize>,
         expanded: bool,
     },
-    Error(String),
+    /// A model failure or a turn failure: the one line, with the model
+    /// failure's details behind the details cycle.
+    Error {
+        text: String,
+        details: Option<crate::model::view::FailureDetail>,
+        expanded: bool,
+    },
     Status {
         text: String,
         tone: Tone,
@@ -122,7 +128,11 @@ pub fn project_row(rows: &[Arc<ViewRow>], index: usize, detail: Detail) -> Block
                 tone: Tone::Muted,
             },
         },
-        RowKind::Error => Block::Error(row.text.clone()),
+        RowKind::Error => Block::Error {
+            text: row.text.clone(),
+            details: row.failure.clone(),
+            expanded: detail != Detail::Collapsed,
+        },
         RowKind::StreamingAssistant | RowKind::Status | RowKind::Other => Block::Status {
             text: if row.text == crate::model::view::INTERRUPT_REASON {
                 crate::ui::i18n::t(crate::model::view::INTERRUPT_REASON).to_owned()
@@ -174,6 +184,7 @@ mod tests {
 
     fn row(kind: RowKind, text: &str) -> ViewRow {
         ViewRow {
+            failure: None,
             row_id: "r".into(),
             kind,
             text: text.into(),

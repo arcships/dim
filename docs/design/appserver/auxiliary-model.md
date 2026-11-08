@@ -169,8 +169,9 @@ ModelProvider), so the policy has one implementation:
 - **Credentials:** a credential that is rejected is recovered once. If the recovered
   credential is rejected again (`Terminal`), the credential owner's `finish_rejected`
   settles it before the call fails; for example, a managed account is signed out.
-- **Transient failures:** these back off within the shared budget (at most three attempts,
-  60 s of waiting), unless the provider's `ModelFailurePolicy::forbids_retry` forbids it.
+- **Transient failures:** these back off within the shared budget (at most eight attempts,
+  300 s of waiting, with a malformed response retried once), unless the provider's
+  `ModelFailurePolicy::forbids_retry` forbids it.
 
 Beyond that, retry is the consumer's (SessionTitle retries on a later input). No event is
 written anywhere.

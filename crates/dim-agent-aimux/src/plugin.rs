@@ -48,6 +48,7 @@ impl Plugin for ConfiguredModelsPlugin {
         });
         ctx.provide(ProviderConnectionResolver(resolver.clone()))?;
         ctx.provide(ModelSelectionHost(resolver.clone()))?;
+        ctx.provide(ModalityConnectionHost(resolver.clone()))?;
         ctx.provide(SelectableModelsHost(Arc::new(ConfiguredSelectable {
             models: self.0.clone(),
         })))?;
@@ -204,6 +205,34 @@ impl ResolveModelConnection for ConfiguredConnection {
                     preset: model.preset.clone(),
                 }),
             })
+        })
+    }
+}
+
+impl ResolveModalityConnection for ConfiguredConnection {
+    fn resolve_for_modality(
+        &self,
+        target: ModalityTarget,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModalityConnection> {
+        Box::pin(async move {
+            if self.generation.is_cancelled() {
+                return Err(HostError::classified(
+                    HostErrorKind::OwnerClosed,
+                    "Model catalog owner is closed",
+                ));
+            }
+            if cancel.is_cancelled() {
+                return Err(HostError::Cancelled(
+                    "Connection resolution cancelled".into(),
+                ));
+            }
+            self.models
+                .get(&target.target.provider_id, &target.target.model_id)?;
+            // The model file declares no modality operation, so this profile's
+            // `selectableForModality` read answers none and every target fails
+            // the declaration rule before a connection is built.
+            Err(undeclared_modality_operation(&target.operation))
         })
     }
 }

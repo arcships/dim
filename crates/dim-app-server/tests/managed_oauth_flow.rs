@@ -10,8 +10,8 @@ use dim_agent_capabilities::{
     file_storage::FileStoragePlugin,
     host::{
         AuxiliaryErrorCode, AuxiliaryModelHost, AuxiliaryRequest, CredentialRecoveryPhase,
-        CredentialRejection, HostError, HostErrorKind, ModelChunk, ModelHost,
-        ProviderConnectionResolver,
+        CredentialRejection, HostError, HostErrorKind, ModalityConnectionHost, ModalityTarget,
+        ModelChunk, ModelHost, ModelProtocol, ProviderConnectionResolver, SelectableModelsHost,
     },
 };
 use dim_agent_runtime::Names;
@@ -1045,6 +1045,48 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
                 )
                 .await
                 .unwrap();
+        }
+        if index == 0 {
+            let listed = root.get::<SelectableModelsHost>().unwrap();
+            assert!(
+                listed
+                    .0
+                    .selectable_for_modality(cancel.clone())
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|model| model.target.provider_id == id
+                        && model.target.model_id == "gpt-image-2"
+                        && model.operations == ["image.generate", "image.edit"]),
+                "the media model is a modality option"
+            );
+            let image = root
+                .get::<ModalityConnectionHost>()
+                .unwrap()
+                .0
+                .resolve_for_modality(
+                    ModalityTarget {
+                        target: ModelId {
+                            provider_id: id.into(),
+                            model_id: "gpt-image-2".into(),
+                        },
+                        operation: "image.generate".into(),
+                    },
+                    cancel.clone(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(image.model, "gpt-image-2");
+            assert_eq!(image.protocol, ModelProtocol::OpenaiResponses);
+            let lease = codex.credential(None, &cancel).await.unwrap();
+            assert!(
+                image.resolved.recovery.is_some(),
+                "a managed connection keeps its recovery"
+            );
+            assert!(
+                !format!("{image:?}").contains(lease.bearer()),
+                "the connection's Debug redacts the credential"
+            );
         }
         let edited = provider
             .update_model_config(

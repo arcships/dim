@@ -107,9 +107,45 @@ Commands:\n\
                                    or from stdin for -\n\
   workflow start NAME [PATH]       Start a definition with parameters from PATH\n\
   workflow history NAME            List a definition's recent runs\n\
+  modality                         List every Modality category and\n\
+                                   operation with its availability, its\n\
+                                   reasons and its default and effective\n\
+                                   model; --json prints the snapshot\n\
+  modality set-default <category>[.<operation>] <provider>/<model>\n\
+                                   Set one operation's default model\n\
+  modality set-default <category>[.<operation>] --clear\n\
+                                   Clear it, restoring automatic resolution\n\
+  modality task list [--state S] [--category C] [--limit N] [--after ID]\n\
+                                   List Modality tasks, newest first\n\
+  modality task status ID          Print a task's state, progress and files\n\
+  modality task wait ID [--out DIR]\n\
+                                   Wait for a task; write its results with --out\n\
+  modality task cancel ID          Cancel a task\n\
+  image generate|edit PROMPT [FILE...] [--mask PATH]\n\
+  image enhance MODE [FILE...]     Submit an image task\n\
+  video generate|edit|enhance PROMPT [FILE...]\n\
+  speech synthesize TEXT\n\
+  speech transcribe FILE\n\
+  music|audio|motion generate PROMPT\n\
+  asset generate PROMPT [FILE...]\n\
+                                   Submit a task and write its results to\n\
+                                   --out (the current directory by default);\n\
+                                   --no-wait prints the task id only\n\
+  ocr FILE [--output-mode text|layout] [--out DIR]\n\
+                                   Recognize the text of an image or PDF;\n\
+                                   a short text prints inline and writes\n\
+                                   nothing, a longer one is written\n\
+                                   --param KEY=VALUE passes one adapter\n\
+                                   parameter: JSON when it parses as JSON,\n\
+                                   a string otherwise, so a string that\n\
+                                   would parse as JSON is written quoted\n\
+                                   (--param 'label=\"true\"')\n\
   recording [on|off]               Record model requests to the home's\n\
                                    model-log/recordings.jsonl; prompts, code\n\
                                    and tool output are written there\n\
+  realtime [--operation voice] [--model PROVIDER/MODEL]\n\
+                                   Open a realtime session; stdin lines are\n\
+                                   text frames and events print as JSON lines\n\
   plugin list                      List plugins by name, the one in use and its status\n\
   plugin install PATH|GIT_URL [--ref R] [--id ID] [--no-enable]\n\
                                    Install a plugin and turn it on\n\
@@ -119,7 +155,7 @@ Commands:\n\
   plugin update ID                 Load the latest commit of a Git plugin\n\
   plugin remove ID\n\
   runtime list                     List the plugin runtimes and their state\n\
-  runtime install node|python      Turn a plugin runtime on and acquire it\n\
+  runtime install node|python|uv   Turn a plugin runtime on and acquire it\n\
   runtime config NAME              Set a runtime's --source or --auto and apply it\n\
   daemon stop                      Gracefully stop an existing daemon\n\
   daemon vacuum [--database PATH]  Rewrite an offline database to reclaim\n\
@@ -229,9 +265,16 @@ Account commands sign in to every Provider the daemon describes with a login\n\
   method. A build without the Dim account provider says so and offers API-key\n\
   Providers instead.\n\
 Exit codes: 0 success, 1 configuration/transport error, a delete that removed\n\
-            nothing or a cleanup in which a delete failed, 2 model/turn\n\
-            failure, 3 interactive approval or answer required, 130\n\
-            interrupted.\n";
+            nothing, a cleanup in which a delete failed or a result file that\n\
+            already exists, 2 model/turn failure or a failed Modality task,\n\
+            3 interactive approval or answer required, 130 interrupted.\n";
+
+/// What `dimcode modality task` names.
+const USAGE_TASK: &str = "Use modality task list | status ID | wait ID [--out DIR] | cancel ID";
+
+/// What `dimcode modality` names.
+const USAGE_MODALITY: &str = "Use modality, modality set-default \
+<category>[.<operation>] <provider>/<model> | --clear, or modality task";
 
 /// What `dimcode session` names besides `export`.
 const USAGE_SESSION: &str =
@@ -354,6 +397,12 @@ pub enum Action {
         method: String,
         params: serde_json::Value,
     },
+    /// `modality ...`: one Modality command (Modality A.5).
+    Modality(crate::modality::Command),
+    /// `realtime`: one realtime session, with the operation to open.
+    Realtime {
+        operation: Option<String>,
+    },
     /// `runtime list`: the plugin runtimes and their state.
     RuntimeList,
     /// `runtime install NAME`: turn a plugin runtime on and acquire it.
@@ -413,6 +462,26 @@ impl Workspace {
     }
 }
 
+/// The flags a Modality command takes (Modality A.5).
+#[derive(Clone, Debug, Default)]
+pub struct ModalityFlags {
+    /// `--out DIR`: where results are written; the current directory when
+    /// absent.
+    pub out: Option<PathBuf>,
+    /// `--no-wait`: stop after the submission and print the id.
+    pub no_wait: bool,
+    /// `task list --state STATE`: one task state.
+    pub state: Option<String>,
+    /// `task list --category CATEGORY`: one category.
+    pub category: Option<String>,
+    /// `task list --limit N`: at most N tasks; the daemon's default otherwise.
+    pub limit: Option<u64>,
+    /// `task list --after ID`: the page after this task.
+    pub after: Option<String>,
+    /// `ocr --output-mode text|layout`: what `ocr.recognize` returns.
+    pub output_mode: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct Options {
     pub action: Action,
@@ -422,6 +491,8 @@ pub struct Options {
     pub resume: Option<String>,
     pub home: PathBuf,
     pub home_explicit: bool,
+    /// The flags of a Modality command (A.5).
+    pub modality: ModalityFlags,
     /// The launch directory: where the daemon starts and what the client's
     /// own file system work resolves against. Requests carry [`Self::workspace`]
     /// instead.
@@ -469,6 +540,7 @@ impl Options {
             resume: None,
             home: default_home(),
             home_explicit: false,
+            modality: ModalityFlags::default(),
             cwd: std::env::current_dir()?,
             workspace: None,
             server: None,
@@ -568,11 +640,79 @@ impl Options {
                         return Err("Supply the database path only once".into());
                     }
                 }
-                "--clear" => {
-                    let Action::SessionRename { clear, .. } = &mut options.action else {
-                        return Err("--clear requires session rename".into());
+                "--clear" => match &mut options.action {
+                    Action::SessionRename { clear, .. } => *clear = true,
+                    Action::Modality(crate::modality::Command::SetDefault { clear, .. }) => {
+                        *clear = true;
+                    }
+                    _ => {
+                        return Err(
+                            "--clear requires session rename or modality set-default".into()
+                        );
+                    }
+                },
+                "--out" => {
+                    let Action::Modality(command) = &options.action else {
+                        return Err("--out requires a submission, modality task wait or ocr".into());
                     };
-                    *clear = true;
+                    if !matches!(
+                        command,
+                        crate::modality::Command::TaskWait { .. }
+                            | crate::modality::Command::Ocr { .. }
+                    ) {
+                        return Err("--out requires a submission, modality task wait or ocr".into());
+                    }
+                    options.modality.out = Some(PathBuf::from(value(&mut args)?));
+                }
+                "--no-wait" => {
+                    let Action::Modality(crate::modality::Command::Ocr { .. }) = &options.action
+                    else {
+                        return Err("--no-wait requires a submission or ocr".into());
+                    };
+                    options.modality.no_wait = true;
+                }
+                "--output-mode" => {
+                    let Action::Modality(crate::modality::Command::Ocr { .. }) = &options.action
+                    else {
+                        return Err("--output-mode requires ocr".into());
+                    };
+                    let mode = value(&mut args)?;
+                    if mode != "text" && mode != "layout" {
+                        return Err(format!("--output-mode is text or layout, not {mode}").into());
+                    }
+                    options.modality.output_mode = Some(mode);
+                }
+                "--state" => {
+                    let Action::Modality(crate::modality::Command::TaskList) = &options.action
+                    else {
+                        return Err("--state requires modality task list".into());
+                    };
+                    options.modality.state = Some(value(&mut args)?);
+                }
+                "--category" => {
+                    let Action::Modality(crate::modality::Command::TaskList) = &options.action
+                    else {
+                        return Err("--category requires modality task list".into());
+                    };
+                    options.modality.category = Some(value(&mut args)?);
+                }
+                "--limit" => {
+                    let Action::Modality(crate::modality::Command::TaskList) = &options.action
+                    else {
+                        return Err("--limit requires modality task list".into());
+                    };
+                    let limit = value(&mut args)?;
+                    options.modality.limit =
+                        Some(limit.parse().map_err(|_| {
+                            format!("--limit takes a number of tasks, not {limit}")
+                        })?);
+                }
+                "--after" => {
+                    let Action::Modality(crate::modality::Command::TaskList) = &options.action
+                    else {
+                        return Err("--after requires modality task list".into());
+                    };
+                    options.modality.after = Some(value(&mut args)?);
                 }
                 "--older-than" => {
                     let value = parse_age(&value(&mut args)?)?;
@@ -789,6 +929,72 @@ impl Options {
                 "plugin" if matches!(options.action, Action::Chat) => {
                     let (method, params) = crate::plugin_command::parse(&mut args)?;
                     options.action = Action::Plugin { method, params };
+                }
+                "modality" if matches!(options.action, Action::Chat) => {
+                    use crate::modality::Command;
+                    let verb = match args.peek().map(String::as_str) {
+                        Some(next) if !next.starts_with("--") => Some(value(&mut args)?),
+                        _ => None,
+                    };
+                    options.action = Action::Modality(match verb.as_deref() {
+                        None => Command::List,
+                        Some("set-default") => {
+                            let operation = value(&mut args)?;
+                            // The model is the next word unless the default is
+                            // being cleared by the flag the loop reads.
+                            let model = match args.peek().map(String::as_str) {
+                                Some(next) if !next.starts_with("--") => Some(value(&mut args)?),
+                                _ => None,
+                            };
+                            Command::SetDefault {
+                                operation,
+                                model,
+                                clear: false,
+                            }
+                        }
+                        Some("task") => match value(&mut args)?.as_str() {
+                            "list" => Command::TaskList,
+                            "status" => Command::TaskStatus {
+                                task_id: value(&mut args)?,
+                            },
+                            "wait" => Command::TaskWait {
+                                task_id: value(&mut args)?,
+                            },
+                            "cancel" => Command::TaskCancel {
+                                task_id: value(&mut args)?,
+                            },
+                            _ => return Err(USAGE_TASK.into()),
+                        },
+                        Some(_) => return Err(USAGE_MODALITY.into()),
+                    });
+                }
+                "image" | "video" | "speech" | "music" | "audio" | "asset" | "motion"
+                    if matches!(options.action, Action::Chat) =>
+                {
+                    let category = arg.clone();
+                    let submit = crate::modality::media::parse(
+                        &category,
+                        &mut args,
+                        &mut options.json,
+                        &mut options.modality,
+                    )?;
+                    options.action = Action::Modality(crate::modality::Command::Submit(submit));
+                }
+                "ocr" if matches!(options.action, Action::Chat) => {
+                    options.action = Action::Modality(crate::modality::Command::Ocr {
+                        file: PathBuf::from(value(&mut args)?),
+                    });
+                }
+                "realtime" if matches!(options.action, Action::Chat) => {
+                    options.action = Action::Realtime { operation: None };
+                }
+                "--operation" => {
+                    let Action::Realtime { operation } = &mut options.action else {
+                        return Err("--operation requires realtime".into());
+                    };
+                    if operation.replace(value(&mut args)?).is_some() {
+                        return Err("Supply --operation only once".into());
+                    }
                 }
                 "migration" if matches!(options.action, Action::Chat) => {
                     options.action = crate::migration_command::parse(&mut args)?;
@@ -1344,18 +1550,27 @@ impl Options {
         if options.provider.is_some() && options.model.is_none() {
             return Err("--provider requires --model or DIM_MODEL".into());
         }
+        // `--model` names the realtime session's model, and is a chat option
+        // for every other command.
+        let model_is_chat_option =
+            options.model.is_some() && !matches!(options.action, Action::Realtime { .. });
         if !matches!(options.action, Action::Chat | Action::Tui | Action::Exec)
             && (options.prompt.is_some()
                 || options.resume.is_some()
-                || options.model.is_some()
+                || model_is_chat_option
                 || options.effort.is_some()
                 || autocompact.is_some()
                 || options.permission.is_some())
         {
             return Err("Commands cannot be combined with chat options".into());
         }
-        if options.json && !matches!(options.action, Action::Exec | Action::Migration(_)) {
-            return Err("--json requires exec or migration".into());
+        if options.json
+            && !matches!(
+                options.action,
+                Action::Exec | Action::Migration(_) | Action::Modality(_)
+            )
+        {
+            return Err("--json requires exec, migration or a modality command".into());
         }
         let images_for_tui = matches!(options.action, Action::Tui) && options.prompt.is_some();
         if !options.images.is_empty() && !matches!(options.action, Action::Exec) && !images_for_tui
@@ -1712,7 +1927,9 @@ impl Options {
             | Action::ManagementSet { area, .. }
             | Action::ManagementAdd { area, .. }
             | Action::ManagementStart { area, .. } => area.names_workspace(),
-            Action::Migration(_)
+            Action::Modality(_)
+            | Action::Realtime { .. }
+            | Action::Migration(_)
             | Action::Acp { .. }
             | Action::Export { .. }
             | Action::SessionRename { .. }
@@ -1876,6 +2093,13 @@ mod workspace_tests {
             (vec!["hooks", "set", document], None, true),
             (vec!["workflow", "list"], None, true),
             (vec!["workflow", "start", "job"], None, true),
+            (vec!["realtime"], None, false),
+            (vec!["realtime", "--operation", "transcribe"], None, false),
+            (
+                vec!["realtime", "--model", "step-plan/stepaudio-2.5-realtime"],
+                None,
+                false,
+            ),
         ];
         for (arguments, piped, names_workspace) in cases {
             let args = ["--home", directory, "--cwd", directory]
@@ -1900,6 +2124,43 @@ mod workspace_tests {
             );
             assert_eq!(options.launch_dir(), Path::new(directory));
         }
+    }
+
+    /// `realtime [--operation voice] [--model PROVIDER/MODEL]`: the operation
+    /// is optional (the dispatcher opens `voice`), the model is the CLI's
+    /// usual reference, and `--operation` belongs to no other command.
+    #[test]
+    fn realtime_takes_one_operation_and_one_model() {
+        let parse = |arguments: &[&str]| {
+            Options::parse(arguments.iter().map(|argument| (*argument).to_owned()))
+        };
+        let options = parse(&["realtime"]).unwrap();
+        assert!(
+            matches!(options.action, Action::Realtime { operation: None }),
+            "{:?}",
+            options.action
+        );
+        let options = parse(&["realtime", "--operation", "transcribe"]).unwrap();
+        let Action::Realtime { operation } = &options.action else {
+            panic!("{:?}", options.action);
+        };
+        assert_eq!(operation.as_deref(), Some("transcribe"));
+        let options = parse(&["realtime", "--model", "step-plan/stepaudio-2.5-realtime"]).unwrap();
+        assert!(
+            matches!(options.action, Action::Realtime { operation: None }),
+            "{:?}",
+            options.action
+        );
+        assert_eq!(
+            options.model.as_deref(),
+            Some("step-plan/stepaudio-2.5-realtime")
+        );
+        let error = parse(&["--operation", "transcribe"]).err().unwrap();
+        assert_eq!(error.to_string(), "--operation requires realtime");
+        let error = parse(&["realtime", "--operation", "voice", "--operation", "voice"])
+            .err()
+            .unwrap();
+        assert_eq!(error.to_string(), "Supply --operation only once");
     }
 
     #[cfg(any(unix, windows))]
