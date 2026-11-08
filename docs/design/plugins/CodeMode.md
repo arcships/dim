@@ -136,6 +136,7 @@ The first delivery changes only the following owners' contracts:
 | Branch invocation mechanism | Typed `step/tool-invoke` / `step/tool-invocation-result` facts, a branch-scoped caller, nested execution lane and parent join | Code Mode and the existing ToolExecutor are separate parts and must hand off through a declared contract without releasing the pinned parent binding early. |
 | Approval mechanism | Reuse of the existing `approval/request` and `approval/respond` contract | Nested approvals use the existing `source.call_id` as the child `invocationId` and `source.turn_id`/`source.request_id` as its request identity; no Approval schema or client decoder change is required. |
 | Native Timeline storage | The typed `step` facts are an incompatible persisted-event change; the storage owner records the next format step and its compatibility test with the implementation under [#1276](https://github.com/arcships/dim/issues/1276) | `StepEvent` is closed and strict, so an older reader cannot treat an unknown `step` name as an extension event. |
+| App Server event visibility | Both `step` keys are execution-only; `ProductEvent::new` returns `None` for them | `session.history` and `session.notice` do not carry them, so the TUI, dim-electron and v3 clients need no new event kind. |
 | Program host | A bounded one-shot execution boundary | Model-supplied code cannot be treated as a trusted in-process function. |
 
 Existing tool declarations, ordinary `step/tool-call` semantics, the context-input route and the
@@ -287,7 +288,9 @@ execution-only facts; they remain execution facts and are not adopted as model m
 
 `v1::EventRef` must exclude both keys, as it already excludes `step/model-content` and
 `context/configured`: a frozen v1 client's closed `StepEvent` cannot decode them. A v1 projection test
-verifies that neither key reaches a v1 connection.
+verifies that neither key reaches a v1 connection. The App Server treats both keys as execution-only:
+`ProductEvent::new` returns `None`, so `session.history` and `session.notice` never carry them and
+clients need no new event kind or fold rule.
 
 The events must contain enough correlation to settle after cancellation or reload without consulting
 runtime heap state. In particular, the result must identify the invocation and parent request, and a
