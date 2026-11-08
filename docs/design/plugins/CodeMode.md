@@ -1,8 +1,14 @@
 # Code Mode: bounded programmatic tool orchestration
 
-Status: Draft. Delivery status is tracked in the issues, not here.
+Status: Draft. Phase: P3. Delivery status is tracked in [#1276](https://github.com/arcships/dim/issues/1276), not here.
+Language: TypeScript first for the plugin package; the isolated host and generic invocation seam are
+mechanism-owner contracts. Scope: process, Session and branch ([ADR 002](../../adr/002-plugin-scope.md)).
 
-Scope: Session and branch.
+The planned first delivery is an optional first-party package at `runtime/plugins/codemode/`, loaded by
+PluginManager only when enabled. It is not currently present in the repository and is not part of the
+default profile. The package coordinates the trusted plugin bindings; it never evaluates model code in
+that process. The bounded evaluator belongs to the isolated host requirement in [#1278](https://github.com/arcships/dim/issues/1278).
+
 Issue: [#1276](https://github.com/arcships/dim/issues/1276).
 Rules: [design rules](../../architecture/rust-agent/principles.md), [ADR 002](../../adr/002-plugin-scope.md), [plugin contract](../plugin-contract.md).
 
@@ -16,15 +22,18 @@ agent loop, a persistent REPL or a Workflow engine.
 
 | Part | Scope | Owns |
 | --- | --- | --- |
-| `CodeModeSession` | Session | The `codemode` tool declaration, user-facing settings and the Session-side runtime factory. It has no branch business state. Its registered handler is invoked by the core with the current branch execution context; it does not discover a branch by reading Session state. |
+| `CodeModeSettings` | Process | The `codemode` Settings source (`codemode.json`): outer risk and authoritative code, time, call, concurrency, memory and output caps. Package enablement remains PluginManager's structural configuration. |
+| `CodeModeSession` | Session | The `codemode` tool declaration and Session-side runtime factory. It reads validated `CodeModeSettings` through the declared `settings` service at call time and has no branch business state. Its registered handler is invoked by the core with the current branch execution context; it does not discover a branch by reading Session state. |
 | `CodeModeBranch` | branch | One-shot executions associated with the current branch, their cancellation and their correlation with programmatic tool results. It writes no duplicate fact for the outer `step/tool-call`; that fact remains ToolExecutor's contract. |
-| `ToolExecutor` extension | branch, mechanism owner | The generic programmatic invocation command/result contract and its normal Permission, Approval, ToolBinding and settlement semantics. This is not Code Mode business state. |
+| generic invocation mechanism | branch, mechanism owner | The generic programmatic invocation command/result contract and its normal Permission, Approval, ToolBinding and settlement semantics. This is not Code Mode business state. |
 | isolated program host | runtime host | The execution boundary and resource limits for model-supplied code. It receives only the declared tool bridge. |
 
-`CodeModeSession` is an ordinary Session part, not a Capability: it registers a tool and owns no
-branch Timeline state. `CodeModeBranch` is a Capability because it consumes branch facts and owns
-the state of active programmatic executions. The generic invocation support belongs to the existing
-ToolExecutor mechanism owner, not to the Code Mode plugin.
+`CodeModeSettings` is a process part owned by the optional package and registers the `codemode`
+Settings source. `CodeModeSession` is an ordinary Session part, not a Capability: it registers a tool
+and owns no branch Timeline state. It reads the validated process settings at each call; changing a
+business limit does not reload the Session. `CodeModeBranch` is a Capability because it consumes branch
+facts and owns the state of active programmatic executions. The generic invocation support belongs to
+the existing ToolExecutor mechanism owner, not to the Code Mode plugin.
 
 ### 1.2 Goals
 
@@ -93,14 +102,24 @@ The exact wire declaration is a binding decision, but the semantic fields are:
 | `timeoutMs` | Optional requested wall-clock budget, capped by the configured maximum. |
 | `maxCalls` | Optional requested nested-call budget, capped by the configured maximum. |
 
+`CodeModeSettings` is the process-owned Settings source named `codemode`, stored as the user document
+`codemode.json`. It supplies the outer declared risk and authoritative maxima for all limits in §2.2;
+PluginManager's structural enablement controls whether the optional package is assembled and is not a
+business field in this document. The Session reads the already validated source at each call, so a
+settings edit applies to later calls without reloading an in-flight call. A missing document uses the
+source's validated defaults at the Settings boundary; the Session does not add defaults.
+
 The outer tool has its own declared risk and therefore enters the normal ToolExecutor admission path.
 Approving the outer call does **not** approve nested calls.
 
 The outer result is a normal `ToolResult`. Its `content` is the only text Code Mode promises to the
 model. A successful result contains the program's final bounded value; an error result names a stable
-terminal status and a safe message. The trusted executor may also attach the bounded, confirmed effects
-reported by committed child results, including when the program fails after a child write. This keeps
-compaction's existing effect digest complete without exposing child results as model messages.
+terminal status and a safe message. Before returning, CodeModeBranch appends the confirmed effects from
+committed child results in child sequence order, including effects from a child that returned an error.
+This keeps compaction's existing effect digest complete without exposing child results as model
+messages. On recovery, ToolExecutor writes the outer reload/cancel result with an explicit
+effect-may-have-happened warning; that generated result carries no declarations under the Session
+boundary contract, and it never claims an unmatched child was not executed.
 `structuredContent` may carry UI/persistence data, but it is not the model-facing channel for a required
 handle or status.
 
@@ -110,14 +129,44 @@ The first delivery changes only the following owners' contracts:
 
 | Owner | Addition | Why it is public |
 | --- | --- | --- |
+| Process Settings source | `CodeModeSettings` source `codemode`, including outer risk and authoritative limits | Settings are process-owned business configuration; PluginManager owns structural package enablement, and the Session must not invent defaults or capture stale limits. |
 | Session tool binding | `codemode` declaration and result contract | The model must be able to adopt and call the tool. |
-| Branch invocation mechanism | Typed `step/tool-invoke` / `step/tool-invocation-result` facts, a branch-scoped caller, nested execution lane, parent join and effect aggregation | Code Mode and the existing ToolExecutor are separate parts and must hand off through a declared contract without releasing the pinned parent binding early. |
+| Branch invocation mechanism | Typed `step/tool-invoke` / `step/tool-invocation-result` facts, a branch-scoped caller, nested execution lane and parent join | Code Mode and the existing ToolExecutor are separate parts and must hand off through a declared contract without releasing the pinned parent binding early. |
+| Code Mode result owner | CodeModeBranch aggregation of confirmed child effects before returning the outer `ToolResult` | The generic ToolExecutor records the returned result unchanged; it does not invent a Code Mode result or apply an effect-size policy. |
+| Approval mechanism | Reuse of the existing `approval/request` and `approval/respond` contract | Nested approvals use the existing `source.call_id` as the child `invocationId` and `source.turn_id`/`source.request_id` as its request identity; no Approval schema or client decoder change is required. |
+| Native Timeline storage | Advance the native store format from v34 to v35 for the new typed `step` facts; v34 readers refuse a v35 marker and never downgrade or rewrite it | `StepEvent` is closed and strict, so an older reader cannot safely treat an unknown `step` name as an extension event. The mechanism owner adds the v35 step, refusal path and upgrade/downgrade fixture in #1277. |
 | Program host | A bounded one-shot execution boundary | Model-supplied code cannot be treated as a trusted in-process function. |
 
 Existing tool declarations, ordinary `step/tool-call` semantics, the context-input route and the
 Workflow contract are unchanged. The typed event contract gains the two generic `step/tool-invoke`
 keys; this is a mechanism addition rather than a Code Mode hook, so another automation capability can
 use it without making the core depend on this optional plugin.
+
+**Native-store decision.** Adding either typed `step` key is an incompatible persisted-event change,
+not an extension-event addition. The implementation therefore advances the native store from v34 to
+v35 with a marker-only migration: the v34 schema and rows are preserved, the startup transaction
+writes marker 35 after the v35 decoder is installed, and the normal v34-to-v35 upgrade path is used
+for databases opened by the new binary. A v34 binary encountering marker 35 rejects the store as an
+updated format, preserves it byte-for-byte, and never downgrades or rewrites it. A v35 binary still
+reads all v34 histories and decodes the new `step` names as core facts. The mechanism-owner work,
+the [storage contract's](../appserver/native-storage-format.md) v35 decision section, and a disposable
+upgrade/downgrade fixture are tracked in [#1277](https://github.com/arcships/dim/issues/1277); they land
+with the typed events, not before them. The fixture opens a v34 store with the v35 binary, verifies
+that existing rows are unchanged, and verifies that a v34 binary refuses the resulting store with the
+existing updated-format error and leaves it byte-for-byte intact.
+
+Nested approvals reuse the existing `approval/request`, `approval/respond` and cancellation data
+contracts. For a child `step/tool-invoke`, the existing `ApprovalRequestData.source` is
+`BranchSource::Tool { call_id: invocationId, turn_id, request_id }`; this supplies the child identity
+and request correlation already rendered by clients. The generic invocation command/result retains
+`parentCallId`, so ToolExecutor and CodeModeBranch map the child approval to the outer call without
+adding fields to approval events. `approval_id` remains the only key accepted by Approval's response
+operation. A response authorizes only that approval and child invocation, never a sibling, future or
+outer `codemode` call; recovery and cancellation match the same `(turnId, requestId, invocationId)`
+source identity. If multiple children wait, each receives its own source and `approval_id`; no response
+is matched by `parentCallId` alone, and outer `codemode` approval cannot satisfy a child. TUI, App Server
+and other clients need no decoder change, but should display the existing call identity when explaining
+a nested approval.
 
 The isolated program's terminal statuses are:
 
@@ -133,12 +182,14 @@ code_limit
 reloading
 ```
 
-A nested invocation has its own ToolExecutor status. It must distinguish a call that ToolExecutor
-rejected after the command was committed but before handler execution (`notExecuted`), a committed call
-cancelled before execution (`cancelled`), and a call whose execution may already have taken effect
-(`reloading`). A Code Mode validation error before `step/tool-invoke` is appended is a local program
-error and has no invocation status or child Timeline fact. An unmatched committed command always uses
-`reloading` during recovery. The plugin must not claim rollback.
+A nested invocation has its own ToolExecutor status. The status meanings are fixed: `denied` is an
+actual Permission or Approval denial (the handler does not start); `notExecuted` is an explicit
+ToolExecutor operational rejection of a committed command after admission, with proof that the handler
+did not start (for example, a retiring or missing pinned handler); `cancelled` is cancellation before
+that rejection/dispatch decision settles; and `reloading` means the handoff occurred but recovery
+cannot prove whether the handler started. A Code Mode validation error before `step/tool-invoke` is
+appended is a local program error and has no invocation status or child Timeline fact. An unmatched
+committed command always uses `reloading` during recovery. The plugin must not claim rollback.
 
 ### 2.2 Runtime bridge
 
@@ -169,7 +220,7 @@ max_recursion_depth = 0 for nested codemode in the first delivery
 ```
 
 The host is an execution boundary, not a dependency-declaration promise. The implementation and
-acceptance of that boundary are tracked by [#1276](https://github.com/arcships/dim/issues/1276).
+acceptance of that boundary are tracked by [#1278](https://github.com/arcships/dim/issues/1278).
 
 ### 2.3 Invocation contract
 
@@ -240,15 +291,16 @@ corresponding runtime promise.
 
 The events are public because two independently owned parts must understand them. Their contract is
 about *programmatic invocation of a pinned tool*, not about Code Mode. They use the existing reserved
-`step` core domain with distinct names, rather than introducing a new `tool` domain. This avoids
-reinterpreting any stored extension event such as `tool/progress` when an older history is opened by a
-new generation. The typed decoder must add these `step/*` keys explicitly. The default context projection must keep both keys out of its render/state key sets, just as it does
-for other execution-only facts; they remain execution facts and are not adopted as model messages.
+`step` core domain with distinct names, rather than introducing a new `tool` domain. This keeps the
+`tool` extension domain available and avoids reinterpreting any stored extension event when a newer
+generation opens history. The typed decoder must add these `step/*` keys explicitly. The default
+context projection must keep both keys out of its render/state key sets, just as it does for other
+execution-only facts; they remain execution facts and are not adopted as model messages.
 
-The implementation must add a pre-upgrade compatibility fixture containing a legacy extension event
-whose domain is `tool`, then verify that the new decoder still reads it as an extension event while
-recognizing `step/tool-invoke` and `step/tool-invocation-result` as core facts. A reservation or
-migration record for the `tool` extension domain is therefore not required for this design.
+The v35 upgrade/downgrade fixture verifies that a v34 history opens unchanged and that the new pair
+decodes as core facts. No reservation or migration record for the `tool` extension domain is
+introduced; this design does not claim that a released producer currently emits `tool/*`, so no
+`tool/*` compatibility fixture is required.
 
 The events must contain enough correlation to settle after cancellation or reload without consulting
 runtime heap state. In particular, the result must identify the invocation and parent request, and a
@@ -278,8 +330,10 @@ committed `step/tool-invoke` is the handoff boundary: a new generation must not 
 command as `notExecuted`, because it cannot prove that the handler never started. The terminal result
 therefore warns that the effect may have taken place, and the invocation is never executed again.
 `notExecuted` is reserved for an invocation that ToolExecutor explicitly rejects and settles after
-admission; it is not a recovery inference for an unmatched command. The same handoff rule is stable
-for all callers. If cancellation occurs before dispatch, ToolExecutor may settle the committed
+admission, with proof that the handler never began; it is not a recovery inference for an unmatched
+command. Permission or Approval denial is reported as `denied`, not `notExecuted`, even though the
+handler also does not begin. The same handoff rule is stable for all callers. If cancellation occurs
+before dispatch or before the rejection/dispatch decision settles, ToolExecutor may settle the committed
 invocation as `cancelled`, with the same no-replay rule.
 
 The outer `codemode` result has the same recovery protection. ToolExecutor remains the sole writer of
@@ -308,15 +362,16 @@ cancels work that has not started, and waits for ToolExecutor to write a termina
 committed child. A child waiting for approval is cancelled through the existing approval contract.
 Only after this join may ToolExecutor publish the outer `step/tool-result`.
 
-ToolExecutor also carries confirmed child effects into that outer result. In committed-child sequence
-order, every `ToolResult.effects` entry returned by a child is appended to the outer
-`ToolResult.effects`, including effects from a child whose tool result is an error; denied,
-`notExecuted`, and cancelled-before-execution children contribute none. The aggregation uses the
-existing `ToolResult.effects` and `ToolEffect::shortened` contract, applies the configured result/effect
-size limit, and records truncation as the existing bounded-result error rather than silently dropping
-an effect. This is trusted executor state, not program output, so a program cannot omit a write by
-returning a short summary. An effect-bearing child failure still produces an outer result containing
-the confirmed effects.
+Before returning the outer result, CodeModeBranch (not the generic ToolExecutor) aggregates confirmed
+child effects in committed-child sequence order. Every `ToolResult.effects` entry returned by a child is
+appended to the outer `ToolResult.effects`, including effects from a child whose tool result is an
+error; denied, `notExecuted`, and cancelled-before-execution children contribute none. The branch uses
+the existing effects contract unchanged: it does not shorten, truncate, or silently drop an effect. The
+number of child results it aggregates is bounded by `maxCalls`, and each invoked tool remains
+responsible for the size and validity of its own result. This aggregation happens before the outer
+result reaches ToolExecutor, so ToolExecutor records the returned result unchanged under the Session
+boundary contract. An effect-bearing child failure still produces an outer result containing the
+confirmed effects.
 
 The first delivery does not write `codemode/started` or `codemode/finished`: the outer `step` facts
 already record the tool call, and the nested generic pair records every external child operation.
@@ -337,9 +392,10 @@ nested step/tool-invoke(name)
 ```
 
 Approval facts remain the existing `approval/request`, `approval/respond` and cancellation contract.
-A nested approval must carry the generic invocation's parent correlation so the client can explain
-what is waiting, but it must not grant authority to sibling calls or to future invocations. Permission
-must see the actual pinned tool call and its risk, not the outer Code Mode declaration.
+A nested approval uses the child's `invocationId` as `source.call_id`, with its `turnId` and `requestId`;
+the invocation result retains `parentCallId` so the client and executor can explain which outer call is
+waiting. A response never grants authority to sibling calls or to future invocations. Permission must
+see the actual pinned tool call and its risk, not the outer Code Mode declaration.
 
 ## 4. Dependencies
 
@@ -347,12 +403,12 @@ must see the actual pinned tool call and its risk, not the outer Code Mode decla
 | --- | --- | --- |
 | `toolRegistry` | Session | Register `codemode` and obtain the adopted tool declaration source. Code Mode does not obtain handlers. |
 | invocation-scoped `ToolBinding` | branch | Supply the fixed declarations and handlers for the outer request. |
-| generic programmatic invocation service | branch | Submit `step/tool-invoke`, receive terminal results and retain parent correlation. This is the requirement tracked by [#1276](https://github.com/arcships/dim/issues/1276). |
+| generic programmatic invocation service | branch | Submit `step/tool-invoke`, receive terminal results and retain parent correlation. This is the requirement tracked by [#1277](https://github.com/arcships/dim/issues/1277). |
 | `Timeline` | branch | Commit invocation commands and terminal results through the branch's existing timeline service. |
 | `Dispatcher` | branch | Consume terminal invocation results in sequence order. |
 | `BranchLifecycle` | branch | Delay background execution until publication and stop admission at closing. |
 | `Approval` and `Permission` | branch | Reuse the existing nested authorization decision for each actual tool. |
-| isolated program host | runtime | Execute one program under hard limits; the requirement is [#1276](https://github.com/arcships/dim/issues/1276). |
+| isolated program host | runtime | Execute one program under hard limits; the requirement is [#1278](https://github.com/arcships/dim/issues/1278). |
 
 The plugin does not depend on `ToolHost`, a handler registry, a second event bus, or direct Session
 facade access. A TypeScript binding must expose the generic service as a declared branch dependency;
@@ -367,8 +423,9 @@ undeclared access is not an optional lookup.
 | Problem | Code Mode needs to hand a child tool call to the current branch's ToolExecutor while the outer `codemode` call is running. Rule §4.7 requires public event/service interaction, and ToolExecutor's existing `step/tool-call` contract represents a model batch, not a child call. The Rust execution context already carries `branch_id`, but the current TypeScript Session tool callback receives only call data and cancellation; it has no branch-bound invocation port for safely submitting the command to that branch. |
 | Existing mechanisms considered | Calling a registered handler or `ToolHost` bypasses ToolBinding pinning, Permission, Approval, cancellation, settlement and reload. Writing a nested `step/tool-call` makes Loop and ToolExecutor treat the child as a second model batch. The current TypeScript binding exposes no safe executor entry point or branch-bound invocation service. |
 | Generic capability | A branch-scoped, language-neutral programmatic invocation contract with `step/tool-invoke` and `step/tool-invocation-result`, request-pinned handler resolution, parent correlation, actual-tool risk admission, normalized results and no handler exposure. The outer tool callback must receive a per-call, branch-bound data port (or equivalent context) for this contract; it must not receive a raw Timeline, ToolExecutor or handler. The capability must be usable by automation other than Code Mode. The port exposes a parent lifecycle gate: close rejects new children and joins every committed child before the outer result is published. |
-| Sequence, batch, interruption and reload | `step/tool-invoke` is committed as the handoff boundary and is consumed on a nested ToolExecutor lane while the ordinary parent batch remains occupied. Multiple child calls may belong to one outer call, subject to a caller budget. Close waits for every committed child on success, failure, cancellation, timeout and reload; cancellation stops new admission and settles committed work. Reload settles every unmatched command as `reloading` with an effect-may-have-happened warning; it never infers `notExecuted` and never replays an effect. ToolExecutor also derives the outer `codemode` reload/cancel result from correlated child facts. Confirmed child `ToolResult.effects`, including effects on an error result, are aggregated onto the outer result in child sequence order. Nested results do not enter context automatically. |
-| Owner and issue | Dim runtime / ToolExecutor mechanism owner; [#1276](https://github.com/arcships/dim/issues/1276). |
+| Sequence, batch, interruption and reload | `step/tool-invoke` is committed as the handoff boundary and is consumed on a nested ToolExecutor lane while the ordinary parent batch remains occupied. Multiple child calls may belong to one outer call, subject to a caller budget. Close waits for every committed child on success, failure, cancellation, timeout and reload; cancellation stops new admission and settles committed work. Reload settles every unmatched command as `reloading` with an effect-may-have-happened warning; it never infers `notExecuted` and never replays an effect. ToolExecutor derives the outer reload/cancel result from correlated child facts, while CodeModeBranch aggregates confirmed child effects before returning the outer result. Nested results do not enter context automatically. |
+| Persistence and compatibility | Because `step/tool-invoke` and `step/tool-invocation-result` extend the strict core `StepEvent`, the mechanism owner must advance native storage v34 to v35, reject v35 stores in older binaries without rewriting them, and add an upgrade/downgrade fixture. No extension-domain compatibility fixture is required. |
+| Owner and issue | Dim runtime / ToolExecutor mechanism owner; [#1277](https://github.com/arcships/dim/issues/1277), delivered as part of [#1276](https://github.com/arcships/dim/issues/1276). |
 
 ### R2. Isolated bounded program host
 
@@ -377,8 +434,8 @@ undeclared access is not an optional lookup.
 | Problem | A model-supplied program cannot be safely run with direct `eval` or a trusted in-process plugin. Dependency declarations do not sandbox Node or host resources. |
 | Existing mechanisms considered | The TypeScript plugin process, ordinary module loading and direct host calls expose too much authority. A timeout alone does not prevent filesystem, process, network or secret access and does not enforce memory/output limits. |
 | Generic capability | A one-shot isolated host with only a serializable tool bridge and hard code, wall-clock, memory, output, invocation and concurrency limits. It must return a terminal status and terminate on cancellation. |
-| Sequence, batch, interruption and reload | Host termination cancels the program but does not undo a child already handed to ToolExecutor. The host closes the parent gate; ToolExecutor continues or cancels the nested lane, settles every committed child, aggregates confirmed effects and only then publishes the outer result. Reload produces a terminal host outcome and leaves Timeline settlement to the invocation owner. |
-| Owner and issue | Runtime/host mechanism owner; [#1276](https://github.com/arcships/dim/issues/1276). |
+| Sequence, batch, interruption and reload | Host termination cancels the program but does not undo a child already handed to ToolExecutor. The host closes the parent gate; ToolExecutor continues or cancels the nested lane and settles every committed child, then CodeModeBranch aggregates confirmed effects before returning the outer result. Reload produces a terminal host outcome and leaves Timeline settlement to the invocation mechanism owner. |
+| Owner and issue | Runtime/host mechanism owner; [#1278](https://github.com/arcships/dim/issues/1278), delivered as part of [#1276](https://github.com/arcships/dim/issues/1276). |
 
 ## 6. Rule check
 
@@ -388,16 +445,16 @@ The governing rules are [principles §1](../../architecture/rust-agent/principle
 | Rule | How this design complies |
 | --- | --- |
 | §1 Capability boundary | `CodeModeBranch` is the only Code Mode Capability. `CodeModeSession` only registers a tool. Generic nested invocation and the isolated host are mechanism-owner contracts, not hidden Code Mode state. |
-| §4.1 split by state owner | Session owns the tool declaration/settings; Branch owns active execution and branch facts; ToolExecutor owns generic invocation admission and results; the isolated host owns only runtime resources. |
-| §4.2 command and handoff | `step/tool-invoke` is the command/handoff. Before it commits, Code Mode can reject malformed or ineligible data as a local program error. After handoff, `notExecuted` is written only when ToolExecutor explicitly rejects the committed command before handler execution; otherwise only ToolExecutor's cancellation/settlement contract applies. Dropping a Promise is not rollback. |
+| §4.1 split by state owner | Process owns `CodeModeSettings`; Session owns the tool declaration; Branch owns active execution and branch facts; ToolExecutor owns generic invocation admission and results; the isolated host owns only runtime resources. |
+| §4.2 command and handoff | `step/tool-invoke` is the command/handoff. Before it commits, Code Mode can reject malformed or ineligible data as a local program error. After handoff, `denied` records Permission/Approval denial; `notExecuted` is written only when ToolExecutor explicitly rejects the committed command and proves the handler did not start; cancellation before dispatch is `cancelled`; uncertainty on reload is `reloading`. Dropping a Promise is not rollback. |
 | §4.3 handlers register work and return | Timeline handlers register execution/waiter tasks and return. Runtime/tool waits are owned by CodeModeBranch or ToolExecutor; the parent lifecycle gate closes admission and joins every committed child before resources and the outer result are settled. |
 | §4.4 core mechanism has no business meaning | The requested seam is `programmatic tool invocation`, not `CodeModeExecutor`. The event names and fields describe a generic child tool call and can serve other automation. |
 | §4.5 atomic batches and ordered dispatch | Each command and terminal result is committed atomically and dispatched by sequence. Child calls use a nested ToolExecutor lane while the parent batch remains occupied; result delivery follows invocation correlation, and the parent publishes only after the child join. |
 | §4.6 context boundary | Nested invocation facts are execution facts and are not adopted as model messages. Only the adopted outer `step/tool-result` is model-facing. A value the model must use is included in the outer `ToolResult.content`. |
 | §4.7 public interaction | Parts communicate through the declared branch service and public generic invocation facts. No handler, ToolExecutor object or private plugin state crosses the boundary. |
 | §4.8 infrastructure requirements | R1 and R2 identify the existing contracts considered, the generic mechanisms needed, sequence/batch/interruption/reload effects and their owners. The design does not add a Code Mode-specific core hook. |
-| §4.9 facts in Timeline | Each external child operation has a durable command/result pair because recovery, approval correlation and no-replay settlement depend on it. Pure program computation and diagnostics stay out of Timeline. No duplicate `codemode/*` status facts are added in the first delivery. |
-| ADR 002 D1 | Parts follow state and lifecycle owners: Session tool, Branch execution, and process-free one-shot runtime. |
+| §4.9 facts in Timeline | Each external child operation has a durable command/result pair because recovery, approval correlation and no-replay settlement depend on it. Pure program computation and diagnostics stay out of Timeline. No duplicate `codemode/*` status facts are added in the first delivery. The strict core event addition advances native storage v34 to v35; older binaries refuse that marker and never downgrade or rewrite the store. |
+| ADR 002 D1 | Parts follow state and lifecycle owners: process `CodeModeSettings`, Session tool, Branch execution, and process-free one-shot runtime. |
 | ADR 002 D2 | No wiring plugin, registry adapter, second event bus or new lifecycle manager is introduced. |
 | ADR 002 D3 | Dependencies point from Code Mode to existing core contracts and the generic mechanism; core does not depend on the optional plugin. |
 | ADR 002 D4 | Limits and user settings are business configuration read at use time. Enabling/reloading the plugin is structural configuration; changing a limit does not require a new assembly mechanism. |
