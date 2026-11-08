@@ -108,8 +108,10 @@ code_limit
 reloading
 ```
 
-A status must say whether a nested call was never handed to ToolExecutor, was cancelled before
-execution, or may already have taken effect. The plugin must not claim rollback.
+The terminal status must distinguish a call explicitly rejected before handoff (`notExecuted`), a
+call cancelled before execution (`cancelled`), and a call that may already have taken effect
+(`reloading`). An unmatched committed command always uses `reloading` during recovery. The plugin must
+not claim rollback.
 
 ### 2.2 Runtime bridge
 
@@ -166,12 +168,17 @@ The terminal result carries:
 
 ```text
 invocationId
+parentCallId
+turnId
+requestId
 status: returned | failed | denied | cancelled | notExecuted | reloading
 result: optional ToolResult
 message: safe terminal text
 ```
 
-The result is delivered to the waiting program by `invocationId`; it is not a new model tool result.
+The result is delivered to the waiting program by `invocationId`; its parent fields also let a new
+ToolExecutor generation correlate recovery with the outer `step/tool-call`. It is not a new model tool
+result.
 The invoked tool's own effects, if any, remain in the returned `ToolResult.effects` contract.
 
 The mechanism resolves `name` and its handler from the request's pinned ToolBinding snapshot. It does
@@ -233,13 +240,25 @@ an invocation is the ordered Timeline state:
 | invocation handed off | Timeline / ToolExecutor | From `tool/invoke` without a terminal result |
 | invocation terminal status | ToolExecutor | From `tool/invocation-result` |
 | active program and its promises | CodeModeBranch / isolated host | Runtime-only; cancelled and settled on close or reload, never replayed |
-| outer turn result | existing ToolExecutor | From `step/tool-result` |
+| outer turn result | ToolExecutor | From `step/tool-result`; on recovery, ToolExecutor derives a reload/cancel warning from the outer call's correlated child facts |
 
-On reload, an invocation with no terminal result is settled according to the mechanism's handoff
-boundary. It is never executed again. If the handler may have started, the result says `reloading` or
-`cancelled` and warns that the effect may have taken place; if it had not been handed to execution,
-its result says `notExecuted`. The exact handoff boundary is owned by ToolExecutor and must be stable
-for all callers.
+On reload, an invocation with no terminal result is settled as `reloading` by ToolExecutor. The
+committed `tool/invoke` is the handoff boundary: a new generation must not classify an unmatched
+command as `notExecuted`, because it cannot prove that the handler never started. The terminal result
+therefore warns that the effect may have taken place, and the invocation is never executed again.
+`notExecuted` is reserved for an invocation that ToolExecutor explicitly rejects and settles after
+admission; it is not a recovery inference for an unmatched command. The same handoff rule is stable
+for all callers. If cancellation occurs before dispatch, ToolExecutor may settle the committed
+invocation as `cancelled`, with the same no-replay rule.
+
+The outer `codemode` result has the same recovery protection. ToolExecutor remains the sole writer of
+`step/tool-result`; when rebuilding an open outer call, it correlates `parentCallId` with any committed
+child `tool/invoke` facts. If a child exists without a terminal result, or has a terminal status (`returned`, `failed`,
+`cancelled` after admission or `reloading`) that permits an effect to have occurred, ToolExecutor
+writes the outer reload/cancel result with an explicit effect-may-have-happened warning instead of
+the generic `Tool was not executed` text. When
+CodeModeBranch is still alive, its branch-bound invocation port returns that same terminal result to
+the outer handler; it does not append a competing outer result.
 
 The first delivery does not write `codemode/started` or `codemode/finished`: the outer `step` facts
 already record the tool call, and the nested generic pair records every external child operation.
@@ -287,10 +306,10 @@ undeclared access is not an optional lookup.
 
 | Field | Content |
 | --- | --- |
-| Problem | Code Mode needs to hand a child tool call to the current branch's ToolExecutor while the outer `codemode` call is running. Rule §4.7 requires public event/service interaction, and ToolExecutor's existing `step/tool-call` contract represents a model batch, not a child call. The current Session tool callback also has no branch identity or branch Timeline port, so it cannot safely submit the command to the current branch. |
-| Existing mechanisms considered | Calling a registered handler or `ToolHost` bypasses ToolBinding pinning, Permission, Approval, cancellation, settlement and reload. Writing a nested `step/tool-call` makes Loop and ToolExecutor treat the child as a second model batch. The current TypeScript branch binding exposes no safe executor entry point, while its Session tool callback receives only call data and cancellation. |
+| Problem | Code Mode needs to hand a child tool call to the current branch's ToolExecutor while the outer `codemode` call is running. Rule §4.7 requires public event/service interaction, and ToolExecutor's existing `step/tool-call` contract represents a model batch, not a child call. The Rust execution context already carries `branch_id`, but the current TypeScript Session tool callback receives only call data and cancellation; it has no branch-bound invocation port for safely submitting the command to that branch. |
+| Existing mechanisms considered | Calling a registered handler or `ToolHost` bypasses ToolBinding pinning, Permission, Approval, cancellation, settlement and reload. Writing a nested `step/tool-call` makes Loop and ToolExecutor treat the child as a second model batch. The current TypeScript binding exposes no safe executor entry point or branch-bound invocation service. |
 | Generic capability | A branch-scoped, language-neutral programmatic invocation contract with `tool/invoke` and `tool/invocation-result`, request-pinned handler resolution, parent correlation, actual-tool risk admission, normalized results and no handler exposure. The outer tool callback must receive a per-call, branch-bound data port (or equivalent context) for this contract; it must not receive a raw Timeline, ToolExecutor or handler. The capability must be usable by automation other than Code Mode. |
-| Sequence, batch, interruption and reload | `tool/invoke` is committed before handoff and is consumed in branch sequence order. Multiple child calls may belong to one outer call, subject to a caller budget, without creating another model batch. Cancellation stops new admission and settles handed-off work. Reload settles unmatched commands and never replays an effect. Nested results do not enter context automatically. |
+| Sequence, batch, interruption and reload | `tool/invoke` is committed as the handoff boundary and is consumed in branch sequence order. Multiple child calls may belong to one outer call, subject to a caller budget, without creating another model batch. Cancellation stops new admission and settles committed work. Reload settles every unmatched command as `reloading` with an effect-may-have-happened warning; it never infers `notExecuted` and never replays an effect. ToolExecutor also derives the outer `codemode` reload/cancel result from correlated child facts. Nested results do not enter context automatically. |
 | Owner and issue | Dim runtime / ToolExecutor mechanism owner; [#1276](https://github.com/arcships/dim/issues/1276). |
 
 ### R2. Isolated bounded program host
@@ -316,7 +335,7 @@ The governing rules are [principles §1](../../architecture/rust-agent/principle
 | §4.3 handlers register work and return | Timeline handlers register execution/waiter tasks and return. Runtime/tool waits are owned by CodeModeBranch or ToolExecutor; resources are released before terminal results are written. |
 | §4.4 core mechanism has no business meaning | The requested seam is `programmatic tool invocation`, not `CodeModeExecutor`. The event names and fields describe a generic child tool call and can serve other automation. |
 | §4.5 atomic batches and ordered dispatch | Each command and terminal result is committed atomically and dispatched by sequence. Child calls do not create a second model batch; result delivery follows invocation correlation. |
-| §4.6 context boundary | Nested invocation facts set neither context flag. Only the adopted outer `step/tool-result` is model-facing. A value the model must use is included in the outer `ToolResult.content`. |
+| §4.6 context boundary | Nested invocation facts are execution facts and are not adopted as model messages. Only the adopted outer `step/tool-result` is model-facing. A value the model must use is included in the outer `ToolResult.content`. |
 | §4.7 public interaction | Parts communicate through the declared branch service and public generic invocation facts. No handler, ToolExecutor object or private plugin state crosses the boundary. |
 | §4.8 infrastructure requirements | R1 and R2 identify the existing contracts considered, the generic mechanisms needed, sequence/batch/interruption/reload effects and their owners. The design does not add a Code Mode-specific core hook. |
 | §4.9 facts in Timeline | Each external child operation has a durable command/result pair because recovery, approval correlation and no-replay settlement depend on it. Pure program computation and diagnostics stay out of Timeline. No duplicate `codemode/*` status facts are added in the first delivery. |
