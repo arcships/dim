@@ -147,6 +147,242 @@ fn snapshot(home: &Path) -> Vec<(String, Vec<u8>)> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_session_catalog_classifies_new_imports_and_keeps_children_inert() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(
+        directory.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+    let source = directory.path().join("source");
+    let target = directory.path().join("target");
+    std::fs::create_dir_all(&target).unwrap();
+    let db = fixture(&source);
+    let acp = json!({"additionalDirectories": [], "mcpServers": []});
+    for (id, settings) in [
+        ("a-subagent", json!({})),
+        ("b-reviewer", json!({"agentProfile": "reviewer"})),
+        (
+            "c-reviewer",
+            json!({"metadata": {"__approvalReviewer": true}}),
+        ),
+        (
+            "d-workflow",
+            json!({"metadata": {"__workflowAgentOrigin": true}}),
+        ),
+        (
+            "e-deferred-parent",
+            json!({"metadata": {"parentSessionId": "archived"}}),
+        ),
+        ("f-acp", json!({"metadata": {"__sessionSource": "acp"}})),
+        ("g-acp", json!({"metadata": {"acp": acp}})),
+        ("h-fork", json!({"metadata": {"acp": acp}})),
+    ] {
+        db.execute(
+            "INSERT INTO sessions SELECT ?1,cwd,?1,'active',tags,createdAt,updatedAt,version FROM sessions WHERE sessionId='old'",
+            [id],
+        ).unwrap();
+        db.execute(
+            "INSERT INTO session_states VALUES (?1,'mock','deterministic',?2,'{}','agent')",
+            params![id, settings.to_string()],
+        )
+        .unwrap();
+    }
+    db.execute_batch(
+        "CREATE TABLE session_relations(relationId TEXT PRIMARY KEY, sourceSessionId TEXT, targetSessionId TEXT, relationType TEXT, typeData TEXT);
+         INSERT INTO session_relations VALUES ('sub','old','a-subagent','subagent','{}');
+         INSERT INTO session_relations VALUES ('fork','g-acp','h-fork','branch','{}');",
+    ).unwrap();
+    std::fs::write(source.join("config.json"), r#"{"showAcpSessions":true}"#).unwrap();
+
+    let root = rutis::Ctx::root().unwrap();
+    let plugin = root.plugin(MigrationPlugin::new(
+        target.clone(),
+        "rust".into(),
+        vec!["system".into()],
+    ));
+    (&plugin).await.unwrap();
+    let migration = root.get::<Migration>().unwrap();
+    let first = migration.run(source.clone(), true, None).await.unwrap();
+    let target_id = |id: &str| {
+        first
+            .objects
+            .iter()
+            .find(|item| item.kind == "session" && item.id == id)
+            .unwrap()
+            .target_id
+            .clone()
+            .unwrap()
+    };
+    let native_path = target.join("rust/dimcode.sqlite");
+    let native = Connection::open(&native_path).unwrap();
+    let classification = |id: &str| {
+        native
+            .query_row(
+                "SELECT origin,leader_session_id FROM agent_sessions WHERE session_id=?1",
+                [target_id(id)],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        classification("a-subagent"),
+        ("internal".into(), Some(target_id("old")))
+    );
+    assert_eq!(
+        classification("e-deferred-parent"),
+        ("internal".into(), None)
+    );
+    let event_count = |db: &Connection| {
+        db.query_row(
+            "SELECT count(*) FROM timeline_events WHERE session_id=?1",
+            [target_id("a-subagent")],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    let original_count = event_count(&native);
+    drop(native);
+    let target_config = target.join("config.json");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&std::fs::read(&target_config).unwrap()).unwrap()["showAcpSessions"],
+        true
+    );
+    std::fs::write(&target_config, r#"{"showAcpSessions":false}"#).unwrap();
+    db.execute(
+        "UPDATE sessions SET status='active' WHERE sessionId='archived'",
+        [],
+    )
+    .unwrap();
+
+    let retried = migration
+        .run(source, true, Some(first.task.id.clone()))
+        .await
+        .unwrap();
+    let archived = retried
+        .objects
+        .iter()
+        .find(|item| item.id == "archived")
+        .unwrap()
+        .target_id
+        .clone()
+        .unwrap();
+    assert!(retried.objects.iter().any(|item| item.id == "a-subagent"
+        && item.outcome == Outcome::AlreadyImported
+        && item.target_id == Some(target_id("a-subagent"))));
+    let native = Connection::open(&native_path).unwrap();
+    assert_eq!(event_count(&native), original_count);
+    drop(native);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&std::fs::read(&target_config).unwrap()).unwrap()["showAcpSessions"],
+        false
+    );
+    plugin.dispose().await.unwrap();
+    root.shutdown().await.unwrap();
+
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    defaults::install(&mut builder);
+    defaults::mock_hosts(&mut builder);
+    let server = serve(
+        builder,
+        ServerConfig {
+            database_path: Some(native_path),
+            product_home: Some(target),
+            unix_path: Some(directory.path().join("native.sock")),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut client = Client::connect(&ConnectionConfig {
+        endpoint: server.unix_path.clone().unwrap(),
+        server: Server {
+            program: std::env::current_exe().unwrap(),
+            embedded: false,
+        },
+        profile: None,
+        client_kind: "cli",
+        client_name: "migration-test",
+    })
+    .await
+    .unwrap();
+    let page: Value = client.typed("session.catalog", json!({})).await.unwrap();
+    let ids = |page: &Value| {
+        page["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["sessionId"].as_str().unwrap().to_owned())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    assert_eq!(
+        ids(&page),
+        [target_id("old"), target_id("h-fork"), archived.clone()].into()
+    );
+    let page: Value = client
+        .typed("session.catalog", json!({"withAcpSessions": true}))
+        .await
+        .unwrap();
+    assert_eq!(
+        ids(&page),
+        [
+            target_id("old"),
+            target_id("h-fork"),
+            target_id("f-acp"),
+            target_id("g-acp"),
+            archived.clone(),
+        ]
+        .into()
+    );
+    let page: Value = client
+        .typed("session.catalog", json!({"withInternal": true}))
+        .await
+        .unwrap();
+    let rows = page["sessions"].as_array().unwrap();
+    for (id, parent) in [
+        ("a-subagent", Some(target_id("old"))),
+        ("b-reviewer", None),
+        ("c-reviewer", None),
+        ("d-workflow", None),
+        ("e-deferred-parent", Some(archived)),
+    ] {
+        let row = rows
+            .iter()
+            .find(|row| row["sessionId"] == target_id(id))
+            .unwrap();
+        assert_eq!(row["origin"], "internal", "{row}");
+        assert_eq!(row["parentSessionId"], json!(parent), "{row}");
+    }
+    let parent = target_id("old");
+    let child = target_id("a-subagent");
+    let refused = client
+        .rpc(
+            "session.collaboration.cancel",
+            json!({"sessionId": parent, "memberSessionId": child}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        dim_client::app_error(&refused),
+        Some("team_member_not_found"),
+        "{refused}"
+    );
+    let deleted: Value = client
+        .typed("session.delete", json!({"sessionId": parent}))
+        .await
+        .unwrap();
+    assert_eq!(deleted["deleted"], true);
+    let attached: Value = client
+        .typed("session.attach", json!({"sessionId": child}))
+        .await
+        .unwrap();
+    assert_eq!(attached["origin"], "internal");
+    assert!(attached.get("parentSessionId").is_none());
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn migration_retains_unsafe_objects_and_cleans_interrupted_snapshots() {
     #[cfg(target_os = "linux")]
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};

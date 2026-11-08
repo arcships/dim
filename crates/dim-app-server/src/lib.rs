@@ -1304,6 +1304,7 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
         "sessionMetadata",
         "auxiliaryModel",
         "settings",
+        "ocrHelper",
     ] {
         catalog.register_shared(name);
     }

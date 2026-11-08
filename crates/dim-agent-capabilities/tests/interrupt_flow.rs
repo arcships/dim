@@ -1578,3 +1578,98 @@ async fn a_steer_is_not_consumed_between_a_failed_preparation_and_its_terminal()
     assert_steer_after_terminal(&events, &hold, "preparation failed");
     soon(agent.close()).await.unwrap();
 }
+
+/// `stop_turn` stops the open turn it names and writes nothing for another id
+/// or for a turn that already ended.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_turn_stops_only_the_open_turn_it_names() {
+    let (model, chunks) = channel_model();
+    let mut builder = channel_builder(model.clone());
+    defaults::install(&mut builder);
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    session
+        .submit("go".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    let cancel = model.invoked().await;
+    let events = until_events(&session, |events| {
+        events
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::TurnStart(_)))
+    })
+    .await;
+    let turn = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::TurnStart(data) => Some(data.turn_id.clone()),
+            _ => None,
+        })
+        .expect("the turn started");
+    let control = session
+        .service::<dim_agent_capabilities::agent_loop::AgentLoop>("main")
+        .unwrap();
+
+    // Another id names no open turn: nothing is written.
+    assert_eq!(
+        control
+            .stop_turn("not-the-open-turn", "operator stop".into())
+            .unwrap(),
+        None
+    );
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::StopInterrupt(_)))
+    );
+
+    // The open turn is stopped, and its model call is cancelled.
+    let sequence = control
+        .stop_turn(&turn, "operator stop".into())
+        .unwrap()
+        .expect("the open turn is stopped");
+    soon(cancel.cancelled()).await;
+    drop(chunks);
+    let events = until_events(&session, |events| {
+        events
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::TurnEnd(_)))
+    })
+    .await;
+    assert!(events.iter().any(|event| {
+        event.sequence == sequence
+            && matches!(&event.kind, EventKind::StopInterrupt(data)
+                if data.reason == "operator stop" && data.scope == InterruptScope::Turn)
+    }));
+    assert!(matches!(
+        events.last().unwrap().kind,
+        EventKind::TurnEnd(TurnEndData {
+            outcome: TurnOutcome::Cancelled { .. },
+            ..
+        })
+    ));
+
+    // The same turn has ended: naming it again writes nothing.
+    let stops = events
+        .iter()
+        .filter(|event| matches!(&event.kind, EventKind::StopInterrupt(_)))
+        .count();
+    assert_eq!(
+        control
+            .stop_turn(&turn, "operator stop again".into())
+            .unwrap(),
+        None
+    );
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(&event.kind, EventKind::StopInterrupt(_)))
+            .count(),
+        stops
+    );
+    soon(agent.close()).await.unwrap();
+}

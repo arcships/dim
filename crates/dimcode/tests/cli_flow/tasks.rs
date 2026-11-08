@@ -210,7 +210,9 @@ fn native_tui_stop_all_settles_the_member_and_reports_cancellation_to_the_leader
     });
     terminal.write(b"delegate-native-task\r");
     terminal.until("native delegation settled for this turn");
-    let sessions = rpc(&mut stream, "session.summaries", json!({}));
+    let catalog = rpc(&mut stream, "session.catalog", json!({}));
+    let sessions = catalog["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1, "{catalog}");
     let leader = sessions[0]["sessionId"].as_str().unwrap().to_owned();
     let deadline = Instant::now() + Duration::from_secs(10);
     while !home.0.join("foreground-started").exists() {

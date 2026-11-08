@@ -107,6 +107,81 @@ fn plugins_entries(home: &Path) -> Vec<String> {
     }
 }
 
+/// The record `plugins.json` holds.
+fn record(home: &Path) -> Value {
+    serde_json::from_slice(&std::fs::read(home.join("plugins.json")).unwrap()).unwrap()
+}
+
+/// The directory the record names for `id`.
+fn recorded_dir(home: &Path, id: &str) -> PathBuf {
+    let record = record(home);
+    let entry = record["installed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == id)
+        .unwrap_or_else(|| panic!("{id} in {record}"));
+    PathBuf::from(entry["dir"].as_str().unwrap())
+}
+
+/// The name of every directory under `<home>/plugins/<id>`, sorted.
+fn copies(home: &Path, id: &str) -> Vec<String> {
+    match std::fs::read_dir(home.join("plugins").join(id)) {
+        Ok(entries) => {
+            let mut names: Vec<String> = entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// The last path component of `dir`.
+fn name_of(dir: &Path) -> String {
+    dir.file_name().unwrap().to_string_lossy().into_owned()
+}
+
+/// `<commit>+<16 lowercase hex>`: one acquisition's own directory (§3.2).
+fn acquisition_name(name: &str) -> bool {
+    let Some((commit, suffix)) = name.split_once('+') else {
+        return false;
+    };
+    commit.len() >= 7
+        && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && suffix.len() == 16
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// A Git repository holding the `git-notes` skills plugin, committed once.
+fn git_notes_repo(home: &Path) -> PathBuf {
+    let repo = home.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(
+        repo.join("dim-plugin.json"),
+        r#"{"name":"git-notes","skills":"skills"}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(repo.join("skills")).unwrap();
+    std::fs::write(repo.join("skills/one.md"), "one").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "one"]);
+    repo
+}
+
+/// One more commit in `repo`; returns its hash.
+fn second_commit(repo: &Path) -> String {
+    std::fs::write(repo.join("skills/two.md"), "two").unwrap();
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-qm", "two"]);
+    git(repo, &["rev-parse", "HEAD"])
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plugin_client_replies_hide_git_credentials_and_runtime_errors() {
     let home = home();
@@ -300,11 +375,10 @@ async fn plugin_configuration_installs_switches_and_survives_a_restart() {
     std::fs::write(repo.join("skills/one.md"), "one").unwrap();
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-qm", "one"]);
-    let first = git(&repo, &["rev-parse", "HEAD"]);
     let url = format!("ssh://fixture{}", repo.display());
     let installed = call(&mut client, "plugin.install", json!({"source":{"git":url}})).await;
     assert_eq!(installed["result"]["id"], "git-notes", "{installed}");
-    let first_dir = home.join("plugins/git-notes").join(&first);
+    let first_dir = recorded_dir(&home, "git-notes");
     assert!(first_dir.join("dim-plugin.json").is_file());
     std::fs::write(repo.join("skills/two.md"), "two").unwrap();
     git(&repo, &["add", "-A"]);
@@ -313,12 +387,14 @@ async fn plugin_configuration_installs_switches_and_survives_a_restart() {
     let updated = call(&mut client, "plugin.update", json!({"id":"git-notes"})).await;
     assert_eq!(updated["result"]["commit"], second.as_str(), "{updated}");
     assert!(
-        home.join("plugins/git-notes")
-            .join(&second)
+        recorded_dir(&home, "git-notes")
             .join("skills/two.md")
             .is_file()
     );
-    assert!(!first_dir.exists());
+    assert!(
+        first_dir.join("skills/one.md").is_file(),
+        "a replaced copy stays until the next start: {first_dir:?}"
+    );
     let local = call(&mut client, "plugin.update", json!({"id":"notes"})).await;
     assert_eq!(app_error(&local), "not_updatable", "{local}");
     let pinned = call(
@@ -378,7 +454,11 @@ async fn plugin_configuration_installs_switches_and_survives_a_restart() {
     assert!(reply.get("error").is_some(), "{reply}");
     assert!(kept.join("dim-plugin.json").is_file());
     assert!(kept.join("abcdef1234").is_dir());
-    assert!(home.join("plugins/git-notes").join(&second).is_dir());
+    assert!(recorded_dir(&home, "git-notes").is_dir());
+    assert!(
+        !first_dir.exists(),
+        "the next start deletes the replaced copy: {first_dir:?}"
+    );
     assert_ok(
         &call(
             &mut client,
@@ -398,14 +478,245 @@ async fn plugin_configuration_installs_switches_and_survives_a_restart() {
     );
     assert_ok(&call(&mut client, "permission.rules", json!({})).await);
 
+    let removed = recorded_dir(&home, "git-notes");
     assert_ok(&call(&mut client, "plugin.remove", json!({"id":"git-notes"})).await);
-    assert!(!home.join("plugins/git-notes").exists());
+    assert!(
+        removed.is_dir(),
+        "remove leaves the copy until the next start: {removed:?}"
+    );
     assert_ok(&call(&mut client, "plugin.remove", json!({"id":"notes"})).await);
     assert!(source.join("dim-plugin.json").is_file());
     assert_ok(&call(&mut client, "plugin.remove", json!({"id":"kept"})).await);
     assert!(kept.join("dim-plugin.json").is_file());
     let builtin = call(&mut client, "plugin.remove", json!({"id":"builtin"})).await;
     assert_eq!(app_error(&builtin), "not_removable", "{builtin}");
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// §3.2 step 4: a Git acquisition renames into `<id>/<commit>+<16 lowercase
+/// hex>`, drawn for that acquisition; an update draws its own directory
+/// instead of replacing the one in use.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_git_acquisition_gets_its_own_suffixed_directory() {
+    ssh_stand_in();
+    let home = home();
+    let config = config(&home);
+    let (server, _, _) = start(config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let repo = git_notes_repo(&home);
+    let url = format!("ssh://fixture{}", repo.display());
+    assert_ok(&call(&mut client, "plugin.install", json!({"source":{"git":url}})).await);
+    let id_dir = home.join("plugins/git-notes").canonicalize().unwrap();
+    let first = recorded_dir(&home, "git-notes");
+    assert_eq!(first.parent(), Some(id_dir.as_path()), "{first:?}");
+    assert!(acquisition_name(&name_of(&first)), "{first:?}");
+
+    let second = second_commit(&repo);
+    let updated = call(&mut client, "plugin.update", json!({"id":"git-notes"})).await;
+    assert_eq!(updated["result"]["commit"], second.as_str(), "{updated}");
+    let next = recorded_dir(&home, "git-notes");
+    assert_ne!(first, next, "an update draws its own directory");
+    assert!(acquisition_name(&name_of(&next)), "{next:?}");
+    assert!(first.join("skills/one.md").is_file(), "{first:?}");
+    assert!(next.join("skills/two.md").is_file(), "{next:?}");
+    assert_eq!(copies(&home, "git-notes").len(), 2);
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// §3.1 step 3, §7: the next start deletes the copies no entry refers to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_next_start_deletes_the_copies_no_entry_names() {
+    ssh_stand_in();
+    let home = home();
+    let config = config(&home);
+    let (server, _, _) = start(config.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let repo = git_notes_repo(&home);
+    let url = format!("ssh://fixture{}", repo.display());
+    assert_ok(&call(&mut client, "plugin.install", json!({"source":{"git":url}})).await);
+    let first = recorded_dir(&home, "git-notes");
+    second_commit(&repo);
+    assert_ok(&call(&mut client, "plugin.update", json!({"id":"git-notes"})).await);
+    let next = recorded_dir(&home, "git-notes");
+    assert_ne!(first, next);
+    assert!(first.is_dir() && next.is_dir());
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let (server, _, _) = start(config).await;
+    let client = Client::new_version(&server, false, 3).await;
+    assert!(!first.exists(), "the replaced copy is gone: {first:?}");
+    assert!(next.is_dir(), "{next:?}");
+    assert_eq!(copies(&home, "git-notes"), vec![name_of(&next)]);
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// §3.6, §7: remove leaves the copy in place until the next start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_keeps_the_copy_until_the_next_start() {
+    ssh_stand_in();
+    let home = home();
+    let config = config(&home);
+    let (server, _, _) = start(config.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let repo = git_notes_repo(&home);
+    let url = format!("ssh://fixture{}", repo.display());
+    assert_ok(&call(&mut client, "plugin.install", json!({"source":{"git":url}})).await);
+    let copy = recorded_dir(&home, "git-notes");
+    assert_ok(&call(&mut client, "plugin.remove", json!({"id":"git-notes"})).await);
+    assert!(copy.is_dir(), "remove leaves the copy: {copy:?}");
+    let list = call(&mut client, "plugin.list", json!({})).await;
+    assert!(
+        list["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["name"] != "git-notes"),
+        "{list}"
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let (server, _, _) = start(config).await;
+    let client = Client::new_version(&server, false, 3).await;
+    assert!(!copy.exists(), "the next start deletes it: {copy:?}");
+    assert!(!home.join("plugins/git-notes").exists());
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// §2.2: a record written before suffixes names its directory without one.
+/// Nothing migrates it, and the cleanup keeps the directory it names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_record_from_before_suffixes_still_loads() {
+    let home = home();
+    let config = config(&home);
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    let dir = home.join("plugins/legacy").join(commit);
+    std::fs::create_dir_all(dir.join("skills")).unwrap();
+    std::fs::write(
+        dir.join("dim-plugin.json"),
+        r#"{"name":"legacy","skills":"skills"}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("skills/one.md"), "one").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    std::fs::write(
+        home.join("plugins.json"),
+        json!({
+            "version": 2,
+            "installed": [{
+                "id": "legacy",
+                "name": "legacy",
+                "source": {"git": "https://example.invalid/legacy.git", "commit": commit},
+                "dir": dir,
+                "kinds": ["skills"],
+            }],
+            "names": {"legacy": {"use": "legacy"}},
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let (server, _, _) = start(config.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let list = call(&mut client, "plugin.list", json!({})).await;
+    let legacy = item(&list, "legacy");
+    assert_eq!(legacy["use"], "legacy", "{legacy}");
+    assert_eq!(legacy["off"], false, "{legacy}");
+    assert!(dir.join("skills/one.md").is_file(), "the cleanup keeps it");
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let (server, _, _) = start(config).await;
+    let client = Client::new_version(&server, false, 3).await;
+    assert!(dir.join("skills/one.md").is_file());
+    assert_eq!(
+        record(&home)["installed"][0]["dir"],
+        json!(dir),
+        "nothing migrates it"
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// §7: the startup cleanup deletes a copy no entry names when its name has
+/// one of the two copy shapes, and keeps a name the path rule refuses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_cleanup_deletes_only_a_copy_shaped_directory() {
+    let home = home();
+    let config = config(&home);
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    let ghost = home.join("plugins/ghost");
+    let acquisition = ghost.join(format!("{commit}+0123456789abcdef"));
+    let bare = ghost.join(commit);
+    let refused = ghost.join(format!("{commit}+ZZZZZZZZZZZZZZZZ"));
+    for dir in [&acquisition, &bare, &refused] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let (server, _, _) = start(config).await;
+    let client = Client::new_version(&server, false, 3).await;
+    assert!(!acquisition.exists(), "a copy no entry names is deleted");
+    assert!(!bare.exists(), "a bare key no entry names is deleted too");
+    assert!(
+        refused.exists(),
+        "a name the path rule refuses is not deleted: {refused:?}"
+    );
+    assert_eq!(copies(&home, "ghost"), vec![name_of(&refused)]);
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// §7, G8: the cleanup runs once per process. Reloading the PluginManager
+/// row deletes no copy; the next start does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reloading_the_plugin_manager_row_keeps_a_replaced_copy() {
+    ssh_stand_in();
+    let home = home();
+    let config = config(&home);
+    let (server, _, _) = start(config.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let repo = git_notes_repo(&home);
+    let url = format!("ssh://fixture{}", repo.display());
+    assert_ok(&call(&mut client, "plugin.install", json!({"source":{"git":url}})).await);
+    let first = recorded_dir(&home, "git-notes");
+    second_commit(&repo);
+    assert_ok(&call(&mut client, "plugin.update", json!({"id":"git-notes"})).await);
+    let next = recorded_dir(&home, "git-notes");
+    assert_ne!(first, next);
+
+    let loader = server.service::<rutis_loader::Loader>().unwrap();
+    loader.restart("PluginManager").await.unwrap();
+    assert!(
+        first.is_dir(),
+        "a reload of the row deletes no copy: {first:?}"
+    );
+    assert!(next.is_dir());
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let (server, _, _) = start(config).await;
+    let client = Client::new_version(&server, false, 3).await;
+    assert!(!first.exists(), "the next start deletes it: {first:?}");
+    assert!(next.is_dir());
     drop(client);
     server.shutdown();
     server.join().await.unwrap();

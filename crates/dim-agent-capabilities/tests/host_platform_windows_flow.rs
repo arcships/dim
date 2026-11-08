@@ -42,6 +42,7 @@ async fn a_helper_without_a_backend_reports_no_confinement_and_keeps_every_limit
         timeout,
         stdout_limit: 1024,
         stderr_limit: 1024,
+        services: SystemServices::None,
     };
 
     let ok = platform()

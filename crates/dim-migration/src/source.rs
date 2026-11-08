@@ -3,6 +3,7 @@ use dim_agent_capabilities::file_storage::{
     DirectoryEntry, FileLease, FilePath, FileStorage, FileStorageError,
 };
 use dim_agent_types::{Message, MessageContent, MessagePart, ModelId, Role};
+use dim_app_server::protocol::SessionOrigin;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,6 +37,8 @@ pub(crate) struct SessionData {
     pub cwd: String,
     pub title: Option<String>,
     pub model: Option<ModelId>,
+    pub origin: SessionOrigin,
+    pub parent_session_id: Option<String>,
     pub records: Vec<RecordedMessage>,
     pub attachments: BTreeMap<String, Vec<Attachment>>,
     pub context_error: Option<String>,
@@ -730,6 +733,46 @@ impl Source {
                 .query_map([id], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?, row.get::<_,String>(2)?, row.get::<_,Option<String>>(3)?))).map_err(object_error)?
                 .map(|row| { let (source, target, kind, data) = row.map_err(object_error)?; Ok(serde_json::json!({"sourceSessionId":source,"targetSessionId":target,"kind":kind,"data":json_field(data)?})) }).collect::<Result<_>>()?;
         }
+        let metadata = &settings["metadata"];
+        let mut incoming = relations
+            .iter()
+            .filter(|relation| relation["targetSessionId"].as_str() == Some(id));
+        let mut subagent_parents = incoming
+            .clone()
+            .filter(|relation| relation["kind"] == "subagent")
+            .filter_map(|relation| relation["sourceSessionId"].as_str());
+        let first_subagent_parent = subagent_parents.next();
+        let relation_parent =
+            first_subagent_parent.filter(|first| subagent_parents.all(|parent| parent == *first));
+        let parent_session_id = metadata["parentSessionId"]
+            .as_str()
+            .filter(|parent| !parent.is_empty())
+            .or(relation_parent);
+        let origin = if parent_session_id.is_some()
+            || first_subagent_parent.is_some()
+            || settings["agentProfile"] == "reviewer"
+            || [
+                "__approvalReviewer",
+                "__subagentOrigin",
+                "__workflowAgentOrigin",
+            ]
+            .iter()
+            .any(|marker| metadata[*marker].as_bool() == Some(true))
+        {
+            SessionOrigin::Internal
+        } else if metadata["__sessionSource"] == "acp"
+            || (metadata.get("__sessionSource").is_none()
+                && metadata["acp"]["additionalDirectories"].is_array()
+                && metadata["acp"]["mcpServers"].is_array()
+                && incoming.next().is_none())
+        {
+            SessionOrigin::Acp
+        } else {
+            SessionOrigin::Unknown
+        };
+        let parent_session_id = parent_session_id
+            .filter(|parent| !parent.is_empty() && *parent != id)
+            .map(str::to_owned);
         let mut blobs = Vec::new();
         if self.inventory.tables.contains_key("session_blobs") {
             blobs = db.prepare("SELECT blobId, kind, ref, mimeType, sizeBytes, checksum FROM session_blobs WHERE sessionId=?1 ORDER BY blobId").map_err(object_error)?
@@ -753,6 +796,8 @@ impl Source {
             cwd,
             title,
             model,
+            origin,
+            parent_session_id,
             records,
             attachments,
             context_error,

@@ -36,6 +36,9 @@ watch(() => props.sessionId, (id) => chat.open(id), { immediate: true })
 const view = computed(() => chat.views[props.sessionId])
 const summary = computed(() => sessions.byId.get(props.sessionId))
 const title = computed(() => summary.value?.title ?? summary.value?.preview ?? t("sidebar.untitled"))
+const parentId = computed(() => summary.value?.parentSessionId)
+const parent = computed(() => parentId.value === undefined ? undefined : sessions.byId.get(parentId.value))
+const children = computed(() => sessions.summaries.filter((session) => session.parentSessionId === props.sessionId))
 const approval = computed(() => view.value?.approvals.find((request) => request.branchId === MAIN_BRANCH))
 const questions = computed(() => view.value?.questions.filter((ask) => ask.branchId === MAIN_BRANCH) ?? [])
 const rulesAvailable = computed(() => connection.supports("permission.rules") && connection.supports("permission.set_rules"))
@@ -279,6 +282,21 @@ async function fork(): Promise<void> {
         </button>
         <span v-if="view.sessionRunning" class="ui-badge session-running" data-tone="primary"><span class="status-dot" data-state="running" aria-hidden="true" />{{ t(view.stopping ? "status.stopping" : "status.running") }}</span>
       </header>
+      <div v-if="parentId || children.length" class="session-relations">
+        <RouterLink v-if="parentId" :to="{ name: 'chat-session', params: { sessionId: parentId } }">
+          {{ t("session.parent", { title: parent?.title ?? parent?.preview ?? parentId }) }}
+        </RouterLink>
+        <details v-if="children.length" :key="sessionId">
+          <summary>{{ t("session.children", { count: children.length }) }}</summary>
+          <ul>
+            <li v-for="child in children" :key="child.sessionId">
+              <RouterLink :to="{ name: 'chat-session', params: { sessionId: child.sessionId } }">
+                {{ child.title ?? child.preview ?? child.sessionId }}
+              </RouterLink>
+            </li>
+          </ul>
+        </details>
+      </div>
     </div>
     <TimelineView
       :rows="view.rows"
@@ -324,4 +342,8 @@ async function fork(): Promise<void> {
 .session-running > .status-dot { border: 0; }
 .session-lines { gap: 6px; flex: none; }
 .session-lines .ui-badge { min-width: 18px; padding-inline: 4px; }
+.session-relations { padding: 0 var(--space-4) var(--space-2); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.session-relations summary { cursor: pointer; }
+.session-relations ul { max-height: 10rem; overflow-y: auto; margin: var(--space-1) 0; padding-inline-start: var(--space-6); }
+.session-relations a { text-decoration: underline; }
 </style>

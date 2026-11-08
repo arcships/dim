@@ -6,7 +6,29 @@ import path from 'node:path';
 
 const repo = path.resolve(import.meta.dirname, '..');
 const defaults = path.join(repo, 'runtime/default-plugins.json');
-const { plugins } = JSON.parse(readFileSync(defaults, 'utf8'));
+const { plugins, optional = {} } = JSON.parse(readFileSync(defaults, 'utf8'));
+const collisions = Object.keys(optional).filter((name) => Object.hasOwn(plugins, name));
+assert.equal(collisions.length, 0, `A name cannot be in both "plugins" and "optional": ${collisions.join(', ')}`);
+/** True when `candidate` lies strictly inside `parent`. */
+const within = (parent, candidate) => {
+  const relative = path.relative(parent, candidate);
+  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+};
+const locations = [...Object.entries(plugins), ...Object.entries(optional)]
+  .map(([name, relative]) => {
+    const directory = path.resolve(path.join(path.dirname(defaults), relative));
+    return { name, relative, folded: directory.toLowerCase() };
+  });
+for (let first = 0; first < locations.length; first += 1) {
+  for (let second = first + 1; second < locations.length; second += 1) {
+    const a = locations[first];
+    const b = locations[second];
+    assert(!(a.folded === b.folded || within(a.folded, b.folded) || within(b.folded, a.folded)),
+    `Two plugins cannot stage into overlapping directories: ${a.name} (${a.relative}) and ${b.name} (${b.relative})`);
+  }
+}
+const shipped = { ...plugins, ...optional };
+const optionalNames = new Set(Object.keys(optional));
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const registry = process.env.DIMCODE_NPM_REGISTRY ?? 'https://registry.npmjs.org';
 
@@ -66,19 +88,13 @@ const assertPortable = () => {
   }
 };
 
-/** True when `candidate` lies strictly inside `parent`. */
-const within = (parent, candidate) => {
-  const relative = path.relative(parent, candidate);
-  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-};
-
 /** True when a current plugin directory equals, sits inside, or contains `directory`. */
 const occupied = (current, directory) => [...current].some((entry) =>
   entry === directory || within(directory, entry) || within(entry, directory));
 
 /** Refuses a recorded or configured directory that does not lie inside the stage. */
 const validate = (output, previous) => {
-  const paths = [...Object.entries(plugins).map(([name, dir]) => [name, dir]),
+  const paths = [...Object.entries(shipped).map(([name, dir]) => [name, dir]),
     ...Object.entries(previous).filter(([, entry]) => entry?.dir).map(([name, entry]) => [name, entry.dir])];
   for (const [name, dir] of paths) {
     const resolved = path.resolve(output, dir);
@@ -205,20 +221,20 @@ const recover = (output, bases) => {
 /**
  * Updates an existing stage in place under one lock per stage. The rule: every
  * run copies every listed plugin's sources again, so an edit takes effect on
- * the next run; `npm ci` runs only for a plugin whose package files hash
- * differs from the one recorded in `.stage-plugins.json`; a plugin that is no
- * longer listed is removed; and each plugin is built beside the live copy,
- * whose dependencies it copies when they are reused, then swapped in only
- * when complete. The live copy is never touched before the swap, so every
- * staged plugin is complete at every moment; the swap renames it aside, puts
- * the replacement in place and restores it if that fails. The record is
- * rewritten after each swap, so it always describes what is on disk. A
- * failure names the plugin, exits non-zero, and leaves the plugins before it
- * updated and the rest as they were. A second run waits for the lock, and the
- * first run of a stage left by a killed one takes over its stale lock and
- * recovers its temporaries. Recorded directories are validated against the
- * stage before anything changes, and a directory is removed only when no
- * current plugin uses it.
+ * the next run; `npm ci` runs only for a default plugin whose package files
+ * hash differs from the one recorded in `.stage-plugins.json`, never for an
+ * optional plugin; a plugin that is no longer listed is removed; and each
+ * plugin is built beside the live copy, whose dependencies it copies when they
+ * are reused, then swapped in only when complete. The live copy is never
+ * touched before the swap, so every staged plugin is complete at every moment;
+ * the swap renames it aside, puts the replacement in place and restores it if
+ * that fails. The record is rewritten after each swap, so it always describes
+ * what is on disk. A failure names the plugin, exits non-zero, and leaves the
+ * plugins before it updated and the rest as they were. A second run waits for
+ * the lock, and the first run of a stage left by a killed one takes over its
+ * stale lock and recovers its temporaries. Recorded directories are validated
+ * against the stage before anything changes, and a directory is removed only
+ * when no current plugin uses it.
  */
 export function updateStage(destination, {
   waitMilliseconds = 180_000,
@@ -248,22 +264,23 @@ function updateLocked(output, rename) {
     }
   })();
   validate(output, previous);
-  recover(output, [...Object.values(plugins).map((relative) => path.resolve(output, relative)),
+  recover(output, [...Object.values(shipped).map((relative) => path.resolve(output, relative)),
     ...Object.values(previous).filter((entry) => entry?.dir).map((entry) => path.resolve(output, entry.dir))]);
   const entries = { ...previous };
   const writeRecord = () => writeAtomically(record,
     `${JSON.stringify({ schemaVersion: 1, plugins: entries }, null, 2)}\n`);
-  const current = new Set(Object.values(plugins).map((relative) => path.resolve(output, relative)));
+  const current = new Set(Object.values(shipped).map((relative) => path.resolve(output, relative)));
   const installed = [];
-  for (const [name, relative] of Object.entries(plugins)) {
+  for (const [name, relative] of Object.entries(shipped)) {
     const source = path.join(path.dirname(defaults), relative);
     const target = path.join(output, relative);
     const partial = `${target}.partial.${process.pid}`;
+    const isOptional = optionalNames.has(name);
     const code = existsSync(path.join(source, 'package.json'));
     assert(!code || existsSync(path.join(source, 'package-lock.json')), `${name} has no package-lock.json`);
-    const hash = dependencies(source);
+    const hash = isOptional ? null : dependencies(source);
     const before = previous[name];
-    const reusable = before?.hash === hash && existsSync(target)
+    const reusable = !isOptional && before?.hash === hash && existsSync(target)
       && (!code || existsSync(path.join(target, 'node_modules')));
     try {
       rmSync(partial, { recursive: true, force: true });
@@ -274,7 +291,7 @@ function updateLocked(output, rename) {
         if (existsSync(modules)) {
           cpSync(modules, path.join(partial, 'node_modules'), { recursive: true, verbatimSymlinks: true });
         }
-      } else if (code) {
+      } else if (!isOptional && code) {
         install(partial, name);
         installed.push(name);
       }
@@ -287,11 +304,11 @@ function updateLocked(output, rename) {
       const old = path.resolve(output, before.dir);
       if (!occupied(current, old)) rmSync(old, { recursive: true, force: true });
     }
-    entries[name] = { hash, dir: relative };
+    entries[name] = isOptional ? { dir: relative } : { hash, dir: relative };
     writeRecord();
   }
   for (const [name, entry] of Object.entries(previous)) {
-    if (name in plugins || !entry?.dir) continue;
+    if (Object.hasOwn(shipped, name) || !entry?.dir) continue;
     const old = path.resolve(output, entry.dir);
     if (!occupied(current, old)) rmSync(old, { recursive: true, force: true });
     delete entries[name];
@@ -301,7 +318,7 @@ function updateLocked(output, rename) {
   const defaultsTemporary = `${defaultsCopy}.tmp.${process.pid}`;
   copy(defaults, defaultsTemporary);
   renameSync(defaultsTemporary, defaultsCopy);
-  console.log(`Updated ${Object.keys(plugins).length} default plugins (npm ci: ${installed.length ? installed.join(', ') : 'none'}).`);
+  console.log(`Updated ${Object.keys(shipped).length} plugins (npm ci: ${installed.length ? installed.join(', ') : 'none'}).`);
 }
 
 function freshStage(destination) {
@@ -310,16 +327,16 @@ function freshStage(destination) {
   try {
     mkdirSync(output, { recursive: true });
     cpSync(defaults, path.join(output, 'default-plugins.json'));
-    for (const [name, relative] of Object.entries(plugins)) {
+    for (const [name, relative] of Object.entries(shipped)) {
       const source = path.join(path.dirname(defaults), relative);
       const target = path.join(output, relative);
       const code = existsSync(path.join(source, 'package.json'));
       assert(!code || existsSync(path.join(source, 'package-lock.json')), `${name} has no package-lock.json`);
       copy(source, target);
-      if (!code) continue;
+      if (!code || optionalNames.has(name)) continue;
       install(target, name);
     }
-    console.log(`Staged ${Object.keys(plugins).length} default plugins.`);
+    console.log(`Staged ${Object.keys(shipped).length} plugins.`);
   } catch (error) {
     rmSync(output, { recursive: true, force: true });
     throw error;

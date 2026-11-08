@@ -30,7 +30,7 @@ Migration 将当前旧版 CLI／Desktop 的已有数据转换成当前原生格�
 | `providers`、`provider_selections` | 经 Provider 的冻结映射转换静态连接、凭据、模型来源、覆盖、偏好、启用状态和作用域选择，不自带转换器。保留已配置目标；无原生对应物的字段逐项报告为省略，其他不可转换项报告并保留来源 |
 | OAuth `auth.json` | 导入兼容的 Dim、Codex、Grok 登录记录，验证结构、版本及已有账号状态摘要。保留目标账号和其他所有者字段；凭据继续遵守正常客户端的有效期与恢复逻辑 |
 | `mcp.json`、MCP OAuth | 逐条转换受支持的服务设置：可解析的条目按旧文件原值导入，不能解析的条目保留在旧 home，并以 `mcpServers.<id>` 记为不支持，不写入原生存储；OAuth 与目标服务 URL、资源、客户端注册和作用域绑定，保留已有凭据；不从历史工具结果推导登录或授权 |
-| CLI 与 Desktop 设置 | 有等价语义的共享项先选旧 Desktop 值，再与目标比较。只补未配置项；`false`、空值与显式清除均保留 |
+| CLI 与 Desktop 设置 | 有等价语义的共享项先选旧 Desktop 值，再与目标比较。只补未配置项；`false`、空值与显式清除均保留。CLI 的 `showAcpSessions` 按布尔值补入 |
 | Skills、Web、exec shell | 保留兼容设置及启用／禁用状态。共享 Skills 来源复用路径；不明确的 ID、未支持的 Web adapter 与设置保留来源，不选择替代实现 |
 | 长期命令权限 | 仅转换等价的 allow／deny 规则；原规则优先级无法表达时保留相关组，不近似放宽权限。单次审批保持历史资料 |
 | `sessions`、`session_states`、`messages`、`compaction_states` | 创建完整的原生会话、历史、模型引用和有效上下文；身份、可见性与回执原子发布。当前 Provider／模型不可用不阻止历史导入 |
@@ -50,6 +50,12 @@ Provider 与 Provider 选择由 Provider 的转换生成：Migration 从快照�
 ## Session 的历史与续聊状态
 
 旧消息没有当前 Timeline，Migration 记录一次明确的导入操作，并将保存的消息内容转换为现有原生历史记录。来源标记、原消息 ID 和来源时间可追溯。导入不产生历史模型请求、工具派发、审批决定或用量测量，也不执行旧工具。
+
+会话目录分类遵循 [Session 分类](../appserver/session-classification.md)。旧设置的 `agentProfile: "reviewer"`、布尔值为真的 `__approvalReviewer`、`__subagentOrigin`、`__workflowAgentOrigin`、非空 `parentSessionId`，以及指向会话的 `subagent` 关系，标为 `internal`。父 ID 优先取设置，其次取唯一的 `subagent` 来源。没有内部来源时，显式的 `__sessionSource: "acp"` 标为 `acp`。缺少显式来源的旧记录须同时具有 ACP 的两个数组 `additionalDirectories` 和 `mcpServers`，且无指向该会话的关系，才沿用旧版 ACP 判定。其余来源保持 `unknown`。
+
+会话来源在首次写入目标库时确定。使用旧版导入器写入 Alpha 目标库的会话需重置目标库，再从原 v2 来源重新导入以获得分类。
+
+会话阶段结束时，用本次已导入或匹配已有回执的目标 ID 补齐父关系。父会话缺失、已删除、暂缓或导入失败时保留内部分类，后续重试可补齐关系。已有父关系保留，自引用和闭环不写入。关系补写只改变目录元数据，历史会话的协作角色和权限由普通导入规则确定。
 
 完整历史与模型有效上下文分别保存。界面通过正常历史投影逐条查看旧消息；模型使用旧版有效摘要及未压缩后缀，保留 `user`、`assistant`、`tool_result` 角色与工具配对。回退边界、私有输入、重试展示和压缩边界在来源解析时确定，不能让展示需要扩大续聊上下文。
 

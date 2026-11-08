@@ -36,6 +36,11 @@ requests rather than repeating external effects. Reload-settled tool results
 fail the turn. An idle append alone starts no turn. Domain-specific history must
 not become a second input-adoption path.
 
+`AgentLoop::stop_turn` is the branch-local way to stop one turn: under the lock
+that opens and closes turns it checks that the named turn is the open one and
+not already ending, commits the `stop/interrupt` only then, and writes nothing
+for any other id.
+
 ## A failed model step and its disposer
 
 The Loop owns one port, the disposer of a failed model step. The port is a

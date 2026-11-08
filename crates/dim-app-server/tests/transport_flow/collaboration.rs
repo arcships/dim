@@ -172,8 +172,375 @@ impl dim_agent_runtime::TimelineStore for CountingTimelineStore {
     }
 }
 
+/// What an armed [`InputHoldStore`] waits for.
+#[derive(Clone, Default)]
+enum HoldKind {
+    /// The first request input's `input/message`: the span between a request
+    /// joining `state.requests` and its `input` returning.
+    #[default]
+    RequestInput,
+    /// The first `input/applied` on this Session's branch: the span between
+    /// InputQueue handing an input to Loop and the turn that consumes it.
+    Applied(String),
+    /// The read of this Session's `input/consumed` after the cancel's own: the
+    /// (S) wait's check, which decides when the stop is written.
+    Consumed(String),
+    /// The next read of this Session's `input/consumed` after the arm: the
+    /// cancel's own check, held before the stop is decided.
+    ConsumedNow(String),
+}
+
+/// Delegates to the in-memory store and holds the next armed append or read of
+/// the configured kind, so a test decides the window by facts.
+struct InputHoldStore {
+    memory: dim_agent_runtime::MemoryTimelineStore,
+    hold: std::sync::Mutex<HoldKind>,
+    /// Whether a matching read or append holds now.
+    armed: std::sync::atomic::AtomicBool,
+    /// Whether the window waits for the cancel's withdrawal to arm it: a
+    /// `Consumed` window holds only reads made after the withdrawal, whose
+    /// own check must pass.
+    pending: std::sync::atomic::AtomicBool,
+    entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    release: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    read_release: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    /// Tells the test that the matching read a `Consumed` window lets pass
+    /// (the cancel's own check) has happened, so the append that check must
+    /// follow can be released after it.
+    check: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+/// Releases a held window: an append blocks its thread, a read awaits.
+enum Release {
+    Append(std::sync::mpsc::Sender<()>),
+    Read(tokio::sync::oneshot::Sender<()>),
+}
+impl Release {
+    fn release(self) {
+        match self {
+            Release::Append(release) => {
+                let _ = release.send(());
+            }
+            Release::Read(release) => {
+                let _ = release.send(());
+            }
+        }
+    }
+}
+
+impl InputHoldStore {
+    /// Installs the first window's signal and release, so a flow that arms by
+    /// setting `armed` keeps working; `arm` installs the next window's.
+    fn new() -> (
+        Arc<Self>,
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (entered, entered_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        let store = Arc::new(Self {
+            memory: Default::default(),
+            hold: Default::default(),
+            armed: Default::default(),
+            pending: Default::default(),
+            entered: std::sync::Mutex::new(Some(entered)),
+            release: std::sync::Mutex::new(Some(release_rx)),
+            read_release: Default::default(),
+            check: Default::default(),
+        });
+        (store, entered_rx, release)
+    }
+    /// Holds the next matching append or read: answers `entered` when it is
+    /// held, then waits for the release.
+    fn arm(
+        &self,
+        hold: HoldKind,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        Release,
+        Option<tokio::sync::oneshot::Receiver<()>>,
+    ) {
+        let (entered, entered_rx) = tokio::sync::oneshot::channel();
+        *self.entered.lock().unwrap() = Some(entered);
+        let mut check = None;
+        let release = match hold {
+            HoldKind::Consumed(_) => {
+                let (release, release_rx) = tokio::sync::oneshot::channel();
+                *self.read_release.lock().unwrap() = Some(release_rx);
+                let (checked, checked_rx) = tokio::sync::oneshot::channel();
+                *self.check.lock().unwrap() = Some(checked);
+                check = Some(checked_rx);
+                Release::Read(release)
+            }
+            HoldKind::ConsumedNow(_) => {
+                let (release, release_rx) = tokio::sync::oneshot::channel();
+                *self.read_release.lock().unwrap() = Some(release_rx);
+                Release::Read(release)
+            }
+            _ => {
+                let (release, release_rx) = std::sync::mpsc::channel();
+                *self.release.lock().unwrap() = Some(release_rx);
+                Release::Append(release)
+            }
+        };
+        let consumed = matches!(hold, HoldKind::Consumed(_));
+        self.pending.store(consumed, Ordering::SeqCst);
+        self.armed.store(!consumed, Ordering::SeqCst);
+        *self.hold.lock().unwrap() = hold;
+        (entered_rx, release, check)
+    }
+    /// Whether this match holds now; the armed window is one shot. A window
+    /// still waiting for the withdrawal lets the cancel's own check pass and
+    /// tells the test it happened.
+    fn holds(&self, matching: bool) -> bool {
+        if !matching {
+            return false;
+        }
+        if self.pending.load(Ordering::SeqCst) {
+            if let Some(check) = self.check.lock().unwrap().take() {
+                let _ = check.send(());
+            }
+            return false;
+        }
+        if !self.armed.load(Ordering::SeqCst) {
+            return false;
+        }
+        self.armed.store(false, Ordering::SeqCst);
+        true
+    }
+    /// Signals the caller the window is held, then blocks until it is
+    /// released, leaving the store ready for the next arm.
+    fn hold(&self) {
+        // Both slots are taken before the window is announced, so a test that
+        // arms the next window as it wakes cannot replace this one's.
+        let entered = self.entered.lock().unwrap().take();
+        let release = self.release.lock().unwrap().take();
+        if let Some(entered) = entered {
+            let _ = entered.send(());
+        }
+        if let Some(release) = release {
+            let _ = release.recv();
+        }
+    }
+    /// The read window's hold: awaited, so it never blocks an executor.
+    async fn read_hold(&self) {
+        let entered = self.entered.lock().unwrap().take();
+        let release = self.read_release.lock().unwrap().take();
+        if let Some(entered) = entered {
+            let _ = entered.send(());
+        }
+        if let Some(release) = release {
+            let _ = release.await;
+        }
+    }
+}
+impl dim_agent_runtime::TimelineStore for InputHoldStore {
+    fn create_session<'a>(
+        &'a self,
+        id: &'a str,
+        config: &'a dim_agent_runtime::SessionConfig,
+    ) -> dim_agent_runtime::BoxFuture<'a, dim_agent_runtime::Result<()>> {
+        self.memory.create_session(id, config)
+    }
+    fn rollback_session<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> dim_agent_runtime::BoxFuture<'a, dim_agent_runtime::Result<()>> {
+        self.memory.rollback_session(id)
+    }
+    fn release_session<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> dim_agent_runtime::BoxFuture<'a, dim_agent_runtime::Result<()>> {
+        self.memory.release_session(id)
+    }
+    fn session_config<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> dim_agent_runtime::BoxFuture<
+        'a,
+        dim_agent_runtime::Result<Option<dim_agent_runtime::SessionConfig>>,
+    > {
+        self.memory.session_config(id)
+    }
+    fn branches<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> dim_agent_runtime::BoxFuture<
+        'a,
+        dim_agent_runtime::Result<Vec<dim_agent_runtime::StoredBranch>>,
+    > {
+        self.memory.branches(id)
+    }
+    fn head<'a>(
+        &'a self,
+        key: &'a dim_agent_runtime::TimelineKey,
+    ) -> dim_agent_runtime::BoxFuture<'a, dim_agent_runtime::Result<u64>> {
+        self.memory.head(key)
+    }
+    fn batch_end<'a>(
+        &'a self,
+        key: &'a dim_agent_runtime::TimelineKey,
+        sequence: u64,
+    ) -> dim_agent_runtime::BoxFuture<'a, dim_agent_runtime::Result<()>> {
+        self.memory.batch_end(key, sequence)
+    }
+    fn append(
+        &self,
+        key: dim_agent_runtime::TimelineKey,
+        events: Vec<dim_agent_runtime::StoredEvent>,
+        publish: dim_agent_runtime::PublishCallback,
+    ) -> dim_agent_runtime::Result<()> {
+        let (matching, arms) = match &*self.hold.lock().unwrap() {
+            HoldKind::RequestInput => (
+                events.iter().any(|stored| {
+                    matches!(&stored.event.kind, EventKind::InputMessage(data)
+                        if data.blocks.first().is_some_and(|block| matches!(
+                            block, InputBlock::Raw { text, .. }
+                                if text.starts_with("<dim-agent-message "))))
+                }),
+                false,
+            ),
+            HoldKind::Applied(session) => (
+                key.session_id == *session
+                    && events
+                        .iter()
+                        .any(|stored| matches!(&stored.event.kind, EventKind::InputApplied(_))),
+                false,
+            ),
+            HoldKind::Consumed(session) => (
+                false,
+                key.session_id == *session
+                    && events
+                        .iter()
+                        .any(|stored| matches!(&stored.event.kind, EventKind::InputWithdraw(_))),
+            ),
+            HoldKind::ConsumedNow(_) => (false, false),
+        };
+        // The withdrawal that carries the cancel arms the read window: every
+        // read after it belongs to the wait, the cancel's own check before it
+        // did not. The append itself never holds the read window.
+        if arms && self.pending.swap(false, Ordering::SeqCst) {
+            self.armed.store(true, Ordering::SeqCst);
+        }
+        if self.holds(matching) {
+            // The hold itself: blocking this worker leaves the held commit
+            // open until released, so the test decides the window.
+            self.hold();
+        }
+        self.memory.append(key, events, publish)
+    }
+    fn read_segments<'a>(
+        &'a self,
+        session_id: &'a str,
+        segments: Vec<(String, RangeInclusive<u64>)>,
+    ) -> dim_agent_runtime::BoxFuture<
+        'a,
+        dim_agent_runtime::Result<Vec<Vec<dim_agent_runtime::StoredEvent>>>,
+    > {
+        self.memory.read_segments(session_id, segments)
+    }
+    fn trace<'a>(
+        &'a self,
+        key: &'a dim_agent_runtime::TimelineKey,
+        sequence: u64,
+    ) -> dim_agent_runtime::BoxFuture<
+        'a,
+        dim_agent_runtime::Result<Option<dim_agent_runtime::TimelineTrace>>,
+    > {
+        self.memory.trace(key, sequence)
+    }
+    fn save_snapshot<'a>(
+        &'a self,
+        key: &'a dim_agent_runtime::TimelineKey,
+        snapshot: dim_agent_types::RecoverySnapshot,
+    ) -> dim_agent_runtime::BoxFuture<'a, dim_agent_runtime::Result<()>> {
+        self.memory.save_snapshot(key, snapshot)
+    }
+    fn latest_snapshot<'a>(
+        &'a self,
+        key: &'a dim_agent_runtime::TimelineKey,
+        through: u64,
+        interpreter: &'a str,
+    ) -> dim_agent_runtime::BoxFuture<
+        'a,
+        dim_agent_runtime::Result<Option<dim_agent_types::RecoverySnapshot>>,
+    > {
+        self.memory.latest_snapshot(key, through, interpreter)
+    }
+    fn query<'a>(
+        &'a self,
+        key: &'a dim_agent_runtime::TimelineKey,
+        query: &'a dim_agent_runtime::TimelineQuery,
+        from: u64,
+        through: u64,
+    ) -> dim_agent_runtime::BoxFuture<
+        'a,
+        dim_agent_runtime::Result<dim_agent_runtime::TimelineQueryPage>,
+    > {
+        Box::pin(async move {
+            let matching = match &*self.hold.lock().unwrap() {
+                HoldKind::Consumed(session) | HoldKind::ConsumedNow(session) => {
+                    key.session_id == *session
+                        && query.kinds.iter().any(|kind| kind == "input/consumed")
+                }
+                _ => false,
+            };
+            if self.holds(matching) {
+                self.read_hold().await;
+            }
+            self.memory.query(key, query, from, through).await
+        })
+    }
+}
+
 async fn launch_team() -> (RunningServer, Agent) {
     launch_with_agent(Arc::new(MockTools), ServerConfig::default()).await
+}
+
+/// A server whose Timeline store is `store`, with a leader Session that may
+/// start members and run `hold`.
+async fn launch_held_team(
+    store: Arc<InputHoldStore>,
+) -> (
+    RunningServer,
+    Agent,
+    Client,
+    String,
+    Session,
+    String,
+    Arc<tokio::sync::Semaphore>,
+) {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut config = ServerConfig::default();
+    config
+        .session_defaults
+        .tools
+        .get_or_insert_default()
+        .push("hold".into());
+    config.unix_path = Some(std::path::PathBuf::from("/tmp").join(format!(
+        "dim-server-test-{}/server.sock",
+        uuid::Uuid::new_v4()
+    )));
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder.timeline_store(store);
+    defaults::install(&mut builder);
+    defaults::mock_model_hosts(&mut builder);
+    dim_agent_capabilities::defaults::tool_host(&mut builder, Arc::new(GateTools(gate.clone())));
+    dim_app_server::collaboration::install(&mut builder);
+    let server = serve(builder, config).await.unwrap();
+    let agent = server.agent().unwrap();
+    let mut client = Client::new_version(&server, false, 3).await;
+    let lead = leader(
+        &mut client,
+        json!({"allowedTools": ["echo", "wait", "agent", "hold"]}),
+    )
+    .await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    let holder = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    (server, agent, client, lead, lead_session, holder, gate)
 }
 
 struct CaptureMemberConfig {
@@ -2767,6 +3134,1944 @@ async fn a_member_stop_reports_cancellation_and_a_later_steer_does_not_reopen_th
     server.join().await.unwrap();
 }
 
+/// A client's `session.collaboration.cancel` interrupts the member's running
+/// turn when it names the branch that owns the request: the member records
+/// `stop/interrupt` and a cancelled `turn/end`, and the leader records the
+/// cancelled `collaboration/result` and its report. Called again once nothing
+/// runs, it answers `idle` and writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_cancel_stops_a_running_member_and_writes_nothing_when_idle() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut config = ServerConfig::default();
+    config
+        .session_defaults
+        .tools
+        .get_or_insert_default()
+        .push("hold".into());
+    let (server, agent) = launch_with_agent(Arc::new(GateTools(gate.clone())), config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let lead = leader(
+        &mut client,
+        json!({"allowedTools": ["echo", "wait", "agent", "hold"]}),
+    )
+    .await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    let holder = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "request", "agentId": holder, "prompt": "tool:hold {}"})),
+        "queue",
+    )
+    .await;
+    let member = next_member(&lead_session, 0).await;
+    let member_session = agent.get_session(&member).unwrap();
+    let holds = async |session: &Session| {
+        events(session)
+            .await
+            .iter()
+            .filter(|event| {
+                matches!(&event.kind,
+                EventKind::ToolCall(data) if data.calls[0].name == "hold")
+            })
+            .count()
+    };
+    poll("the member's hold started", async || {
+        (holds(&member_session).await == 1).then_some(())
+    })
+    .await;
+
+    let cancelled = client
+        .rpc(
+            "session.collaboration.cancel",
+            json!({"sessionId": lead, "branchId": "main", "memberSessionId": member}),
+        )
+        .await;
+    assert_ok(&cancelled);
+    assert_eq!(cancelled["result"]["status"], "cancelled", "{cancelled}");
+    // The running turn is stopped before the call answers.
+    assert!(
+        events(&member_session)
+            .await
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::StopInterrupt(_))),
+        "the stop is committed before the call answers"
+    );
+    poll("the member's cancelled turn", async || {
+        events(&member_session)
+            .await
+            .iter()
+            .any(|event| {
+                matches!(&event.kind, EventKind::TurnEnd(data)
+                    if matches!(data.outcome, dim_agent_types::TurnOutcome::Cancelled { .. }))
+            })
+            .then_some(())
+    })
+    .await;
+    let outcome = poll("the leader's cancelled result", async || {
+        result_of(&events(&lead_session).await, &member)
+            .into_iter()
+            .find(|outcome| matches!(outcome, CollaborationOutcome::Cancelled { .. }))
+    })
+    .await;
+    assert!(matches!(outcome, CollaborationOutcome::Cancelled { .. }));
+
+    let reported = events(&lead_session).await;
+    let result_id = reported
+        .iter()
+        .find(|event| {
+            matches!(&event.kind,
+                EventKind::CollaborationResult(data) if data.session_id == member
+                    && matches!(data.outcome, CollaborationOutcome::Cancelled { .. }))
+        })
+        .unwrap()
+        .id
+        .clone();
+    poll("the cancel's report reaches the leader", async || {
+        events(&lead_session)
+            .await
+            .iter()
+            .any(|event| {
+                matches!(&event.kind,
+                EventKind::InputMessage(data) if report(data) == Some(result_id.as_str()))
+            })
+            .then_some(())
+    })
+    .await;
+
+    let stops = async |session: &Session| {
+        events(session)
+            .await
+            .iter()
+            .filter(|event| matches!(&event.kind, EventKind::StopInterrupt(_)))
+            .count()
+    };
+    let before = stops(&member_session).await;
+    let idle = client
+        .rpc(
+            "session.collaboration.cancel",
+            json!({"sessionId": lead, "memberSessionId": member}),
+        )
+        .await;
+    assert_ok(&idle);
+    assert_eq!(idle["result"]["status"], "idle", "{idle}");
+    assert_eq!(
+        stops(&member_session).await,
+        before,
+        "an idle cancel writes no stop/interrupt"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A cancel from a branch whose own request to the member is still waiting
+/// for delivery stops nothing: that request is refused `busy`, and the
+/// member's running turn belongs to the branch that owns the open request.
+/// The flow commits the competing request and a barrier of its own as one
+/// batch: the request's `open` entry exists before the barrier's listener
+/// holds the branch's dispatch, and its refusal's `delivered` is published
+/// but not dispatched until the flow releases the gate. No sleep decides
+/// the timing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_cancel_from_another_branch_leaves_the_owning_branch_turn_running() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let dispatch = DispatchGate::new({
+        let entered = entered.clone();
+        let release = release.clone();
+        Arc::new(move |_, event| {
+            let hold = event.kind.key() == "collaborationtest/barrier";
+            let entered = entered.clone();
+            let release = release.clone();
+            Box::pin(async move {
+                if hold {
+                    entered.notify_one();
+                    release.notified().await;
+                }
+            })
+        })
+    });
+    let mut config = ServerConfig::default();
+    config
+        .session_defaults
+        .tools
+        .get_or_insert_default()
+        .push("hold".into());
+    let (server, agent) = launch_gated_tools(
+        dispatch.clone(),
+        Arc::new(GateTools(gate.clone())),
+        config,
+        |_| {},
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": std::env::temp_dir(), "tools": ["echo", "wait", "agent", "branch"],
+                "permissionPolicy": {"allowedTools": ["echo", "wait", "agent", "hold"]}}),
+        )
+        .await;
+    assert_ok(&created);
+    let lead = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    dispatch.leader.set(lead.clone()).unwrap();
+    let lead_session = agent.get_session(&lead).unwrap();
+    let holder = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "request", "agentId": holder, "prompt": "tool:hold {}"})),
+        "queue",
+    )
+    .await;
+    let member = next_member(&lead_session, 0).await;
+    let member_session = agent.get_session(&member).unwrap();
+    let holds = async |session: &Session| {
+        events(session)
+            .await
+            .iter()
+            .filter(|event| {
+                matches!(&event.kind,
+                EventKind::ToolCall(data) if data.calls[0].name == "hold")
+            })
+            .count()
+    };
+    let stops = async |session: &Session| {
+        events(session)
+            .await
+            .iter()
+            .filter(|event| matches!(&event.kind, EventKind::StopInterrupt(_)))
+            .count()
+    };
+    poll("the member's hold started", async || {
+        (holds(&member_session).await == 1).then_some(())
+    })
+    .await;
+
+    // A second branch of the same leader requests the same member. The
+    // request joins the branch's `open` and is refused `busy`; the barrier
+    // committed with it keeps the refusal's `delivered` from being
+    // dispatched, so `open` still holds the member when the client cancels.
+    let history = client
+        .rpc(
+            "session.history",
+            json!({"sessionId": lead, "branchId": "main", "after": 0, "limit": 256}),
+        )
+        .await;
+    assert_ok(&history);
+    let at = history["result"]["through"].as_u64().unwrap();
+    let opened = client
+        .rpc(
+            "session.branch_create",
+            json!({"sessionId": lead, "parentBranchId": "main", "at": at,
+                "prompt": "competing branch"}),
+        )
+        .await;
+    assert_ok(&opened);
+    let branch = opened["result"]["branch"]["branchId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    poll("the competing branch is idle", async || {
+        lead_session
+            .state(&branch)
+            .is_ok_and(|state| !state.running)
+            .then_some(())
+    })
+    .await;
+    let branch_timeline = dispatch
+        .branches
+        .lock()
+        .unwrap()
+        .get(&(lead.clone(), branch.clone()))
+        .cloned()
+        .expect("the competing branch's Timeline");
+    branch_timeline
+        .append_batch_registered(
+            vec![
+                EventKind::CollaborationRequest(dim_agent_types::CollaborationRequestData {
+                    turn_id: "competing-turn".into(),
+                    request_id: "competing-request".into(),
+                    call_id: "competing-call".into(),
+                    target: dim_agent_types::CollaborationTarget::Member {
+                        agent_id: holder.clone(),
+                        session_id: member.clone(),
+                    },
+                    prompt: "later".into(),
+                })
+                .into(),
+                EventKind::Extension(
+                    dim_agent_types::ExtensionEvent::new("collaborationtest", "barrier", json!({}))
+                        .unwrap(),
+                )
+                .into(),
+            ],
+            |_| Ok(()),
+        )
+        .unwrap();
+
+    entered.notified().await;
+    let cancelled = client
+        .rpc(
+            "session.collaboration.cancel",
+            json!({"sessionId": lead, "branchId": branch, "memberSessionId": member}),
+        )
+        .await;
+    assert_ok(&cancelled);
+    assert_eq!(cancelled["result"]["status"], "idle", "{cancelled}");
+    assert_eq!(
+        stops(&member_session).await,
+        0,
+        "the cancel stopped nothing"
+    );
+    assert!(
+        member_session
+            .state("main")
+            .is_ok_and(|state| state.running),
+        "the owning branch's member turn is still running"
+    );
+
+    release.notify_one();
+    let delivery = poll("the competing request's refusal", async || {
+        branch_events(&lead_session, &branch, ..)
+            .await
+            .unwrap()
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::CollaborationDelivered(data) => Some(data.delivery.clone()),
+                _ => None,
+            })
+    })
+    .await;
+    assert_eq!(
+        delivery,
+        CollaborationDelivery::Error {
+            error: dim_agent_types::CollaborationErrorCode::Busy
+        }
+    );
+
+    // The owning request finishes with its own result once the member's hold
+    // ends: nothing cancelled it.
+    gate.add_permits(1);
+    let outcome = poll("the owning branch's result", async || {
+        result_of(&events(&lead_session).await, &member)
+            .into_iter()
+            .next()
+    })
+    .await;
+    assert_eq!(outcome, CollaborationOutcome::Completed, "{outcome:?}");
+    assert_eq!(stops(&member_session).await, 0);
+    returned(&mut client, &lead, &lead_session, 1).await;
+
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Creates the member with a first request that settles, so the client knows
+/// the member Session id before the request a hold is armed for.
+async fn settled_member(
+    client: &mut Client,
+    agent: &Agent,
+    lead: &str,
+    lead_session: &Session,
+    holder: &str,
+) -> (String, Session) {
+    say(
+        client,
+        lead,
+        tool(json!({"action": "request", "agentId": holder,
+            "prompt": "tool:echo {\"text\":\"ready\"}"})),
+        "queue",
+    )
+    .await;
+    let member = next_member(lead_session, 0).await;
+    let member_session = agent.get_session(&member).unwrap();
+    let outcome = poll("the first request completes", async || {
+        result_of(&events(lead_session).await, &member)
+            .into_iter()
+            .next()
+    })
+    .await;
+    assert_eq!(outcome, CollaborationOutcome::Completed, "{outcome:?}");
+    (member, member_session)
+}
+
+/// The turn the cancelled request started ended cancelled with the client's
+/// reason, and the leader's result names it.
+async fn cancel_settled(lead_session: &Session, member: &str, member_session: &Session) {
+    let turn = poll("the member's cancelled turn", async || {
+        events(member_session)
+            .await
+            .iter()
+            .rev()
+            .find_map(|event| match &event.kind {
+                EventKind::TurnEnd(data) => Some(data.outcome.clone()),
+                _ => None,
+            })
+            .filter(|outcome| matches!(outcome, dim_agent_types::TurnOutcome::Cancelled { .. }))
+    })
+    .await;
+    assert!(
+        matches!(&turn, dim_agent_types::TurnOutcome::Cancelled { reason }
+            if reason == "cancelled by the client"),
+        "{turn:?}"
+    );
+    let outcome = poll("the leader's cancelled result", async || {
+        result_of(&events(lead_session).await, member)
+            .into_iter()
+            .find(|outcome| matches!(outcome, CollaborationOutcome::Cancelled { .. }))
+    })
+    .await;
+    assert_eq!(
+        outcome,
+        CollaborationOutcome::Cancelled {
+            reason: "cancelled by the client".into()
+        },
+        "{outcome:?}"
+    );
+}
+
+/// Reads the member's `stop/interrupt` reason once there is one.
+async fn stop_reason(session: &Session) -> String {
+    poll("the delivery's stop", async || {
+        events(session)
+            .await
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::StopInterrupt(data) => Some(data.reason.clone()),
+                _ => None,
+            })
+    })
+    .await
+}
+
+/// Every `stop/interrupt` reason on the member's main line, in order.
+async fn stop_reasons(session: &Session) -> Vec<String> {
+    events(session)
+        .await
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::StopInterrupt(data) => Some(data.reason.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The member's turn ends cancelled with `reason`, once it has: the last
+/// `turn/end` of its main line is that outcome.
+async fn turn_cancelled(session: &Session, reason: &str) {
+    poll(&format!("the member's turn ends `{reason}`"), async || {
+        events(session)
+            .await
+            .iter()
+            .rev()
+            .find_map(|event| match &event.kind {
+                EventKind::TurnEnd(data) => Some(data.outcome.clone()),
+                _ => None,
+            })
+            .filter(|outcome| {
+                matches!(outcome, dim_agent_types::TurnOutcome::Cancelled { reason: actual }
+                    if actual == reason)
+            })
+    })
+    .await;
+}
+
+/// The leader's results for `member`, read from its main line after its
+/// Session closed: an ended line keeps the facts it committed.
+async fn closed_results(lead_session: &Session, member: &str) -> Vec<CollaborationOutcome> {
+    result_of(
+        &branch_events(lead_session, "main", ..).await.unwrap(),
+        member,
+    )
+}
+
+/// The member's input and its sequence for the request whose prompt contains
+/// `needle`, once its `input/message` is published.
+async fn request_input(session: &Session, needle: &str) -> (String, u64) {
+    poll("the request's input", async || {
+        events(session)
+            .await
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::InputMessage(data)
+                    if agent_message(data).is_some_and(|text| text.contains(needle)) =>
+                {
+                    Some((event.id.clone(), event.sequence))
+                }
+                _ => None,
+            })
+    })
+    .await
+}
+
+/// The sequences of the member's `input/consumed` facts for `input`.
+async fn consumed_at(session: &Session, input: &str) -> Vec<u64> {
+    events(session)
+        .await
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::InputConsumed(data) if data.input_id == input => Some(event.sequence),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The cancelled request's turn consumed its input before the stop, and the
+/// request after the settle consumes only its own input: the cancelled input
+/// is gone, not waiting in history for unrelated work.
+async fn cancel_consumed_before_the_stop(
+    client: &mut Client,
+    lead: &str,
+    holder: &str,
+    member: &str,
+    member_session: &Session,
+) {
+    let (input, _) = request_input(member_session, "tool:hold").await;
+    let stop = events(member_session)
+        .await
+        .iter()
+        .find(|event| matches!(&event.kind, EventKind::StopInterrupt(_)))
+        .expect("the stop is committed")
+        .sequence;
+    let consumed = consumed_at(member_session, &input).await;
+    assert_eq!(
+        consumed.len(),
+        1,
+        "the cancelled turn consumed its input once: {consumed:?}"
+    );
+    assert!(
+        consumed[0] < stop,
+        "the input is consumed before the stop: {} < {stop}",
+        consumed[0]
+    );
+
+    say(
+        client,
+        lead,
+        tool(
+            json!({"action": "request", "agentId": holder, "sessionId": member,
+            "prompt": "tool:echo {\"text\":\"again\"}"}),
+        ),
+        "queue",
+    )
+    .await;
+    let (again, _) = request_input(member_session, "again").await;
+    poll("the next request's turn consumes its input", async || {
+        consumed_at(member_session, &again).await.first().copied()
+    })
+    .await;
+    let later: Vec<String> = events(member_session)
+        .await
+        .iter()
+        .filter(|event| event.sequence > stop)
+        .filter_map(|event| match &event.kind {
+            EventKind::InputConsumed(data) => Some(data.input_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        later,
+        vec![again],
+        "the next turn consumes only its own input, not the cancelled request's"
+    );
+    assert_eq!(
+        consumed_at(member_session, &input).await,
+        consumed,
+        "the cancelled request's input appears in no later `input/consumed`"
+    );
+}
+
+/// A client cancel that lands while the request's input is still being
+/// appended answers `cancelled` and writes no stop itself: the cancel is
+/// recorded on the request, and the delivery stops the turn the input starts.
+/// The store holds the append, so the window needs no sleep and no production
+/// hook, and the turn's cancelled end decides the leader's result.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_cancel_before_the_member_input_is_queued_stops_the_turn_it_starts() {
+    let (store, _, _) = InputHoldStore::new();
+    let (server, agent, mut client, lead, lead_session, holder, _gate) =
+        launch_held_team(store.clone()).await;
+    let stops = async |session: &Session| {
+        events(session)
+            .await
+            .iter()
+            .filter(|event| matches!(&event.kind, EventKind::StopInterrupt(_)))
+            .count()
+    };
+    let (member, member_session) =
+        settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+
+    let (entered, release, _) = store.arm(HoldKind::RequestInput);
+    say(
+        &mut client,
+        &lead,
+        tool(
+            json!({"action": "request", "agentId": holder, "sessionId": member,
+            "prompt": "tool:hold {}"}),
+        ),
+        "queue",
+    )
+    .await;
+    entered
+        .await
+        .expect("the request's input is being appended");
+    let cancelled = client
+        .rpc(
+            "session.collaboration.cancel",
+            json!({"sessionId": lead, "branchId": "main", "memberSessionId": member}),
+        )
+        .await;
+    assert_ok(&cancelled);
+    assert_eq!(cancelled["result"]["status"], "cancelled", "{cancelled}");
+    assert_eq!(
+        stops(&member_session).await,
+        0,
+        "the cancel alone stops nothing"
+    );
+    release.release();
+
+    assert_eq!(
+        stop_reason(&member_session).await,
+        "cancelled by the client"
+    );
+    assert_eq!(
+        stops(&member_session).await,
+        1,
+        "the delivery stops the member once"
+    );
+    cancel_settled(&lead_session, &member, &member_session).await;
+    cancel_consumed_before_the_stop(&mut client, &lead, &holder, &member, &member_session).await;
+
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A client cancel that lands after the member applied the request's input
+/// but before its turn started: the call carries the cancellation out before
+/// it answers, and the stop waits for the input's `input/consumed`, so it
+/// lands on the running turn. The store holds the `input/applied` append, so
+/// the window needs no sleep.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_cancel_after_the_member_input_is_applied_stops_the_turn_it_starts() {
+    let (store, _, _) = InputHoldStore::new();
+    let (server, agent, mut client, lead, lead_session, holder, _gate) =
+        launch_held_team(store.clone()).await;
+    let stops = async |session: &Session| {
+        events(session)
+            .await
+            .iter()
+            .filter(|event| matches!(&event.kind, EventKind::StopInterrupt(_)))
+            .count()
+    };
+    let (member, member_session) =
+        settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+
+    let (entered, release, _) = store.arm(HoldKind::Applied(member.clone()));
+    say(
+        &mut client,
+        &lead,
+        tool(
+            json!({"action": "request", "agentId": holder, "sessionId": member,
+            "prompt": "tool:hold {}"}),
+        ),
+        "queue",
+    )
+    .await;
+    entered
+        .await
+        .expect("the member applies the request's input");
+    // The call records the cancel and carries it out before it answers; the
+    // held `input/applied` commit keeps the withdrawal pending, and no stop
+    // is written while it does.
+    let cancelling = {
+        let lead = lead.clone();
+        let member = member.clone();
+        let mut other = Client::new_version(&server, false, 3).await;
+        tokio::spawn(async move {
+            other
+                .rpc(
+                    "session.collaboration.cancel",
+                    json!({"sessionId": lead, "branchId": "main", "memberSessionId": member}),
+                )
+                .await
+        })
+    };
+    assert_eq!(
+        stops(&member_session).await,
+        0,
+        "the cancel stops nothing before the turn starts"
+    );
+    release.release();
+    let cancelled = cancelling.await.expect("the cancel call");
+    assert_ok(&cancelled);
+    assert_eq!(cancelled["result"]["status"], "cancelled", "{cancelled}");
+
+    assert_eq!(
+        stop_reason(&member_session).await,
+        "cancelled by the client"
+    );
+    assert_eq!(
+        stops(&member_session).await,
+        1,
+        "the delivery stops the member once"
+    );
+    cancel_settled(&lead_session, &member, &member_session).await;
+    cancel_consumed_before_the_stop(&mut client, &lead, &holder, &member, &member_session).await;
+
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A client cancel holds the member's stopping mark until the effect returns:
+/// a request to that member decided while the stop is still pending is
+/// refused `busy`, and one sent after it returns is accepted. The store holds
+/// the (S) wait's own read of `input/consumed`, so the member's turn finishes
+/// and the request settles while the stop is still owed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_cancel_refuses_a_new_request_to_the_member_until_it_returns() {
+    let (store, _, _) = InputHoldStore::new();
+    let (server, agent, mut client, lead, lead_session, holder, gate) =
+        launch_held_team(store.clone()).await;
+    let (member, _member_session) =
+        settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+    let deliveries = async |session: &Session| {
+        events(session)
+            .await
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::CollaborationDelivered(data) => Some(data.delivery.clone()),
+                _ => None,
+            })
+            .collect::<Vec<CollaborationDelivery>>()
+    };
+    let count = async |session: &Session, refused: bool| {
+        deliveries(session)
+            .await
+            .iter()
+            .filter(|delivery| matches!(delivery, CollaborationDelivery::Error { .. }) == refused)
+            .count()
+    };
+
+    // The request is applied while its append is held, so the cancel lands in
+    // the (S) path: InputQueue already handed the input to Loop.
+    let (entered, release, _) = store.arm(HoldKind::Applied(member.clone()));
+    say(
+        &mut client,
+        &lead,
+        tool(
+            json!({"action": "request", "agentId": holder, "sessionId": member,
+            "prompt": "tool:hold {}"}),
+        ),
+        "queue",
+    )
+    .await;
+    entered
+        .await
+        .expect("the member applies the request's input");
+    // The (S) wait's own read is the next window: it is held once the turn
+    // has consumed the input and before the stop is written. The cancel's own
+    // check passes first, while the applied append is still held, so it sees
+    // an unconsumed input and takes the (S) path.
+    let (entered_read, release_read, checked) = store.arm(HoldKind::Consumed(member.clone()));
+    let cancelling = {
+        let lead = lead.clone();
+        let member = member.clone();
+        let mut other = Client::new_version(&server, false, 3).await;
+        tokio::spawn(async move {
+            other
+                .rpc(
+                    "session.collaboration.cancel",
+                    json!({"sessionId": lead, "branchId": "main", "memberSessionId": member}),
+                )
+                .await
+        })
+    };
+    checked
+        .expect("the cancel checks the input")
+        .await
+        .expect("the cancel checks the input");
+    release.release();
+    entered_read
+        .await
+        .expect("the wait reads the member's consumed input");
+    let cancelled = cancelling.await.expect("the cancel call");
+    assert_ok(&cancelled);
+    assert_eq!(cancelled["result"]["status"], "cancelled", "{cancelled}");
+
+    // The member's turn finishes on its own while the stop is still owed: the
+    // request settles from that ending, not as a cancellation.
+    gate.add_permits(1);
+    poll("the second request settles", async || {
+        (result_of(&events(&lead_session).await, &member).len() >= 2).then_some(())
+    })
+    .await;
+    let outcomes = result_of(&events(&lead_session).await, &member);
+    assert_eq!(
+        outcomes.last(),
+        Some(&CollaborationOutcome::Completed),
+        "{outcomes:?}"
+    );
+
+    // A request decided now is refused `busy`: the stop it would race has not
+    // returned.
+    let refused = count(&lead_session, true).await;
+    say(
+        &mut client,
+        &lead,
+        tool(
+            json!({"action": "request", "agentId": holder, "sessionId": member,
+            "prompt": "tool:echo {\"text\":\"during\"}"}),
+        ),
+        "queue",
+    )
+    .await;
+    poll("the request during the stop is refused", async || {
+        (count(&lead_session, true).await > refused).then_some(())
+    })
+    .await;
+    let last = deliveries(&lead_session)
+        .await
+        .into_iter()
+        .rfind(|delivery| matches!(delivery, CollaborationDelivery::Error { .. }))
+        .expect("the refusal");
+    assert_eq!(
+        last,
+        CollaborationDelivery::Error {
+            error: dim_agent_types::CollaborationErrorCode::Busy
+        }
+    );
+
+    // Once the held read returns, the wait ends one way or another — with the
+    // stop, or from the request's own ending when its turn got there first —
+    // and the mark clears, so the member takes new work.
+    release_read.release();
+    let accepted = count(&lead_session, false).await;
+    say(
+        &mut client,
+        &lead,
+        tool(
+            json!({"action": "request", "agentId": holder, "sessionId": member,
+            "prompt": "tool:echo {\"text\":\"after\"}"}),
+        ),
+        "queue",
+    )
+    .await;
+    poll("the request after the cancel is accepted", async || {
+        (count(&lead_session, false).await > accepted).then_some(())
+    })
+    .await;
+
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A cancel stops the turn that consumed the request's input, nothing else:
+/// the turn ends, a client's own submit starts the replacing turn, and the
+/// stop decided for the old turn writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_cancel_stops_the_turn_it_named_not_the_one_that_replaced_it() {
+    let (store, _, _) = InputHoldStore::new();
+    let (server, agent, mut client, lead, lead_session, holder, gate) =
+        launch_held_team(store.clone()).await;
+    let (member, member_session) =
+        settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+
+    say(
+        &mut client,
+        &lead,
+        tool(
+            json!({"action": "request", "agentId": holder, "sessionId": member,
+            "prompt": "tool:hold {}"}),
+        ),
+        "queue",
+    )
+    .await;
+    let (input, _) = request_input(&member_session, "tool:hold").await;
+    let consumed = poll("the request's turn consumes its input", async || {
+        consumed_at(&member_session, &input).await.first().copied()
+    })
+    .await;
+
+    // The cancel's own check reads the member's facts; hold that read, so the
+    // turn can end and a client's submit start another before the stop is
+    // decided.
+    let (entered, release_read, _) = store.arm(HoldKind::ConsumedNow(member.clone()));
+    let cancelling = {
+        let lead = lead.clone();
+        let member = member.clone();
+        let mut other = Client::new_version(&server, false, 3).await;
+        tokio::spawn(async move {
+            other
+                .rpc(
+                    "session.collaboration.cancel",
+                    json!({"sessionId": lead, "branchId": "main", "memberSessionId": member}),
+                )
+                .await
+        })
+    };
+    entered.await.expect("the cancel checks the member's facts");
+
+    // The request's turn ends on its own, and a client's submit starts the
+    // replacing turn.
+    gate.add_permits(1);
+    let first_end = poll("the request's turn ends", async || {
+        events(&member_session)
+            .await
+            .iter()
+            .find(|event| event.sequence > consumed && matches!(&event.kind, EventKind::TurnEnd(_)))
+            .map(|event| event.sequence)
+    })
+    .await;
+    say(
+        &mut client,
+        &member,
+        "tool:echo {\"text\":\"after\"}".to_owned(),
+        "queue",
+    )
+    .await;
+    let second_start = poll("the replacing turn starts", async || {
+        events(&member_session)
+            .await
+            .iter()
+            .find(|event| {
+                event.sequence > first_end && matches!(&event.kind, EventKind::TurnStart(_))
+            })
+            .map(|event| event.sequence)
+    })
+    .await;
+    gate.add_permits(1);
+
+    release_read.release();
+    let cancelled = cancelling.await.expect("the cancel call");
+    assert_ok(&cancelled);
+    assert_eq!(cancelled["result"]["status"], "cancelled", "{cancelled}");
+
+    // The replacing turn runs to its own end, and no stop lands on it.
+    let second_end = poll("the replacing turn ends", async || {
+        events(&member_session)
+            .await
+            .iter()
+            .find(|event| {
+                event.sequence > second_start && matches!(&event.kind, EventKind::TurnEnd(_))
+            })
+            .map(|event| (event.sequence, event.kind.clone()))
+    })
+    .await;
+    assert!(
+        matches!(&second_end.1, EventKind::TurnEnd(data)
+            if matches!(data.outcome, dim_agent_types::TurnOutcome::Completed { .. })),
+        "the replacing turn ends on its own: {:?}",
+        second_end.1
+    );
+    let stops: Vec<u64> = events(&member_session)
+        .await
+        .iter()
+        .filter(|event| {
+            event.sequence > second_start && matches!(&event.kind, EventKind::StopInterrupt(_))
+        })
+        .map(|event| event.sequence)
+        .collect();
+    assert!(
+        stops.is_empty(),
+        "no stop lands on the replacing turn: {stops:?}"
+    );
+    let outcomes = result_of(&events(&lead_session).await, &member);
+    assert_eq!(
+        outcomes.last(),
+        Some(&CollaborationOutcome::Completed),
+        "{outcomes:?}"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// The same interleaving for the detached (S) wait: the wait names the turn
+/// that consumed the request's input, so a turn that ended first writes
+/// nothing on the replacing turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_detached_cancel_wait_stops_the_turn_it_named_not_the_one_that_replaced_it() {
+    let (store, _, _) = InputHoldStore::new();
+    let (server, agent, mut client, lead, lead_session, holder, gate) =
+        launch_held_team(store.clone()).await;
+    let (member, member_session) =
+        settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+
+    // Hold the applied append, so the cancel's own check runs before the
+    // input is consumed and takes the (S) path.
+    let (entered, release, _) = store.arm(HoldKind::Applied(member.clone()));
+    say(
+        &mut client,
+        &lead,
+        tool(
+            json!({"action": "request", "agentId": holder, "sessionId": member,
+            "prompt": "tool:hold {}"}),
+        ),
+        "queue",
+    )
+    .await;
+    entered
+        .await
+        .expect("the member applies the request's input");
+    // The wait's own read is the next window: it arms after the withdrawal.
+    let (entered_read, release_read, checked) = store.arm(HoldKind::Consumed(member.clone()));
+    let cancelling = {
+        let lead = lead.clone();
+        let member = member.clone();
+        let mut other = Client::new_version(&server, false, 3).await;
+        tokio::spawn(async move {
+            other
+                .rpc(
+                    "session.collaboration.cancel",
+                    json!({"sessionId": lead, "branchId": "main", "memberSessionId": member}),
+                )
+                .await
+        })
+    };
+    checked
+        .expect("the cancel checks the input")
+        .await
+        .expect("the cancel checks the input");
+    release.release();
+    entered_read
+        .await
+        .expect("the wait reads the member's consumed input");
+    let (input, _) = request_input(&member_session, "tool:hold").await;
+    let consumed = poll("the request's turn consumes its input", async || {
+        consumed_at(&member_session, &input).await.first().copied()
+    })
+    .await;
+
+    // The request's turn ends on its own, and a client's submit starts the
+    // replacing turn.
+    gate.add_permits(1);
+    let first_end = poll("the request's turn ends", async || {
+        events(&member_session)
+            .await
+            .iter()
+            .find(|event| event.sequence > consumed && matches!(&event.kind, EventKind::TurnEnd(_)))
+            .map(|event| (event.sequence, event.kind.clone()))
+    })
+    .await;
+    assert!(
+        matches!(&first_end.1, EventKind::TurnEnd(data)
+            if matches!(data.outcome, dim_agent_types::TurnOutcome::Completed { .. })),
+        "the request's turn ends on its own: {:?}",
+        first_end.1
+    );
+    say(
+        &mut client,
+        &member,
+        "tool:echo {\"text\":\"after\"}".to_owned(),
+        "queue",
+    )
+    .await;
+    let second_start = poll("the replacing turn starts", async || {
+        events(&member_session)
+            .await
+            .iter()
+            .find(|event| {
+                event.sequence > first_end.0 && matches!(&event.kind, EventKind::TurnStart(_))
+            })
+            .map(|event| event.sequence)
+    })
+    .await;
+    gate.add_permits(1);
+
+    release_read.release();
+    let cancelled = cancelling.await.expect("the cancel call");
+    assert_ok(&cancelled);
+    assert_eq!(cancelled["result"]["status"], "cancelled", "{cancelled}");
+
+    // The replacing turn runs to its own end, and no stop lands on it.
+    let second_end = poll("the replacing turn ends", async || {
+        events(&member_session)
+            .await
+            .iter()
+            .find(|event| {
+                event.sequence > second_start && matches!(&event.kind, EventKind::TurnEnd(_))
+            })
+            .map(|event| (event.sequence, event.kind.clone()))
+    })
+    .await;
+    assert!(
+        matches!(&second_end.1, EventKind::TurnEnd(data)
+            if matches!(data.outcome, dim_agent_types::TurnOutcome::Completed { .. })),
+        "the replacing turn ends on its own: {:?}",
+        second_end.1
+    );
+    let stops: Vec<u64> = events(&member_session)
+        .await
+        .iter()
+        .filter(|event| {
+            event.sequence > second_start && matches!(&event.kind, EventKind::StopInterrupt(_))
+        })
+        .map(|event| event.sequence)
+        .collect();
+    assert!(
+        stops.is_empty(),
+        "no stop lands on the replacing turn: {stops:?}"
+    );
+    let outcomes = result_of(&events(&lead_session).await, &member);
+    assert_eq!(
+        outcomes.last(),
+        Some(&CollaborationOutcome::Completed),
+        "{outcomes:?}"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Issue #1254: a leader's turn stop that lands while the request's input is
+/// still being appended writes no member stop itself; the delivery carries
+/// the stop out once the input exists, and the turn that consumed it ends
+/// with the leader's reason, which the one result names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_interrupt_during_the_request_input_append_stops_the_turn_it_starts() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let (store, _, _) = InputHoldStore::new();
+        let (server, agent, mut client, lead, lead_session, holder, _gate) =
+            launch_held_team(store.clone()).await;
+        let (member, member_session) =
+            settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+
+        let (entered, release, _) = store.arm(HoldKind::RequestInput);
+        say(
+            &mut client,
+            &lead,
+            tool(
+                json!({"action": "request", "agentId": holder, "sessionId": member,
+                "prompt": "tool:hold {}"}),
+            ),
+            "queue",
+        )
+        .await;
+        entered
+            .await
+            .expect("the request's input is being appended");
+        // The request is undelivered while its input append is held, so the
+        // leader's turn stop covers it and writes no member stop of its own.
+        assert_ok(
+            &client
+                .rpc(
+                    "session.stop",
+                    json!({"sessionId": lead, "branchId": "main"}),
+                )
+                .await,
+        );
+        assert!(
+            stop_reasons(&member_session).await.is_empty(),
+            "the leader's stop alone stops nothing"
+        );
+        release.release();
+
+        let (input, _) = request_input(&member_session, "tool:hold").await;
+        turn_cancelled(&member_session, "interrupted by leader").await;
+        assert_eq!(
+            stop_reasons(&member_session).await,
+            vec!["interrupted by leader".to_owned()],
+            "the delivery stops the member once"
+        );
+        let stop = events(&member_session)
+            .await
+            .iter()
+            .find(|event| matches!(&event.kind, EventKind::StopInterrupt(_)))
+            .expect("the stop is committed")
+            .sequence;
+        let consumed = consumed_at(&member_session, &input).await;
+        assert_eq!(
+            consumed.len(),
+            1,
+            "the request's turn consumed its input once: {consumed:?}"
+        );
+        assert!(
+            consumed[0] < stop,
+            "the input is consumed before the stop: {} < {stop}",
+            consumed[0]
+        );
+        let outcomes = result_of(&events(&lead_session).await, &member);
+        assert_eq!(
+            outcomes.last(),
+            Some(&CollaborationOutcome::Cancelled {
+                reason: "interrupted by leader".into()
+            })
+        );
+
+        server.shutdown();
+        server.join().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// Issue #1254: when the leader covers the request first and a client cancel
+/// arrives while the input is still being appended, the cancel answers
+/// `cancelled` and adds nothing. One carry-out writes the leader's stop, and
+/// the one result names the leader's reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_cancel_after_the_leader_covers_the_request_adds_no_second_stop() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let (store, _, _) = InputHoldStore::new();
+        let (server, agent, mut client, lead, lead_session, holder, _gate) =
+            launch_held_team(store.clone()).await;
+        let (member, member_session) =
+            settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+
+        let (entered, release, _) = store.arm(HoldKind::RequestInput);
+        say(
+            &mut client,
+            &lead,
+            tool(
+                json!({"action": "request", "agentId": holder, "sessionId": member,
+                "prompt": "tool:hold {}"}),
+            ),
+            "queue",
+        )
+        .await;
+        entered
+            .await
+            .expect("the request's input is being appended");
+        assert_ok(
+            &client
+                .rpc(
+                    "session.stop",
+                    json!({"sessionId": lead, "branchId": "main"}),
+                )
+                .await,
+        );
+        let cancelled = client
+            .rpc(
+                "session.collaboration.cancel",
+                json!({"sessionId": lead, "branchId": "main", "memberSessionId": member}),
+            )
+            .await;
+        assert_ok(&cancelled);
+        assert_eq!(cancelled["result"]["status"], "cancelled", "{cancelled}");
+        release.release();
+
+        turn_cancelled(&member_session, "interrupted by leader").await;
+        assert_eq!(
+            stop_reasons(&member_session).await,
+            vec!["interrupted by leader".to_owned()],
+            "the client's cancel adds no second stop"
+        );
+        let outcomes = result_of(&events(&lead_session).await, &member);
+        assert_eq!(
+            outcomes.last(),
+            Some(&CollaborationOutcome::Cancelled {
+                reason: "interrupted by leader".into()
+            })
+        );
+
+        server.shutdown();
+        server.join().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// Issue #1254: a client cancel that arrives while the leader's carry-out is
+/// already running answers `cancelled` and starts nothing of its own. The one
+/// stop and the one result keep the leader's reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_cancel_while_the_leaders_carry_out_runs_adds_no_second_stop() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let (store, _, _) = InputHoldStore::new();
+        let (server, agent, mut client, lead, lead_session, holder, _gate) =
+            launch_held_team(store.clone()).await;
+        let (member, member_session) =
+            settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+
+        let (entered, release, _) = store.arm(HoldKind::RequestInput);
+        say(
+            &mut client,
+            &lead,
+            tool(
+                json!({"action": "request", "agentId": holder, "sessionId": member,
+                "prompt": "tool:hold {}"}),
+            ),
+            "queue",
+        )
+        .await;
+        entered
+            .await
+            .expect("the request's input is being appended");
+        // The leader's turn stop covers the undelivered request; the delivery
+        // starts the carry-out once the input's id is published.
+        assert_ok(
+            &client
+                .rpc(
+                    "session.stop",
+                    json!({"sessionId": lead, "branchId": "main"}),
+                )
+                .await,
+        );
+        // Hold the carry-out's own check, so the cancel meets it running.
+        let (checked, release_check, _) = store.arm(HoldKind::ConsumedNow(member.clone()));
+        release.release();
+        checked
+            .await
+            .expect("the leader's carry-out checks the member's facts");
+        let (input, _) = request_input(&member_session, "tool:hold").await;
+        poll("the request's turn consumes its input", async || {
+            consumed_at(&member_session, &input).await.first().copied()
+        })
+        .await;
+
+        // The input is published and the leader's carry-out runs: the cancel
+        // records only the client's flag and answers.
+        let cancelled = client
+            .rpc(
+                "session.collaboration.cancel",
+                json!({"sessionId": lead, "branchId": "main", "memberSessionId": member}),
+            )
+            .await;
+        assert_ok(&cancelled);
+        assert_eq!(cancelled["result"]["status"], "cancelled", "{cancelled}");
+        release_check.release();
+
+        let turn = poll("the member's cancelled turn", async || {
+            events(&member_session)
+                .await
+                .iter()
+                .rev()
+                .find_map(|event| match &event.kind {
+                    EventKind::TurnEnd(data) => Some(data.outcome.clone()),
+                    _ => None,
+                })
+                .filter(|outcome| matches!(outcome, dim_agent_types::TurnOutcome::Cancelled { .. }))
+        })
+        .await;
+        assert!(
+            matches!(&turn, dim_agent_types::TurnOutcome::Cancelled { reason }
+                if reason == "interrupted by leader"),
+            "{turn:?}"
+        );
+        assert_eq!(
+            stop_reasons(&member_session).await,
+            vec!["interrupted by leader".to_owned()],
+            "the client's cancel adds no second stop"
+        );
+        let outcomes = result_of(&events(&lead_session).await, &member);
+        assert_eq!(
+            outcomes.last(),
+            Some(&CollaborationOutcome::Cancelled {
+                reason: "interrupted by leader".into()
+            })
+        );
+
+        server.shutdown();
+        server.join().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// Issue #1254: a leader branch close carries the stop out at the stage the
+/// request's input reached, off the branch's own teardown. With the input
+/// handed to Loop and not yet consumed, the close returns while the carry-out
+/// is parked on the member's facts; after the branch is gone, the carry-out
+/// lets the member consume the input and stops that turn with the leader's
+/// reason, and the close's result is `leader closed`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_branch_close_stops_the_turn_that_consumed_the_request_input() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let (store, _, _) = InputHoldStore::new();
+        let (server, agent, mut client, lead, lead_session, holder, _gate) =
+            launch_held_team(store.clone()).await;
+        let (member, member_session) =
+            settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+
+        let (entered, release, _) = store.arm(HoldKind::Applied(member.clone()));
+        say(
+            &mut client,
+            &lead,
+            tool(
+                json!({"action": "request", "agentId": holder, "sessionId": member,
+                "prompt": "tool:hold {}"}),
+            ),
+            "queue",
+        )
+        .await;
+        entered
+            .await
+            .expect("the member applies the request's input");
+        // The request's id is published once its delivery returns; the close
+        // then starts the carry-out from the interrupt.
+        poll("the request is delivered", async || {
+            (events(&lead_session)
+                .await
+                .iter()
+                .filter(|event| {
+                    matches!(&event.kind, EventKind::CollaborationDelivered(data)
+                        if matches!(&data.delivery, CollaborationDelivery::Ok { session_id, .. }
+                            if session_id == &member))
+                })
+                .count()
+                >= 2)
+                .then_some(())
+        })
+        .await;
+        // Hold the carry-out's own check of the member's facts: the close must
+        // return while the carry-out is parked there, because the carry-out
+        // rides Collaboration's tracker, not the branch's.
+        let (checked, release_check, _) = store.arm(HoldKind::ConsumedNow(member.clone()));
+        let closing = tokio::spawn(lead_session.close());
+        checked
+            .await
+            .expect("the carry-out checks the member's facts");
+        tokio::time::timeout(Duration::from_secs(5), closing)
+            .await
+            .expect("the branch close returns while the carry-out is parked")
+            .unwrap()
+            .unwrap();
+        assert!(
+            agent.get_session(&member).is_some(),
+            "the leader's close leaves the member open"
+        );
+
+        // The check saw the input applied and not consumed, so the carry-out
+        // waits for the turn that consumes it and stops that turn.
+        release_check.release();
+        release.release();
+        turn_cancelled(&member_session, "interrupted by leader").await;
+        assert_eq!(
+            stop_reasons(&member_session).await,
+            vec!["interrupted by leader".to_owned()],
+            "the daemon-level wait stops the turn once"
+        );
+        let outcomes = closed_results(&lead_session, &member).await;
+        assert_eq!(
+            outcomes.last(),
+            Some(&CollaborationOutcome::Cancelled {
+                reason: "leader closed".into()
+            })
+        );
+
+        server.shutdown();
+        server.join().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// Issue #1254: a request whose turn already ended writes nothing on a later
+/// leader stop, even while the member runs another turn: the carry-out names
+/// the ended turn, the turn-scoped stop answers `None`, and that other turn
+/// runs to its own end. The close's result is still `leader closed`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_stop_after_the_request_turn_ended_writes_nothing() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let (store, _, _) = InputHoldStore::new();
+        let (server, agent, mut client, lead, lead_session, holder, gate) =
+            launch_held_team(store.clone()).await;
+        let (member, member_session) =
+            settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+
+        say(
+            &mut client,
+            &lead,
+            tool(
+                json!({"action": "request", "agentId": holder, "sessionId": member,
+                "prompt": "tool:hold {}"}),
+            ),
+            "queue",
+        )
+        .await;
+        let (input, _) = request_input(&member_session, "tool:hold").await;
+        let consumed = poll("the request's turn consumes its input", async || {
+            consumed_at(&member_session, &input).await.first().copied()
+        })
+        .await;
+        // An unrelated turn keeps the member busy after the request's turn
+        // ends, so the delivery's settle waits and the request is still open
+        // when the leader closes.
+        say(&mut client, &member, "tool:hold {}".to_owned(), "queue").await;
+        gate.add_permits(1);
+        let end = poll("the request's turn ends", async || {
+            events(&member_session)
+                .await
+                .iter()
+                .find(|event| {
+                    event.sequence > consumed && matches!(&event.kind, EventKind::TurnEnd(_))
+                })
+                .map(|event| (event.sequence, event.kind.clone()))
+        })
+        .await;
+        assert!(
+            matches!(&end.1, EventKind::TurnEnd(data)
+                if matches!(data.outcome, dim_agent_types::TurnOutcome::Completed { .. })),
+            "the request's turn ends on its own: {:?}",
+            end.1
+        );
+        let unrelated = poll("the unrelated turn starts", async || {
+            events(&member_session)
+                .await
+                .iter()
+                .find(|event| {
+                    event.sequence > end.0 && matches!(&event.kind, EventKind::TurnStart(_))
+                })
+                .map(|event| event.sequence)
+        })
+        .await;
+
+        lead_session.close().await.unwrap();
+        assert!(
+            agent.get_session(&member).is_some(),
+            "the leader's close leaves the member open"
+        );
+        assert!(
+            stop_reasons(&member_session).await.is_empty(),
+            "the ended request turn writes no stop"
+        );
+        let outcomes = closed_results(&lead_session, &member).await;
+        assert_eq!(
+            outcomes.last(),
+            Some(&CollaborationOutcome::Cancelled {
+                reason: "leader closed".into()
+            })
+        );
+
+        // The unrelated turn runs to its own end, untouched.
+        gate.add_permits(1);
+        let later = poll("the unrelated turn ends", async || {
+            events(&member_session)
+                .await
+                .iter()
+                .find(|event| {
+                    event.sequence > unrelated && matches!(&event.kind, EventKind::TurnEnd(_))
+                })
+                .map(|event| event.kind.clone())
+        })
+        .await;
+        assert!(
+            matches!(&later, EventKind::TurnEnd(data)
+                if matches!(data.outcome, dim_agent_types::TurnOutcome::Completed { .. })),
+            "the unrelated turn ends on its own: {later:?}"
+        );
+        assert!(
+            stop_reasons(&member_session).await.is_empty(),
+            "no stop lands on the unrelated turn"
+        );
+
+        server.shutdown();
+        server.join().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// Issue #1254, order 2: a client cancel carried out first keeps its single
+/// carry-out when the leader covers the request later. The branch close
+/// records only the leader's reason and the forced settle; the client's wait
+/// survives the branch and writes the one stop, and the request has one
+/// result, `leader closed`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_branch_close_after_a_client_cancel_keeps_one_carry_out() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let (store, _, _) = InputHoldStore::new();
+        let (server, agent, mut client, lead, lead_session, holder, _gate) =
+            launch_held_team(store.clone()).await;
+        let (member, member_session) =
+            settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+
+        // Drive the client cancel into its (S) wait: the applied append is
+        // held, so the cancel's own check runs before the input is consumed
+        // and the wait parks on the next read of `input/consumed`.
+        let (entered, release, _) = store.arm(HoldKind::Applied(member.clone()));
+        say(
+            &mut client,
+            &lead,
+            tool(
+                json!({"action": "request", "agentId": holder, "sessionId": member,
+                "prompt": "tool:hold {}"}),
+            ),
+            "queue",
+        )
+        .await;
+        entered
+            .await
+            .expect("the member applies the request's input");
+        let (entered_read, release_read, checked) = store.arm(HoldKind::Consumed(member.clone()));
+        let cancelling = {
+            let lead = lead.clone();
+            let member = member.clone();
+            let mut other = Client::new_version(&server, false, 3).await;
+            tokio::spawn(async move {
+                other
+                    .rpc(
+                        "session.collaboration.cancel",
+                        json!({"sessionId": lead, "branchId": "main",
+                            "memberSessionId": member}),
+                    )
+                    .await
+            })
+        };
+        checked
+            .expect("the cancel checks the input")
+            .await
+            .expect("the cancel checks the input");
+        release.release();
+        entered_read
+            .await
+            .expect("the wait reads the member's consumed input");
+        let cancelled = cancelling.await.expect("the cancel call");
+        assert_ok(&cancelled);
+        assert_eq!(cancelled["result"]["status"], "cancelled", "{cancelled}");
+
+        lead_session.close().await.unwrap();
+        assert!(
+            agent.get_session(&member).is_some(),
+            "the leader's close leaves the member open"
+        );
+        release_read.release();
+
+        turn_cancelled(&member_session, "cancelled by the client").await;
+        assert_eq!(
+            stop_reasons(&member_session).await,
+            vec!["cancelled by the client".to_owned()],
+            "the client's single carry-out writes the one stop"
+        );
+        let outcomes = closed_results(&lead_session, &member).await;
+        assert_eq!(
+            outcomes.last(),
+            Some(&CollaborationOutcome::Cancelled {
+                reason: "leader closed".into()
+            })
+        );
+
+        server.shutdown();
+        server.join().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// Issue #1254: a branch close covers every request the branch holds, and
+/// every covered request gets its carry-out started: with two members whose
+/// inputs are both handed to Loop, both consuming turns end with the leader's
+/// reason and each request has one `leader closed` result.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_branch_close_starts_every_covered_carry_out() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let (store, _, _) = InputHoldStore::new();
+        let (server, agent, mut client, lead, lead_session, holder, _gate) =
+            launch_held_team(store.clone()).await;
+        let (first, first_session) =
+            settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+        say(
+            &mut client,
+            &lead,
+            tool(json!({"action": "request", "agentId": holder,
+                "prompt": "tool:echo {\"text\":\"ready\"}"})),
+            "queue",
+        )
+        .await;
+        let second = next_member(&lead_session, 1).await;
+        let second_session = agent.get_session(&second).unwrap();
+        let outcome = poll("the second member's first request", async || {
+            result_of(&events(&lead_session).await, &second)
+                .into_iter()
+                .next()
+        })
+        .await;
+        assert_eq!(outcome, CollaborationOutcome::Completed, "{outcome:?}");
+
+        // Both requests are delivered, and both members hold their applied
+        // input: the branch close meets two covered requests at the same
+        // stage.
+        let (entered, release_first, _) = store.arm(HoldKind::Applied(first.clone()));
+        say(
+            &mut client,
+            &lead,
+            tool(
+                json!({"action": "request", "agentId": holder, "sessionId": first,
+                "prompt": "tool:hold {}"}),
+            ),
+            "queue",
+        )
+        .await;
+        entered.await.expect("the first member applies its input");
+        let (entered, release_second, _) = store.arm(HoldKind::Applied(second.clone()));
+        say(
+            &mut client,
+            &lead,
+            tool(
+                json!({"action": "request", "agentId": holder, "sessionId": second,
+                "prompt": "tool:hold {}"}),
+            ),
+            "queue",
+        )
+        .await;
+        entered.await.expect("the second member applies its input");
+
+        let closing = tokio::spawn(lead_session.close());
+        release_first.release();
+        release_second.release();
+        closing.await.unwrap().unwrap();
+        assert!(
+            agent.get_session(&first).is_some() && agent.get_session(&second).is_some(),
+            "the leader's close leaves the members open"
+        );
+
+        for (member, session) in [(&first, &first_session), (&second, &second_session)] {
+            turn_cancelled(session, "interrupted by leader").await;
+            assert_eq!(
+                stop_reasons(session).await,
+                vec!["interrupted by leader".to_owned()],
+                "each covered request is stopped once: {}",
+                member
+            );
+            let outcomes = closed_results(&lead_session, member).await;
+            assert_eq!(
+                outcomes.last(),
+                Some(&CollaborationOutcome::Cancelled {
+                    reason: "leader closed".into()
+                })
+            );
+        }
+
+        server.shutdown();
+        server.join().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// Issue #1254: a client attached to the member can delete the request's
+/// input before the leader's carry-out withdraws it. No turn will consume a
+/// deleted input, so the carry-out ends with nothing to stop and the
+/// member's stopping mark goes with it: the request settles cancelled, no
+/// stop is written, and the next request to the same member is accepted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_withdraw_of_the_request_input_ends_the_carried_out_stop() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let (store, _, _) = InputHoldStore::new();
+        let (server, agent, mut client, lead, lead_session, holder, gate) =
+            launch_held_team(store.clone()).await;
+        let (member, member_session) =
+            settled_member(&mut client, &agent, &lead, &lead_session, &holder).await;
+        let deliveries = async |session: &Session| {
+            events(session)
+                .await
+                .iter()
+                .filter_map(|event| match &event.kind {
+                    EventKind::CollaborationDelivered(data) => Some(data.delivery.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<CollaborationDelivery>>()
+        };
+
+        // The member's own turn is held at its applied append: its queue
+        // stays in the `starting` window and its Loop phase stays `Idle`, so
+        // the request below is admitted, and its input waits behind that
+        // turn instead of being handed to Loop.
+        let (entered, release, _) = store.arm(HoldKind::Applied(member.clone()));
+        say(&mut client, &member, "tool:hold {}".to_owned(), "queue").await;
+        entered.await.expect("the member applies its own input");
+        say(
+            &mut client,
+            &lead,
+            tool(
+                json!({"action": "request", "agentId": holder, "sessionId": member,
+                "prompt": "tool:hold {}"}),
+            ),
+            "queue",
+        )
+        .await;
+        // The request is recorded before its input is written, so a cancel
+        // that answers `cancelled` proves the request was admitted while the
+        // member's phase was still `Idle`; one that answers `idle` wrote
+        // nothing.
+        poll("the request is admitted", async || {
+            let cancelled = client
+                .rpc(
+                    "session.collaboration.cancel",
+                    json!({"sessionId": lead, "branchId": "main", "memberSessionId": member}),
+                )
+                .await;
+            (cancelled["result"]["status"] == "cancelled").then_some(())
+        })
+        .await;
+
+        // Hold the carry-out's own check, so the member's client withdraws
+        // the request's input before the leader's withdrawal runs.
+        let (checked, release_check, _) = store.arm(HoldKind::ConsumedNow(member.clone()));
+        release.release();
+        checked
+            .await
+            .expect("the carry-out checks the member's facts");
+        let (input, _) = request_input(&member_session, "tool:hold").await;
+
+        // The member's own client deletes the input while InputQueue still
+        // holds it unapplied, so the withdrawal deletes rather than
+        // `notHeld`, and its reply follows the published `input/deleted`.
+        let withdrawn = client
+            .rpc(
+                "session.input.withdraw",
+                json!({"sessionId": member, "branchId": "main", "inputId": input,
+                    "reason": "the member took it back"}),
+            )
+            .await;
+        assert_ok(&withdrawn);
+        assert_eq!(withdrawn["result"]["status"], "deleted", "{withdrawn}");
+        release_check.release();
+
+        // The member's held turn ends on its own, and the request settles
+        // from the cancel with no stop written: the deleted input never got
+        // a turn.
+        gate.add_permits(1);
+        let outcomes = poll("the cancelled request settles", async || {
+            let outcomes = result_of(&events(&lead_session).await, &member);
+            (outcomes.len() >= 2).then_some(outcomes)
+        })
+        .await;
+        assert_eq!(
+            outcomes.last(),
+            Some(&CollaborationOutcome::Cancelled {
+                reason: "cancelled by the client".into()
+            }),
+            "{outcomes:?}"
+        );
+        assert!(
+            stop_reasons(&member_session).await.is_empty(),
+            "a deleted input writes no stop"
+        );
+
+        // The member takes new work: the mark did not outlive the carry-out.
+        let before = deliveries(&lead_session).await.len();
+        say(
+            &mut client,
+            &lead,
+            tool(
+                json!({"action": "request", "agentId": holder, "sessionId": member,
+                "prompt": "tool:echo {\"text\":\"after\"}"}),
+            ),
+            "queue",
+        )
+        .await;
+        let delivery = poll("the next request's delivery", async || {
+            deliveries(&lead_session).await.get(before).cloned()
+        })
+        .await;
+        assert!(
+            matches!(delivery, CollaborationDelivery::Ok { .. }),
+            "the member takes new work after the deleted input: {delivery:?}"
+        );
+        let outcomes = poll("the next request settles", async || {
+            let outcomes = result_of(&events(&lead_session).await, &member);
+            (outcomes.len() >= 3).then_some(outcomes)
+        })
+        .await;
+        assert_eq!(outcomes.last(), Some(&CollaborationOutcome::Completed));
+
+        server.shutdown();
+        server.join().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// The Team relation decides who may cancel: another leader's member and an
+/// unknown id are both `team_member_not_found`, and a member Session answers
+/// `invalid_params`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_cancel_refuses_another_teams_member_an_unknown_id_and_a_member() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut config = ServerConfig::default();
+    config
+        .session_defaults
+        .tools
+        .get_or_insert_default()
+        .push("hold".into());
+    let (server, agent) = launch_with_agent(Arc::new(GateTools(gate.clone())), config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let lead = leader(
+        &mut client,
+        json!({"allowedTools": ["echo", "wait", "agent", "hold"]}),
+    )
+    .await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    let holder = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "request", "agentId": holder, "prompt": "tool:hold {}"})),
+        "queue",
+    )
+    .await;
+    let member = next_member(&lead_session, 0).await;
+    let member_session = agent.get_session(&member).unwrap();
+    poll("the member's hold started", async || {
+        events(&member_session)
+            .await
+            .iter()
+            .any(|event| {
+                matches!(&event.kind,
+                EventKind::ToolCall(data) if data.calls[0].name == "hold")
+            })
+            .then_some(())
+    })
+    .await;
+
+    let other = leader(&mut client, allowed()).await;
+    let foreign = client
+        .rpc(
+            "session.collaboration.cancel",
+            json!({"sessionId": other, "memberSessionId": member}),
+        )
+        .await;
+    assert_eq!(
+        foreign["error"]["data"]["appError"], "team_member_not_found",
+        "{foreign}"
+    );
+
+    let unknown = client
+        .rpc(
+            "session.collaboration.cancel",
+            json!({"sessionId": lead, "memberSessionId": "no-such-member"}),
+        )
+        .await;
+    assert_eq!(
+        unknown["error"]["data"]["appError"], "team_member_not_found",
+        "{unknown}"
+    );
+
+    let by_member = client
+        .rpc(
+            "session.collaboration.cancel",
+            json!({"sessionId": member, "memberSessionId": member}),
+        )
+        .await;
+    assert_eq!(
+        by_member["error"]["data"]["appError"], "invalid_params",
+        "{by_member}"
+    );
+    assert_eq!(
+        by_member["error"]["message"], "members can only message, read and list",
+        "{by_member}"
+    );
+
+    gate.add_permits(1);
+    idle(&mut client, &member).await;
+    idle(&mut client, &lead).await;
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 /// Echoes like the mock host, except that a request whose last message asks
 /// for `partial-call` or `many-calls` starts that many `echo` calls and
 /// streams nothing more until it is cancelled, leaving calls that only
@@ -3450,6 +5755,11 @@ struct DispatchGate {
     contexts: std::sync::Mutex<
         std::collections::BTreeMap<String, (rutis::Ctx, Arc<dim_agent_runtime::Timeline>)>,
     >,
+    /// Each branch's Timeline, keyed by Session and branch id, so a flow can
+    /// write a fact of its own on a branch it did not open through the model.
+    branches: std::sync::Mutex<
+        std::collections::BTreeMap<(String, String), Arc<dim_agent_runtime::Timeline>>,
+    >,
 }
 impl DispatchGate {
     fn new(hold: Hold) -> Arc<Self> {
@@ -3458,6 +5768,7 @@ impl DispatchGate {
             hold,
             timeline: Default::default(),
             contexts: Default::default(),
+            branches: Default::default(),
         })
     }
 }
@@ -3503,6 +5814,10 @@ impl rutis::host::DynPlugin for DispatchGatePlugin {
                 .lock()
                 .unwrap()
                 .insert(session.clone(), (ctx.clone(), timeline.clone()));
+            gate.branches
+                .lock()
+                .unwrap()
+                .insert((session.clone(), timeline.branch_id()), timeline.clone());
             if gate.leader.get() == Some(&session) {
                 *gate.timeline.lock().unwrap() = Some(timeline.clone());
             }
@@ -3584,6 +5899,16 @@ impl rutis::host::DynPlugin for MemberHoldPlugin {
 
 async fn launch_gated_with(
     gate: Arc<DispatchGate>,
+    config: ServerConfig,
+    extra: impl FnOnce(&mut AgentBuilder),
+) -> (RunningServer, Agent) {
+    launch_gated_tools(gate, Arc::new(MockTools), config, extra).await
+}
+
+/// [`launch_gated_with`] with the deployment's tool driver.
+async fn launch_gated_tools(
+    gate: Arc<DispatchGate>,
+    tools: Arc<dyn ToolDriver>,
     mut config: ServerConfig,
     extra: impl FnOnce(&mut AgentBuilder),
 ) -> (RunningServer, Agent) {
@@ -3595,7 +5920,7 @@ async fn launch_gated_with(
     builder.timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()));
     defaults::install(&mut builder);
     defaults::mock_model_hosts(&mut builder);
-    dim_agent_capabilities::defaults::tool_host(&mut builder, Arc::new(MockTools));
+    dim_agent_capabilities::defaults::tool_host(&mut builder, tools);
     builder.require_feature(
         Feature::new("collaboration-test.dispatch-gate")
             .branch("collaboration-test.dispatch-gate", move |names| {

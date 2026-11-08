@@ -1190,8 +1190,7 @@ pub struct SessionInfo {
     /// The Session's creation origin; protocol v3 with a native store (#557).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<SessionOrigin>,
-    /// The leader Session a Collaboration member belongs to; absent when the
-    /// store records none (#557).
+    /// The stored parent Session; absent when the store records none (#557).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
     /// `title`, `titleSource` and `titleRevision` from SessionStore (S5b);

@@ -95,7 +95,7 @@ function mount(t, branchId, questions = [], component, stores = {}) {
     },
     connection: { supports: () => false },
     models: { available: false, load: async () => {} },
-    sessions: { byId: new Map() },
+    sessions: { byId: new Map(), summaries: [] },
     toast: { push() {} },
     ui: { shellMode: "wide", approvalKeyboard: () => false },
     ...stores,

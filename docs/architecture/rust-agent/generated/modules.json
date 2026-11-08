@@ -2107,6 +2107,16 @@
       ]
     },
     {
+      "id": "dim_app_server::collaboration::tests",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::collaboration",
+      "file": "crates/dim-app-server/src/collaboration.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq"
+      ]
+    },
+    {
       "id": "dim_app_server::collaboration_model_policy",
       "crate": "dim_app_server",
       "parent": "dim_app_server",
@@ -2831,7 +2841,8 @@
         "tokio::select",
         "tracing::warn",
         "unreachable",
-        "vec"
+        "vec",
+        "write"
       ]
     },
     {
@@ -3823,6 +3834,102 @@
         "json",
         "matches",
         "println"
+      ]
+    },
+    {
+      "id": "dim_cli::modality",
+      "crate": "dim_cli",
+      "parent": "dim_cli",
+      "file": "crates/dim-cli/src/modality/mod.rs",
+      "unexpandedMacros": [
+        "format",
+        "json",
+        "matches"
+      ]
+    },
+    {
+      "id": "dim_cli::modality::command",
+      "crate": "dim_cli",
+      "parent": "dim_cli::modality",
+      "file": "crates/dim-cli/src/modality/command.rs",
+      "unexpandedMacros": [
+        "format",
+        "json",
+        "write",
+        "writeln"
+      ]
+    },
+    {
+      "id": "dim_cli::modality::media",
+      "crate": "dim_cli",
+      "parent": "dim_cli::modality",
+      "file": "crates/dim-cli/src/modality/media.rs",
+      "unexpandedMacros": [
+        "format",
+        "json"
+      ]
+    },
+    {
+      "id": "dim_cli::modality::media::tests",
+      "crate": "dim_cli",
+      "parent": "dim_cli::modality::media",
+      "file": "crates/dim-cli/src/modality/media.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq"
+      ]
+    },
+    {
+      "id": "dim_cli::modality::ocr",
+      "crate": "dim_cli",
+      "parent": "dim_cli::modality",
+      "file": "crates/dim-cli/src/modality/ocr.rs",
+      "unexpandedMacros": [
+        "format",
+        "json",
+        "write",
+        "writeln"
+      ]
+    },
+    {
+      "id": "dim_cli::modality::task",
+      "crate": "dim_cli",
+      "parent": "dim_cli::modality",
+      "file": "crates/dim-cli/src/modality/task.rs",
+      "unexpandedMacros": [
+        "format",
+        "json",
+        "matches",
+        "tokio::select",
+        "writeln"
+      ]
+    },
+    {
+      "id": "dim_cli::modality::tests",
+      "crate": "dim_cli",
+      "parent": "dim_cli::modality",
+      "file": "crates/dim-cli/src/modality/tests.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "panic",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_cli::modality::tests_scripted",
+      "crate": "dim_cli",
+      "parent": "dim_cli::modality",
+      "file": "crates/dim-cli/src/modality/tests_scripted.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "format",
+        "json",
+        "matches",
+        "panic",
+        "vec",
+        "writeln"
       ]
     },
     {
@@ -6217,6 +6324,7 @@
       "file": "crates/dim-modality/src/lib.rs",
       "unexpandedMacros": [
         "format",
+        "tokio::select",
         "unreachable",
         "vec"
       ]
@@ -6238,8 +6346,19 @@
       "unexpandedMacros": [
         "format",
         "json",
+        "matches",
         "tokio::select",
-        "tracing::warn"
+        "tracing::warn",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_modality::engine::tests",
+      "crate": "dim_modality",
+      "parent": "dim_modality::engine",
+      "file": "crates/dim-modality/src/engine.rs",
+      "unexpandedMacros": [
+        "assert_eq"
       ]
     },
     {
@@ -6272,6 +6391,79 @@
       "unexpandedMacros": [
         "assert",
         "assert_eq"
+      ]
+    },
+    {
+      "id": "dim_ocr",
+      "crate": "dim_ocr",
+      "parent": null,
+      "file": "crates/dim-ocr/src/lib.rs",
+      "unexpandedMacros": []
+    },
+    {
+      "id": "dim_ocr::args",
+      "crate": "dim_ocr",
+      "parent": "dim_ocr",
+      "file": "crates/dim-ocr/src/args.rs",
+      "unexpandedMacros": [
+        "format"
+      ]
+    },
+    {
+      "id": "dim_ocr::contract",
+      "crate": "dim_ocr",
+      "parent": "dim_ocr",
+      "file": "crates/dim-ocr/src/contract.rs",
+      "unexpandedMacros": [
+        "format",
+        "write"
+      ]
+    },
+    {
+      "id": "dim_ocr::helper",
+      "crate": "dim_ocr",
+      "parent": "dim_ocr",
+      "file": "crates/dim-ocr/src/helper.rs",
+      "unexpandedMacros": [
+        "format",
+        "writeln"
+      ]
+    },
+    {
+      "id": "dim_ocr::pdf",
+      "crate": "dim_ocr",
+      "parent": "dim_ocr",
+      "file": "crates/dim-ocr/src/pdf.rs",
+      "unexpandedMacros": [
+        "format"
+      ]
+    },
+    {
+      "id": "dim_ocr::platform",
+      "crate": "dim_ocr",
+      "parent": "dim_ocr",
+      "file": "crates/dim-ocr/src/platform.rs",
+      "unexpandedMacros": [
+        "cfg",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_ocr::plugin",
+      "crate": "dim_ocr",
+      "parent": "dim_ocr",
+      "file": "crates/dim-ocr/src/plugin.rs",
+      "unexpandedMacros": []
+    },
+    {
+      "id": "dim_ocr::vision",
+      "crate": "dim_ocr",
+      "parent": "dim_ocr",
+      "file": "crates/dim-ocr/src/vision.rs",
+      "unexpandedMacros": [
+        "format",
+        "matches",
+        "msg_send"
       ]
     },
     {
@@ -8534,11 +8726,13 @@
         "path InputConsumedData",
         "path InputMode",
         "path InputMode::Append",
+        "path InterruptScope::Turn",
         "path ModelOutputEndData",
         "path ModelOutputOutcome::Cancelled",
         "path ModelOutputOutcome::Completed",
         "path ModelOutputOutcome::Failed",
         "path ModelStartData",
+        "path StopInterruptData",
         "path ToolCallData",
         "path ToolCallResult",
         "path ToolResultData",
@@ -10922,7 +11116,8 @@
         "use confined::ConfinedOutput",
         "use confined::ConfinedSpec",
         "use confined::ConfinedStream",
-        "use confined::Confinement"
+        "use confined::Confinement",
+        "use confined::SystemServices"
       ]
     },
     {
@@ -11084,6 +11279,16 @@
         "use super::ProcessSpec",
         "use super::ProcessSpecError",
         "use super::TemporaryDirectory"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::host_platform::isolation",
+      "to": "dim_agent_capabilities::host_platform::confined",
+      "references": [
+        "path SystemServices",
+        "path SystemServices::None",
+        "path SystemServices::OnDeviceRecognition",
+        "use super::SystemServices"
       ]
     },
     {
@@ -20464,6 +20669,13 @@
     },
     {
       "from": "dim_app_server::collaboration",
+      "to": "dim_agent_capabilities::agent_loop",
+      "references": [
+        "path dim_agent_capabilities::agent_loop::AgentLoop"
+      ]
+    },
+    {
+      "from": "dim_app_server::collaboration",
       "to": "dim_agent_capabilities::context_block",
       "references": [
         "path context_block::element",
@@ -20491,14 +20703,21 @@
       "from": "dim_app_server::collaboration",
       "to": "dim_agent_capabilities::input_queue",
       "references": [
-        "path dim_agent_capabilities::input_queue::InputQueue"
+        "path dim_agent_capabilities::input_queue::InputQueue",
+        "path dim_agent_capabilities::input_queue::Withdrawal::Deleted",
+        "path dim_agent_capabilities::input_queue::Withdrawal::NotHeld"
       ]
     },
     {
       "from": "dim_app_server::collaboration",
       "to": "dim_agent_capabilities::methods",
       "references": [
-        "path dim_agent_capabilities::methods::SessionMethods"
+        "path RpcError",
+        "path RpcError::from",
+        "path RpcError::invalid",
+        "path RpcError::service",
+        "path dim_agent_capabilities::methods::SessionMethods",
+        "use dim_agent_capabilities::methods::RpcError"
       ]
     },
     {
@@ -20707,6 +20926,7 @@
         "path EventKind::CollaborationRequest",
         "path EventKind::CollaborationResult",
         "path EventKind::InputApplied",
+        "path EventKind::InputConsumed",
         "path EventKind::InputDeleted",
         "path EventKind::InputMessage",
         "path EventKind::ModelStart",
@@ -20821,6 +21041,13 @@
     },
     {
       "from": "dim_app_server::collaboration",
+      "to": "dim_app_server::collaboration::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_app_server::collaboration",
       "to": "dim_app_server::collaboration_model_policy",
       "references": [
         "path ModelPolicy",
@@ -20890,6 +21117,7 @@
         "path MethodCall",
         "path RpcError",
         "path RpcError::invalid",
+        "path RpcError::unknown_method",
         "path SessionMethods",
         "path params",
         "path reply",
@@ -21008,6 +21236,31 @@
       "references": [
         "path CollaborationSession",
         "path success"
+      ]
+    },
+    {
+      "from": "dim_app_server::collaboration::tests",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path AgentError::Closed",
+        "path AgentError::Storage"
+      ]
+    },
+    {
+      "from": "dim_app_server::collaboration::tests",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path CollaborationOutcome::Cancelled"
+      ]
+    },
+    {
+      "from": "dim_app_server::collaboration::tests",
+      "to": "dim_app_server::collaboration",
+      "references": [
+        "path CANCELLED_BY_CLIENT",
+        "path INTERRUPTED",
+        "path NOT_STARTED",
+        "path cancel_rpc"
       ]
     },
     {
@@ -28851,6 +29104,7 @@
         "path Action::McpLogin",
         "path Action::McpLogout",
         "path Action::Migration",
+        "path Action::Modality",
         "path Action::Models",
         "path Action::Plugin",
         "path Action::Realtime",
@@ -29065,6 +29319,21 @@
       "references": [
         "mod migration_command",
         "path migration_command::run"
+      ]
+    },
+    {
+      "from": "dim_cli",
+      "to": "dim_cli::modality",
+      "references": [
+        "mod modality",
+        "path modality::run"
+      ]
+    },
+    {
+      "from": "dim_cli",
+      "to": "dim_cli::modality::task",
+      "references": [
+        "path modality::task::Output"
       ]
     },
     {
@@ -29348,6 +29617,24 @@
       "references": [
         "path crate::migration_command::Command",
         "path crate::migration_command::parse"
+      ]
+    },
+    {
+      "from": "dim_cli::args",
+      "to": "dim_cli::modality",
+      "references": [
+        "path crate::modality::Command",
+        "path crate::modality::Command::Ocr",
+        "path crate::modality::Command::SetDefault",
+        "path crate::modality::Command::Submit",
+        "path crate::modality::Command::TaskList"
+      ]
+    },
+    {
+      "from": "dim_cli::args",
+      "to": "dim_cli::modality::media",
+      "references": [
+        "path crate::modality::media::parse"
       ]
     },
     {
@@ -31379,6 +31666,460 @@
       "references": [
         "path dim_migration::terminal::Terminal",
         "path dim_migration::terminal::Terminal::new"
+      ]
+    },
+    {
+      "from": "dim_cli::modality",
+      "to": "dim_cli",
+      "references": [
+        "path Result",
+        "path crate::Error",
+        "use crate::Result"
+      ]
+    },
+    {
+      "from": "dim_cli::modality",
+      "to": "dim_cli::args",
+      "references": [
+        "path Options",
+        "use crate::args::Options"
+      ]
+    },
+    {
+      "from": "dim_cli::modality",
+      "to": "dim_cli::modality::command",
+      "references": [
+        "mod command",
+        "path command",
+        "path command::run"
+      ]
+    },
+    {
+      "from": "dim_cli::modality",
+      "to": "dim_cli::modality::media",
+      "references": [
+        "mod media",
+        "path media::Submit"
+      ]
+    },
+    {
+      "from": "dim_cli::modality",
+      "to": "dim_cli::modality::ocr",
+      "references": [
+        "mod ocr"
+      ]
+    },
+    {
+      "from": "dim_cli::modality",
+      "to": "dim_cli::modality::task",
+      "references": [
+        "mod task",
+        "path task::Output"
+      ]
+    },
+    {
+      "from": "dim_cli::modality",
+      "to": "dim_cli::modality::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::modality",
+      "to": "dim_cli::modality::tests_scripted",
+      "references": [
+        "mod tests_scripted"
+      ]
+    },
+    {
+      "from": "dim_cli::modality",
+      "to": "dim_cli::sanitize",
+      "references": [
+        "path safe_line",
+        "use crate::sanitize::safe_line"
+      ]
+    },
+    {
+      "from": "dim_cli::modality",
+      "to": "dim_client",
+      "references": [
+        "path Client",
+        "path RpcError",
+        "use crate::client::Client",
+        "use crate::client::RpcError",
+        "use crate::client::app_error"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::command",
+      "to": "dim_cli",
+      "references": [
+        "path Result",
+        "use crate::Result"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::command",
+      "to": "dim_cli::args",
+      "references": [
+        "path Options",
+        "use crate::args::Options"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::command",
+      "to": "dim_cli::modality",
+      "references": [
+        "path Command",
+        "path Command::List",
+        "path Command::Ocr",
+        "path Command::SetDefault",
+        "path Command::Submit",
+        "path Command::TaskCancel",
+        "path Command::TaskList",
+        "path Command::TaskStatus",
+        "path Command::TaskWait",
+        "path Modality",
+        "path Modality::open",
+        "path model_reference",
+        "path operation_key",
+        "path refusal",
+        "path row_of",
+        "use super::Command",
+        "use super::Modality",
+        "use super::model_reference",
+        "use super::operation_key",
+        "use super::refusal",
+        "use super::row_of",
+        "use super::table"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::command",
+      "to": "dim_cli::modality::media",
+      "references": [
+        "path media::run",
+        "use super::media"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::command",
+      "to": "dim_cli::modality::ocr",
+      "references": [
+        "path ocr::run",
+        "use super::ocr"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::command",
+      "to": "dim_cli::modality::task",
+      "references": [
+        "path Output",
+        "path task",
+        "path task::finish",
+        "path task::progress_text",
+        "path task::wait",
+        "use super::task",
+        "use super::task::Output"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::command",
+      "to": "dim_cli::sanitize",
+      "references": [
+        "path safe_line",
+        "use crate::sanitize::safe_line"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::command",
+      "to": "dim_client",
+      "references": [
+        "path Client",
+        "path app_error",
+        "use crate::client::Client",
+        "use crate::client::app_error"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::media",
+      "to": "dim_cli",
+      "references": [
+        "path Result",
+        "use crate::Result"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::media",
+      "to": "dim_cli::args",
+      "references": [
+        "path ModalityFlags",
+        "path Options",
+        "use crate::args::ModalityFlags",
+        "use crate::args::Options"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::media",
+      "to": "dim_cli::modality",
+      "references": [
+        "path Modality::open",
+        "use super::Modality"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::media",
+      "to": "dim_cli::modality::media::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::media",
+      "to": "dim_cli::modality::task",
+      "references": [
+        "path task::Output",
+        "path task::submit",
+        "use super::task"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::media",
+      "to": "dim_client",
+      "references": [
+        "path Client",
+        "use crate::client::Client"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::media::tests",
+      "to": "dim_cli",
+      "references": [
+        "path Result"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::media::tests",
+      "to": "dim_cli::args",
+      "references": [
+        "path ModalityFlags::default"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::media::tests",
+      "to": "dim_cli::modality::media",
+      "references": [
+        "path Submit",
+        "path parse"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::ocr",
+      "to": "dim_cli",
+      "references": [
+        "path Result",
+        "use crate::Result"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::ocr",
+      "to": "dim_cli::args",
+      "references": [
+        "path Options",
+        "use crate::args::Options"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::ocr",
+      "to": "dim_cli::modality",
+      "references": [
+        "path Modality",
+        "path Modality::open",
+        "use super::Modality"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::ocr",
+      "to": "dim_cli::modality::media",
+      "references": [
+        "path file_name",
+        "use super::media::MAX_INLINE_BYTES",
+        "use super::media::file_name",
+        "use super::media::input"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::ocr",
+      "to": "dim_cli::modality::task",
+      "references": [
+        "path Output",
+        "path task",
+        "path task::Read::Bytes",
+        "path task::Read::Stopped",
+        "path task::Written::Files",
+        "path task::Written::Stopped",
+        "path task::finish",
+        "path task::read_result",
+        "path task::stopped_transfer",
+        "path task::wait",
+        "path task::write_results",
+        "use super::task",
+        "use super::task::Output"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::ocr",
+      "to": "dim_cli::sanitize",
+      "references": [
+        "path safe",
+        "use crate::sanitize::safe",
+        "use crate::sanitize::safe_line"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::ocr",
+      "to": "dim_client",
+      "references": [
+        "path Client",
+        "use crate::client::Client"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::task",
+      "to": "dim_cli",
+      "references": [
+        "path Result",
+        "path crate::Error",
+        "use crate::Result"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::task",
+      "to": "dim_cli::args",
+      "references": [
+        "path ModalityFlags",
+        "use crate::args::ModalityFlags"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::task",
+      "to": "dim_cli::modality",
+      "references": [
+        "path Modality",
+        "path refusal",
+        "use super::Modality",
+        "use super::refusal"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::task",
+      "to": "dim_cli::sanitize",
+      "references": [
+        "path safe",
+        "path safe_line",
+        "use crate::sanitize::safe",
+        "use crate::sanitize::safe_line"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::task",
+      "to": "dim_client",
+      "references": [
+        "path Message::Notice",
+        "path Message::Response",
+        "use dim_client::Message"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::tests",
+      "to": "dim_cli::args",
+      "references": [
+        "path Action::Modality",
+        "path Options",
+        "path Options::parse",
+        "use crate::args::Action",
+        "use crate::args::Options"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::tests",
+      "to": "dim_cli::modality",
+      "references": [
+        "path Command::Ocr",
+        "path Command::SetDefault",
+        "path Command::TaskCancel",
+        "path Command::TaskStatus",
+        "path Command::TaskWait",
+        "use super::Command"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::tests",
+      "to": "dim_cli::modality::ocr",
+      "references": [
+        "use super::ocr"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::tests",
+      "to": "dim_cli::modality::task",
+      "references": [
+        "path task::check_targets",
+        "path task::copy_in_place",
+        "use super::task"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::tests_scripted",
+      "to": "dim_cli",
+      "references": [
+        "path crate::Result"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::tests_scripted",
+      "to": "dim_cli::args",
+      "references": [
+        "path Action::Modality",
+        "path Options",
+        "use crate::args::Action",
+        "use crate::args::Options"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::tests_scripted",
+      "to": "dim_cli::modality",
+      "references": [
+        "path run",
+        "use super::run"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::tests_scripted",
+      "to": "dim_cli::modality::task",
+      "references": [
+        "path super::task::Output"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::tests_scripted",
+      "to": "dim_cli::modality::tests",
+      "references": [
+        "path parse",
+        "use super::tests::parse"
+      ]
+    },
+    {
+      "from": "dim_cli::modality::tests_scripted",
+      "to": "dim_client",
+      "references": [
+        "path Client",
+        "path Client::connect",
+        "path ConnectionConfig",
+        "path Server",
+        "use crate::client::Client",
+        "use dim_client::ConnectionConfig",
+        "use dim_client::Server"
       ]
     },
     {
@@ -42744,13 +43485,6 @@
     },
     {
       "from": "dim_migration::native",
-      "to": "dim_app_server::protocol",
-      "references": [
-        "use dim_app_server::protocol::SessionOrigin"
-      ]
-    },
-    {
-      "from": "dim_migration::native",
       "to": "dim_app_server::storage::catalog",
       "references": [
         "path dim_app_server::storage::initialize_session_catalog"
@@ -43239,6 +43973,17 @@
     },
     {
       "from": "dim_migration::source",
+      "to": "dim_app_server::protocol",
+      "references": [
+        "path SessionOrigin",
+        "path SessionOrigin::Acp",
+        "path SessionOrigin::Internal",
+        "path SessionOrigin::Unknown",
+        "use dim_app_server::protocol::SessionOrigin"
+      ]
+    },
+    {
+      "from": "dim_migration::source",
       "to": "dim_migration",
       "references": [
         "path Error",
@@ -43292,6 +44037,13 @@
         "use dim_agent_capabilities::host::HostErrorKind",
         "use dim_agent_capabilities::host::ModelSelectionHost",
         "use dim_agent_capabilities::host::SelectableModelsHost"
+      ]
+    },
+    {
+      "from": "dim_modality",
+      "to": "dim_agent_capabilities::host_platform",
+      "references": [
+        "path dim_agent_capabilities::host_platform::HostPlatform"
       ]
     },
     {
@@ -43434,9 +44186,11 @@
       "to": "dim_modality::engine",
       "references": [
         "mod engine",
+        "path ArtifactHook",
         "path Clock",
         "path ModalityTasks",
         "path ModalityTasks::new",
+        "path NoArtifactHook",
         "path SystemClock",
         "path TaskCancel",
         "path TaskList",
@@ -43447,6 +44201,7 @@
         "path engine::Shared::new",
         "path not_found",
         "path unavailable",
+        "use engine::ArtifactHook",
         "use engine::Clock",
         "use engine::DEFAULT_LIST_LIMIT",
         "use engine::MAX_INLINE_BYTES",
@@ -43456,6 +44211,7 @@
         "use engine::MAX_SUBMISSION_BYTES",
         "use engine::MAX_WAIT_MS",
         "use engine::ModalityTasks",
+        "use engine::NoArtifactHook",
         "use engine::PROGRESS_INTERVAL",
         "use engine::SystemClock",
         "use engine::TaskCancel",
@@ -43501,6 +44257,26 @@
       ]
     },
     {
+      "from": "dim_modality",
+      "to": "dim_ocr::platform",
+      "references": [
+        "path dim_ocr::APPLE_VISION_MODEL",
+        "path dim_ocr::APPLE_VISION_PROVIDER",
+        "path dim_ocr::apple_vision_available"
+      ]
+    },
+    {
+      "from": "dim_modality",
+      "to": "dim_ocr::plugin",
+      "references": [
+        "path dim_ocr::HELPER_CONTRACT",
+        "path dim_ocr::HelperDescription",
+        "path dim_ocr::HelperVersion",
+        "path dim_ocr::PLUGIN_MODEL",
+        "path dim_ocr::PLUGIN_PROVIDER"
+      ]
+    },
+    {
       "from": "dim_modality::adapter",
       "to": "dim_agent_capabilities::host",
       "references": [
@@ -43521,7 +44297,9 @@
       "to": "dim_agent_capabilities::file_storage",
       "references": [
         "path EntryKind::Directory",
-        "use dim_agent_capabilities::file_storage::EntryKind"
+        "path FileReader",
+        "use dim_agent_capabilities::file_storage::EntryKind",
+        "use dim_agent_capabilities::file_storage::FileReader"
       ]
     },
     {
@@ -43538,6 +44316,33 @@
         "use dim_agent_capabilities::host::ModalityTarget",
         "use dim_agent_capabilities::host::ModelSelectionHost",
         "use dim_agent_capabilities::host::SelectableModelsHost"
+      ]
+    },
+    {
+      "from": "dim_modality::engine",
+      "to": "dim_agent_capabilities::host_platform",
+      "references": [
+        "path HostPlatform",
+        "use dim_agent_capabilities::host_platform::HostPlatform"
+      ]
+    },
+    {
+      "from": "dim_modality::engine",
+      "to": "dim_agent_capabilities::host_platform::confined",
+      "references": [
+        "path ConfinedError",
+        "path ConfinedError::Cancelled",
+        "path ConfinedError::InvalidPath",
+        "path ConfinedOutput",
+        "path ConfinedSpec",
+        "path Confinement",
+        "path SystemServices::None",
+        "path SystemServices::OnDeviceRecognition",
+        "use dim_agent_capabilities::host_platform::ConfinedError",
+        "use dim_agent_capabilities::host_platform::ConfinedOutput",
+        "use dim_agent_capabilities::host_platform::ConfinedSpec",
+        "use dim_agent_capabilities::host_platform::Confinement",
+        "use dim_agent_capabilities::host_platform::SystemServices"
       ]
     },
     {
@@ -43582,14 +44387,24 @@
         "path Evaluation",
         "path ModalityAdapterService",
         "path catalog_category",
+        "path crate::OcrLookup::Read",
+        "path crate::OcrLookup::Skip",
         "path crate::OperationRow",
+        "path crate::PluginTargetState::Absent",
+        "path crate::PluginTargetState::Outdated",
+        "path crate::PluginTargetState::Ready",
+        "path crate::Reason",
         "path crate::evaluate",
+        "path crate::host_target_for",
         "path crate::is_realtime",
+        "path crate::plugin_target_state",
         "path crate::unknown_operation",
+        "path host_target",
         "path is_understand",
         "use crate::Evaluation",
         "use crate::ModalityAdapterService",
         "use crate::catalog_category",
+        "use crate::host_target",
         "use crate::is_understand"
       ]
     },
@@ -43611,6 +44426,13 @@
         "use crate::adapter::JobFile",
         "use crate::adapter::ProgressSink",
         "use crate::adapter::RemoteCancel"
+      ]
+    },
+    {
+      "from": "dim_modality::engine",
+      "to": "dim_modality::engine::tests",
+      "references": [
+        "mod tests"
       ]
     },
     {
@@ -43639,6 +44461,8 @@
         "path Write::Written",
         "path task",
         "path task::FORMAT_VERSION",
+        "path task::HostTarget",
+        "path task::OCR_CACHE_DIR",
         "path task::TASKS_DIR",
         "path task::create",
         "path task::hex",
@@ -43665,6 +44489,60 @@
         "use crate::task::TaskResult",
         "use crate::task::TaskState",
         "use crate::task::Write"
+      ]
+    },
+    {
+      "from": "dim_modality::engine",
+      "to": "dim_ocr::contract",
+      "references": [
+        "path dim_ocr::HelperErrorCode",
+        "path dim_ocr::HelperErrorCode::EncryptedPdf",
+        "path dim_ocr::HelperErrorCode::InvalidInput",
+        "path dim_ocr::HelperErrorCode::LocalRuntimeFailed",
+        "path dim_ocr::HelperErrorCode::LocalRuntimeUnavailable",
+        "path dim_ocr::HelperErrorCode::ResourceLimitExceeded",
+        "path dim_ocr::MAX_ARTIFACT_BYTES",
+        "path dim_ocr::OutputMode",
+        "path dim_ocr::PAGE_IMAGE_PREFIX",
+        "path dim_ocr::RESULT_FILE",
+        "path dim_ocr::TEXT_FILE",
+        "path dim_ocr::read_pages"
+      ]
+    },
+    {
+      "from": "dim_modality::engine",
+      "to": "dim_ocr::platform",
+      "references": [
+        "path dim_ocr::APPLE_VISION_MODEL",
+        "path dim_ocr::APPLE_VISION_PROVIDER",
+        "path dim_ocr::apple_vision_available"
+      ]
+    },
+    {
+      "from": "dim_modality::engine",
+      "to": "dim_ocr::plugin",
+      "references": [
+        "path dim_ocr::HelperDescription",
+        "path dim_ocr::PLUGIN_MODEL",
+        "path dim_ocr::PLUGIN_PROVIDER"
+      ]
+    },
+    {
+      "from": "dim_modality::engine::tests",
+      "to": "dim_agent_capabilities::host_platform::confined",
+      "references": [
+        "path ConfinedError::InvalidPath",
+        "path ConfinedError::OutputLimit",
+        "path ConfinedStream::Stdout",
+        "use dim_agent_capabilities::host_platform::ConfinedError",
+        "use dim_agent_capabilities::host_platform::ConfinedStream"
+      ]
+    },
+    {
+      "from": "dim_modality::engine::tests",
+      "to": "dim_modality::engine",
+      "references": [
+        "use super::confinement_code"
       ]
     },
     {
@@ -43705,6 +44583,7 @@
       "references": [
         "path ModalityAdapterService",
         "path catalog_category",
+        "path crate::OcrLookup::Skip",
         "path crate::OperationRow",
         "path crate::host_error",
         "path evaluate",
@@ -43795,6 +44674,195 @@
         "path TaskState::Failed",
         "path TaskState::Interrupted",
         "path TaskState::Succeeded"
+      ]
+    },
+    {
+      "from": "dim_ocr",
+      "to": "dim_ocr::args",
+      "references": [
+        "mod args",
+        "use args::HelperArguments"
+      ]
+    },
+    {
+      "from": "dim_ocr",
+      "to": "dim_ocr::contract",
+      "references": [
+        "mod contract",
+        "use contract::Document",
+        "use contract::DocumentText",
+        "use contract::HelperError",
+        "use contract::HelperErrorCode",
+        "use contract::MAX_ARTIFACT_BYTES",
+        "use contract::MAX_INPUT_BYTES",
+        "use contract::MAX_PAGE_PIXELS",
+        "use contract::MAX_PDF_PAGES",
+        "use contract::OutputMode",
+        "use contract::PAGE_IMAGE_PREFIX",
+        "use contract::Page",
+        "use contract::PageText",
+        "use contract::RESULT_FILE",
+        "use contract::Region",
+        "use contract::TEXT_FILE",
+        "use contract::page_image_name",
+        "use contract::read_pages"
+      ]
+    },
+    {
+      "from": "dim_ocr",
+      "to": "dim_ocr::helper",
+      "references": [
+        "mod helper",
+        "use helper::helper_main",
+        "use helper::helper_main_with_budget"
+      ]
+    },
+    {
+      "from": "dim_ocr",
+      "to": "dim_ocr::pdf",
+      "references": [
+        "mod pdf"
+      ]
+    },
+    {
+      "from": "dim_ocr",
+      "to": "dim_ocr::platform",
+      "references": [
+        "mod platform",
+        "use platform::APPLE_VISION_MODEL",
+        "use platform::APPLE_VISION_PROVIDER",
+        "use platform::apple_vision_available",
+        "use platform::macos_version"
+      ]
+    },
+    {
+      "from": "dim_ocr",
+      "to": "dim_ocr::plugin",
+      "references": [
+        "mod plugin",
+        "use plugin::DescriptionTarget",
+        "use plugin::HELPER_CONTRACT",
+        "use plugin::HelperDescription",
+        "use plugin::HelperVersion",
+        "use plugin::PLUGIN_MODEL",
+        "use plugin::PLUGIN_PROVIDER"
+      ]
+    },
+    {
+      "from": "dim_ocr",
+      "to": "dim_ocr::vision",
+      "references": [
+        "mod vision"
+      ]
+    },
+    {
+      "from": "dim_ocr::args",
+      "to": "dim_ocr::contract",
+      "references": [
+        "path HelperError",
+        "path HelperError::invalid_input",
+        "path OutputMode",
+        "path OutputMode::default",
+        "path OutputMode::parse",
+        "use crate::contract::HelperError",
+        "use crate::contract::OutputMode"
+      ]
+    },
+    {
+      "from": "dim_ocr::helper",
+      "to": "dim_ocr::args",
+      "references": [
+        "path HelperArguments",
+        "path HelperArguments::parse",
+        "use crate::args::HelperArguments"
+      ]
+    },
+    {
+      "from": "dim_ocr::helper",
+      "to": "dim_ocr::contract",
+      "references": [
+        "path Document",
+        "path HelperError",
+        "path HelperError::failed",
+        "path HelperError::invalid_input",
+        "path HelperError::limit",
+        "path HelperError::unavailable",
+        "path HelperErrorCode",
+        "path MAX_ARTIFACT_BYTES",
+        "path MAX_INPUT_BYTES",
+        "path OutputMode::Layout",
+        "path OutputMode::Text",
+        "path RESULT_FILE",
+        "path TEXT_FILE",
+        "path crate::contract::Page",
+        "path crate::contract::Region",
+        "path page_image_name",
+        "use crate::contract::Document",
+        "use crate::contract::HelperError",
+        "use crate::contract::HelperErrorCode",
+        "use crate::contract::MAX_ARTIFACT_BYTES",
+        "use crate::contract::MAX_INPUT_BYTES",
+        "use crate::contract::OutputMode",
+        "use crate::contract::RESULT_FILE",
+        "use crate::contract::TEXT_FILE",
+        "use crate::contract::page_image_name"
+      ]
+    },
+    {
+      "from": "dim_ocr::helper",
+      "to": "dim_ocr::pdf",
+      "references": [
+        "path crate::pdf::PdfDocument",
+        "path crate::pdf::PdfDocument::open"
+      ]
+    },
+    {
+      "from": "dim_ocr::helper",
+      "to": "dim_ocr::vision",
+      "references": [
+        "path crate::vision::image_source",
+        "path crate::vision::recognize_image",
+        "path crate::vision::recognize_url",
+        "path crate::vision::write_png"
+      ]
+    },
+    {
+      "from": "dim_ocr::pdf",
+      "to": "dim_ocr::contract",
+      "references": [
+        "path HelperError",
+        "path HelperError::encrypted_pdf",
+        "path HelperError::failed",
+        "path HelperError::invalid_input",
+        "path HelperError::limit",
+        "path MAX_PAGE_PIXELS",
+        "path MAX_PDF_PAGES",
+        "path RENDER_DPI",
+        "use crate::contract::HelperError",
+        "use crate::contract::MAX_PAGE_PIXELS",
+        "use crate::contract::MAX_PDF_PAGES",
+        "use crate::contract::RENDER_DPI"
+      ]
+    },
+    {
+      "from": "dim_ocr::vision",
+      "to": "dim_ocr::contract",
+      "references": [
+        "path HelperError",
+        "path HelperError::failed",
+        "path HelperError::invalid_input",
+        "path HelperError::limit",
+        "path Region",
+        "path crate::contract::MAX_PAGE_PIXELS",
+        "use crate::contract::HelperError",
+        "use crate::contract::Region"
+      ]
+    },
+    {
+      "from": "dim_ocr::vision",
+      "to": "dim_ocr::platform",
+      "references": [
+        "path crate::platform::macos_version"
       ]
     },
     {
@@ -44789,6 +45857,30 @@
     },
     {
       "module": "dim_cli::args",
+      "path": "Command::List"
+    },
+    {
+      "module": "dim_cli::args",
+      "path": "Command::SetDefault"
+    },
+    {
+      "module": "dim_cli::args",
+      "path": "Command::TaskCancel"
+    },
+    {
+      "module": "dim_cli::args",
+      "path": "Command::TaskList"
+    },
+    {
+      "module": "dim_cli::args",
+      "path": "Command::TaskStatus"
+    },
+    {
+      "module": "dim_cli::args",
+      "path": "Command::TaskWait"
+    },
+    {
+      "module": "dim_cli::args",
       "path": "ManagementAction::Inspect"
     },
     {
@@ -45362,6 +46454,22 @@
     {
       "module": "dim_modality",
       "path": "D::Error"
+    },
+    {
+      "module": "dim_modality",
+      "path": "ServiceValue::List"
+    },
+    {
+      "module": "dim_ocr::contract",
+      "path": "A::Error"
+    },
+    {
+      "module": "dim_ocr::contract",
+      "path": "D::Error"
+    },
+    {
+      "module": "dim_ocr::platform",
+      "path": "CStr::from_bytes_until_nul"
     }
   ]
 }

@@ -164,6 +164,7 @@ impl AgentRecords {
                 let mut query = connection
                     .prepare(
                         "SELECT session_id FROM agent_sessions WHERE leader_session_id = ?1 \
+                         AND CASE WHEN json_valid(config) THEN json_extract(config, '$.collaborationRole') END = 'member' \
                          ORDER BY session_id",
                     )
                     .map_err(storage_error)?;
@@ -218,7 +219,9 @@ impl AgentRecords {
                 let mut query = connection
                     .prepare(
                         "SELECT session_id, leader_session_id FROM agent_sessions \
-                         WHERE leader_session_id IS NOT NULL ORDER BY session_id",
+                         WHERE leader_session_id IS NOT NULL \
+                         AND CASE WHEN json_valid(config) THEN json_extract(config, '$.collaborationRole') END = 'member' \
+                         ORDER BY session_id",
                     )
                     .map_err(storage_error)?;
                 let rows = query

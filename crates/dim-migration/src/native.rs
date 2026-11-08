@@ -5,7 +5,6 @@ use crate::{
 use dim_agent_capabilities::file_storage::FileStorage;
 use dim_agent_runtime::{BranchRecord, SessionConfig, StoredEvent};
 use dim_agent_types::*;
-use dim_app_server::protocol::SessionOrigin;
 use dim_app_server::storage::SqliteStorage;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
@@ -408,6 +407,30 @@ impl Native {
         )))
     }
 
+    pub fn link_session_parents<'a>(
+        &self,
+        links: impl Iterator<Item = (&'a str, &'a str)>,
+    ) -> Result<()> {
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction().map_err(failure)?;
+        {
+            let mut update = tx.prepare(
+                "WITH RECURSIVE ancestors(id) AS (
+                   SELECT ?2 UNION
+                   SELECT s.leader_session_id FROM agent_sessions s JOIN ancestors a ON s.session_id=a.id
+                   WHERE s.leader_session_id IS NOT NULL
+                 )
+                 UPDATE agent_sessions SET leader_session_id=?2
+                 WHERE session_id=?1 AND origin='internal' AND leader_session_id IS NULL
+                   AND NOT EXISTS (SELECT 1 FROM ancestors WHERE id=?1)",
+            ).map_err(failure)?;
+            for (child, parent) in links {
+                update.execute(params![child, parent]).map_err(failure)?;
+            }
+        }
+        tx.commit().map_err(failure)
+    }
+
     pub fn session(&self, data: &SessionData, digest: &str, files: &[String]) -> Result<String> {
         let session = uuid::Uuid::new_v4().to_string();
         let events = history(data)?;
@@ -488,7 +511,7 @@ impl Native {
                 session,
                 serde_json::to_string(&config).map_err(failure)?,
                 i64::try_from(now).map_err(failure)?,
-                SessionOrigin::Unknown.as_str(),
+                data.origin.as_str(),
             ],
         )
         .map_err(failure)?;

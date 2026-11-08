@@ -15,6 +15,23 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+/// The system services a host-owned helper may reach beyond its files. The
+/// set is closed: every rule a variant adds is recorded in
+/// `docs/architecture/rust-agent/plugins/HostPlatform.md` with the denial it
+/// answers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SystemServices {
+    /// No system service: the helper reads the system baseline, its own
+    /// executable and [`Confinement::read`], and writes [`Confinement::write`];
+    /// everything else is denied.
+    #[default]
+    None,
+    /// On-device text recognition: Apple Vision, the Apple Neural Engine and
+    /// the GPU, and the sandbox extension that hands the framework's cache to
+    /// the neural-engine compiler service.
+    OnDeviceRecognition,
+}
+
 /// The boundary of one host-owned helper.
 #[derive(Debug)]
 pub struct Confinement {
@@ -29,6 +46,8 @@ pub struct Confinement {
     pub stdout_limit: usize,
     /// The most bytes the helper may write to standard error.
     pub stderr_limit: usize,
+    /// The system services the helper may reach, beyond its files.
+    pub services: SystemServices,
 }
 
 /// The program a host-owned helper starts. Its working directory is the first
@@ -124,8 +143,9 @@ impl std::error::Error for ConfinedError {
 impl HostPlatform {
     /// Starts a host-owned helper under its own boundary and collects its
     /// bounded output. The helper reads the system baseline, its executable
-    /// and `confinement.read`; writes only inside `confinement.write`; has no
-    /// network; receives the minimal environment allowlist plus `spec.env`;
+    /// and `confinement.read`; writes only inside `confinement.write`; reaches
+    /// only the system services `confinement.services` names; has no network;
+    /// receives the minimal environment allowlist plus `spec.env`;
     /// and runs in the first write directory. Seatbelt on macOS and bubblewrap
     /// on Linux apply whatever the user's Process isolation switch says,
     /// because that switch governs agent commands and this is a host-owned
@@ -256,6 +276,7 @@ impl HostPlatform {
                 &read_only_files,
                 &writable,
                 false,
+                confinement.services,
             )
             .map_err(|error| ConfinedError::Spawn(io::Error::other(error.reason)))?;
             Ok((prepared, true))

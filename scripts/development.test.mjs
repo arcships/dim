@@ -278,11 +278,11 @@ test('a run stages the default plugins and updates them only when needed', { ski
   }
   assert.equal(existsSync(path.join(checkout.staged, 'plugins/workflow')), false);
   assert.deepEqual(checkout.installs().map(installName).sort(), ['goal', 'session-title']);
-  assert.match(first.stderr, /Updated 2 default plugins \(npm ci: goal, session-title\)\./);
+  assert.match(first.stderr, /Updated 2 plugins \(npm ci: goal, session-title\)\./);
   const second = checkout.run();
   assert.equal(second.status, 0, second.stderr);
   assert.equal(checkout.installs().length, 2);
-  assert.match(second.stderr, /Updated 2 default plugins \(npm ci: none\)\./);
+  assert.match(second.stderr, /Updated 2 plugins \(npm ci: none\)\./);
   writeFileSync(path.join(checkout.repo, 'runtime/plugins/goal/index.ts'), "export const name = 'goal edited';\n");
   const edited = checkout.run();
   assert.equal(edited.status, 0, edited.stderr);
@@ -293,7 +293,7 @@ test('a run stages the default plugins and updates them only when needed', { ski
   assert.equal(locked.status, 0, locked.stderr);
   assert.equal(checkout.installs().length, 3);
   assert.equal(installName(checkout.installs().at(-1)), 'goal');
-  assert.match(locked.stderr, /Updated 2 default plugins \(npm ci: goal\)\./);
+  assert.match(locked.stderr, /Updated 2 plugins \(npm ci: goal\)\./);
 });
 
 test('a developer-selected default plugin file is used without staging', { skip: process.platform === 'win32' }, (t) => {

@@ -75,6 +75,14 @@ async fn execution_state_is_adopted_and_unchanged_values_do_not_duplicate() {
     .await;
     let session = env.session(&cwd, "").await.unwrap();
 
+    // The branch may take its first turn before the part's detached append
+    // lands (`execution_settings/prompt.rs`), so wait for the snapshot's
+    // Timeline append before the turn that must carry it.
+    until_block(
+        &session,
+        "<dim-state source=\"dim/settings/execution\">Execution sandbox: off.",
+    )
+    .await;
     run(&session, "hello").await;
     let text = request_text(requests(&session).await.last().unwrap());
     assert!(

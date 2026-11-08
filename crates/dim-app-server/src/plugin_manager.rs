@@ -157,9 +157,9 @@ pub(crate) struct StartupLayer {
 
 impl State {
     /// Startup (§3.1), first part: reads `plugins.json` and the default
-    /// configuration file, and registers the `instanceNames` and process
-    /// names of the plugins that may be used with the catalog. `home` is
-    /// canonical.
+    /// configuration file, deletes the copies no entry names (§7), and
+    /// registers the `instanceNames` and process names of the plugins that
+    /// may be used with the catalog. `home` is canonical.
     pub fn read(
         home: &Path,
         files: Option<&Path>,
@@ -177,6 +177,20 @@ impl State {
             *dir = std::fs::canonicalize(&*dir)
                 .map_err(|error| format!("default plugin {name} at {}: {error}", dir.display()))?;
         }
+        let dirs = PluginsDir::new(home);
+        // The one cleanup of a process (§7): the directories of installed
+        // entries are kept and every other copy under `<home>/plugins/<id>/`
+        // is deleted here and nowhere else, so a task that read a
+        // description keeps a directory that exists until the process
+        // exits. Nothing acquires before this runs: no client is admitted
+        // until startup finishes, and a reload of this row acquires
+        // nothing.
+        let keep: Vec<PathBuf> = record
+            .installed
+            .iter()
+            .map(|entry| entry.dir.clone())
+            .collect();
+        dirs.clean(&keep);
         let none = BTreeSet::new();
         for name in names(&record, &defaults, &none) {
             let dir = using(&record, &defaults, &none, &name)
@@ -190,7 +204,7 @@ impl State {
         }
         Ok(Arc::new(Self {
             record_path,
-            dirs: PluginsDir::new(home),
+            dirs,
             files: files.map(Path::to_owned),
             defaults,
             configs: configs.clone(),
@@ -1137,7 +1151,7 @@ impl Manager {
                     phase("check");
                     let manifest = acquire::manifest_of(&staging)?;
                     let id = self.new_id(params.id.as_deref(), &manifest)?;
-                    let target = self.state.dirs.clone_dir(&id, &commit)?;
+                    let target = self.state.dirs.acquisition_dir(&id, &commit)?;
                     let dir = staging.place(&self.state.dirs, &target)?;
                     placed = Some(dir.clone());
                     let manifest = Manifest::read(&dir)?;
@@ -1337,11 +1351,6 @@ impl Manager {
         self.state
             .dirs
             .remove_python_link(&python_package(&entry.id));
-        if let Source::Git { .. } = entry.source {
-            self.state
-                .dirs
-                .delete(&self.state.dirs.id_dir(&entry.id)?)?;
-        }
         Ok(json!({}))
     }
 
@@ -1510,7 +1519,7 @@ impl Manager {
                 format!("the new commit names {:?}; install it again", manifest.name),
             ));
         }
-        let target = self.state.dirs.clone_dir(&id, &commit)?;
+        let target = self.state.dirs.acquisition_dir(&id, &commit)?;
         let dir = staging.place(&self.state.dirs, &target)?;
         let manifest = match Manifest::read(&dir) {
             Ok(manifest) => manifest,
@@ -1549,7 +1558,6 @@ impl Manager {
         if change.after == Some(Use::Installed(id.clone())) {
             reply = self.switch(&entry.name, change).await.into_map();
         }
-        let _ = self.state.dirs.delete(&entry.dir);
         reply.insert("commit".into(), json!(commit));
         Ok(Value::Object(reply))
     }
@@ -1849,16 +1857,6 @@ impl DynPlugin for PluginManagerPlugin {
                 runtimes: self.runtimes.clone(),
                 settings: self.settings.clone(),
             };
-            let keep: Vec<PathBuf> = manager
-                .state
-                .record
-                .lock()
-                .unwrap()
-                .installed
-                .iter()
-                .map(|entry| entry.dir.clone())
-                .collect();
-            manager.state.dirs.clean(&keep);
             let methods = ctx.require_at(&self.methods)?;
             let handler = manager.clone();
             methods.register(

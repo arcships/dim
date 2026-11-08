@@ -212,6 +212,43 @@ confinement path is absolute, existing and of the required kind, and is
 canonicalized before anything starts; a relative, missing or wrong-kind path is
 `InvalidPath` and nothing starts.
 
+`Confinement.services` is a closed `SystemServices` value whose default `None`
+is the profile above. `OnDeviceRecognition` is the one other value: it adds
+exactly the system-service rules in the table below, named for what it grants
+rather than for a caller, and no caller can add a rule. On Linux and Windows the
+value changes nothing: bubblewrap has no system-service grant to make, and
+Windows confines nothing here.
+
+| Seatbelt rule (macOS) | The denial it answers |
+| --- | --- |
+| `(allow mach-lookup (global-name "com.apple.appleneuralengine"))` | `mach-lookup com.apple.appleneuralengine` |
+| `(allow iokit-open-user-client (iokit-user-client-class "IOSurfaceRootUserClient"))` | `iokit-open-user-client IOSurfaceRootUserClient` |
+| `(allow iokit-open-user-client (iokit-user-client-class "H1xANELoadBalancerDirectPathClient"))` | `iokit-open-user-client H1xANELoadBalancerDirectPathClient` |
+| `(allow iokit-open-user-client (iokit-user-client-class "AGXDeviceUserClient"))` | `iokit-open-user-client AGXDeviceUserClient` |
+| `(allow file-issue-extension (require-all (extension-class "com.apple.app-sandbox.read") (subpath (param "<each write directory>"))))` | `sandbox_extension_issue_file` failing with `Operation not permitted` |
+| `(allow file-read-data (literal (param "EXECUTABLE_DIR")))` | `file-read-data <the directory holding the helper>` |
+
+The recognition engine reaches the neural-engine daemon through `mach-lookup`
+and its I/O clients through `iokit-open-user-client`; it hands its writable
+cache to the compiler service as a `com.apple.app-sandbox.read` file extension;
+and it reads the directory holding the helper while it starts. Each rule names
+its service: there is no bare `(allow mach-lookup)` or `(allow iokit-open)`, and
+the extension rule is scoped to each `write` directory the caller passed. The
+framework keeps its model cache under the user's home and honours
+`CFFIXED_USER_HOME`, so a caller that sets it through `spec.env` to a `write`
+directory keeps that cache inside the confinement.
+
+The set was converged on an Apple M4 running macOS 27.2. Each of the four
+service rules is required there: without the mach service or one of the I/O
+client classes recognition fails with a typed helper error, and without
+`AGXDeviceUserClient` it returns no text; the framework never falls back to the
+CPU. Intel Macs do not offer the Modality target `local/apple-vision`, because
+the classes are the Apple Silicon ones and no Intel evidence exists. No other
+Apple Silicon generation was available to measure, so the class names are
+exactly those this machine's frameworks requested; a generation whose
+frameworks ask for another class needs its own evidence rather than a guessed
+name.
+
 macOS wraps the helper in the existing Seatbelt profile and Linux in the
 existing bubblewrap arguments, both with the network grant off; the profile and
 argv builders are those agent commands use. Where the platform cannot confine —
@@ -301,7 +338,9 @@ The unit test `bubblewrap_binds_file_roots_after_the_directories_that_contain_th
 that file roots are bound after the directories that contain them;
 `bubblewrap_unshares_the_network_only_when_the_switch_is_off` (Linux) and
 `seatbelt_allows_network_only_when_the_switch_is_on` (macOS) cover the platform's network
-flag binding.
+flag binding; `seatbelt_grants_on_device_recognition_services_only_when_asked` (macOS) checks
+that exactly the recognition rule set appears with `SystemServices::OnDeviceRecognition`
+and none of it without.
 [local_execution.rs](../../../../tests/integration/tests/local_execution.rs):
 `the_local_execution_assembly_passes_the_assembly_check` and
 `exec_and_external_shell_callers_use_live_shell_preferences` exercise the real

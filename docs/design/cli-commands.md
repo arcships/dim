@@ -1360,6 +1360,12 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode migration [run\|inspect] [--source OLD_HOME]` | Import by default, or inspect, a stopped legacy data home through the shared [Migration plugin](../../crates/dim-migration/README.md). |
 | `dimcode migration list\|show TASK\|cancel TASK` | Query durable results or request cancellation without a daemon. |
 | `dimcode migration retry TASK [--source OLD_HOME]` | Reconcile a previous task's source again; return a new task linked to the old report. |
+| `dimcode modality [--json]` | Table of every Modality category and operation over `modality.capabilities` ([Modality](plugins/Modality.md#a5-cli)): availability, the owner's reasons as `dimension: detail` lines, the default and the effective model; `--json` prints the reply unchanged. A daemon that does not advertise the method says it serves no Modality and exits 1. |
+| `dimcode modality set-default <category>[.<operation>] <provider>/<model>` / `--clear` | Write one operation default over `modality.configure` with the revision read immediately before, retried once after a `modality_conflict`; `--clear` sends `model: null`; prints the operation's row, or the reply under `--json`. |
+| `dimcode image generate\|edit PROMPT [FILE...]`, `image enhance MODE [FILE...]`, `video generate\|edit\|enhance PROMPT [FILE...]`, `speech synthesize TEXT`, `speech transcribe FILE`, `music\|audio\|motion generate PROMPT`, `asset generate PROMPT [FILE...]` | Submit one task over `modality.task.submit` ([Modality](plugins/Modality.md#a5-cli)): `--mask` sends the mask as an input file named by `params.mask`, `--param KEY=VALUE` adds one adapter parameter (JSON when it parses as JSON, a string otherwise), and the inputs go inline when the whole set fits 8 MiB and by `node_path` above it. Waits and writes the result files to `--out`, a directory that defaults to `.`, refusing to replace an existing file; `--no-wait` prints the id, `--json` the record. |
+| `dimcode modality task list [--state S] [--category C] [--limit N] [--after ID]` | List one page of Modality tasks over `modality.task.list` ([Modality](plugins/Modality.md#a5-cli)), newest first, as `ID STATE OPERATION MODEL CREATED`, with `More: --after <id>` on stderr when another page exists; `--json` prints the reply unchanged. |
+| `dimcode modality task status\|wait\|cancel ID` | Print one task's row, progress, error and result files over `modality.task.status`; wait for it over `modality.task.wait`, writing results only with `--out DIR`; or cancel it over `modality.task.cancel`, reporting the state the owner returned. |
+| `dimcode ocr FILE [--output-mode text\|layout] [--out DIR]` | Submit `ocr.recognize` over `modality.task.submit` ([Modality](plugins/Modality.md#a5-cli)) and wait for it: a text within 64 KiB and 30,000 UTF-16 units prints inline and writes nothing, a longer one is written with a 2,000-character preview and its path, `--output-mode layout` writes the page images, and `--out` asks for the result set beside the printed text. |
 | `dimcode skills list` | List the Skills of the workspace over `skills.catalog`: each entry's name, source, state, file and description, then the catalog's issues. |
 | `dimcode skills enable\|disable ID` | Enable or disable one Skill over `skills.set_enabled`, then report the catalog again. |
 | `dimcode skills reload` | Rescan the user and project roots over `skills.refresh` and report what it found, through the [Skills management surface](#management-surfaces). |
@@ -1437,8 +1443,8 @@ available. Existing piped stdin and `--resume` calls retain their behavior, and
 sends the first message
 ([starting with a first message](#starting-with-a-first-message)).
 `exec resume` also accepts the same existing global options. Supplying the Session twice or the prompt twice is an
-argument error. `--json` serves `exec` and `migration`, and `tui` requires a
-terminal. Help/version and argument errors do not start the daemon.
+argument error. `--json` serves `exec`, `migration` and the Modality commands (`modality`,
+the category commands and `ocr`), and `tui` requires a terminal. Help/version and argument errors do not start the daemon.
 
 ### Starting with a first message
 

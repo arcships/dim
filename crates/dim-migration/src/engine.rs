@@ -190,13 +190,17 @@ async fn execute_source(
     let ids = source.session_ids()?;
     task.total = Some(ids.len() as u64);
     task.processed = 0;
+    let mut imported = BTreeMap::new();
     for id in ids {
         check(owner, &task.id).await?;
         task.current = Some(id.clone());
         publish(owner, task).await?;
-        let result = match source.session(&id) {
-            Ok(data) => session(owner, task, source, target, data).await,
-            Err(e) => Err(e),
+        let (result, parent) = match source.session(&id) {
+            Ok(mut data) => {
+                let parent = data.parent_session_id.take();
+                (session(owner, task, source, target, data).await, parent)
+            }
+            Err(e) => (Err(e), None),
         };
         let result = match result {
             Ok(result) => result,
@@ -218,10 +222,20 @@ async fn execute_source(
             },
             Err(e) => return Err(e),
         };
+        if matches!(result.outcome, Outcome::Imported | Outcome::AlreadyImported)
+            && let Some(target_id) = &result.target_id
+        {
+            imported.insert(result.id.clone(), (target_id.clone(), parent));
+        }
         owner.ledger.object(&task.id, &result).await?;
         task.processed += 1;
         publish(owner, task).await?;
     }
+    check(owner, &task.id).await?;
+    target.link_session_parents(imported.values().filter_map(|(child_id, parent)| {
+        let (parent, _) = imported.get(parent.as_ref()?)?;
+        Some((child_id.as_str(), parent.as_str()))
+    }))?;
     task.stage = "scheduler".into();
     task.processed = 0;
     task.total = None;

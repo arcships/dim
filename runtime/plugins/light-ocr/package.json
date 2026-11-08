@@ -1,0 +1,10 @@
+{
+  "name": "dim-light-ocr",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@arcships/light-ocr": "0.5.9",
+    "@arcships/light-ocr-runtime": "0.1.9",
+    "@arcships/rutis": "0.19.3"
+  }
+}

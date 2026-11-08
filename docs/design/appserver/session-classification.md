@@ -15,9 +15,8 @@ for its own work. After a large legacy import the last kind is most of the list,
 delegation prompt as their preview, so `/resume` reads as one repeated conversation.
 
 The Session record gains one creation-only field, `origin`, with four values: `client`, `acp`, `internal` and
-`unknown`. The entry that creates a Session writes it in the creation transaction; nothing else writes it except an
-import that replaces `unknown` with what the source recorded. The parent of a child Session is the leader link the
-store already keeps. Three reads report both — `session.attach`, `session.summaries`, `session.catalog` — and
+`unknown`. The entry that creates a Session writes it in the creation transaction. The parent of a child Session is
+the leader link the store already keeps. Three reads report both — `session.attach`, `session.summaries`, `session.catalog` — and
 only `session.catalog` can drop whole classes: `withInternal` and `withAcpSessions`, both off by
 default, applied before the page boundary. A picker that turns neither on lists conversations, which is what the legacy
 picker did.
@@ -29,9 +28,8 @@ picker did.
 
 ## 2. Scope and non-goals
 
-This page owns the type of the origin and its meaning, which creation entry writes which value, the one later write an
-import may make, the two protocol fields that report it, the `session.create {origin}` parameter, the two discovery
-markers, and what a client must do with them.
+This page owns the type of the origin and its meaning, which creation entry writes which value, the two protocol
+fields that report it, the `session.create {origin}` parameter, the two discovery markers, and what a client must do with them.
 
 It does not own:
 
@@ -69,14 +67,14 @@ image-only and imported cases.
 and starts no work: an imported member is an inert conversation. That is why the catalog cannot reuse
 `collaboration_role` as the label, and why an import must not set that role to fake one.
 
-The only later write: an import may replace `unknown` with a value the source itself recorded, once. Nothing writes a
-stored origin back to `unknown`, and no other writer changes it.
-
 **Parent.** `parentSessionId` is the leader Session's id when the store records one
 (`agent_sessions.leader_session_id`, [#593](../plugins/Collaboration.md#6-delegation-ownership-and-lifetime)),
 absent otherwise. The link names a Session, not its state: the parent may be closed and so not listed. A Session whose
 parent is not in this store lists without the link, because the stored value is a foreign key and no row references a
 Session the store does not hold.
+
+Collaboration and member deletion follow this link only for a Session created with the member role. Deleting the parent
+of an imported historical Session clears that Session's catalog link and preserves its history.
 
 ### 3.2 Which creation entry writes which value
 
@@ -211,8 +209,8 @@ This part writes no event, owns no Session or branch state and adds nothing to t
 
 | State | Owner | Written | Rebuilt |
 | --- | --- | --- | --- |
-| `agent_sessions.origin` | SessionStore's stored Session record | The creation transaction, once; later only an import replacing `unknown` | Not from the Timeline: it is creation input, so the projection property of [the catalog](session-catalog.md#4-events-and-state) does not extend to it. The v30 step backfills what the store already records (the leader link) and leaves the rest `unknown` |
-| `agent_sessions.leader_session_id` | same | Collaboration member creation ([#593](../plugins/Collaboration.md#6-delegation-ownership-and-lifetime)) | As stored |
+| `agent_sessions.origin` | SessionStore's stored Session record | The creation transaction, once | Not from the Timeline: it is creation input, so the projection property of [the catalog](session-catalog.md#4-events-and-state) does not extend to it. The v30 step backfills what the store already records (the leader link) and leaves the rest `unknown` |
+| `agent_sessions.leader_session_id` | same | Collaboration member creation ([#593](../plugins/Collaboration.md#6-delegation-ownership-and-lifetime)), Migration parent mapping, or deletion of a historical Session's parent | As stored |
 
 The class is display data for pickers. [Design rules §4 rule 9](../architecture/rust-agent/principles.md) keeps it out of
 the Timeline and out of the model's context; a Session's origin also never reaches model requests.
@@ -227,7 +225,7 @@ the Timeline and out of the model's context; a Session's origin also never reach
 | [Client Session catalog](session-catalog.md) | Applies `withInternal` and `withAcpSessions` in its query before the page boundary and keeps both out of `session.summaries` |
 | Rpc discovery (`hello.features`) | Advertises `session.create.origin` beside `session.create`, and `session.catalog.origins` beside `session.catalog` |
 | [AcpGateway](../plugins/AcpGateway.md) | Declares `acp` on `session/new` |
-| [Migration](../plugins/Migration.md) | Writes `unknown`, and later the mapped value |
+| [Migration](../plugins/Migration.md) | Writes the mapped origin or `unknown` when importing a Session |
 
 ## 6. Cross-module requirements
 
@@ -235,7 +233,7 @@ Format of [design rules §4 rule 8](../architecture/rust-agent/principles.md).
 
 | Problem | Why existing mechanisms fail | Needed capability | Ordering | Owner |
 | --- | --- | --- | --- | --- |
-| Imported Sessions keep no child or ACP classification, and old parent ids have no native target | `SessionConfig` has no origin; the source's settings and `session_relations` are archived but not mapped; `collaboration_role` carries runtime meaning and must not be set as a label | The `origin` column, its one-write rule, and an import that may replace `unknown` once; Migration writes native rows directly as it does for config and `cwd`, so no App Server method is added | After this contract and format v30 | Migration ([#557](https://github.com/arcships/dim/issues/557)) |
+| Imported Sessions need child or ACP classification and translated parent ids | The legacy settings and relation IDs use the source store's format and identities | Migration writes the mapped origin and parent using the existing native columns | After this contract and format v30 | Migration ([#557](https://github.com/arcships/dim/issues/557)) |
 | A.5 says ACP Session display is unsupported for want of a durable client-origin field | The field now exists | `session/new` sends `origin`, and A.5 describes the field | With the implementation | AcpGateway |
 | `/resume` has no class labels and no ACP switch; `/settings` lists ACP display as unsupported | The reply carries no class | Filters, labels and the client preference of §3.8 | With the implementation | CLI, then [clients](../clients.md) |
 | `sessions.launch` creates a Session whose origin is `internal` | Its contract states no creation record | One row in §6.1 of the sessions service | With the implementation | Agents |
@@ -279,7 +277,7 @@ Format of [design rules §4 rule 8](../architecture/rust-agent/principles.md).
 | D3 | `unknown` is a value | Absent or `null` for an unmapped Session | Absence already means "this reply carries no classification" (protocol v1 and v2, no store). Conflating the two would make an imported Session look like a protocol detail |
 | D4 | The default list is `client` and `unknown`; `acp` and `internal` are opt-in | Defaulting to `client` alone; keeping today's unfiltered default | Filtering `unknown` out would hide a user's imported history from the only list they have; keeping the unfiltered default would keep the crowding this issue is about |
 | D5 | A fork's origin is `client` | Copying the source's origin | A fork is a new Session of the client that forked it; the legacy catalog excluded forks from its ACP fallback for the same reason |
-| D6 | The origin is written once, and an import may replace `unknown` once | Letting any later read or attachment update it | A Session's later attachments must not change its creation provenance, and a re-run of an import must be able to name what the source recorded without overwriting a value that is already known |
+| D6 | The creation transaction writes the origin once | Reclassifying an existing Session on import retry or attachment | Creation provenance is fixed when the native Session is created |
 | D7 | `session.summaries` reports the fields but filters nothing | Applying the same filters there | It is not the picker: `session.summaries` is the fallback list of older clients and the source of ACP's `session/list`, and it has no page boundary to keep |
 | D8 | No parent filter and no children listing | A `parent` filter on the catalog | A live team comes from Collaboration's Team status, and a historical child is reachable by id and by `withInternal`; a parent filter would be an unused method surface until a client asks for it |
 | D9 | No new index | A partial index per hidden class | Two independent switches need two indexes, each maintained by every commit that moves `updated_at_ms`; the filtered page is bounded by the page plus the rows it skips ([#596](https://github.com/arcships/dim/issues/596)) |
@@ -316,8 +314,7 @@ Format of [design rules §4 rule 8](../architecture/rust-agent/principles.md).
   digest and in the acceptance list, and `session.summaries` reading the same query with both filters on.
 - [Native storage format](native-storage-format.md#557-v30-格式决定): the column, the v30 step, the version lists and the
   table reference.
-- [Migration](../plugins/Migration.md): which legacy setting and relation becomes which origin and parent, and the
-  incremental reconciliation of already imported Sessions.
+- [Migration](../plugins/Migration.md): which legacy settings and relations become native origins and parents.
 - [AcpGateway](../plugins/AcpGateway.md#a5-client-labels): A.5 stops reporting the missing field and describes what
   `session/new` sends.
 - [Clients](../clients.md#34-system-management): the `/settings` row for ACP Session display.

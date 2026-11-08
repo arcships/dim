@@ -216,7 +216,10 @@ impl Realtime {
             &self.shared.selectable,
             &self.shared.selection,
             &self.shared.ctx,
+            self.shared.ocr_helper.as_deref(),
             cancel,
+            // A realtime session never reaches the OCR target (A.2.1).
+            crate::OcrLookup::Skip,
         )
         .await?;
         let model = resolve_task_model(&evaluation, category.name, row, request.model.as_ref())?;

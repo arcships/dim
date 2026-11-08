@@ -20,6 +20,7 @@ dim-app-server.workspace = true
 dim-session-title.workspace = true
 dim-goal.workspace = true
 dim-modality.workspace = true
+dim-ocr.workspace = true
 dim-modality-aimux.workspace = true
 dim-oauth = { path = "../dim-oauth" }
 dim-agent-scheduler = { path = "../dim-agent-scheduler" }
@@ -42,4 +43,5 @@ libc = "0.2"
 rutis.workspace = true
 rutis-bridge.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 rusqlite = "0.40.2"

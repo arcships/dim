@@ -1,0 +1,10 @@
+{
+  "name": "light-ocr",
+  "description": "Local PP-OCR for Modality through light-ocr",
+  "version": "0.1.0",
+  "code": {
+    "entry": "index.ts",
+    "provides": { "ocrHelper": { "describe": "async" } }
+  },
+  "dependencies": "npm"
+}

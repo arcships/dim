@@ -460,6 +460,10 @@ struct VideoHandle {
 
 /// Streams one video into `path`, counting the bytes.
 ///
+/// Every byte is flushed to `path` before this returns, so a reader that
+/// opens the file after the call sees the whole video: a `tokio::fs::File`
+/// does not finish its writes when it is dropped.
+///
 /// The connection's headers reach the request only when the URL shares the
 /// connection's origin: a provider hands back a pre-signed URL on another
 /// host, and the credential must not travel there.
@@ -515,6 +519,9 @@ async fn download(
             AdapterError::provider_error(format!("The video cannot be written: {error}"))
         })?;
     }
+    file.flush().await.map_err(|error| {
+        AdapterError::provider_error(format!("The video cannot be written: {error}"))
+    })?;
     Ok(written)
 }
 

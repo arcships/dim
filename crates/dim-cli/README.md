@@ -541,6 +541,74 @@ entry to still exist.
 
 See the [MCP OAuth contract](../../docs/design/appserver/mcp-oauth.md#13-requirements-raised-to-mechanism-owners).
 
+## Modality
+
+`dimcode modality` prints one row per operation of the daemon's Modality, read over
+`modality.capabilities`: category, operation, whether it is available, its default model, the model
+that would be used, and the owner's reasons as `dimension: detail` entries. The table renders the
+owner's snapshot and never guesses: a category or operation this build does not implement still has
+a row, with its reason. `--json` prints the reply unchanged. A daemon that does not advertise
+`modality.capabilities` — one older than Modality, or one whose Modality is reloading — answers
+every `dimcode modality` command with `This daemon serves no Modality.` and exit code 1, and the
+command calls nothing else.
+
+`dimcode modality set-default <category>[.<operation>] <provider>/<model>` writes one default over
+`modality.configure`, carrying the revision read immediately before the write. A category alone
+writes the category-keyed default, which is what every category except `image` and `speech` uses;
+those two name the operation. `--clear` sends `model: null` and restores automatic resolution. A
+`modality_conflict` means another client saved between the read and the write, so the revision is
+read again and the write retried once; a second conflict fails with the owner's message. The
+command prints the operation's row from the reply, or the reply under `--json`.
+
+`dimcode image generate|edit PROMPT [FILE...]`, `image enhance MODE [FILE...]`, `video
+generate|edit|enhance PROMPT [FILE...]`, `speech synthesize TEXT`, `speech transcribe FILE`,
+`music|audio|motion generate PROMPT` and `asset generate PROMPT [FILE...]` each submit one task
+over `modality.task.submit`. The CLI types only the inputs the design declares: the prompt or text
+positional, the input files, `image edit --mask` and `image enhance MODE`. Everything else an
+operation takes is the adapter's, passed as a repeatable `--param KEY=VALUE`: the value is JSON
+when it parses as JSON and a string otherwise, so a string that would parse as JSON is written
+quoted, as in `--param 'label="true"'`. The mask is itself an input file, and `params.mask` names
+it. `--model PROVIDER/MODEL` picks the model; without it the daemon resolves the operation default.
+
+Every input is read from the local file system, which is the daemon's own: the submission sends
+them all inline when the whole set fits 8 MiB and all by their canonical `node_path` above it. The
+media type comes from the extension; an operation that does not accept it is the daemon's
+`invalid_input`, not a second rule here. The command then waits over `modality.task.wait`, drawing
+progress on stderr only when stderr is a terminal, and writes the result files to `--out`, a
+directory that defaults to `.` and is created when missing. It never replaces an existing file:
+when a target exists, nothing is written, the files are named, and the message gives `dimcode
+modality task wait <id> --out <dir>` for fetching them into another directory; the task keeps its
+files. Each file is transferred in 4 MiB chunks into a temporary sibling and hard-linked into
+place, so a file created at the target while the transfer ran is refused, not replaced; where the
+file system has no hard links, the file is copied into a target created without replacement
+instead, which may show the target incomplete while the copy runs, and a failed or stopped
+transfer removes the temporary. `--no-wait` stops after the submission and prints the
+id; `--json` prints the record instead of the command's own lines. The first Ctrl+C during a wait
+stops waiting, prints the id and exits 130, and the task continues; a Ctrl+C during a result
+transfer stops the transfer, removes the partial file and exits 130, printing `Stopped; the task
+keeps its results. Fetch them with: dimcode modality task wait <id> --out <dir>`. A failed task
+prints its `code: message` and exits 2; a cancelled one exits 130.
+
+`dimcode modality task list [--state S] [--category C] [--limit N] [--after ID]` prints one page
+of tasks over `modality.task.list`, newest first, as `ID STATE OPERATION MODEL CREATED`; when the
+reply names a further page, `More: --after <id>` goes to stderr so stdout stays a table.
+`dimcode modality task status ID` prints the same row, then the task's progress, its error and one
+line per result file. `dimcode modality task wait ID [--out DIR]` is the submission's wait on its
+own: the task's results are written only when `--out` names a directory, so checking on a task
+never litters the working directory. `dimcode modality task cancel ID` reports the state the owner
+returned; an already-terminal task says it is unchanged. `--json` prints the reply unchanged for
+all four.
+
+`dimcode ocr FILE [--output-mode text|layout] [--out DIR]` submits one `ocr.recognize` host task.
+In text mode, a `text.txt` of at most 64 KiB and at most 30,000 UTF-16 units is printed and
+nothing is written, so the common case leaves no files behind; the printed text has terminal
+controls removed, while a written `text.txt` and the `--json` record keep the exact bytes. A longer
+text is written — to `--out` when it names a directory, to the current directory otherwise — and
+the command prints a 2,000-character preview followed by `Full text: <path>`. `--out` with a short
+text asks for the result set beside the printed text, and `--output-mode layout` writes the
+rasterized page images and prints every written path. Writing follows the same rule as every
+Modality command: no target is ever replaced. `--json` prints the record and `--no-wait` the id.
+
 ## Permission presets and approvals
 
 The App Server decides each tool call; the CLI selects settings and never decides a call itself.
@@ -1538,8 +1606,8 @@ JSON escaping can make a prompt exceed this limit even when its original text fi
 | Exit code | Meaning |
 | --- | --- |
 | `0` | Completed, or normal interactive exit |
-| `1` | Invalid configuration, incompatible daemon, login or transport error |
-| `2` | Model or turn failed |
+| `1` | Invalid configuration, incompatible daemon, login or transport error, or a result file that already exists |
+| `2` | Model or turn failed, or a failed Modality task |
 | `3` | Interactive approval or answer required |
 | `130` | Interrupted noninteractive turn or login |
 

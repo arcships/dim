@@ -32,6 +32,9 @@ const PINS: &str = include_str!("../../../runtime/runtimes.json");
 const NODE_PACKAGE: &str = include_str!("../../../runtime/package.json");
 const NODE_LOCK: &str = include_str!("../../../runtime/package-lock.json");
 const PYTHON_REQUIREMENTS: &str = include_str!("../../../runtime/python-requirements.txt");
+/// npm's cache for one install: a scratch directory beside or inside what is
+/// installed, removed before the call returns.
+const NPM_CACHE: &str = ".npm-cache";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -111,6 +114,42 @@ pub struct Plan {
     indexes: Vec<String>,
 }
 
+/// What `Runtimes` reads from its host's environment (§2.2), a plain value
+/// like the home: the `PATH` a `system` runtime resolves on, and the
+/// variables that put the user's own sources first.
+#[derive(Clone, Debug, Default)]
+pub struct Environment {
+    /// `PATH`: the search path a `system` runtime resolves on; an environment
+    /// with none resolves no `system` runtime.
+    pub path: OsString,
+    /// `DIMCODE_NODE_MIRROR`: a base URL the Node archive's file name is
+    /// appended to.
+    pub node_mirror: Option<String>,
+    /// `DIMCODE_PYTHON_MIRROR`: the same for the Python archive.
+    pub python_mirror: Option<String>,
+    /// `DIMCODE_UV_MIRROR`: the same for the uv archive.
+    pub uv_mirror: Option<String>,
+    /// `DIMCODE_NPM_REGISTRY`: the registry npm tries first.
+    pub npm_registry: Option<String>,
+    /// `DIMCODE_PYTHON_INDEX`: the index pip tries first.
+    pub python_index: Option<String>,
+}
+impl Environment {
+    /// One of the variables above, unset when the host sets none or sets it
+    /// empty.
+    fn variable(&self, variable: &str) -> Option<String> {
+        let value = match variable {
+            "DIMCODE_NODE_MIRROR" => self.node_mirror.as_ref(),
+            "DIMCODE_PYTHON_MIRROR" => self.python_mirror.as_ref(),
+            "DIMCODE_UV_MIRROR" => self.uv_mirror.as_ref(),
+            "DIMCODE_NPM_REGISTRY" => self.npm_registry.as_ref(),
+            "DIMCODE_PYTHON_INDEX" => self.python_index.as_ref(),
+            _ => None,
+        };
+        value.filter(|value| !value.is_empty()).cloned()
+    }
+}
+
 /// The runtimes of a home (design §2.3): every path follows from the fixed
 /// versions, the configuration and the home.
 #[derive(Clone, Debug)]
@@ -119,11 +158,12 @@ pub struct Runtimes {
     /// The home the configuration was read from, kept so an action can read it
     /// again (§2.2).
     home: PathBuf,
-    /// The search path a `system` runtime resolves on, an embedding host's
-    /// input like the home: `None` reads the process `PATH` at each lookup,
-    /// and a host that gives one keeps its lookups out of the process
-    /// environment. Production leaves it `None`.
-    search_path: Option<OsString>,
+    /// The host's environment, an embedding host's input like the home:
+    /// `None` reads the process (its `PATH` at each lookup, its mirror and
+    /// registry variables at start), and a host that gives one is read
+    /// instead, out of the process environment entirely. Production leaves
+    /// it `None`.
+    environment: Option<Environment>,
     preset: Choices,
     node: Plan,
     python: Plan,
@@ -143,11 +183,11 @@ pub type Choices = BTreeMap<String, Choice>;
 
 impl Runtimes {
     /// The runtimes of `home`: the default configuration file's `preset`,
-    /// overridden by `<home>/runtimes/config.json`.
+    /// overridden by `<home>/runtimes/config.json`, read under `environment`.
     pub fn load(
         home: &Path,
         preset: &Choices,
-        search_path: Option<OsString>,
+        environment: Option<Environment>,
     ) -> Result<Self, String> {
         let root = home.join("runtimes");
         let user_file = root.join("config.json");
@@ -174,7 +214,7 @@ impl Runtimes {
             home,
             root,
             preset.clone(),
-            search_path,
+            environment,
             choice(Kind::Node),
             choice(Kind::Python),
             choice(Kind::Uv),
@@ -186,22 +226,29 @@ impl Runtimes {
     /// the environment at that moment instead of at startup. `runtime.list`
     /// keeps reporting the runtime in effect until such an action runs.
     pub fn reload(&self) -> Result<Self, String> {
-        Self::load(&self.home, &self.preset, self.search_path.clone())
+        Self::load(&self.home, &self.preset, self.environment.clone())
     }
 
     fn new(
         home: &Path,
         root: PathBuf,
         preset: Choices,
-        search_path: Option<OsString>,
+        environment: Option<Environment>,
         node: (Source, bool),
         python: (Source, bool),
         uv: (Source, bool),
     ) -> Result<Self, String> {
         let pins: Pins = serde_json::from_str(PINS).expect("runtime/runtimes.json is valid");
         let platform = platform();
-        let search = search_path.as_deref();
-        let mirror = |variable: &str| std::env::var(variable).ok().filter(|v| !v.is_empty());
+        let search = environment
+            .as_ref()
+            .map(|environment| environment.path.as_os_str());
+        let mirror = |variable: &str| match &environment {
+            Some(environment) => environment.variable(variable),
+            None => std::env::var(variable)
+                .ok()
+                .filter(|value| !value.is_empty()),
+        };
         let sources = |pin: &Pin, variable: &str| {
             mirror(variable)
                 .map(|base| format!("{}/{{file}}", base.trim_end_matches('/')))
@@ -326,7 +373,7 @@ impl Runtimes {
         Ok(Self {
             root,
             home: home.to_owned(),
-            search_path,
+            environment,
             preset,
             node: node_plan,
             python: python_plan,
@@ -584,6 +631,27 @@ fn runtime_item(name: &'static str) -> Map<String, Value> {
     data.insert("kind".into(), Value::from("runtime"));
     data.insert("name".into(), Value::from(name));
     data
+}
+
+/// Why `RuntimeService::install_packages` failed (§5, §9 R1): its code and
+/// message.
+#[derive(Debug)]
+pub struct PackagesError {
+    pub code: &'static str,
+    pub message: String,
+}
+impl PackagesError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+impl std::fmt::Display for PackagesError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
 }
 
 /// The process service of RuntimeManager: what other process parts (and the
@@ -888,6 +956,82 @@ impl RuntimeService {
                 self.tasks.lock().unwrap().push(task);
                 Ok(())
             }
+        }
+    }
+
+    /// Installs a plugin's locked npm dependencies into `dir` (§5, §9 R1):
+    /// when Node is off, turns it on and waits for its acquisition on this
+    /// service's own state, then runs the managed (or `system`) Node's own npm
+    /// over `dir/package-lock.json`, trying the registries in the plan's
+    /// order, and returns when npm exits.
+    ///
+    /// Nothing is recorded and nothing under `<home>/runtimes/` is written:
+    /// `dir` belongs to the caller, which renames or deletes it. npm's cache
+    /// is `dir/.npm-cache`, inside that directory, and is removed before
+    /// returning. `cancel` kills npm and leaves `dir` to its caller.
+    pub async fn install_packages(
+        self: &Arc<Self>,
+        dir: &Path,
+        cancel: &CancellationToken,
+    ) -> Result<(), PackagesError> {
+        if cancel.is_cancelled() {
+            return Err(PackagesError::new("cancelled", "the call was cancelled"));
+        }
+        let index = Self::index(Kind::Node);
+        // Subscribed before the state is read, so a change between the read
+        // and the wait below is not missed.
+        let mut changes = self.changes.subscribe();
+        if !matches!(self.states.lock().unwrap()[index], State::Provided(_)) {
+            self.install(Kind::Node)
+                .map_err(|error| PackagesError::new("node_unavailable", error))?;
+        }
+        loop {
+            let failed = match &self.states.lock().unwrap()[index] {
+                State::Provided(_) => break,
+                State::Failed(reason) => Some(reason.clone()),
+                _ => None,
+            };
+            if let Some(reason) = failed {
+                return Err(PackagesError::new("node_unavailable", reason));
+            }
+            tokio::select! {
+                () = cancel.cancelled() => {
+                    return Err(PackagesError::new(
+                        "cancelled",
+                        "Node was still being acquired",
+                    ));
+                }
+                changed = changes.recv() => {
+                    if matches!(changed, Err(broadcast::error::RecvError::Closed)) {
+                        return Err(PackagesError::new(
+                            "node_unavailable",
+                            "RuntimeManager stopped while Node was being acquired",
+                        ));
+                    }
+                }
+            }
+        }
+        let plan = self.plans.lock().unwrap()[index].clone();
+        let npm = npm_cli(&plan.interpreter);
+        if !npm.is_file() {
+            return Err(PackagesError::new(
+                "npm_unavailable",
+                format!("no npm at {}", npm.display()),
+            ));
+        }
+        let cache = dir.join(NPM_CACHE);
+        let installed = tokio::select! {
+            installed = install_locked(&plan, dir, &cache) => Some(installed),
+            () = cancel.cancelled() => None,
+        };
+        let _ = std::fs::remove_dir_all(&cache);
+        match installed {
+            None => Err(PackagesError::new(
+                "cancelled",
+                format!("npm ci in {} was cancelled", dir.display()),
+            )),
+            Some(Ok(())) => Ok(()),
+            Some(Err(reason)) => Err(PackagesError::new("install_failed", reason)),
         }
     }
 
@@ -1480,7 +1624,24 @@ async fn npm_ci(plan: &Plan, packages: &Path) -> Result<(), String> {
     std::fs::write(partial.join("package.json"), NODE_PACKAGE)
         .and_then(|()| std::fs::write(partial.join("package-lock.json"), NODE_LOCK))
         .map_err(|e| e.to_string())?;
-    let cache = sibling(packages, ".npm-cache");
+    let cache = sibling(packages, NPM_CACHE);
+    let installed = install_locked(plan, &partial, &cache).await;
+    let _ = std::fs::remove_dir_all(&cache);
+    if let Err(error) = installed {
+        let _ = std::fs::remove_dir_all(&partial);
+        return Err(format!("Node packages not installed: {error}"));
+    }
+    std::fs::rename(&partial, packages).map_err(|e| e.to_string())
+}
+
+/// Runs `npm ci` inside `dir` with `plan`'s own npm over `dir`'s lock, trying
+/// each registry in the plan's order, and returns the failures joined when
+/// none succeeds. `--workspaces=false` keeps npm from walking up to an
+/// ancestor workspace root and making that root its project. Both the
+/// runtime's own packages (`npm_ci`) and a plugin's locked dependencies
+/// (`RuntimeService::install_packages`) run here; the caller owns `dir` and
+/// `cache`.
+async fn install_locked(plan: &Plan, dir: &Path, cache: &Path) -> Result<(), String> {
     let mut errors = Vec::new();
     for registry in &plan.indexes {
         let mut command = tokio::process::Command::new(&plan.interpreter);
@@ -1492,28 +1653,22 @@ async fn npm_ci(plan: &Plan, packages: &Path) -> Result<(), String> {
                 "--omit=dev",
                 "--no-audit",
                 "--no-fund",
+                "--workspaces=false",
                 "--registry",
                 registry,
             ])
-            .env("npm_config_cache", &cache)
-            .current_dir(&partial);
+            .env("npm_config_cache", cache)
+            .current_dir(dir);
         match run(command, "npm ci").await {
-            Ok(_) => {
-                errors.clear();
-                break;
-            }
+            Ok(_) => return Ok(()),
             Err(error) => errors.push(format!("{registry}: {error}")),
         }
     }
-    let _ = std::fs::remove_dir_all(&cache);
-    if !errors.is_empty() {
-        let _ = std::fs::remove_dir_all(&partial);
-        return Err(format!(
-            "Node packages not installed: {}",
-            errors.join("; ")
-        ));
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
     }
-    std::fs::rename(&partial, packages).map_err(|e| e.to_string())
 }
 
 async fn pip_install(plan: &Plan, packages: &Path) -> Result<(), String> {

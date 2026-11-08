@@ -210,6 +210,9 @@ export function readSummaries(value: unknown): SessionSummary[] {
     const at = `session.summaries[${index}]`
     const source = obj(item, at)
     const preview = optStr(source, "preview", at)
+    const origin = optStr(source, "origin", at)
+    if (origin !== undefined && origin !== "client" && origin !== "acp" && origin !== "internal" && origin !== "unknown") fail(`${at}.origin`, "client, acp, internal or unknown")
+    const parentSessionId = optStr(source, "parentSessionId", at)
     return {
       ...readSessionTitle(source, at),
       sessionId: str(source, "sessionId", at),
@@ -219,6 +222,8 @@ export function readSummaries(value: unknown): SessionSummary[] {
       running: bool(source, "running", at),
       sequence: num(source, "sequence", at),
       ...(preview === undefined ? {} : { preview }),
+      ...(origin === undefined ? {} : { origin }),
+      ...(parentSessionId === undefined ? {} : { parentSessionId }),
       updatedAt: num(source, "updatedAt", at),
     }
   })

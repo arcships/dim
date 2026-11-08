@@ -247,6 +247,8 @@ const zhCN: Messages = {
   "sidebar.showLess": "显示更少",
   "sidebar.showMore": "显示更多",
   "sidebar.untitled": "新会话",
+  "session.parent": "父会话：{title}",
+  "session.children": "子会话（{count}）",
   "sidebar.workspaces": "工作区",
   "status.running": "运行中",
   "status.stopping": "正在停止",

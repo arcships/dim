@@ -7,8 +7,8 @@ use dim_agent_runtime::{AgentBuilder, AgentConfig};
 use dim_agent_types::{CatalogCapabilities, ModelId};
 use dim_app_server::{RunningServer, ServerConfig, serve};
 use dim_modality::{
-    AdapterError, AdapterFuture, AdapterOperation, AdapterOutput, AdapterProgress, Clock,
-    InstallOptions, Job, JobFile, ModalityAdapter, ModalityAdapterService, ProgressSink,
+    AdapterError, AdapterFuture, AdapterOperation, AdapterOutput, AdapterProgress, ArtifactHook,
+    Clock, InstallOptions, Job, JobFile, ModalityAdapter, ModalityAdapterService, ProgressSink,
     RealtimeConnection, RealtimeEnd, RealtimeEvent, RealtimeFrame, RealtimeLimits, RealtimeOpened,
     RealtimeTransport, RemoteCancel, Submitted,
 };
@@ -153,10 +153,7 @@ async fn launch_with(
     defaults::mock_model_hosts(&mut builder);
     dim_agent_capabilities::defaults::tool_host(&mut builder, tools);
     dim_app_server::collaboration::install(&mut builder);
-    match options {
-        Some(options) => dim_modality::install_with(&mut builder, options),
-        None => dim_modality::install(&mut builder),
-    }
+    dim_modality::install_with(&mut builder, options.unwrap_or_default());
     extra(&mut builder);
     serve(builder, config).await.unwrap()
 }
@@ -197,6 +194,8 @@ struct Behavior {
     reverse_completion: bool,
     /// A path outside the work directory to return instead of writing.
     outside: Option<std::path::PathBuf>,
+    /// A name inside the work directory to leave as a link to the given path.
+    link: Option<(String, std::path::PathBuf)>,
     remote_cancel: RemoteCancel,
 }
 impl Default for Behavior {
@@ -217,6 +216,7 @@ impl Default for Behavior {
             named_output: false,
             reverse_completion: false,
             outside: None,
+            link: None,
             remote_cancel: RemoteCancel::Cancelled,
         }
     }
@@ -526,6 +526,19 @@ impl ModalityAdapter for FixtureAdapter {
                         name: "outside.bin".into(),
                         media_type: "image/png".into(),
                         path: outside,
+                    }],
+                    data: None,
+                });
+            }
+            if let Some((name, target)) = &behavior.link {
+                let path = job.work_dir.join(name);
+                let _ = std::fs::remove_file(&path);
+                std::os::unix::fs::symlink(target, &path).expect("fixture link");
+                return Ok(AdapterOutput {
+                    files: vec![JobFile {
+                        name: name.clone(),
+                        media_type: "image/png".into(),
+                        path,
                     }],
                     data: None,
                 });
@@ -1461,7 +1474,7 @@ async fn every_a1_category_and_operation_is_reported_with_its_default_key() {
             ("avatar", Some("modality.realtime")),
         ],
     );
-    assert_operations(categories, "ocr", &[("recognize", None)]);
+    assert_operations(categories, "ocr", &[("recognize", Some("modality.ocr"))]);
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
@@ -1665,7 +1678,6 @@ async fn operations_without_a_default_key_or_unknown_answers_are_unknown() {
     assert_ok(&snapshot);
     let revision = snapshot["result"]["revision"].clone();
     for params in [
-        json!({"expectedRevision": revision, "category": "ocr", "operation": "recognize", "model": null}),
         json!({"expectedRevision": revision, "category": "ocr", "model": null}),
         json!({"expectedRevision": revision, "category": "video", "operation": "unknown", "model": null}),
         json!({"expectedRevision": revision, "category": "image", "model": null}),
@@ -2302,6 +2314,12 @@ async fn a_cancel_racing_completion_yields_one_terminal_state() {
         .rpc("modality.task.cancel", json!({"task_id": task_id}))
         .await;
     assert_ok(&cancelled);
+    assert_eq!(
+        state_of(&cancelled["result"]["task"]),
+        "cancelled",
+        "{cancelled}"
+    );
+    let at_settled = count_results(&result_dir);
     let record = wait_terminal(&mut client, &task_id).await;
     assert_eq!(state_of(&record), "cancelled", "{record}");
     assert!(
@@ -2312,6 +2330,16 @@ async fn a_cancel_racing_completion_yields_one_terminal_state() {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         let leftovers = count_results(&result_dir);
+        // The cancel replies only after `settled_cancelled` returned, and
+        // `finish` observes the terminal record before it returns, so the
+        // mirror is already terminal when the reply arrives. The copier
+        // checks that mirror before opening each file and copies one at a
+        // time, so past the reply it can add at most the one file it had
+        // already opened.
+        assert!(
+            leftovers <= at_settled + 1,
+            "the losing completion kept copying: {leftovers} files seen, {at_settled} when the cancel settled"
+        );
         if leftovers == 0 {
             break;
         }
@@ -2584,6 +2612,39 @@ async fn a_result_outside_the_work_directory_fails_the_task() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_result_that_is_a_link_fails_the_task() {
+    let fixture = Arc::new(FixtureAdapter::default());
+    let (server, home) = start(Some(fixture.clone()), "dm-link").await;
+    let outside = home.join("outside.bin");
+    std::fs::write(&outside, b"stolen").unwrap();
+    fixture.set_behavior(Behavior {
+        link: Some(("out.bin".into(), outside)),
+        ..Default::default()
+    });
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_task_provider(&mut client).await;
+    let task = submit_task(
+        &mut client,
+        json!({"category": "image", "operation": "generate", "params": {"prompt": "o"}}),
+    )
+    .await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let record = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&record), "failed", "{record}");
+    assert_eq!(record["error"]["code"], "provider_error", "{record}");
+    assert!(record["result"].is_null(), "no result is written");
+    assert!(!record.to_string().contains("stolen"), "{record}");
+    let result_dir = home.join(format!("modality/tasks/{task_id}/result"));
+    let leftovers = std::fs::read_dir(&result_dir)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(leftovers, 0);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn progress_is_streamed_to_wait_and_written_at_most_once_per_second() {
     let fixture = Arc::new(FixtureAdapter::default());
     let gate = CancellationToken::new();
@@ -2657,6 +2718,93 @@ async fn progress_is_streamed_to_wait_and_written_at_most_once_per_second() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// An operation the evaluation marks unavailable is refused with the
+/// listing's own reasons, before model resolution: the `build` dimension
+/// answers `modality_unavailable`, anything else `unavailable`, and no task is
+/// written. An operation it marks available keeps the model path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unavailable_operation_answers_with_the_listings_reasons() {
+    let home = home("dm-unavailable");
+    let server = start_in(home.clone(), None).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    // `image` declares its operation, so only the adapter is missing; `music`
+    // declares nothing, so its model resolution has no answer either.
+    create_provider_with(&mut client, vec![chat("alpha", &["image.generate"])]).await;
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    for (category, operation, code) in [
+        // No adapter in this build: the operation itself is `adapter`.
+        ("image", "generate", "unavailable"),
+        // Nothing implements music: the reason is `build`.
+        ("music", "generate", "modality_unavailable"),
+    ] {
+        let entry = operation_in(&snapshot, category, operation);
+        assert_eq!(entry["available"], false, "{entry}");
+        let id = format!("{category}.{operation}");
+        let refused = client
+            .rpc(
+                "modality.task.submit",
+                json!({"category": category, "operation": operation, "params": {"prompt": "x"}}),
+            )
+            .await;
+        assert_eq!(app_error(&refused), code, "{id}: {refused}");
+        let message = refused["error"]["message"].as_str().unwrap();
+        let mut lines = message.lines();
+        assert_eq!(
+            lines.next(),
+            Some(format!("{id} is unavailable.").as_str()),
+            "{message}"
+        );
+        for reason in entry["reasons"].as_array().unwrap() {
+            let line = format!(
+                "{}: {}",
+                reason["dimension"].as_str().unwrap(),
+                reason["detail"].as_str().unwrap()
+            );
+            assert!(
+                message.lines().any(|found| found == line),
+                "{id} answers without `{line}`: {message}"
+            );
+        }
+    }
+    let list = client.rpc("modality.task.list", json!({})).await;
+    assert_ok(&list);
+    assert!(
+        list["result"]["tasks"].as_array().unwrap().is_empty(),
+        "a refused submission writes no task: {list}"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// An operation the evaluation marks available keeps the model path: with no
+/// configured default the task resolves one automatically, so the
+/// availability check refuses only what the listing refuses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_available_operation_still_resolves_its_model() {
+    let fixture = Arc::new(FixtureAdapter::default());
+    let (server, home) = start(Some(fixture), "dm-available").await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_provider_with(&mut client, vec![chat("alpha", &["image.generate"])]).await;
+    let task = submit_task(
+        &mut client,
+        json!({"category": "image", "operation": "generate", "params": {"prompt": "a"}}),
+    )
+    .await;
+    assert_eq!(
+        task["executor"]["provider"]["modelId"], "alpha",
+        "the task resolved its model: {task}"
+    );
+    assert_eq!(
+        state_of(&wait_terminal(&mut client, task["task_id"].as_str().unwrap()).await),
+        "succeeded"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unavailable_default_fails_submit() {
     let fixture = Arc::new(FixtureAdapter::default());
@@ -2713,7 +2861,6 @@ async fn operations_that_are_not_tasks_answer_for_themselves() {
         ("realtime", "voice", "modality_unknown_operation"),
         ("realtime", "transcribe", "modality_unknown_operation"),
         ("realtime", "avatar", "modality_unknown_operation"),
-        ("ocr", "recognize", "modality_unavailable"),
     ] {
         let refused = client
             .rpc(
@@ -3864,4 +4011,1757 @@ async fn params_files_is_reserved_for_the_validated_metadata() {
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// OCR host tasks (decision 4): the target the build runs itself.
+// ---------------------------------------------------------------------------
+
+const OCR_PROVIDER: &str = "local";
+const OCR_MODEL: &str = "apple-vision";
+/// The base64 of `b"image"`: the boundary checks a media type, not the bytes.
+const IMAGE_BASE64: &str = "aW1hZ2U=";
+
+/// A stand-in helper speaking the process contract in shell, keyed by the
+/// input's name so one script covers every failure the mapping decides.
+fn fake_helper(directory: &std::path::Path) -> std::path::PathBuf {
+    let path = directory.join("fake-ocr-helper.sh");
+    std::fs::write(
+        &path,
+        r#"#!/bin/sh
+input=""
+artifacts=""
+mode="text"
+shift
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --input) input="$2"; shift 2 ;;
+    --artifacts) artifacts="$2"; shift 2 ;;
+    --output-mode) mode="$2"; shift 2 ;;
+    *) echo "unexpected $1" >&2; exit 1 ;;
+  esac
+done
+name=$(basename "$input")
+case "$name" in
+  exit2.png)
+    printf '%s\n' '{"ok":false,"error":{"code":"encrypted_pdf","message":"The PDF requires a password"}}'
+    exit 2 ;;
+  exit1.png)
+    echo "the helper broke" >&2
+    exit 1 ;;
+  hang.png)
+    echo $$ > "$artifacts/pid"
+    sleep 30
+    exit 0 ;;
+  loud.png)
+    i=0
+    while [ "$i" -lt 1400 ]; do
+      printf '%0100d' 0
+      i=$((i + 1))
+    done
+    exit 0 ;;
+  big.png)
+    text=$(yes a | tr -d '\n' | head -c 600000)
+    printf '{"text":"%s","pageCount":3,"pages":[{"page":1,"text":"%s","width":10,"height":10,"regions":[]},{"page":2,"text":"%s","width":10,"height":10,"regions":[]},{"page":3,"text":"%s","width":10,"height":10,"regions":[]}]}' \
+      "$text" "$text" "$text" "$text" > "$artifacts/result.json"
+    printf '%s' "$text" > "$artifacts/text.txt"
+    printf '%s\n' '{"ok":true,"pageCount":3}'
+    exit 0 ;;
+  fifo.png)
+    mkfifo "$artifacts/result.json"
+    printf '%s\n' '{"ok":true,"pageCount":1}'
+    exit 0 ;;
+  link.png)
+    printf '%s' '{"text":"OUTSIDE-MARKER","pageCount":1,"pages":[{"page":1,"text":"OUTSIDE-MARKER","width":10,"height":10,"regions":[]}]}' > "$TMPDIR/outside.json"
+    ln -s "$TMPDIR/outside.json" "$artifacts/result.json"
+    printf 'hello' > "$artifacts/text.txt"
+    printf '%s\n' '{"ok":true,"pageCount":1}'
+    exit 0 ;;
+  textlink.png)
+    printf '%s' '{"text":"hello","pageCount":1,"pages":[{"page":1,"text":"hello","width":10,"height":10,"regions":[]}]}' > "$artifacts/result.json"
+    printf 'stolen' > "$TMPDIR/outside.txt"
+    ln -s "$TMPDIR/outside.txt" "$artifacts/text.txt"
+    printf '%s\n' '{"ok":true,"pageCount":1}'
+    exit 0 ;;
+  imagelink.png)
+    printf '%s' '{"text":"hello","pageCount":1,"pages":[{"page":1,"text":"hello","width":10,"height":10,"regions":[]}]}' > "$artifacts/result.json"
+    printf 'hello' > "$artifacts/text.txt"
+    printf 'PNG' > "$TMPDIR/outside.png"
+    ln -s "$TMPDIR/outside.png" "$artifacts/page-0001.png"
+    printf '%s\n' '{"ok":true,"pageCount":1}'
+    exit 0 ;;
+  oversized.png)
+    printf '%s' '{"text":"hello","pageCount":1,"pages":[{"page":1,"text":"hello","width":10,"height":10,"regions":[]}]}' > "$artifacts/result.json"
+    printf 'hello' > "$artifacts/text.txt"
+    dd if=/dev/null of="$artifacts/page-0001.png" bs=1 seek=1073741825 2>/dev/null
+    printf '%s\n' '{"ok":true,"pageCount":1}'
+    exit 0 ;;
+  noresult.png)
+    printf 'orphan text' > "$artifacts/text.txt"
+    printf '%s\n' '{"ok":true,"pageCount":1}'
+    exit 0 ;;
+  notext.png)
+    printf '%s' '{"text":"hello","pageCount":1,"pages":[{"page":1,"text":"hello","width":10,"height":10,"regions":[]}]}' > "$artifacts/result.json"
+    printf '%s\n' '{"ok":true,"pageCount":1}'
+    exit 0 ;;
+esac
+printf '%s' '{"text":"hello\n\nworld","pageCount":2,"pages":[{"page":1,"text":"hello","width":10,"height":10,"regions":[]},{"page":2,"text":"world","width":10,"height":10,"regions":[]}]}' > "$artifacts/result.json"
+printf 'hello\n\nworld' > "$artifacts/text.txt"
+if [ "$mode" = "layout" ]; then
+  printf 'PNG' > "$artifacts/page-0001.png"
+fi
+printf '%s\n' '{"ok":true,"pageCount":2}'
+exit 0
+"#,
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+async fn start_with_helper(home: std::path::PathBuf, helper: std::path::PathBuf) -> RunningServer {
+    let config = ServerConfig {
+        product_home: Some(home.clone()),
+        target_home: Some(home.join("native")),
+        ..Default::default()
+    };
+    launch_with(
+        Arc::new(MockTools),
+        config,
+        Some(InstallOptions {
+            ocr_helper: Some(helper),
+            ..Default::default()
+        }),
+        |_| {},
+    )
+    .await
+}
+
+async fn start_with_helper_and_hook(
+    home: std::path::PathBuf,
+    helper: std::path::PathBuf,
+    hook: Arc<dyn ArtifactHook>,
+) -> RunningServer {
+    let config = ServerConfig {
+        product_home: Some(home.clone()),
+        target_home: Some(home.join("native")),
+        ..Default::default()
+    };
+    launch_with(
+        Arc::new(MockTools),
+        config,
+        Some(InstallOptions {
+            ocr_helper: Some(helper),
+            artifact: hook,
+            ..Default::default()
+        }),
+        |_| {},
+    )
+    .await
+}
+
+fn ocr_submit(name: &str, mode: &str) -> Value {
+    json!({
+        "category": "ocr",
+        "operation": "recognize",
+        "params": {"outputMode": mode},
+        "files": [{"name": name, "media_type": "image/png", "data_base64": IMAGE_BASE64}],
+        "client_task_id": format!("ocr-{name}-{mode}"),
+    })
+}
+
+/// The bytes of one result file through `modality.task.result`.
+async fn result_bytes(client: &mut Client, task_id: &str, name: &str, length: usize) -> Vec<u8> {
+    let reply = client
+        .rpc(
+            "modality.task.result",
+            json!({"task_id": task_id, "name": name, "offset": 0, "length": length}),
+        )
+        .await;
+    assert_ok(&reply);
+    base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        reply["result"]["data_base64"].as_str().unwrap(),
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ocr_offers_the_local_target_and_configure_sets_the_default() {
+    let home = home("dm-ocr");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home, helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let ocr = snapshot["result"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|category| category["category"] == "ocr")
+        .unwrap();
+    assert_eq!(ocr["available"], true);
+    let recognize = operation_in(&snapshot, "ocr", "recognize");
+    assert_eq!(recognize["available"], true);
+    assert_eq!(
+        recognize["options"],
+        json!([{"providerId": OCR_PROVIDER, "modelId": OCR_MODEL, "available": true}])
+    );
+    let configured = client
+        .rpc(
+            "modality.configure",
+            json!({
+                "expectedRevision": snapshot["result"]["revision"],
+                "category": "ocr",
+                "operation": "recognize",
+                "model": {"providerId": OCR_PROVIDER, "modelId": OCR_MODEL},
+            }),
+        )
+        .await;
+    assert_ok(&configured);
+    let recognize = operation_in(&configured, "ocr", "recognize");
+    assert_eq!(
+        recognize["default"],
+        json!({"providerId": OCR_PROVIDER, "modelId": OCR_MODEL, "available": true})
+    );
+    assert_eq!(
+        recognize["effective"],
+        json!({"providerId": OCR_PROVIDER, "modelId": OCR_MODEL, "source": "default"})
+    );
+    // A Provider model is not an OCR option.
+    let refused = client
+        .rpc(
+            "modality.configure",
+            json!({
+                "expectedRevision": configured["result"]["revision"],
+                "category": "ocr",
+                "operation": "recognize",
+                "model": {"providerId": PROVIDER, "modelId": "alpha"},
+            }),
+        )
+        .await;
+    assert_eq!(app_error(&refused), "modality_invalid_selection");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ocr_task_publishes_the_helper_artifacts() {
+    let home = home("dm-ocr");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home, helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = submit_task(&mut client, ocr_submit("scan.png", "text")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        task["executor"],
+        json!({
+            "kind": "host",
+            "node": null,
+            "target": {"providerId": OCR_PROVIDER, "modelId": OCR_MODEL},
+            "confined": null,
+        })
+    );
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "succeeded", "{done}");
+    if cfg!(target_os = "macos") {
+        assert_eq!(done["executor"]["confined"], true, "{done}");
+    }
+    let result = &done["result"];
+    let names: Vec<&str> = result["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["result.json", "text.txt"]);
+    assert_eq!(
+        result["data"],
+        json!({"pages": [{"page": 1, "text": "hello"}, {"page": 2, "text": "world"}]})
+    );
+    assert_eq!(
+        result_bytes(&mut client, &task_id, "text.txt", 65536).await,
+        b"hello\n\nworld"
+    );
+    let result_json = result_bytes(&mut client, &task_id, "result.json", 65536).await;
+    let document: Value = serde_json::from_slice(&result_json).unwrap();
+    assert_eq!(document["pageCount"], 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn data_carries_at_most_one_mebibyte_of_page_text() {
+    let home = home("dm-ocr");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home, helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = submit_task(&mut client, ocr_submit("big.png", "text")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "succeeded", "{done}");
+    let data = &done["result"]["data"];
+    assert_eq!(data["textTruncated"], true, "{data}");
+    let pages = data["pages"].as_array().unwrap();
+    assert_eq!(pages.len(), 3, "{data}");
+    let numbers: Vec<u64> = pages
+        .iter()
+        .map(|page| page["page"].as_u64().unwrap())
+        .collect();
+    assert_eq!(numbers, [1, 2, 3]);
+    // Page one fits the 1 MiB budget; page two would cross it and keeps only
+    // its number, and so does page three.
+    assert_eq!(pages[0]["text"].as_str().unwrap().len(), 600_000);
+    assert!(pages[1].get("text").is_none(), "{data}");
+    assert!(pages[2].get("text").is_none(), "{data}");
+    let kept: usize = pages
+        .iter()
+        .filter_map(|page| page["text"].as_str())
+        .map(str::len)
+        .sum();
+    assert!(kept <= 1024 * 1024, "{kept} bytes of text recorded");
+    // The whole text is still in text.txt.
+    let text = result_bytes(&mut client, &task_id, "text.txt", 1_048_576).await;
+    assert_eq!(text.len(), 600_000);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_layout_task_publishes_the_page_image() {
+    let home = home("dm-ocr");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home, helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = submit_task(&mut client, ocr_submit("scan.png", "layout")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "succeeded", "{done}");
+    let names: Vec<&str> = done["result"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["result.json", "text.txt", "page-0001.png"]);
+    assert_eq!(
+        result_bytes(&mut client, &task_id, "page-0001.png", 65536).await,
+        b"PNG"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn helper_artifacts_that_are_not_regular_files_are_refused_without_blocking() {
+    let home = home("dm-ocr");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home.clone(), helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    for (name, mode) in [
+        ("fifo.png", "text"),
+        ("link.png", "text"),
+        ("textlink.png", "text"),
+        ("imagelink.png", "layout"),
+    ] {
+        let started = std::time::Instant::now();
+        let task = submit_task(&mut client, ocr_submit(name, mode)).await;
+        let task_id = task["task_id"].as_str().unwrap().to_owned();
+        let done = wait_terminal(&mut client, &task_id).await;
+        assert_eq!(state_of(&done), "failed", "{name}: {done}");
+        assert_eq!(done["error"]["code"], "executor_error", "{name}: {done}");
+        assert!(done["result"].is_null(), "{name}: no result is written");
+        let fetched = task_status(&mut client, &task_id).await;
+        for record in [&done, &fetched] {
+            let text = record.to_string();
+            assert!(!text.contains("OUTSIDE-MARKER"), "{name}: {text}");
+            assert!(!text.contains("stolen"), "{name}: {text}");
+        }
+        let result_dir = home.join(format!("modality/tasks/{task_id}/result"));
+        // Artifacts published before the refused one are discarded; the
+        // storage's own dot-directories are infrastructure, not results.
+        let leftovers = std::fs::read_dir(&result_dir)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+                    .count()
+            })
+            .unwrap_or(0);
+        assert_eq!(leftovers, 0, "{name}: {leftovers} result files");
+        if name == "fifo.png" {
+            // A FIFO left at the artifact name must not block the read.
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "the FIFO blocked the daemon for {:?}",
+                started.elapsed()
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_oversized_helper_result_is_refused_before_it_is_read() {
+    let home = home("dm-ocr");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home.clone(), helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = submit_task(&mut client, ocr_submit("oversized.png", "text")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "failed", "{done}");
+    assert_eq!(done["error"]["code"], "executor_error", "{done}");
+    assert!(
+        done["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("exceed"),
+        "{done}"
+    );
+    assert!(done["result"].is_null(), "no result is written");
+    let result_dir = home.join(format!("modality/tasks/{task_id}/result"));
+    // The small artifacts copied before the oversized page are discarded with
+    // it; the storage's own dot-directories are infrastructure, not results.
+    let leftovers = std::fs::read_dir(&result_dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+                .count()
+        })
+        .unwrap_or(0);
+    assert_eq!(leftovers, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_host_task_removes_its_work_directory() {
+    let home = home("dm-ocr");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home.clone(), helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    for (name, message) in [
+        ("noresult.png", "The OCR helper wrote no readable result"),
+        ("notext.png", "The OCR helper wrote no text"),
+    ] {
+        let task = submit_task(&mut client, ocr_submit(name, "text")).await;
+        let task_id = task["task_id"].as_str().unwrap().to_owned();
+        let done = wait_terminal(&mut client, &task_id).await;
+        assert_eq!(state_of(&done), "failed", "{name}: {done}");
+        assert_eq!(done["error"]["code"], "executor_error", "{name}: {done}");
+        assert_eq!(done["error"]["message"], message, "{name}: {done}");
+        assert!(done["result"].is_null(), "{name}: no result is written");
+        let work_dir = home.join(format!("modality/tasks/{task_id}/work"));
+        assert!(
+            !work_dir.exists(),
+            "{name}: the failed task kept its work directory"
+        );
+    }
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The count hook of the flow below: after a work file is opened and counted,
+/// it records the size the count saw and, for `result.json` and
+/// `page-0001.png`, replaces that file under the same name. A copy from a
+/// second open would publish the replacement; a copy from the counted reader
+/// publishes the recorded size.
+struct ReplaceAfterCount {
+    counted: Mutex<BTreeMap<String, u64>>,
+}
+
+impl ArtifactHook for ReplaceAfterCount {
+    fn after_count(&self, work: &std::path::Path, name: &str) {
+        let Ok(metadata) = std::fs::metadata(work.join(name)) else {
+            return;
+        };
+        self.counted
+            .lock()
+            .unwrap()
+            .insert(name.to_owned(), metadata.len());
+        let replacement = work.join("replacement.bin");
+        match name {
+            "result.json" => std::fs::write(
+                &replacement,
+                b"{\"text\":\"CHANGED\",\"pageCount\":1,\"pages\":[{\"page\":1,\"text\":\"CHANGED\",\"width\":10,\"height\":10,\"regions\":[]}]}",
+            )
+            .unwrap(),
+            "page-0001.png" => std::fs::write(&replacement, vec![b'X'; 100]).unwrap(),
+            _ => return,
+        }
+        std::fs::rename(&replacement, work.join(name)).unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_host_path_publishes_the_bytes_the_cap_counted() {
+    let home = home("dm-ocr");
+    let helper = fake_helper(&home);
+    let hook = Arc::new(ReplaceAfterCount {
+        counted: Mutex::new(BTreeMap::new()),
+    });
+    let server = start_with_helper_and_hook(home, helper, hook.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = submit_task(&mut client, ocr_submit("scan.png", "layout")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "succeeded", "{done}");
+    let counted = hook.counted.lock().unwrap().clone();
+    assert_eq!(counted["page-0001.png"], 3, "{counted:?}");
+    assert_eq!(counted["text.txt"], 12, "{counted:?}");
+    // Every published file has the size its count saw, and the total
+    // is the counted total: the replacements were never copied.
+    let files = done["result"]["files"].as_array().unwrap();
+    let mut total = 0;
+    for file in files {
+        let name = file["name"].as_str().unwrap();
+        let bytes = file["bytes"].as_u64().unwrap();
+        assert_eq!(Some(&bytes), counted.get(name), "{name}: {done}");
+        total += bytes;
+    }
+    assert_eq!(total, counted.values().sum::<u64>(), "{done}");
+    assert_eq!(
+        result_bytes(&mut client, &task_id, "page-0001.png", 65536).await,
+        b"PNG"
+    );
+    // data.pages describes the published result.json, not the replacement.
+    let result_json = result_bytes(&mut client, &task_id, "result.json", 65536).await;
+    let document: Value = serde_json::from_slice(&result_json).unwrap();
+    let expected: Vec<Value> = document["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|page| json!({"page": page["page"], "text": page["text"]}))
+        .collect();
+    assert_eq!(done["result"]["data"]["pages"], json!(expected), "{done}");
+    assert!(!done.to_string().contains("CHANGED"), "{done}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typed_and_broken_helpers_fail_with_the_mapped_code() {
+    let home = home("dm-ocr");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home, helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    for (name, code) in [
+        ("exit2.png", "invalid_input"),
+        ("exit1.png", "executor_error"),
+    ] {
+        let task = submit_task(&mut client, ocr_submit(name, "text")).await;
+        let task_id = task["task_id"].as_str().unwrap().to_owned();
+        let done = wait_terminal(&mut client, &task_id).await;
+        assert_eq!(state_of(&done), "failed", "{done}");
+        assert_eq!(done["error"]["code"], code, "{done}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_helper_over_its_output_limit_fails_executor_error() {
+    let home = home("dm-ocr");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home, helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = submit_task(&mut client, ocr_submit("loud.png", "text")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "failed", "{done}");
+    assert_eq!(done["error"]["code"], "executor_error", "{done}");
+    assert!(
+        done["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("stdout"),
+        "{done}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancel_stops_a_running_helper() {
+    let home = home("dm-ocr");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home.clone(), helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = submit_task(&mut client, ocr_submit("hang.png", "text")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    // The helper records its pid inside its work directory before sleeping.
+    let pid_file = home.join("modality/tasks").join(&task_id).join("work/pid");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let pid = loop {
+        if let Ok(pid) = std::fs::read_to_string(&pid_file) {
+            break pid.trim().to_owned();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the helper never recorded its pid"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    let cancelled = client
+        .rpc("modality.task.cancel", json!({"task_id": task_id}))
+        .await;
+    assert_ok(&cancelled);
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "cancelled", "{done}");
+    assert!(
+        done["executor"]["confined"].is_null(),
+        "a started helper that returned no result records no confinement result: {done}"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let alive = std::process::Command::new("/bin/kill")
+            .args(["-0", &pid])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !alive {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the helper {pid} outlived its task"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_named_node_is_unavailable() {
+    let home = home("dm-ocr");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home, helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let mut submit = ocr_submit("scan.png", "text");
+    submit["node"] = json!("n2");
+    let task = submit_task(&mut client, submit).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "failed", "{done}");
+    assert_eq!(done["error"]["code"], "node_unavailable", "{done}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_foreign_explicit_model_is_refused() {
+    let home = home("dm-ocr");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home, helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let mut submit = ocr_submit("scan.png", "text");
+    submit["model"] = json!({"providerId": PROVIDER, "modelId": "alpha"});
+    let reply = client.rpc("modality.task.submit", submit).await;
+    assert_eq!(app_error(&reply), "model_unavailable");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ocr_takes_one_input_file() {
+    let home = home("dm-ocr");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home, helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let mut submit = ocr_submit("scan.png", "text");
+    submit["files"] = json!([]);
+    let reply = client.rpc("modality.task.submit", submit).await;
+    assert_eq!(app_error(&reply), "invalid_input");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_vanished_input_fails_invalid_input() {
+    let home = home("dm-ocr");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home.clone(), helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    // Four hanging tasks occupy the category; the fifth waits in the queue.
+    let mut hanging = Vec::new();
+    for index in 0..4 {
+        let mut submit = ocr_submit("hang.png", "text");
+        submit["client_task_id"] = json!(format!("hang-{index}"));
+        let task = submit_task(&mut client, submit).await;
+        hanging.push(task["task_id"].as_str().unwrap().to_owned());
+    }
+    let input = home.join("scan.png");
+    std::fs::write(&input, b"image").unwrap();
+    let mut queued = ocr_submit("scan.png", "text");
+    queued["files"] = json!([{
+        "name": "scan.png",
+        "media_type": "image/png",
+        "node_path": input.to_str().unwrap(),
+    }]);
+    queued["client_task_id"] = json!("vanishing");
+    let task = submit_task(&mut client, queued).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    assert_eq!(state_of(&task), "queued");
+    std::fs::remove_file(&input).unwrap();
+    for hanging in &hanging {
+        let reply = client
+            .rpc("modality.task.cancel", json!({"task_id": hanging}))
+            .await;
+        assert_ok(&reply);
+    }
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "failed", "{done}");
+    assert_eq!(done["error"]["code"], "invalid_input", "{done}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ocr_is_absent_when_the_build_starts_no_helper() {
+    let (server, _home) = start(None, "dm-ocr-nobuild").await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let recognize = operation_in(&snapshot, "ocr", "recognize");
+    assert_eq!(recognize["available"], false);
+    assert_eq!(recognize["options"], json!([]));
+    assert_eq!(recognize["reasons"][0]["dimension"], "build");
+    let refused = client
+        .rpc(
+            "modality.configure",
+            json!({
+                "expectedRevision": snapshot["result"]["revision"],
+                "category": "ocr",
+                "operation": "recognize",
+                "model": {"providerId": OCR_PROVIDER, "modelId": OCR_MODEL},
+            }),
+        )
+        .await;
+    assert_eq!(app_error(&refused), "modality_invalid_selection");
+    let submit = client
+        .rpc(
+            "modality.task.submit",
+            json!({
+                "category": "ocr",
+                "operation": "recognize",
+                "model": {"providerId": OCR_PROVIDER, "modelId": OCR_MODEL},
+                "files": [{"name": "scan.png", "media_type": "image/png", "data_base64": IMAGE_BASE64}],
+            }),
+        )
+        .await;
+    assert_eq!(
+        app_error(&submit),
+        "modality_unavailable",
+        "a build reason names the code: {submit}"
+    );
+    let message = submit["error"]["message"].as_str().unwrap();
+    assert_eq!(
+        message.lines().next(),
+        Some("ocr.recognize is unavailable."),
+        "{message}"
+    );
+    let reason = &recognize["reasons"][0];
+    assert!(
+        message.contains(&format!(
+            "\n{}: {}",
+            reason["dimension"].as_str().unwrap(),
+            reason["detail"].as_str().unwrap()
+        )),
+        "the refusal carries the listing's reason: {message}"
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ocr_is_absent_on_a_platform_without_apple_vision() {
+    let home = home("dm-ocr-platform");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home, helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let recognize = operation_in(&snapshot, "ocr", "recognize");
+    assert_eq!(recognize["available"], false);
+    assert_eq!(recognize["reasons"][0]["dimension"], "platform");
+    let submit = client
+        .rpc(
+            "modality.task.submit",
+            json!({
+                "category": "ocr",
+                "operation": "recognize",
+                "model": {"providerId": OCR_PROVIDER, "modelId": OCR_MODEL},
+                "files": [{"name": "scan.png", "media_type": "image/png", "data_base64": IMAGE_BASE64}],
+            }),
+        )
+        .await;
+    assert_eq!(app_error(&submit), "unavailable");
+}
+
+// ---------------------------------------------------------------------------
+// The plugin-supplied OCR target (A.2.1): a fixture process row provides
+// `ocrHelper`, its `describe` reply is the test's, and the helper it names is
+// test code. No plugin package, engine or downloaded file is involved.
+// ---------------------------------------------------------------------------
+
+use rutis::host::CtxHost;
+use rutis_bridge::session::{HostDispatch, Reply, Value as ServiceValue, host_key};
+
+const PP_OCR_MODEL: &str = "pp-ocr";
+
+/// The fixture `ocrHelper` service: its `describe` returns the JSON the test
+/// set, or `null`, and counts the calls so a flow can tell a task read it.
+/// Past the replies it is allowed, it answers with a future that never
+/// completes — a row that stops answering — and counts the reads dropped
+/// without an answer.
+#[derive(Clone, Default)]
+struct OcrHelperFixture {
+    description: Arc<Mutex<Option<Value>>>,
+    /// The service's declared method kinds, as `HostDispatch::methods`
+    /// returns them.
+    declared: Arc<Mutex<Value>>,
+    describes: Arc<AtomicUsize>,
+    replies: Arc<AtomicUsize>,
+    dropped: Arc<AtomicUsize>,
+}
+impl OcrHelperFixture {
+    fn new(description: Option<Value>) -> Self {
+        Self::declaring(description, json!({"describe": "async"}))
+    }
+    /// A fixture whose service declares `declared` — `{ method: kind }`, as a
+    /// manifest's `provides` entry does.
+    fn declaring(description: Option<Value>, declared: Value) -> Self {
+        Self {
+            description: Arc::new(Mutex::new(description)),
+            declared: Arc::new(Mutex::new(declared)),
+            describes: Default::default(),
+            replies: Arc::new(AtomicUsize::new(usize::MAX)),
+            dropped: Default::default(),
+        }
+    }
+    fn set(&self, description: Option<Value>) {
+        *self.description.lock().unwrap() = description;
+    }
+    fn describes(&self) -> usize {
+        self.describes.load(Ordering::SeqCst)
+    }
+    /// Every `describe` from now on hangs.
+    fn silent(&self) {
+        self.replies.store(0, Ordering::SeqCst);
+    }
+    /// The next `describe` answers; every one after it hangs.
+    fn reply_once_then_silent(&self) {
+        self.replies.store(self.describes() + 1, Ordering::SeqCst);
+    }
+    /// How many hanging replies were given up on (a bound or a cancel).
+    fn dropped(&self) -> usize {
+        self.dropped.load(Ordering::SeqCst)
+    }
+}
+/// Counts a pending `describe` answer dropped without one.
+struct PendingRead(Arc<AtomicUsize>);
+impl Drop for PendingRead {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+impl HostDispatch for OcrHelperFixture {
+    fn methods(&self) -> Option<Value> {
+        Some(self.declared.lock().unwrap().clone())
+    }
+    fn invoke(&self, method: &str, _args: ServiceValue) -> Reply {
+        assert_eq!(method, "describe", "the fixture serves one method");
+        let count = self.describes.fetch_add(1, Ordering::SeqCst) + 1;
+        if count > self.replies.load(Ordering::SeqCst) {
+            let dropped = self.dropped.clone();
+            return Ok(ServiceValue::future(async move {
+                let _pending = PendingRead(dropped);
+                std::future::pending::<Reply>().await
+            }));
+        }
+        let description = self.description.lock().unwrap().clone();
+        // An `async` method answers with a future (LightOcr §3).
+        Ok(ServiceValue::future(async move {
+            Ok(ServiceValue::Data(description.unwrap_or(Value::Null)))
+        }))
+    }
+}
+
+/// The fixture plugin's process row: it provides `ocrHelper` and nothing else.
+struct OcrHelperPlugin(OcrHelperFixture);
+impl Plugin for OcrHelperPlugin {
+    type Deps = ();
+    fn name(&self) -> &str {
+        "test.ocr.helper"
+    }
+    async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
+        ctx.provide_at(
+            host_key("ocrHelper"),
+            Arc::new(self.0.clone()) as Arc<dyn HostDispatch>,
+        )?;
+        Ok(())
+    }
+}
+
+/// A product profile with the fixture plugin installed beside the build's own
+/// OCR helper.
+async fn start_with_ocr_targets(
+    home: std::path::PathBuf,
+    helper: Option<std::path::PathBuf>,
+    fixture: OcrHelperFixture,
+) -> RunningServer {
+    let config = ServerConfig {
+        product_home: Some(home.clone()),
+        target_home: Some(home.join("native")),
+        ..Default::default()
+    };
+    launch_with(
+        Arc::new(MockTools),
+        config,
+        Some(InstallOptions {
+            ocr_helper: helper,
+            ..Default::default()
+        }),
+        move |builder| {
+            builder.plugin(move |_| Ok(Box::new(OcrHelperPlugin(fixture.clone()))));
+        },
+    )
+    .await
+}
+
+/// The `ocrHelper.describe` reply of A.2.1.
+fn ocr_description(
+    contract: u32,
+    executable: &std::path::Path,
+    args: &[std::path::PathBuf],
+    read: &[&std::path::Path],
+) -> Value {
+    json!({
+        "contract": contract,
+        "target": {"providerId": OCR_PROVIDER, "modelId": PP_OCR_MODEL},
+        "executable": executable.to_string_lossy(),
+        "args": args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+        "read": read.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+    })
+}
+
+fn write_script(path: &std::path::Path, body: &str) {
+    std::fs::write(path, body).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A plugin directory with the stub helper and the file it reads at start; the
+/// stub writes the marker it read into `result.json` and `text.txt`.
+fn plugin_copy(root: &std::path::Path, name: &str, marker: &str) -> std::path::PathBuf {
+    let directory = root.join(name);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("marker.txt"), marker).unwrap();
+    write_script(
+        &directory.join("stub.sh"),
+        r#"#!/bin/sh
+input=""
+artifacts=""
+mode="text"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --input) input="$2"; shift 2 ;;
+    --artifacts) artifacts="$2"; shift 2 ;;
+    --output-mode) mode="$2"; shift 2 ;;
+    *) echo "unexpected $1" >&2; exit 1 ;;
+  esac
+done
+directory=$(dirname "$0")
+marker=$(cat "$directory/marker.txt")
+printf '{"text":"%s","pageCount":1,"pages":[{"page":1,"text":"%s","width":10,"height":10,"regions":[]}]}' "$marker" "$marker" > "$artifacts/result.json"
+printf '%s' "$marker" > "$artifacts/text.txt"
+if [ "$mode" = "layout" ]; then printf 'PNG' > "$artifacts/page-0001.png"; fi
+printf '{"ok":true,"pageCount":1}\n'
+"#,
+    );
+    directory
+}
+
+/// The test-owned gate the (c) flows name: it runs outside the plugin
+/// directory, marks the work directory ready, waits for the go marker, and
+/// then execs the stub the description named.
+fn ocr_gate(root: &std::path::Path) -> std::path::PathBuf {
+    let gate = root.join("ocr-gate.sh");
+    write_script(
+        &gate,
+        r#"#!/bin/sh
+stub="$1"
+shift
+input=""
+artifacts=""
+mode="text"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --input) input="$2"; shift 2 ;;
+    --artifacts) artifacts="$2"; shift 2 ;;
+    --output-mode) mode="$2"; shift 2 ;;
+    *) echo "unexpected $1" >&2; exit 1 ;;
+  esac
+done
+printf 'ready' > "$artifacts/ready"
+n=0
+while [ ! -f "$artifacts/go" ]; do
+  n=$((n + 1))
+  if [ "$n" -ge 600 ]; then echo "no go marker" >&2; exit 4; fi
+  sleep 0.05
+done
+exec /bin/sh "$stub" --input "$input" --artifacts "$artifacts" --output-mode "$mode"
+"#,
+    );
+    gate
+}
+
+/// A stub that refuses with a typed helper error: exit 2, one JSON line.
+fn refusing_stub(directory: &std::path::Path) -> std::path::PathBuf {
+    let stub = directory.join("refuse.sh");
+    write_script(
+        &stub,
+        r#"#!/bin/sh
+printf '{"ok":false,"error":{"code":"encrypted_pdf","message":"The PDF requires a password"}}\n'
+exit 2
+"#,
+    );
+    stub
+}
+
+/// A stub that exits unexpectedly: neither the success nor the error line.
+fn breaking_stub(directory: &std::path::Path) -> std::path::PathBuf {
+    let stub = directory.join("break.sh");
+    write_script(
+        &stub,
+        r#"#!/bin/sh
+echo "the plugin helper broke" >&2
+exit 1
+"#,
+    );
+    stub
+}
+
+/// A stub that reads a file beside its plugin directory, outside any grant the
+/// description gives: under confinement the read fails and it exits 9.
+fn leaking_stub(directory: &std::path::Path) -> std::path::PathBuf {
+    let stub = directory.join("leak.sh");
+    write_script(
+        &stub,
+        r#"#!/bin/sh
+artifacts=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --input) shift 2 ;;
+    --artifacts) artifacts="$2"; shift 2 ;;
+    --output-mode) shift 2 ;;
+    *) echo "unexpected $1" >&2; exit 1 ;;
+  esac
+done
+directory=$(dirname "$0")
+content=$(cat "$directory/../secret.txt") || exit 9
+printf '{"text":"%s","pageCount":1,"pages":[{"page":1,"text":"%s","width":10,"height":10,"regions":[]}]}' "$content" "$content" > "$artifacts/result.json"
+printf '%s' "$content" > "$artifacts/text.txt"
+printf '{"ok":true,"pageCount":1}\n'
+"#,
+    );
+    stub
+}
+
+/// An `ocr.recognize` submission naming the plugin target explicitly, with a
+/// fresh `client_task_id` so one test can run several tasks.
+fn plugin_ocr_submit(name: &str, mode: &str) -> Value {
+    let mut submit = ocr_submit(name, mode);
+    submit["model"] = json!({"providerId": OCR_PROVIDER, "modelId": PP_OCR_MODEL});
+    submit["client_task_id"] = json!(format!("plugin-{name}-{mode}-{}", uuid::Uuid::new_v4()));
+    submit
+}
+
+async fn wait_for_path(path: &std::path::Path) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !path.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} never appeared",
+            path.display()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn work_of(home: &std::path::Path, task_id: &str) -> std::path::PathBuf {
+    home.join("modality/tasks").join(task_id).join("work")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ocr_lists_a_plugin_target_and_runs_its_helper() {
+    let home = home("dm-ocr-plugin");
+    let plugin = plugin_copy(&home, "pp-ocr-plugin", "plugin-copy");
+    let fixture = OcrHelperFixture::new(Some(ocr_description(
+        1,
+        std::path::Path::new("/bin/sh"),
+        &[plugin.join("stub.sh")],
+        &[&plugin],
+    )));
+    let helper = fake_helper(&home);
+    let server = start_with_ocr_targets(home.clone(), Some(helper), fixture.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let recognize = operation_in(&snapshot, "ocr", "recognize");
+    let plugin_option = recognize["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["modelId"] == PP_OCR_MODEL)
+        .unwrap_or_else(|| panic!("the plugin target is not listed: {recognize}"));
+    assert_eq!(plugin_option["available"], true, "{recognize}");
+    assert_eq!(plugin_option["reason"], Value::Null);
+    if cfg!(target_os = "macos") {
+        assert!(
+            recognize["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|option| option["modelId"] == OCR_MODEL && option["available"] == true),
+            "Apple Vision is not listed beside the plugin target: {recognize}"
+        );
+    }
+    let task = submit_task(&mut client, plugin_ocr_submit("scan.png", "text")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        task["executor"],
+        json!({
+            "kind": "host",
+            "node": null,
+            "target": {"providerId": OCR_PROVIDER, "modelId": PP_OCR_MODEL},
+            "confined": null,
+        })
+    );
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "succeeded", "{done}");
+    let names: Vec<&str> = done["result"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["result.json", "text.txt"]);
+    assert_eq!(
+        done["result"]["data"],
+        json!({"pages": [{"page": 1, "text": "plugin-copy"}]})
+    );
+    assert_eq!(
+        result_bytes(&mut client, &task_id, "text.txt", 65536).await,
+        b"plugin-copy"
+    );
+    if cfg!(target_os = "macos") {
+        assert_eq!(done["executor"]["confined"], true, "{done}");
+    } else {
+        assert!(done["executor"]["confined"].is_boolean(), "{done}");
+    }
+    assert!(!work_of(&home, &task_id).exists(), "{done}");
+    assert!(fixture.describes() >= 2, "submit and start each describe");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ocr_plugin_target_is_absent_without_the_service() {
+    let home = home("dm-ocr-plugin");
+    let helper = fake_helper(&home);
+    let server = start_with_helper(home, helper).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let recognize = operation_in(&snapshot, "ocr", "recognize");
+    assert!(
+        !recognize["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|option| option["modelId"] == PP_OCR_MODEL),
+        "an absent service lists no plugin target: {recognize}"
+    );
+    if cfg!(target_os = "macos") {
+        assert!(
+            recognize["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|option| option["modelId"] == OCR_MODEL && option["available"] == true),
+            "Apple Vision stays available: {recognize}"
+        );
+    }
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            plugin_ocr_submit("scan.png", "text"),
+        )
+        .await;
+    assert_eq!(app_error(&refused), "unavailable");
+    assert_eq!(
+        refused["error"]["message"], "The PP-OCR plugin is not running",
+        "{refused}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ocr_plugin_target_with_an_older_contract_is_unavailable() {
+    let home = home("dm-ocr-plugin");
+    let plugin = plugin_copy(&home, "pp-ocr-plugin", "plugin-copy");
+    // A newer contract changes the description's shape: an unknown field and
+    // no `args`. It must still say its contract and name its target.
+    let mut newer = ocr_description(
+        2,
+        std::path::Path::new("/bin/sh"),
+        &[plugin.join("stub.sh")],
+        &[&plugin],
+    );
+    let object = newer.as_object_mut().unwrap();
+    object.remove("args");
+    object.insert("gpu".into(), json!(true));
+    let fixture = OcrHelperFixture::new(Some(newer));
+    let helper = fake_helper(&home);
+    let server = start_with_ocr_targets(home, Some(helper), fixture.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let recognize = operation_in(&snapshot, "ocr", "recognize");
+    let plugin_option = recognize["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["modelId"] == PP_OCR_MODEL)
+        .unwrap_or_else(|| panic!("the outdated target is still listed: {recognize}"));
+    assert_eq!(plugin_option["available"], false, "{recognize}");
+    assert_eq!(
+        plugin_option["reason"],
+        json!({"dimension": "runtime", "detail": "The PP-OCR plugin needs an update"}),
+        "{recognize}"
+    );
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            plugin_ocr_submit("scan.png", "text"),
+        )
+        .await;
+    assert_eq!(app_error(&refused), "unavailable");
+    assert_eq!(
+        refused["error"]["message"], "The PP-OCR plugin needs an update",
+        "{refused}"
+    );
+    let configured = client
+        .rpc(
+            "modality.configure",
+            json!({
+                "expectedRevision": snapshot["result"]["revision"],
+                "category": "ocr",
+                "operation": "recognize",
+                "model": {"providerId": OCR_PROVIDER, "modelId": PP_OCR_MODEL},
+            }),
+        )
+        .await;
+    assert_eq!(app_error(&configured), "modality_invalid_selection");
+    assert_eq!(
+        configured["error"]["message"], "The PP-OCR plugin needs an update",
+        "{configured}"
+    );
+    // A reply that says this build's contract but is not the strict
+    // description is no target at all.
+    let mut malformed = ocr_description(
+        1,
+        std::path::Path::new("/bin/sh"),
+        &[plugin.join("stub.sh")],
+        &[&plugin],
+    );
+    malformed.as_object_mut().unwrap().remove("args");
+    fixture.set(Some(malformed));
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let recognize = operation_in(&snapshot, "ocr", "recognize");
+    assert!(
+        !recognize["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|option| option["modelId"] == PP_OCR_MODEL),
+        "a malformed current-contract reply lists no plugin target: {recognize}"
+    );
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            plugin_ocr_submit("scan.png", "text"),
+        )
+        .await;
+    assert_eq!(app_error(&refused), "unavailable");
+    assert_eq!(
+        refused["error"]["message"], "The PP-OCR plugin is not running",
+        "{refused}"
+    );
+}
+
+/// A service that declares `describe` sync is never called: it reads as
+/// needing an update, so the target is listed unavailable and a submission
+/// fails with that reason. The kind is checked before the call, so a package
+/// built against the old form cannot block a thread.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ocr_plugin_target_declaring_describe_sync_needs_an_update() {
+    let home = home("dm-ocr-plugin");
+    let plugin = plugin_copy(&home, "pp-ocr-plugin", "plugin-copy");
+    let fixture = OcrHelperFixture::declaring(
+        Some(ocr_description(
+            1,
+            std::path::Path::new("/bin/sh"),
+            &[plugin.join("stub.sh")],
+            &[&plugin],
+        )),
+        json!({"describe": "sync"}),
+    );
+    let helper = fake_helper(&home);
+    let server = start_with_ocr_targets(home.clone(), Some(helper), fixture.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let recognize = operation_in(&snapshot, "ocr", "recognize");
+    let plugin_option = recognize["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["modelId"] == PP_OCR_MODEL)
+        .unwrap_or_else(|| panic!("the outdated target is still listed: {recognize}"));
+    assert_eq!(plugin_option["available"], false, "{recognize}");
+    assert_eq!(
+        plugin_option["reason"],
+        json!({"dimension": "runtime", "detail": "The PP-OCR plugin needs an update"}),
+        "{recognize}"
+    );
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            plugin_ocr_submit("scan.png", "text"),
+        )
+        .await;
+    assert_eq!(app_error(&refused), "unavailable", "{refused}");
+    assert_eq!(
+        refused["error"]["message"], "The PP-OCR plugin needs an update",
+        "{refused}"
+    );
+    assert_eq!(
+        fixture.describes(),
+        0,
+        "a service declaring describe sync is never called"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ocr_plugin_removal_after_describe_keeps_the_admitted_task() {
+    let home = home("dm-ocr-plugin");
+    let plugin = plugin_copy(&home, "pp-ocr-plugin", "old-copy");
+    let gate = ocr_gate(&home);
+    let fixture = OcrHelperFixture::new(Some(ocr_description(
+        1,
+        &gate,
+        &[plugin.join("stub.sh")],
+        &[&plugin],
+    )));
+    let helper = fake_helper(&home);
+    let server = start_with_ocr_targets(home.clone(), Some(helper), fixture.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = submit_task(&mut client, plugin_ocr_submit("scan.png", "text")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let work = work_of(&home, &task_id);
+    wait_for_path(&work.join("ready")).await;
+    assert!(fixture.describes() >= 2, "the task read the description");
+    // The provider is removed in the window between that read and the helper.
+    fixture.set(None);
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let recognize = operation_in(&snapshot, "ocr", "recognize");
+    assert!(
+        !recognize["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|option| option["modelId"] == PP_OCR_MODEL),
+        "a removed provider lists no plugin target: {recognize}"
+    );
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            recognize["options"],
+            json!([{"providerId": OCR_PROVIDER, "modelId": OCR_MODEL, "available": true}]),
+            "{recognize}"
+        );
+    }
+    let refused = client
+        .rpc(
+            "modality.task.submit",
+            plugin_ocr_submit("scan.png", "text"),
+        )
+        .await;
+    assert_eq!(app_error(&refused), "unavailable");
+    assert_eq!(
+        refused["error"]["message"], "The PP-OCR plugin is not running",
+        "{refused}"
+    );
+    std::fs::write(work.join("go"), b"go").unwrap();
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "succeeded", "{done}");
+    assert_eq!(
+        result_bytes(&mut client, &task_id, "text.txt", 65536).await,
+        b"old-copy"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ocr_plugin_update_after_describe_runs_the_old_copy() {
+    let home = home("dm-ocr-plugin");
+    let old = plugin_copy(&home, "pp-ocr-old", "old-copy");
+    let new = plugin_copy(&home, "pp-ocr-new", "new-copy");
+    let gate = ocr_gate(&home);
+    let fixture = OcrHelperFixture::new(Some(ocr_description(
+        1,
+        &gate,
+        &[old.join("stub.sh")],
+        &[&old],
+    )));
+    let helper = fake_helper(&home);
+    let server = start_with_ocr_targets(home.clone(), Some(helper), fixture.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = submit_task(&mut client, plugin_ocr_submit("scan.png", "text")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let work = work_of(&home, &task_id);
+    wait_for_path(&work.join("ready")).await;
+    // The provider is updated in the window: later calls see the new copy, the
+    // admitted task keeps the description it read.
+    fixture.set(Some(ocr_description(
+        1,
+        &gate,
+        &[new.join("stub.sh")],
+        &[&new],
+    )));
+    std::fs::write(work.join("go"), b"go").unwrap();
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "succeeded", "{done}");
+    assert_eq!(
+        result_bytes(&mut client, &task_id, "text.txt", 65536).await,
+        b"old-copy"
+    );
+    // Later calls run the updated description: the new copy, directly.
+    fixture.set(Some(ocr_description(
+        1,
+        std::path::Path::new("/bin/sh"),
+        &[new.join("stub.sh")],
+        &[&new],
+    )));
+    let later = submit_task(&mut client, plugin_ocr_submit("scan.png", "text")).await;
+    let later_id = later["task_id"].as_str().unwrap().to_owned();
+    let later = wait_terminal(&mut client, &later_id).await;
+    assert_eq!(state_of(&later), "succeeded", "{later}");
+    assert_eq!(
+        result_bytes(&mut client, &later_id, "text.txt", 65536).await,
+        b"new-copy"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ocr_plugin_helper_failures_clear_the_work_directory() {
+    let home = home("dm-ocr-plugin");
+    let plugin = plugin_copy(&home, "pp-ocr-plugin", "plugin-copy");
+    let refuse = refusing_stub(&plugin);
+    let break_it = breaking_stub(&plugin);
+    let fixture = OcrHelperFixture::new(None);
+    let helper = fake_helper(&home);
+    let server = start_with_ocr_targets(home.clone(), Some(helper), fixture.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    // A typed refusal keeps the helper's code, mapped to the task vocabulary.
+    fixture.set(Some(ocr_description(
+        1,
+        std::path::Path::new("/bin/sh"),
+        &[refuse],
+        &[&plugin],
+    )));
+    let task = submit_task(&mut client, plugin_ocr_submit("refused.png", "text")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "failed", "{done}");
+    assert_eq!(done["error"]["code"], "invalid_input", "{done}");
+    assert_eq!(
+        done["error"]["message"], "The PDF requires a password",
+        "{done}"
+    );
+    assert!(!work_of(&home, &task_id).exists(), "{done}");
+    // Any other exit is the helper's unexpected failure.
+    fixture.set(Some(ocr_description(
+        1,
+        std::path::Path::new("/bin/sh"),
+        &[break_it],
+        &[&plugin],
+    )));
+    let task = submit_task(&mut client, plugin_ocr_submit("broken.png", "text")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "failed", "{done}");
+    assert_eq!(done["error"]["code"], "executor_error", "{done}");
+    assert!(
+        done["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("the plugin helper broke"),
+        "{done}"
+    );
+    assert!(!work_of(&home, &task_id).exists(), "{done}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ocr_plugin_helper_copy_gone_before_spawn_fails_the_task() {
+    let home = home("dm-ocr-plugin");
+    let plugin = plugin_copy(&home, "pp-ocr-plugin", "plugin-copy");
+    let fixture = OcrHelperFixture::new(Some(ocr_description(
+        1,
+        &plugin.join("stub.sh"),
+        &[],
+        &[&plugin],
+    )));
+    let helper = fake_helper(&home);
+    let server = start_with_ocr_targets(home.clone(), Some(helper), fixture).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    std::fs::remove_dir_all(&plugin).unwrap();
+    let task = submit_task(&mut client, plugin_ocr_submit("scan.png", "text")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "failed", "{done}");
+    assert_eq!(done["error"]["code"], "executor_error", "{done}");
+    assert!(
+        done["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unreadable"),
+        "{done}"
+    );
+    assert!(!work_of(&home, &task_id).exists(), "{done}");
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ocr_plugin_helper_cannot_read_outside_its_read_set() {
+    let home = home("dm-ocr-plugin");
+    let plugin = plugin_copy(&home, "pp-ocr-plugin", "plugin-copy");
+    let leak = leaking_stub(&plugin);
+    std::fs::write(home.join("secret.txt"), "do-not-read").unwrap();
+    let fixture = OcrHelperFixture::new(Some(ocr_description(
+        1,
+        std::path::Path::new("/bin/sh"),
+        std::slice::from_ref(&leak),
+        &[&plugin],
+    )));
+    let helper = fake_helper(&home);
+    let server = start_with_ocr_targets(home.clone(), Some(helper), fixture.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    // The description's read set does not grant the file: the helper's read is
+    // denied and its exit fails the task.
+    let task = submit_task(&mut client, plugin_ocr_submit("scan.png", "text")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "failed", "{done}");
+    assert_eq!(done["error"]["code"], "executor_error", "{done}");
+    assert!(!work_of(&home, &task_id).exists(), "{done}");
+    // Granting the directory makes the same stub succeed: the denial was the
+    // read set, not the stub.
+    fixture.set(Some(ocr_description(
+        1,
+        std::path::Path::new("/bin/sh"),
+        &[leak],
+        &[&plugin, &home],
+    )));
+    let task = submit_task(&mut client, plugin_ocr_submit("scan.png", "text")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let done = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&done), "succeeded", "{done}");
+    assert_eq!(
+        result_bytes(&mut client, &task_id, "text.txt", 65536).await,
+        b"do-not-read"
+    );
+}
+
+/// A product profile with the fixture plugin and the fixture adapter: a flow
+/// that runs an image task beside a stalled OCR service.
+async fn start_with_ocr_targets_and_adapter(
+    home: std::path::PathBuf,
+    helper: Option<std::path::PathBuf>,
+    fixture: OcrHelperFixture,
+    adapter: Arc<FixtureAdapter>,
+) -> RunningServer {
+    let config = ServerConfig {
+        product_home: Some(home.clone()),
+        target_home: Some(home.join("native")),
+        ..Default::default()
+    };
+    launch_with(
+        Arc::new(MockTools),
+        config,
+        Some(InstallOptions {
+            ocr_helper: helper,
+            ..Default::default()
+        }),
+        move |builder| {
+            builder.plugin(move |_| Ok(Box::new(OcrHelperPlugin(fixture.clone()))));
+            builder.plugin(move |_| Ok(Box::new(FixturePlugin(adapter.clone()))));
+        },
+    )
+    .await
+}
+
+/// Waits until `count` reaches `wanted`, failing at the deadline.
+async fn wait_for_count(count: impl Fn() -> usize, wanted: usize, what: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while count() < wanted {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what} never reached {wanted}: {}",
+            count()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// `describe` is read only where the OCR target matters: an image task never
+/// calls it, and a snapshot calls it once, whatever the row does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_image_submit_never_reads_a_silent_ocr_helper() {
+    let home = home("dm-ocr-plugin");
+    let fixture = OcrHelperFixture::new(None);
+    fixture.silent();
+    let helper = fake_helper(&home);
+    let adapter = Arc::new(FixtureAdapter::default());
+    let server =
+        start_with_ocr_targets_and_adapter(home.clone(), Some(helper), fixture.clone(), adapter)
+            .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_task_provider(&mut client).await;
+    // The image task completes while `describe` never answers, and its path
+    // never reaches the service.
+    let submit = json!({
+        "category": "image", "operation": "generate",
+        "params": {"prompt": "a cat"},
+        "files": [inline_file("in.png", "image/png", b"inline image")],
+        "client_task_id": "image-beside-ocr",
+    });
+    let task = tokio::time::timeout(Duration::from_secs(5), submit_task(&mut client, submit))
+        .await
+        .expect("the image submit waited on the OCR helper");
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    let done = tokio::time::timeout(Duration::from_secs(5), wait_terminal(&mut client, &task_id))
+        .await
+        .expect("the image task waited on the OCR helper");
+    assert_eq!(state_of(&done), "succeeded", "{done}");
+    assert_eq!(
+        fixture.describes(),
+        0,
+        "an image task never reads ocrHelper"
+    );
+    // The snapshot carries every category, the OCR one included, so it reads
+    // the service once and answers within the bound.
+    let snapshot = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.rpc("modality.capabilities", json!({})),
+    )
+    .await
+    .expect("the snapshot waited on the OCR helper");
+    assert_ok(&snapshot);
+    assert_eq!(
+        fixture.describes(),
+        1,
+        "one read per snapshot, not one per category"
+    );
+    wait_for_count(|| fixture.dropped(), 1, "the unanswered describe").await;
+    let recognize = operation_in(&snapshot, "ocr", "recognize");
+    assert!(
+        !recognize["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|option| option["modelId"] == PP_OCR_MODEL),
+        "a silent row lists no plugin target: {recognize}"
+    );
+    assert_eq!(
+        operation_in(&snapshot, "image", "generate")["available"],
+        true,
+        "the image category is unaffected"
+    );
+}
+
+/// A row that never answers reads as absent, bounded: the snapshot lists no
+/// plugin target, Apple Vision is unchanged, and an explicit submit of the
+/// plugin target fails with the one runtime reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_silent_ocr_helper_reads_as_absent() {
+    let home = home("dm-ocr-plugin");
+    let fixture = OcrHelperFixture::new(None);
+    fixture.silent();
+    let helper = fake_helper(&home);
+    let server = start_with_ocr_targets(home.clone(), Some(helper), fixture.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let snapshot = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.rpc("modality.capabilities", json!({})),
+    )
+    .await
+    .expect("the snapshot waited on the OCR helper");
+    assert_ok(&snapshot);
+    assert_eq!(fixture.describes(), 1);
+    wait_for_count(|| fixture.dropped(), 1, "the unanswered describe").await;
+    let recognize = operation_in(&snapshot, "ocr", "recognize");
+    assert!(
+        !recognize["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|option| option["modelId"] == PP_OCR_MODEL),
+        "a silent row lists no plugin target: {recognize}"
+    );
+    if cfg!(target_os = "macos") {
+        assert!(
+            recognize["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|option| option["modelId"] == OCR_MODEL && option["available"] == true),
+            "Apple Vision stays available: {recognize}"
+        );
+    } else {
+        assert!(
+            recognize["reasons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|reason| reason["dimension"] == "platform"),
+            "Apple Vision keeps its platform reason: {recognize}"
+        );
+    }
+    // A submission of the plugin target reads once, gives up at the bound,
+    // and fails unavailable.
+    let refused = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.rpc(
+            "modality.task.submit",
+            plugin_ocr_submit("scan.png", "text"),
+        ),
+    )
+    .await
+    .expect("the submit waited on the OCR helper");
+    assert_eq!(app_error(&refused), "unavailable", "{refused}");
+    assert_eq!(
+        refused["error"]["message"], "The PP-OCR plugin is not running",
+        "{refused}"
+    );
+    assert_eq!(fixture.describes(), 2, "the submit reads once");
+    wait_for_count(|| fixture.dropped(), 2, "the unanswered describe").await;
+}
+
+/// A cancel while the start-time `describe` is pending settles the task
+/// `cancelled`, not `failed` with the absent reason, and the pending read is
+/// dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_during_the_start_time_describe_settles_cancelled() {
+    let home = home("dm-ocr-plugin");
+    let plugin = plugin_copy(&home, "pp-ocr-plugin", "plugin-copy");
+    let fixture = OcrHelperFixture::new(Some(ocr_description(
+        1,
+        std::path::Path::new("/bin/sh"),
+        &[plugin.join("stub.sh")],
+        &[&plugin],
+    )));
+    // The submit's read answers; the task's start-time read hangs.
+    fixture.reply_once_then_silent();
+    let helper = fake_helper(&home);
+    let server = start_with_ocr_targets(home.clone(), Some(helper), fixture.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let task = submit_task(&mut client, plugin_ocr_submit("scan.png", "text")).await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    wait_for_count(|| fixture.describes(), 2, "the start-time describe").await;
+    let cancelled = client
+        .rpc("modality.task.cancel", json!({"task_id": task_id}))
+        .await;
+    assert_ok(&cancelled);
+    let done = tokio::time::timeout(Duration::from_secs(5), wait_terminal(&mut client, &task_id))
+        .await
+        .expect("the cancel waited on the pending describe");
+    assert_eq!(state_of(&done), "cancelled", "{done}");
+    wait_for_count(|| fixture.dropped(), 1, "the cancelled describe").await;
 }

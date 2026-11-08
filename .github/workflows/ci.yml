@@ -162,7 +162,7 @@ jobs:
           # 0.19's TypeScript test tool runs plugins on a real rutis-host; the
           # tests run from the repository root, so name it explicitly.
           export RUTIS_HOST="$PWD/runtime/node_modules/.bin/rutis-host"
-          node --test runtime/plugin-sdk.test.mjs
+          node --test runtime/plugin-sdk.test.mjs runtime/light-ocr-*.test.mjs
           # The workflow plugin tests stay off: no double of a
           # test's can receive the plugin definition they register, because
           # 0.19.3's test tool does not take one (rutis-0.19-upgrade M10). The

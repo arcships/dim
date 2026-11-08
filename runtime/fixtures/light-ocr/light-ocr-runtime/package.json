@@ -1,0 +1,5 @@
+{
+  "name": "@arcships/light-ocr-runtime",
+  "version": "0.1.9",
+  "main": "index.cjs"
+}

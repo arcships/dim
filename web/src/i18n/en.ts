@@ -245,6 +245,8 @@ const en = {
   "sidebar.showLess": "Show less",
   "sidebar.showMore": "Show more",
   "sidebar.untitled": "New session",
+  "session.parent": "Parent session: {title}",
+  "session.children": "Child sessions ({count})",
   "sidebar.workspaces": "Workspaces",
   "status.running": "Running",
   "status.stopping": "Stopping",

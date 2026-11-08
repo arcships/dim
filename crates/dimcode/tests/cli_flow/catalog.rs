@@ -113,10 +113,7 @@ fn tui_resume_labels_origins_and_shows_acp_sessions_when_asked() {
                 {"sessionId":"chat","cwd":"/workspace","title":"Update cache","preview":"chat preview",
                  "model":{"providerId":"test","modelId":"model"},"updatedAt":5,"origin":"client"},
                 {"sessionId":"editor","cwd":"/workspace","title":"Editor conversation","preview":"acp preview",
-                 "model":{"providerId":"test","modelId":"model"},"updatedAt":4,"origin":"acp"},
-                {"sessionId":"helper","cwd":"/workspace","title":"Inspect cache","preview":"agent preview",
-                 "model":{"providerId":"test","modelId":"model"},"updatedAt":3,"origin":"internal",
-                 "parentSessionId":"chat"}
+                 "model":{"providerId":"test","modelId":"model"},"updatedAt":4,"origin":"acp"}
             ]}),
         );
         no_catalog(wire);
@@ -128,7 +125,6 @@ fn tui_resume_labels_origins_and_shows_acp_sessions_when_asked() {
     terminal.write(b"/resume\r");
     terminal.until("[Chat] Update cache");
     terminal.until("[ACP ] Editor conversation");
-    terminal.until("[Agent] Inspect cache");
     terminal.write(b"\x1b[27u");
     terminal.write(b"/exit\r");
     terminal.until("Bye!");

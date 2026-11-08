@@ -2568,6 +2568,12 @@ fn drop_session(connection: &mut Connection, session: &str) -> Result<usize> {
         .map_err(error)?;
     let released = chunk(connection, |tx| {
         let released = files::release(tx, session).map_err(error)?;
+        tx.execute(
+            "UPDATE agent_sessions SET leader_session_id=NULL WHERE leader_session_id=?1
+             AND CASE WHEN json_valid(config) THEN json_extract(config, '$.collaborationRole') END IS NOT 'member'",
+            [session],
+        )
+        .map_err(error)?;
         for table in [
             "session_output_owners",
             "session_grants",

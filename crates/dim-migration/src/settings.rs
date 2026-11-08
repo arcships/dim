@@ -280,7 +280,9 @@ pub(crate) async fn import(
             "tuiMouseMode" => value
                 .as_str()
                 .is_some_and(|value| ["on", "off"].contains(&value)),
-            "tuiNotifyOnComplete" | "tuiToolDetailsExpanded" => value.is_boolean(),
+            "tuiNotifyOnComplete" | "tuiToolDetailsExpanded" | "showAcpSessions" => {
+                value.is_boolean()
+            }
             _ => false,
         };
         if compatible {

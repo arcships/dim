@@ -146,6 +146,7 @@ fn scratch(name: &str) -> PathBuf {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
+    let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).unwrap();
     std::fs::canonicalize(path).unwrap()
 }
@@ -169,6 +170,7 @@ struct Harness {
     agent: MinimalHost,
     model: Arc<Script>,
     cwd: PathBuf,
+    owned_dirs: Vec<PathBuf>,
     compacting: bool,
 }
 
@@ -182,11 +184,15 @@ impl Harness {
         Self::with_context(platform, true).await
     }
     async fn with_context(mut platform: HostPlatform, compacting: bool) -> Self {
-        platform.home = scratch("home");
+        let home = scratch("home");
+        platform.home = home.clone();
         let cwd = scratch("cwd");
         platform.env.retain(|(name, _)| name != "HOME");
         platform.env.push(("HOME".into(), cwd.as_os_str().into()));
-        Self::with_platform_context(test_platform(platform), cwd, compacting).await
+        let mut harness =
+            Self::with_platform_context(test_platform(platform), cwd, compacting).await;
+        harness.owned_dirs.push(home);
+        harness
     }
     async fn with_platform(platform: impl FnOnce(&mut AgentBuilder), cwd: PathBuf) -> Self {
         Self::with_platform_context(platform, cwd, false).await
@@ -253,6 +259,7 @@ impl Harness {
         Self {
             agent,
             model,
+            owned_dirs: vec![cwd.clone()],
             cwd,
             compacting,
         }
@@ -290,6 +297,9 @@ impl Harness {
     }
     async fn shutdown(self) {
         self.agent.close().await.unwrap();
+        for dir in self.owned_dirs {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }
 

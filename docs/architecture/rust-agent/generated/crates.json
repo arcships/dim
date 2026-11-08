@@ -169,6 +169,10 @@
   },
   {
     "from": "dim-modality",
+    "to": "dim-ocr"
+  },
+  {
+    "from": "dim-modality",
     "to": "rutis"
   },
   {
@@ -410,6 +414,10 @@
   {
     "from": "dimcode",
     "to": "dim-oauth"
+  },
+  {
+    "from": "dimcode",
+    "to": "dim-ocr"
   },
   {
     "from": "dimcode",
