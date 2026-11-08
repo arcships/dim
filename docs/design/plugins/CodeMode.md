@@ -7,7 +7,7 @@ mechanism-owner contracts. Scope: process, Session and branch ([ADR 002](../../a
 The planned first delivery is an optional first-party package at `runtime/plugins/codemode/`, loaded by
 PluginManager only when enabled. It is not currently present in the repository and is not part of the
 default profile. The package coordinates the trusted plugin bindings; it never evaluates model code in
-that process. The bounded evaluator belongs to the isolated host requirement in [#1278](https://github.com/arcships/dim/issues/1278).
+that process. The bounded evaluator belongs to the isolated host requirement in [#1276](https://github.com/arcships/dim/issues/1276).
 
 Issue: [#1276](https://github.com/arcships/dim/issues/1276).
 Rules: [design rules](../../architecture/rust-agent/principles.md), [ADR 002](../../adr/002-plugin-scope.md), [plugin contract](../plugin-contract.md).
@@ -22,7 +22,7 @@ agent loop, a persistent REPL or a Workflow engine.
 
 | Part | Scope | Owns |
 | --- | --- | --- |
-| `CodeModeSettings` | Process | The `codemode` Settings source (`codemode.json`): outer risk and authoritative code, time, call, concurrency, memory and output caps. Package enablement remains PluginManager's structural configuration. |
+| `CodeModeSettings` | Process | The `codemode` Settings source (`codemode.json`): authoritative code, time, call, concurrency, memory and output caps. The `codemode` declaration's outer risk is fixed at package load; package enablement remains PluginManager's structural configuration. |
 | `CodeModeSession` | Session | The `codemode` tool declaration and Session-side runtime factory. It reads validated `CodeModeSettings` through the declared `settings` service at call time and has no branch business state. Its registered handler is invoked by the core with the current branch execution context; it does not discover a branch by reading Session state. |
 | `CodeModeBranch` | branch | One-shot executions associated with the current branch, their cancellation and their correlation with programmatic tool results. It writes no duplicate fact for the outer `step/tool-call`; that fact remains ToolExecutor's contract. |
 | generic invocation mechanism | branch, mechanism owner | The generic programmatic invocation command/result contract and its normal Permission, Approval, ToolBinding and settlement semantics. This is not Code Mode business state. |
@@ -31,9 +31,11 @@ agent loop, a persistent REPL or a Workflow engine.
 `CodeModeSettings` is a process part owned by the optional package and registers the `codemode`
 Settings source. `CodeModeSession` is an ordinary Session part, not a Capability: it registers a tool
 and owns no branch Timeline state. It reads the validated process settings at each call; changing a
-business limit does not reload the Session. `CodeModeBranch` is a Capability because it consumes branch
-facts and owns the state of active programmatic executions. The generic invocation support belongs to
-the existing ToolExecutor mechanism owner, not to the Code Mode plugin.
+business limit does not reload the Session. The outer tool's declared risk is not a per-call setting:
+the registered declaration uses the package's fixed risk, and a risk change requires reloading the
+package. `CodeModeBranch` is a Capability because it consumes branch facts and owns the state of active
+programmatic executions. The generic invocation support belongs to the existing ToolExecutor mechanism
+owner, not to the Code Mode plugin.
 
 ### 1.2 Goals
 
@@ -103,14 +105,16 @@ The exact wire declaration is a binding decision, but the semantic fields are:
 | `maxCalls` | Optional requested nested-call budget, capped by the configured maximum. |
 
 `CodeModeSettings` is the process-owned Settings source named `codemode`, stored as the user document
-`codemode.json`. It supplies the outer declared risk and authoritative maxima for all limits in §2.2;
-PluginManager's structural enablement controls whether the optional package is assembled and is not a
-business field in this document. The Session reads the already validated source at each call, so a
-settings edit applies to later calls without reloading an in-flight call. A missing document uses the
-source's validated defaults at the Settings boundary; the Session does not add defaults.
+`codemode.json`. It supplies the authoritative maxima for all limits in §2.2; PluginManager's
+structural enablement controls whether the optional package is assembled and is not a business field
+in this document. The Session reads the already validated source at each call, so a limit edit applies
+to later calls without reloading an in-flight call. The `codemode` declaration's outer risk is fixed
+when the package loads and is not read from this source per call; changing it requires reloading the
+package and is a structural change, not a business edit. A missing document uses the source's validated
+defaults at the Settings boundary; the Session does not add defaults.
 
-The outer tool has its own declared risk and therefore enters the normal ToolExecutor admission path.
-Approving the outer call does **not** approve nested calls.
+The outer tool has its own fixed declared risk and therefore enters the normal ToolExecutor admission
+path. Approving the outer call does **not** approve nested calls.
 
 The outer result is a normal `ToolResult`. Its `content` is the only text Code Mode promises to the
 model. A successful result contains the program's final bounded value; an error result names a stable
@@ -129,12 +133,12 @@ The first delivery changes only the following owners' contracts:
 
 | Owner | Addition | Why it is public |
 | --- | --- | --- |
-| Process Settings source | `CodeModeSettings` source `codemode`, including outer risk and authoritative limits | Settings are process-owned business configuration; PluginManager owns structural package enablement, and the Session must not invent defaults or capture stale limits. |
-| Session tool binding | `codemode` declaration and result contract | The model must be able to adopt and call the tool. |
+| Process Settings source | `CodeModeSettings` source `codemode`: authoritative execution limits | Settings are process-owned business configuration; PluginManager owns structural package enablement, and the Session must not invent defaults or capture stale limits. |
+| Session tool binding | `codemode` declaration and result contract, including the package's fixed outer risk | The model must be able to adopt and call the tool. The registered declaration cannot change with a business setting, so the outer risk is fixed at load. |
 | Branch invocation mechanism | Typed `step/tool-invoke` / `step/tool-invocation-result` facts, a branch-scoped caller, nested execution lane and parent join | Code Mode and the existing ToolExecutor are separate parts and must hand off through a declared contract without releasing the pinned parent binding early. |
 | Code Mode result owner | CodeModeBranch aggregation of confirmed child effects before returning the outer `ToolResult` | The generic ToolExecutor records the returned result unchanged; it does not invent a Code Mode result or apply an effect-size policy. |
 | Approval mechanism | Reuse of the existing `approval/request` and `approval/respond` contract | Nested approvals use the existing `source.call_id` as the child `invocationId` and `source.turn_id`/`source.request_id` as its request identity; no Approval schema or client decoder change is required. |
-| Native Timeline storage | Advance the native store format from v34 to v35 for the new typed `step` facts; v34 readers refuse a v35 marker and never downgrade or rewrite it | `StepEvent` is closed and strict, so an older reader cannot safely treat an unknown `step` name as an extension event. The mechanism owner adds the v35 step, refusal path and upgrade/downgrade fixture in #1277. |
+| Native Timeline storage | Advance the native store by one format for the new typed `step` facts, taking the next free number at implementation time; an older binary refuses the newer marker and never downgrades or rewrites it | `StepEvent` is closed and strict, so an older reader cannot safely treat an unknown `step` name as an extension event. The mechanism owner adds the format step, refusal path and upgrade/downgrade fixture under [#1276](https://github.com/arcships/dim/issues/1276). |
 | Program host | A bounded one-shot execution boundary | Model-supplied code cannot be treated as a trusted in-process function. |
 
 Existing tool declarations, ordinary `step/tool-call` semantics, the context-input route and the
@@ -143,17 +147,21 @@ keys; this is a mechanism addition rather than a Code Mode hook, so another auto
 use it without making the core depend on this optional plugin.
 
 **Native-store decision.** Adding either typed `step` key is an incompatible persisted-event change,
-not an extension-event addition. The implementation therefore advances the native store from v34 to
-v35 with a marker-only migration: the v34 schema and rows are preserved, the startup transaction
-writes marker 35 after the v35 decoder is installed, and the normal v34-to-v35 upgrade path is used
-for databases opened by the new binary. A v34 binary encountering marker 35 rejects the store as an
-updated format, preserves it byte-for-byte, and never downgrades or rewrites it. A v35 binary still
-reads all v34 histories and decodes the new `step` names as core facts. The mechanism-owner work,
-the [storage contract's](../appserver/native-storage-format.md) v35 decision section, and a disposable
-upgrade/downgrade fixture are tracked in [#1277](https://github.com/arcships/dim/issues/1277); they land
-with the typed events, not before them. The fixture opens a v34 store with the v35 binary, verifies
-that existing rows are unchanged, and verifies that a v34 binary refuses the resulting store with the
-existing updated-format error and leaves it byte-for-byte intact.
+not an extension-event addition. The implementation therefore advances the native store by one format
+with a marker-only migration: no business table, column, index or row changes; the startup transaction
+that already upgrades older formats advances the marker table's `CHECK (version = N)` constraint and
+its single row, and all earlier formats keep their existing upgrade paths. The version number is
+the next free format at implementation time, not fixed by this design. [#557](https://github.com/arcships/dim/issues/557)
+sets that rule for a reserved format, and the open property-query change
+([#1286](https://github.com/arcships/dim/pull/1286)) already proposes v35 and v36, so this design must
+not claim those numbers. An older binary rejects the newer marker as an updated
+format, preserves the store byte-for-byte, and never downgrades or rewrites it. The new binary still
+reads the previous format's histories and decodes the new `step` names as core facts. The
+mechanism-owner work, the [storage contract's](../appserver/native-storage-format.md) decision section,
+and a disposable upgrade/downgrade fixture are tracked under [#1276](https://github.com/arcships/dim/issues/1276);
+they land with the typed events, not before them. The fixture opens the previous-format store with the
+new binary, verifies that business rows are unchanged and the marker advanced, and verifies that an old
+binary refuses the resulting store with the existing updated-format error and leaves it intact.
 
 Nested approvals reuse the existing `approval/request`, `approval/respond` and cancellation data
 contracts. For a child `step/tool-invoke`, the existing `ApprovalRequestData.source` is
@@ -220,7 +228,7 @@ max_recursion_depth = 0 for nested codemode in the first delivery
 ```
 
 The host is an execution boundary, not a dependency-declaration promise. The implementation and
-acceptance of that boundary are tracked by [#1278](https://github.com/arcships/dim/issues/1278).
+acceptance of that boundary are tracked by [#1276](https://github.com/arcships/dim/issues/1276).
 
 ### 2.3 Invocation contract
 
@@ -297,7 +305,7 @@ generation opens history. The typed decoder must add these `step/*` keys explici
 context projection must keep both keys out of its render/state key sets, just as it does for other
 execution-only facts; they remain execution facts and are not adopted as model messages.
 
-The v35 upgrade/downgrade fixture verifies that a v34 history opens unchanged and that the new pair
+The format upgrade/downgrade fixture verifies that the previous format's history opens unchanged and that the new pair
 decodes as core facts. No reservation or migration record for the `tool` extension domain is
 introduced; this design does not claim that a released producer currently emits `tool/*`, so no
 `tool/*` compatibility fixture is required.
@@ -402,13 +410,14 @@ see the actual pinned tool call and its risk, not the outer Code Mode declaratio
 | Dependency | Scope | Purpose |
 | --- | --- | --- |
 | `toolRegistry` | Session | Register `codemode` and obtain the adopted tool declaration source. Code Mode does not obtain handlers. |
+| `settings` | Session | Read the validated `codemode` source at each call. The Session part does not register a source or add defaults. |
 | invocation-scoped `ToolBinding` | branch | Supply the fixed declarations and handlers for the outer request. |
-| generic programmatic invocation service | branch | Submit `step/tool-invoke`, receive terminal results and retain parent correlation. This is the requirement tracked by [#1277](https://github.com/arcships/dim/issues/1277). |
+| generic programmatic invocation service | branch | Submit `step/tool-invoke`, receive terminal results and retain parent correlation. This is the requirement tracked by [#1276](https://github.com/arcships/dim/issues/1276). |
 | `Timeline` | branch | Commit invocation commands and terminal results through the branch's existing timeline service. |
 | `Dispatcher` | branch | Consume terminal invocation results in sequence order. |
 | `BranchLifecycle` | branch | Delay background execution until publication and stop admission at closing. |
 | `Approval` and `Permission` | branch | Reuse the existing nested authorization decision for each actual tool. |
-| isolated program host | runtime | Execute one program under hard limits; the requirement is [#1278](https://github.com/arcships/dim/issues/1278). |
+| isolated program host | runtime | Execute one program under hard limits; the requirement is [#1276](https://github.com/arcships/dim/issues/1276). |
 
 The plugin does not depend on `ToolHost`, a handler registry, a second event bus, or direct Session
 facade access. A TypeScript binding must expose the generic service as a declared branch dependency;
@@ -424,8 +433,8 @@ undeclared access is not an optional lookup.
 | Existing mechanisms considered | Calling a registered handler or `ToolHost` bypasses ToolBinding pinning, Permission, Approval, cancellation, settlement and reload. Writing a nested `step/tool-call` makes Loop and ToolExecutor treat the child as a second model batch. The current TypeScript binding exposes no safe executor entry point or branch-bound invocation service. |
 | Generic capability | A branch-scoped, language-neutral programmatic invocation contract with `step/tool-invoke` and `step/tool-invocation-result`, request-pinned handler resolution, parent correlation, actual-tool risk admission, normalized results and no handler exposure. The outer tool callback must receive a per-call, branch-bound data port (or equivalent context) for this contract; it must not receive a raw Timeline, ToolExecutor or handler. The capability must be usable by automation other than Code Mode. The port exposes a parent lifecycle gate: close rejects new children and joins every committed child before the outer result is published. |
 | Sequence, batch, interruption and reload | `step/tool-invoke` is committed as the handoff boundary and is consumed on a nested ToolExecutor lane while the ordinary parent batch remains occupied. Multiple child calls may belong to one outer call, subject to a caller budget. Close waits for every committed child on success, failure, cancellation, timeout and reload; cancellation stops new admission and settles committed work. Reload settles every unmatched command as `reloading` with an effect-may-have-happened warning; it never infers `notExecuted` and never replays an effect. ToolExecutor derives the outer reload/cancel result from correlated child facts, while CodeModeBranch aggregates confirmed child effects before returning the outer result. Nested results do not enter context automatically. |
-| Persistence and compatibility | Because `step/tool-invoke` and `step/tool-invocation-result` extend the strict core `StepEvent`, the mechanism owner must advance native storage v34 to v35, reject v35 stores in older binaries without rewriting them, and add an upgrade/downgrade fixture. No extension-domain compatibility fixture is required. |
-| Owner and issue | Dim runtime / ToolExecutor mechanism owner; [#1277](https://github.com/arcships/dim/issues/1277), delivered as part of [#1276](https://github.com/arcships/dim/issues/1276). |
+| Persistence and compatibility | Because `step/tool-invoke` and `step/tool-invocation-result` extend the strict core `StepEvent`, the mechanism owner must advance the native store by one format at implementation time, taking the next free number, reject newer stores in older binaries without rewriting them, and add an upgrade/downgrade fixture. No extension-domain compatibility fixture is required. |
+| Owner and issue | Dim runtime / ToolExecutor mechanism owner; [#1276](https://github.com/arcships/dim/issues/1276). |
 
 ### R2. Isolated bounded program host
 
@@ -435,7 +444,7 @@ undeclared access is not an optional lookup.
 | Existing mechanisms considered | The TypeScript plugin process, ordinary module loading and direct host calls expose too much authority. A timeout alone does not prevent filesystem, process, network or secret access and does not enforce memory/output limits. |
 | Generic capability | A one-shot isolated host with only a serializable tool bridge and hard code, wall-clock, memory, output, invocation and concurrency limits. It must return a terminal status and terminate on cancellation. |
 | Sequence, batch, interruption and reload | Host termination cancels the program but does not undo a child already handed to ToolExecutor. The host closes the parent gate; ToolExecutor continues or cancels the nested lane and settles every committed child, then CodeModeBranch aggregates confirmed effects before returning the outer result. Reload produces a terminal host outcome and leaves Timeline settlement to the invocation mechanism owner. |
-| Owner and issue | Runtime/host mechanism owner; [#1278](https://github.com/arcships/dim/issues/1278), delivered as part of [#1276](https://github.com/arcships/dim/issues/1276). |
+| Owner and issue | Runtime/host mechanism owner; [#1276](https://github.com/arcships/dim/issues/1276). |
 
 ## 6. Rule check
 
@@ -453,11 +462,11 @@ The governing rules are [principles §1](../../architecture/rust-agent/principle
 | §4.6 context boundary | Nested invocation facts are execution facts and are not adopted as model messages. Only the adopted outer `step/tool-result` is model-facing. A value the model must use is included in the outer `ToolResult.content`. |
 | §4.7 public interaction | Parts communicate through the declared branch service and public generic invocation facts. No handler, ToolExecutor object or private plugin state crosses the boundary. |
 | §4.8 infrastructure requirements | R1 and R2 identify the existing contracts considered, the generic mechanisms needed, sequence/batch/interruption/reload effects and their owners. The design does not add a Code Mode-specific core hook. |
-| §4.9 facts in Timeline | Each external child operation has a durable command/result pair because recovery, approval correlation and no-replay settlement depend on it. Pure program computation and diagnostics stay out of Timeline. No duplicate `codemode/*` status facts are added in the first delivery. The strict core event addition advances native storage v34 to v35; older binaries refuse that marker and never downgrade or rewrite the store. |
+| §4.9 facts in Timeline | Each external child operation has a durable command/result pair because recovery, approval correlation and no-replay settlement depend on it. Pure program computation and diagnostics stay out of Timeline. No duplicate `codemode/*` status facts are added in the first delivery. The strict core event addition advances the native store by one format at implementation time; older binaries refuse the newer marker and never downgrade or rewrite the store. |
 | ADR 002 D1 | Parts follow state and lifecycle owners: process `CodeModeSettings`, Session tool, Branch execution, and process-free one-shot runtime. |
 | ADR 002 D2 | No wiring plugin, registry adapter, second event bus or new lifecycle manager is introduced. |
 | ADR 002 D3 | Dependencies point from Code Mode to existing core contracts and the generic mechanism; core does not depend on the optional plugin. |
-| ADR 002 D4 | Limits and user settings are business configuration read at use time. Enabling/reloading the plugin is structural configuration; changing a limit does not require a new assembly mechanism. |
+| ADR 002 D4 | Limits are business configuration read at use time. The outer tool's declared risk is structural and fixed at load; enabling, reloading or changing that risk requires the package's structural path, not a business edit. |
 | ADR 002 D5 | The invocation and runtime contracts are language-neutral data and error shapes; Rust and TypeScript spellings belong in the binding appendix. |
 
 Ablation: the design intentionally removes a persistent REPL, a Code Mode-specific core event domain,
@@ -479,7 +488,7 @@ CodeModeSession.apply(ctx):
     declaration = {
       name: "codemode",
       source: "extension",
-      risk: configured_outer_risk,
+      risk: declared_outer_risk,
       inputSchema: { code, timeoutMs?, maxCalls? }
     },
     execute = (call, cancelled) => currentBranchCodeMode.run(call.arguments, cancelled)
@@ -487,7 +496,9 @@ CodeModeSession.apply(ctx):
 ```
 
 The actual binding must use the existing Session tool registration contract and return the normal
-`{content, isError?}` result shape. It must validate external input once at the boundary.
+`{content, isError?}` result shape. It must validate external input once at the boundary. The
+declaration's risk is the package's fixed value; a settings edit does not replace the registration,
+and changing the risk requires reloading the package.
 
 ### 7.2 Branch invocation service
 
