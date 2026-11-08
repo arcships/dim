@@ -46,4 +46,4 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | --- | --- |
 | Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source), `CodeModeSettings` when the optional Code Mode package is enabled, light-ocr in the daemon; AcpGateway in its client host process |
 | Session parts | Questions, ShellInput, Attachments, SessionTitle, PromptSuggestion, Goal, Web, Recall, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table), Code Mode when enabled |
-| Branch parts | Goal (with Pursuit), ModelRecovery, Hooks, Prompt, Code Mode |
+| Branch parts | Goal (with Pursuit), ModelRecovery, Hooks, Prompt, Code Mode when enabled |

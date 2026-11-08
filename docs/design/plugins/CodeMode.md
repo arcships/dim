@@ -384,11 +384,12 @@ see the actual pinned tool call and its risk, not the outer Code Mode declaratio
 
 | Dependency | Scope | Purpose |
 | --- | --- | --- |
+| `settings` | Process | Register the `codemode` source. `CodeModeSession` reads the validated source through this service at each call and adds no defaults. |
+| `partRegistry` | Process | Register `CodeModeSession` and `CodeModeBranch` from the package row. |
 | `toolRegistry` | Session | Register `codemode` and obtain the adopted tool declaration source. Code Mode does not obtain handlers. |
-| `settings` | Session | Read the validated `codemode` source at each call. The Session part does not register a source or add defaults. |
 | invocation-scoped `ToolBinding` | branch | Supply the fixed declarations and handlers for the outer request. |
 | generic programmatic invocation service | branch | Submit `step/tool-invoke`, receive terminal results and retain parent correlation. This is the requirement tracked by [#1276](https://github.com/arcships/dim/issues/1276). |
-| `Timeline` | branch | Commit invocation commands and terminal results through the branch's existing timeline service. |
+| `Timeline` | branch | CodeModeBranch commits the invocation command; ToolExecutor commits the terminal result through the same branch timeline service. |
 | `Dispatcher` | branch | Consume terminal invocation results in sequence order. |
 | `BranchLifecycle` | branch | Delay background execution until publication and stop admission at closing. |
 | `Approval` and `Permission` | branch | Reuse the existing nested authorization decision for each actual tool. |
