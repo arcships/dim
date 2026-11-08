@@ -9,8 +9,11 @@ use crate::{
 };
 use chrono::{DateTime, Duration, Utc};
 use dim_agent_capabilities::{
-    methods::{Handler, Interruption, MethodDecl, RpcError, params},
-    settings::SettingsScope,
+    methods::{
+        Caller as MethodCaller, Handler, Interruption, MethodCall, MethodDecl, Progress, RpcError,
+        params,
+    },
+    settings::{SettingsChanged, SettingsScope, settings_changes},
 };
 use dim_agent_runtime::{Names, PartRegistry, PartScope};
 use dim_agent_types::{PermissionPolicy, PermissionPreset};
@@ -18,7 +21,7 @@ use dim_app_server::{
     SessionPermissions, SessionRef, SessionsError,
     methods::ManagementMethods,
     plugin_files::PluginFileTransactions,
-    settings::{SettingsError, SettingsService},
+    settings::{BusinessDocument, SettingsError, SettingsService},
 };
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -80,6 +83,7 @@ impl DynPlugin for SchedulerPlugin {
             let sessions = ctx.require_at(&self.sessions)?;
             settings.register::<ScheduleDocument>(ctx)?;
             let shared = Arc::new(Shared {
+                ctx: ctx.clone(),
                 sessions,
                 settings,
                 files,
@@ -91,6 +95,7 @@ impl DynPlugin for SchedulerPlugin {
                 tasks: TaskTracker::new(),
                 retention: Default::default(),
                 reporting: Default::default(),
+                watch: crate::watch::Watchers::default(),
             });
             let cleanup = shared.clone();
             ctx.effect(move || async move {
@@ -99,6 +104,21 @@ impl DynPlugin for SchedulerPlugin {
                 cleanup.tasks.wait().await;
                 Ok(())
             })?;
+            // A committed `schedule` settings write is the jobs source
+            // (design §11.2). The listener is withdrawn with this generation,
+            // like every registration made from its apply.
+            {
+                let shared = shared.clone();
+                ctx.listen::<SettingsChanged>()
+                    .name(settings_changes(ScheduleDocument::NAMESPACE))
+                    .on(move |_, _| {
+                        let shared = shared.clone();
+                        async move {
+                            shared.watch.jobs();
+                            Ok(None)
+                        }
+                    })?;
+            }
             ctx.provide_as::<ScheduleJobs>(Arc::new(ScheduleJobs {
                 shared: shared.clone(),
             }))?;
@@ -116,6 +136,10 @@ impl DynPlugin for SchedulerPlugin {
                     MethodDecl::new("schedule.set_enabled", true, Interruption::Drain),
                     MethodDecl::new("schedule.history", false, Interruption::Report),
                     MethodDecl::new("schedule.run_now", true, Interruption::Drain),
+                    MethodDecl {
+                        progress: true,
+                        ..MethodDecl::new("schedule.watch", false, Interruption::Report)
+                    },
                 ],
                 handler(shared.clone()),
             )?;
@@ -173,6 +197,9 @@ impl DynPlugin for SchedulerPlugin {
 }
 
 pub(crate) struct Shared {
+    /// This generation's context, used to announce committed changes on a
+    /// Session's channel (design §11).
+    pub(crate) ctx: Ctx,
     pub(crate) sessions: Arc<dyn HostDispatch>,
     pub(crate) settings: Arc<SettingsService>,
     pub(crate) files: Arc<PluginFileTransactions>,
@@ -195,6 +222,8 @@ pub(crate) struct Shared {
     /// Runs whose report call or diagnostic write is still in flight; their
     /// records are not eligible for retention (A.7).
     pub(crate) reporting: std::sync::Mutex<HashSet<String>>,
+    /// The open `schedule.watch` calls of this generation (design §11.2).
+    pub(crate) watch: crate::watch::Watchers,
 }
 
 impl Shared {
@@ -220,9 +249,16 @@ impl Shared {
 }
 
 fn handler(shared: Arc<Shared>) -> Handler {
-    Arc::new(move |method, value, cancel, _progress| {
+    Arc::new(move |call, cancel, progress| {
+        let MethodCall {
+            method,
+            params: value,
+            origin,
+        } = call;
         let shared = shared.clone();
-        Box::pin(async move { dispatch(&shared, &method, value, &cancel).await })
+        Box::pin(async move {
+            dispatch(&shared, &method, value, origin.caller, progress, &cancel).await
+        })
     })
 }
 
@@ -282,9 +318,18 @@ async fn dispatch(
     shared: &Arc<Shared>,
     method: &str,
     value: Value,
+    caller: Option<MethodCaller>,
+    progress: Progress,
     cancel: &CancellationToken,
 ) -> Result<Value, RpcError> {
     match method {
+        "schedule.watch" => {
+            let _: ListParams = params(value)?;
+            if let Some(caller) = caller {
+                shared.watch.watch(caller, progress, cancel).await;
+            }
+            Ok(json!({}))
+        }
         "schedule.list" => {
             let _: ListParams = params(value)?;
             Ok(list(shared, cancel).await?)

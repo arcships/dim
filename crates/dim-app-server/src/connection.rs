@@ -2,12 +2,12 @@ use crate::{
     ServerConfig,
     agents::{AgentIndex, DeleteOutcome, SessionUse},
     control::ServerControl,
-    outbound::{Frame, Sender},
+    outbound::{Admission, Frame, Sender},
     protocol::*,
     skills_management::skills_error,
 };
 use dim_agent_capabilities::{
-    methods::{Accepted, RpcError},
+    methods::{Accepted, CallSite, CallerConnection, Callers, NotifyError, RpcError},
     permission::{Permission, PermissionState, PermissionUpdateError},
     skills::SkillsBranch,
     workspace_tools::background::{BackgroundExec, TaskError},
@@ -22,6 +22,11 @@ mod tree;
 mod ui_extensions;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
+use rutis_bridge::session::{
+    Error as BridgeError, HostDispatch, Reply as BridgeReply, Value as BridgeValue, caller_row,
+};
+use serde::de::DeserializeOwned;
+use serde_json::Map;
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
@@ -88,6 +93,147 @@ impl Drop for Inflight {
             .remove(&self.id);
     }
 }
+
+/// The plain writer and close signal of one client connection (methods
+/// contract A.2): what a foreign notification whose call has finished uses.
+/// It holds the connection weakly, so a kept handle does not keep it alive.
+pub(crate) struct DirectConnection {
+    id: String,
+    connection: Weak<Connection>,
+    closed: CancellationToken,
+    unloading: CancellationToken,
+}
+impl DirectConnection {
+    fn new(connection: &Arc<Connection>, unloading: &CancellationToken) -> Arc<Self> {
+        Arc::new(Self {
+            id: connection.id.clone(),
+            connection: Arc::downgrade(connection),
+            closed: connection.closed.clone(),
+            unloading: unloading.clone(),
+        })
+    }
+    /// The encoded frame, after the connection check and encoded once through
+    /// the sender's admission, without queueing it: a call's sink holds it
+    /// until its reply.
+    fn frame(
+        &self,
+        method: &str,
+        params: serde_json::Map<String, Value>,
+    ) -> Result<Frame, NotifyError> {
+        let Some(connection) = self.connection.upgrade() else {
+            return Err(NotifyError::Gone);
+        };
+        if self.closed.is_cancelled() || self.unloading.is_cancelled() {
+            return Err(NotifyError::Gone);
+        }
+        connection
+            .sender
+            .hold(Outbound::message(method.to_owned(), params))
+            .map_err(|admission| match admission {
+                Admission::TooLarge => NotifyError::TooLarge,
+                Admission::Full => NotifyError::Gone,
+            })
+    }
+    fn write(&self, frame: Frame) -> Result<(), NotifyError> {
+        let Some(connection) = self.connection.upgrade() else {
+            return Err(NotifyError::Gone);
+        };
+        if connection.sender.push(frame) {
+            Ok(())
+        } else {
+            Err(NotifyError::Gone)
+        }
+    }
+}
+impl CallerConnection for DirectConnection {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn notify(
+        &self,
+        method: &str,
+        params: serde_json::Map<String, Value>,
+    ) -> Result<(), NotifyError> {
+        self.write(self.frame(method, params)?)
+    }
+    fn closed(&self) -> BoxFuture<'static, ()> {
+        let (closed, unloading) = (self.closed.clone(), self.unloading.clone());
+        Box::pin(async move {
+            tokio::select! {
+                _ = closed.cancelled() => {}
+                _ = unloading.cancelled() => {}
+            }
+        })
+    }
+}
+
+/// The calling connection of one admitted call (methods contract A.2):
+/// `callChannel.notify` and `closed` for the provider that serves it.
+///
+/// Every notification is written after the reply of the call that produced
+/// its `Caller`: one sent while the call runs is encoded once and admitted by
+/// the connection's sender here, then goes out right after the reply, in
+/// order. It is a reliable frame: a call holding more than the connection's
+/// reliable allowance is a slow consumer and the connection closes, while a
+/// notification over the frame limit is `TooLarge` and the connection stays
+/// open.
+pub(crate) struct CallSink {
+    direct: Arc<DirectConnection>,
+    state: Mutex<CallState>,
+}
+enum CallState {
+    /// Frames sent before the reply was written, in order: encoded and
+    /// holding their room already.
+    Held(Vec<Frame>),
+    /// The reply is written; later frames go straight to the connection.
+    Released,
+}
+impl CallSink {
+    fn new(connection: &Arc<Connection>, unloading: &CancellationToken) -> Arc<Self> {
+        Arc::new(Self {
+            direct: DirectConnection::new(connection, unloading),
+            state: Mutex::new(CallState::Held(Vec::new())),
+        })
+    }
+    fn direct(&self) -> Arc<DirectConnection> {
+        self.direct.clone()
+    }
+    /// The reply is written: everything held follows it, in order. A
+    /// notification sent from here on is written directly.
+    fn release(&self) {
+        let mut state = self.state.lock().expect("held notifications");
+        if let CallState::Held(frames) = &mut *state {
+            for frame in frames.drain(..) {
+                let _ = self.direct.write(frame);
+            }
+        }
+        *state = CallState::Released;
+    }
+}
+impl CallerConnection for CallSink {
+    fn id(&self) -> &str {
+        self.direct.id()
+    }
+    fn notify(
+        &self,
+        method: &str,
+        params: serde_json::Map<String, Value>,
+    ) -> Result<(), NotifyError> {
+        let frame = self.direct.frame(method, params)?;
+        let mut state = self.state.lock().expect("held notifications");
+        match &mut *state {
+            CallState::Held(frames) => frames.push(frame),
+            CallState::Released => {
+                drop(state);
+                self.direct.write(frame)?;
+            }
+        }
+        Ok(())
+    }
+    fn closed(&self) -> BoxFuture<'static, ()> {
+        self.direct.closed()
+    }
+}
 impl Connection {
     pub fn new(
         hub: Arc<ConnectionHub>,
@@ -139,6 +285,10 @@ impl Connection {
     }
     pub async fn finish(&self) {
         self.closed.cancel();
+        // The connection closed: no call of any row can name it again.
+        let _ = self
+            .hub
+            .with_rpc(|rpc| rpc.callers.close_connection(&self.id));
         if self.entry == Entry::Local {
             self.hub.web.release(&self.hub, &self.id).await;
         }
@@ -195,10 +345,20 @@ impl Connection {
                     }
                     let rpc = rpc.clone();
                     let progress = this.progress(&id, &method);
+                    let sink = CallSink::new(&this, &rpc.unloading);
+                    let site = CallSite {
+                        connection: sink.clone(),
+                        direct: sink.direct(),
+                        callers: rpc.callers.clone(),
+                        closed: this.closed.clone(),
+                    };
                     rpc.commands.clone().spawn(async move {
-                        match this.session_method(&rpc, method, params, progress).await {
+                        match this
+                            .session_method(&rpc, method, params, site, progress)
+                            .await
+                        {
                             Ok((accepted, usage)) => {
-                                this.answer(id, guard, accepted).await;
+                                this.answer(id, guard, accepted, sink).await;
                                 drop(usage);
                             }
                             Err(error) => {
@@ -219,15 +379,23 @@ impl Connection {
                     return Err(RpcError::reloading());
                 }
                 let progress = this.progress(&id, &method);
+                let sink = CallSink::new(&this, &rpc.unloading);
+                let site = CallSite {
+                    connection: sink.clone(),
+                    direct: sink.direct(),
+                    callers: rpc.callers.clone(),
+                    closed: this.closed.clone(),
+                };
                 let accepted = crate::methods::dispatch(
                     &rpc.management,
                     &rpc.loader,
                     method,
                     params,
+                    Some(site),
                     rpc.unloading.clone(),
                     progress,
                 )?;
-                rpc.commands.spawn(this.answer(id, guard, accepted));
+                rpc.commands.spawn(this.answer(id, guard, accepted, sink));
                 return Ok(());
             }
             let rpc = rpc.clone();
@@ -247,19 +415,36 @@ impl Connection {
             let _ = self.sender.send(Outbound::result(id, Err(error)), false);
         }
     }
-    /// Sends an admitted contributed call's reply on this connection. The id
-    /// is the client's again once answered. An interrupted operation may still
+    /// Sends an admitted contributed call's reply on this connection, then
+    /// releases the call's held notifications behind it. The id is the
+    /// client's again once answered. An interrupted operation may still
     /// commit: the calling load's unload waits for it, so the next load reads
     /// its outcome.
-    async fn answer(self: Arc<Self>, id: RequestId, guard: Inflight, accepted: Accepted) {
-        let result = accepted
-            .reply
+    async fn answer(
+        self: Arc<Self>,
+        id: RequestId,
+        guard: Inflight,
+        accepted: Accepted,
+        sink: Arc<CallSink>,
+    ) {
+        let Accepted {
+            reply,
+            settled,
+            registration,
+        } = accepted;
+        let result = reply
             .await
             .unwrap_or_else(|_| Err(RpcError::wire(-32603, "Method operation failed")))
             .map(Reply::Contributed);
         let _ = self.sender.send(Outbound::result(id, result), false);
+        sink.release();
+        // The reply is written: the foreign call no longer holds
+        // notifications, so its index entry ends here, not at handler return.
+        if let Some(registration) = registration {
+            registration.finish();
+        }
         drop(guard);
-        let _ = accepted.settled.await;
+        let _ = settled.await;
     }
     /// The progress sink of contributed call `id` (methods contract A.2):
     /// `management.progress {id, method, data}` on this connection only, best
@@ -291,6 +476,7 @@ impl Connection {
         rpc: &RpcService,
         method: String,
         params: Value,
+        site: CallSite,
         progress: impl Fn(Value) + Send + Sync + 'static,
     ) -> Result<(Accepted, SessionUse), RpcError> {
         let session_id = params
@@ -307,7 +493,8 @@ impl Connection {
         if rpc.stopping.is_cancelled() {
             return Err(RpcError::reloading());
         }
-        let accepted = provider.accept(method, params, rpc.unloading.clone(), progress)?;
+        let accepted =
+            provider.accept(method, params, Some(site), rpc.unloading.clone(), progress)?;
         Ok((accepted, usage))
     }
     /// The connection's entry decides what it may call before any method is
@@ -723,6 +910,34 @@ impl Connection {
                 server_version: SERVER_VERSION,
             })),
             Call::Shutdown(params) => {
+                if params.if_idle && !params.force {
+                    // The decision is atomic with hello and attach admission:
+                    // an admission either ran before it and is counted or is
+                    // refused as shutting down, so no client joins a daemon
+                    // this call is closing.
+                    let busy = {
+                        let mut admission = self.hub.idle_decision();
+                        if admission.closing_for_idle {
+                            return Some(Err(RpcError::invalid("Shutdown already requested")));
+                        }
+                        let connections = self.hub.count_except(&self.id);
+                        let attached_sessions = self.hub.attached_sessions();
+                        let running = rpc.index.running_sessions();
+                        if connections > 0 || attached_sessions > 0 || running > 0 {
+                            Some((connections, attached_sessions, running))
+                        } else {
+                            admission.closing_for_idle = true;
+                            None
+                        }
+                    };
+                    if let Some((connections, attached_sessions, running)) = busy {
+                        return Some(Err(RpcError::daemon_busy(
+                            connections,
+                            attached_sessions,
+                            running,
+                        )));
+                    }
+                }
                 if !params.force {
                     let mut reply = self.shutdown_reply.lock().expect("shutdown reply");
                     if reply.is_some() {
@@ -1663,6 +1878,10 @@ pub(crate) struct ConnectionHub {
     config: Arc<ServerConfig>,
     pub control: Arc<ServerControl>,
     connections: Mutex<HashMap<String, Weak<Connection>>>,
+    /// Serializes an idle-shutdown decision with hello and attach admission:
+    /// an admission runs before the decision and is counted, or sees it and
+    /// is refused as shutting down.
+    admission: Mutex<IdleAdmission>,
     /// Emits a client-change fact for a Session whose presence a branch observes.
     client_emitter: Mutex<Option<rutis::Ctx>>,
     pub tasks: TaskTracker,
@@ -1679,6 +1898,12 @@ pub(crate) struct ConnectionHub {
     #[cfg(feature = "testing")]
     fail_attach_before_registration: std::sync::atomic::AtomicBool,
 }
+/// What [`ConnectionHub::admission`] serializes: once an idle shutdown has
+/// found the daemon idle, no hello or attach may join it.
+#[derive(Default)]
+pub(crate) struct IdleAdmission {
+    closing_for_idle: bool,
+}
 impl ConnectionHub {
     fn new(
         config: Arc<ServerConfig>,
@@ -1689,6 +1914,7 @@ impl ConnectionHub {
             web: crate::web_entry::WebEntry::new(config.web_assets.clone()),
             ui,
             connections: Mutex::new(HashMap::new()),
+            admission: Mutex::new(IdleAdmission::default()),
             client_emitter: Mutex::new(None),
             tasks: TaskTracker::new(),
             shutdown_requests: TaskTracker::new(),
@@ -1769,6 +1995,51 @@ impl ConnectionHub {
     }
     fn count(&self) -> usize {
         self.connections.lock().expect("connection index").len()
+    }
+    /// Live connections other than `requester`.
+    pub(crate) fn count_except(&self, requester: &str) -> usize {
+        self.connections
+            .lock()
+            .expect("connection index")
+            .keys()
+            .filter(|id| id.as_str() != requester)
+            .count()
+    }
+    /// Sessions with a client attached, on any connection: the requester's
+    /// own attachment keeps the daemon too, because a concurrent attach is
+    /// either counted here or refused as shutting down.
+    pub(crate) fn attached_sessions(&self) -> usize {
+        let connections = self.connections.lock().expect("connection index");
+        let mut sessions = std::collections::HashSet::new();
+        for connection in connections.values() {
+            let Some(connection) = connection.upgrade() else {
+                continue;
+            };
+            sessions.extend(
+                connection
+                    .attachments
+                    .lock()
+                    .expect("attachments")
+                    .keys()
+                    .cloned(),
+            );
+        }
+        sessions.len()
+    }
+    /// Admits a hello or attach: refused once an idle shutdown has decided to
+    /// close the daemon. Holding the guard makes the admission and that
+    /// decision see each other.
+    pub(crate) fn admit(&self) -> Result<std::sync::MutexGuard<'_, IdleAdmission>, RpcError> {
+        let admission = self.admission.lock().expect("admission");
+        if admission.closing_for_idle {
+            return Err(RpcError::wire(-32603, "Server is shutting down"));
+        }
+        Ok(admission)
+    }
+    /// The idle-shutdown decision, with hello and attach admission held out
+    /// while it counts and commits.
+    pub(crate) fn idle_decision(&self) -> std::sync::MutexGuard<'_, IdleAdmission> {
+        self.admission.lock().expect("admission")
     }
     fn attached_clients(&self, session: &str) -> usize {
         self.connections
@@ -1939,6 +2210,9 @@ pub(crate) struct RpcService {
     pub stopping: CancellationToken,
     pub control: Arc<ServerControl>,
     pub config: Arc<ServerConfig>,
+    /// The callers the providers of this process recorded, by row instance
+    /// and connection id: what `callChannel` serves to other languages.
+    pub callers: Arc<Callers>,
     /// Session MCP follow/refresh availability, not a host management service.
     /// The actual owners are acquired from the Session and followed across reload.
     pub mcp: Option<()>,
@@ -1991,6 +2265,7 @@ pub(crate) struct RpcPlugin {
     control: Key<ServerControl>,
     loader: Key<rutis_loader::Loader>,
     management: Key<crate::methods::ManagementMethods>,
+    callers: Key<Callers>,
 }
 impl RpcPlugin {
     pub fn new(names: &Names<'_>, config: Arc<ServerConfig>, root: Ctx) -> rutis::Result<Self> {
@@ -2003,6 +2278,7 @@ impl RpcPlugin {
             control: names.key()?,
             loader: names.key()?,
             management: names.key()?,
+            callers: names.key()?,
         })
     }
 }
@@ -2018,6 +2294,7 @@ impl DynPlugin for RpcPlugin {
             self.control.erase(),
             self.loader.erase(),
             self.management.erase(),
+            self.callers.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -2027,6 +2304,7 @@ impl DynPlugin for RpcPlugin {
             let control = ctx.require_at(&self.control)?;
             let loader = ctx.require_at(&self.loader)?;
             let management = ctx.require_at(&self.management)?;
+            let callers = ctx.require_at(&self.callers)?;
             let service = Arc::new(RpcService {
                 index,
                 ctx: self.root.clone(),
@@ -2035,6 +2313,7 @@ impl DynPlugin for RpcPlugin {
                 stopping: ctx.cancellation_token(),
                 control,
                 config: self.config.clone(),
+                callers,
                 mcp: self.config.local_execution().then_some(()),
                 commands: TaskTracker::new(),
                 unloading: CancellationToken::new(),
@@ -2054,6 +2333,9 @@ impl DynPlugin for RpcPlugin {
                 service.unloading.cancel();
                 service.commands.close();
                 service.commands.wait().await;
+                // This load admitted every call the index records; a new
+                // generation starts empty and records its own.
+                service.callers.clear();
                 Ok(())
             })?;
             handler.register(registered);
@@ -2069,4 +2351,144 @@ fn session_candidate(rpc: &RpcService, method: &str, params: &Value) -> bool {
     dim_agent_capabilities::methods::valid_name(method)
         && !rpc.management.holds(method)
         && params.get("sessionId").is_some()
+}
+
+/// The process row providing `callChannel` for parts of other languages
+/// (methods contract A.2) and the caller index Rpc records into. It depends
+/// on no other row, so a row that names `callChannel` does not reload when
+/// Rpc or the Agent index reloads.
+pub(crate) struct CallChannelPlugin {
+    callers: Key<Callers>,
+}
+impl CallChannelPlugin {
+    pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
+        Ok(Self {
+            callers: names.key()?,
+        })
+    }
+}
+impl DynPlugin for CallChannelPlugin {
+    fn name(&self) -> &str {
+        "CallChannel"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        Vec::new()
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let callers = Arc::new(Callers::default());
+            ctx.provide_at(
+                rutis_bridge::session::host_key("callChannel"),
+                Arc::new(ForeignCallChannel {
+                    callers: callers.clone(),
+                }),
+            )?;
+            ctx.provide_at(self.callers.clone(), callers)?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// The process service `callChannel` (methods contract A.2): the
+/// notifications a row sends to a connection that called one of its
+/// namespaces, and the wait for that connection to close. Its calls end in
+/// the same `Caller` a Rust provider sends through.
+pub(crate) struct ForeignCallChannel {
+    pub callers: Arc<Callers>,
+}
+impl HostDispatch for ForeignCallChannel {
+    fn methods(&self) -> Option<Value> {
+        Some(serde_json::json!({ "notify": "async", "closed": "async" }))
+    }
+    fn invoke(&self, method: &str, args: BridgeValue) -> BridgeReply {
+        // Read the caller inside `invoke`: a future returned here runs later
+        // and no longer sees it.
+        let row = caller_row().ok_or_else(|| {
+            BridgeError::Value(
+                "callChannel needs the calling row's context: only a row of a language runtime can call it"
+                    .into(),
+            )
+        })?;
+        let instance = row.instance();
+        match method {
+            "notify" => {
+                let NotifyRequest {
+                    connection_id,
+                    call_id,
+                    method,
+                    params,
+                } = request(args)?;
+                let callers = self.callers.clone();
+                Ok(BridgeValue::future(async move {
+                    callers
+                        .notify(instance, &connection_id, &call_id, &method, params)
+                        .map(|()| serde_json::json!({}).into())
+                        .map_err(|error| failure(&method, &connection_id, error))
+                }))
+            }
+            "closed" => {
+                let ClosedRequest { connection_id } = request(args)?;
+                let closed = self
+                    .callers
+                    .closed(instance, &connection_id)
+                    .map_err(|error| failure("closed", &connection_id, error))?;
+                Ok(BridgeValue::future(async move {
+                    closed.await;
+                    Ok(BridgeValue::Undefined)
+                }))
+            }
+            _ => Err(BridgeError::no_method(
+                "callChannel",
+                method,
+                vec!["notify", "closed"],
+            )),
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NotifyRequest {
+    connection_id: String,
+    call_id: String,
+    method: String,
+    #[serde(default)]
+    params: Map<String, Value>,
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClosedRequest {
+    connection_id: String,
+}
+
+/// One request object; anything else is the caller's programming error.
+fn request<T: DeserializeOwned>(args: BridgeValue) -> Result<T, BridgeError> {
+    let invalid = |detail: String| {
+        BridgeError::Value(format!("expected one callChannel request object: {detail}"))
+    };
+    let Value::Array(args) = args.json()? else {
+        return Err(invalid("not an argument list".into()));
+    };
+    let [request] = <[Value; 1]>::try_from(args)
+        .map_err(|args| invalid(format!("{} arguments", args.len())))?;
+    serde_json::from_value(request).map_err(|error| invalid(error.to_string()))
+}
+
+/// The service error a caller reads, carrying the contract's code.
+fn failure(method: &str, connection: &str, error: NotifyError) -> BridgeError {
+    BridgeError::binding(
+        error.code(),
+        match error {
+            NotifyError::Undeclared => format!(
+                "notification {method} is not declared by a namespace the calling row registered"
+            ),
+            // The index cannot tell a closed connection from one the row
+            // never received a call from: both leave no entry.
+            NotifyError::Gone => {
+                format!("connection {connection} is closed or was not served by this row")
+            }
+            NotifyError::TooLarge => format!("notification {method} exceeds the frame limit"),
+        },
+        None,
+    )
 }

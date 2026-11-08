@@ -636,6 +636,7 @@ async fn input_replies_after_publication_and_lookup_waits_for_committed_inputs()
                 },
             ],
             mode: Some(dim_agent_types::InputMode::Queue),
+            handover: None,
         }
     );
     let at = |submission: &str| json!({"sessionId":session.id(),"branchId":"main","submissionId":submission});
@@ -1641,6 +1642,7 @@ async fn node_session_permissions_reads_live_policy_and_survives_index_reload() 
             .accept(
                 "permissions.branch".into(),
                 at.clone(),
+                None,
                 CancellationToken::new(),
                 |_| {},
             )

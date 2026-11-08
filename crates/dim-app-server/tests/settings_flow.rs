@@ -960,7 +960,13 @@ async fn client_call(
         _ => panic!("{method} has no active provider"),
     };
     provider
-        .accept(method.to_owned(), params, CancellationToken::new(), |_| {})
+        .accept(
+            method.to_owned(),
+            params,
+            None,
+            CancellationToken::new(),
+            |_| {},
+        )
         .unwrap()
         .reply
         .await

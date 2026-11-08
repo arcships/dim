@@ -8,6 +8,7 @@
 //! nothing new produces no bytes at all, which keeps the hardware cursor
 //! blinking.
 
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 use ratatui::layout::{Rect, Size};
@@ -44,8 +45,8 @@ pub struct Frame {
     pub dock: usize,
     /// Index in `live` of the row the scrollback interface never moves up:
     /// the one above the composer, or above the prompt in its place. Rows
-    /// above it (the live tail, the queue) give back theirs above it when
-    /// they get fewer, rows below it (a menu, the status) below it.
+    /// above it (the live tail, the queue) give back theirs between the
+    /// transcript and dock, rows below it (a menu, the status) below it.
     pub anchor: usize,
     /// A box the fullscreen interface centres over the transcript (the
     /// command palette, pickers); the scrollback interface never gets one.
@@ -67,16 +68,11 @@ pub struct Screen {
     /// First screen row of the live region. It follows the end of the
     /// committed content down the screen and is pinned to the bottom once
     /// the content reaches it. The anchor row never moves up, so fewer rows
-    /// above it move the region down and fewer below it give the region's
-    /// bottom rows back, blank, for the next growth to reuse.
+    /// above it leave space before the dock and fewer below it give the
+    /// region's bottom rows back, blank, for the next growth to reuse.
     top: u16,
     /// Rows above the anchor the region shows.
     tail: u16,
-    /// Blank rows right above the region: the ones it gave back when its
-    /// tail got shorter. They are still the region's: a commit or a longer
-    /// tail fills them before anything moves or scrolls, so no blank row is
-    /// left between the history and what follows it.
-    gap: u16,
     /// Cursor row of the shell when the interface started; `None` when the
     /// terminal did not answer, which pins the region to the bottom.
     origin: Option<u16>,
@@ -104,7 +100,6 @@ impl Screen {
             viewport_height: 0,
             top: size.1,
             tail: 0,
-            gap: 0,
             origin: None,
             content_start: 0,
             scrolled: false,
@@ -141,23 +136,29 @@ impl Screen {
         self.top
     }
 
-    /// Where the region would start, before any scroll, `wanted` rows tall
-    /// with `tail` rows above the anchor: where the anchor stays put, or
-    /// higher, into the gap, when the region would otherwise run past the
-    /// bottom; moving up costs the same rows a scroll would and leaves no
-    /// blank row behind. It never starts above the gap.
-    fn anchored_top(&self, wanted: u16, tail: u16) -> u16 {
-        let floor = self.top - self.gap;
-        let anchor = self.top + self.tail.min(self.viewport_height);
-        let ideal = anchor.saturating_sub(tail).max(floor);
-        ideal.min(self.size.1.saturating_sub(wanted)).max(floor)
-    }
-
-    /// Where the region starts once it is `wanted` rows tall with `tail`
-    /// tail rows.
-    fn top_for(&self, wanted: u16, tail: u16) -> u16 {
-        self.anchored_top(wanted, tail)
-            .min(self.size.1.saturating_sub(wanted))
+    fn layout<'a>(&self, frame: &'a Frame, size: (u16, u16)) -> (Cow<'a, Frame>, u16) {
+        let wanted = self.wanted_for(size, frame.live.len());
+        let padding = self
+            .tail
+            .saturating_sub(visible_tail(frame, wanted))
+            .min(size.1.saturating_sub(self.top.saturating_add(wanted)));
+        if padding == 0 {
+            return (Cow::Borrowed(frame), wanted);
+        }
+        let mut frame = frame.clone();
+        let dock = frame.dock;
+        frame.live.splice(
+            dock..dock,
+            std::iter::repeat_n(String::new(), padding as usize),
+        );
+        frame.dock = dock + padding as usize;
+        frame.anchor += padding as usize;
+        if let Some((row, _)) = &mut frame.cursor
+            && *row as usize >= dock
+        {
+            *row += padding;
+        }
+        (Cow::Owned(frame), wanted + padding)
     }
 
     /// Renders `frame` for a terminal of `size`; returns the bytes to write
@@ -165,15 +166,15 @@ impl Screen {
     pub fn render(&mut self, frame: &Frame, size: (u16, u16)) -> Vec<u8> {
         let mut out = Vec::new();
         let resized = size != self.size;
-        let wanted = self.wanted_for(size, frame.live.len());
-        let tail = visible_tail(frame, wanted);
-        let rows_changed = self.painted_differs(frame, wanted);
+        let (mut layout, mut wanted) = self.layout(frame, size);
+        let tail = visible_tail(&layout, wanted);
+        let rows_changed = self.painted_differs(&layout, wanted);
         let nothing = frame.commits.is_empty()
             && !resized
             && !rows_changed
             && wanted == self.viewport_height
             && tail == self.tail
-            && !self.cursor_needs_move(frame, wanted, tail)
+            && !self.cursor_needs_move(&layout, wanted)
             && self.cursor_visible == frame.cursor.is_some();
         if nothing {
             return out;
@@ -183,7 +184,6 @@ impl Screen {
             self.size = size;
             self.viewport_height = wanted;
             self.tail = tail;
-            self.gap = 0;
             self.painted = vec![None; wanted as usize];
             self.cursor_at = None;
             self.begin(&mut out);
@@ -223,6 +223,11 @@ impl Screen {
         for commit in &frame.commits {
             self.commit(commit, &mut out);
         }
+        if resized || !frame.commits.is_empty() {
+            (layout, wanted) = self.layout(frame, size);
+        }
+        let frame = layout.as_ref();
+        let tail = visible_tail(frame, wanted);
         if wanted != self.viewport_height || tail != self.tail {
             self.relayout(wanted, tail, &mut out);
         }
@@ -259,15 +264,16 @@ impl Screen {
             .any(|(i, row)| self.painted.get(i).and_then(|p| p.as_deref()) != Some(row.as_str()))
     }
 
-    fn cursor_needs_move(&self, frame: &Frame, wanted: u16, tail: u16) -> bool {
+    fn cursor_needs_move(&self, frame: &Frame, wanted: u16) -> bool {
         match (frame.cursor, self.cursor_at) {
             (None, _) => false,
-            (Some((row, col)), at) => at != Some((col, self.top_for(wanted, tail) + row)),
+            (Some((row, col)), at) => {
+                at != Some((col, self.top.min(self.size.1.saturating_sub(wanted)) + row))
+            }
         }
     }
 
     fn commit(&mut self, text: &str, out: &mut Vec<u8>) {
-        self.take_gap();
         if self.commit_in_place(text, out) {
             return;
         }
@@ -389,35 +395,10 @@ impl Screen {
         self.content_start = self.content_start.saturating_sub(rows);
     }
 
-    /// Takes the gap back into the region as blank tail rows, so what is
-    /// committed next follows the history directly.
-    fn take_gap(&mut self) {
-        let gap = std::mem::take(&mut self.gap);
-        if gap == 0 {
-            return;
-        }
-        self.top -= gap;
-        self.viewport_height += gap;
-        self.tail = self.tail.min(self.viewport_height) + gap;
-        self.painted
-            .splice(0..0, std::iter::repeat_n(Some(String::new()), gap as usize));
-    }
-
-    /// Lays the region out `wanted` rows tall with `tail` rows above the
-    /// anchor, keeping the anchor in place: it never moves up unless the
-    /// region would run past the bottom. The region starts lower when fewer
-    /// rows are above the anchor (its top rows become the gap), ends higher
-    /// when fewer are below it (its bottom rows are given back blank, for the
-    /// next growth),
-    /// takes the gap back before anything scrolls and scrolls the screen
-    /// only for rows that fit nowhere. A menu or a question opened and
-    /// closed again scrolls once, the first time, never once per opening.
     fn relayout(&mut self, wanted: u16, tail: u16, out: &mut Vec<u8>) {
         let (_, rows) = self.size;
         let old = self.viewport_height;
-        let floor = self.top - self.gap;
-        let desired = self.anchored_top(wanted, tail);
-        let overflow = (desired + wanted).saturating_sub(rows);
+        let overflow = (self.top + wanted).saturating_sub(rows);
         if overflow > 0 {
             let anchor = self.top + self.tail;
             let pinned = !self.synchronized
@@ -440,23 +421,16 @@ impl Screen {
             }
             self.note_scroll(overflow);
         }
-        let shift = i64::from(desired) - i64::from(self.top);
         let old_top = i64::from(self.top) - i64::from(overflow);
-        for i in (0..i64::from(old)).filter(|&i| i < shift || i >= shift + i64::from(wanted)) {
+        for i in i64::from(wanted)..i64::from(old) {
             let at = old_top + i;
             if (0..i64::from(rows)).contains(&at) {
                 push_move(out, 0, at as u16);
                 out.extend_from_slice(ERASE_LINE);
             }
         }
-        self.painted = (0..i64::from(wanted))
-            .map(|j| match j + shift {
-                i if i < 0 => Some(String::new()),
-                i => self.painted.get(i as usize).cloned().flatten(),
-            })
-            .collect();
-        self.gap = desired - floor;
-        self.top = desired.saturating_sub(overflow);
+        self.painted.resize(wanted as usize, None);
+        self.top = self.top.saturating_sub(overflow);
         self.viewport_height = wanted;
         self.tail = tail;
         self.cursor_at = None;
@@ -467,7 +441,6 @@ impl Screen {
         self.viewport_height = wanted;
         self.top = size.1.saturating_sub(wanted);
         self.tail = 0;
-        self.gap = 0;
         self.painted = vec![None; wanted as usize];
         let top = self.viewport_top();
         push_move(out, 0, top);
@@ -477,13 +450,8 @@ impl Screen {
 
     /// Repaints after a resize by rewriting the terminal's whole history.
     ///
-    /// Erasing cannot survive a resize: reflowing terminals (iTerm2, Ghostty,
-    /// Apple Terminal) split every row wider than the new width before the
-    /// app hears about it, pushing stale pieces of the old frame into native
-    /// scrollback where no escape sequence reaches them. So the screen and the
-    /// scrollback are cleared (`2J`, then `3J`; `2J` first so terminals that
-    /// archive the screen on it archive into what `3J` clears) and `tail`,
-    /// laid out at the new width, is written from the top of a clean screen.
+    /// Replaces native scrollback with `tail`, already laid out at the new
+    /// width. Visible rows are overwritten, never cleared before repainting.
     /// Output from before this interface started is lost.
     pub fn rewrite(&mut self, size: (u16, u16), tail: &[String], wanted: u16) -> Vec<u8> {
         let mut out = Vec::new();
@@ -495,24 +463,38 @@ impl Screen {
             out.extend_from_slice(CURSOR_HIDE);
             self.cursor_visible = false;
         }
-        out.extend_from_slice(b"\x1b[2J\x1b[H\x1b[3J");
+        out.extend_from_slice(b"\x1b[3J\x1b[H");
+        let mut history_rows = 0;
         for row in tail {
-            out.extend_from_slice(scrub(row).as_bytes());
-            out.extend_from_slice(b"\x1b[0m\r\n");
+            let text = scrub(row);
+            let laid = lay_out(&text, size.0 as usize);
+            history_rows += laid.as_ref().map_or(1, |laid| laid.rows);
+            out.extend_from_slice(
+                laid.as_ref()
+                    .map_or(text.as_bytes(), |laid| laid.text.as_bytes()),
+            );
+            out.extend_from_slice(b"\x1b[0m");
+            if !laid.is_some_and(|laid| laid.full) {
+                out.extend_from_slice(ERASE_LINE_END);
+            }
+            out.extend_from_slice(b"\r\n");
         }
-        let after = tail.len().min((rows - 1) as usize) as u16;
+        let after = history_rows.min((rows - 1) as usize) as u16;
         let overflow = (after + wanted).saturating_sub(rows);
         if overflow > 0 {
             push_move(&mut out, 0, rows - 1);
             out.extend(std::iter::repeat_n(b"\n", overflow as usize).flatten());
         }
         let top = after - overflow;
-        self.scrolled = tail.len() > top as usize;
+        if top + wanted < rows {
+            push_move(&mut out, 0, top + wanted);
+            out.extend_from_slice(ERASE_DOWN);
+        }
+        self.scrolled = history_rows > top as usize;
         self.content_start = 0;
         self.top = top;
         self.viewport_height = wanted;
         self.tail = 0;
-        self.gap = 0;
         self.painted = vec![None; wanted as usize];
         self.cursor_at = None;
         self.anchor = top;
@@ -537,10 +519,10 @@ impl Screen {
 
     /// Hands the screen over to the fullscreen interface: the live region
     /// is erased, so what stays behind is the committed history, and the
-    /// cursor waits where the region started (above its gap).
+    /// cursor waits where the region started.
     pub fn erase_live(&mut self) -> Vec<u8> {
         let mut out = Vec::new();
-        push_move(&mut out, 0, self.viewport_top() - self.gap);
+        push_move(&mut out, 0, self.viewport_top());
         out.extend_from_slice(ERASE_DOWN);
         out.extend_from_slice(CURSOR_SHOW);
         self.cursor_visible = true;
@@ -976,35 +958,51 @@ mod tests {
 
     #[test]
     fn rewrite_clears_scrollback_and_writes_the_history_once() {
-        let (mut screen, mut emu) = setup(true);
-        emu.feed(b"before-start\r\n");
-        screen.set_origin(1);
-        let live = ["composer", "status"];
-        drive(
-            &mut screen,
-            &mut emu,
-            &frame(&["\nfirst\n", "\nsecond\n"], &live, Some((0, 0))),
-        );
-        let tail: Vec<String> = ["", "first", "", "second"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let wanted = screen.wanted_for(SIZE, live.len());
-        let bytes = screen.rewrite(SIZE, &tail, wanted);
-        emu.feed(&bytes);
-        drive(&mut screen, &mut emu, &frame(&[], &live, Some((0, 0))));
-        let rows = emu.rows_text();
-        assert_eq!(
-            rows[..6],
-            ["", "first", "", "second", "composer", "status"],
-            "{rows:?}"
-        );
-        let transcript = emu.transcript();
-        assert!(
-            !transcript.iter().any(|l| l == "before-start"),
-            "{transcript:?}"
-        );
-        assert_eq!(transcript.iter().filter(|l| *l == "first").count(), 1);
+        for synchronized in [false, true] {
+            for history_rows in [0, 5, 40] {
+                let (mut screen, mut emu) = setup(synchronized);
+                emu.feed(b"before-start\r\n");
+                screen.set_origin(1);
+                let live = ["composer", "status"];
+                drive(
+                    &mut screen,
+                    &mut emu,
+                    &frame(&["\nfirst\n", "\nsecond\n"], &live, Some((0, 0))),
+                );
+                let tail: Vec<String> = (0..history_rows)
+                    .map(|row| match row % 5 {
+                        0 => String::new(),
+                        1 => "x".repeat(SIZE.0 as usize),
+                        2 => "x".repeat(2 * SIZE.0 as usize),
+                        3 => "y".repeat(SIZE.0 as usize + 1),
+                        _ => format!("history {row}"),
+                    })
+                    .collect();
+                let wanted = screen.wanted_for(SIZE, live.len());
+                let flickers = emu.flickers;
+                let mut bytes = screen.rewrite(SIZE, &tail, wanted);
+                bytes.extend(screen.render(&frame(&[], &live, Some((0, 0))), SIZE));
+                emu.feed(&bytes);
+                let mut expected: Vec<String> = tail
+                    .iter()
+                    .flat_map(|row| {
+                        if row.is_empty() {
+                            vec![String::new()]
+                        } else {
+                            row.as_bytes()
+                                .chunks(SIZE.0 as usize)
+                                .map(|part| String::from_utf8(part.to_vec()).unwrap())
+                                .collect()
+                        }
+                    })
+                    .collect();
+                expected.extend(live.map(str::to_owned));
+                assert_eq!(emu.transcript(), expected);
+                assert_eq!(emu.flickers, flickers, "rewriting history must not flash");
+                drive(&mut screen, &mut emu, &frame(&[], &live, Some((0, 0))));
+                assert_eq!(emu.transcript(), expected);
+            }
+        }
     }
 
     /// Tool and shell output reaches rows verbatim: only the escapes the
@@ -1217,6 +1215,78 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn shrinking_a_queue_keeps_the_live_transcript_compact_without_flickering() {
+        for sync in [true, false] {
+            for origin in [None, Some(0)] {
+                let (mut screen, mut emu) = setup(sync);
+                if let Some(origin) = origin {
+                    screen.set_origin(origin);
+                }
+                let mut queued = docked(
+                    &[
+                        "",
+                        "◆ Thinking…",
+                        "queue top",
+                        "queued",
+                        "hint",
+                        "queue bottom",
+                        "composer",
+                        "status",
+                    ],
+                    6,
+                    Some((6, 1)),
+                );
+                queued.dock = 2;
+                queued.commits.push("\n┃ user\n".into());
+                drive(&mut screen, &mut emu, &queued);
+                let composer = emu
+                    .rows_text()
+                    .iter()
+                    .position(|row| row == "composer")
+                    .unwrap();
+                let mut steered = docked(
+                    &["", "◆ Thinking…", "", "┃ steer", "composer", "status"],
+                    4,
+                    Some((4, 1)),
+                );
+                drive(&mut screen, &mut emu, &steered);
+                let transcript = emu.transcript();
+                let user = transcript.iter().position(|row| row == "┃ user").unwrap();
+                assert_eq!(
+                    &transcript[user..user + 5],
+                    ["┃ user", "", "◆ Thinking…", "", "┃ steer"],
+                    "the live transcript must keep only its normal separators: {transcript:?}"
+                );
+                assert_eq!(emu.row(composer), "composer");
+                assert_eq!(emu.cy, composer);
+                assert_eq!(emu.flickers, 0);
+                assert!(drive(&mut screen, &mut emu, &steered).is_empty());
+                steered.live[1] = "◆ Thinking… more text".into();
+                drive(&mut screen, &mut emu, &steered);
+                assert_eq!(emu.row(composer), "composer");
+                drive(
+                    &mut screen,
+                    &mut emu,
+                    &frame(
+                        &["\n◆ Thought\n\n┃ steer\n"],
+                        &["composer", "status"],
+                        Some((0, 1)),
+                    ),
+                );
+                let transcript = emu.transcript();
+                let user = transcript.iter().position(|row| row == "┃ user").unwrap();
+                assert_eq!(
+                    &transcript[user..user + 5],
+                    ["┃ user", "", "◆ Thought", "", "┃ steer"]
+                );
+                assert_eq!(emu.row(composer), "composer");
+                assert_eq!(emu.cy, composer);
+                assert_eq!(emu.flickers, 0);
+            }
+        }
     }
 
     /// Opens and closes a panel under the composer `times` times; returns
@@ -1576,17 +1646,25 @@ mod tests {
                 assert_eq!(emu.flickers, flickers, "a row flickered; {context}");
                 let top = screen.top as usize;
                 let rows = emu.rows_text();
+                let height = screen.wanted_for(size, frame.live.len());
+                let mut expected = visible_rows(&frame.live, height);
+                let padding = at - top - visible_tail(&frame, height) as usize;
+                let boundary = frame
+                    .dock
+                    .saturating_sub(frame.live.len().saturating_sub(height as usize));
+                expected.splice(
+                    boundary..boundary,
+                    std::iter::repeat_n(String::new(), padding),
+                );
                 assert_eq!(
                     rows[top..top + screen.viewport_height as usize],
-                    visible_rows(&frame.live, screen.viewport_height),
+                    expected,
                     "{context}"
                 );
-                let floor = top - screen.gap as usize;
-                assert!(rows[floor..top].iter().all(String::is_empty), "{context}");
                 let history: String = emu
                     .scrollback
                     .iter()
-                    .chain(&rows[..floor])
+                    .chain(&rows[..top])
                     .flat_map(|row| row.chars())
                     .filter(|&c| c != '\u{0}')
                     .collect();

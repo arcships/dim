@@ -398,6 +398,28 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
         std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o444)).unwrap();
         assert_eq!(exported(&readonly, &session).await, stopped);
 
+        // A damaged request body fails the export before its first line: the
+        // preflight rebuilds and hash-checks every body.
+        let damaged = directory.join("copies/damaged.sqlite");
+        std::fs::copy(&database, &damaged).unwrap();
+        let connection = rusqlite::Connection::open(&damaged).unwrap();
+        assert!(
+            connection
+                .execute(
+                    "UPDATE timeline_content SET body = 'unreadable request body' \
+                     WHERE session_id = ?1 AND kind = 'node'",
+                    [&session],
+                )
+                .unwrap()
+                > 0
+        );
+        drop(connection);
+        assert!(
+            rejected(&damaged, &session)
+                .await
+                .contains("request content hash mismatch")
+        );
+
         for (version, dropped, end_index) in [
             (13, "DROP TABLE session_file_owners; DROP TABLE session_files; DROP TABLE session_metadata;", true),
             (17, "", true),

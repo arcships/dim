@@ -22,6 +22,7 @@ use dim_agent_capabilities::{
     permission::{CommandRulesHost, NoCommandRules},
     skill_settings::SkillSettingsHost,
     skills::{MemorySkillSettings, SkillsCatalogPlugin},
+    toolchain::ToolchainSourceHost,
     workspace_tools::WorkspaceToolsConfig,
 };
 use dim_agent_runtime::{testing::MinimalHost, *};
@@ -63,13 +64,18 @@ struct GraphPlatform {
     home: PathBuf,
     storage: Key<FileStorage>,
     execution: Key<ExecutionSettingsHost>,
+    toolchain: Key<ToolchainSourceHost>,
 }
 impl DynPlugin for GraphPlatform {
     fn name(&self) -> &str {
         "HostPlatform"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.storage.erase(), self.execution.erase()]
+        vec![
+            self.storage.erase(),
+            self.execution.erase(),
+            self.toolchain.erase(),
+        ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
@@ -80,6 +86,8 @@ impl DynPlugin for GraphPlatform {
             })
             .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?
             .with_execution_settings(ExecutionSettingsHost(execution.0.clone()));
+            let toolchain = ctx.require_at(&self.toolchain)?;
+            platform = platform.with_toolchain_source(ToolchainSourceHost(toolchain.0.clone()));
             platform.home = self.home.clone();
             ctx.provide_as::<HostPlatform>(Arc::new(platform))?;
             Ok(Effect::Done)
@@ -189,6 +197,7 @@ pub async fn local_graph() -> Result<BTreeMap<&'static str, Value>> {
             home: home.clone(),
             storage: Key::of(),
             execution: Key::of(),
+            toolchain: Key::of(),
         }))
     });
     defaults::mock_model_hosts(&mut builder);
@@ -215,6 +224,7 @@ pub async fn local_graph() -> Result<BTreeMap<&'static str, Value>> {
         root.provide_as::<ExecutionSettingsHost>(Arc::new(ExecutionSettingsHost::fixed(
             Default::default(),
         )))?;
+        root.provide_as::<ToolchainSourceHost>(Arc::new(ToolchainSourceHost::fixed(vec![])))?;
         Ok(())
     })
     .await?;

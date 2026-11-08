@@ -11,6 +11,7 @@ use crate::{
     runs::SchedulerError,
 };
 use chrono::{DateTime, Duration, Utc};
+use dim_agent_capabilities::session_broadcast::{SessionNotice, notify};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
@@ -196,6 +197,25 @@ pub struct Wakeups {
 }
 
 impl Wakeups {
+    /// Announces one committed record change on the target Session's channel
+    /// (design §11.1). The notice reports that the record changed; `list` is
+    /// its truth. A Session that is not loaded or not observed drops it.
+    fn notice(&self, wakeup: &Wakeup) {
+        notify(
+            &self.shared.ctx,
+            &wakeup.session_id,
+            SessionNotice {
+                source: "Scheduler".into(),
+                kind: "wakeup".into(),
+                data: json!({
+                    "branchId": wakeup.branch_id,
+                    "wakeupId": wakeup.wakeup_id,
+                    "state": wakeup.state.name(),
+                }),
+            },
+        );
+    }
+
     /// Records a one-shot wakeup. An instant already past the grace window is
     /// recorded `expired` at once; nothing is ever replayed (A.4's rule).
     pub async fn create(&self, request: WakeupRequest) -> Result<Wakeup, SchedulerError> {
@@ -217,11 +237,13 @@ impl Wakeups {
         };
         created.validate().map_err(SchedulerError::invalid_data)?;
         let record = created.clone();
-        update(&self.shared.files, move |wakeups| {
+        let record = update(&self.shared.files, move |wakeups| {
             wakeups.push(created);
             Ok((true, record))
         })
-        .await
+        .await?;
+        self.notice(&record);
+        Ok(record)
     }
 
     /// The wakeups of one Session branch; the method boundary defaults
@@ -252,7 +274,7 @@ impl Wakeups {
         let _hold = self.shared.wakeups.lock().await;
         let session_id = session_id.to_owned();
         let wakeup_id = wakeup_id.to_owned();
-        update(&self.shared.files, move |wakeups| {
+        let (record, settled) = update(&self.shared.files, move |wakeups| {
             let Some(position) = wakeups
                 .iter()
                 .position(|wakeup| wakeup.wakeup_id == wakeup_id)
@@ -277,7 +299,13 @@ impl Wakeups {
             let record = record.clone();
             Ok((settled, (record, settled)))
         })
-        .await
+        .await?;
+        // A cancel of a terminal record changes nothing, so it announces
+        // nothing.
+        if settled {
+            self.notice(&record);
+        }
+        Ok((record, settled))
     }
 
     /// One pass of the timer (and of the restart, whose first pass runs
@@ -415,8 +443,9 @@ impl Wakeups {
         if outcomes.is_empty() && expired.is_empty() && prune.is_empty() {
             return Ok(());
         }
-        update(&self.shared.files, move |wakeups| {
+        let applied = update(&self.shared.files, move |wakeups| {
             let mut changed = false;
+            let mut applied = Vec::new();
             for (wakeup_id, state) in &outcomes {
                 let Some(record) = wakeups
                     .iter_mut()
@@ -429,6 +458,7 @@ impl Wakeups {
                 }
                 record.state = *state;
                 record.settled_at = Some(stamp(now));
+                applied.push(record.clone());
                 changed = true;
             }
             for wakeup_id in &expired {
@@ -443,6 +473,7 @@ impl Wakeups {
                 }
                 record.state = WakeupState::Expired;
                 record.settled_at = Some(stamp(now));
+                applied.push(record.clone());
                 changed = true;
             }
             if !prune.is_empty() {
@@ -454,8 +485,18 @@ impl Wakeups {
                 wakeups.retain(|wakeup| !pruned.contains(wakeup.wakeup_id.as_str()));
                 changed |= wakeups.len() != before;
             }
-            Ok((changed, ()))
+            Ok((changed, applied))
         })
-        .await
+        .await?;
+        // One notice per record this pass settled, sent after the settle
+        // commits. A `fired` notice is a committed-state notice, not ordered
+        // against the input's `session.event`, which the Session emits when
+        // it dispatches the input; a client relates the two by the input's
+        // submission id `wakeup:<wakeup_id>`. Retention pruning changes no
+        // readable record and announces nothing.
+        for record in &applied {
+            self.notice(record);
+        }
+        Ok(())
     }
 }

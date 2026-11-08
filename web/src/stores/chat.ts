@@ -5,7 +5,7 @@ import { Projection, type TimelineRow } from "../projection"
 import { Lines, type LineView } from "../lines"
 import { ConnectionLost, RpcError } from "../rpc/client"
 import type { Goal, GoalCall } from "../goal"
-import { MAIN_BRANCH, type ApprovalDecision, type ApprovalRequest, type DraftAttachments, type FileCandidate, type ModelId, type ModelProgress, type Notification, type PendingQuestion, type PermissionPreset, type PermissionPolicy, type QueuedInput, type QuestionAnswer, type SessionEvent, type UserInput, type WithdrawResult } from "../rpc/protocol"
+import { MAIN_BRANCH, type ApprovalDecision, type ApprovalRequest, type DraftAttachments, type FileCandidate, type ModelId, type ModelProgress, type Notification, type PendingQuestion, type PermissionPreset, type ModelRetryProgress, type PermissionPolicy, type QueuedInput, type QuestionAnswer, type SessionEvent, type UserInput, type WithdrawResult } from "../rpc/protocol"
 import { readRevision, readRules } from "../rpc/general-settings"
 import { ProtocolError, readAck, readAttachmentPath, readBranchCreate, readCompactResult, readConfigurationOutcome, readContextUsage, readFileCandidates, readForkedSessionId, readHistory, readModelUpdate, readMemberApproval, readPermissionState, readPermissionVersion, readSessionMethods, readWithdrawResult } from "../rpc/read"
 import { useConnectionStore } from "./connection"
@@ -36,6 +36,8 @@ export type SessionView = {
   /** Whether main runs, and whether it is stopping. */
   running: boolean
   stopping: boolean
+  /** The retry main's current model request is waiting to make, while it sleeps. */
+  retry: ModelRetryProgress | undefined
   /** Whether any line of this session runs: the header and sidebar badge. */
   sessionRunning: boolean
   /** Pending approvals of every branch, oldest first. */
@@ -121,6 +123,7 @@ export const useChatStore = defineStore("chat", () => {
       rows: [],
       running: stored?.running ?? false,
       stopping: false,
+      retry: undefined,
       sessionRunning: stored?.running ?? false,
       approvals: [],
       questions: [],
@@ -248,10 +251,8 @@ export const useChatStore = defineStore("chat", () => {
       case "session.model.progress": {
         const branchId = notification.progress.branchId
         const stream = ensureBranch(channel, branchId)
-        if (stream.syncing) {
-          stream.progress = notification.progress
-          break
-        }
+        stream.progress = notification.progress
+        if (stream.syncing) break
         stream.projection.progress(notification.progress)
         changed(channel)
         break
@@ -306,6 +307,8 @@ export const useChatStore = defineStore("chat", () => {
     const stream = ensureBranch(channel, branchId)
     if (!stream.projection.apply(event)) return
     stream.after = Math.max(stream.after, event.sequence)
+    const applied = event.content
+    if (applied.kind === "turn-end" || ((applied.kind === "model-end" || applied.kind === "tool-use") && applied.requestId === stream.progress?.requestId)) stream.progress = undefined
     if (event.content.kind === "branch-create") ensureBranch(channel, event.content.branchId)
     if (branchId === MAIN_BRANCH && event.content.kind === "permission-changed") channel.view.permission = event.content.policy
     changed(channel)
@@ -446,6 +449,7 @@ export const useChatStore = defineStore("chat", () => {
     view.lastTurnEnd = channel.main.projection.lastTurnEnd
     view.running = main.running
     view.stopping = main.stopping
+    view.retry = channel.main.progress?.retry
     view.sessionRunning = anyRunning(channel)
     view.model = channel.main.projection.model ?? useSessionsStore().byId.get(view.sessionId)?.model
     view.lines = channel.lines.views()

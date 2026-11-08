@@ -20,10 +20,13 @@ import type {
   EventContent,
   HelloResult,
   HistoryPage,
+  ModelFailure,
   ModelId,
+  ModelRetryProgress,
   ModelUpdateResult,
   Notification,
   ProviderCatalog,
+  ProviderPresentation,
   ProviderSummary,
   RawBlock,
   SessionEvent,
@@ -88,6 +91,61 @@ function modelId(value: unknown, at: string): ModelId {
   return { providerId: str(source, "providerId", at), modelId: str(source, "modelId", at) }
 }
 
+/** A provider's own wording for a failure; absent when the host supplied none. */
+function readPresentation(value: unknown, at: string): ProviderPresentation | undefined {
+  if (value === undefined || value === null) return undefined
+  const source = obj(value, at)
+  const serverMessage = optStr(source, "serverMessage", at)
+  const requestId = optStr(source, "requestId", at)
+  const action = optStr(source, "action", at)
+  return {
+    source: str(source, "source", at),
+    reason: str(source, "reason", at),
+    ...(serverMessage === undefined ? {} : { serverMessage }),
+    ...(requestId === undefined ? {} : { requestId }),
+    ...(action === undefined ? {} : { action }),
+  }
+}
+
+/** Why a model request failed; absent on events written before the fact existed. */
+function readModelFailure(value: unknown, at: string): ModelFailure | undefined {
+  if (value === undefined || value === null) return undefined
+  const source = obj(value, at)
+  const status = source.status === undefined || source.status === null ? undefined : num(source, "status", at)
+  const providerCode = optStr(source, "providerCode", at)
+  const requestId = optStr(source, "requestId", at)
+  const reason = optStr(source, "reason", at)
+  const retryAfterMs = source.retryAfterMs === undefined || source.retryAfterMs === null ? undefined : num(source, "retryAfterMs", at)
+  const cause = source.cause === undefined || source.cause === null ? [] : arr(source.cause, `${at}.cause`).map((frame, index) => {
+    if (typeof frame !== "string") fail(`${at}.cause[${index}]`, "a string")
+    return frame
+  })
+  return {
+    kind: str(source, "kind", at),
+    ...(status === undefined ? {} : { status }),
+    ...(providerCode === undefined ? {} : { providerCode }),
+    ...(requestId === undefined ? {} : { requestId }),
+    ...(reason === undefined ? {} : { reason }),
+    cause,
+    attempts: num(source, "attempts", at),
+    waitedMs: num(source, "waitedMs", at),
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+  }
+}
+
+/** The retry a model request is waiting to make; absent when none is pending. */
+function readRetryProgress(value: unknown, at: string): ModelRetryProgress | undefined {
+  if (value === undefined || value === null) return undefined
+  const source = obj(value, at)
+  const reason = optStr(source, "reason", at)
+  return {
+    attempt: num(source, "attempt", at),
+    maxAttempts: num(source, "maxAttempts", at),
+    retryAtMs: num(source, "retryAtMs", at),
+    kind: str(source, "kind", at),
+    ...(reason === undefined ? {} : { reason }),
+  }
+}
 
 export function readHello(value: unknown): HelloResult {
   const source = obj(value, "hello")
@@ -517,8 +575,17 @@ function content(type: string, name: string, data: Json, at: string): EventConte
         }),
       }
     case "step/model-output-end": {
-      const error = str(data, "status", at) === "failed" ? str(data, "error", at) : undefined
-      return { kind: "model-end", requestId: str(data, "request_id", at), ...(error === undefined ? {} : { error }) }
+      const failed = str(data, "status", at) === "failed"
+      const error = failed ? str(data, "error", at) : undefined
+      const presentation = failed ? readPresentation(data.presentation, `${at}.presentation`) : undefined
+      const failure = failed ? readModelFailure(data.failure, `${at}.failure`) : undefined
+      return {
+        kind: "model-end",
+        requestId: str(data, "request_id", at),
+        ...(error === undefined ? {} : { error }),
+        ...(presentation === undefined ? {} : { presentation }),
+        ...(failure === undefined ? {} : { failure }),
+      }
     }
     case "context/configured":
       return { kind: "context-configured", model: { providerId: str(data, "provider_id", at), modelId: str(data, "model_id", at) } }
@@ -651,6 +718,7 @@ export function readNotification(method: string, value: unknown): Notification |
       }
     case "session.model.progress": {
       const requestId = optStr(params, "requestId", method)
+      const retry = readRetryProgress(params.retry, `${method}.retry`)
       return {
         method,
         progress: {
@@ -661,6 +729,7 @@ export function readNotification(method: string, value: unknown): Notification |
           textOffset: num(params, "textOffset", method),
           thinking: str(params, "thinking", method),
           thinkingOffset: num(params, "thinkingOffset", method),
+          ...(retry === undefined ? {} : { retry }),
         },
       }
     }

@@ -2748,7 +2748,13 @@ async fn management(fixture: &Fixture, method: &str, params: Value) -> Value {
         .expect("management methods are installed")
         .provider(method)
         .expect("the method is registered")
-        .accept(method.into(), params, CancellationToken::new(), |_| {})
+        .accept(
+            method.into(),
+            params,
+            None,
+            CancellationToken::new(),
+            |_| {},
+        )
         .expect("the method is accepted")
         .reply
         .await

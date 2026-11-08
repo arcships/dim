@@ -157,6 +157,12 @@ Desktop 在独立仓库里。本仓库负责 Desktop 使用的 App Server 契约
 | 分支元数据、重命名、按分支设置模型 | 来自 `branch/*` 事实；重命名在客户端本地；按分支设置模型不做（[#280](https://github.com/arcships/dim/issues/280)） |
 | 本地工具、编辑/重试、用量、子 agent 关系 | 客户端运行的 MCP server；`session.fork` + `session.submit`；客户端统计用量；`collaboration/*` 事实（[#281](https://github.com/arcships/dim/issues/281)） |
 | 没有字节流入口时的 UI 扩展资源与 Session 媒体 | 协议分页读取 `ui.extensions.read` 与 `session.ui.resources.read`（[客户端 UI 扩展](../../design/client-ui-extensions.md)，[#1170](https://github.com/arcships/dim/issues/1170)） |
+| 助手模型（新对话的默认模型） | Provider 的作用域选择：读 `provider.selection {cwd?}`，写 `provider.select {cwd?, providerId, modelId, expectedVersion?}`（[Provider 管理](appserver/provider-management.md#3-管理合同)）。`version` 是 CAS 令牌，过期即 `provider_conflict`；`cwd` 缺省为全局默认，工作区选择在 `session.create` 时优先于它 |
+| 自定义指令（全局） | 用户的 `~/AGENTS.md`：PromptSources 在分支加载时读取，并每 60 秒重新检查（[PromptSources](plugins/PromptSources.md#13-内容)）；本地客户端可以打开或编辑该文件，没有 App Server 方法或设置保存它。单次对话的指令是 `session.create {systemPrompt?, appendSystemPrompt?}` |
+| 子 agent 最大并发数 | 不做：Dim 没有成员并发设置（[Collaboration](plugins/Collaboration.md)），客户端将该控件显示为不可用，绝不在本地保存 |
+| 外部 agent（启用状态、可执行文件路径） | `external_agents.list`、`external_agents.set_enabled` 与 `external_agents.configure`，并用文档的 revision 做 CAS（[ExternalAgent A.1](plugins/ExternalAgent.md#a1-管理方法)）；只有 `hello.features` 列出这些方法时，客户端才提供这些控件 |
+
+在本表没有归属的设置，客户端一律显示为不可用，绝不当作已生效而保存在本地。
 
 Desktop 自己的能力覆盖和界面验收在它的仓库里跟踪。本仓库的契约支撑不了的能力，按同一规则在本仓库开 issue。
 

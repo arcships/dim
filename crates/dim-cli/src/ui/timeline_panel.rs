@@ -234,6 +234,7 @@ mod tests {
 
     fn row(id: &str, kind: RowKind, text: &str) -> Arc<ViewRow> {
         Arc::new(ViewRow {
+            failure: None,
             row_id: id.into(),
             kind,
             text: text.into(),

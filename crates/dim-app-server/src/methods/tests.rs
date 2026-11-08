@@ -1,6 +1,6 @@
 //! Per-call lookup, provider-owned calls and namespace ownership contracts.
 use super::*;
-use dim_agent_capabilities::methods::{Handler, Interruption};
+use dim_agent_capabilities::methods::{Handler, Interruption, MethodCall};
 use dim_agent_runtime::{Modules, Names, names::register, register_part, wait_active};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
 use rutis_loader::{Layer, LoaderPlugin, Patch};
@@ -32,7 +32,7 @@ impl Owner {
                 .iter()
                 .map(|method| decl(method, Interruption::Drain))
                 .collect(),
-            handler: Arc::new(|_, _, _, _| Box::pin(async { Ok(json!({})) })),
+            handler: Arc::new(|_, _, _| Box::pin(async { Ok(json!({})) })),
             methods: names.key()?,
         })
     }
@@ -86,7 +86,7 @@ impl DynPlugin for Waiting {
                 ctx,
                 "pending",
                 vec![decl("pending.read", Interruption::Drain)],
-                Arc::new(|_, _, _, _| Box::pin(async { Ok(json!({})) })),
+                Arc::new(|_, _, _| Box::pin(async { Ok(json!({})) })),
             )?;
             Ok(Effect::Done)
         })
@@ -184,6 +184,7 @@ impl Assembly {
             &self.loader,
             method.into(),
             json!({}),
+            None,
             entry.clone(),
             |_| {},
         )
@@ -265,7 +266,7 @@ impl DynPlugin for Fixture {
                     decl("fixture.wait", Interruption::Report),
                     decl("fixture.read", Interruption::Drain),
                 ],
-                Arc::new(move |method, _, cancel, _| {
+                Arc::new(move |MethodCall { method, .. }, cancel, _| {
                     let state = state.clone();
                     Box::pin(async move {
                         if method == "fixture.write" {
@@ -539,4 +540,45 @@ async fn namespace_validation_and_nested_ownership_follow_the_longest_provided_n
         assert!(started.elapsed() < Duration::from_secs(1));
         assembly.root.shutdown().await.unwrap();
     }
+}
+
+/// Methods contract A.2: a contributed notification may not take a built-in
+/// notification's wire name, in either table, so a provider cannot
+/// impersonate a notification its connections already read.
+#[test]
+fn both_checks_refuse_a_built_in_notification_name() {
+    let with = |name: &str, notification: &str| {
+        vec![MethodDecl {
+            notifications: vec![notification.into()],
+            ..decl(name, Interruption::Drain)
+        }]
+    };
+    let error = ManagementMethods::check()(
+        "management",
+        &with("management.read", "management.progress"),
+    )
+    .expect_err("the management table refuses a built-in notification");
+    assert!(
+        error
+            .to_string()
+            .contains("Invalid management contribution")
+    );
+    ManagementMethods::check()("management", &with("management.read", "management.changed"))
+        .expect("a name of its own is fine");
+
+    let error = reserved_for_sessions()(
+        "session.event",
+        &with("session.event.read", "session.event"),
+    )
+    .expect_err("the Session table refuses a built-in notification");
+    assert!(
+        error
+            .to_string()
+            .contains("invalid Session namespace session.event")
+    );
+    reserved_for_sessions()(
+        "session.event",
+        &with("session.event.read", "session.event.read"),
+    )
+    .expect("a name of its own is fine");
 }

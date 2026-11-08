@@ -42,7 +42,9 @@ Two terms are used below:
 - The **effective** configuration is the declared one with the daemon's own resolution applied:
   a project entry's stdio `cwd` is resolved against the workspace and its enablement is taken
   from the user's record (ADR 003 D3), and a plugin entry's stdio `cwd` is resolved against the
-  plugin directory.
+  plugin directory. A stdio entry's child `PATH` is the entry's own `PATH` when it sets one,
+  otherwise the daemon's, with the bin directories of the runtimes RuntimeManager installed
+  appended after it (RuntimeManager §5); the command text stays what the user wrote.
 
 ## 2. Current behavior
 

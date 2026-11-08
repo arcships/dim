@@ -19,7 +19,8 @@ use dim_agent_runtime::{
     AgentBuilder, AgentConfig, AgentError, BoxFuture, BranchOptions, Dispatcher, Feature,
     LoopSnapshot, LoopState, MemoryTimelineStore, Names, PublishCallback, Session, SessionConfig,
     StoredBranch, StoredEvent, Timeline, TimelineIdentity, TimelineKey, TimelineQuery,
-    TimelineQueryDirection, TimelineQueryPage, TimelineStore, TimelineTrace,
+    TimelineQueryDirection, TimelineQueryOrderBy, TimelineQueryPage, TimelineQueryScope,
+    TimelineStore, TimelineTrace,
 };
 use dim_agent_types::{
     AgentEvent, BranchSource, DeltaData, EventKind, InputBlock, InputMessageData, InputMode,
@@ -31,7 +32,7 @@ use rutis::host::{CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis_loader::resolve::Build;
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     ops::RangeInclusive,
     path::PathBuf,
     sync::{
@@ -253,6 +254,25 @@ impl Seed {
             .unwrap_or_else(|error| panic!("seeding {branch}: {error}"))
     }
 
+    /// Commits `kinds` as one atomic batch and returns the facts, so a case
+    /// can seed a batch Goal writes together (R5).
+    pub fn append_batch(&mut self, branch: &str, kinds: Vec<EventKind>) -> Vec<Arc<AgentEvent>> {
+        let timeline = self.timelines.entry(branch.to_owned()).or_insert_with(|| {
+            Arc::new(Timeline::new(
+                self.root.clone(),
+                TimelineKey {
+                    session_id: self.session.clone(),
+                    branch_id: branch.to_owned(),
+                },
+                vec![],
+                self.store.clone(),
+            ))
+        });
+        timeline
+            .append_batch_registered(kinds.into_iter().map(EventKind::into).collect(), |_| Ok(()))
+            .unwrap_or_else(|error| panic!("seeding a batch on {branch}: {error}"))
+    }
+
     /// Closes the seeding root; the facts stay in the store.
     pub async fn finish(self) {
         let _ = self.root.shutdown().await;
@@ -412,7 +432,8 @@ impl TimelineStore for RefusingStore {
 /// A store that holds Goal's creation check — its one `branch/create` query —
 /// until the case lets it go, so a case can commit a change and have the fold
 /// consume it while that check waits; every other call delegates to a memory
-/// store.
+/// store. It also holds one publication or one read at a time, so a case can
+/// place a fact in a window a live system never shows it in.
 #[derive(Default)]
 pub struct GatedStore {
     memory: MemoryTimelineStore,
@@ -425,6 +446,54 @@ pub struct GatedStore {
             tokio::sync::oneshot::Receiver<()>,
         )>,
     >,
+    /// A state record's publication and every publication after it, held until
+    /// the case releases them.
+    state: Arc<Mutex<Option<StateHold>>>,
+    /// A read whose one kind matches, held until the case releases it.
+    read: Mutex<Option<ReadHold>>,
+}
+
+/// One held read: its kind selection, the one branch it must not be on, and
+/// the case's ends of the gate.
+struct ReadHold {
+    kinds: Vec<String>,
+    not_branch: Option<String>,
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Receiver<()>,
+}
+
+/// One held publication: the state record naming `after` and everything
+/// committed after it wait, in order, for the case's release (R2, R4).
+struct StateHold {
+    /// The state record's `after`, or `None` for the next state record.
+    after: Option<u64>,
+    entered: Option<tokio::sync::oneshot::Sender<()>>,
+    release: Option<tokio::sync::oneshot::Receiver<()>>,
+    /// Set when the record's publication arrived: later ones queue behind it.
+    triggered: bool,
+    /// Set when the case released the gate: the queue drains and later
+    /// publications run directly.
+    released: bool,
+    queue: VecDeque<Box<dyn FnOnce() + Send>>,
+}
+
+impl StateHold {
+    /// Whether one of `events` is a state record naming the held `after`.
+    fn matches(&self, events: &[StoredEvent]) -> bool {
+        events.iter().any(|stored| {
+            let EventKind::InputMessage(data) = &stored.event.kind else {
+                return false;
+            };
+            data.blocks.iter().any(|block| {
+                let InputBlock::Raw { text, .. } = block;
+                if !text.contains(r#"kind="state""#) {
+                    return false;
+                }
+                self.after
+                    .is_none_or(|after| text.contains(&format!(r#"after="{after}""#)))
+            })
+        })
+    }
 }
 
 impl GatedStore {
@@ -456,6 +525,76 @@ impl GatedStore {
         let (entered, written) = tokio::sync::oneshot::channel();
         let (release, held) = tokio::sync::oneshot::channel();
         *self.published.lock().unwrap() = Some((entered, held));
+        (written, release)
+    }
+
+    /// Holds the publication of the state record naming `after` (`None`: the
+    /// next state record) and of every fact committed after it: the first end
+    /// fires once the record's append is committed, and sending on the second
+    /// publishes it and then the facts behind it.
+    pub fn hold_state(
+        &self,
+        after: Option<u64>,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered, written) = tokio::sync::oneshot::channel();
+        let (release, held) = tokio::sync::oneshot::channel();
+        *self.state.lock().unwrap() = Some(StateHold {
+            after,
+            entered: Some(entered),
+            release: Some(held),
+            triggered: false,
+            released: false,
+            queue: VecDeque::new(),
+        });
+        (written, release)
+    }
+
+    /// Holds the next read whose single kind is `kind`: the first end fires
+    /// once the read starts, and sending on the second lets it answer.
+    pub fn hold_query(
+        &self,
+        kind: &str,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        self.hold_read(&[kind])
+    }
+
+    /// Holds the next read whose kind selection is exactly `kinds`, whatever
+    /// its branch or direction: the first end fires once the read starts, and
+    /// sending on the second lets it answer.
+    pub fn hold_read(
+        &self,
+        kinds: &[&str],
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        self.hold_read_other_than(kinds, None)
+    }
+
+    /// [`Self::hold_read`] for a read on any branch but `branch`: the scan of a
+    /// branch that is still loading, while another branch's reads go through.
+    pub fn hold_read_other_than(
+        &self,
+        kinds: &[&str],
+        branch: Option<&str>,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered, written) = tokio::sync::oneshot::channel();
+        let (release, held) = tokio::sync::oneshot::channel();
+        *self.read.lock().unwrap() = Some(ReadHold {
+            kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
+            not_branch: branch.map(str::to_owned),
+            entered,
+            release: held,
+        });
         (written, release)
     }
 }
@@ -510,23 +649,91 @@ impl TimelineStore for GatedStore {
                 text.contains(r#"kind="continuation""#)
             })
         });
-        let held = continuation
-            .then(|| self.published.lock().unwrap().take())
-            .flatten();
-        let Some((entered, held)) = held else {
-            return self.memory.append(key, events, publish);
+        if continuation && let Some((entered, held)) = self.published.lock().unwrap().take() {
+            return self.memory.append(
+                key,
+                events,
+                Box::new(move |result| {
+                    tokio::spawn(async move {
+                        let _ = entered.send(());
+                        let _ = held.await;
+                        publish(result);
+                    });
+                }),
+            );
+        }
+        enum Held {
+            /// This append is the held record: its publication waits for the
+            /// case, then drains the queue in commit order.
+            Trigger(
+                tokio::sync::oneshot::Sender<()>,
+                tokio::sync::oneshot::Receiver<()>,
+            ),
+            /// A fact committed after the held record: it publishes behind it.
+            Behind,
+        }
+        let held = {
+            let mut slot = self.state.lock().unwrap();
+            match slot.as_mut() {
+                Some(hold) if hold.released => None,
+                Some(hold) if hold.triggered => Some(Held::Behind),
+                Some(hold) if hold.matches(&events) => {
+                    hold.triggered = true;
+                    match (hold.entered.take(), hold.release.take()) {
+                        (Some(entered), Some(release)) => Some(Held::Trigger(entered, release)),
+                        _ => Some(Held::Behind),
+                    }
+                }
+                _ => None,
+            }
         };
-        self.memory.append(
-            key,
-            events,
-            Box::new(move |result| {
-                tokio::spawn(async move {
-                    let _ = entered.send(());
-                    let _ = held.await;
-                    publish(result);
-                });
-            }),
-        )
+        match held {
+            None => self.memory.append(key, events, publish),
+            Some(Held::Behind) => {
+                let state = self.state.clone();
+                self.memory.append(
+                    key,
+                    events,
+                    Box::new(move |result| {
+                        let mut slot = state.lock().unwrap();
+                        match slot.as_mut() {
+                            Some(hold) if !hold.released => {
+                                hold.queue.push_back(Box::new(move || publish(result)));
+                            }
+                            _ => {
+                                drop(slot);
+                                publish(result);
+                            }
+                        }
+                    }),
+                )
+            }
+            Some(Held::Trigger(entered, release)) => {
+                let state = self.state.clone();
+                self.memory.append(
+                    key,
+                    events,
+                    Box::new(move |result| {
+                        tokio::spawn(async move {
+                            let _ = entered.send(());
+                            let _ = release.await;
+                            let mut slot = state.lock().unwrap();
+                            if let Some(hold) = slot.as_mut() {
+                                hold.released = true;
+                            }
+                            publish(result);
+                            loop {
+                                let next = slot.as_mut().and_then(|hold| hold.queue.pop_front());
+                                match next {
+                                    Some(callback) => callback(),
+                                    None => break,
+                                }
+                            }
+                        });
+                    }),
+                )
+            }
+        }
     }
     fn batch_end<'a>(
         &'a self,
@@ -555,7 +762,32 @@ impl TimelineStore for GatedStore {
                 )
             })
             .and_then(|(entered, release)| entered.zip(release));
-        let Some((entered, release)) = armed else {
+        if let Some((entered, release)) = armed {
+            return Box::pin(async move {
+                let _ = entered.send(());
+                let _ = release.await;
+                self.memory.query(key, query, from, through).await
+            });
+        }
+        let held = {
+            let mut slot = self.read.lock().unwrap();
+            match slot.as_ref() {
+                Some(hold)
+                    if query.kinds == hold.kinds
+                        && hold
+                            .not_branch
+                            .as_ref()
+                            .is_none_or(|branch| branch != &key.branch_id) =>
+                {
+                    slot.take()
+                }
+                _ => None,
+            }
+        };
+        let Some(ReadHold {
+            entered, release, ..
+        }) = held
+        else {
             return self.memory.query(key, query, from, through);
         };
         Box::pin(async move {
@@ -762,7 +994,7 @@ impl Env {
             .expect("SessionMethods");
         let provider = methods.provider(&name).expect("the Goal method");
         let accepted = provider
-            .accept(name, params, CancellationToken::new(), |_| {})
+            .accept(name, params, None, CancellationToken::new(), |_| {})
             .expect("the method accepts");
         accepted.reply.await.expect("the method replies")
     }
@@ -770,9 +1002,33 @@ impl Env {
     /// Opens a real child branch of `parent` at its head, with `prompt` and
     /// `source`, as the branch tool or Goal's own creation does.
     pub async fn open_branch(&self, parent: &str, prompt: &str, source: BranchSource) -> String {
+        let id = self
+            .create_branch(parent, prompt, source)
+            .await
+            .id()
+            .to_owned();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while !self.probe.has(&id) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the branch's parts activate");
+        id
+    }
+
+    /// Opens a real child branch of `parent` and returns it before its parts
+    /// finish loading, so a case can act inside that window: the handle commits
+    /// through the branch's own Timeline.
+    pub async fn create_branch(
+        &self,
+        parent: &str,
+        prompt: &str,
+        source: BranchSource,
+    ) -> dim_agent_runtime::Branch {
         let at = self.timeline(parent).sequence();
         let command = self.probe.commands(parent);
-        let branch = command
+        command
             .branch(
                 parent.to_owned(),
                 at,
@@ -783,16 +1039,7 @@ impl Env {
                 CancellationToken::new(),
             )
             .await
-            .expect("the branch opens");
-        let id = branch.id().to_owned();
-        tokio::time::timeout(Duration::from_secs(15), async {
-            while !self.probe.has(&id) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the branch's parts activate");
-        id
+            .expect("the branch opens")
     }
 
     /// Ends `id` with `source`, as another line or the host does.
@@ -908,6 +1155,11 @@ impl Env {
         })
         .await
         .expect("main and its parts activate");
+        self.await_goal_methods().await;
+    }
+
+    /// Waits until the `session.goal.*` methods are registered.
+    pub async fn await_goal_methods(&self) {
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 let methods = self.session.session_service::<SessionMethods>();
@@ -1007,6 +1259,94 @@ impl Env {
         self.probe.guide().compose(branch)
     }
 
+    /// The branch's live keyed blocks at its head, by the rule `session.keys`
+    /// serves (keyed-blocks §2.3; `scan_keys` at
+    /// crates/dim-app-server/src/connection/tree.rs:707): the newest live block
+    /// of each key on the branch's own segment, ascending by (sequence, block).
+    /// Returns each key with its raw block text.
+    pub async fn keys(&self, branch: &str) -> Vec<(String, String)> {
+        const PAGE: u64 = 256;
+        let timeline = self.timeline(branch);
+        let mut found: HashMap<String, (u64, usize, String)> = HashMap::new();
+        let mut closed: HashSet<String> = HashSet::new();
+        let mut deleted: HashSet<String> = HashSet::new();
+        let mut from = timeline.sequence();
+        while from > 0 {
+            let query = TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                include_publishing: true,
+                from_event: None,
+                from_sequence: Some(from),
+                order_by: TimelineQueryOrderBy::Sequence,
+                direction: TimelineQueryDirection::Descending,
+                kinds: vec![
+                    "input/message".into(),
+                    "input/deleted".into(),
+                    "branch/start".into(),
+                    "session/forked".into(),
+                ],
+                flags: Vec::new(),
+                event_id: None,
+                predicate: None,
+                predicates: Vec::new(),
+                text: None,
+                limit: std::num::NonZeroU64::new(PAGE).expect("a page keeps one event"),
+                offset: 0,
+            };
+            let reply = timeline.query(query).await.expect("the keyed read");
+            let exhausted = (reply.events.len() as u64) < PAGE;
+            let mut done = false;
+            for event in &reply.events {
+                match &event.kind {
+                    EventKind::BranchStart(_) | EventKind::SessionForked(_) => {
+                        done = true;
+                        break;
+                    }
+                    EventKind::InputDeleted(data) => {
+                        deleted.insert(data.input_id.clone());
+                    }
+                    EventKind::InputMessage(data) if !deleted.contains(&event.id) => {
+                        for (index, block) in data.blocks.iter().enumerate().rev() {
+                            let InputBlock::Raw {
+                                text,
+                                key: Some(key),
+                                retire,
+                            } = block
+                            else {
+                                continue;
+                            };
+                            if found.contains_key(key) {
+                                continue;
+                            }
+                            if *retire {
+                                closed.insert(key.clone());
+                                continue;
+                            }
+                            if closed.contains(key) {
+                                continue;
+                            }
+                            found.insert(key.clone(), (event.sequence, index, text.clone()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if done || exhausted {
+                break;
+            }
+            from = reply
+                .events
+                .last()
+                .map_or(0, |event| event.sequence.saturating_sub(1));
+        }
+        let mut entries: Vec<(String, (u64, usize, String))> = found.into_iter().collect();
+        entries.sort_by_key(|(_, (sequence, index, _))| (*sequence, *index));
+        entries
+            .into_iter()
+            .map(|(key, (_, _, text))| (key, text))
+            .collect()
+    }
+
     /// The Goal inputs on `branch`, in order.
     pub async fn writes(&self, branch: &str) -> Vec<Block> {
         self.all_events(branch)
@@ -1018,6 +1358,7 @@ impl Env {
                     text.starts_with("<dim-goal ").then(|| Block {
                         id: event.id.clone(),
                         sequence: event.sequence,
+                        submission_id: data.submission_id.clone(),
                         marker: text.lines().next().unwrap().to_owned(),
                         text: text.clone(),
                         blocks: data.blocks.iter().map(raw_text).collect(),
@@ -1353,12 +1694,19 @@ pub fn turn_end_with(turn_id: &str, status: &str) -> EventKind {
 /// One input message of literal blocks, the way a restored or foreign writer
 /// leaves one.
 pub fn message(blocks: Vec<InputBlock>, mode: InputMode) -> EventKind {
-    EventKind::InputMessage(InputMessageData {
+    EventKind::InputMessage(input_message(blocks, mode))
+}
+
+/// The [`InputMessageData`] behind [`message`], for committing through a
+/// [`dim_agent_runtime::Branch`] handle.
+pub fn input_message(blocks: Vec<InputBlock>, mode: InputMode) -> InputMessageData {
+    InputMessageData {
         submission_id: Some(format!("test:{}", uuid::Uuid::new_v4())),
         user: None,
         blocks,
         mode: Some(mode),
-    })
+        handover: None,
+    }
 }
 
 /// A raw block with literal text.
@@ -1398,6 +1746,8 @@ pub fn user_with_blocks(text: &str, mode: InputMode, blocks: Vec<InputBlock>) ->
 pub struct Block {
     pub id: String,
     pub sequence: u64,
+    /// The input's submission id (`goal:<uuid>` for every Goal write).
+    pub submission_id: Option<String>,
     /// The `<dim-goal ...>` marker line.
     pub marker: String,
     pub text: String,

@@ -11,7 +11,9 @@ use crate::{
     protocol::{canonical_cwd, optional_non_null},
     settings::{BusinessDocument, SettingsError, SettingsScope, SettingsService},
 };
-use dim_agent_capabilities::methods::{Interruption, MethodDecl, RpcError, params, reply};
+use dim_agent_capabilities::methods::{
+    Interruption, MethodCall, MethodDecl, RpcError, params, reply,
+};
 use rutis::{Ctx, Error};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::Arc};
@@ -690,7 +692,8 @@ pub(super) fn provide(
         .into_iter()
         .map(|name| MethodDecl::new(name, !matches!(name, "mcp.catalog" | "mcp.configuration" | "mcp.inspect" | "mcp.temporary.capabilities" | "mcp.import.preview" | "mcp.import.sources"), Interruption::Report))
         .collect(),
-        Arc::new(move |method, value, stopping, _| {
+        Arc::new(move |call, stopping, _| {
+            let MethodCall { method, params: value, .. } = call;
             let directory = directory.clone();
             let settings = settings.clone();
             let auth = auth.clone();

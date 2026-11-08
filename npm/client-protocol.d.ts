@@ -141,9 +141,31 @@ export type EventContent =
   | { kind: "tool-call"; requestId: string; asks: AskCall[] }
   | { kind: "tool-completed"; callId: string; result: ToolResult }
   | { kind: "tool-result"; requestId: string; results: Array<{ callId: string; result: ToolResult }> }
-  | { kind: "model-end"; requestId: string; error?: string }
+  | { kind: "model-end"; requestId: string; error?: string; presentation?: ProviderPresentation; failure?: ModelFailure }
   | { kind: "context-configured"; model: ModelId }
   | { kind: "other" }
+
+/** A provider's own wording for a failure; it wins over the kind's line. */
+export type ProviderPresentation = {
+  source: string
+  reason: string
+  serverMessage?: string
+  requestId?: string
+  action?: string
+}
+
+/** Why a model request failed, as the terminal fact records it. */
+export type ModelFailure = {
+  kind: string
+  status?: number
+  providerCode?: string
+  requestId?: string
+  reason?: string
+  cause: string[]
+  attempts: number
+  waitedMs: number
+  retryAfterMs?: number
+}
 
 export type SessionEvent = {
   id: string
@@ -173,6 +195,21 @@ export type ModelProgress = {
   thinking: string
   /** Unicode scalar values of the request's `step/thinking` deltas before `thinking`. */
   thinkingOffset: number
+  /** The retry this request is waiting to make, while it sleeps. */
+  retry?: ModelRetryProgress
+}
+
+/** A retry a request is waiting for, shown while it sleeps. */
+export type ModelRetryProgress = {
+  /** The attempt about to run, at least 2. */
+  attempt: number
+  /** The total cap on attempts. */
+  maxAttempts: number
+  /** Unix milliseconds at which the attempt starts. */
+  retryAtMs: number
+  kind: string
+  /** The failure's bounded reason. */
+  reason?: string
 }
 
 export type ApprovalRequest = {

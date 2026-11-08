@@ -1300,6 +1300,7 @@ pub(crate) async fn complete_detailed(
     let reply = invoke_with_recovery(
         host,
         request,
+        None,
         resolved,
         cancel,
         &mut (),

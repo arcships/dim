@@ -8,15 +8,29 @@ publish = false
 description = "Modality: the process owner of the non-conversational multimodal surface"
 
 [dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dim-agent-capabilities.workspace = true
 dim-agent-runtime.workspace = true
 dim-agent-types.workspace = true
 dim-app-server.workspace = true
+dim-ocr.workspace = true
+jsonschema = { version = "0.50.1", default-features = false }
 rutis.workspace = true
+rutis-bridge.workspace = true
 serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+sha2 = "0.10.9"
+tokio.workspace = true
 tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
 
 [dev-dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 futures-util.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

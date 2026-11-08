@@ -6,6 +6,8 @@ use axum::{
     response::{IntoResponse, Response, Sse, sse::Event},
     routing::post,
 };
+use dim_agent_capabilities::host_platform::{HostPlatform, ShellStatus};
+use dim_agent_capabilities::toolchain::{InstalledToolchain, ToolchainSourceHost};
 use dim_agent_capabilities::{
     adapters::{DefaultPrepareModelPlugin, MockTools},
     defaults,
@@ -459,7 +461,37 @@ impl Env {
         configure: impl FnOnce(&mut AgentBuilder, &Arc<Remote>),
         configuration: impl FnOnce(&str, &Path) -> Value,
     ) -> Self {
-        Self::with_config_protected(configure, configuration, BTreeSet::new()).await
+        Self::with_config_protected(configure, configuration, BTreeSet::new(), None).await
+    }
+
+    /// A Session whose stdio entry names a program only the installed
+    /// runtime provides: the child `PATH` gets `bin` appended, so the bare
+    /// command resolves there.
+    async fn with_stdio_toolchain(bin: PathBuf, root: PathBuf) -> Self {
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp-minimal.cjs");
+        let platform = HostPlatform::current(ShellStatus::Unavailable {
+            code: "test",
+            reason: "stdio does not need a shell".into(),
+        })
+        .unwrap()
+        .with_toolchain_source(ToolchainSourceHost::fixed(vec![InstalledToolchain {
+            bin,
+            root,
+        }]));
+        Self::with_config_protected(
+            |_, _| {},
+            move |_, home| {
+                json!({"mcpServers":{"docs":{
+                    "command":"fixturetool",
+                    "cwd":home,
+                    "env":{"MCP_FIXTURE":fixture}
+                }}})
+            },
+            BTreeSet::new(),
+            Some(platform),
+        )
+        .await
     }
 
     /// `credential_names` is the set the daemon's credential owner reports.
@@ -467,6 +499,7 @@ impl Env {
         configure: impl FnOnce(&mut AgentBuilder, &Arc<Remote>),
         configuration: impl FnOnce(&str, &Path) -> Value,
         credential_names: BTreeSet<String>,
+        platform: Option<HostPlatform>,
     ) -> Self {
         let remote = Remote::new();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -520,6 +553,10 @@ impl Env {
                 credential_names,
             ))))
             .map_err(|error| AgentError::Build(error.to_string()))?;
+            if let Some(platform) = platform {
+                root.provide(platform)
+                    .map_err(|error| AgentError::Build(error.to_string()))?;
+            }
             Ok(())
         })
         .await
@@ -751,7 +788,13 @@ async fn temporary(
         .unwrap()
         .provider(method)
         .unwrap()
-        .accept(method.into(), params, CancellationToken::new(), |_| {})
+        .accept(
+            method.into(),
+            params,
+            None,
+            CancellationToken::new(),
+            |_| {},
+        )
         .unwrap()
         .reply
         .await
@@ -770,7 +813,13 @@ async fn management(
         .expect("management methods are installed")
         .provider(method)
         .expect("the method is registered")
-        .accept(method.into(), params, CancellationToken::new(), |_| {})
+        .accept(
+            method.into(),
+            params,
+            None,
+            CancellationToken::new(),
+            |_| {},
+        )
         .expect("the method is accepted")
         .reply
         .await
@@ -2902,6 +2951,7 @@ async fn expansion_guards_a_configured_api_key_env() {
             }}})
         },
         BTreeSet::from(["TEST_PROVIDER_KEY".to_owned()]),
+        None,
     )
     .await;
     env.update(
@@ -3572,4 +3622,66 @@ async fn a_tool_call_deadline_is_shared_by_its_404_retry() {
     assert_eq!(cancelled[0]["requestId"], lookup_ids[1], "{cancelled:?}");
 
     env.close().await;
+}
+
+/// A stdio entry whose command exists only in an installed runtime's bin
+/// directory starts there and lists its tools: the child `PATH` appends the
+/// toolchain directories after the daemon's own, and on Unix the program
+/// lookup reads the child `PATH`.
+#[tokio::test]
+async fn a_stdio_entry_starts_a_command_the_toolchain_source_provides() {
+    use std::os::unix::fs::PermissionsExt;
+    let base = std::env::temp_dir().join(format!("dim-mcp-toolchain-{}", uuid::Uuid::new_v4()));
+    let archive = base.join("runtimes").join("node-v-test");
+    let bin = archive.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let tool = bin.join("fixturetool");
+    std::fs::write(&tool, "#!/bin/sh\nexec node \"$MCP_FIXTURE\"\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let env = Env::with_stdio_toolchain(bin.clone(), archive.clone()).await;
+    let session = env.session(false, PermissionPreset::FullAccess).await;
+    let mcp = session.session_service::<McpSession>().unwrap();
+    let mut changed = mcp.subscribe();
+    let version = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match changed.borrow_and_update().servers.get("docs") {
+                Some(McpSourceState::Ready { version }) => return version.clone(),
+                Some(McpSourceState::Failed { message }) => {
+                    panic!("the entry did not start: {message}")
+                }
+                _ => {}
+            }
+            changed.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    adopted(&session, Some(&version)).await;
+    env.turn(&session, Action::Text).await;
+    let names: Vec<String> = env
+        .model
+        .requests
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .tools
+        .as_ref()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| {
+                    tool.metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.mcp_original_tool_name.clone())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        names.iter().any(|name| name == "fixture_tool"),
+        "the entry started and listed its tool: {names:?}"
+    );
+    env.close().await;
+    std::fs::remove_dir_all(base).unwrap();
 }

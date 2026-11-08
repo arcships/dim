@@ -27,6 +27,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use tokio::sync::watch;
 
 /// The Session and branch services marked `#[rutis::service]`: provided in
 /// their instance, each is served by name there.
@@ -116,7 +117,7 @@ impl SessionTypeScriptConfig {
             python: Some(PythonConfig {
                 interpreter: python.interpreter.clone(),
                 project: home.join("plugins").join(".python"),
-                packages: Some(python.packages.clone()),
+                packages: python.packages.clone(),
             }),
             acquire: Some(runtimes),
             rows,
@@ -142,6 +143,15 @@ pub struct PythonConfig {
 pub struct LaunchCommand {
     launcher: Launcher,
     anchor: PathBuf,
+    /// Its connection row's status, one cell for every generation of the row
+    /// this command starts: the row writes it, RuntimeManager subscribes.
+    status: Arc<RuntimeStatus>,
+}
+
+impl LaunchCommand {
+    pub(crate) fn status(&self) -> Arc<RuntimeStatus> {
+        self.status.clone()
+    }
 }
 
 /// A local runtime: its connection row and the launch command that row
@@ -340,7 +350,11 @@ impl ForeignRuntime {
         Self {
             row,
             command: Key::dynamic(command),
-            launch: Arc::new(LaunchCommand { launcher, anchor }),
+            launch: Arc::new(LaunchCommand {
+                launcher,
+                anchor,
+                status: Arc::new(RuntimeStatus::new()),
+            }),
         }
     }
     /// Its connection row's plugin.
@@ -413,9 +427,12 @@ fn log_lines(runtime: &'static str) -> Stdio {
 }
 
 /// A local runtime's state, as its connection row keeps it, at
-/// [`RuntimeStatus::key`] of the row while the row runs.
-#[derive(Debug)]
-pub struct RuntimeStatus(Mutex<RuntimeState>);
+/// [`RuntimeStatus::key`] of the row while the row runs. The same cell
+/// outlives the row's generations, so a subscriber follows a restart.
+pub struct RuntimeStatus {
+    state: Mutex<RuntimeState>,
+    changed: watch::Sender<RuntimeState>,
+}
 
 /// What a [`RuntimeStatus`] says.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -429,15 +446,27 @@ pub enum RuntimeState {
 }
 
 impl RuntimeStatus {
+    fn new() -> Self {
+        let (changed, _) = watch::channel(RuntimeState::Starting);
+        Self {
+            state: Mutex::new(RuntimeState::Starting),
+            changed,
+        }
+    }
     /// Where the connection row `row` keeps its runtime's status.
     pub fn key(row: &str) -> Key<RuntimeStatus> {
         Key::dynamic(row.to_owned())
     }
     pub fn state(&self) -> RuntimeState {
-        self.0.lock().unwrap().clone()
+        self.state.lock().unwrap().clone()
+    }
+    /// Every state this cell takes, from the one it holds now.
+    pub fn subscribe(&self) -> watch::Receiver<RuntimeState> {
+        self.changed.subscribe()
     }
     fn set(&self, state: RuntimeState) {
-        *self.0.lock().unwrap() = state;
+        *self.state.lock().unwrap() = state.clone();
+        self.changed.send_replace(state);
     }
 }
 
@@ -459,9 +488,10 @@ impl DynPlugin for RuntimeConnection {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, std::result::Result<Effect, Error>> {
         Box::pin(async move {
-            let status = Arc::new(RuntimeStatus(Mutex::new(RuntimeState::Starting)));
-            ctx.provide_at(RuntimeStatus::key(self.row), status.clone())?;
             let command = ctx.require_at(&self.command)?;
+            let status = command.status();
+            status.set(RuntimeState::Starting);
+            ctx.provide_at(RuntimeStatus::key(self.row), status.clone())?;
             let processes = Processes::default();
             let watching: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
             {

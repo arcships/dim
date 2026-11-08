@@ -60,7 +60,7 @@ The local Mac route differs: `publish-alpha.mjs` selects a version and temporari
 
 ## Upgrade compatibility
 
-Before replacing an older CLI and daemon, stop that daemon with its matching CLI. The replacement `dimcode daemon stop` refuses daemons without `daemon.shutdown.completed` and leaves them running. Forced shutdown does not certify storage or plugin cleanup.
+Before replacing an older CLI and daemon, stop that daemon with its matching CLI. A client of another build replaces the daemon on its own only while the daemon is idle; while other clients use it, the client keeps the daemon it finds and says so. The replacement `dimcode daemon stop` refuses daemons without `daemon.shutdown.completed` and leaves them running. Forced shutdown does not certify storage or plugin cleanup.
 
 Account-enabled distributions use an executable built with the Dim account provider (`crates/dim-oauth`) through `ManagedProviderRow`. The public executable supports API-key providers and does not load the former TypeScript account package. Existing launchers must remove the old `dimcode --plugin-dir`, `--node` and `--js-runtime` arguments and use the account build when managed login is required; those arguments are rejected rather than falling back to a package. Embedding applications replace `ManagedPluginConfig` with the [typed provider hook](../../crates/dim-app-server/README.md#managed-provider-plugins).
 

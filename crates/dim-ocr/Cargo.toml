@@ -1,0 +1,47 @@
+[package]
+name = "dim-ocr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "The OCR helper contract and the on-device Apple Vision engine"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.189"
+objc2 = "0.6.3"
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-image-io = "0.3.2"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+  "std",
+  "NSArray",
+  "NSDictionary",
+  "NSEnumerator",
+  "NSObject",
+  "NSString",
+  "NSURL",
+] }
+objc2-vision = { version = "0.3.2", default-features = false, features = [
+  "std",
+  "VNRecognizeTextRequest",
+  "VNTypes",
+  "VNRequest",
+  "VNRequestHandler",
+  "VNObservation",
+  "objc2-core-foundation",
+  "objc2-core-graphics",
+] }
+objc2-pdf-kit = { version = "0.3.2", default-features = false, features = [
+  "std",
+  "PDFDocument",
+  "PDFPage",
+  "objc2-core-graphics",
+] }
+
+[dev-dependencies]
+uuid.workspace = true

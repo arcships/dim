@@ -9,7 +9,9 @@ use crate::{
     protocol::{canonical_cwd, optional_non_null},
     settings::{BusinessDocument, SettingsError, SettingsScope, SettingsService},
 };
-use dim_agent_capabilities::methods::{Interruption, MethodDecl, RpcError, params, reply};
+use dim_agent_capabilities::methods::{
+    Interruption, MethodCall, MethodDecl, RpcError, params, reply,
+};
 use dim_agent_capabilities::skills::{
     InstallOutcome, RefreshTarget, Replace, SelectedSkill, SkillPreview, SkillStatus,
     SkillsCatalog, SkillsError, selection_path, valid_installation_id,
@@ -671,7 +673,12 @@ impl DynPlugin for SkillsCatalogPlugin {
                     )
                 })
                 .collect(),
-                Arc::new(move |method, value, _, _| {
+                Arc::new(move |call, _, _| {
+                    let MethodCall {
+                        method,
+                        params: value,
+                        ..
+                    } = call;
                     let catalog = catalog.clone();
                     let home = home.clone();
                     Box::pin(async move {

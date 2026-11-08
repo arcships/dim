@@ -7,7 +7,7 @@ use crate::{
 };
 use dim_agent_capabilities::{
     host::{HostError, HostFuture},
-    methods::{Interruption, MethodDecl, RpcError, params, reply},
+    methods::{Interruption, MethodCall, MethodDecl, RpcError, params, reply},
     permission::{CommandRulesHost, ReadCommandRules},
 };
 use dim_agent_runtime::{AgentBuilder, Names};
@@ -166,7 +166,12 @@ impl DynPlugin for PermissionRulesPlugin {
                         MethodDecl::new(name, name != "permission.rules", Interruption::Report)
                     })
                     .collect(),
-                Arc::new(move |method, value, stopping, _| {
+                Arc::new(move |call, stopping, _| {
+                    let MethodCall {
+                        method,
+                        params: value,
+                        ..
+                    } = call;
                     let settings = settings.clone();
                     Box::pin(async move {
                         match method.as_str() {

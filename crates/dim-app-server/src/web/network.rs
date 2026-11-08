@@ -52,10 +52,43 @@ pub struct Diagnostic {
     pub message: String,
 }
 
-#[derive(Clone)]
 pub struct NetworkConfig {
-    pub allow_private_hosts: Vec<String>,
-    pub proxy: Option<Url>,
+    allow_private_hosts: Vec<String>,
+    proxy: Option<(Url, bool)>,
+}
+
+impl NetworkConfig {
+    pub fn new(
+        allow_private_hosts: Vec<String>,
+        proxy: Option<&str>,
+        proxy_dns: bool,
+    ) -> Result<Self, WebError> {
+        let proxy = match proxy {
+            Some(value) => {
+                let url = parse_url(value).map_err(|_| {
+                    WebError::new("connect_failed", "The configured proxy is unusable.")
+                })?;
+                if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+                    return Err(WebError::new(
+                        "connect_failed",
+                        "The configured proxy is unusable.",
+                    ));
+                }
+                Some((url, proxy_dns))
+            }
+            None if proxy_dns => {
+                return Err(WebError::new(
+                    "connect_failed",
+                    "Proxy DNS requires a configured proxy.",
+                ));
+            }
+            None => None,
+        };
+        Ok(Self {
+            allow_private_hosts,
+            proxy,
+        })
+    }
 }
 
 pub fn hostname(url: &Url) -> String {
@@ -132,21 +165,6 @@ pub fn domain(value: &str) -> Option<String> {
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
     });
     valid.then_some(host)
-}
-
-pub fn proxy_url(value: Option<&str>) -> Result<Option<Url>, WebError> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let proxy = parse_url(value)
-        .map_err(|_| WebError::new("connect_failed", "The configured proxy is unusable."))?;
-    if proxy.path() != "/" || proxy.query().is_some() || proxy.fragment().is_some() {
-        return Err(WebError::new(
-            "connect_failed",
-            "The configured proxy is unusable.",
-        ));
-    }
-    Ok(Some(proxy))
 }
 
 #[derive(Clone, Copy)]
@@ -293,7 +311,7 @@ impl Policy {
         })
     }
 
-    fn check(&self, addresses: &[IpAddr]) -> Result<(), WebError> {
+    fn check(&self, addresses: &[IpAddr], hostname: bool) -> Result<(), WebError> {
         for &address in addresses {
             let eff = effective_ip(address);
             let permitted = self.allowed_host
@@ -305,7 +323,11 @@ impl Policy {
                 if BENCHMARK_V4.matches(eff) {
                     return Err(WebError::new(
                         "blocked_address",
-                        "Reserved benchmark addresses are blocked. If using Fake-IP DNS, configure real-address DNS answers or an explicit trusted-host exception; see docs/design/plugins/Web.md (Address policy).",
+                        if hostname {
+                            "Reserved benchmark addresses are blocked. If using Fake-IP DNS, enable proxyDns with a trusted proxy, use real-address DNS answers, or configure an explicit trusted-host exception. See docs/design/plugins/Web.md (Address policy)."
+                        } else {
+                            "Reserved benchmark addresses are blocked. Proxy DNS applies only to hostname targets. See docs/design/plugins/Web.md (Address policy)."
+                        },
                     ));
                 }
                 return Err(WebError::new(
@@ -372,9 +394,6 @@ async fn resolve_addresses(
     host: &str,
     cancel: &CancellationToken,
 ) -> Result<Vec<IpAddr>, WebError> {
-    if cancel.is_cancelled() {
-        return Err(WebError::new("cancelled", "Call cancelled."));
-    }
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Ok(vec![ip]);
     }
@@ -480,7 +499,7 @@ async fn connect_tls(
     Ok(Box::new(tls_stream))
 }
 
-async fn open_tunnel(proxy: &Url, ip: IpAddr, port: u16) -> Result<Box<dyn AsyncStream>, WebError> {
+async fn open_tunnel(proxy: &Url, authority: &str) -> Result<Box<dyn AsyncStream>, WebError> {
     let proxy_host = hostname(proxy);
     let proxy_port = proxy
         .port_or_known_default()
@@ -502,10 +521,6 @@ async fn open_tunnel(proxy: &Url, ip: IpAddr, port: u16) -> Result<Box<dyn Async
         connect_tls(Box::new(tcp), &proxy_host).await?
     } else {
         Box::new(tcp)
-    };
-    let authority = match ip {
-        IpAddr::V4(v4) => format!("{v4}:{port}"),
-        IpAddr::V6(v6) => format!("[{v6}]:{port}"),
     };
     let req = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n");
     stream
@@ -738,24 +753,37 @@ pub async fn get(
         .port_or_known_default()
         .ok_or_else(|| WebError::new("invalid_input", "Expected an absolute HTTP or HTTPS URL."))?;
     let connect_phase = async {
+        if cancel.is_cancelled() {
+            return Err(WebError::new("cancelled", "Call cancelled."));
+        }
+        let secure = async |stream| {
+            if url.scheme() == "https" {
+                connect_tls(stream, &host).await
+            } else {
+                Ok(stream)
+            }
+        };
+        if let Some((proxy, true)) = &config.proxy
+            && let Some(url::Host::Domain(domain)) = url.host()
+        {
+            let stream = open_tunnel(proxy, &format!("{domain}:{port}")).await?;
+            return secure(stream).await;
+        }
         let ips = resolve_addresses(&host, cancel).await?;
-        policy.check(&ips)?;
+        policy.check(&ips, matches!(url.host(), Some(url::Host::Domain(_))))?;
         let mut last_err = WebError::new("connect_failed", "The connection failed.");
         for ip in ips {
             let attempt = async {
-                let base_stream: Box<dyn AsyncStream> = if let Some(proxy) = &config.proxy {
-                    open_tunnel(proxy, ip, port).await?
+                let address = SocketAddr::new(ip, port);
+                let base_stream: Box<dyn AsyncStream> = if let Some((proxy, _)) = &config.proxy {
+                    open_tunnel(proxy, &address.to_string()).await?
                 } else {
-                    let tcp = TcpStream::connect(SocketAddr::new(ip, port))
+                    let tcp = TcpStream::connect(address)
                         .await
                         .map_err(|_| WebError::new("connect_failed", "The connection failed."))?;
                     Box::new(tcp)
                 };
-                if url.scheme() == "https" {
-                    connect_tls(base_stream, &host).await
-                } else {
-                    Ok(base_stream)
-                }
+                secure(base_stream).await
             };
             match attempt.await {
                 Ok(stream) => return Ok(stream),
@@ -919,10 +947,7 @@ mod tests {
     }
 
     fn config(host: &str, proxy: Option<&str>) -> NetworkConfig {
-        NetworkConfig {
-            allow_private_hosts: vec![host.to_owned()],
-            proxy: proxy_url(proxy).unwrap(),
-        }
+        NetworkConfig::new(vec![host.to_owned()], proxy, false).unwrap()
     }
 
     async fn origin() -> (
@@ -1023,10 +1048,7 @@ mod tests {
             targets.clone(),
             stop.clone(),
         );
-        let blocked = NetworkConfig {
-            allow_private_hosts: Vec::new(),
-            proxy: proxy_url(Some(&proxy_base)).unwrap(),
-        };
+        let blocked = NetworkConfig::new(Vec::new(), Some(&proxy_base), false).unwrap();
         let _name = dns("private.test", &["8.8.8.8", "10.0.0.1"]);
         let url = Url::parse("http://private.test/secret").unwrap();
         let mut diagnostics = Vec::new();
@@ -1066,6 +1088,7 @@ mod tests {
         };
         assert_eq!(err.code, "blocked_address", "{err}");
         assert!(err.message.contains("benchmark"), "{err}");
+        assert!(err.message.contains("enable proxyDns"), "{err}");
         assert!(targets.lock().unwrap().is_empty(), "{targets:?}");
         stop.cancel();
         task.await.unwrap();
@@ -1156,6 +1179,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_dns_uses_the_hostname_for_connect_and_tls_without_local_resolution() {
+        let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_base = format!("http://{}", proxy.local_addr().unwrap());
+        let _name = dns("fake-tls.test", &["198.18.0.1"]);
+        let handshake = tokio::spawn(async move {
+            let (mut socket, _) = proxy.accept().await.unwrap();
+            let (head, _) = read_head(&mut socket).await;
+            assert_eq!(
+                head.lines().next(),
+                Some("CONNECT fake-tls.test:443 HTTP/1.1")
+            );
+            socket
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+            let start =
+                tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), socket)
+                    .await
+                    .unwrap();
+            assert_eq!(start.client_hello().server_name(), Some("fake-tls.test"));
+        });
+        let url = Url::parse("https://fake-tls.test/").unwrap();
+        let Err(err) = get(
+            &url,
+            &NetworkConfig::new(Vec::new(), Some(&proxy_base), true).unwrap(),
+            &CancellationToken::new(),
+            &mut Vec::new(),
+            &HashMap::new(),
+        )
+        .await
+        else {
+            panic!("TLS requires a completed handshake");
+        };
+        assert_eq!(err.code, "tls_failed", "{err}");
+        handshake.await.unwrap();
+        assert_eq!(test_dns::hits("fake-tls.test"), 0);
+    }
+
+    #[tokio::test]
     async fn a_resolution_that_does_not_finish_hits_the_connect_deadline() {
         test_dns::insert("never.test", test_dns::Answer::Hang);
         let _name = Dns("never.test");
@@ -1163,10 +1225,7 @@ mod tests {
         let url = Url::parse("http://never.test/").unwrap();
         let err = match get(
             &url,
-            &NetworkConfig {
-                allow_private_hosts: Vec::new(),
-                proxy: None,
-            },
+            &NetworkConfig::new(Vec::new(), None, false).unwrap(),
             &CancellationToken::new(),
             &mut Vec::new(),
             &HashMap::new(),

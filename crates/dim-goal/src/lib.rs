@@ -83,19 +83,25 @@ impl DynPlugin for GoalPlugin {
                 },
             )?;
             let parts = ctx.require_at(&self.parts)?;
-            let session = self.texts.clone();
+            // One table for this plugin's parts: a change call reaches the
+            // loaded branch's Owner, which composes the record (R5), without
+            // a service (ADR 002 D3).
+            let changes = branch::Changes::default();
+            let session_changes = changes.clone();
             parts.register(ctx, PartScope::Session, SESSION_PART, move |mount| {
-                Ok(Some(
-                    Box::new(session::GoalSession::new(mount.names, session.clone())?)
-                        as Box<dyn DynPlugin>,
-                ))
+                Ok(Some(Box::new(session::GoalSession::new(
+                    mount.names,
+                    session_changes.clone(),
+                )?) as Box<dyn DynPlugin>))
             })?;
+            let branch_changes = changes.clone();
             let branch = self.texts.clone();
             parts.register(ctx, PartScope::Branch, BRANCH_PART, move |mount| {
-                Ok(Some(
-                    Box::new(branch::GoalBranch::new(mount.names, branch.clone())?)
-                        as Box<dyn DynPlugin>,
-                ))
+                Ok(Some(Box::new(branch::GoalBranch::new(
+                    mount.names,
+                    branch.clone(),
+                    branch_changes.clone(),
+                )?) as Box<dyn DynPlugin>))
             })?;
             Ok(Effect::Done)
         })

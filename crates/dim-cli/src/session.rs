@@ -219,6 +219,7 @@ pub async fn chat(
         None
     };
     let mut display = Display::new(interactive, options.json);
+    display.retries = !matches!(options.action, Action::Exec);
     for note in &notes {
         display.record(note)?;
     }

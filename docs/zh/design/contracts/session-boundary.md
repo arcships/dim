@@ -2,7 +2,7 @@
 
 状态：草案。总体设计：[总览 §3 集成](../overview.md#3-基于现有机制的集成)、[附录 B Rpc 与 ToolRegistry](../overview.md#附录-b-现有插件的补充)；规则：[ADR 002](../../adr/002-plugin-scope.md) D2、D3、D5。阶段：P0。语言：语言中立合同；Rust 绑定见[附录 F](#附录-f-rust-绑定)。[C4 绑定](../../../design/session-typescript.md) 已实现非 Rust Session 工具和方法子集；原生广播仍待定。
 
-本合同以 ADR 002 D5 的语言中立形式定义三种注册服务：Session 的 `sessionMethods` 与 `toolRegistry`，以及进程的 `managementMethods`。每个服务由服务名和作用域标识；其方法接收并返回可序列化数据；错误是数据；取消是一个协议动作。任何语言的部件都依赖其作用域的服务，并在自己的 `apply` 中注册：方法命名空间注册到 `sessionMethods` 或 `managementMethods`，工具注册到 `toolRegistry`。注册属于发起它的部件，在该部件卸载时撤回。Rpc 在每次调用时读取这两张方法表，不依赖任何提供方。它们建立在运行时已有的机制之上：按作用域的具名服务、Rpc 现有的经 Session 分发（与如今的 `approval.respond` 相同），以及作为调用方 effect 的注册。实现状态：方法命名空间（#14、C1、#382）与工具（#382）通过附录 F 的 Rust 绑定注册，其他语言的部件通过同样的服务注册（[C4](../../../design/session-typescript.md)、[进程行](../../../design/process-typescript.md)）；`callChannel` 只实现了逐次调用的 `progress`（C1）。`callChannel` 的其余部分及通用插件安装尚未实现，`ConnectionEntry {name, deviceId}`、按 `deviceId` 路由和导出的 rutis 链接也未实现（提议在 P3 随 RemoteGateway 实现）。
+本合同以 ADR 002 D5 的语言中立形式定义三种注册服务：Session 的 `sessionMethods` 与 `toolRegistry`，以及进程的 `managementMethods`。每个服务由服务名和作用域标识；其方法接收并返回可序列化数据；错误是数据；取消是一个协议动作。任何语言的部件都依赖其作用域的服务，并在自己的 `apply` 中注册：方法命名空间注册到 `sessionMethods` 或 `managementMethods`，工具注册到 `toolRegistry`。注册属于发起它的部件，在该部件卸载时撤回。Rpc 在每次调用时读取这两张方法表，不依赖任何提供方。它们建立在运行时已有的机制之上：按作用域的具名服务、Rpc 现有的经 Session 分发（与如今的 `approval.respond` 相同），以及作为调用方 effect 的注册。实现状态：方法命名空间（#14、C1、#382）与工具（#382）通过附录 F 的 Rust 绑定注册，其他语言的部件通过同样的服务注册（[C4](../../../design/session-typescript.md)、[进程行](../../../design/process-typescript.md)）；`callChannel` 已实现逐次调用的 `progress`（C1）以及绑定连接的通知 `notify` 与 `closed`（#1158）；`takeFinalReply` 及通用插件安装尚未实现，`ConnectionEntry {name, deviceId}`、按 `deviceId` 路由和导出的 rutis 链接也未实现（提议在 P3 随 RemoteGateway 实现）。
 
 | 服务 | 作用域 | 注册什么 | 注册方 | 读取方 |
 | --- | --- | --- | --- | --- |
@@ -58,7 +58,7 @@ flowchart LR
 | `managementMethods` | 从没有命名空间持有过该名称，或注册它的行已禁用或不存在时返回 `unknown_method`；其他情况下，已撤回的命名空间按该行的状态作答（§3.2） |
 | 工具注册 | Session 挂载列表列出但没有部件注册的工具不声明，并在诊断中报告；有部件注册后从下一个请求起声明（A.5） |
 
-本文定义的合同：这两张方法表及其注册、工具注册、`MethodDecl`、`MethodCall`、`MethodReply`、`MethodError`、列出方法的 `session.methods`、配套服务 `callChannel`（只实现了 `progress`）、`ToolDeclaration`、`ToolCall`、`ToolResult` 及其效果声明、各入口获得的服务范围、命名、保留名、现有管理方法的迁移以及兼容性表。使用的合同：`SessionConfig`（[session-access](session-access.md#a3-sessionconfig-字段)）、来源输入约定（[session-access A.2](session-access.md#a2-来源输入约定)）、Rpc 命令信封以及 `appError` 码。
+本文定义的合同：这两张方法表及其注册、工具注册、`MethodDecl`、`MethodCall`、`MethodReply`、`MethodError`、列出方法的 `session.methods`、配套服务 `callChannel`（`progress`、`notify` 与 `closed` 已实现）、`ToolDeclaration`、`ToolCall`、`ToolResult` 及其效果声明、各入口获得的服务范围、命名、保留名、现有管理方法的迁移以及兼容性表。使用的合同：`SessionConfig`（[session-access](session-access.md#a3-sessionconfig-字段)）、来源输入约定（[session-access A.2](session-access.md#a2-来源输入约定)）、Rpc 命令信封以及 `appError` 码。
 
 ## 2. 数据与状态
 
@@ -142,7 +142,7 @@ sequenceDiagram
 | `managementMethods.register(namespace, MethodDecl[], call)` | async | 注册一个管理命名空间，直到调用方部件卸载 |
 | `call(MethodCall, cancelled, progress) -> MethodReply`（注册部件自己的函数） | async | 执行该命名空间的方法 |
 | `session.methods {sessionId}`（线上方法，Rpc 内建） | async | 列出某个 Session 的方法（协议 v3） |
-| `callChannel.progress / notify / closed`（Rpc） | sync / async | 逐次调用的进度（已实现，附录 F）与绑定连接的通知（未实现） |
+| `callChannel.progress / notify / closed`（App Server） | sync / async | 逐次调用的进度与绑定连接的通知（已实现，附录 F） |
 | `toolRegistry.register(ToolDeclaration, execute)` | async | 注册一个工具，直到调用方部件卸载 |
 | `execute(ToolCall, cancelled) -> ToolResult`（注册部件自己的函数） | async | 工具执行 |
 
@@ -215,7 +215,7 @@ sequenceDiagram
   "mutating": true,
   "interruption": "report" | "drain",  // 卸载时由提供方回复：report → operation_interrupted；drain → 调用自己的结果
   "progress": false,
-  "notifications": ["session.goal.changed"], // 位于命名空间内
+  "notifications?": ["session.goal.changed"], // 位于命名空间内
   "reply": "direct" | "handoff" }      // handoff：daemon.shutdown
 // MethodCall
 { "callId": "string", "method": "session.goal.set",
@@ -228,7 +228,7 @@ sequenceDiagram
 { "code": -32000, "appError": "string", "message": "string" }
 ```
 
-目前已实现（附录 F）：`MethodDecl.name`、`MethodDecl.mutating`、`interruption` 与 `progress`；外来 `register` 从外来部件的声明解码这些字段，并为每次调用提供新的 `callId`。`notifications`、`reply`、`origin` 和 `handedOff` 未实现。
+目前已实现（附录 F）：`MethodDecl.name`、`MethodDecl.mutating`、`interruption`、`progress` 与 `notifications`，以及 `MethodCall.method`、`params` 与 `origin.caller`（线上为 `origin.connectionId`）；外来 `register` 从外来部件的声明解码这些字段，为每次调用提供新的 `callId`，并在调用来自连接时加上 `origin.connectionId`。`reply`、`handedOff`、`origin.entry` 与 `origin.peer` 未实现。
 
 取消与中断：调用由提供方自己回复，不由 Rpc 回复。有两种情况会中断已受理的调用：提供方这一代卸载，以及受理该调用的 Rpc 装载卸载。任一发生时，处理函数的取消令牌都会触发，`drain` 调用也不例外。随后 `report` 调用立即回复 `operation_interrupted`（操作可能已经提交），之后再结算；`drain` 调用回复自己的结果。提供方的卸载等待它受理的每个调用，包括 `report` 调用。调用方断开不会取消任何东西。
 
@@ -237,7 +237,7 @@ sequenceDiagram
 | 命名空间 | `<segment>(.<segment>)*`，段为 `[a-z][a-z0-9_]*`，最多 128 字节，由注册它的部件拥有；命名空间本身可以是一个方法（`session.rename`）。不符合该语法的命名空间在注册时被拒绝，被调用的名称不符合该语法时不做任何查找，直接为 `unknown_method` |
 | 注册 | 部件在自己的 `apply` 中把命名空间连同其声明（至少一个方法，每个方法唯一且位于命名空间内）和它的 `call` 注册到其作用域的方法表。Rust 部件传入自己的 ctx；其他语言由桥把注册绑定到调用方行，`call` 是该行的函数，经桥回调。注册属于该部件，在它卸载时撤回。在同一张表中再次注册同一命名空间会失败（`<ns> is registered already`）。方法表在注册时检查命名空间与声明（见下文保留名）；被拒绝的注册使发起注册的部件失败 |
 | 所有权 | 名称属于该表中作为其前缀或与其相等的最长已注册命名空间。已撤回的命名空间仍持有它的名称：方法表记住注册它的行，调用按该行的状态作答（§3.2；见下文 Session 级调用）。该表从没有命名空间持有过的名称没有所有者 |
-| 保留名 | 在命名空间注册时检查。精确内建名是 `is_builtin_method` 接受的名称（[protocol.rs](../../../../crates/dim-app-server/src/protocol.rs)）。管理方法：命名空间须符合语法，不能位于保留根（`hello`、`daemon`、`agent`、`approval`、`session`）之内，任何前缀都不能等于精确内建名，声明的方法也不能等于精确内建名（"Invalid management namespace"、"Invalid management contribution"）；精确内建名不会落在管理命名空间之内，因为每个精确内建名都位于某个保留根之下。Session：App Server 提供进程值 `ReservedMethods`，每个 Session 的方法表都用它检查；不符合语法、位于根 `hello`、`daemon`、`agent` 或 `approval` 之内，或者与精确内建名相等、包含它或位于它之内的命名空间被拒绝（"invalid Session namespace <ns>"）。例如 `session.mcp` 是精确内建名，因此 `session.mcp`、`session.mcp.extra` 以及包含它的单独 `session` 根都被拒绝。Session 命名空间可以位于 `session` 之下（`session.goal`、`session.input`）。`session.input` 不保留：InputQueue 把它注册到 `sessionMethods`，因此 Rpc 不点名任何所属服务 |
+| 保留名 | 在命名空间注册时检查。精确内建名是 `is_builtin_method` 接受的名称（[protocol.rs](../../../../crates/dim-app-server/src/protocol.rs)）。声明的通知不能取内建通知的线上名称，即 `Notification` 各变体的名称：提供方不能冒充其连接已经在读取的通知。管理方法：命名空间须符合语法，不能位于保留根（`hello`、`daemon`、`agent`、`approval`、`session`）之内，任何前缀都不能等于精确内建名，声明的方法也不能等于精确内建名（"Invalid management namespace"、"Invalid management contribution"）；精确内建名不会落在管理命名空间之内，因为每个精确内建名都位于某个保留根之下。Session：App Server 提供进程值 `ReservedMethods`，每个 Session 的方法表都用它检查；不符合语法、位于根 `hello`、`daemon`、`agent` 或 `approval` 之内，或者与精确内建名相等、包含它或位于它之内的命名空间被拒绝（"invalid Session namespace <ns>"）。例如 `session.mcp` 是精确内建名，因此 `session.mcp`、`session.mcp.extra` 以及包含它的单独 `session` 根都被拒绝。Session 命名空间可以位于 `session` 之下（`session.goal`、`session.input`）。`session.input` 不保留：InputQueue 把它注册到 `sessionMethods`，因此 Rpc 不点名任何所属服务 |
 | 优先级与路由 | 内建方法；否则，管理命名空间（已注册或已撤回）持有的名称交给管理方法（§3.2）；否则，对协议 v3+，符合语法且 params 对象带 `sessionId` 字段的名称是 Session 方法候选（见下文 Session 级调用）；否则交给管理方法，没有命名空间持有的名称为 `unknown_method`。共用一个线上名称空间。params 中没有 `sessionId` 的名称从不是 Session 方法候选：没有 Session，Rpc 就不知道它的命名空间，因此只有 Session 命名空间持有的名称在没有 `sessionId` 时为 `unknown_method` |
 | 命名空间冲突 | 没有装配检查，由路由优先级决定。与某个管理命名空间相等、包含它或位于它之内的 Session 命名空间照常注册，但管理命名空间持有的名称路由到管理方法，从不到达该 Session |
 | Session 级调用 | Rpc 从候选的原始 params 读取 `sessionId`；不是非空字符串时结果为 `-32602`（空字符串为 `invalid_params`，"sessionId must not be empty"）。Rpc 对其授权，并通过 `index.acquire` 获取该 Session，未装载的 Session 会被恢复（不同于 `approval.respond`：对未装载的 Session 它返回 `session_closed`）；非空但不对应任何 Session 的 id 为 `session_closed`。然后 Rpc 在该 Session 的 `sessionMethods` 中读取该名称的所有者：已注册的命名空间 → 其提供方；已撤回的命名空间 → 读取注册它的行在本 Session 中的副本状态（§9.4），按管理方法的对照表作答（§3.2）：该副本尚未启动、处于 Pending、Loading 或新旧两代之间时返回 `service_reloading`，处于 Failed、Unresolved、Disposed 或 Stopped 时返回 `service_unavailable`，副本处于 Active（该行的子插件正在重载）或没有副本（部件处于新旧两代之间）时返回 `service_reloading`；本 Session 从没有命名空间持有过的名称 → `unknown_method`。Rpc 一直持有该 Session 的使用权，直到调用的操作结算。`sessionId` 与 `branchId` 留在 `params` 中；Rpc 读取 `sessionId` 只为授权和解析。提供方通过该分支的服务到达某个分支。管理命名空间持有的名称，或 params 中没有 `sessionId` 的名称，从不恢复 Session |
@@ -277,20 +277,20 @@ sequenceDiagram
   提供方调用 --> 回复（未声明的名称：-32601 unknown_method）
 ```
 
-目前注册的 Session 命名空间：`session.question`（Questions）、`session.goal`（Goal）、`session.rename`（SessionTitle）、`session.input`（InputQueue）、`session.context`（ContextCompaction）、`session.exec.output`（WorkspaceTools，[后台任务输出](../../../design/background-task-output.md)）、`session.agent`（[模型配置](../../../design/model-configuration.md)）、`attachment`（Attachments）、`shell`（ShellInput）、`session.wakeup`（Scheduler，[Scheduler §10](../plugins/Scheduler.md#10-session-作用域的一次性唤醒)）。Hooks 不注册 Session 命名空间：它的 `hooks.*` 方法是管理方法（[Hooks A.7](../plugins/Hooks.md#a7-管理方法)）。各插件文档对其方法具有权威性。
+目前注册的 Session 命名空间：`session.question`（Questions）、`session.goal`（Goal）、`session.rename`（SessionTitle）、`session.input`（InputQueue）、`session.context`（ContextCompaction）、`session.exec.output`（WorkspaceTools，[后台任务输出](../../../design/background-task-output.md)）、`session.agent`（[模型配置](../../../design/model-configuration.md)）、`attachment`（Attachments）、`shell`（ShellInput）、`session.wakeup`（Scheduler，[Scheduler §10](../plugins/Scheduler.md#10-session-作用域的一次性唤醒)）、`session.collaboration`（Collaboration，[Collaboration §6.7](../plugins/Collaboration.md#67-从客户端停止成员)）。`approval.respond` 是内建的 Session 方法，不是部件注册。Hooks 不注册 Session 命名空间：它的 `hooks.*` 方法是管理方法（[Hooks A.7](../plugins/Hooks.md#a7-管理方法)）。各插件文档对其方法具有权威性。
 
 ### A.2 调用通道
 
-只实现了 `progress`（C1）；`notify`、`closed` 与 `takeFinalReply` 未实现。Rpc 向方法提供方提供进程服务 `callChannel`；`progress` 的 Rust 绑定是处理函数按调用获得的 `Progress`（附录 F）。
+`progress`、`notify` 与 `closed` 已实现（C1、#1158）；`takeFinalReply` 未实现。App Server 以自己的 `CallChannel` 行向方法提供方提供进程服务 `callChannel`，因此声明该名字的行不会随 Rpc 重载；Rust 绑定是处理函数按调用获得的 `Progress` 与 `Caller`（附录 F）。
 
 | 方法 | 模式 | 请求 | 回复 |
 | --- | --- | --- | --- |
 | `progress` | sync | `{callId, data}` | —（除非方法声明了 `progress`，否则丢弃） |
-| `notify` | async | `{connectionId, method, params}` | `{}`，或错误 `unsupported`（链接）、`undeclared`、`gone` |
+| `notify` | async | `{connectionId, callId, method, params}` | `{}`，或错误 `unsupported`（链接）、`undeclared`、`gone`、`too_large` |
 | `closed` | async | `{connectionId}` | 连接关闭时完成 |
 | `takeFinalReply` | async | `{callId}` | 最终回复写出后返回 `{}`；仅限 `handoff` 方法 |
 
-进度对 Session 方法和管理方法都以通知 `management.progress {id, method, data}` 发送，排在响应之前，尽力送达（见下文），断开后丢弃。通知名必须声明且位于命名空间内。`connectionId` 在连接关闭前对 `notify` 一直有效。
+进度对 Session 方法和管理方法都以通知 `management.progress {id, method, data}` 发送，排在响应之前，尽力送达（见下文），断开后丢弃。`connectionId` 在连接关闭前对 `notify` 与 `closed` 一直有效；关闭之后两者都返回 `gone`。
 
 一次调用的进度如何到达调用方：
 
@@ -318,6 +318,30 @@ progress.send --> 进度额度 ----------------------+
 reply ----------> 回复与通知额度 ----------------+
                   已满：慢消费者，关闭连接
 ```
+
+通知是 JSON-RPC 通知 `{"jsonrpc":"2.0","method":"<声明的名称>","params":{...}}`，只写到发起调用的连接；该 Session 的其他客户端收不到。`params` 是 JSON 对象。`callId` 必填，指通知所报告工作所属的调用：即提供方收到的 `MethodCall` 的 `callId`。该调用的回复尚未写出时，它的通知按序暂存并在回复之后写出；回复写出后，或该 id 不在途时，直接写出。`connectionId` 是地址：未从该连接收到过调用的行返回 `gone`。只能发送服务过该连接的代际声明过、且位于其命名空间内的名称；其他名称返回 `undeclared`，不写任何内容。
+
+一次调用的通知如何到达调用方：
+
+```text
+Client A             Rpc                  call admission            provider handler
+  | x.run {..} id 7 -->|                        |                          |
+  |                    |-- accept(.., caller) ->|-- handler(.., caller) -->|
+  |                    |                        |   notify(callId, ..)     |
+  |                    |                        |   暂存：等回复之后       |
+  |                    |                        |<-- result ---------------|
+  |<-- result id 7 ----|<-- reply --------------|                          |
+  |<-- x.changed {...} ---- 暂存的通知按序写出  |<-- 回复之后按序写出 -----|
+  |                    |   之后的 notify 直接   |                          |
+  |<-- x.changed {...} ---- 进入发送队列                                    |
+```
+
+送达方式与进度不同：
+
+- **可靠。** 提供方发送通知时只编码一次。调用的回复尚未写出时发出的通知经连接的暂存额度受理：其上限与回复与通知额度相同（1024 帧、32 MiB）但彼此独立，因此暂存的通知不会占用回复所需的空间。一次调用暂存的通知超过暂存额度时，该客户端像慢消费者一样被断开，之后的 `notify` 返回 `gone`。回复只经回复与通知额度受理。回复写出后，暂存的通知按序连同它们已占用的额度进入发送队列，并在各自写出后释放；因此连接的排队帧由两个额度共同界定，至多 2048 帧、64 MiB。超过帧上限的通知返回 `too_large`：不写任何内容，连接保持。
+- **回复之后。** 通知写在它 `callId` 所指调用的回复之后，该 `callId` 即报告该工作的 `MethodCall` 的 `callId`。调用仍进行时发出的通知按序暂存，紧接回复之后写出，因此客户端不会先看到回复尚未告知的对象的通知（例如回复才返回的 id）。该回复写出后，或该 id 不在途时，通知直接进入发送队列；同一连接上另一个未完成的调用既不会暂存它，也不会改变它的顺序。每条路径都会写出回复，包括被中断的调用和连接已消失的调用。
+- **生命周期。** 连接关闭，或受理该调用的 Rpc 代际卸载后，`closed` 完成，之后的 `notify` 返回 `gone`。提供方代际卸载后发出的通知在两种绑定中都返回 `gone`：原生调用方持有该代际的停止信号，外来索引在同一次卸载时删除该实例的条目。调用方断开不取消任何调用。未从某连接收到过调用的行，其 `notify` 与 `closed` 对该连接返回 `gone`。服务按行实例与连接保存一个条目，内含该连接按 `callId` 记录的未完成调用；连接关闭、受理该调用的 Rpc 代际卸载或该行代际卸载时删除条目，调用在回复写出后从条目中移除。
+- **拒绝顺序。** 代际已装载时，两种绑定都先判定 `undeclared`，再看连接状态：连接已关闭也不会掩盖该代际未声明的名称。已卸载的代际对任何名称都返回 `gone`，无论是否声明过。
 
 ### A.3 入口与导出
 
@@ -447,7 +471,7 @@ ToolBinding 沿既有 Prompt / BranchOpening 流程完成匹配与必要的采�
 | 对未装载 Session 调用 Session 方法 | — | Rpc 通过 `index.acquire` 恢复后再分发（不同于 `approval.respond`，它返回 `session_closed`） | Rpc |
 | Session 级提供方在调用中途重载 | admitted < reload | `report`：`operation_interrupted`；`drain`：调用自己的结果；卸载等待两者 | 提供方 |
 | 进程所有者重载 | — | 其已撤回的命名空间按它的行作答：尚未启动、Pending、Loading 或新旧两代之间：重新注册前返回 `service_reloading`；Failed、Unresolved、Stopped 或 Disposed：`service_unavailable`（§3.2）；已受理的调用属于提供方，按 `interruption` 处理；Rpc 不重载 | Rpc |
-| 有在途调用时 Rpc 重载 | — | 处理函数的取消令牌触发：`report` 回复 `operation_interrupted`，`drain` 回复自己的结果；Rpc 卸载时等待它应发出的回复以及每个被中断操作结算；`closed` 完成（`callChannel`，未实现） | Rpc |
+| 有在途调用时 Rpc 重载 | — | 处理函数的取消令牌触发：`report` 回复 `operation_interrupted`，`drain` 回复自己的结果；Rpc 卸载时等待它应发出的回复以及每个被中断操作结算；`closed` 完成，之后的 `notify` 返回 `gone` | Rpc |
 | 在带 `deviceId` 的连接上调用管理方法 | — | `unknown_method` | Rpc |
 | 客户端在调用中途 detach | — | 调用继续；回复被丢弃 | Rpc |
 | 两个部件在同一张表中注册同一命名空间 | 注册 | 第二次注册被拒绝，其部件失败 | 方法表 |
@@ -494,21 +518,21 @@ ToolBinding 沿既有 Prompt / BranchOpening 流程完成匹配与必要的采�
 
 ## 附录 F. Rust 绑定
 
-上述服务映射到下列原生所有者。工具注册到 ToolRegistry（A.5）。每张方法表也经自己的分发器服务其他语言：`SessionMethods` 部件在 `host_key_in("sessionMethods", session_instance)`，App Server 的 `ManagementMethods` 行在 `host_key("managementMethods")`。其他语言的 Session 部件（[C4](../../../design/session-typescript.md)）或进程行（[TypeScript 进程绑定](../../../design/process-typescript.md)）注入方法表并调用 `register(namespace, declarations, call)`，它返回一个 Promise。注册属于调用方（桥的调用方行），`call` 经桥回调，并使用 C1 的受理、进度与 `report`/`drain`；已受理的调用在调用方清理之前结束。不向 Session facade 增加按名称的服务查找，入口准入不变。Session 部件从 `sessionIdentity`、`sessionConfig` 与 `sessionLifecycle` 服务读取 Session 标识、配置与 closing；每个部件自己监听其 Session 的 `session/{sessionId}` 通道。它不增加公开 facade 查找或关键分支输入路径。连接通知、交接和 origin 不在已实现的子集内。
+上述服务映射到下列原生所有者。工具注册到 ToolRegistry（A.5）。每张方法表也经自己的分发器服务其他语言：`SessionMethods` 部件在 `host_key_in("sessionMethods", session_instance)`，App Server 的 `ManagementMethods` 行在 `host_key("managementMethods")`。其他语言的 Session 部件（[C4](../../../design/session-typescript.md)）或进程行（[TypeScript 进程绑定](../../../design/process-typescript.md)）注入方法表并调用 `register(namespace, declarations, call)`，它返回一个 Promise。注册属于调用方（桥的调用方行），`call` 经桥回调，并使用 C1 的受理、进度与 `report`/`drain`；已受理的调用在调用方清理之前结束。不向 Session facade 增加按名称的服务查找，入口准入不变。Session 部件从 `sessionIdentity`、`sessionConfig` 与 `sessionLifecycle` 服务读取 Session 标识、配置与 closing；每个部件自己监听其 Session 的 `session/{sessionId}` 通道。它不增加公开 facade 查找或关键分支输入路径。连接通知（`notify` 与 `closed`）在两种绑定中均已实现；交接（`takeFinalReply`）不在已实现的子集内。
 
 | 语言中立服务 | Rust 类型 | Rust 中的注册 | 收集 | 状态 |
 | --- | --- | --- | --- | --- |
 | `managementMethods` | `ManagementMethods`，持有一个 `MethodTable` 的进程服务，由 App Server 的 `ManagementMethodsPlugin` 行提供 | 进程部件依赖 `Keyed<ManagementMethods>`，在其 `apply` 中调用 `methods.register(ctx, ns, Vec<MethodDecl>, Handler)` | Rpc 依赖这张表并按调用读取（`management_provider`，§3.2），行状态来自 `loader.get(row)`；没有提供方在 Rpc 的 `Deps` 中 | 已实现（#14、#382） |
 | `sessionMethods` | `SessionMethods`，持有一个 `MethodTable` 的 Session 服务，由 `SessionMethodsPlugin` Session 部件提供；其检查是 App Server 提供的进程值 `ReservedMethods` | Session 部件依赖 `Keyed<SessionMethods>`，在其 `apply` 中调用 `methods.register(ctx, ns, Vec<MethodDecl>, Handler)` | 每次调用：在 `sessionId` 指定、经 `index.acquire` 获取的 Session 上调用 `Session::session_service::<SessionMethods>()`，再经 `session_provider`（A.1）；没有提供方在 Rpc 的 `Deps` 中 | 已实现（C1、#382） |
 | 工具注册 | `ToolContribution {definition, handler}`，注册到本 Session 的 `ToolRegistry`（`Keyed<ToolRegistry>`） | 在部件的 `apply` 中调用 `tools.register(ctx, ToolContribution)`；动态来源用 `tools.register_source(ctx, name, provider)` | 每次读取纳入已注册的内容；挂载列表中没有注册的名称被省略并记录诊断；每次注册是注册表自有的带版本集合（A.5，#241） | 已实现（#382） |
-| `callChannel` | `progress`：处理函数的 `Progress` 参数，每次调用一个 | — | Rpc 为每个已受理调用提供一个通向发起调用连接的 sink | `progress` 已实现（C1）；`notify`、`closed`、`takeFinalReply` 未实现 |
+| `callChannel` | `progress`：处理函数的 `Progress` 参数，每次调用一个；`notify` 与 `closed`：处理函数 `MethodCall.origin` 上的 `Caller`，每次调用一个；其他语言使用进程服务 `callChannel` | — | Rpc 为每个已受理调用提供一个通向发起调用连接的 sink；索引按 `callId` 记录其他语言的调用直到其回复写出，并在连接关闭或卸载时删除该连接的条目 | `progress`、`notify` 与 `closed` 已实现（C1、#1158）；`takeFinalReply` 未实现 |
 
 ```rust
 // crates/dim-agent-capabilities/src/methods.rs（C1），两个服务共用
 pub type Handler = Arc<
-    dyn Fn(String, Value, CancellationToken, Progress)
+    dyn Fn(MethodCall, CancellationToken, Progress)
         -> BoxFuture<'static, Result<Value, RpcError>> + Send + Sync,
->; // (method, params, 取消令牌, 进度)
+>; // (call, 取消令牌, 进度)
 impl Progress {
     pub fn send(&self, data: Value); // 尽力送达；未声明时、或回复交出之后丢弃
 }
@@ -520,12 +544,16 @@ pub struct MethodDecl {
     pub interruption: Interruption, // 外来声明必填
     #[serde(skip_serializing)]
     pub progress: bool,             // 外来声明必填
+    #[serde(default, skip_serializing)]
+    pub notifications: Vec<String>, // 位于命名空间内，整个声明集内唯一
 }
 impl MethodProvider { // 一代提供方：声明、处理函数、已受理的调用
-    pub fn new(ctx: &Ctx, namespace: &str, declarations: Vec<MethodDecl>, handler: Handler)
+    pub fn new(ctx: &Ctx, namespace: &str, declarations: Vec<MethodDecl>, handler: Handler,
+        foreign: bool) // 其他语言的部件：其调用被记录到回复写出
         -> Result<Arc<Self>, CordisError>;
-    pub fn accept(&self, method: String, params: Value, entry_stopping: CancellationToken,
-        progress: impl Fn(Value) + Send + Sync + 'static) -> Result<Accepted, RpcError>;
+    pub fn accept(self: &Arc<Self>, method: String, params: Value, site: Option<CallSite>,
+        entry_stopping: CancellationToken, progress: impl Fn(Value) + Send + Sync + 'static)
+        -> Result<Accepted, RpcError>;
 }
 // 方法表在命名空间及其声明注册之前对它们的检查。
 pub type Check = Arc<dyn Fn(&str, &[MethodDecl]) -> Result<(), CordisError> + Send + Sync>;
@@ -543,10 +571,27 @@ pub struct ReservedMethods(pub Check);           // 进程值：Session 方法�
 pub struct ManagementMethods(pub Arc<MethodTable>); // Deref<Target = MethodTable>
 ```
 
-`MethodProvider::new` 拒绝无效的声明（A.1 的语法；至少一个方法，每个方法唯一且位于命名空间内），并把提供方绑定到注册它的部件的这一代：这一代被取消时（这是卸载的第一步，早于它的任何 effect），提供方停止受理，并中断已受理的 `Report` 调用；它的卸载 effect 等待每个已受理调用，因此两张方法表不会分叉。其他语言的行在其 apply 返回的 effect 里卸载插件，这个 effect 先于 apply 期间注册的 effect 运行，所以它已受理的调用在插件仍在运行时就收到结束信号。`MethodTable::register` 先运行方法表的 `Check`，再构造提供方，并代表拥有 `ctx` 的部件注册该命名空间；已被注册的命名空间会失败。该部件卸载时，方法表把它的行与命名空间一起记下，之后的调用按该行作答（`Owner::Left`）。`ManagementMethods` 的检查是 A.1 保留名中的管理规则；Session 方法表的检查是 App Server 的 `ReservedMethods`，装配登记了这个名字时方法表依赖它；宿主不登记它时不保留任何名字，只检查语法。处理函数接收方法名、原始 params、在任一卸载时触发的取消令牌（A.1），以及该调用的 `Progress`。`RpcError`（连同它的 `From<AgentError>`）位于同一模块（A.1 共享类型）；`ManagementMethods`、保留名检查与 Rpc 的查找（`management_provider`、`session_provider`）留在 dim-app-server。
+`MethodProvider::new` 拒绝无效的声明（A.1 的语法；至少一个方法，每个方法唯一且位于命名空间内；以及每个声明的通知：符合语法、位于命名空间内、整个声明集内不重复，且不等于任何方法名），并把提供方绑定到注册它的部件的这一代：这一代被取消时（这是卸载的第一步，早于它的任何 effect），提供方停止受理，并中断已受理的 `Report` 调用；它的卸载 effect 等待每个已受理调用，因此两张方法表不会分叉。其他语言的行在其 apply 返回的 effect 里卸载插件，这个 effect 先于 apply 期间注册的 effect 运行，所以它已受理的调用在插件仍在运行时就收到结束信号。`MethodTable::register` 先运行方法表的 `Check`，再构造提供方，并代表拥有 `ctx` 的部件注册该命名空间；已被注册的命名空间会失败。该部件卸载时，方法表把它的行与命名空间一起记下，之后的调用按该行作答（`Owner::Left`）。`ManagementMethods` 的检查是 A.1 保留名中的管理规则；Session 方法表的检查是 App Server 的 `ReservedMethods`，装配登记了这个名字时方法表依赖它；宿主不登记它时不保留任何名字，只检查语法。处理函数接收 `MethodCall`——方法名、原始 params 与其 `Origin`——在任一卸载时触发的取消令牌（A.1），以及该调用的 `Progress`。调用由客户端连接发出时（无论经哪张表）`origin.caller` 存在，否则不存在。`RpcError`（连同它的 `From<AgentError>`）位于同一模块（A.1 共享类型）；`ManagementMethods`、保留名检查与 Rpc 的查找（`management_provider`、`session_provider`）留在 dim-app-server。
 
-`Progress` 按调用绑定 A.2 的 `progress`，而不是通过 `callChannel` 进程服务：Rpc 给每个已受理调用一个 sink，把 `management.progress {id, method, data}` 写到发起调用的连接；受理逻辑只在方法声明了 `progress` 时把它交给处理函数，并在交出回复之前关闭它。sink 在连接上按进度自己的额度排队，所以进度不会占用回复和持久通知的空间。管理方法走同一路径；目前没有管理方法声明 `progress`。
+`Progress` 按调用绑定 A.2 的 `progress`，而不是通过 `callChannel` 进程服务：Rpc 给每个已受理调用一个 sink，把 `management.progress {id, method, data}` 写到发起调用的连接；受理逻辑只在方法声明了 `progress` 时把它交给处理函数，并在交出回复之前关闭它。sink 在连接上按进度自己的额度排队，所以进度不会占用回复和持久通知的空间。管理方法走同一路径；`runtime.watch` 与 `schedule.watch` 声明了 `progress`（[RuntimeManager §10](../plugins/RuntimeManager.md#10-客户端变更通知)；[Scheduler §11.2](../plugins/Scheduler.md#112-任务与运行)）。
 
-外来 `register`（`ForeignMethods`，两张方法表共用）一次性解码声明，要求上列必填字段。它以 `{callId, method, params}`、取消 Promise 及逐次调用的进度回调调用 `call`，并解码 `{kind:"value", value}` 或 `{code, message}` 错误，其中 `code` 即 `appError`；省略的 `value`（包括 JSON 序列化时省略的 JavaScript `undefined`）成为 JSON `null`。方法也可以重新抛出它收到的服务错误。不支持的声明/回复字段及损坏数据在此边界失败。尚未实现：`callChannel` 的连接通知/最终回复交接、`origin`、`notifications` 与 `reply` 声明字段。
+```rust
+// crates/dim-agent-capabilities/src/methods.rs，两个服务共用
+pub struct MethodCall { pub method: String, pub params: Value, pub origin: Origin }
+pub struct Origin { pub caller: Option<Caller> }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotifyError { Undeclared, Gone, TooLarge } // code()："undeclared"、"gone"、"too_large"
+impl Caller {
+    pub fn id(&self) -> &str; // 合同中的 connectionId
+    pub fn notify(&self, method: &str, params: serde_json::Map<String, Value>) -> Result<(), NotifyError>;
+    pub fn closed(&self) -> impl Future<Output = ()> + Send + 'static;
+}
+```
+
+`Caller` 与 `Progress` 一样按调用绑定 A.2 的 `notify` 与 `closed`：只有调用来自客户端连接时 `MethodProvider::accept` 才构造它，并绑定到该声明集声明的通知，因此集合外的名称在写入任何内容之前就是 `Undeclared`，已卸载的代际则先返回 `Gone`。它通过 `CallerConnection` 这个 trait 对象持有连接，而该对象不强引用连接，所以保留 `Caller` 的提供方不会让已关闭的连接存活。Rpc 在产生该 `Caller` 的调用回复之后写出每条通知：调用进行中发出的通知只编码一次，经连接的暂存额度受理，按序暂存，紧接回复之后写出；超过帧上限的通知是 `TooLarge`，连接保持；暂存额度收不下的通知作为慢消费者关闭连接。连接关闭或受理该调用的 Rpc 代际卸载时，`closed` 完成。
+
+`Callers` 是进程内唯一的调用方索引：按行实例保存该代际声明的通知名称，该实例的连接关闭后仍保留，因此先判定 `Undeclared` 再看连接状态；并按行实例与连接保存该连接的直接写入端与该行按 `callId` 记录的未完成调用。`MethodProvider::accept` 在调用的 sink、实例与提供方声明都可用的位置生成其他语言调用的 `callId` 并记录该调用；`Connection::answer` 在回复写出后移除它。连接关闭、受理该调用的 Rpc 代际卸载或该行代际卸载时删除该连接的条目；声明的名称随该实例的代际一起删除。原生提供方保留自己的 `Caller`，不记录任何内容。App Server 以进程服务 `callChannel`（`ForeignCallChannel`，位于 `host_key("callChannel")`，由无依赖的 `CallChannel` 行提供）向其他语言提供 A.2 的 `callChannel`：其 `notify` 与 `closed` 用 `rutis_bridge::session::caller_row()` 读取调用行的实例，并最终落在 Rust 绑定所用同一次调用的 sink 上，两种绑定共用一条送达路径。
+
+外来 `register`（`ForeignMethods`，两张方法表共用）一次性解码声明，要求上列必填字段。它在调用来自连接时以 `{callId, method, params, origin: {connectionId}}`、否则以 `{callId, method, params}`、取消 Promise 及逐次调用的进度回调调用 `call`，并解码 `{kind:"value", value}` 或 `{code, message}` 错误，其中 `code` 即 `appError`；省略的 `value`（包括 JSON 序列化时省略的 JavaScript `undefined`）成为 JSON `null`。方法也可以重新抛出它收到的服务错误。不支持的声明/回复字段及损坏数据在此边界失败。尚未实现：最终回复交接、`origin.entry` 与 `origin.peer`，以及 `reply` 声明字段。
 
 `ToolContribution` 与 `ToolHandler` 是 `dim-agent-capabilities/src/tool_registry.rs` 中的原生类型。`ToolRegistry::register(ctx, ToolContribution)` 代表拥有 `ctx` 的部件注册，直到该部件卸载；它拒绝不满足 `[A-Za-z0-9_-]{1,64}` 的名称、宿主工具名和已被注册的名称。其他语言经 ToolRegistry 的分发器访问 `toolRegistry`：`register(declaration, execute)` 把声明解码为 `ToolDefinition` 一次，要求 `risk` 非空，并代表调用方行（桥的 `caller_row`）注册一个经桥回调 `execute` 的 `ToolHandler`。该处理器持有调用方行的代次令牌：行开始卸载后，经保留的处理器发起的调用不会发出，在途调用以错误结束，错误提示它可能已经生效，不会改绑到新的代次；外部所有者仍负责结算其 JavaScript 工作。每次执行派生自己的子取消令牌，单个工具正常完成不会取消同批其他工具。

@@ -398,6 +398,50 @@ impl TimelineContext {
             crate::core::Appended::Existing(sequence) => self.committed_input(sequence).await,
         }
     }
+    /// Validates a batch of input from outside the branch and appends it as
+    /// one atomic commit. Every input is checked as [`Self::input`] checks
+    /// one, and the whole batch is admitted once. A batch is never empty and
+    /// every input carries a submission id; the ids are distinct. When every
+    /// id is already committed the batch writes nothing and returns those
+    /// inputs in the given order; when only some are, it fails with
+    /// [`AgentError::PartialSubmission`] and writes nothing either.
+    pub(crate) async fn inputs(
+        &self,
+        inputs: Vec<InputMessageData>,
+    ) -> Result<Vec<Arc<AgentEvent>>> {
+        if let Some(error) = self.dispatcher.failure() {
+            return Err(error);
+        }
+        if self.close.started() {
+            return Err(AgentError::Closed(self.id().into()));
+        }
+        if inputs.is_empty() {
+            return Err(AgentError::InvalidInput(
+                "an input batch must contain at least one input".into(),
+            ));
+        }
+        for input in &inputs {
+            input
+                .validate()
+                .map_err(|reason| AgentError::InvalidInput(reason.into()))?;
+        }
+        let result = self.timeline.inputs_checked(inputs, || {
+            if self.ended() {
+                return Err(AgentError::BranchEnded(self.id.clone()));
+            }
+            Ok(())
+        })?;
+        match result {
+            crate::core::AppendedBatch::Written(events) => Ok(events),
+            crate::core::AppendedBatch::Existing(sequences) => {
+                let mut events = Vec::with_capacity(sequences.len());
+                for sequence in sequences {
+                    events.push(self.committed_input(sequence).await?);
+                }
+                Ok(events)
+            }
+        }
+    }
     /// The committed input with submission id `id`, once it is published.
     pub(crate) async fn lookup(&self, id: &str) -> Result<Option<Arc<AgentEvent>>> {
         let Some(input) = self.timeline.submission(id)? else {

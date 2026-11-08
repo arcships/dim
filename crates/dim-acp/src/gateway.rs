@@ -2064,8 +2064,18 @@ impl Gateway {
                 EventContent::ModelEnd(data)
                     if prompt.input.is_none() || prompt.turn.as_deref() == Some(&data.turn_id) =>
                 {
-                    if matches!(&data.outcome, dim_agent_types::ModelOutputOutcome::Failed { presentation: Some(presentation), .. } if presentation.reason == "max_tokens")
-                    {
+                    let output_limit = match &data.outcome {
+                        dim_agent_types::ModelOutputOutcome::Failed {
+                            failure: Some(failure),
+                            ..
+                        } => failure.kind == dim_agent_types::ModelFailureKind::OutputLimit,
+                        dim_agent_types::ModelOutputOutcome::Failed {
+                            presentation: Some(presentation),
+                            ..
+                        } => presentation.reason == "max_tokens",
+                        _ => false,
+                    };
+                    if output_limit {
                         prompt.max_tokens.insert(data.turn_id.clone());
                     }
                 }

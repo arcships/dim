@@ -236,6 +236,169 @@ fn model_failure_roundtrips_and_rejects_invalid_contracts() {
 }
 
 #[test]
+fn failure_chain_roundtrips_and_rejects_invalid_contracts() {
+    use std::sync::Arc;
+    // A binary without `failure_chain` cannot decode a record that carries
+    // it: `ContextPrepareData` and `ModelCallData` deny unknown fields. The
+    // frozen fixtures stay unchanged.
+    for kind in ["context/prepare", "model/call"] {
+        let old = fixture(kind, None);
+        let old_event: AgentEvent = serde_json::from_value(old.clone()).unwrap();
+        equal_json(&serde_json::to_value(old_event).unwrap(), &old);
+
+        let mut event = old;
+        event["data"]["failure_chain"] = json!({
+            "from_request_id": "request-1",
+            "attempts": 5,
+            "waited_ms": 1500
+        });
+        let decoded: AgentEvent = serde_json::from_value(event.clone()).unwrap();
+        equal_json(&serde_json::to_value(&decoded).unwrap(), &event);
+        let outbound =
+            serde_json::to_value(v1::SharedEvent::new(Arc::new(decoded)).unwrap()).unwrap();
+        assert!(
+            outbound["data"].get("failure_chain").is_none(),
+            "{outbound}"
+        );
+    }
+
+    for chain in [
+        json!(null),
+        json!({"from_request_id": "request-1", "attempts": 5}),
+        json!({"from_request_id": 1, "attempts": 5, "waited_ms": 0}),
+        json!({"from_request_id": "request-1", "attempts": 300, "waited_ms": 0}),
+        json!({"from_request_id": "request-1", "attempts": 5, "waited_ms": 0, "unexpected": true}),
+    ] {
+        let mut invalid = fixture("context/prepare", None);
+        invalid["data"]["failure_chain"] = chain;
+        assert!(
+            serde_json::from_value::<AgentEvent>(invalid.clone()).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn retry_forbidden_roundtrips_and_rejects_invalid_contracts() {
+    use std::sync::Arc;
+    let old = fixture("step/model-output-end", Some("failed"));
+    // An event written before the retry-policy fact still decodes and
+    // re-encodes without it.
+    let old_event: AgentEvent = serde_json::from_value(old.clone()).unwrap();
+    equal_json(&serde_json::to_value(old_event).unwrap(), &old);
+
+    let mut event = old;
+    event["data"]["failure"] = json!({
+        "kind": "server_error",
+        "status": 503,
+        "cause": [],
+        "attempts": 1,
+        "waitedMs": 0,
+        "retryForbidden": true
+    });
+    let decoded: AgentEvent = serde_json::from_value(event.clone()).unwrap();
+    equal_json(&serde_json::to_value(&decoded).unwrap(), &event);
+    let decoded_v1: v1::AgentEvent = serde_json::from_value(event.clone()).unwrap();
+    equal_json(&serde_json::to_value(decoded_v1).unwrap(), &event);
+    let outbound = serde_json::to_value(
+        v1::SharedEvent::new(Arc::new(
+            serde_json::from_value::<AgentEvent>(event.clone()).unwrap(),
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    equal_json(&outbound, &event);
+
+    let mut allowed = fixture("step/model-output-end", Some("failed"));
+    allowed["data"]["failure"] = json!({
+        "kind": "server_error",
+        "attempts": 1,
+        "waitedMs": 0,
+        "retryForbidden": false
+    });
+    let decoded: AgentEvent = serde_json::from_value(allowed).unwrap();
+    let encoded = serde_json::to_value(&decoded).unwrap();
+    assert!(
+        encoded["data"]["failure"].get("retryForbidden").is_none(),
+        "{encoded}"
+    );
+
+    for forbidden in [json!("yes"), json!(1), json!(null)] {
+        let mut invalid = fixture("step/model-output-end", Some("failed"));
+        invalid["data"]["failure"] = json!({
+            "kind": "server_error",
+            "attempts": 1,
+            "waitedMs": 0,
+            "retryForbidden": forbidden
+        });
+        assert!(
+            serde_json::from_value::<AgentEvent>(invalid.clone()).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn handover_roundtrips_and_rejects_invalid_contracts() {
+    use std::sync::Arc;
+    // The frozen fixtures hold `input/message` records only in the v1
+    // {text, mode} shape, so the old record below is written in the
+    // internal shape by hand. A binary without `handover` cannot decode a
+    // record that carries it: `InputMessageData` denies unknown fields.
+    let old = json!({
+        "id": "event-1",
+        "sequence": 1,
+        "create_at": 1790000000123u64,
+        "type": "input",
+        "name": "message",
+        "data": {
+            "user": {"content": [{"type": "text", "text": "handover"}]},
+            "mode": "queue"
+        }
+    });
+    let old_event: AgentEvent = serde_json::from_value(old.clone()).unwrap();
+    equal_json(&serde_json::to_value(old_event).unwrap(), &old);
+
+    let mut event = old.clone();
+    event["data"]["handover"] = json!({"turn_id": "turn-2", "request_id": "request-3"});
+    let decoded: AgentEvent = serde_json::from_value(event.clone()).unwrap();
+    equal_json(&serde_json::to_value(&decoded).unwrap(), &event);
+    let outbound = serde_json::to_value(v1::SharedEvent::new(Arc::new(decoded)).unwrap()).unwrap();
+    assert!(outbound["data"].get("handover").is_none(), "{outbound}");
+
+    // The v1 inbound view knows only text and mode, so it refuses the
+    // field like every field it does not know.
+    let mut v1_event = json!({
+        "id": "event-1",
+        "sequence": 1,
+        "create_at": 1790000000123u64,
+        "type": "input",
+        "name": "message",
+        "data": {"text": "handover", "mode": "queue"}
+    });
+    assert!(serde_json::from_value::<v1::AgentEvent>(v1_event.clone()).is_ok());
+    v1_event["data"]["handover"] = json!({"turn_id": "turn-2", "request_id": "request-3"});
+    assert!(
+        serde_json::from_value::<v1::AgentEvent>(v1_event.clone()).is_err(),
+        "{v1_event}"
+    );
+
+    for handover in [
+        json!(null),
+        json!({"turn_id": "turn-2"}),
+        json!({"turn_id": 2, "request_id": "request-3"}),
+        json!({"turn_id": "turn-2", "request_id": "request-3", "unexpected": true}),
+    ] {
+        let mut invalid = old.clone();
+        invalid["data"]["handover"] = handover;
+        assert!(
+            serde_json::from_value::<AgentEvent>(invalid.clone()).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
 fn omitted_modes_and_safe_integer_limits_keep_the_contract() {
     let mut value = fixture("input/message", None);
     value["sequence"] = json!(JS_MAX_SAFE_INTEGER);
@@ -271,6 +434,7 @@ fn request_events_preserve_draft_encoding() {
         request,
         configuration: None,
         prompt: None,
+        failure_chain: None,
     };
     let draft = EventDraft::new(EventKind::ModelCall(call));
     assert_eq!(

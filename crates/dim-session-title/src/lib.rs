@@ -1,6 +1,6 @@
 use dim_agent_capabilities::{
     host::{AuxiliaryModelHost, AuxiliaryRequest},
-    methods::{Interruption, MethodDecl, RpcError, SessionMethods, reply},
+    methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, reply},
     session_broadcast::{SessionBroadcast, SessionBroadcastEvent, session_channel},
 };
 use dim_agent_runtime::{
@@ -242,7 +242,8 @@ impl DynPlugin for SessionTitle {
                     true,
                     Interruption::Report,
                 )],
-                Arc::new(move |method, params, cancel, _| {
+                Arc::new(move |call, cancel, _| {
+                    let MethodCall { method, params, .. } = call;
                     let owner = owner.clone();
                     Box::pin(async move {
                         if method != "session.rename" {

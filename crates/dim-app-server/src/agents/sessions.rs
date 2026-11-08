@@ -458,6 +458,9 @@ impl AgentIndex {
                     }),
                     blocks,
                     mode: Some(write.mode),
+                    // A client's input cannot address a handover: only a
+                    // capability writing in-process can.
+                    handover: None,
                 };
                 Ok((lease, publication, input, write.branch_id))
             })

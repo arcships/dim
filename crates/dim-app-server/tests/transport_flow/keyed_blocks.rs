@@ -908,3 +908,64 @@ async fn the_read_equals_the_model_baseline_at_a_quiescent_point() {
         );
     }
 }
+
+const GOAL_STATE: &str = "goal:state";
+const GOAL_STATE_TEXT: &str = "<dim-goal kind=\"state\" status=\"paused\" reason=\"user\" after=\"1\" branch=\"main\">\nThe goal for branch main is paused.\n</dim-goal>";
+const GOAL_CLEARED_TEXT: &str = "<dim-goal kind=\"state\" status=\"cleared\" after=\"2\" branch=\"main\">\nThe goal for branch main is not in effect.\n</dim-goal>";
+
+/// Goal contributes one key (Goal.md §2, keyed-blocks §2): the newest live
+/// `goal:state` record is the branch's entry, and a retired record removes it.
+/// A client reads the goal from the same projection as every other key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keys_carry_the_goal_state_record_and_its_retirement() {
+    let server = launch(Arc::new(MockTools), ServerConfig::default()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = create_session(&mut client, json!([])).await;
+    let session = server.agent().unwrap().get_session(&id).unwrap();
+
+    let state = session
+        .input(appended(vec![goal(GOAL_STATE_TEXT, GOAL_STATE)]), "main")
+        .await
+        .unwrap();
+    let reply = read_keys(&mut client, &id, "main", json!({})).await;
+    assert_eq!(
+        entries(&reply),
+        [entry(GOAL_STATE, &state, GOAL_STATE_TEXT)],
+        "the live state record is the goal:state entry"
+    );
+    // A read fixed before the record sees no entry: the projection is the
+    // facts up to the read's through.
+    let before = read_keys(
+        &mut client,
+        &id,
+        "main",
+        json!({"through": state.sequence - 1}),
+    )
+    .await;
+    assert!(entries(&before).is_empty(), "{before:#?}");
+
+    // Retiring the key removes the entry; history still carries the block.
+    let cleared = session
+        .input(
+            appended(vec![retired(GOAL_CLEARED_TEXT, GOAL_STATE)]),
+            "main",
+        )
+        .await
+        .unwrap();
+    let reply = read_keys(&mut client, &id, "main", json!({})).await;
+    assert!(entries(&reply).is_empty(), "a retired record lists no key");
+    // A read fixed just before the retirement still lists the record: the
+    // entry ends because the key is retired, not because history changed.
+    let cut = read_keys(
+        &mut client,
+        &id,
+        "main",
+        json!({"through": cleared.sequence - 1}),
+    )
+    .await;
+    assert_eq!(entries(&cut), [entry(GOAL_STATE, &state, GOAL_STATE_TEXT)]);
+    assert!(
+        cleared.sequence > state.sequence,
+        "the retirement follows the record"
+    );
+}

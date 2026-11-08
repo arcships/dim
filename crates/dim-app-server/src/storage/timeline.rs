@@ -2908,9 +2908,8 @@ impl TimelineStore for SqliteTimelineStore {
                     }
                 };
             }
-            let mut reader = self.reader(RequestBodies::Rebuild);
-            let result = validate_session(&self.db, &mut reader, session_id, &directory).await;
-            self.finish(reader);
+            let mut reader = self.reader(RequestBodies::Unused);
+            let result = validate_session(&self.db, session_id, &directory, &mut reader).await;
             match result {
                 Ok(branches) => {
                     self.validated
@@ -3263,32 +3262,106 @@ pub(super) async fn read_directory(
         .await
 }
 
-/// Checks every row of `session` with one reader, which carries its content
-/// cache and kept request across the pass. `directory` is the read this pass
-/// validates and, on success, records.
+/// The batch and content references of one validation pass over a branch.
+/// `references` holds what the batch's rows name, checked on the batch's
+/// connection and emptied once checked.
+#[derive(Default)]
+struct ValidationPass {
+    rows: Option<Rows>,
+    references: BTreeSet<String>,
+}
+
+/// Fails unless every content row `references` names exists in `session`,
+/// reading hashes only: one statement on the caller's connection, no body
+/// loaded or parsed, and the set is emptied once checked. A batch of 64
+/// physical rows bounds the set, so memory does not grow with the Session.
+fn check_references(
+    connection: &Connection,
+    session: &str,
+    references: &mut BTreeSet<String>,
+) -> Result<()> {
+    if references.is_empty() {
+        return Ok(());
+    }
+    let names = serde_json::to_string(references).map_err(error)?;
+    let mut query = connection
+        .prepare_cached(
+            "SELECT hash FROM timeline_content WHERE session_id = ?1 \
+             AND hash IN (SELECT value FROM json_each(?2))",
+        )
+        .map_err(error)?;
+    let found: BTreeSet<String> = query
+        .query_map(params![session, names], |row| row.get(0))
+        .map_err(error)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(error)?;
+    if let Some(missing) = references
+        .iter()
+        .find(|reference| !found.contains(*reference))
+    {
+        return Err(error(format!("missing request content {missing}")));
+    }
+    references.clear();
+    Ok(())
+}
+
+/// Fails unless every node row in `session` names an existing parent row: one
+/// statement over the Session's node rows, reading only each body's `parent`
+/// field, so no body is loaded or hashed. With `check_references` it proves
+/// every chain reachable from a reference complete by induction: the
+/// referenced node exists, every parent exists by this check, and the walk
+/// ends at a node whose `parent` is null. Memory does not grow with the
+/// Session.
+fn check_parents(connection: &Connection, session: &str) -> Result<()> {
+    let missing: Option<String> = connection
+        .query_row(
+            "SELECT json_extract(n.body, '$.parent') FROM timeline_content n \
+             WHERE n.session_id = ?1 AND n.kind = 'node' \
+               AND json_valid(n.body) AND json_type(n.body, '$.parent') = 'text' \
+               AND NOT EXISTS (SELECT 1 FROM timeline_content p \
+                 WHERE p.session_id = ?1 AND p.hash = json_extract(n.body, '$.parent')) \
+             LIMIT 1",
+            [session],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(error)?;
+    if let Some(missing) = missing {
+        return Err(error(format!("missing request content {missing}")));
+    }
+    Ok(())
+}
+
+/// Validates `session`'s stored rows and returns its branch directory.
+/// `reader` decides what the pass does with request bodies: restore passes a
+/// reader without bodies, so the pass checks that every content reference a
+/// record names and every node's parent resolve, and a body is loaded,
+/// decoded and hash-checked only by the reads that use it (§7 of the request
+/// storage design); export passes a rebuilding reader, so every body is
+/// rebuilt and hash-checked before the export writes its first line.
 pub(super) async fn validate_session(
     db: &Arc<SqliteStorage>,
-    reader: &mut Reader,
     session: &str,
     directory: &ValidatedDirectory,
+    reader: &mut Reader,
 ) -> Result<Vec<StoredBranch>> {
     let id = session.to_owned();
-    let orphan: bool = db
-        .run_read(move |connection| {
-            connection
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM timeline_events e LEFT JOIN timeline_branches b \
+    db.run_read(move |connection| {
+        let orphan: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM timeline_events e LEFT JOIN timeline_branches b \
              ON b.session_id=e.session_id AND b.branch_id=e.branch_id \
              WHERE e.session_id=?1 AND b.branch_id IS NULL)",
-                    [&id],
-                    |row| row.get(0),
-                )
-                .map_err(error)
-        })
-        .await?;
-    if orphan {
-        return Err(error("Timeline event references a missing branch"));
-    }
+                [&id],
+                |row| row.get(0),
+            )
+            .map_err(error)?;
+        if orphan {
+            return Err(error("Timeline event references a missing branch"));
+        }
+        check_parents(connection, &id)
+    })
+    .await?;
     let branches = directory.branches()?;
     let mut event_ids = BTreeSet::new();
     let mut created = BTreeSet::new();
@@ -3301,23 +3374,29 @@ pub(super) async fn validate_session(
                 session_id: session.into(),
                 branch_id: id.clone(),
             };
-            let rows = holds(db, reader, None, move |connection, reader, rows: &mut Option<Rows>| {
-                let rows = match rows {
+            let pass = holds(db, reader, ValidationPass::default(), move |connection, reader, pass: &mut ValidationPass| {
+                let rows = match pass.rows.as_mut() {
                     Some(rows) => rows,
                     None => {
                         let mut query = connection.prepare_cached("SELECT sequence, last_sequence, kind, body, event_id FROM timeline_events WHERE session_id=?1 AND branch_id=?2 AND sequence>=?3 ORDER BY sequence LIMIT 64").map_err(error)?;
+                        let mut references = BTreeSet::new();
                         let fetched = query.query_map(params![key.session_id, key.branch_id, sql_sequence(next)?], |row| Ok((
                             read_sequence(row,0)?, read_sequence(row,1)?, row.get::<_,String>(2)?, row.get::<_,String>(3)?, row.get::<_,Option<String>>(4)?
                         ))).map_err(error)?.map(|row| {
                             let (first, last, kind, body, event_id) = row.map_err(error)?;
-                            Fetched::parse(first, last, kind, &body, event_id)
+                            let fetched = Fetched::parse(first, last, kind, &body, event_id)?;
+                            references.extend(fetched.wires.iter().flat_map(|wire| wire.references().map(str::to_owned)));
+                            Ok(fetched)
                         }).collect::<Result<_>>()?;
-                        rows.insert(Rows { fetched, decoded: vec![] })
+                        pass.references = references;
+                        pass.rows.insert(Rows { fetched, decoded: vec![] })
                     }
                 };
-                rows.advance(connection, &key.session_id, reader)
+                let done = rows.advance(connection, &key.session_id, reader)?;
+                check_references(connection, &key.session_id, &mut pass.references)?;
+                Ok(done)
             }).await?;
-            let page = rows.expect("a finished pass fetched its rows").decoded;
+            let page = pass.rows.expect("a finished pass fetched its rows").decoded;
             if page.is_empty() {
                 break;
             }

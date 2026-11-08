@@ -15,7 +15,7 @@ use rutis::service;
 use rutis::{Ctx, Disposer, Event};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     num::NonZeroU64,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex, OnceLock},
@@ -127,6 +127,15 @@ pub(crate) enum Appended {
     /// An input with the same submission id is already committed at this
     /// sequence; nothing was written.
     Existing(u64),
+}
+/// What [`Timeline::inputs`] did.
+pub(crate) enum AppendedBatch {
+    /// The whole batch was written, in the given order and at contiguous
+    /// sequences.
+    Written(Vec<Arc<AgentEvent>>),
+    /// Every input's submission id is already committed, at these sequences
+    /// in the batch's given order; nothing was written.
+    Existing(Vec<u64>),
 }
 #[derive(Default)]
 struct Data {
@@ -282,6 +291,69 @@ impl Timeline {
         Ok(Appended::Written(
             events.pop().expect("single-event batch returned one event"),
         ))
+    }
+    /// Commits `inputs` as one atomic batch, unless every input's submission
+    /// id is already committed on this branch: all ids are required and
+    /// distinct. The check, admission and append hold the commit lock, so the
+    /// whole batch is decided at once. One id committed and another not fails
+    /// with [`AgentError::PartialSubmission`] and writes nothing.
+    pub(crate) fn inputs_checked(
+        &self,
+        inputs: Vec<InputMessageData>,
+        admit: impl FnOnce() -> Result<()>,
+    ) -> Result<AppendedBatch> {
+        let _append = AppendGuard::enter()?;
+        let _commit = self.0.commit.lock().unwrap();
+        let mut ids = HashSet::with_capacity(inputs.len());
+        for input in &inputs {
+            let Some(id) = &input.submission_id else {
+                return Err(AgentError::InvalidInput(
+                    "every input in a batch must carry a submission id".into(),
+                ));
+            };
+            if !ids.insert(id.as_str()) {
+                return Err(AgentError::InvalidInput(format!(
+                    "submission id {id} appears more than once in one batch"
+                )));
+            }
+        }
+        let mut committed = HashMap::with_capacity(inputs.len());
+        let mut pending = Vec::new();
+        for id in &ids {
+            match self.submission(id)? {
+                Some(input) => {
+                    committed.insert(*id, input.sequence);
+                }
+                None => pending.push(*id),
+            }
+        }
+        if pending.is_empty() {
+            // Every id is committed: the batch is a replay. Keep the given
+            // order, not the set's.
+            let sequences = inputs
+                .iter()
+                .map(|input| {
+                    let id = input
+                        .submission_id
+                        .as_deref()
+                        .expect("every id was checked above");
+                    committed[id]
+                })
+                .collect();
+            return Ok(AppendedBatch::Existing(sequences));
+        }
+        if !committed.is_empty() {
+            return Err(AgentError::PartialSubmission(pending.join(", ")));
+        }
+        admit()?;
+        let events = self.commit(
+            inputs
+                .into_iter()
+                .map(|input| EventKind::InputMessage(input).into())
+                .collect(),
+            |_| Ok(()),
+        )?;
+        Ok(AppendedBatch::Written(events))
     }
     /// The committed input with submission id `id`: its event id and sequence.
     pub(crate) fn submission(&self, id: &str) -> Result<Option<SubmissionInput>> {

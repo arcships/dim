@@ -45,6 +45,7 @@ pub mod timeline_tree;
 pub mod tool_binding;
 pub mod tool_executor;
 pub mod tool_registry;
+pub mod toolchain;
 pub mod wait;
 pub mod workspace_tools;
 
@@ -115,9 +116,11 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<host::ModelSelectionHost>(catalog, None);
     register::<host::CredentialVariablesHost>(catalog, None);
     register::<host::SessionFilesHost>(catalog, None);
+    register::<workspace_tools::mentions::MentionIndex>(catalog, None);
     register::<skill_settings::SkillSettingsHost>(catalog, None);
     register::<environment_clients::SessionClientsHost>(catalog, None);
     register::<execution_settings::ExecutionSettingsHost>(catalog, None);
+    register::<toolchain::ToolchainSourceHost>(catalog, None);
     register::<skills::SkillsCatalog>(catalog, None);
 }
 impl PublicService for approval::Approval {}

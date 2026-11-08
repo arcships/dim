@@ -28,7 +28,7 @@ folding names would break case-sensitive directories and their aliases.
 
 ## Bounded reads
 
-`read_limited(path, limit, cancel)` preserves the same authorized-handle traversal and cancellation as `read`. It checks the opened file's length before allocating contents, then checks each chunk before extending the buffer to cover concurrent growth. Exceeding the byte limit returns `Io(InvalidData)` without partial bytes or a write. The business caller chooses its byte limit; ordinary `read` and lease reads remain unbounded.
+`read_limited(path, limit, cancel)` preserves the same authorized-handle traversal and cancellation as `read`. It checks the opened file's length before allocating contents, then checks each chunk before extending the buffer to cover concurrent growth. Exceeding the byte limit returns `Io(InvalidData)` without partial bytes or a write. The lease's own `read_limited(limit, cancel)` applies the same rule under the held lock; `read` is its unbounded case. The business caller chooses its byte limit.
 
 ## Leases and lock keys
 
@@ -62,7 +62,11 @@ created the key.
 A replacement writes its temporary file in
 `.dim-file-storage-locks/.dim-file-storage-temps` under its key's name, so only
 that key's holder writes or removes it. A leftover from an interrupted
-replacement is discarded by the next replacement of that name.
+replacement is discarded by the next replacement of that name. `replace_from`
+takes the replacement from a reader one 64 KiB chunk at a time with the same
+temporary file, permissions, rename and durability rules, so a replacement
+need not be held whole; a read that fails or is cancelled before the rename
+removes the temporary file and leaves the target as it was.
 
 `auth.json` also takes the TypeScript-compatible `auth.json.lock` marker, which
 is reclaimed only while holding the `auth.json` key. A marker is stale once it
@@ -121,6 +125,14 @@ In both the created and the existing case the parent is synced before the call
 returns, so a retry after `Unsynced` confirms durability. Windows has no
 directory sync, as for replacement. Cancellation is checked up to the creation.
 
+`create_directories` makes a multi-level path an existing directory tree by
+calling that same one-level creation for each component, holding the opened
+parent between levels, and returns the absolute path the path names below the
+root. A component that already exists as a link, file or other non-directory
+fails `InvalidPath` and is left untouched, and so does an alias of a reserved
+resource; the returned path therefore names the result without a followed
+link. This is the primitive for handing a work directory to a helper process.
+
 ## Listing and removal
 
 `list` returns the entries of a directory below an authorized root, sorted by
@@ -129,7 +141,10 @@ file, never followed). FileStorage's lock, temporary and account-marker
 resources are omitted, including names the filesystem equates with them.
 
 `EntryKind` serializes as `file`, `directory` or `other` for generated exports.
-Native entry names remain `OsString`; the exporting boundary chooses its UTF-8 policy.
+Native entry names remain `OsString`; the exporting boundary chooses its UTF-8
+policy, and one that returns a path-shaped name joins the resolved components
+with `/`, so the name round-trips through its own path resolution: on Unix a
+backslash is part of a name, and on Windows it is a separator.
 
 `remove` makes an entry absent. Files, including those beneath a directory,
 are removed under the lock leases use, so removing a leased file, or a directory
@@ -254,6 +269,10 @@ and starts again from its target if a directory it returns to was deleted.
 `directory_creation_stays_inside_the_authorized_root` (mode, an existing
 directory, a missing parent, aliases of the reserved directory and the account
 marker, an existing file or link, cancellation),
+`streaming_replacement_and_nested_directories_stay_inside_the_authorized_root`
+(replacement from a reader with a bounded read, a source that cancels part-way
+leaving the old contents and no temporary file, nested creation with modes, an
+existing directory, and a file or link at any level),
 `directory_listing_and_removal_stay_inside_the_authorized_root` (Session-file
 layout, reserved resources and aliases, leases held during partial removal,
 links, cancellation, leftovers with reserved names or of the wrong type, a

@@ -11,7 +11,7 @@ use crate::{
 };
 use dim_agent_capabilities::{
     file_storage::FileStorageError,
-    methods::{Interruption, MethodDecl, RpcError, params, reply},
+    methods::{Interruption, MethodCall, MethodDecl, RpcError, params, reply},
 };
 use dim_agent_runtime::Names;
 use rutis::Ctx;
@@ -146,7 +146,12 @@ impl DynPlugin for SettingsMethodsPlugin {
                     MethodDecl::new("settings.sources", false, Interruption::Report),
                     MethodDecl::new("settings.projects", false, Interruption::Report),
                 ],
-                Arc::new(move |method, value, stopping, _| {
+                Arc::new(move |call, stopping, _| {
+                    let MethodCall {
+                        method,
+                        params: value,
+                        ..
+                    } = call;
                     let service = service.clone();
                     Box::pin(async move {
                         match method.as_str() {

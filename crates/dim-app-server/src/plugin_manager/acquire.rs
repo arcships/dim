@@ -25,7 +25,9 @@ pub fn check_id(id: &str) -> Result<(), PluginError> {
 
 /// The directories PluginManager may create, rename or delete. Every one is
 /// checked to be exactly `<home>/plugins/.staging/<random>`,
-/// `<home>/plugins/<id>` or `<home>/plugins/<id>/<commit>` before use.
+/// `<home>/plugins/.python`, `<home>/plugins/<id>`,
+/// `<home>/plugins/<id>/<commit>` or `<home>/plugins/<id>/<commit>+<suffix>`
+/// before use.
 #[derive(Clone, Debug)]
 pub struct PluginsDir {
     root: PathBuf,
@@ -55,6 +57,26 @@ impl PluginsDir {
         Ok(self.id_dir(id)?.join(commit))
     }
 
+    /// `<root>/<id>/<commit>+<16 lowercase hex>`: what one acquisition
+    /// renames into (§3.2 step 4). The suffix is drawn for this acquisition,
+    /// and a name that already exists is never reused.
+    pub fn acquisition_dir(&self, id: &str, commit: &str) -> Result<PathBuf, PluginError> {
+        let id_dir = self
+            .clone_dir(id, commit)?
+            .parent()
+            .expect("a clone directory has a parent")
+            .to_owned();
+        for _ in 0..8 {
+            let suffix = uuid::Uuid::new_v4().simple().to_string();
+            let dir = id_dir.join(format!("{commit}+{}", &suffix[..16]));
+            self.check(&dir)?;
+            if !dir.exists() {
+                return Ok(dir);
+            }
+        }
+        Err(acquire_failed("no free acquisition directory"))
+    }
+
     /// Whether `dir` is one of the shapes PluginManager owns, read lexically
     /// and then after resolving what exists of it.
     pub fn check(&self, dir: &Path) -> Result<(), PluginError> {
@@ -70,7 +92,10 @@ impl PluginsDir {
             [".staging", random] => !random.is_empty(),
             [".python"] => true,
             [id] => check_id(id).is_ok(),
-            [id, commit] => self.clone_dir(id, commit).is_ok(),
+            // A bare `<commit>` is the directory a record written before
+            // suffixes names, and what the startup cleanup reads; nothing
+            // acquires into that shape.
+            [id, name] => self.clone_dir(id, name).is_ok() || acquisition(name),
             _ => false,
         };
         if !shaped {
@@ -190,11 +215,12 @@ impl PluginsDir {
         }
     }
 
-    /// Startup cleanup: staging leftovers and Git clones no entry refers
-    /// to. `installed` are the directories of every installed entry: an id
-    /// directory holding one that is not a clone (a local plugin kept under
-    /// `<home>/plugins`) is left whole, and only clone-shaped directories
-    /// are ever deleted, the id directory only once it is empty.
+    /// Startup cleanup: staging leftovers and Git copies no entry refers to.
+    /// `installed` are the directories of every installed entry: an id
+    /// directory holding one that is not a copy (a local plugin kept under
+    /// `<home>/plugins`) is left whole, and only the two copy shapes are
+    /// ever deleted, the id directory only once it is empty. It runs once
+    /// per process, from `State::read`, before any acquisition.
     pub fn clean(&self, installed: &[PathBuf]) {
         if self.real_dirs(&self.staging_root()).is_err() {
             return;
@@ -263,6 +289,18 @@ impl Drop for Staging {
             }
         }
     }
+}
+
+/// `<commit>+<16 lowercase hex>`: one acquisition's own directory.
+fn acquisition(name: &str) -> bool {
+    let Some((commit, suffix)) = name.split_once('+') else {
+        return false;
+    };
+    let hex = |byte: u8| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte);
+    commit.len() >= 7
+        && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && suffix.len() == 16
+        && suffix.bytes().all(hex)
 }
 
 /// A Python package name: what an id becomes with `-` as `_`.

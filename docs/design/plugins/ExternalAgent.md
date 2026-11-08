@@ -404,11 +404,11 @@ Namespace `external_agents`, which ExternalAgent's process row registers with `m
 
 | Method | Params | Result | `mutating` |
 | --- | --- | --- | --- |
-| `external_agents.list` | `refresh?` | Store state (`available`, `unavailable` with its code); per configured or attached node: `attached` or `unavailable`; per agent: executable, version, protocol (ACP or CLI), enabled, description, configuration (references only) | no |
-| `external_agents.set_enabled` | `node`, `agent`, `enabled` | New state | yes |
-| `external_agents.configure` | `node`, `agent`, `description?`, `executable?`, `args?`, `env?: {name: value}`, `reasoning?` | New configuration | yes |
+| `external_agents.list` | `refresh?` | `revision`, the `external_agents` document's Settings revision, which `set_enabled` and `configure` take as `expectedRevision`; store state (`available`, `unavailable` with its code); per configured or attached node: `attached` or `unavailable`; per agent: executable, version, protocol (ACP or CLI), enabled, description, configuration (references only) | no |
+| `external_agents.set_enabled` | `node`, `agent`, `enabled`, `expectedRevision?` | New state | yes |
+| `external_agents.configure` | `node`, `agent`, `description?`, `executable?`, `args?`, `env?: {name: value}`, `reasoning?`, `expectedRevision?` | New configuration | yes |
 
-Detection calls a bridge's `detect` when it attaches and on `refresh` (A1). Detected agents stay disabled until enabled (A2). Writes go through Settings' typed write with the revision read (CAS); ExternalAgent applies `settings.changed` without a reload. Enabling writes nothing else: the catalog is derived from this document.
+Detection calls a bridge's `detect` when it attaches and on `refresh` (A1). Detected agents stay disabled until enabled (A2). Writes go through Settings' typed write with the revision read (CAS); a caller sends the `revision` it last read as `expectedRevision`, a stale one is `settings_conflict` ([settings service §6](../appserver/settings-service.md#6-errors)) and writes nothing, and without it the owner's own read-then-CAS applies. ExternalAgent applies `settings.changed` without a reload. Enabling writes nothing else: the catalog is derived from this document.
 
 ### A.2 Member provider
 

@@ -1,25 +1,31 @@
 //! RuntimeManager (docs/design/plugins/RuntimeManager.md): acquires the Node
-//! and Python rutis runtimes into `<home>/runtimes/`, verified against their
-//! publishers' checksums, and provides each one's launch command once it is
-//! installed. The runtime's connection row injects the command, so rutis
-//! starts it then.
+//! and Python rutis runtimes, and the uv tool, into `<home>/runtimes/`,
+//! verified against their publishers' checksums. A runtime's launch command is
+//! provided once it is installed, and its connection row injects it, so rutis
+//! starts it then; uv launches no runtime and is only installed.
 use crate::methods::ManagementMethods;
 use crate::session_typescript::{ForeignRuntime, RuntimeState, RuntimeStatus};
-use dim_agent_capabilities::methods::{Interruption, MethodDecl, RpcError, params, reply};
+use dim_agent_capabilities::methods::{
+    Interruption, MethodCall, MethodDecl, RpcError, params, reply,
+};
+use dim_agent_capabilities::toolchain::{InstalledToolchain, ToolchainSource, ToolchainSourceHost};
 use dim_agent_runtime::Names;
 use rutis::Ctx;
 use rutis::Disposer;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap},
+    ffi::{OsStr, OsString},
     path::{Component, Path, PathBuf},
     process::Stdio,
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::io::AsyncWriteExt;
+use tokio::sync::{broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
 const PINS: &str = include_str!("../../../runtime/runtimes.json");
@@ -32,6 +38,7 @@ const PYTHON_REQUIREMENTS: &str = include_str!("../../../runtime/python-requirem
 struct Pins {
     node: Pin,
     python: Pin,
+    uv: Pin,
     npm_registries: Vec<String>,
     python_indexes: Vec<String>,
 }
@@ -56,18 +63,31 @@ pub enum Source {
     System,
 }
 
-/// The two runtimes RuntimeManager supplies.
+/// What RuntimeManager supplies: the two runtimes plugin code runs in, and the
+/// uv tool that launches Python MCP servers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Kind {
     Node,
     Python,
+    Uv,
 }
 impl Kind {
-    pub const ALL: [Kind; 2] = [Kind::Node, Kind::Python];
+    pub const ALL: [Kind; 3] = [Kind::Node, Kind::Python, Kind::Uv];
     pub fn name(self) -> &'static str {
         match self {
             Kind::Node => "node",
             Kind::Python => "python",
+            Kind::Uv => "uv",
+        }
+    }
+    /// Whether rutis starts a runtime process for it from a launch command.
+    /// Node and Python do: each has a connection row, a `RuntimeStatus` and
+    /// plugin rows waiting for its session. uv is a tool that launches no
+    /// runtime; it is installed for the user's own commands.
+    pub fn launches_runtime(self) -> bool {
+        match self {
+            Kind::Node | Kind::Python => true,
+            Kind::Uv => false,
         }
     }
     fn parse(name: &str) -> Option<Self> {
@@ -86,7 +106,8 @@ pub struct Plan {
     archive: Option<(Archive, PathBuf)>,
     sources: Vec<String>,
     /// The packages directory: Node's `npm ci` tree, Python's `pip --target`.
-    pub packages: PathBuf,
+    /// A tool that launches no runtime has none.
+    pub packages: Option<PathBuf>,
     indexes: Vec<String>,
 }
 
@@ -98,9 +119,15 @@ pub struct Runtimes {
     /// The home the configuration was read from, kept so an action can read it
     /// again (§2.2).
     home: PathBuf,
+    /// The search path a `system` runtime resolves on, an embedding host's
+    /// input like the home: `None` reads the process `PATH` at each lookup,
+    /// and a host that gives one keeps its lookups out of the process
+    /// environment. Production leaves it `None`.
+    search_path: Option<OsString>,
     preset: Choices,
     node: Plan,
     python: Plan,
+    uv: Plan,
 }
 
 /// One runtime's entry in the `runtimes` section (RuntimeManager §2.2).
@@ -117,7 +144,11 @@ pub type Choices = BTreeMap<String, Choice>;
 impl Runtimes {
     /// The runtimes of `home`: the default configuration file's `preset`,
     /// overridden by `<home>/runtimes/config.json`.
-    pub fn load(home: &Path, preset: &Choices) -> Result<Self, String> {
+    pub fn load(
+        home: &Path,
+        preset: &Choices,
+        search_path: Option<OsString>,
+    ) -> Result<Self, String> {
         let root = home.join("runtimes");
         let user_file = root.join("config.json");
         let user = match std::fs::read(&user_file) {
@@ -143,8 +174,10 @@ impl Runtimes {
             home,
             root,
             preset.clone(),
+            search_path,
             choice(Kind::Node),
             choice(Kind::Python),
+            choice(Kind::Uv),
         )
     }
 
@@ -153,18 +186,21 @@ impl Runtimes {
     /// the environment at that moment instead of at startup. `runtime.list`
     /// keeps reporting the runtime in effect until such an action runs.
     pub fn reload(&self) -> Result<Self, String> {
-        Self::load(&self.home, &self.preset)
+        Self::load(&self.home, &self.preset, self.search_path.clone())
     }
 
     fn new(
         home: &Path,
         root: PathBuf,
         preset: Choices,
+        search_path: Option<OsString>,
         node: (Source, bool),
         python: (Source, bool),
+        uv: (Source, bool),
     ) -> Result<Self, String> {
         let pins: Pins = serde_json::from_str(PINS).expect("runtime/runtimes.json is valid");
         let platform = platform();
+        let search = search_path.as_deref();
         let mirror = |variable: &str| std::env::var(variable).ok().filter(|v| !v.is_empty());
         let sources = |pin: &Pin, variable: &str| {
             mirror(variable)
@@ -211,7 +247,7 @@ impl Runtimes {
                     directory.join("bin/node")
                 }
             }
-            Source::System => which("node").unwrap_or_else(|| root.join("no-system-node")),
+            Source::System => which("node", search).unwrap_or_else(|| root.join("no-system-node")),
         };
         let python_archive = archive(
             &pins.python,
@@ -230,7 +266,7 @@ impl Runtimes {
             }
             Source::System => {
                 let name = if cfg!(windows) { "python" } else { "python3" };
-                which(name).unwrap_or_else(|| root.join("no-system-python"))
+                which(name, search).unwrap_or_else(|| root.join("no-system-python"))
             }
         };
         let node_plan = Plan {
@@ -242,10 +278,10 @@ impl Runtimes {
                 .then_some(node_archive)
                 .flatten(),
             sources: sources(&pins.node, "DIMCODE_NODE_MIRROR"),
-            packages: root.join(format!(
+            packages: Some(root.join(format!(
                 "node-packages-{}",
                 digest(&[NODE_PACKAGE, NODE_LOCK])
-            )),
+            ))),
             indexes: registries,
         };
         let python_plan = Plan {
@@ -257,18 +293,44 @@ impl Runtimes {
                 .then_some(python_archive)
                 .flatten(),
             sources: sources(&pins.python, "DIMCODE_PYTHON_MIRROR"),
-            packages: root.join(format!(
+            packages: Some(root.join(format!(
                 "python-packages-{}",
                 digest(&[PYTHON_REQUIREMENTS])
-            )),
+            ))),
             indexes,
+        };
+        let uv_archive = archive(&pins.uv, format!("uv-{}-{platform}", pins.uv.version));
+        let uv_interpreter = match uv.0 {
+            Source::Download => {
+                let (_, directory) = uv_archive
+                    .as_ref()
+                    .ok_or_else(|| format!("no uv download for {platform}"))?;
+                if cfg!(windows) {
+                    directory.join("uv.exe")
+                } else {
+                    directory.join("uv")
+                }
+            }
+            Source::System => which("uv", search).unwrap_or_else(|| root.join("no-system-uv")),
+        };
+        let uv_plan = Plan {
+            source: uv.0,
+            auto: uv.1,
+            version: pins.uv.version.clone(),
+            interpreter: uv_interpreter,
+            archive: (uv.0 == Source::Download).then_some(uv_archive).flatten(),
+            sources: sources(&pins.uv, "DIMCODE_UV_MIRROR"),
+            packages: None,
+            indexes: vec![],
         };
         Ok(Self {
             root,
             home: home.to_owned(),
+            search_path,
             preset,
             node: node_plan,
             python: python_plan,
+            uv: uv_plan,
         })
     }
 
@@ -276,6 +338,7 @@ impl Runtimes {
         match kind {
             Kind::Node => &self.node,
             Kind::Python => &self.python,
+            Kind::Uv => &self.uv,
         }
     }
     /// The home this configuration was read from.
@@ -286,11 +349,17 @@ impl Runtimes {
     pub fn js_runtime(&self) -> PathBuf {
         self.node
             .packages
+            .as_ref()
+            .expect("Node has a packages directory")
             .join("node_modules/@arcships/rutis-runtime")
     }
     /// The anchor Node resolves packages from.
     pub fn anchor(&self) -> PathBuf {
-        self.node.packages.join("package.json")
+        self.node
+            .packages
+            .as_ref()
+            .expect("Node has a packages directory")
+            .join("package.json")
     }
     fn record_file(&self) -> PathBuf {
         self.root.join("runtimes.json")
@@ -315,15 +384,28 @@ fn platform() -> String {
     format!("{os}-{arch}")
 }
 
-fn which(program: &str) -> Option<PathBuf> {
+fn which(program: &str, search: Option<&OsStr>) -> Option<PathBuf> {
     let file = if cfg!(windows) {
         format!("{program}.exe")
     } else {
         program.to_owned()
     };
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|directory| directory.join(&file))
-        .find(|path| path.is_file())
+    let path = match search {
+        Some(path) => path.to_owned(),
+        None => std::env::var_os("PATH")?,
+    };
+    std::env::split_paths(&path).find_map(|directory| {
+        let candidate = directory.join(&file);
+        // An entry may be relative, or empty for the current directory
+        // (§5). Resolve it lexically, so every caller gets the absolute
+        // path the entry names from any working directory.
+        let candidate = if candidate.is_absolute() {
+            candidate
+        } else {
+            std::path::absolute(&candidate).ok()?
+        };
+        candidate.is_file().then_some(candidate)
+    })
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -336,7 +418,9 @@ struct Record {
     version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sha256: Option<String>,
-    packages: String,
+    /// The packages directory; absent for a tool that launches no runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    packages: Option<String>,
 }
 impl Record {
     fn of(plan: &Plan, version: &str, sha256: Option<String>) -> Self {
@@ -344,12 +428,11 @@ impl Record {
             source: plan.source,
             version: version.to_owned(),
             sha256,
-            packages: plan
-                .packages
-                .file_name()
-                .expect("a packages directory")
-                .to_string_lossy()
-                .into_owned(),
+            packages: plan.packages.as_ref().and_then(|packages| {
+                packages
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            }),
         }
     }
 }
@@ -359,6 +442,83 @@ fn read_records(path: &Path) -> BTreeMap<String, Record> {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
+}
+
+/// Whether `record` has `plan` installed under the plan in effect (§2.4): the
+/// record is this plan's with `version`, and the directories it names are
+/// present. For a tool that launches no runtime, the executable itself must
+/// also be there: a `system` record cannot vouch for a file the user removed.
+/// An acquisition skips the download on it, `runtime.list` reports `path` on
+/// it and `install` acquires again without it.
+fn is_installed(kind: Kind, plan: &Plan, version: &str, record: Option<&Record>) -> bool {
+    record.is_some_and(|record| *record == Record::of(plan, version, record.sha256.clone()))
+        && plan
+            .archive
+            .as_ref()
+            .is_none_or(|(_, directory)| directory.is_dir())
+        && plan
+            .packages
+            .as_ref()
+            .is_none_or(|packages| packages.is_dir())
+        && (kind.launches_runtime() || plan.interpreter.is_file())
+}
+
+/// `plan` as HostPlatform sees it (§5): a downloaded runtime installed under
+/// the plan in effect contributes its interpreter's directory and the archive
+/// directory that contains it. A `system` plan has no archive and contributes
+/// nothing.
+fn installed_toolchain(
+    kind: Kind,
+    plan: &Plan,
+    record: Option<&Record>,
+) -> Option<InstalledToolchain> {
+    let (_, root) = plan.archive.as_ref()?;
+    if !is_installed(kind, plan, &plan.version, record) {
+        return None;
+    }
+    Some(InstalledToolchain {
+        bin: plan.interpreter.parent()?.to_path_buf(),
+        root: root.clone(),
+    })
+}
+
+/// The text of Python's PEP 668 marker (§7): pip refuses to install into an
+/// interpreter that carries it, and names a virtual environment or uv.
+const EXTERNALLY_MANAGED: &str = "[externally-managed]\nError=This Python runtime is managed by Dim and is replaced when Dim updates it. Create a virtual environment (python3 -m venv .venv) or use uv for project packages.\n";
+
+/// The interpreter's stdlib directory inside its archive directory
+/// (`sysconfig.get_path("stdlib")`): `lib/python3.<minor>` on Unix, `Lib` on
+/// Windows.
+fn python_stdlib(plan: &Plan) -> Option<PathBuf> {
+    if cfg!(windows) {
+        return Some(PathBuf::from("Lib"));
+    }
+    let minor = plan.version.split('.').nth(1)?;
+    Some(PathBuf::from("lib").join(format!("python3.{minor}")))
+}
+
+/// The PEP 668 marker of a downloaded Python (§7). `system` interpreters are
+/// never touched, and every other runtime has none.
+fn externally_managed(plan: &Plan) -> Option<PathBuf> {
+    let (_, directory) = plan.archive.as_ref()?;
+    Some(
+        directory
+            .join(python_stdlib(plan)?)
+            .join("EXTERNALLY-MANAGED"),
+    )
+}
+
+/// Writes the marker when it is absent; one already there is left as it is.
+fn create_externally_managed(marker: &Path) -> Result<(), String> {
+    if marker.is_file() {
+        return Ok(());
+    }
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
+    std::fs::write(marker, EXTERNALLY_MANAGED)
+        .map_err(|error| format!("{}: {error}", marker.display()))
 }
 
 /// A runtime's entry in `runtime.list` (design §5).
@@ -372,7 +532,12 @@ pub struct RuntimeEntry {
     /// checked interpreter, absent until it is checked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// `off`, `acquiring`, `failed`, or, once its launch command is
+    /// The interpreter the daemon resolved, present while the record marks
+    /// this runtime installed under the plan in effect (§2.4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// `off`, `acquiring`, `failed`, or `ready` for a tool that launches no
+    /// runtime, once installed; for a runtime, once its launch command is
     /// provided, its connection's status: `starting`, `ready`, `down`.
     pub status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -396,6 +561,29 @@ enum State {
     Failed(String),
     /// Its launch command is provided; `None` while it is provided again.
     Provided(Option<Disposer>),
+    /// A tool that launches no runtime: installed under the plan in effect.
+    Installed,
+}
+
+/// One open `runtime.watch` call. Its handler owns the items; the map only
+/// ends the call when a later watch on the same connection takes over.
+struct Watch {
+    connection: String,
+    takeover: CancellationToken,
+}
+
+/// One `runtime.watch` item: its sequence number and what changed.
+fn watch_item(seq: u64, mut data: Map<String, Value>) -> Value {
+    data.insert("seq".into(), seq.into());
+    Value::Object(data)
+}
+
+/// The item naming a runtime: the client re-reads its `runtime.list` entry.
+fn runtime_item(name: &'static str) -> Map<String, Value> {
+    let mut data = Map::new();
+    data.insert("kind".into(), Value::from("runtime"));
+    data.insert("name".into(), Value::from(name));
+    data
 }
 
 /// The process service of RuntimeManager: what other process parts (and the
@@ -406,48 +594,109 @@ pub struct RuntimeService {
     runtimes: Mutex<Arc<Runtimes>>,
     /// One runtime's plan in effect. Applying a runtime replaces its own entry
     /// only, so the other runtime keeps reporting what it is running.
-    plans: Mutex<[Plan; 2]>,
+    plans: Mutex<[Plan; 3]>,
     /// Serializes the read-modify-write of the user's configuration file.
     config: Mutex<()>,
-    local: Mutex<[ForeignRuntime; 2]>,
-    states: Mutex<[State; 2]>,
-    versions: Mutex<[Option<String>; 2]>,
+    /// One per kind: the launch command for a runtime, `None` for a tool.
+    local: Mutex<[Option<ForeignRuntime>; 3]>,
+    states: Mutex<[State; 3]>,
+    versions: Mutex<[Option<String>; 3]>,
     record: tokio::sync::Mutex<()>,
     ctx: Ctx,
     stop: CancellationToken,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// One name per committed change of a runtime or of its connection row:
+    /// `runtime.watch` reads it (design §10).
+    changes: broadcast::Sender<&'static str>,
+    /// The open `runtime.watch` calls of this generation, one per connection.
+    watchers: Mutex<HashMap<String, Arc<Watch>>>,
 }
 impl RuntimeService {
     fn index(kind: Kind) -> usize {
         kind as usize
     }
+    /// Announces one runtime's committed change to the connections watching.
+    fn changed(&self, name: &'static str) {
+        let _ = self.changes.send(name);
+    }
+    /// Registers this connection's watch, ending the one it replaces: one
+    /// watch per connection.
+    fn register(&self, connection: &str) -> Arc<Watch> {
+        let watch = Arc::new(Watch {
+            connection: connection.to_owned(),
+            takeover: CancellationToken::new(),
+        });
+        let previous = self
+            .watchers
+            .lock()
+            .unwrap()
+            .insert(connection.to_owned(), watch.clone());
+        if let Some(previous) = previous {
+            previous.takeover.cancel();
+        }
+        watch
+    }
+    /// Removes this call's watch, unless a later one replaced it.
+    fn forget(&self, watch: &Arc<Watch>) {
+        let mut watchers = self.watchers.lock().unwrap();
+        if watchers
+            .get(&watch.connection)
+            .is_some_and(|current| Arc::ptr_eq(current, watch))
+        {
+            watchers.remove(&watch.connection);
+        }
+    }
     /// Every runtime's status.
     pub fn list(&self) -> Vec<RuntimeEntry> {
+        let records = read_records(&self.runtimes.lock().unwrap().record_file());
         let plans = self.plans.lock().unwrap().clone();
         let states = self.states.lock().unwrap();
         let versions = self.versions.lock().unwrap();
         Kind::ALL
             .into_iter()
             .map(|kind| {
-                let plan = &plans[Self::index(kind)];
-                let (status, reason) = match &states[Self::index(kind)] {
+                let index = Self::index(kind);
+                let plan = &plans[index];
+                let version = match plan.source {
+                    Source::Download => Some(plan.version.clone()),
+                    Source::System => versions[index].clone(),
+                };
+                let installed = version.as_deref().is_some_and(|version| {
+                    is_installed(kind, plan, version, records.get(kind.name()))
+                });
+                let (status, mut reason) = match &states[index] {
                     State::Off => ("off", None),
                     State::Acquiring => ("acquiring", None),
                     State::Failed(reason) => ("failed", Some(reason.clone())),
+                    // A tool has no connection: it is ready exactly while its
+                    // record marks it installed under the plan in effect.
+                    State::Installed if installed => ("ready", None),
+                    State::Installed => ("off", None),
                     State::Provided(_) => match self.status(kind) {
                         RuntimeState::Starting => ("starting", None),
                         RuntimeState::Ready => ("ready", None),
                         RuntimeState::Down(reason) => ("down", Some(reason)),
                     },
                 };
+                let mut path = None;
+                if installed {
+                    match plan.interpreter.to_str() {
+                        Some(interpreter) => path = Some(interpreter.to_owned()),
+                        None => {
+                            let unrepresentable = "the interpreter path is not valid UTF-8";
+                            reason = Some(match reason.take() {
+                                Some(reason) => format!("{reason}; {unrepresentable}"),
+                                None => unrepresentable.to_owned(),
+                            });
+                        }
+                    }
+                }
                 RuntimeEntry {
                     name: kind.name(),
                     source: plan.source,
                     auto: plan.auto,
-                    version: match plan.source {
-                        Source::Download => Some(plan.version.clone()),
-                        Source::System => versions[Self::index(kind)].clone(),
-                    },
+                    version,
+                    path,
                     status,
                     reason,
                 }
@@ -455,37 +704,92 @@ impl RuntimeService {
             .collect()
     }
 
-    /// The status of `kind`'s connection; `starting` while its row has not
-    /// started.
-    fn status(&self, kind: Kind) -> RuntimeState {
-        let row = self.local.lock().unwrap()[Self::index(kind)].row;
-        self.ctx
-            .get_at(&RuntimeStatus::key(row))
-            .map_or(RuntimeState::Starting, |status| status.state())
+    /// The downloaded runtimes installed under the plan in effect (§2.4), node
+    /// first: the directories HostPlatform appends to a started process's
+    /// `PATH` and grants a confined one read-only. A `system` interpreter is
+    /// the user's own and contributes nothing; the user's `PATH` already
+    /// reaches it.
+    pub fn toolchains(&self) -> Vec<InstalledToolchain> {
+        let records = read_records(&self.runtimes.lock().unwrap().record_file());
+        let plans = self.plans.lock().unwrap().clone();
+        Kind::ALL
+            .into_iter()
+            .filter_map(|kind| {
+                installed_toolchain(kind, &plans[Self::index(kind)], records.get(kind.name()))
+            })
+            .collect()
     }
 
-    /// Provides `kind`'s launch command.
-    fn provide(&self, kind: Kind) -> State {
-        let runtime = self.local.lock().unwrap()[Self::index(kind)].clone();
+    /// The status of `kind`'s connection; `starting` while its row has not
+    /// started. A tool launches no runtime, so it has no row and no status of
+    /// its own.
+    fn status(&self, kind: Kind) -> RuntimeState {
+        let row = self.local.lock().unwrap()[Self::index(kind)]
+            .as_ref()
+            .map(|runtime| runtime.row);
+        row.map_or(RuntimeState::Starting, |row| {
+            self.ctx
+                .get_at(&RuntimeStatus::key(row))
+                .map_or(RuntimeState::Starting, |status| status.state())
+        })
+    }
+
+    /// Provides `kind`'s launch command; a tool that launches no runtime has
+    /// none, so an acquisition leaves it installed.
+    fn provide(self: &Arc<Self>, kind: Kind) -> State {
+        if !kind.launches_runtime() {
+            return State::Installed;
+        }
+        let runtime = self.local.lock().unwrap()[Self::index(kind)]
+            .clone()
+            .expect("a launching kind has a launch command");
+        // Subscribed before the row starts: its first state is then a change.
+        let status = runtime.launch.status().subscribe();
         match self
             .ctx
             .provide_at(runtime.command.clone(), runtime.launch.clone())
         {
-            Ok(provided) => State::Provided(Some(provided)),
+            Ok(provided) => {
+                self.forward_status(kind, status);
+                State::Provided(Some(provided))
+            }
             Err(error) => State::Failed(error.to_string()),
         }
+    }
+
+    /// Forwards every state the row writes to the change signal. The cell
+    /// belongs to the command, so it serves every generation that command
+    /// starts; the task ends with this generation.
+    fn forward_status(self: &Arc<Self>, kind: Kind, mut status: watch::Receiver<RuntimeState>) {
+        let service = self.clone();
+        let stop = self.stop.clone();
+        let forwarded = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = stop.cancelled() => return,
+                    changed = status.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        service.changed(kind.name());
+                    }
+                }
+            }
+        });
+        self.tasks.lock().unwrap().push(forwarded);
     }
 
     /// Turns `kind` on and applies the configuration in effect. It reads
     /// `<home>/runtimes/config.json` again (§2.2) and makes what it gives that
     /// runtime's plan: when the `source` differs from the one it is on, it
     /// withdraws the launch command by disposing it, then disposes the running
-    /// connection and acquires under the new source. Only that runtime's plan
-    /// changes; the other keeps reporting what it is running. While an
-    /// acquisition is in flight the call changes nothing, so one acquisition
-    /// never sees two plans: a change made meanwhile applies on the next call. A
-    /// configuration that does not read fails here and leaves the runtime as it
-    /// was.
+    /// connection and acquires under the new source. A tool has no launch
+    /// command to withdraw; its changed source only acquires again. Only that
+    /// runtime's plan changes; the other keeps reporting what it is running.
+    /// While an acquisition is in flight the call changes nothing, so one
+    /// acquisition never sees two plans: a change made meanwhile applies on the
+    /// next call. A configuration that does not read fails here and leaves the
+    /// runtime as it was.
     pub fn install(self: &Arc<Self>, kind: Kind) -> Result<(), String> {
         let fresh = self.runtimes.lock().unwrap().reload()?.plan(kind).clone();
         let index = Self::index(kind);
@@ -495,7 +799,19 @@ impl RuntimeService {
         // reserved the transition, and the transition would be lost.
         let step = {
             let mut states = self.states.lock().unwrap();
-            let changed = self.plans.lock().unwrap()[index].source != fresh.source;
+            let plan = self.plans.lock().unwrap()[index].clone();
+            let changed = plan.source != fresh.source;
+            // The same predicate `runtime.list` reports `ready` and `path`
+            // with, so the two cannot disagree about whether `kind` is still
+            // installed.
+            let records = read_records(&self.runtimes.lock().unwrap().record_file());
+            let version = match plan.source {
+                Source::Download => Some(plan.version.clone()),
+                Source::System => self.versions.lock().unwrap()[index].clone(),
+            };
+            let installed = version.as_deref().is_some_and(|version| {
+                is_installed(kind, &plan, version, records.get(kind.name()))
+            });
             let step = match &mut states[index] {
                 State::Acquiring | State::Provided(None) => Step::Busy,
                 State::Provided(provided) => {
@@ -512,6 +828,17 @@ impl RuntimeService {
                     states[index] = State::Acquiring;
                     Step::Acquire
                 }
+                // A tool has no launch command to withdraw: a changed source
+                // or a record that no longer holds (its executable is gone,
+                // say) acquires again, and otherwise the call leaves it
+                // installed.
+                State::Installed => {
+                    if changed || !installed {
+                        Step::Restart(None, true)
+                    } else {
+                        Step::Keep
+                    }
+                }
             };
             if !matches!(step, Step::Busy) {
                 let mut plans = self.plans.lock().unwrap();
@@ -524,6 +851,7 @@ impl RuntimeService {
         if matches!(step, Step::Busy) {
             return Ok(());
         }
+        self.changed(kind.name());
         let service = self.clone();
         match step {
             Step::Busy | Step::Keep => Ok(()),
@@ -534,6 +862,7 @@ impl RuntimeService {
                         .await
                         .unwrap_or_else(|| State::Acquiring);
                     service.states.lock().unwrap()[index] = state;
+                    service.changed(kind.name());
                 });
                 self.tasks.lock().unwrap().push(task);
                 Ok(())
@@ -554,6 +883,7 @@ impl RuntimeService {
                         service.provide(kind)
                     };
                     service.states.lock().unwrap()[index] = state;
+                    service.changed(kind.name());
                 });
                 self.tasks.lock().unwrap().push(task);
                 Ok(())
@@ -608,6 +938,7 @@ impl RuntimeService {
         std::fs::write(&partial, bytes)
             .and_then(|()| std::fs::rename(&partial, &path))
             .map_err(|e| format!("{}: {e}", path.display()))?;
+        self.changed(kind.name());
         self.install(kind)
     }
 
@@ -637,15 +968,23 @@ impl RuntimeService {
             Source::Download => plan.version.clone(),
             Source::System => check_system(kind, &plan.interpreter).await?,
         };
-        let installed = read_records(&runtimes.record_file())
-            .get(kind.name())
-            .is_some_and(|record| *record == Record::of(&plan, &version, record.sha256.clone()))
-            && plan
-                .archive
-                .as_ref()
-                .is_none_or(|(_, directory)| directory.is_dir())
-            && plan.packages.is_dir();
+        let marker = (kind == Kind::Python)
+            .then(|| externally_managed(&plan))
+            .flatten();
+        let installed = is_installed(
+            kind,
+            &plan,
+            &version,
+            read_records(&runtimes.record_file()).get(kind.name()),
+        );
         if installed {
+            // A downloaded Python installed before the marker existed gets it
+            // at the next start (§7).
+            if let Some(marker) = &marker
+                && let Err(error) = create_externally_managed(marker)
+            {
+                tracing::warn!(runtime = kind.name(), %error, "externally-managed marker not written");
+            }
             return Ok(version);
         }
         std::fs::create_dir_all(&runtimes.root).map_err(|e| e.to_string())?;
@@ -653,19 +992,54 @@ impl RuntimeService {
             Some((archive, directory)) => {
                 let client = client()?;
                 let sha256 = checksum(&client, archive).await?;
-                if !directory.is_dir() {
-                    download(&client, &plan.sources, &archive.file, &sha256, directory).await?;
+                // A tool is present only while its executable is: a directory
+                // left without it is replaced, so `install` can repair a
+                // damaged download. A runtime keeps its directory until the
+                // pinned version changes (§2.4).
+                let present = if kind.launches_runtime() {
+                    directory.is_dir()
+                } else {
+                    plan.interpreter.is_file()
+                };
+                if !present {
+                    if directory.is_dir() {
+                        std::fs::remove_dir_all(directory)
+                            .map_err(|e| format!("{}: {e}", directory.display()))?;
+                    }
+                    let relative = marker
+                        .as_deref()
+                        .and_then(|marker| marker.strip_prefix(directory).ok())
+                        .map(Path::to_path_buf);
+                    download(
+                        &client,
+                        &plan.sources,
+                        &archive.file,
+                        &sha256,
+                        directory,
+                        relative,
+                    )
+                    .await?;
                 }
                 Some(sha256)
             }
             None => None,
         };
         let record = Record::of(&plan, &version, sha256);
-        if !plan.packages.is_dir() {
+        if let Some(packages) = &plan.packages
+            && !packages.is_dir()
+        {
             match kind {
-                Kind::Node => npm_ci(&plan).await?,
-                Kind::Python => pip_install(&plan).await?,
+                Kind::Node => npm_ci(&plan, packages).await?,
+                Kind::Python => pip_install(&plan, packages).await?,
+                Kind::Uv => unreachable!("a tool has no packages"),
             }
+        }
+        // A Python directory that was already unpacked when this started gets
+        // the marker here, before the record marks it installed.
+        if let Some(marker) = &marker
+            && let Err(error) = create_externally_managed(marker)
+        {
+            tracing::warn!(runtime = kind.name(), %error, "externally-managed marker not written");
         }
         let _guard = self.record.lock().await;
         let path = runtimes.record_file();
@@ -682,18 +1056,39 @@ impl RuntimeService {
 
 /// `kind`'s launch command for `runtimes` (RuntimeManager §2.3): what its
 /// connection row starts, rebuilt when `runtime.install` applies a changed
-/// configuration.
-fn launch(kind: Kind, plan: &Plan, runtimes: &Runtimes) -> ForeignRuntime {
-    match kind {
+/// configuration. A tool that launches no runtime has none.
+fn launch(kind: Kind, plan: &Plan, runtimes: &Runtimes) -> Option<ForeignRuntime> {
+    if !kind.launches_runtime() {
+        return None;
+    }
+    Some(match kind {
         Kind::Node => {
             ForeignRuntime::node(&plan.interpreter, &runtimes.js_runtime(), runtimes.anchor())
         }
         Kind::Python => ForeignRuntime::python(
             &plan.interpreter,
-            Some(&plan.packages),
+            plan.packages.as_deref(),
             runtimes.home().join("plugins").join(".python"),
         ),
+        Kind::Uv => unreachable!("a tool launches no runtime"),
+    })
+}
+
+/// The launch command of a launching kind, from the two the App Server built
+/// at startup. A tool that launches no runtime has none.
+fn launch_command(
+    kind: Kind,
+    node: &ForeignRuntime,
+    python: &ForeignRuntime,
+) -> Option<ForeignRuntime> {
+    if !kind.launches_runtime() {
+        return None;
     }
+    Some(match kind {
+        Kind::Node => node.clone(),
+        Kind::Python => python.clone(),
+        Kind::Uv => unreachable!("a tool launches no runtime"),
+    })
 }
 
 /// `path` with `suffix` appended to its whole file name.
@@ -742,6 +1137,10 @@ async fn download(
     file: &str,
     sha256: &str,
     directory: &Path,
+    // The PEP 668 marker's path inside `directory`, written into the
+    // `.partial` directory before the rename so the archive directory never
+    // exists without it.
+    marker: Option<PathBuf>,
 ) -> Result<(), String> {
     let partial = sibling(directory, ".partial");
     let archive = sibling(directory, ".download");
@@ -763,9 +1162,15 @@ async fn download(
     let _ = std::fs::remove_dir_all(&partial);
     let name = file.to_owned();
     let (from, to) = (archive.clone(), partial.clone());
-    let unpacked = tokio::task::spawn_blocking(move || unpack(&name, &from, &to))
-        .await
-        .map_err(|e| e.to_string())?;
+    let unpacked = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        unpack(&name, &from, &to)?;
+        if let Some(marker) = marker {
+            create_externally_managed(&to.join(marker))?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&archive);
     if let Err(error) = unpacked {
         let _ = std::fs::remove_dir_all(&partial);
@@ -818,7 +1223,7 @@ fn unpack(name: &str, archive: &Path, into: &Path) -> Result<(), String> {
         Ok(path.components().skip(1).collect())
     };
     if name.ends_with(".zip") {
-        return unzip(archive, into, &inside);
+        return unzip(archive, into);
     }
     let file = std::fs::File::open(archive).map_err(|e| e.to_string())?;
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
@@ -887,24 +1292,40 @@ fn unpack(name: &str, archive: &Path, into: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn unzip(
-    archive: &Path,
-    into: &Path,
-    inside: &dyn Fn(&Path) -> Result<PathBuf, String>,
-) -> Result<(), String> {
+/// Unpacks a zip archive. A release may wrap every entry in one top-level
+/// directory (Node's `node-v…-win-x64/`) or place the executables at the root
+/// (uv's `uv.exe` and `uvx.exe`); a wrapper is stripped only when every entry
+/// is under the same top-level directory.
+fn unzip(archive: &Path, into: &Path) -> Result<(), String> {
     let file = std::fs::File::open(archive).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let mut names = Vec::with_capacity(zip.len());
     for index in 0..zip.len() {
-        let mut entry = zip.by_index(index).map_err(|e| e.to_string())?;
+        let entry = zip.by_index(index).map_err(|e| e.to_string())?;
         let raw = String::from_utf8_lossy(entry.name_raw()).replace('\\', "/");
-        let path = PathBuf::from(&raw);
         if entry.enclosed_name().is_none() {
             return Err(format!("refusing archive path {raw}"));
         }
+        names.push(raw);
+    }
+    let strip = wrapped(&names);
+    for (index, raw) in names.into_iter().enumerate() {
+        let mut entry = zip.by_index(index).map_err(|e| e.to_string())?;
+        let path = PathBuf::from(&raw);
         if entry.is_symlink() {
             return Err(format!("refusing link {}", path.display()));
         }
-        let relative = inside(&path)?;
+        if !path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+        {
+            return Err(format!("refusing archive path {raw}"));
+        }
+        let relative: PathBuf = if strip {
+            path.components().skip(1).collect()
+        } else {
+            path
+        };
         if relative.as_os_str().is_empty() {
             continue;
         }
@@ -929,6 +1350,29 @@ fn unzip(
         }
     }
     Ok(())
+}
+
+/// Whether every zip entry sits under the same top-level directory, which is
+/// the release's wrapper rather than content. A flat archive, whose entries
+/// share no directory, keeps its paths.
+fn wrapped(names: &[String]) -> bool {
+    let mut top: Option<std::ffi::OsString> = None;
+    let mut nested = false;
+    for name in names {
+        let mut components = Path::new(name).components();
+        let Some(Component::Normal(first)) = components.next() else {
+            return false;
+        };
+        let first = first.to_os_string();
+        if top.as_ref().is_some_and(|known| known != &first) {
+            return false;
+        }
+        if top.is_none() {
+            top = Some(first);
+        }
+        nested |= components.next().is_some();
+    }
+    top.is_some() && nested
 }
 
 async fn run(mut command: tokio::process::Command, what: &str) -> Result<String, String> {
@@ -968,18 +1412,29 @@ async fn check_system(kind: Kind, interpreter: &Path) -> Result<String, String> 
                 major > 3 || (major == 3 && minor >= 12)
             })
         }
+        Kind::Uv => {
+            command.arg("--version");
+            ("0.11", |major, minor| {
+                major > 0 || (major == 0 && minor >= 11)
+            })
+        }
     };
     if !interpreter.is_file() {
         return Err(format!("no {} interpreter on PATH", kind.name()));
     }
     let what = format!("{} {}", kind.name(), interpreter.display());
-    let version = run(command, &what).await?;
-    let mut parts = version
-        .trim()
-        .trim_start_matches('v')
-        .split('.')
-        .map(|part| part.parse::<u32>().ok());
-    let version = version.trim().trim_start_matches('v').to_owned();
+    let output = run(command, &what).await?;
+    let version = match kind {
+        // `uv --version` prints `uv <version> (<commit> <date>)`.
+        Kind::Uv => output
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or_default()
+            .trim_start_matches('v')
+            .to_owned(),
+        Kind::Node | Kind::Python => output.trim().trim_start_matches('v').to_owned(),
+    };
+    let mut parts = version.split('.').map(|part| part.parse::<u32>().ok());
     match (parts.next().flatten(), parts.next().flatten()) {
         (Some(major), Some(minor)) if accepts(major, minor) => {}
         _ => {
@@ -994,7 +1449,18 @@ async fn check_system(kind: Kind, interpreter: &Path) -> Result<String, String> 
             npm_cli(interpreter).display()
         ));
     }
+    if !kind.launches_runtime() {
+        let uvx = uvx(interpreter);
+        if !uvx.is_file() {
+            return Err(format!("{what} has no uvx at {}", uvx.display()));
+        }
+    }
     Ok(version)
+}
+
+/// `uvx` beside `uv`: the tool runs `uvx <server>` itself.
+fn uvx(uv: &Path) -> PathBuf {
+    uv.with_file_name(if cfg!(windows) { "uvx.exe" } else { "uvx" })
 }
 
 fn npm_cli(node: &Path) -> PathBuf {
@@ -1007,14 +1473,14 @@ fn npm_cli(node: &Path) -> PathBuf {
     }
 }
 
-async fn npm_ci(plan: &Plan) -> Result<(), String> {
-    let partial = sibling(&plan.packages, ".partial");
+async fn npm_ci(plan: &Plan, packages: &Path) -> Result<(), String> {
+    let partial = sibling(packages, ".partial");
     let _ = std::fs::remove_dir_all(&partial);
     std::fs::create_dir_all(&partial).map_err(|e| e.to_string())?;
     std::fs::write(partial.join("package.json"), NODE_PACKAGE)
         .and_then(|()| std::fs::write(partial.join("package-lock.json"), NODE_LOCK))
         .map_err(|e| e.to_string())?;
-    let cache = sibling(&plan.packages, ".npm-cache");
+    let cache = sibling(packages, ".npm-cache");
     let mut errors = Vec::new();
     for registry in &plan.indexes {
         let mut command = tokio::process::Command::new(&plan.interpreter);
@@ -1047,12 +1513,12 @@ async fn npm_ci(plan: &Plan) -> Result<(), String> {
             errors.join("; ")
         ));
     }
-    std::fs::rename(&partial, &plan.packages).map_err(|e| e.to_string())
+    std::fs::rename(&partial, packages).map_err(|e| e.to_string())
 }
 
-async fn pip_install(plan: &Plan) -> Result<(), String> {
-    let partial = sibling(&plan.packages, ".partial");
-    let requirements = sibling(&plan.packages, ".requirements.txt");
+async fn pip_install(plan: &Plan, packages: &Path) -> Result<(), String> {
+    let partial = sibling(packages, ".partial");
+    let requirements = sibling(packages, ".requirements.txt");
     let _ = std::fs::remove_dir_all(&partial);
     std::fs::write(&requirements, PYTHON_REQUIREMENTS).map_err(|e| e.to_string())?;
     let mut errors = Vec::new();
@@ -1100,7 +1566,52 @@ async fn pip_install(plan: &Plan) -> Result<(), String> {
             errors.join("; ")
         ));
     }
-    std::fs::rename(&partial, &plan.packages).map_err(|e| e.to_string())
+    std::fs::rename(&partial, packages).map_err(|e| e.to_string())
+}
+
+/// The port HostPlatform reads: RuntimeService is resolved at each call
+/// through an optional dependency, so RuntimeManager's reload neither reloads
+/// HostPlatform nor leaves it holding a withdrawn service.
+struct RuntimeToolchain {
+    ctx: Ctx,
+    service: Key<RuntimeService>,
+}
+impl ToolchainSource for RuntimeToolchain {
+    fn toolchains(&self) -> Vec<InstalledToolchain> {
+        self.ctx
+            .get_at(&self.service)
+            .map(|service| service.toolchains())
+            .unwrap_or_default()
+    }
+}
+
+/// The process row `ToolchainSource`: provides the port that carries the
+/// installed runtimes' bin directories to HostPlatform. It reads
+/// RuntimeService optionally, so it exists on hosts without RuntimeManager.
+pub struct ToolchainSourcePlugin {
+    service: Key<RuntimeService>,
+}
+impl ToolchainSourcePlugin {
+    pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
+        Ok(Self {
+            service: names.key()?,
+        })
+    }
+}
+impl DynPlugin for ToolchainSourcePlugin {
+    fn name(&self) -> &str {
+        "ToolchainSource"
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let port = RuntimeToolchain {
+                ctx: ctx.clone(),
+                service: self.service.clone(),
+            };
+            ctx.provide_as::<ToolchainSourceHost>(Arc::new(ToolchainSourceHost(Arc::new(port))))?;
+            Ok(Effect::Done)
+        })
+    }
 }
 
 /// The process row `RuntimeManager`.
@@ -1108,7 +1619,9 @@ pub struct RuntimeManagerPlugin {
     methods: Key<ManagementMethods>,
     service: Key<RuntimeService>,
     runtimes: Arc<Runtimes>,
-    local: [ForeignRuntime; 2],
+    /// One per kind in `Kind::ALL` order: a launch command for a runtime,
+    /// `None` for a tool.
+    local: [Option<ForeignRuntime>; 3],
 }
 impl RuntimeManagerPlugin {
     pub(crate) fn new(
@@ -1121,7 +1634,7 @@ impl RuntimeManagerPlugin {
             methods: names.key()?,
             service: names.key()?,
             runtimes,
-            local: [node, python],
+            local: Kind::ALL.map(|kind| launch_command(kind, &node, &python)),
         })
     }
 }
@@ -1138,18 +1651,17 @@ impl DynPlugin for RuntimeManagerPlugin {
             let records = read_records(&self.runtimes.record_file());
             let service = Arc::new(RuntimeService {
                 runtimes: Mutex::new(self.runtimes.clone()),
-                plans: Mutex::new([
-                    self.runtimes.plan(Kind::Node).clone(),
-                    self.runtimes.plan(Kind::Python).clone(),
-                ]),
+                plans: Mutex::new(Kind::ALL.map(|kind| self.runtimes.plan(kind).clone())),
                 config: Mutex::new(()),
                 local: Mutex::new(self.local.clone()),
-                states: Mutex::new([State::Off, State::Off]),
-                versions: Mutex::new([None, None]),
+                states: Mutex::new(Kind::ALL.map(|_| State::Off)),
+                versions: Mutex::new(Kind::ALL.map(|_| None)),
                 record: tokio::sync::Mutex::new(()),
                 ctx: ctx.clone(),
                 stop: CancellationToken::new(),
                 tasks: Mutex::new(Vec::new()),
+                changes: broadcast::channel(64).0,
+                watchers: Mutex::new(HashMap::new()),
             });
             let owned = service.clone();
             ctx.effect(move || async move {
@@ -1169,12 +1681,57 @@ impl DynPlugin for RuntimeManagerPlugin {
                     MethodDecl::new("runtime.list", false, Interruption::Report),
                     MethodDecl::new("runtime.install", true, Interruption::Report),
                     MethodDecl::new("runtime.configure", true, Interruption::Report),
+                    MethodDecl {
+                        progress: true,
+                        ..MethodDecl::new("runtime.watch", false, Interruption::Report)
+                    },
                 ],
-                Arc::new(move |method, value, _stopping, _| {
+                Arc::new(move |call, stopping, progress| {
+                    let MethodCall {
+                        method,
+                        params: value,
+                        origin,
+                    } = call;
                     let service = handler.clone();
                     Box::pin(async move {
                         match method.as_str() {
                             "runtime.list" => reply(service.list()),
+                            "runtime.watch" => {
+                                let Some(caller) = origin.caller else {
+                                    return reply(Value::Object(Map::new()));
+                                };
+                                let mut changes = service.changes.subscribe();
+                                let watch = service.register(caller.id());
+                                let mut watching = Map::new();
+                                watching.insert("kind".into(), Value::from("watching"));
+                                progress.send(watch_item(0, watching));
+                                let closed = caller.closed();
+                                tokio::pin!(closed);
+                                let mut seq = 1u64;
+                                loop {
+                                    tokio::select! {
+                                        biased;
+                                        _ = watch.takeover.cancelled() => break,
+                                        _ = stopping.cancelled() => break,
+                                        _ = &mut closed => break,
+                                        change = changes.recv() => match change {
+                                            Ok(name) => {
+                                                progress.send(watch_item(seq, runtime_item(name)));
+                                                seq += 1;
+                                            }
+                                            Err(broadcast::error::RecvError::Lagged(_)) => {
+                                                for kind in Kind::ALL {
+                                                    progress.send(watch_item(seq, runtime_item(kind.name())));
+                                                    seq += 1;
+                                                }
+                                            }
+                                            Err(broadcast::error::RecvError::Closed) => break,
+                                        },
+                                    }
+                                }
+                                service.forget(&watch);
+                                reply(Value::Object(Map::new()))
+                            }
                             "runtime.install" => {
                                 #[derive(Deserialize)]
                                 struct Install {
@@ -1226,8 +1783,12 @@ impl DynPlugin for RuntimeManagerPlugin {
 
 #[cfg(test)]
 mod tests {
-    use super::{Archive, PINS, Pins, checksum, client, download, unpack};
-    use std::path::Path;
+    use super::{
+        Archive, Kind, PINS, Pins, Plan, Record, Source, checksum, client,
+        create_externally_managed, download, externally_managed, hex, installed_toolchain, unpack,
+    };
+    use sha2::{Digest, Sha256};
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn every_release_platform_has_an_archive_and_an_official_checksum() {
@@ -1238,6 +1799,11 @@ mod tests {
                 .checksums
                 .starts_with("https://github.com/astral-sh/python-build-standalone/")
         );
+        assert!(
+            pins.uv
+                .checksums
+                .starts_with("https://github.com/astral-sh/uv/releases/")
+        );
         for platform in [
             "darwin-arm64",
             "darwin-x64",
@@ -1246,7 +1812,7 @@ mod tests {
             "windows-arm64",
             "windows-x64",
         ] {
-            for pin in [&pins.node, &pins.python] {
+            for pin in [&pins.node, &pins.python, &pins.uv] {
                 assert!(pin.files.contains_key(platform), "{platform}");
             }
         }
@@ -1311,6 +1877,7 @@ mod tests {
             "node.tar.gz",
             &published,
             &directory,
+            None,
         )
         .await
         .unwrap_err();
@@ -1461,6 +2028,218 @@ mod tests {
             assert!(error.contains("refusing"), "{name}: {error}");
         }
         assert!(!root.parent().unwrap().join("escape").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The uv Windows archive holds `uv.exe` and `uvx.exe` at its root, while
+    /// the Node one wraps its files in a directory; both unpack to the same
+    /// layout, the executables in the archive directory.
+    #[test]
+    fn a_zip_without_a_wrapper_keeps_its_entries_at_the_root() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+        let root = scratch("flat");
+        let file = root.join("uv.zip");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&file).unwrap());
+        for name in ["uv.exe", "uvx.exe", "uvw.exe"] {
+            writer
+                .start_file(name, SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"ok").unwrap();
+        }
+        writer.finish().unwrap();
+        unpack("uv.zip", &file, &root.join("out")).unwrap();
+        for name in ["uv.exe", "uvx.exe", "uvw.exe"] {
+            assert_eq!(
+                std::fs::read(root.join("out").join(name)).unwrap(),
+                b"ok",
+                "{name}"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A fresh acquisition writes PEP 668's marker into the `.partial`
+    /// directory, so the archive directory never exists without it (§7).
+    #[tokio::test]
+    async fn an_acquired_python_carries_the_marker_before_its_directory_is_renamed() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let root = scratch("marker-download");
+        let source = root.join("python.tar.gz");
+        archive(&source, |builder| {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_path("python/lib/python3.12/os.py").unwrap();
+            header.set_mode(0o644);
+            header.set_size(2);
+            header.set_cksum();
+            builder.append(&header, &b"ok"[..]).unwrap();
+        });
+        let bytes = std::fs::read(&source).unwrap();
+        let published = hex(&Sha256::digest(&bytes));
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request).await.unwrap_or(0);
+                let _ = stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                            bytes.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+                let _ = stream.write_all(&bytes).await;
+            }
+        });
+        let directory = root.join("python-3.12-test");
+        download(
+            &client().unwrap(),
+            &[format!("http://{address}/{{file}}")],
+            "python.tar.gz",
+            &published,
+            &directory,
+            Some(PathBuf::from("lib/python3.12/EXTERNALLY-MANAGED")),
+        )
+        .await
+        .unwrap();
+        let marker = directory.join("lib/python3.12/EXTERNALLY-MANAGED");
+        let text = std::fs::read_to_string(&marker).unwrap();
+        assert!(
+            text.starts_with("[externally-managed]") && text.contains("Error="),
+            "{text}"
+        );
+        assert!(!root.join("python-3.12-test.partial").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A directory installed before the marker existed gets it at the next
+    /// start, and an existing marker is left as it is.
+    #[test]
+    fn an_installed_directory_gets_the_marker_only_when_it_is_missing() {
+        let root = scratch("marker-start");
+        let directory = root.join("python-3.12-test");
+        let marker = directory.join("lib/python3.12/EXTERNALLY-MANAGED");
+        create_externally_managed(&marker).unwrap();
+        assert!(
+            std::fs::read_to_string(&marker)
+                .unwrap()
+                .starts_with("[externally-managed]")
+        );
+        std::fs::write(&marker, "mine").unwrap();
+        create_externally_managed(&marker).unwrap();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "mine");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The marker path follows the archive's layout: the interpreter is at
+    /// `bin/python3`, so `sysconfig`'s stdlib is the sibling `lib/python3.12`.
+    #[cfg(unix)]
+    #[test]
+    fn the_marker_path_is_the_stdlib_directory_of_the_archive_layout() {
+        let root = PathBuf::from("/scratch");
+        let plan = Plan {
+            source: Source::Download,
+            auto: false,
+            version: "3.12.15+20261003".into(),
+            interpreter: root.join("python-3.12.15-test/bin/python3"),
+            archive: Some((
+                Archive {
+                    file: "python.tar.gz".into(),
+                    checksums: "https://example.invalid/SHA256SUMS".into(),
+                },
+                root.join("python-3.12.15-test"),
+            )),
+            sources: vec![],
+            packages: Some(root.join("python-packages-test")),
+            indexes: vec![],
+        };
+        assert_eq!(
+            externally_managed(&plan),
+            Some(root.join("python-3.12.15-test/lib/python3.12/EXTERNALLY-MANAGED"))
+        );
+    }
+
+    /// Only a downloaded, installed runtime is a toolchain: its `bin` is the
+    /// interpreter's directory and its `root` is the archive directory. A
+    /// `system` interpreter is the user's own and contributes nothing.
+    #[test]
+    fn only_a_downloaded_runtime_is_a_toolchain() {
+        use dim_agent_capabilities::toolchain::InstalledToolchain;
+        let root = scratch("toolchain");
+        let archive = root.join("python-3.12.15-test");
+        std::fs::create_dir_all(archive.join("bin")).unwrap();
+        let packages = root.join("python-packages-test");
+        std::fs::create_dir_all(&packages).unwrap();
+        let plan = Plan {
+            source: Source::Download,
+            auto: false,
+            version: "3.12.15+20261003".into(),
+            interpreter: archive.join("bin/python3"),
+            archive: Some((
+                Archive {
+                    file: "python.tar.gz".into(),
+                    checksums: "https://example.invalid/SHA256SUMS".into(),
+                },
+                archive.clone(),
+            )),
+            sources: vec![],
+            packages: Some(packages),
+            indexes: vec![],
+        };
+        let record = Record::of(&plan, &plan.version, None);
+        assert_eq!(
+            installed_toolchain(Kind::Python, &plan, Some(&record)),
+            Some(InstalledToolchain {
+                bin: archive.join("bin"),
+                root: archive.clone(),
+            })
+        );
+        assert_eq!(
+            installed_toolchain(Kind::Python, &plan, None),
+            None,
+            "a runtime the record does not mark installed is not a toolchain"
+        );
+        let system = Plan {
+            source: Source::System,
+            archive: None,
+            interpreter: root.join("no-system-python"),
+            ..plan.clone()
+        };
+        let record = Record::of(&system, "3.12.9", None);
+        assert_eq!(
+            installed_toolchain(Kind::Python, &system, Some(&record)),
+            None,
+            "a system interpreter contributes nothing"
+        );
+        // A tool's executable is part of "installed": the archive directory
+        // that remains without it is not a toolchain.
+        let tool = Plan {
+            source: Source::Download,
+            auto: false,
+            version: "0.13.7".into(),
+            interpreter: archive.join("uv"),
+            packages: None,
+            ..plan.clone()
+        };
+        let record = Record::of(&tool, &tool.version, None);
+        assert_eq!(
+            installed_toolchain(Kind::Uv, &tool, Some(&record)),
+            None,
+            "a tool whose executable is gone is not installed"
+        );
+        std::fs::write(&tool.interpreter, b"ok").unwrap();
+        assert_eq!(
+            installed_toolchain(Kind::Uv, &tool, Some(&record)),
+            Some(InstalledToolchain {
+                bin: archive.clone(),
+                root: archive.clone(),
+            })
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

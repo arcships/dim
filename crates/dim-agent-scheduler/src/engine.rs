@@ -128,6 +128,9 @@ async fn record(
         Ok((true, Some(run)))
     })
     .await?;
+    if let Some(run) = &run {
+        shared.watch.run(run);
+    }
     if let Some(run) = &run
         && run.state == RunState::Launching
     {
@@ -238,23 +241,34 @@ pub(crate) fn requested_policy(job: &Job) -> PermissionPolicy {
     }
 }
 
-/// Writes one run's change under the file lock.
+/// Writes one run's change under the file lock, and announces the state the
+/// record took when the change moved it.
 async fn update_run(
     shared: &Shared,
     run_id: &str,
     change: impl FnOnce(&mut Run) + Send + 'static,
 ) -> Result<(), SchedulerError> {
     let run_id = run_id.to_owned();
+    let moved = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let observe = moved.clone();
     runs::update(&shared.files, move |history| {
         let run = history
             .iter_mut()
             .find(|run| run.run_id == run_id)
             .ok_or_else(|| SchedulerError::invalid_data(format!("run {run_id} is missing")))?;
+        let before = run.state;
         change(run);
         run.validate().map_err(SchedulerError::invalid_data)?;
+        if run.state != before {
+            *observe.lock().unwrap() = Some(run.clone());
+        }
         Ok((true, ()))
     })
-    .await
+    .await?;
+    if let Some(run) = moved.lock().unwrap().clone() {
+        shared.watch.run(&run);
+    }
+    Ok(())
 }
 
 async fn record_session(
@@ -317,6 +331,7 @@ async fn finish(
         shared.reporting.lock().unwrap().remove(&marked);
         return Ok(());
     };
+    shared.watch.run(&run);
     let outcome = report(shared, run).await;
     shared.reporting.lock().unwrap().remove(&marked);
     shared.spawn(prune(shared.clone()));

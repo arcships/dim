@@ -33,6 +33,7 @@ pub mod settings;
 pub mod settings_methods;
 mod skills_management;
 pub mod storage;
+mod storage_methods;
 mod transport;
 mod tree_protocol;
 pub mod ui_extensions;
@@ -40,6 +41,7 @@ mod ui_host;
 mod ui_leaf;
 pub mod web;
 mod web_entry;
+mod workspace_files;
 
 use agents::{AgentIndex, AgentsPlugin};
 pub use agents::{SessionPermissions, SessionRef, SessionsError};
@@ -151,7 +153,7 @@ impl ServerConfig {
 pub enum ServerError {
     #[error("server I/O: {0}")]
     Io(#[from] std::io::Error),
-    #[error("session cleanup: {0}")]
+    #[error("App Server runtime: {0}")]
     Runtime(#[from] dim_agent_runtime::AgentError),
     #[error("server task: {0}")]
     Join(#[from] tokio::task::JoinError),
@@ -693,6 +695,9 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             builder.catalog(),
             move |_| Ok(Box::new(storage::SqliteStoragePlugin::new(path.clone()))),
         )?);
+        rows.push(register_part(&mut builtins, builder.catalog(), |names| {
+            Ok(Box::new(storage_methods::StorageMethodsPlugin::new(names)?))
+        })?);
         rows.push(register_part(
             &mut builtins,
             builder.catalog(),
@@ -705,6 +710,16 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     }
     rows.push(register_part(&mut builtins, builder.catalog(), |names| {
         Ok(Box::new(methods::ManagementMethodsPlugin::new(names)?))
+    })?);
+    // The sessionless workspace file search reads the index the WorkspaceTools
+    // owner provides, so the row is assembled only where that part is.
+    if builder.requires_part("WorkspaceTools") {
+        rows.push(register_part(&mut builtins, builder.catalog(), |names| {
+            Ok(Box::new(workspace_files::WorkspaceFilesPlugin::new(names)?))
+        })?);
+    }
+    rows.push(register_part(&mut builtins, builder.catalog(), |names| {
+        Ok(Box::new(connection::CallChannelPlugin::new(names)?))
     })?);
     rows.push(register_part(&mut builtins, builder.catalog(), |_| {
         Ok(Box::new(managed_provider::ManagedProvidersPlugin))
@@ -808,6 +823,11 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                 names,
             )?))
         })?);
+        rows.push(register_part(&mut builtins, builder.catalog(), |names| {
+            Ok(Box::new(runtime_manager::ToolchainSourcePlugin::new(
+                names,
+            )?))
+        })?);
         dim_agent_runtime::names::register::<
             dim_agent_capabilities::prompt_suggestion::PromptSuggestionSettingsHost,
         >(builder.catalog_mut(), None);
@@ -825,6 +845,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                         names,
                         dim_agent_capabilities::host_platform::HostPlatformConfig {
                             execution: names.key()?,
+                            toolchain: names.key()?,
                             exec_shell_file: Some((home_root, "exec-shell.json".into())),
                             home: platform_home.clone(),
                         },
@@ -1239,7 +1260,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
 /// does nothing, so each installer applies them.
 pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     use dim_agent_capabilities::host::{
-        AuxiliaryModelHost, ModelSelectionHost, SelectableModelsHost,
+        AuxiliaryModelHost, ModalityConnectionHost, ModelSelectionHost, SelectableModelsHost,
     };
     use dim_agent_runtime::{SESSION_GROUP, names::register};
     register::<ServerControl>(catalog, None);
@@ -1266,20 +1287,24 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     register::<ModelSelectionHost>(catalog, None);
     register::<AuxiliaryModelHost>(catalog, None);
     register::<SelectableModelsHost>(catalog, None);
+    register::<ModalityConnectionHost>(catalog, None);
     register::<mcp::McpService>(catalog, None);
     register::<mcp::McpAuth>(catalog, None);
     register::<mcp::Publication>(catalog, None);
     register::<hooks_settings::HooksService>(catalog, None);
     register::<methods::ManagementMethods>(catalog, None);
+    register::<dim_agent_capabilities::methods::Callers>(catalog, None);
     register::<runtime_manager::RuntimeService>(catalog, None);
     register::<collaboration::CollaborationSession>(catalog, Some(SESSION_GROUP));
     register::<mcp::McpSession>(catalog, Some(SESSION_GROUP));
     for name in [
+        "callChannel",
         "pluginFiles",
         "sessions",
         "sessionMetadata",
         "auxiliaryModel",
         "settings",
+        "ocrHelper",
     ] {
         catalog.register_shared(name);
     }

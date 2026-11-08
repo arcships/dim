@@ -6,7 +6,9 @@ use crate::{
     protocol::Empty,
     settings::{BusinessDocument, SettingsError, SettingsScope, SettingsService},
 };
-use dim_agent_capabilities::methods::{Interruption, MethodDecl, RpcError, params, reply};
+use dim_agent_capabilities::methods::{
+    Interruption, MethodCall, MethodDecl, RpcError, params, reply,
+};
 use dim_agent_runtime::Names;
 use dim_agent_types::ModelId;
 use rutis::Ctx;
@@ -132,7 +134,12 @@ impl DynPlugin for CollaborationModelPolicyPlugin {
                     )
                 })
                 .collect(),
-                Arc::new(move |method, value, stopping, _| {
+                Arc::new(move |call, stopping, _| {
+                    let MethodCall {
+                        method,
+                        params: value,
+                        ..
+                    } = call;
                     let settings = settings.clone();
                     Box::pin(async move {
                         match method.as_str() {

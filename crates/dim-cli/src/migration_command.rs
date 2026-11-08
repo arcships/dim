@@ -54,7 +54,12 @@ pub(crate) fn parse(
     }))
 }
 
-pub(crate) async fn run(root: &rutis::Ctx, options: &Options, command: &Command) -> Result<i32> {
+pub(crate) async fn run(
+    root: &rutis::Ctx,
+    options: &Options,
+    command: &Command,
+    locale: crate::locale::Locale,
+) -> Result<i32> {
     let terminal = dim_migration::terminal::Terminal::new(options.json);
     let json_output = !terminal.is_interactive()
         || !matches!(command.operation, Operation::Run | Operation::Retry(_));
@@ -95,7 +100,7 @@ pub(crate) async fn run(root: &rutis::Ctx, options: &Options, command: &Command)
                 std::fs::canonicalize(source.parent().ok_or(USAGE)?)?
             };
         }
-        let (code, output) = run_home(root, &options, command, &terminal).await?;
+        let (code, output) = run_home(root, &options, command, &terminal, locale).await?;
         if let Some(output) = output {
             if json_output {
                 println!("{}", serde_json::to_string_pretty(&output)?);
@@ -154,7 +159,7 @@ pub(crate) async fn run(root: &rutis::Ctx, options: &Options, command: &Command)
             command.source_stopped = true;
         }
         let invocation = rutis::Ctx::root()?;
-        let outcome = run_home(&invocation, &options, &command, &terminal).await;
+        let outcome = run_home(&invocation, &options, &command, &terminal, locale).await;
         let closed = invocation.shutdown().await;
         let outcome = match closed {
             Ok(()) => outcome,
@@ -206,6 +211,7 @@ async fn run_home(
     options: &Options,
     command: &Command,
     terminal: &dim_migration::terminal::Terminal,
+    locale: crate::locale::Locale,
 ) -> Result<(i32, Option<Value>)> {
     let mut command = command.clone();
     if matches!(command.operation, Operation::Inspect | Operation::Run) {
@@ -250,7 +256,7 @@ async fn run_home(
         {
             return Ok((0, None));
         }
-        execute(root, &service, options, &command, terminal).await
+        execute(root, &service, options, &command, terminal, locale).await
     }
     .await;
     plugin.dispose().await?;
@@ -278,6 +284,7 @@ async fn execute(
     options: &Options,
     command: &Command,
     terminal: &dim_migration::terminal::Terminal,
+    locale: crate::locale::Locale,
 ) -> Result<(i32, Option<Value>)> {
     match &command.operation {
         Operation::List => Ok((0, Some(serde_json::to_value(service.list().await?)?))),
@@ -311,7 +318,7 @@ async fn execute(
             {
                 return Ok((130, None));
             }
-            let (link, connection) = crate::daemon_link(root, options, false).await?;
+            let (link, connection) = crate::daemon_link(root, options, false, locale).await?;
             if let Some(client) = connection.take() {
                 crate::client::shutdown(client).await?;
             }

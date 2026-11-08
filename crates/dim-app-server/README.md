@@ -430,7 +430,9 @@ Unix endpoint directories must be private (0700), sockets use 0600, and cleanup 
 
 ### Shutdown completion
 
-For authorized transports, v3 `hello.features` includes `daemon.shutdown.completed`. A successful `daemon.shutdown` response with `force: false` (the default) certifies that Agent work, connections and the Rutis process tree have settled, including storage and plugin disposal. Cleanup failure returns `shutdown_failed` without exposing disposer error details. EOF alone is not success. `force: true` retains its early acknowledgement and does not promise cleanup.
+For authorized transports, v3 `hello.features` includes `daemon.shutdown.completed` and `daemon.shutdown.ifIdle`. A successful `daemon.shutdown` response with `force: false` (the default) certifies that Agent work, connections and the Rutis process tree have settled, including storage and plugin disposal. Cleanup failure returns `shutdown_failed` without exposing disposer error details. EOF alone is not success. `force: true` retains its early acknowledgement and does not promise cleanup.
+
+`daemon.shutdown {ifIdle: true}` stops the daemon only while it is idle: no other client connection is open, no Session has an attached client, and no turn is running; the requesting connection is not counted in the connection total. The decision is atomic with hello and Session attach admission: a concurrent client is either counted before the decision or refused as shutting down, so none joins a daemon the call is closing. A daemon in use answers the app error `daemon_busy` carrying the `connections`, `attachedSessions` and `running` counts and changes nothing. Without `ifIdle` the method behaves as above; the CLI uses it to replace a daemon of another build only when replacing it disturbs no one.
 
 The requesting connection hands only its final-response writer to the existing process coordinator before leaving the plugin graph. The coordinator sends successful completion after `root.shutdown()`; no graph-owned RPC task waits on its own disposal. Shutdown first stops RPC admission and joins admitted shutdown handlers, including force acknowledgement writes. If an admitted force request wins, the coordinator joins connection handoffs and returns `shutdown_failed` to pending graceful callers without waiting for business cleanup. Reply writes are bounded by the transport write deadline. Client disconnect does not cancel accepted cleanup. Clients must check the feature before relying on this completion contract from an older daemon.
 
@@ -482,9 +484,28 @@ A host without a product home names its plugin root in `ServerConfig.plugin_file
 
 A plugin declares `inject: ['pluginFiles']` and opens a fresh scope during each `apply`. Register `scope.close()` with `ctx.effect` immediately after opening, then register business cleanup. The host chooses the authorized product root; the plugin supplies relative file paths only. This is a trusted-plugin API, not a sandbox for untrusted Node code.
 
+A scope offers `withLock(name, callback, cancelled?)`, `list(prefix)` and `remove(name)`; a lease offers `read()`, `replace(text)`, `backup(suffix)`, `readBytes()` and `replaceBytes(bytes)`. Every name is a path relative to the authorized root, resolved through FileStorage: `..`, an absolute path and this module's reserved names fail `invalid_path`.
+
+`list(prefix)` returns one level of the directory `prefix`, sorted by name, each entry its name relative to the authorized root and its kind (`file`, `directory`, or `other` for a link or special file, never followed). A returned name is the stored components joined by `/`, so it can be passed straight to another operation; on Unix a backslash is part of a name, and on Windows it is a separator. It does not recurse and does not enter a directory entry, and the root itself is not listed, so a prefix names a directory. An entry whose name is not valid UTF-8 is omitted: these operations address names as strings, so it could not be read either, but removing the directory removes it. `remove(name)` removes a file, or a directory and everything beneath it. A file a lease holds, and a directory with a lease held beneath it, fail `locked`; an absent entry counts as removed, so a retry is safe. Removal is not atomic: an error can leave part of a tree removed.
+
+Every file is either a text envelope or raw bytes. `read()` and `replace(text)` use the envelope below. `readBytes()` returns the file's bytes whole, so a text file returns its stored envelope; `replaceBytes(bytes)` writes raw bytes with no envelope. A text read of a raw file fails `invalid_data` and leaves it untouched. Both byte operations are whole-buffer and capped at [`MAX_WHOLE_FILE_BYTES`](src/plugin_files.rs) (8 MiB): the runtime channel's frame is 16 MiB and carries bytes base64-encoded, four bytes for every three, so 12 MiB is the raw ceiling before any envelope and 8 MiB leaves the envelope and both sides' copies room while bounding one allocation. A file over the cap fails `invalid_data` before it is read, and a replacement over it fails `invalid_data` without writing. A buffer large enough that its call message would exceed the runtime's 16 MiB frame never reaches the host: the plugin's own runtime refuses that call before sending it, with a `RangeError` coded `bad-value` naming the argument and the limit, and neither the plugin row nor the file store is affected — the same holds for any call argument, a large text `replace` included. Stream larger files through the typed Rust API instead.
+
 A Rust process plugin uses the typed `PluginFileTransactions` service (`names.key::<PluginFileTransactions>()`) instead. `transact(name, change)` runs `change` on the inner text under the file's lock. `change` receives `None` for a missing file and returns the replacement text (`None` keeps the file as it is) together with its own result. The host writes and checks the same `{version: 1, text}` envelope. An envelope that is not version 1 fails with `InvalidData` before `change` runs, and its bytes stay unchanged.
 
-Import `PluginFiles`, `FileScope`, `FileLease` and `FileResult` with
+Besides `transact`, the service offers:
+
+| Method | Value |
+| --- | --- |
+| `read_bytes(name)` | the whole file, envelope included, or `None` when absent; over the cap is `InvalidData` |
+| `open_read(name)` | a `FileReader` pinning the file for offset reads of at most 64 KiB, or `None` when absent |
+| `write_stream(name, source)` | replaces the file from a reader under its lock; no envelope and no size bound |
+| `list(prefix)` | one level under `prefix`, each a `PluginFileEntry { name, kind }` |
+| `remove(name)` | a file or a directory tree; `Locked` while a lease holds it or a file beneath it |
+| `directory(name)` | makes the directory and its missing parents (mode 0700) and returns the absolute path |
+
+`write_stream` writes through FileStorage's own temporary file and atomic rename, so a failure or cancellation leaves the old content and no temporary file. `directory` is for handing a work directory to a helper process: a link or other non-directory at any existing component fails `InvalidPath`, so the returned path never names a followed link. The path names what the call created; a component replaced by a link afterwards is outside its control. There is no JavaScript binding for it, because a sandboxed JavaScript part has no use for a path string.
+
+Import `PluginFiles`, `FileScope`, `FileLease`, `FileEntry` and `FileResult` with
 `import type { PluginFiles } from 'dimcode/plugin'`. The
 [SDK declarations](../../npm/plugin.d.ts) define the method types; the
 [plugin author's guide](../../docs/typescript-plugin-authoring.md) shows their use.
@@ -513,8 +534,9 @@ and additional fields are invalid. The host does not parse or validate `text`.
 `replace(text)` atomically writes this envelope through the existing FileStorage
 lease, preserving the existing permissions, durability and cancellation rules.
 `read()` decodes and validates the envelope at this external storage boundary
-and returns only `text`; a missing file still returns `null`. The named service,
-method arguments and successful reply shapes do not change.
+and returns only `text`; a missing file still returns `null`. Only `read` and
+`replace` use the envelope; `readBytes` and `replaceBytes` carry the file's
+bytes as they are.
 
 An unversioned file, malformed record, unknown version or invalid UTF-8 returns
 the existing fixed `invalid_data` error, without file contents or parser details.
@@ -530,7 +552,8 @@ baseline is separate from native SQLite storage and changes no database format.
 envelope or any rejected legacy bytes. A backup must not decode, re-encode or
 upgrade its source. An explicit `replace` writes version 1; the caller still owns
 the decision to replace existing data and to make a successful backup first.
-Binary payload support is outside S10 and remains P3 work.
+`readBytes` and `replaceBytes` do not use this envelope: a binary file is raw
+bytes, and a text file's bytes are its envelope.
 
 ##### Rule check
 
@@ -544,9 +567,11 @@ the existing language-neutral service and error data unchanged.
 ##### Requirements raised to mechanism owners
 
 None (§4 rule 8). Existing atomic
-replacement and backup primitives cover the format. Acceptance uses disposable
-plugin roots to verify round-trip text, stored version, reopen, version rejection
-with byte preservation and unchanged transaction/backup/lifecycle behavior.
+replacement, listing, removal and directory primitives cover the operations.
+Acceptance uses disposable plugin roots to verify round-trip text and binary
+files, stored version, reopen, version rejection with byte preservation, the
+whole-buffer bound, listings, removal under a held lease, work directories and
+unchanged transaction/backup/lifecycle behavior.
 
 ## Managed provider contract
 

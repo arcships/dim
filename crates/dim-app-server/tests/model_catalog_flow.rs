@@ -318,3 +318,52 @@ fn listing_keys_of_other_servers_declare_the_limits_they_state() {
     assert_eq!(lmstudio.capabilities.context_window, Some(131_072));
     assert_eq!(lmstudio.capabilities.missing_limits(), ["maxOutputTokens"]);
 }
+
+/// A shipped model that declares a `realtime.*` capability also declares the
+/// transport its adapter speaks: an operation without one could never open a
+/// session, and `modality.capabilities` would offer it anyway.
+#[test]
+fn every_shipped_realtime_capability_declares_its_transport() {
+    use dim_agent_capabilities::host::RealtimeDeclaration;
+    let catalog = BundledCatalog::load().unwrap();
+    let mut declared = Vec::new();
+    for provider in catalog.providers() {
+        for model in &provider.models {
+            let Some(raw) = model.metadata.as_ref().map(|metadata| &metadata.raw) else {
+                continue;
+            };
+            let operations = raw
+                .get("modalityCapabilities")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if !operations
+                .iter()
+                .any(|id| id.as_str().is_some_and(|id| id.starts_with("realtime.")))
+            {
+                continue;
+            }
+            let transport: RealtimeDeclaration =
+                serde_json::from_value(raw.get("realtime").cloned().unwrap_or_else(|| {
+                    panic!("{} declares no realtime transport", model.model_id)
+                }))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{} declares an invalid realtime transport: {error}",
+                        model.model_id
+                    )
+                });
+            declared.push((model.model_id.clone(), transport));
+        }
+    }
+    assert_eq!(
+        declared,
+        [(
+            "stepaudio-2.5-realtime".to_owned(),
+            RealtimeDeclaration {
+                protocol: "openai-realtime".into(),
+                path: "/realtime".into(),
+            }
+        )]
+    );
+}

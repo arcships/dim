@@ -1,7 +1,7 @@
 use crate::{methods::ManagementMethods, protocol::Empty};
 use dim_agent_capabilities::{
     host_platform::{ExecShellSettingsError, HostPlatform},
-    methods::{Interruption, MethodDecl, RpcError, params, reply},
+    methods::{Interruption, MethodCall, MethodDecl, RpcError, params, reply},
 };
 use dim_agent_runtime::Names;
 use rutis::Ctx;
@@ -61,7 +61,12 @@ impl DynPlugin for ExecShellSettingsPlugin {
                     MethodDecl::new("host.exec_shell.get", false, Interruption::Report),
                     MethodDecl::new("host.exec_shell.update", true, Interruption::Report),
                 ],
-                Arc::new(move |method, value, stopping, _| {
+                Arc::new(move |call, stopping, _| {
+                    let MethodCall {
+                        method,
+                        params: value,
+                        ..
+                    } = call;
                     let platform = platform.clone();
                     Box::pin(async move {
                         match method.as_str() {

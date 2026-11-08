@@ -2586,6 +2586,7 @@ async fn model_progress_reaches_v3_subscribers_without_persisting() {
             name: "echo".into(),
             arguments: "{\"text\":\"he".into(),
         }],
+        retry: None,
     };
     let updates = 200;
     for count in 1..=updates {
@@ -2613,6 +2614,29 @@ async fn model_progress_reaches_v3_subscribers_without_persisting() {
     assert_eq!(
         other.notice("session.model.progress").await["params"],
         last["params"]
+    );
+
+    cell.set(ModelProgress {
+        turn_id: Some("turn-1".into()),
+        request_id: Some("request-1".into()),
+        retry: Some(dim_agent_runtime::RetryProgress {
+            attempt: 2,
+            max_attempts: 8,
+            retry_at_ms: 1_700_000_000_000,
+            kind: dim_agent_types::ModelFailureKind::ServerError,
+            reason: Some("fixture rejection".into()),
+        }),
+        ..Default::default()
+    });
+    let retrying = json!({"attempt":2,"maxAttempts":8,"retryAtMs":1_700_000_000_000u64,
+        "kind":"server_error","reason":"fixture rejection"});
+    assert_eq!(
+        client.notice("session.model.progress").await["params"]["retry"],
+        retrying
+    );
+    assert_eq!(
+        other.notice("session.model.progress").await["params"]["retry"],
+        retrying
     );
     cell.set(ModelProgress::default());
     assert_eq!(

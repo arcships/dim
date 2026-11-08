@@ -1,11 +1,13 @@
 //! Goal's Session part (design §1, A.1, A.2): the `goal_update` tool, the
-//! `session.goal.*` methods and the guide entry. It writes change inputs by
-//! branch id and never reads Goal's state.
+//! `session.goal.*` methods and the guide entry. It writes changes by branch
+//! id through the branch part's Owner, which composes their records, and never
+//! reads Goal's state.
 
-use crate::text::{self, GoalTexts, OBJECTIVE_LIMIT, SUMMARY_LIMIT};
+use crate::branch::{Change, Changes};
+use crate::text::{self, OBJECTIVE_LIMIT, SUMMARY_LIMIT};
 use dim_agent_capabilities::{
     host::{HostFuture, ToolExecutionContext},
-    methods::{Interruption, MethodDecl, RpcError, SessionMethods, reply},
+    methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, reply},
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     timeline_tree::TreeCommands,
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry},
@@ -23,17 +25,17 @@ pub struct GoalSession {
     tools: Key<ToolRegistry>,
     methods: Key<SessionMethods>,
     guide: Key<GuideEntries>,
-    texts: Arc<GoalTexts>,
+    changes: Changes,
 }
 
 impl GoalSession {
-    pub fn new(names: &Names<'_>, texts: Arc<GoalTexts>) -> rutis::Result<Self> {
+    pub fn new(names: &Names<'_>, changes: Changes) -> rutis::Result<Self> {
         Ok(Self {
             tree: names.key()?,
             tools: names.key()?,
             methods: names.key()?,
             guide: names.key()?,
-            texts,
+            changes,
         })
     }
 }
@@ -78,12 +80,14 @@ impl DynPlugin for GoalSession {
                         metadata: None,
                         file_changes: None,
                     },
-                    handler: Arc::new(GoalUpdate { tree: tree.clone() }),
+                    handler: Arc::new(GoalUpdate {
+                        changes: self.changes.clone(),
+                    }),
                 },
             )?;
             let owner = Arc::new(Owner {
                 tree,
-                texts: self.texts.clone(),
+                changes: self.changes.clone(),
             });
             methods.register(
                 ctx,
@@ -94,7 +98,8 @@ impl DynPlugin for GoalSession {
                         MethodDecl::new(&format!("session.goal.{name}"), true, Interruption::Report)
                     })
                     .collect(),
-                Arc::new(move |method, params, _cancel, _progress| {
+                Arc::new(move |call, _cancel, _progress| {
+                    let MethodCall { method, params, .. } = call;
                     let owner = owner.clone();
                     Box::pin(async move { owner.call(&method, params).await })
                 }),
@@ -106,18 +111,19 @@ impl DynPlugin for GoalSession {
 
 struct Owner {
     tree: Arc<TreeCommands>,
-    texts: Arc<GoalTexts>,
+    changes: Changes,
 }
 
 impl Owner {
-    /// A change method writes one input and replies with its sequence; it
-    /// validates only its own parameters and never reads the fold.
+    /// A change method asks the branch part for the batch (record, trigger)
+    /// and replies with the trigger's sequence; it validates only its own
+    /// parameters and never reads the fold.
     async fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
         let branch = branch_of(&params)?;
         let op = method
             .strip_prefix("session.goal.")
             .ok_or_else(|| RpcError::invalid(format!("unknown method {method}")))?;
-        let input = match op {
+        let change = match op {
             "set" | "edit" => {
                 let objective =
                     text_value(params.get("objective"), OBJECTIVE_LIMIT).ok_or_else(|| {
@@ -126,7 +132,7 @@ impl Owner {
                         ))
                     })?;
                 if op == "edit" {
-                    text::edit(&branch, &objective)
+                    Change::Edit { objective }
                 } else {
                     let judge = match params.get("judge") {
                         None | Some(Value::Null) => text::Judge::Model,
@@ -145,20 +151,23 @@ impl Owner {
                             ));
                         }
                     };
-                    text::set(&branch, &objective, &self.texts, judge)
+                    Change::Set { objective, judge }
                 }
             }
-            "pause" => text::pause(&branch),
-            "resume" => text::resume(&branch),
-            "clear" => text::clear(&branch),
+            "pause" => Change::Pause,
+            "resume" => Change::Resume,
+            "clear" => Change::Clear,
             _ => return Err(RpcError::invalid(format!("unknown method {method}"))),
         };
-        let event = self
-            .tree
-            .input(branch, input)
+        // The branch is checked through the tree first, so a missing or ended
+        // branch answers as it does to every other write.
+        self.tree.get(&branch).map_err(RpcError::from)?;
+        let sequence = self
+            .changes
+            .change(&branch, change)
             .await
             .map_err(RpcError::from)?;
-        reply(json!({ "sequence": event.sequence }))
+        reply(json!({ "sequence": sequence }))
     }
 }
 
@@ -178,10 +187,11 @@ fn text_value(value: Option<&Value>, limit: usize) -> Option<String> {
     (length > 0 && value.trim() != "" && length <= limit).then(|| value.to_owned())
 }
 
-/// The `goal_update` tool (A.1): validate the parameters, write one change
-/// input on the calling branch, and confirm the write.
+/// The `goal_update` tool (A.1): validate the parameters, ask the branch part
+/// for the (record, trigger) batch on the calling branch, and confirm the
+/// write.
 struct GoalUpdate {
-    tree: Arc<TreeCommands>,
+    changes: Changes,
 }
 
 impl ToolHandler for GoalUpdate {
@@ -200,14 +210,11 @@ impl ToolHandler for GoalUpdate {
             if status != "completed" && status != "blocked" {
                 return Ok(ToolResult::error(text::TOOL_INVALID));
             }
-            match self
-                .tree
-                .input(
-                    context.branch_id.clone(),
-                    text::report(&context.branch_id, status, &summary),
-                )
-                .await
-            {
+            let change = Change::Report {
+                completed: status == "completed",
+                summary,
+            };
+            match self.changes.change(&context.branch_id, change).await {
                 Ok(_) => Ok(ToolResult::text(format!("goal_update recorded: {status}."))),
                 Err(error) => Ok(ToolResult::error(error.to_string())),
             }

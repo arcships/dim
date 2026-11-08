@@ -26,6 +26,10 @@ pub enum AgentError {
     /// before branches accepted each id once; nothing was written.
     #[error("more than one input has submission id {0}")]
     AmbiguousSubmission(String),
+    /// A batch's submission ids are partly committed on the branch and partly
+    /// not; nothing was written. The message lists the uncommitted ids.
+    #[error("some inputs of the batch have committed on the branch and some have not: {0}")]
+    PartialSubmission(String),
     #[error("{component}: {message}")]
     Fault { component: String, message: String },
     #[error("framework: {0}")]

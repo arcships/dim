@@ -7,7 +7,7 @@ use super::{
     session::contribution,
 };
 use dim_agent_capabilities::{
-    methods::{self, Interruption, MethodDecl, RpcError, SessionMethods},
+    methods::{self, Interruption, MethodCall, MethodDecl, RpcError, SessionMethods},
     tool_registry::{
         ToolProvider, ToolProviderChanged, ToolRegistry, ToolSourceSet, tool_provider_changes,
     },
@@ -169,7 +169,8 @@ impl DynPlugin for TemporaryMcp {
             let context = ctx.clone();
             let (session, tools, lifecycle) =
                 (self.session, self.tools.clone(), self.lifecycle.clone());
-            methods.register(ctx, NAMESPACE, ["attach","renew","detach"].into_iter().map(|name| MethodDecl::new(&format!("{NAMESPACE}.{name}"), true, Interruption::Drain)).collect(), Arc::new(move |method, params, cancelled, _| {
+            methods.register(ctx, NAMESPACE, ["attach","renew","detach"].into_iter().map(|name| MethodDecl::new(&format!("{NAMESPACE}.{name}"), true, Interruption::Drain)).collect(), Arc::new(move |call, cancelled, _| {
+                let MethodCall { method, params, .. } = call;
                 let (bindings, changed, mutation, ctx, cwd, tools, lifecycle) = (bindings.clone(), changed.clone(), mutation.clone(), context.clone(), config.cwd.clone(), tools.clone(), lifecycle.clone());
                 Box::pin(async move {
                     if method.ends_with(".attach") {

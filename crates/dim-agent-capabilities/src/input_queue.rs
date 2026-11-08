@@ -1,6 +1,6 @@
 use crate::{
     host::HostFuture,
-    methods::{Interruption, MethodDecl, RpcError, SessionMethods, params, reply},
+    methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     timeline_tree::TreeCommands,
 };
 use dim_agent_runtime::{
@@ -42,16 +42,21 @@ pub enum Withdrawal {
 /// One committed input until Loop consumes it.
 struct Entry {
     id: String,
-    mode: InputMode,
-    /// This queue decided to write its `input/applied`.
-    released: bool,
+    kind: EntryKind,
+}
+enum EntryKind {
+    /// An input this queue releases by its mode.
+    Input { mode: InputMode, released: bool },
+    /// Held for the turn it names, never released or counted.
+    Handover { turn_id: String },
 }
 /// What InputQueue derives from the events it consumes.
 #[derive(Default)]
 struct QueueState {
     entries: Vec<Entry>,
-    /// Between a dispatched `turn/start` and its `turn/end`.
-    turn_open: bool,
+    /// The open turn's id, between a dispatched `turn/start` and its
+    /// `turn/end`.
+    turn: Option<String>,
     /// An input released while no turn ran is about to start one: until
     /// its `turn/start`, queue inputs wait as if the turn ran. A
     /// `stop/interrupt` ends the wait, since inputs applied before it no
@@ -63,22 +68,46 @@ impl QueueState {
     fn step(&mut self, event: &AgentEvent) -> Vec<Decision> {
         match &event.kind {
             EventKind::InputMessage(data) => {
+                if let Some(handover) = &data.handover {
+                    // A handover input is held for its own turn only; with
+                    // no such turn open it is dead on arrival.
+                    if self.turn.as_deref() != Some(handover.turn_id.as_str()) {
+                        return vec![Decision::Delete(event.id.clone())];
+                    }
+                    self.entries.push(Entry {
+                        id: event.id.clone(),
+                        kind: EntryKind::Handover {
+                            turn_id: handover.turn_id.clone(),
+                        },
+                    });
+                    return Vec::new();
+                }
                 let mode = data.effective_mode();
                 self.entries.push(Entry {
                     id: event.id.clone(),
-                    mode,
-                    released: false,
+                    kind: EntryKind::Input {
+                        mode,
+                        released: false,
+                    },
                 });
                 let held_queue = self.entries.iter().any(|entry| {
-                    !entry.released && entry.mode == InputMode::Queue && entry.id != event.id
+                    matches!(
+                        &entry.kind,
+                        EntryKind::Input {
+                            mode: InputMode::Queue,
+                            released: false
+                        }
+                    ) && entry.id != event.id
                 });
                 match mode {
-                    InputMode::Queue if self.turn_open || self.starting || held_queue => Vec::new(),
+                    InputMode::Queue if self.turn.is_some() || self.starting || held_queue => {
+                        Vec::new()
+                    }
                     _ => self.release(&event.id),
                 }
             }
-            EventKind::TurnStart(_) => {
-                self.turn_open = true;
+            EventKind::TurnStart(data) => {
+                self.turn = Some(data.turn_id.clone());
                 self.starting = false;
                 Vec::new()
             }
@@ -86,30 +115,43 @@ impl QueueState {
                 self.starting = false;
                 Vec::new()
             }
-            EventKind::TurnEnd(_) => {
-                self.turn_open = false;
-                match self
-                    .entries
-                    .iter()
-                    .find(|entry| !entry.released && entry.mode == InputMode::Queue)
-                {
-                    Some(next) => {
-                        let next = next.id.clone();
-                        self.release(&next)
+            EventKind::TurnEnd(data) => {
+                self.turn = None;
+                let mut decisions = Vec::new();
+                self.entries.retain(|entry| {
+                    let ended = matches!(
+                        &entry.kind,
+                        EntryKind::Handover { turn_id } if *turn_id == data.turn_id
+                    );
+                    if ended {
+                        decisions.push(Decision::Delete(entry.id.clone()));
                     }
-                    None => Vec::new(),
+                    !ended
+                });
+                if let Some(next) = self.entries.iter().find(|entry| {
+                    matches!(
+                        &entry.kind,
+                        EntryKind::Input {
+                            mode: InputMode::Queue,
+                            released: false
+                        }
+                    )
+                }) {
+                    let next = next.id.clone();
+                    decisions.extend(self.release(&next));
                 }
+                decisions
             }
             EventKind::InputConsumed(data) => {
                 self.entries.retain(|entry| entry.id != data.input_id);
                 Vec::new()
             }
             EventKind::InputWithdraw(data) => {
-                match self
-                    .entries
-                    .iter()
-                    .position(|entry| entry.id == data.input_id && !entry.released)
-                {
+                // An input is still unapplied unless this queue released it.
+                match self.entries.iter().position(|entry| {
+                    entry.id == data.input_id
+                        && !matches!(&entry.kind, EntryKind::Input { released: true, .. })
+                }) {
                     Some(index) => {
                         self.entries.remove(index);
                         vec![Decision::Delete(data.input_id.clone())]
@@ -126,20 +168,26 @@ impl QueueState {
         let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) else {
             return Vec::new();
         };
-        entry.released = true;
-        if !self.turn_open && entry.mode != InputMode::Append {
+        let EntryKind::Input { mode, released } = &mut entry.kind else {
+            return Vec::new();
+        };
+        *released = true;
+        let mode = *mode;
+        if self.turn.is_none() && mode != InputMode::Append {
             self.starting = true;
         }
-        vec![Decision::Apply(entry.id.clone(), entry.mode)]
+        vec![Decision::Apply(entry.id.clone(), mode)]
     }
 }
 /// Consumes `input/message` and decides by its mode when Loop may consume
 /// it, writing `input/applied` with the mode then: steer and append inputs
 /// at once; a queue input when no turn runs or is about to start,
-/// otherwise after the turn ends, one per turn. Knows of turns only through `turn/start`,
-/// `turn/end` and `stop/interrupt`; Loop decides how to consume what is
-/// applied. Consumes `input/withdraw` in order and writes `input/deleted`
-/// for an input it still holds unapplied.
+/// otherwise after the turn ends, one per turn. A handover input is never
+/// released: it waits for the turn it names and is deleted when that turn
+/// ends, or on arrival when no such turn is open. Knows of turns only
+/// through `turn/start`, `turn/end` and `stop/interrupt`; Loop decides how
+/// to consume what is applied. Consumes `input/withdraw` in order and
+/// writes `input/deleted` for an input it still holds unapplied.
 pub struct InputQueue {
     state: Mutex<QueueState>,
     observable: Arc<StateCell<InputSnapshot>>,
@@ -154,7 +202,11 @@ pub struct InputQueue {
 impl InputQueue {
     fn publish(&self, state: &QueueState) {
         self.observable.set(InputSnapshot {
-            queued: state.entries.len(),
+            queued: state
+                .entries
+                .iter()
+                .filter(|entry| matches!(&entry.kind, EntryKind::Input { .. }))
+                .count(),
         });
     }
     /// Writes the decisions; returns the sequence of the last `input/deleted`.
@@ -537,7 +589,8 @@ impl DynPlugin for InputMethodsPlugin {
                     true,
                     Interruption::Report,
                 )],
-                Arc::new(move |_, value, cancel, _| {
+                Arc::new(move |call, cancel, _| {
+                    let MethodCall { params: value, .. } = call;
                     let tree = tree.clone();
                     let checks = checks.clone();
                     Box::pin(async move {

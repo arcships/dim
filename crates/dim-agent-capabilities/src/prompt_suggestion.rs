@@ -16,7 +16,9 @@ use crate::host::{
     HostError, ModelChunk, ModelConnection, ModelHost, ModelStream, ProviderConnectionResolver,
     ResolvedModelConnection,
 };
-use crate::methods::{Interruption, MethodDecl, RpcError, SessionMethods, params, reply};
+use crate::methods::{
+    Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply,
+};
 use crate::session_broadcast::{
     SessionBroadcast, SessionBroadcastEvent, SessionNotice, notify, session_channel,
 };
@@ -576,7 +578,12 @@ impl DynPlugin for PromptSuggestionPlugin {
                     MethodDecl::new("session.suggestion.request", false, Interruption::Report),
                     MethodDecl::new("session.suggestion.respond", true, Interruption::Report),
                 ],
-                Arc::new(move |method, value, cancel, _| {
+                Arc::new(move |call, cancel, _| {
+                    let MethodCall {
+                        method,
+                        params: value,
+                        ..
+                    } = call;
                     let part = part.clone();
                     Box::pin(async move {
                         match method.as_str() {

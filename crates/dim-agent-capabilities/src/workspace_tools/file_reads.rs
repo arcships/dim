@@ -170,7 +170,7 @@ impl FileReads {
     /// before a later one, so the newest completed one decides whether the
     /// operation survived.
     async fn latest_completed(&self, established: u64) -> Result<Option<String>, HostError> {
-        let mut offset = 0;
+        let mut from_sequence = None;
         loop {
             let reply = self
                 .timeline
@@ -178,7 +178,7 @@ impl FileReads {
                     scope: TimelineQueryScope::Branch,
                     include_publishing: false,
                     from_event: None,
-                    from_sequence: None,
+                    from_sequence,
                     order_by: TimelineQueryOrderBy::Sequence,
                     direction: TimelineQueryDirection::Descending,
                     kinds: vec!["context/compaction".into()],
@@ -189,7 +189,7 @@ impl FileReads {
                     text: None,
                     limit: NonZeroU64::new(COMPACTION_PAGE)
                         .expect("a page keeps at least one compaction"),
-                    offset,
+                    offset: 0,
                 })
                 .await
                 .map_err(|error| {
@@ -205,10 +205,13 @@ impl FileReads {
                     return Ok(Some(retain_from.clone()));
                 }
             }
-            if (reply.events.len() as u64) < COMPACTION_PAGE {
+            let Some(last) = reply.events.last().map(|event| event.sequence) else {
+                return Ok(None);
+            };
+            if (reply.events.len() as u64) < COMPACTION_PAGE || last <= 1 {
                 return Ok(None);
             }
-            offset += reply.events.len() as u64;
+            from_sequence = Some(last - 1);
         }
     }
 }
@@ -238,5 +241,111 @@ impl DynPlugin for FileReadsPlugin {
             ctx.provide_at(self.reads.clone(), Arc::new(FileReads::new(timeline)))?;
             Ok(Effect::Done)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dim_agent_runtime::{MemoryTimelineStore, SessionConfig, TimelineKey, TimelineStore};
+    use dim_agent_types::{
+        CompactionDiagnosticsRecord, CompactionReason, CompactionStrategyRecord, CompactionTrigger,
+        ContextCompactionData,
+    };
+
+    async fn timeline() -> Arc<Timeline> {
+        let store = Arc::new(MemoryTimelineStore::default());
+        store
+            .create_session("file-reads", &SessionConfig::default())
+            .await
+            .expect("the session");
+        Arc::new(Timeline::new(
+            Ctx::root().unwrap(),
+            TimelineKey {
+                session_id: "file-reads".into(),
+                branch_id: "main".into(),
+            },
+            Vec::new(),
+            store,
+        ))
+    }
+
+    fn completed(retain_from: &str) -> EventKind {
+        EventKind::ContextCompaction(ContextCompactionData {
+            turn_id: None,
+            request_id: None,
+            command: None,
+            start: None,
+            through: 0,
+            outcome: ContextCompactionResult::Completed {
+                retain_from: retain_from.into(),
+                replacement: Vec::new(),
+                strategy: "test".into(),
+                diagnostics: Box::new(CompactionDiagnosticsRecord {
+                    reason: CompactionReason::Auto,
+                    trigger: CompactionTrigger::Threshold,
+                    retain_from: None,
+                    retain_limit: None,
+                    estimated_input_tokens: 0.0,
+                    estimated_output_tokens: None,
+                    entries_replaced: 0,
+                    model_call_count: 0,
+                    duration_ms: 0,
+                    model_usage: None,
+                    insufficient_space: None,
+                    strategy: CompactionStrategyRecord {
+                        kind: "test".into(),
+                        details: serde_json::Map::new(),
+                    },
+                }),
+                context_baseline: Vec::new(),
+                replacement_parts: None,
+                pinned_inputs: None,
+                digest_entries: None,
+            },
+        })
+    }
+
+    fn cancelled() -> EventKind {
+        EventKind::ContextCompaction(ContextCompactionData {
+            turn_id: None,
+            request_id: None,
+            command: None,
+            start: None,
+            through: 0,
+            outcome: ContextCompactionResult::Cancelled {
+                reason: "cancelled".into(),
+            },
+        })
+    }
+
+    #[tokio::test]
+    async fn the_guard_pages_to_a_completed_compaction_beyond_one_page() {
+        let timeline = timeline().await;
+        timeline
+            .append(completed("retained").into())
+            .expect("the completed compaction");
+        for _ in 0..COMPACTION_PAGE {
+            timeline
+                .append(cancelled().into())
+                .expect("a cancelled compaction");
+        }
+        let reads = FileReads::new(timeline);
+        assert_eq!(
+            reads.latest_completed(0).await.unwrap(),
+            Some("retained".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn the_guard_stops_at_sequence_one_before_asking_for_zero() {
+        let timeline = timeline().await;
+        for _ in 0..COMPACTION_PAGE {
+            timeline
+                .append(cancelled().into())
+                .expect("a cancelled compaction");
+        }
+        let reads = FileReads::new(timeline);
+        assert_eq!(reads.latest_completed(0).await.unwrap(), None);
     }
 }

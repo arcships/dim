@@ -403,11 +403,11 @@ ExternalAgent 进程行注册到 `managementMethods` 的命名空间 `external_a
 
 | 方法 | 参数 | 结果 | `mutating` |
 | --- | --- | --- | --- |
-| `external_agents.list` | `refresh?` | 存储状态（`available`、带错误码的 `unavailable`）；每个已配置或已挂接节点：`attached` 或 `unavailable`；每个 agent：executable、version、protocol（ACP 或 CLI）、enabled、description、配置（仅引用） | 否 |
-| `external_agents.set_enabled` | `node`、`agent`、`enabled` | 新状态 | 是 |
-| `external_agents.configure` | `node`、`agent`、`description?`、`executable?`、`args?`、`env?: {name: value}`、`reasoning?` | 新配置 | 是 |
+| `external_agents.list` | `refresh?` | `revision`，即 `external_agents` 文档的 Settings revision，`set_enabled` 与 `configure` 把它作为 `expectedRevision` 传回；存储状态（`available`、带错误码的 `unavailable`）；每个已配置或已挂接节点：`attached` 或 `unavailable`；每个 agent：executable、version、protocol（ACP 或 CLI）、enabled、description、配置（仅引用） | 否 |
+| `external_agents.set_enabled` | `node`、`agent`、`enabled`、`expectedRevision?` | 新状态 | 是 |
+| `external_agents.configure` | `node`、`agent`、`description?`、`executable?`、`args?`、`env?: {name: value}`、`reasoning?`、`expectedRevision?` | 新配置 | 是 |
 
-检测在桥接挂接时和 `refresh` 时调用其 `detect`（A1）。检测到的 agent 在启用前保持禁用（A2）。写入通过 Settings 的类型化写入和读取到的 revision 进行（CAS）；ExternalAgent 应用 `settings.changed`，不重载。启用不写其他内容：目录由该文档派生。
+检测在桥接挂接时和 `refresh` 时调用其 `detect`（A1）。检测到的 agent 在启用前保持禁用（A2）。写入通过 Settings 的类型化写入和读取到的 revision 进行（CAS）；调用方把上次读到的 `revision` 作为 `expectedRevision` 传回，过期即 `settings_conflict`（[Settings 服务 §6](../appserver/settings-service.md#6-错误)）且不写入任何内容，不传时由所有者自行读取后 CAS。ExternalAgent 应用 `settings.changed`，不重载。启用不写其他内容：目录由该文档派生。
 
 ### A.2 成员提供方
 

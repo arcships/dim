@@ -10,6 +10,7 @@ mod methods;
 mod runs;
 mod session;
 mod wakeups;
+mod watch;
 
 #[cfg(test)]
 extern crate self as dim_agent_scheduler;

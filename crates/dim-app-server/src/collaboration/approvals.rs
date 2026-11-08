@@ -2,7 +2,7 @@ use super::*;
 use dim_agent_capabilities::{
     approval::{Approval, ApprovalRespondError},
     input_queue::InputQueue,
-    methods::{Interruption, MethodDecl, RpcError, SessionMethods, params, reply},
+    methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     session_broadcast::{SessionNotice, notify},
 };
 use sha2::{Digest, Sha256};
@@ -720,14 +720,26 @@ pub(super) fn install(
     methods.register(
         ctx,
         "session.collaboration",
-        vec![MethodDecl::new(
-            MEMBER_APPROVAL_GET,
-            false,
-            Interruption::Report,
-        )],
-        Arc::new(move |_, value, cancel, _| {
+        vec![
+            MethodDecl::new(MEMBER_APPROVAL_GET, false, Interruption::Report),
+            MethodDecl::new(CANCEL_MEMBER, true, Interruption::Drain),
+        ],
+        Arc::new(move |call, cancel, _| {
+            let MethodCall {
+                method,
+                params: value,
+                ..
+            } = call;
             let owner = owner.clone();
-            Box::pin(async move { reply(owner.approval_detail(params(value)?, &cancel).await?) })
+            Box::pin(async move {
+                match method.as_str() {
+                    MEMBER_APPROVAL_GET => {
+                        reply(owner.approval_detail(params(value)?, &cancel).await?)
+                    }
+                    CANCEL_MEMBER => reply(owner.cancel_member(params(value)?).await?),
+                    _ => Err(RpcError::unknown_method()),
+                }
+            })
         }),
     )?;
     Ok(())

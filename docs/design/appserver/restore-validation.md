@@ -55,7 +55,7 @@ A restore starts at `Agent::restore_session`
 config, then `Agent::create` receives `SessionStart::Restore` and calls `store.branches(id)`
 ([agent.rs:174](../../../crates/dim-agent-runtime/src/agent.rs#L174)) before it builds anything. For
 the native store that is `validate_session`
-([timeline.rs:3329](../../../crates/dim-app-server/src/storage/timeline.rs#L3329)):
+([timeline.rs:3198](../../../crates/dim-app-server/src/storage/timeline.rs#L3198)):
 
 ```text
 store.branches(id)  — one connection hold: the directory
@@ -63,7 +63,10 @@ store.branches(id)  — one connection hold: the directory
   orphan scan                      every timeline_events row has a timeline_branches row
   timeline_branches                branch_id, info, sequence, ordered by branch_id
 then, per branch, pages of 64 physical rows:
-  decode every event and its request content (one bounded reader across the pass)
+  decode every event without its request bodies, and check that every content reference
+  a record names resolves to a content row (hashes only, no body loaded or hashed)
+  check that every node row's parent resolves to a content row (hashes and the parent field
+  only, no body loaded or hashed)
   check the row kind, the event-id index, the before trace's event id and kinds
   check sequence continuity, atomic-batch boundaries, and that the head is the final batch end
   collect every event id in one set (duplicates fail), and every completed compaction
@@ -74,6 +77,15 @@ then:
   directory checks: main is the root; every child has parent, anchor and cut; anchors do not
   exceed the parent head; parent chains exist and have no cycle
 ```
+
+The reference check runs per batch; the parent check is one statement over the Session's `node`
+rows, reading only each body's `parent` field. Together they prove every message list complete by
+induction without loading a body: the referenced node exists, each parent exists by the statement,
+and the walk ends at a node whose parent is null. Appends write a node and its parent in one
+transaction, fork copies the referenced parent closure, and the only delete removes a whole Session,
+so no path removes a single content row and the statement can cover the whole Session in constant
+memory. Export is the exception to the cheap pass: its preflight rebuilds and hash-checks every
+body before the first line is written, so a damaged body cannot leave a partial export.
 
 The cost is the pass. The issue measured it with `restore_cost product` in a release build:
 about 14 µs per event, 30 ms of a 69 ms restore at 5,008 events. Validation is one of the three

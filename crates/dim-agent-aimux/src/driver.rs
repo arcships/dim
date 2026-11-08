@@ -235,6 +235,79 @@ fn anthropic_base_url(base_url: &str) -> String {
     }
 }
 
+/// The transport a non-conversational call uses: the same client, redirect
+/// policy and connection facts as a chat call to the same model.
+///
+/// One instance per adapter, so every call to one connection shares its
+/// connection pool. [`Self::resolve`] splits a base URL the way a chat call
+/// does: the models append a path to the base, so the base URL's query travels
+/// on the transport instead.
+pub struct MediaTransport {
+    transport: ReqwestFetch,
+}
+impl MediaTransport {
+    pub fn new() -> Self {
+        Self {
+            transport: ReqwestFetch::default(),
+        }
+    }
+    /// The base URL without its query, and the transport carrying that query,
+    /// the connection's proxy and its timeout.
+    pub fn resolve(&self, network: &ModelNetwork, base_url: &str) -> (String, FetchFunction) {
+        let (base, query) = split_query(base_url);
+        (base, fetch(&self.transport, network, query))
+    }
+    /// The client a media download streams through: the connection's proxy
+    /// and the redirect rule its credential allows.
+    ///
+    /// `credentialed` is true when the request carries the connection's
+    /// headers because its URL shares the connection's origin. Only a
+    /// same-origin 307 or 308 is then followed, the rule
+    /// [`follow_redirects`] applies: reqwest strips `Authorization` on a
+    /// cross-origin redirect but not a provider's own header, so another hop
+    /// could carry `x-goog-api-key` or `xi-api-key` to a different host. An
+    /// uncredentialed URL is a pre-signed one the provider minted; it carries
+    /// no secret, so the default policy follows its redirects.
+    ///
+    /// The connection's timeout is not applied: it bounds one provider
+    /// exchange, and a download is a body of its own size. The error is a
+    /// fixed sentence, because a proxy URL may carry a credential.
+    pub fn client(
+        network: Option<&ModelNetwork>,
+        credentialed: bool,
+    ) -> Result<reqwest::Client, String> {
+        let mut builder = reqwest::Client::builder();
+        if let Some(proxy) = network.and_then(|network| network.proxy.as_ref()) {
+            builder = builder.proxy(
+                reqwest::Proxy::all(proxy)
+                    .map_err(|_| "the connection's proxy URL cannot be used".to_owned())?,
+            );
+        }
+        if credentialed {
+            builder = builder.redirect(reqwest::redirect::Policy::custom(|attempt| {
+                let original = attempt.previous().first().map(url::Url::origin);
+                let same_origin = original == Some(attempt.url().origin());
+                if matches!(attempt.status().as_u16(), 307 | 308)
+                    && same_origin
+                    && attempt.previous().len() < MAX_REDIRECTS
+                {
+                    attempt.follow()
+                } else {
+                    attempt.stop()
+                }
+            }));
+        }
+        builder
+            .build()
+            .map_err(|_| "the media download client cannot be built".to_owned())
+    }
+}
+impl Default for MediaTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// The provider headers that keep provider-settings auth out of the way: dim
 /// sends every credential through `options.headers`, so the provider itself
 /// must produce none, not even an empty one.

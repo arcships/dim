@@ -546,12 +546,15 @@ fn project(
             .any(|v| v != "chat")
         || strings(actions.as_ref()).iter().any(|v| v != "chat")
         || (!output_modalities.is_empty() && !output_modalities.iter().any(|m| m == "text"));
+    // The server's status wins over the kind: a media model the relay marks
+    // unavailable serves no use at all, while the chat-kind reason leaves a
+    // non-conversational use open.
     let mut unavailable_reason = if route.is_none() {
         Some("unsupported_endpoint")
+    } else if status == "unavailable" {
+        Some("server_unavailable")
     } else if non_chat {
         Some("unsupported_model_type")
-    } else if input.get("status") == Some(&json!("unavailable")) {
-        Some("server_unavailable")
     } else {
         None
     };

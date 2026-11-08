@@ -1,6 +1,6 @@
 //! Process-owned access to the managed-provider service and its typed contract.
 pub mod management;
-use crate::model_catalog::{MAX_MODEL_TOKENS, ModelEntry};
+use crate::model_catalog::{MAX_MODEL_TOKENS, ModelEntry, ModelStatus};
 use dim_agent_capabilities::host::ModelProtocol;
 use dim_agent_runtime::Names;
 use management::{
@@ -56,6 +56,33 @@ pub struct ManagedModel {
 pub struct ManagedCatalog {
     pub account: AccountSnapshot,
     pub models: Vec<ManagedModel>,
+}
+
+impl ManagedModel {
+    /// Whether this entry is excluded from every use. An `unavailable` status
+    /// says so whatever reason was stored; otherwise only a stored reason
+    /// that excludes every use does. The managed catalog derivation and a
+    /// managed account's credential lease read this one rule.
+    pub fn excluded_from_every_use(&self) -> bool {
+        self.entry.status == ModelStatus::Unavailable
+            || self
+                .unavailable_reason
+                .as_deref()
+                .is_some_and(reason_excludes_modality)
+    }
+}
+
+/// Whether a stored `unavailableReason` excludes a non-conversational use too.
+/// `unsupported_model_type` says the entry is not a chat model and
+/// `limits_undeclared` that it declares no chat limits; both leave a
+/// non-conversational use open. Every other stored reason — the model's
+/// status, a missing route, a disabled provider, a missing credential, a
+/// signed-out account — means the entry serves no use at all. This is the
+/// reason half of [`ManagedModel::excluded_from_every_use`], which also reads
+/// the entry's status and is what the catalog and a credential lease consult
+/// when they hold the whole model.
+pub fn reason_excludes_modality(reason: &str) -> bool {
+    !matches!(reason, "unsupported_model_type" | "limits_undeclared")
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

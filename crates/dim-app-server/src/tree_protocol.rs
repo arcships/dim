@@ -1,7 +1,9 @@
 //! Version 2 product views of the Session broadcast; positions are branch sequences.
 use dim_agent_capabilities::session_broadcast::SessionNotice;
 use dim_agent_runtime::{BranchStatus, ModelProgress, TimelineInfo};
-use dim_agent_types::{AgentEvent, ApprovalCallData, ApprovalDecision, BranchSource, EventKind};
+use dim_agent_types::{
+    AgentEvent, ApprovalCallData, ApprovalDecision, BranchSource, EventKind, ModelFailureKind,
+};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -241,6 +243,23 @@ pub struct ModelProgressNotice {
     /// Unicode scalar values of this request's `step/thinking` deltas before `thinking`.
     pub thinking_offset: u64,
     pub tools: Vec<ToolProgress>,
+    /// The retry this request is waiting to make, while it sleeps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry: Option<RetryProgress>,
+}
+/// A retry a request is waiting for, shown while it sleeps.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryProgress {
+    /// The attempt about to run, at least 2.
+    pub attempt: u8,
+    /// The total cap on attempts.
+    pub max_attempts: u8,
+    /// Unix milliseconds at which the attempt starts.
+    pub retry_at_ms: u64,
+    pub kind: ModelFailureKind,
+    /// The failure's bounded reason.
+    pub reason: Option<String>,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -271,6 +290,13 @@ impl ModelProgressNotice {
                     arguments: tool.arguments,
                 })
                 .collect(),
+            retry: progress.retry.map(|retry| RetryProgress {
+                attempt: retry.attempt,
+                max_attempts: retry.max_attempts,
+                retry_at_ms: retry.retry_at_ms,
+                kind: retry.kind,
+                reason: retry.reason,
+            }),
         }
     }
 }

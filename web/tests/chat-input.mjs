@@ -18,7 +18,7 @@ registerHooks({
       const source = `export const ${name}=()=>globalThis.chatInputStores.${store}; export const workspaceName=x=>x`
       return { url: `data:text/javascript,${encodeURIComponent(source)}`, shortCircuit: true }
     }
-    if (specifier === "vue-i18n") return { url: "data:text/javascript,export const useI18n=()=>({t:key=>key})", shortCircuit: true }
+    if (specifier === "vue-i18n") return { url: "data:text/javascript,export const createI18n=()=>({global:{t:key=>key,locale:{value:\"en\"},setLocaleMessage(){},availableLocales:[]}});export const useI18n=()=>({t:key=>key})", shortCircuit: true }
     if (specifier === "vue-router") return { url: "data:text/javascript,export const useRoute=()=>({params:{}});export const useRouter=()=>({push:async to=>globalThis.chatInputNavigations.push(to)});export const RouterLink={render:()=>null}", shortCircuit: true }
     if (specifier.endsWith(".vue") && !components.test(specifier)) return { url: "data:text/javascript,export default {render:()=>null}", shortCircuit: true }
     try { return next(specifier, context) } catch (error) {

@@ -711,6 +711,8 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
                             (200, "text/plain", "hello plain".to_owned(), String::new())
                         } else if path == "/data" {
                             (200, "application/json", r#"{"a":1}"#.to_owned(), String::new())
+                        } else if path == "/search" {
+                            (200, "application/json", r#"{"type":"search","web":{"results":[{"title":"Proxy search","url":"https://example.com/","description":"Fixture result"}]}}"#.to_owned(), String::new())
                         } else if path == "/bin" {
                             (200, "application/octet-stream", "\u{0}".to_owned(), String::new())
                         } else if path == "/missing" {
@@ -736,6 +738,9 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
     let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_base = format!("http://{}", proxy.local_addr().unwrap());
     let tunnels = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let pending = Arc::new(tokio::sync::Notify::new());
+    let disconnected = Arc::new(tokio::sync::Notify::new());
+    let (entered, closed) = (pending.clone(), disconnected.clone());
     let (tunnel_log, proxy_stop) = (tunnels.clone(), stop.clone());
     let proxy_task = tokio::spawn(async move {
         loop {
@@ -744,6 +749,7 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
                 accepted = proxy.accept() => {
                     let (mut client, _) = accepted.unwrap();
                     let tunnel_log = tunnel_log.clone();
+                    let (entered, closed) = (entered.clone(), closed.clone());
                     tokio::spawn(async move {
                         let mut header = Vec::new();
                         let mut chunk = [0u8; 1024];
@@ -757,7 +763,19 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
                         };
                         let head = String::from_utf8_lossy(&header[..end]);
                         let target = head.lines().next().unwrap_or("").split_whitespace().nth(1).unwrap_or("").to_owned();
-                        tunnel_log.lock().unwrap().push(target);
+                        tunnel_log.lock().unwrap().push(target.clone());
+                        if target == "pending.invalid:80" {
+                            entered.notify_one();
+                            assert_eq!(client.read(&mut chunk).await.unwrap(), 0);
+                            closed.notify_one();
+                            return;
+                        }
+                        if target != origin_addr.to_string()
+                            && target != format!("proxy-dns.invalid:{}", origin_addr.port())
+                        {
+                            client.write_all(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n").await.unwrap();
+                            return;
+                        }
                         let mut upstream = tokio::net::TcpStream::connect(origin_addr).await.unwrap();
                         client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await.unwrap();
                         if end < header.len() {
@@ -867,6 +885,124 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
     idle(&mut client, &id).await;
     assert!(text(&result(&session).await).contains("blocked_address"));
     assert_eq!(tunnels.lock().unwrap().len(), 1);
+
+    let before = hits.load(Ordering::SeqCst);
+    for proxy in [None, Some("http://invalid.example/path")] {
+        let mut document = json!({
+            "allowPrivateHosts": ["127.0.0.1"],
+            "proxyDns": true,
+            "searchService": {"kind":"brave","endpoint":format!("{base}/search"),"apiKey":"fixture-key"}
+        });
+        if let Some(proxy) = proxy {
+            document["proxy"] = json!(proxy);
+        }
+        configure(&mut client, document).await;
+        for (name, args, code) in [
+            (
+                "web_fetch",
+                json!({"url": format!("{base}/landed")}),
+                "connect_failed",
+            ),
+            (
+                "web_search",
+                json!({"query": "fixture"}),
+                "search_unavailable",
+            ),
+        ] {
+            submit(&mut client, &id, name, args).await;
+            idle(&mut client, &id).await;
+            let failed = result(&session).await;
+            assert!(text(&failed).contains(code), "{name}: {failed:?}");
+        }
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), before);
+    assert_eq!(tunnels.lock().unwrap().len(), 1);
+
+    let authority = format!("proxy-dns.invalid:{}", origin_addr.port());
+    configure(
+        &mut client,
+        json!({"proxy": proxy_base, "proxyDns": true,
+            "searchService":{"kind":"brave","endpoint":format!("http://{authority}/search"),"apiKey":"fixture-key"}}),
+    )
+    .await;
+    for (url, expected) in [
+        ("http://127.0.0.1/", "blocked_address"),
+        (
+            "http://198.18.0.1/",
+            "blocked_address: Reserved benchmark addresses are blocked. Proxy DNS applies only to hostname targets.",
+        ),
+        ("http://[::ffff:127.0.0.1]/", "blocked_address"),
+        ("http://localhost/", "blocked_address"),
+        ("http://sub.localhost./", "blocked_address"),
+    ] {
+        submit(&mut client, &id, "web_fetch", json!({"url": url})).await;
+        idle(&mut client, &id).await;
+        let blocked = result(&session).await;
+        assert!(text(&blocked).contains(expected), "{url}: {blocked:?}");
+    }
+    assert_eq!(tunnels.lock().unwrap().len(), 1);
+    for (name, args, expected) in [
+        (
+            "web_fetch",
+            json!({"url":format!("http://{authority}/plain")}),
+            "hello plain",
+        ),
+        ("web_search", json!({"query":"fixture"}), "Proxy search"),
+    ] {
+        submit(&mut client, &id, name, args).await;
+        idle(&mut client, &id).await;
+        let reply = result(&session).await;
+        assert_ne!(reply.is_error, Some(true), "{name}: {reply:?}");
+        assert!(text(&reply).contains(expected), "{name}: {reply:?}");
+        let request = seen.lock().unwrap().to_ascii_lowercase();
+        assert!(
+            request.contains(&format!("host: {authority}\r\n")),
+            "{request}"
+        );
+    }
+    assert_eq!(
+        &tunnels.lock().unwrap()[1..],
+        [authority.clone(), authority]
+    );
+    let before = hits.load(Ordering::SeqCst);
+    submit(
+        &mut client,
+        &id,
+        "web_fetch",
+        json!({"url":"http://refused.invalid/"}),
+    )
+    .await;
+    idle(&mut client, &id).await;
+    let refused = result(&session).await;
+    assert!(
+        text(&refused).contains("connect_failed: The proxy refused the tunnel."),
+        "{refused:?}"
+    );
+    submit(
+        &mut client,
+        &id,
+        "web_fetch",
+        json!({"url":"http://pending.invalid/"}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), pending.notified())
+        .await
+        .unwrap();
+    assert_ok(
+        &client
+            .rpc("session.stop", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    tokio::time::timeout(Duration::from_secs(5), disconnected.notified())
+        .await
+        .unwrap();
+    idle(&mut client, &id).await;
+    assert_eq!(result(&session).await.is_error, Some(true));
+    assert_eq!(
+        &tunnels.lock().unwrap()[3..],
+        ["refused.invalid:80", "pending.invalid:80"]
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), before);
 
     configure(&mut client, json!({"allowPrivateHosts":["127.0.0.1"]})).await;
     submit(

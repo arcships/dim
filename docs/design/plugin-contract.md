@@ -308,8 +308,9 @@ Being a Capability adds no rule of its own; it says which of the existing rules 
 Examples:
 
 - The Goal branch part folds facts and decides continuations, so it is a Capability.
-- The Goal Session part provides `goal_update` and `session.goal.*` and writes change inputs by branch
-  id. It holds no Goal state, so it is not a Capability.
+- The Goal Session part provides `goal_update` and `session.goal.*` and writes change triggers by branch
+  id. It holds no Goal state, so it is not a Capability; the state is a `goal:state` record the branch
+  part writes, read by the model, the clients and the fold alike (Goal §2, A.5).
 - Questions provides `ask_user` and `session.question.*`. Its waiters are its own tool calls and it
   writes no facts, so it is not a Capability.
 

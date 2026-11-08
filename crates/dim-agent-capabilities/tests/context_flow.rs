@@ -1081,6 +1081,7 @@ async fn restoring_each_preparation_handoff_settles_without_replaying_work() {
                         configuration: None,
                         prompt: None,
                         recovery: None,
+                        failure_chain: None,
                     })
                     .into(),
                 )
@@ -1095,6 +1096,11 @@ async fn restoring_each_preparation_handoff_settles_without_replaying_work() {
                         request,
                         configuration: None,
                         prompt: None,
+                        failure_chain: (boundary == "model-call").then(|| FailureChain {
+                            from_request_id: "request-before".into(),
+                            attempts: 5,
+                            waited_ms: 70_000,
+                        }),
                     })
                     .into(),
                 )
@@ -1139,6 +1145,25 @@ async fn restoring_each_preparation_handoff_settles_without_replaying_work() {
         );
         if boundary != "input-consumed" && boundary != "model-output-end" {
             assert!(events.iter().any(|event| matches!(&event.kind, EventKind::ModelOutputEnd(data) if matches!(&data.outcome, ModelOutputOutcome::Failed { error, .. } if error == CAPABILITY_RELOADING))));
+        }
+        if boundary == "model-call" {
+            let failure = events
+                .iter()
+                .find_map(|event| match &event.kind {
+                    EventKind::ModelOutputEnd(ModelOutputEndData {
+                        outcome:
+                            ModelOutputOutcome::Failed {
+                                failure: Some(failure),
+                                ..
+                            },
+                        ..
+                    }) => Some(failure.as_ref()),
+                    _ => None,
+                })
+                .expect("the settled call reports facts");
+            assert_eq!(failure.kind, ModelFailureKind::Unknown);
+            assert_eq!(failure.attempts, 5);
+            assert_eq!(failure.waited_ms, 70_000);
         }
         assert_eq!(
             events
@@ -1305,6 +1330,100 @@ async fn restoring_pending_inputs_runs_each_queued_input_in_its_own_turn() {
     assert!(first_end < consumed(&second.id));
     assert!(events.iter().any(|event| matches!(&event.kind,
         EventKind::Text(data) if data.delta.contains("second"))));
+    agent.close().await.unwrap();
+}
+
+/// A handover input its turn ended without consuming is owed one deletion
+/// when InputQueue loads; a second load owes none, because it reads the
+/// committed one.
+#[tokio::test]
+async fn a_restored_queue_writes_one_owed_deletion_for_a_handover_input() {
+    let store = Arc::new(MemoryTimelineStore::default());
+    store
+        .create_session("handover-restore", &SessionConfig::default())
+        .await
+        .unwrap();
+    let timeline = Timeline::new(
+        rutis::Ctx::root().unwrap(),
+        TimelineKey {
+            session_id: "handover-restore".into(),
+            branch_id: "main".into(),
+        },
+        Vec::new(),
+        store.clone(),
+    );
+    timeline
+        .append(
+            EventKind::TurnStart(TurnStartData {
+                turn_id: "turn-1".into(),
+            })
+            .into(),
+        )
+        .unwrap();
+    let handover = timeline
+        .append(
+            EventKind::InputMessage(InputMessageData {
+                user: Some(UserInput {
+                    content: vec![ContentBlock::Text {
+                        text: "handover text".into(),
+                    }],
+                }),
+                mode: Some(InputMode::Queue),
+                handover: Some(InputHandover {
+                    turn_id: "turn-1".into(),
+                    request_id: "request-1".into(),
+                }),
+                ..Default::default()
+            })
+            .into(),
+        )
+        .unwrap();
+    timeline
+        .append(
+            EventKind::TurnEnd(TurnEndData {
+                turn_id: "turn-1".into(),
+                outcome: TurnOutcome::Completed {
+                    reason: "stop".into(),
+                },
+            })
+            .into(),
+        )
+        .unwrap();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+    let mut builder = builder_with_context(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        Context::default(),
+    );
+    builder.timeline_store(store);
+    let deletions = |events: &[Arc<AgentEvent>]| {
+        events
+            .iter()
+            .filter(|event| {
+                matches!(&event.kind, EventKind::InputDeleted(data) if data.input_id == handover.id)
+            })
+            .count()
+    };
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = agent
+        .restore_session("handover-restore".into())
+        .await
+        .unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert_eq!(deletions(&events), 1, "one owed deletion");
+    assert!(!events.iter().any(|event| matches!(&event.kind,
+        EventKind::InputApplied(data) if data.input_id == handover.id)));
+    agent.close().await.unwrap();
+
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = agent
+        .restore_session("handover-restore".into())
+        .await
+        .unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert_eq!(deletions(&events), 1, "a second load writes nothing");
     agent.close().await.unwrap();
 }
 

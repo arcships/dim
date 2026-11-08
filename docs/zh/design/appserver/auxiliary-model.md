@@ -145,7 +145,7 @@ Provider 通过 `ProviderService` 解析模型、通过 `ProductResolver` 解析
 
 - **凭据：** 被拒的凭据恢复一次；恢复后再次被拒（`Terminal`）时，先由凭据所有者的
   `finish_rejected` 结算（例如托管账号被登出），再让调用失败。
-- **瞬时失败：** 在共用预算内退避重试（至多三次尝试、等待合计 60 秒），提供方的
+- **瞬时失败：** 在共用预算内退避重试（至多八次尝试、等待合计 300 秒，malformed 响应只重试一次），提供方的
   `ModelFailurePolicy::forbids_retry` 禁止时不重试。
 
 此外的重试归使用者（SessionTitle 在之后的输入时重试）。任何地方都不写事件。

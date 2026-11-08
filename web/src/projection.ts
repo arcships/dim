@@ -11,8 +11,9 @@
  * Rows are immutable values: a change replaces the row, so a published copy of
  * `rows` re-renders only the rows that changed.
  */
+import { failureLine } from "./failures"
 import { GoalFold, type Goal } from "./goal"
-import type { AskQuestion, ModelId, ModelProgress, QueuedInput, SessionEvent, ToolResult } from "./rpc/protocol"
+import type { AskQuestion, ModelFailure, ModelId, ModelProgress, ProviderPresentation, QueuedInput, SessionEvent, ToolResult } from "./rpc/protocol"
 
 export type TimelineRow =
   | { kind: "user"; key: string; text: string; skills?: string[]; at: number; sequence: number; cut: number }
@@ -24,7 +25,7 @@ export type TimelineRow =
   | { kind: "source-message"; key: string; from: string; steer: boolean; final: boolean; body: string }
   | { kind: "source-idle"; key: string; branch: string; status: string }
   | { kind: "source-ended"; key: string; branch: string }
-  | { kind: "error"; key: string; text: string }
+  | { kind: "error"; key: string; text: string; details?: ModelFailure }
   | { kind: "stopped"; key: string }
 
 /** A request's reasoning or answer while it is still arriving. */
@@ -57,6 +58,10 @@ export class Projection {
   private held = new Map<string, QueuedInput>()
   /** The branch's goal, folded from its events (goal.ts). */
   readonly goalFold = new GoalFold()
+  /** Requests whose text, thinking or tool row already showed. */
+  private showedOutput = new Set<string>()
+  /** The error of the model failure the latest turn end may repeat. */
+  private shownFailure: string | undefined
 
   /** The goal in force on this branch. */
   get goal(): Goal | undefined {
@@ -135,6 +140,7 @@ export class Projection {
         this.requestStarts.set(content.requestId, event.createAt)
         break
       case "thinking": {
+        this.showedOutput.add(content.requestId)
         const thought = this.openThinking(content.requestId)
         commit(thought, content.delta)
         const start = this.requestStarts.get(content.requestId)
@@ -142,6 +148,7 @@ export class Projection {
         break
       }
       case "text": {
+        this.showedOutput.add(content.requestId)
         this.closeThinking(content.requestId)
         const answer = this.openAnswer(content.requestId)
         commit(answer, content.delta)
@@ -149,6 +156,7 @@ export class Projection {
         break
       }
       case "tool-use":
+        this.showedOutput.add(content.requestId)
         this.closeThinking(content.requestId)
         this.closeAnswer(content.requestId)
         this.requestStarts.delete(content.requestId)
@@ -164,20 +172,36 @@ export class Projection {
         for (const result of content.results) this.completeTool(result.callId, result.result)
         this.asks = this.asks.filter((ask) => ask.requestId !== content.requestId || !content.results.some((result) => result.callId === ask.callId))
         break
-      case "model-end":
+      case "model-end": {
+        const incomplete = this.showedOutput.delete(content.requestId)
         this.closeThinking(content.requestId)
         this.closeAnswer(content.requestId)
         this.requestStarts.delete(content.requestId)
-        if (content.error !== undefined) this.push({ kind: "error", key: `error-${event.sequence}`, text: content.error })
+        if (content.error !== undefined) {
+          const failure = content.failure
+          const text = content.presentation !== undefined
+            ? presentationLine(content.presentation, content.error)
+            : failure !== undefined ? failureLine(failure, incomplete) : content.error
+          this.push({ kind: "error", key: `error-${event.sequence}`, text, ...(failure === undefined ? {} : { details: failure }) })
+          this.shownFailure = content.error
+        }
         break
-      case "turn-end":
+      }
+      case "turn-end": {
         this.lastTurnEnd = event.sequence
         for (const requestId of [...this.thoughts.keys()]) this.closeThinking(requestId)
         for (const requestId of [...this.answers.keys()]) this.closeAnswer(requestId)
         this.requestStarts.clear()
-        if (content.outcome === "failed") this.push({ kind: "error", key: `error-${event.sequence}`, text: content.error ?? "" })
+        // The marker belongs to this turn only, whatever the outcome.
+        const shown = this.shownFailure
+        this.shownFailure = undefined
+        if (content.outcome === "failed") {
+          const error = content.error ?? ""
+          if (shown !== error) this.push({ kind: "error", key: `error-${event.sequence}`, text: error })
+        }
         if (content.outcome === "cancelled") this.push({ kind: "stopped", key: `stopped-${event.sequence}` })
         break
+      }
       case "context-configured":
         this.model = content.model
         break
@@ -192,11 +216,13 @@ export class Projection {
     const requestId = progress.requestId
     if (requestId === undefined) return
     if (progress.thinking !== "") {
+      this.showedOutput.add(requestId)
       const thought = this.openThinking(requestId)
       thought.progress = { text: progress.thinking, offset: progress.thinkingOffset }
       this.update(thought.index, { text: shown(thought) })
     }
     if (progress.text !== "") {
+      this.showedOutput.add(requestId)
       const answer = this.openAnswer(requestId)
       answer.progress = { text: progress.text, offset: progress.textOffset }
       this.update(answer.index, { text: shown(answer) })
@@ -280,6 +306,12 @@ function branchNotice(text: string, mode: string | undefined): BranchNotice | un
     return branch === undefined ? undefined : { kind: "source-ended", branch }
   }
   return undefined
+}
+
+/** The provider's own wording, as the CLI words it: message unless absent, then the action. */
+function presentationLine(presentation: ProviderPresentation, error: string): string {
+  const message = presentation.serverMessage ?? error
+  return presentation.action === undefined ? `model failed: ${message}` : `model failed: ${message}. ${presentation.action}`
 }
 
 function firstLine(text: string): string {

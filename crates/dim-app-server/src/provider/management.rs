@@ -4,7 +4,9 @@ use crate::{
     methods::{ManagementMethods, SelectionScope},
     protocol::{Empty, canonical_cwd, optional_non_null},
 };
-use dim_agent_capabilities::methods::{Interruption, MethodDecl, RpcError, params, reply};
+use dim_agent_capabilities::methods::{
+    Interruption, MethodCall, MethodDecl, RpcError, params, reply,
+};
 use rutis::{Ctx, Error};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -138,7 +140,12 @@ pub(super) fn provide(
             )
         })
         .collect(),
-        Arc::new(move |method, value, stopping, _| {
+        Arc::new(move |call, stopping, _| {
+            let MethodCall {
+                method,
+                params: value,
+                ..
+            } = call;
             let provider = provider.clone();
             Box::pin(async move {
                 let cancel = &stopping;

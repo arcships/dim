@@ -60,7 +60,7 @@ sequenceDiagram
 
 控制事件与业务事件共用 Timeline、序号、时间字段和 Dispatcher；没有第二条控制总线。模型历史转换忽略控制事件。
 
-外部输入经门面 `Branch::input` 写入：门面在边界校验（`InputMessageData::validate`，只拒绝没有内容的输入，失败不落事实），然后追加 input/message，不读 Loop 状态。能力产生的自动输入直接追加到本分支 Timeline，由产生方保证合法。InputQueue 只消费，不拦截写入。
+外部输入经门面 `Branch::input` 写入：门面在边界校验（`InputMessageData::validate`，只拒绝没有内容的输入，失败不落事实），然后追加 input/message，不读 Loop 状态。需要一起生效的多条输入经门面 `Branch::inputs` 一次提交：门面逐条按同一规则校验，批次为空或任一条不合法时不落任何事实；整批是一个原子批次，序号连续、一起发布，按给定顺序返回事件。批次内每条输入都必须带 submission id 且互不相同：都已提交时返回既有事件、不写；只有部分已提交时返回 `PartialSubmission`、不写。分支已关闭或故障时，两者以相同方式失败。`TreeCommands::inputs` 是同一入口的服务包装，仅 Rust 使用。能力产生的自动输入直接追加到本分支 Timeline，由产生方保证合法。InputQueue 只消费，不拦截写入。
 
 中断前后的输入按 Timeline 顺序处理，提交与 stop 之间不需要锁：
 
@@ -72,6 +72,8 @@ sequenceDiagram
 | 中断之后写入 | 按正常流程：InputQueue 按模式写 input/applied，Steer、Queue 开始 turn，与 idle 时相同；包括 Notification、AgentReport 等自动唤醒 |
 
 输入采用归 InputQueue（写 `input/applied`），消费归 Loop（写 `input/consumed`）。
+
+第二条采用路径是 handover 输入：`input/message` 携带 `handover: {turn_id, request_id}`，不写 `input/applied`，由 Loop 在启动该交接续接的批次中写 `input/consumed`，或由 InputQueue 在该 turn 结束仍未消费它时、或它到达时 turn 未打开的情况下写 `input/deleted`。它从不驱动 turn，也不会被普通请求顺手消费（[InputQueue](plugins/InputQueue.md#handover-inputs)）。
 
 被 Steer 取代的请求与 `stop/interrupt` 无关：Steer 被消费时持有请求的状态机（Loop 读上下文时、ContextPreparation、尚未收到任何模型输出的 ModelProvider）取消它并写 `Cancelled`（`replaced by steer`），turn 不标记为中断；已收到输出的请求不被取代，Steer 等该输出结束。Loop 消费到这个终态、turn 未被中断时，在同一 turn 消费 Steer 发新请求；同一 turn 的新 `step/model-start` 总在上一个请求的终态之后（Loop 的事件与生命周期见 [Loop](plugins/Loop.md#events-and-lifetime)）。
 
@@ -98,7 +100,7 @@ sequenceDiagram
 
 ## 4. v1 兼容
 
-原 22 类事件字段不变。本文的停止控制事件、Loop 写入的 `input/consumed` 与[审批控制事件](event-driven-flows.md#7-v1-兼容与装配)均保留在 Rust Timeline；v1 App Server 的 session.event 过滤这些事件，保留原 Timeline sequence，不重编号；过滤后可跳号。JSON-RPC 方法、hello 版本和时间格式不变。已有样本兼容与新增过滤/续读分别验收，不声称新增控制事件属于冻结的 v1 事件集合。
+原 22 类事件字段不变。本文的停止控制事件、Loop 写入的 `input/consumed`、`step/disposition` 与[审批控制事件](event-driven-flows.md#7-v1-兼容与装配)均保留在 Rust Timeline；v1 App Server 的 session.event 过滤这些事件，保留原 Timeline sequence，不重编号；过滤后可跳号。JSON-RPC 方法、hello 版本和时间格式不变。已有样本兼容与新增过滤/续读分别验收，不声称新增控制事件属于冻结的 v1 事件集合。
 
 ## 5. 验收
 

@@ -932,6 +932,7 @@ impl ModelDriver for FailingBeforeStream {
                             attempts: 1,
                             waited: Duration::ZERO,
                             retry_after_stop: None,
+                            retry_forbidden: false,
                         })),
                         presentation: None,
                     })

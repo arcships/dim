@@ -11,7 +11,7 @@ use dim_agent_capabilities::execution_settings::{
     SOURCE,
 };
 use dim_agent_capabilities::host_platform::{HostPlatform, SandboxBackend};
-use dim_agent_capabilities::methods::{Interruption, MethodDecl, params, reply};
+use dim_agent_capabilities::methods::{Interruption, MethodCall, MethodDecl, params, reply};
 use dim_agent_runtime::{Names, PartRegistry};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -132,7 +132,12 @@ impl DynPlugin for ExecutionBackendPlugin {
                     false,
                     Interruption::Report,
                 )],
-                Arc::new(move |method, value, _, _| {
+                Arc::new(move |call, _, _| {
+                    let MethodCall {
+                        method,
+                        params: value,
+                        ..
+                    } = call;
                     let platform = platform.clone();
                     Box::pin(async move {
                         match method.as_str() {

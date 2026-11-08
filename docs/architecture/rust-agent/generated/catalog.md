@@ -14,6 +14,8 @@ Each catalog name a part of the assembly provides or injects. A name that crosse
 | `agentIndex` | process | Agents | Rust-only | — |
 | `auxiliaryModel` | process | Provider | yes | `complete` async |
 | `auxiliaryModelHost` | process | Provider | Rust-only | — |
+| `callChannel` | process | CallChannel | yes | `closed` async, `notify` async |
+| `callers` | process | CallChannel | Rust-only | — |
 | `collaboration` | process | Collaboration | Rust-only | — |
 | `collaborationDirectory` | process | CollaborationDirectory | Rust-only | — |
 | `connectionHub` | process | Connection | Rust-only | — |
@@ -31,6 +33,8 @@ Each catalog name a part of the assembly provides or injects. A name that crosse
 | `managementMethods` | process | ManagementMethods | Rust-only | — |
 | `mcpAuth` | process | Mcp | Rust-only | — |
 | `mcpService` | process | Mcp | Rust-only | — |
+| `mentionIndex` | process | WorkspaceToolsOwner | Rust-only | — |
+| `modalityConnectionHost` | process | Provider | Rust-only | — |
 | `modelHost` | process | Aimux | Rust-only | — |
 | `modelSelectionHost` | process | Provider | Rust-only | — |
 | `openAICodexOAuthService` | process | OpenAICodexOAuth | Rust-only | — |
@@ -56,6 +60,7 @@ Each catalog name a part of the assembly provides or injects. A name that crosse
 | `settingsService` | process | Settings | Rust-only | — |
 | `skillsCatalog` | process | SkillsCatalog | Rust-only | — |
 | `sqliteStorage` | process | SqliteStorage | Rust-only | — |
+| `toolchainSourceHost` | process | ToolchainSource | Rust-only | — |
 | `uiExtensions` | process | UiExtensions | Rust-only | — |
 | `uiHost` | process | UiHost | Rust-only | — |
 | `workflowFiles` | process | Settings | yes | `createDirectory` async, `list` async, `read` async, `replace` async |

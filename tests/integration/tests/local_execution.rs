@@ -5,6 +5,7 @@
 mod compaction_support;
 #[path = "local_support/process.rs"]
 mod process_support;
+use dim_agent_capabilities::toolchain::ToolchainSourceHost;
 use dim_agent_capabilities::{
     adapters::DefaultPrepareModelPlugin,
     execution_settings::{ExecutionSettings, ExecutionSettingsHost},
@@ -159,6 +160,7 @@ fn configured_platform(home: PathBuf) -> impl FnOnce(&mut AgentBuilder) {
                 names,
                 HostPlatformConfig {
                     execution: names.key()?,
+                    toolchain: names.key()?,
                     exec_shell_file: Some((0, "exec-shell.json".into())),
                     home: None,
                 },
@@ -387,6 +389,7 @@ impl Harness {
             root.provide_as::<ExecutionSettingsHost>(Arc::new(ExecutionSettingsHost::fixed(
                 ExecutionSettings::default(),
             )))?;
+            root.provide_as::<ToolchainSourceHost>(Arc::new(ToolchainSourceHost::fixed(vec![])))?;
             Ok(())
         })
         .await

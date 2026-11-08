@@ -41,6 +41,12 @@ fn change(sequence: u64, blocks: Vec<Value>) -> Value {
 }
 
 fn set(sequence: u64, text: &str) -> Value {
+    change(sequence, vec![state(sequence, "active", text)])
+}
+
+/// A `set` a daemon built from main publishes: the old two keys, no state
+/// record.
+fn old_set(sequence: u64, text: &str) -> Value {
     change(
         sequence,
         vec![objective("main", "set", text), active("main")],
@@ -48,46 +54,28 @@ fn set(sequence: u64, text: &str) -> Value {
 }
 
 fn edit(sequence: u64, text: &str) -> Value {
-    change(sequence, vec![objective("main", "edit", text)])
+    change(sequence, vec![state(sequence, "active", text)])
 }
 
-fn paused(sequence: u64) -> Value {
+fn paused(sequence: u64, text: &str) -> Value {
     change(
         sequence,
-        vec![status(
-            "<dim-goal kind=\"goal\" op=\"pause\" reason=\"user\" branch=\"main\">\nThe user set the goal status for branch main to paused.\n</dim-goal>",
-        )],
+        vec![json!({"type":"raw","key":"goal:state","text":format!(
+            "<dim-goal kind=\"state\" status=\"paused\" reason=\"user\" after=\"{sequence}\" branch=\"main\">\n<objective>\n{text}\n</objective>\nGoal text.\n</dim-goal>"
+        )})],
     )
 }
 
-fn resumed(sequence: u64) -> Value {
-    change(
-        sequence,
-        vec![status(
-            "<dim-goal kind=\"goal\" op=\"resume\" branch=\"main\">\nThe user set the goal status for branch main to active.\n</dim-goal>",
-        )],
-    )
+fn resumed(sequence: u64, text: &str) -> Value {
+    change(sequence, vec![state(sequence, "active", text)])
 }
 
 fn cleared(sequence: u64) -> Value {
-    change(
-        sequence,
-        vec![
-            json!({"type":"raw","key":"goal:objective","retire":true,"text":
-                "<dim-goal kind=\"goal\" op=\"clear\" branch=\"main\">\nThe previous goal was cleared by the user.\n</dim-goal>"}),
-            json!({"type":"raw","key":"goal:status","retire":true,"text":
-                "<dim-goal kind=\"goal\" status=\"cleared\" branch=\"main\">\nThe goal for branch main has no status.\n</dim-goal>"}),
-        ],
-    )
+    change(sequence, vec![cleared_state(sequence)])
 }
 
-fn completed(sequence: u64) -> Value {
-    change(
-        sequence,
-        vec![status(
-            "<dim-goal kind=\"goal\" op=\"completed\" branch=\"main\">\nResult:\nDone\n\nFinished.\n</dim-goal>",
-        )],
-    )
+fn completed(sequence: u64, text: &str) -> Value {
+    change(sequence, vec![state(sequence, "completed", text)])
 }
 
 /// The fork's own opening: the facts before it are copied from the parent.
@@ -219,7 +207,7 @@ fn line_goal_forms_write_the_machine_they_name_and_show_the_events() {
         );
         wire.reply(&write, json!({"sequence":15}));
         let history = wire.read("session.history");
-        wire.reply(&history, page(15, vec![paused(15)]));
+        wire.reply(&history, page(15, vec![paused(15, "Make the tests pass quickly")]));
 
         let read = wire.read("session.methods");
         wire.reply(&read, methods(true));
@@ -228,7 +216,7 @@ fn line_goal_forms_write_the_machine_they_name_and_show_the_events() {
         let write = wire.read("session.goal.resume");
         wire.reply(&write, json!({"sequence":18}));
         let history = wire.read("session.history");
-        wire.reply(&history, page(18, vec![resumed(18)]));
+        wire.reply(&history, page(18, vec![resumed(18, "Make the tests pass quickly")]));
 
         let read = wire.read("session.methods");
         wire.reply(&read, methods(true));
@@ -323,6 +311,61 @@ fn line_goal_takes_an_objective_spelled_like_a_form_after_set() {
     daemon.join().unwrap();
 }
 
+/// R6: a daemon built from main answers `session.goal.set` with the sequence
+/// but publishes the old keys, not a state record. The command is released at
+/// that sequence, as on main, and the following `/goal` shows the goal it
+/// wrote instead of a command still in progress.
+#[test]
+fn tui_goal_set_is_released_by_a_daemon_that_publishes_the_old_keys() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["session.methods"]);
+        wire.created();
+        wire.attached();
+        // `/goal set Ship it`: the line is read, then the method is written.
+        let read = wire.read("session.methods");
+        wire.reply(&read, methods(true));
+        let history = wire.read("session.history");
+        wire.reply(&history, page(8, vec![]));
+        let write = wire.read("session.goal.set");
+        assert_eq!(
+            write["params"],
+            json!({"sessionId":"session","branchId":"main","objective":"Ship it"})
+        );
+        wire.reply(&write, json!({"sequence":9}));
+        // The daemon's answer: the old two keys, no state record.
+        let history = wire.read("session.history");
+        wire.reply(&history, page(9, vec![old_set(9, "Ship it")]));
+        // The following `/goal` reads the line again.
+        let read = wire.read("session.methods");
+        wire.reply(&read, methods(true));
+        let history = wire.read("session.history");
+        wire.reply(&history, page(9, vec![]));
+        wire.detach();
+    });
+    let mut terminal = Terminal::launch(home.command());
+    terminal.until("\n> ");
+    terminal.write(b"/goal set Ship it\n");
+    terminal.until("Goal set on main · active");
+    terminal.until("  Ship it");
+    terminal.until("\n> ");
+    terminal.write(b"/goal\n");
+    terminal.until(USAGE);
+    terminal.until("Goal on main · active");
+    terminal.until("  Ship it");
+    assert!(
+        !terminal
+            .transcript
+            .contains("Goal: a /goal is still in progress on this line"),
+        "the command was released at the returned sequence: {}",
+        terminal.transcript
+    );
+    terminal.until("\n> ");
+    terminal.write(b"/exit\n");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
 #[test]
 fn line_goal_needs_a_daemon_that_installs_goal() {
     let home = Home::new();
@@ -371,7 +414,7 @@ fn line_goal_sets_a_new_goal_after_a_completed_one() {
         let history = wire.read("session.history");
         wire.reply(
             &history,
-            page(10, vec![set(9, "First goal"), completed(10)]),
+            page(10, vec![set(9, "First goal"), completed(10, "First goal")]),
         );
 
         // A typed objective after a finished goal starts a new one.
@@ -475,13 +518,13 @@ fn tui_goal_shows_the_state_and_marks_the_status_area() {
         wire.reply(&read, methods(true));
         let write = wire.read("session.goal.pause");
         wire.reply(&write, json!({"sequence":15}));
-        change_notice(wire, "main", paused(15));
+        change_notice(wire, "main", paused(15, "Ship it fully"));
 
         let read = wire.read("session.methods");
         wire.reply(&read, methods(true));
         let write = wire.read("session.goal.resume");
         wire.reply(&write, json!({"sequence":18}));
-        change_notice(wire, "main", resumed(18));
+        change_notice(wire, "main", resumed(18, "Ship it fully"));
 
         let read = wire.read("session.methods");
         wire.reply(&read, methods(true));
@@ -595,10 +638,7 @@ fn tui_goal_acts_on_the_shown_line_and_a_new_line_has_none() {
         change_notice(
             wire,
             "line-1",
-            change(
-                12,
-                vec![objective("line-1", "set", "Child goal"), active("line-1")],
-            ),
+            change(12, vec![state_on("line-1", 12, "active", "Child goal")]),
         );
         drained(wire);
     });
@@ -683,7 +723,7 @@ fn tui_goal_reads_the_line_before_it_picks_set_or_edit() {
         change_notice(
             wire,
             "line-1",
-            change(13, vec![objective("line-1", "edit", "New objective")]),
+            change(13, vec![state_on("line-1", 13, "active", "New objective")]),
         );
         drained(wire);
     });
@@ -1272,4 +1312,138 @@ fn the_product_profile_installs_native_goal_without_a_foreign_runtime() {
             .status
             .success()
     );
+}
+
+/// A `goal:state` record, as Goal writes it (Goal.md §2, A.5).
+fn state(sequence: u64, status: &str, text: &str) -> Value {
+    state_on("main", sequence, status, text)
+}
+
+/// [`state`] for a branch of its own.
+fn state_on(branch: &str, sequence: u64, status: &str, text: &str) -> Value {
+    json!({"type":"raw","key":"goal:state","text":format!(
+        "<dim-goal kind=\"state\" status=\"{status}\" after=\"{sequence}\" branch=\"{branch}\">\n<objective>\n{text}\n</objective>\nGoal text.\n</dim-goal>"
+    )})
+}
+
+/// A retired `goal:state` record: the branch has no goal.
+fn cleared_state(sequence: u64) -> Value {
+    json!({"type":"raw","key":"goal:state","retire":true,"text":format!(
+        "<dim-goal kind=\"state\" status=\"cleared\" after=\"{sequence}\" branch=\"main\">\nThe goal for branch main is not in effect.\n</dim-goal>"
+    )})
+}
+
+/// D5/D6: a history written before the state record existed still reads by
+/// the old keys; a read needs no record and writes nothing.
+#[test]
+fn line_goal_reads_an_old_two_key_history() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["session.methods"]);
+        wire.created();
+        wire.attached();
+        let read = wire.read("session.methods");
+        wire.reply(&read, methods(true));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            page(
+                9,
+                vec![change(
+                    9,
+                    vec![objective("main", "set", "Old goal"), active("main")],
+                )],
+            ),
+        );
+        wire.detach();
+    });
+    let mut terminal = Terminal::launch(home.command());
+    terminal.until("\n> ");
+
+    terminal.write(b"/goal\n");
+    terminal.until(USAGE);
+    terminal.until("Goal on main · active");
+    terminal.until("  Old goal");
+    terminal.until("\n> ");
+
+    terminal.write(b"/exit\n");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+/// D6: `/goal` reads the newest live `goal:state` record a reloaded history
+/// carries; the old two-key histories keep reading by the old rules in the
+/// other flows.
+#[test]
+fn line_goal_reads_the_state_record() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["session.methods"]);
+        wire.created();
+        wire.attached();
+        // The command loads the line's history: the newest record wins.
+        let read = wire.read("session.methods");
+        wire.reply(&read, methods(true));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            // The page continues the attach head (8): every event is above it.
+            page(
+                12,
+                vec![
+                    change(9, vec![state(9, "active", "Ship it")]),
+                    change(12, vec![state(12, "paused", "Ship it fully")]),
+                ],
+            ),
+        );
+        wire.detach();
+    });
+    let mut terminal = Terminal::launch(home.command());
+    terminal.until("\n> ");
+
+    terminal.write(b"/goal\n");
+    terminal.until(USAGE);
+    terminal.until("Goal on main · paused (user)");
+    terminal.until("  Ship it fully");
+    terminal.until("\n> ");
+
+    terminal.write(b"/exit\n");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+/// D6: a retired `goal:state` record says the branch has no goal.
+#[test]
+fn line_goal_reads_a_retirement() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["session.methods"]);
+        wire.created();
+        wire.attached();
+        let read = wire.read("session.methods");
+        wire.reply(&read, methods(true));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            page(
+                12,
+                vec![
+                    change(9, vec![state(9, "active", "Ship it")]),
+                    change(12, vec![cleared_state(12)]),
+                ],
+            ),
+        );
+        wire.detach();
+    });
+    let mut terminal = Terminal::launch(home.command());
+    terminal.until("\n> ");
+
+    terminal.write(b"/goal\n");
+    terminal.until(USAGE);
+    terminal.until("No goal on main.");
+    terminal.until("\n> ");
+
+    terminal.write(b"/exit\n");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
 }

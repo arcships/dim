@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch, type ComponentPublicInstance } from "vue"
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type ComponentPublicInstance } from "vue"
 import { useI18n } from "vue-i18n"
 import { useVirtualizer } from "@tanstack/vue-virtual"
 import { ChevronDown, GitBranch, LoaderCircle } from "lucide-vue-next"
@@ -8,6 +8,8 @@ import ChatMarkdown from "./ChatMarkdown.vue"
 import TimelineUserMessage from "./TimelineUserMessage.vue"
 import TimelineWorkRow from "./TimelineWorkRow.vue"
 import { groupRows } from "./work"
+import { failureDetails, retryAnnouncement, retrySeconds, retryStatus } from "../../failures"
+import type { ModelRetryProgress } from "../../rpc/protocol"
 import { RAIL_MIN_MARKERS, timelineMarkers } from "../../timeline-markers"
 
 /**
@@ -18,6 +20,8 @@ import { RAIL_MIN_MARKERS, timelineMarkers } from "../../timeline-markers"
 const props = defineProps<{
   rows: readonly TimelineRow[]
   running: boolean
+  /** The retry the running request is waiting to make, while it sleeps. */
+  retry?: ModelRetryProgress
   quotable: boolean
   branchable?: boolean
   empty?: string
@@ -34,6 +38,27 @@ const expandedGroups = ref<Record<string, boolean>>({})
 const expandedItems = ref<Record<string, boolean>>({})
 
 const display = computed(() => groupRows(props.rows))
+const expandedDetails = ref<Record<string, boolean>>({})
+/** The client clock the retry countdown reads, ticked while a retry is set. */
+const now = ref(Date.now())
+let countdown: ReturnType<typeof setInterval> | undefined
+
+watch(() => props.retry, (retry) => {
+  clearInterval(countdown)
+  countdown = undefined
+  if (retry === undefined) return
+  now.value = Date.now()
+  countdown = setInterval(() => { now.value = Date.now() }, 500)
+}, { immediate: true })
+onBeforeUnmount(() => clearInterval(countdown))
+
+const retryText = computed(() => props.retry === undefined ? "" : retryStatus(props.retry, retrySeconds(props.retry.retryAtMs, now.value)))
+/** The live region text: it follows the attempt, not the visible countdown. */
+const retryLive = computed(() => retryAnnouncement(props.retry))
+
+function toggleDetails(key: string): void {
+  expandedDetails.value[key] = expandedDetails.value[key] !== true
+}
 
 function shortId(id: string): string {
   return id.slice(0, 8)
@@ -165,12 +190,24 @@ onMounted(() => void toEnd())
             </p>
             <p v-else-if="entry.row.kind === 'source-idle'" class="timeline-line-notice">{{ t("timeline.lineWaiting", { id: entry.row.branch, status: entry.row.status }) }}</p>
             <p v-else-if="entry.row.kind === 'source-ended'" class="timeline-line-notice">{{ t("timeline.lineEnded", { id: entry.row.branch }) }}</p>
-            <div v-else-if="entry.row.kind === 'error'" class="notice-row error-row" role="alert"><span>{{ entry.row.text }}</span></div>
+            <div v-else-if="entry.row.kind === 'error'" class="notice-row error-row" role="alert">
+              <span>{{ entry.row.text }}</span>
+              <template v-if="entry.row.details">
+                <button type="button" class="error-details-toggle" :aria-expanded="expandedDetails[entry.row.key] === true" @click="toggleDetails(entry.row.key)">{{ t("failure.details") }}</button>
+                <div v-if="expandedDetails[entry.row.key]" class="error-details">
+                  <div v-for="(line, index) in failureDetails(entry.row.details)" :key="index">{{ line }}</div>
+                </div>
+              </template>
+            </div>
             <p v-else class="timeline-notice">{{ t("timeline.noticeStopped") }}</p>
           </template>
         </div>
       </div>
-      <div v-if="running" class="processing-row" role="status"><LoaderCircle :size="14" class="is-spinning" aria-hidden="true" /><span>{{ t("work.processing") }}</span></div>
+      <div v-if="running" class="processing-row" role="status">
+        <LoaderCircle :size="14" class="is-spinning" aria-hidden="true" />
+        <span :aria-hidden="retry === undefined ? false : 'true'">{{ retry === undefined ? t("work.processing") : retryText }}</span>
+        <span class="sr-only">{{ retryLive }}</span>
+      </div>
     </div>
     <nav v-if="showRail" class="timeline-rail" :aria-label="t('timeline.rail')">
       <button
@@ -205,6 +242,9 @@ onMounted(() => void toEnd())
 .timeline-marker-prompt { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 3; -webkit-box-orient: vertical; color: var(--foreground); }
 .timeline-marker-reply { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; color: var(--muted-foreground); }
 .virtual-timeline-row.is-jump-target :deep(.user-bubble) { box-shadow: var(--focus-ring); transition: box-shadow var(--duration-popover) var(--ease-out); }
+.error-details-toggle { justify-self: start; padding: 0; border: 0; background: none; color: var(--muted-foreground); font-size: var(--text-xs); text-decoration: underline; cursor: pointer; }
+.error-details-toggle:hover, .error-details-toggle:focus-visible { color: var(--foreground); }
+.error-details { display: grid; gap: 2px; color: var(--muted-foreground); font-family: var(--font-mono); font-size: var(--text-xs); overflow-wrap: anywhere; }
 
 .jump-latest-enter-from { opacity: 0; transform: translateY(4px); }
 @media (prefers-reduced-motion: reduce) {
