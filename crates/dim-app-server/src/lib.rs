@@ -11,6 +11,7 @@ mod exec_shell_settings;
 mod execution_settings;
 pub mod grok_oauth;
 pub mod hooks_settings;
+pub mod link;
 mod managed_oauth;
 pub mod managed_provider;
 pub mod mcp;
