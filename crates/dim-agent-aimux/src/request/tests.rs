@@ -176,7 +176,7 @@ async fn final_request_replays_multimodal_tool_history_and_only_model_readable_r
                 {"type": "text", "text": "searching"},
                 {"type": "tool_use", "id": "call-1", "name": name, "input": {"query": "recent"}}
             ]},
-            {"role": "tool_result", "content": [{"type": "tool_result", "tool_use_id": "call-1", "content": [{"type": "text", "text": "part 1\n"}, {"type": "text", "text": "part 2"}], "is_error": false, "structuredContent": {"private": "hidden"}}]},
+            {"role": "tool_result", "content": [{"type": "tool_result", "tool_use_id": "call-1", "content": [{"type": "text", "text": "part 1\n"}, {"type": "text", "text": "part 2"}], "is_error": false, "structuredContent": {"private": "structured-only-sentinel"}}]},
             {"role": "user", "content": "continue"}
         ],
         "tools": [tool(name)],
@@ -250,6 +250,7 @@ async fn final_request_replays_multimodal_tool_history_and_only_model_readable_r
     )
     .await;
     assert_eq!(body["messages"][3]["reasoning_content"], "plan");
+    assert!(!body.to_string().contains("structured-only-sentinel"));
     for local in [
         "metadata",
         "session_id",

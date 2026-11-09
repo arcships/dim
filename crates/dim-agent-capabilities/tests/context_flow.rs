@@ -847,6 +847,8 @@ mod compaction_events;
 mod context_reads;
 #[path = "context_flow/digest.rs"]
 mod digest;
+#[path = "context_flow/evidence_visibility.rs"]
+mod evidence_visibility;
 #[path = "context_flow/manual_compaction.rs"]
 mod manual_compaction;
 #[path = "context_flow/pinning.rs"]
