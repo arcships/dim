@@ -126,6 +126,7 @@ async fn dial(ctx: Ctx, config: LinkConfig) {
                     })
                     .await;
                 let _ = session.dispose().await;
+                tokio::time::sleep(backoff).await;
             }
             Err(error) => {
                 warn!(address = %config.address, %error, "link: dial failed");
@@ -196,6 +197,15 @@ async fn listen(ctx: Ctx, config: LinkConfig) {
     info!(address = %config.address, "link: listening");
     while let Some(channel) = accepted.recv().await {
         info!("link: accepted a connection");
-        let _ = ctx.plugin(Session::new(channel));
+        let session = ctx.plugin(Session::new(channel));
+        tokio::spawn(async move {
+            let mut states = session.watch();
+            let _ = states
+                .wait_for(|snapshot| {
+                    matches!(snapshot.state, FiberState::Failed | FiberState::Disposed)
+                })
+                .await;
+            let _ = session.dispose().await;
+        });
     }
 }
