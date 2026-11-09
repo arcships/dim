@@ -18,6 +18,7 @@ pub mod methods;
 pub mod model_catalog;
 pub mod model_log;
 mod outbound;
+pub mod link;
 pub mod permission_rules;
 #[cfg(windows)]
 mod pipe_client;

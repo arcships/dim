@@ -13,7 +13,7 @@ repository = "https://github.com/arcships/dim"
 [workspace.dependencies]
 rutis = "0.19.3"
 rutis-loader = { version = "0.19.3", features = ["node"] }
-rutis-bridge = "0.19.3"
+rutis-bridge = { version = "0.19.3", features = ["websocket"] }
 schemars = "1"
 dim-agent-types = { path = "crates/dim-agent-types" }
 dim-agent-runtime = { path = "crates/dim-agent-runtime" }
