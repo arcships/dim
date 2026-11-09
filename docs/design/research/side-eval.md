@@ -39,14 +39,15 @@ W
 
 Lines
   main   Fix login               working
-  W      watch: API compatibility idle     last checked: #184
+  W      watch: API compatibility idle     read through: #184
          [Open] [Edit prompt] [Subscriptions] [End]
+         Execution: shared tools and workspace
 
 W: Possible API break at #192. Evidence: ... Suggested check: ...
    [Open evidence] [Send to main]
 ```
 
-`Tab` 补全、`Enter` 提交，其他行为遵循 [CLI command menu](../cli-commands.md#command-menu)。关注、打开和未读提示复用 Lines，不新增 watcher 仪表盘。客户端可以在任何已展示的辅助分支上使用同一套关注控件。
+`Tab` 补全、`Enter` 提交，其他行为遵循 [CLI command menu](../cli-commands.md#command-menu)。关注、打开和未读提示复用 Lines，不新增 watcher 仪表盘。`/watch` 首期是 CLI 入口；其他客户端沿用普通 branch 入口，不承诺创建体验一致。创建结果与详情注明共享工具和工作区，不加确认弹窗，也不显示“只读隔离”。
 
 主 agent 组装 brief：用户目标及来源、关注范围、何时提醒、是否允许直接发送建议、何时结束。不能把自己的目标概括当作用户新增授权。用户明确要求观察时安排 W；主 agent 自行创建时沿用已有分支权限，并说明用途。能在当前任务中直接核对的事情就由主 agent 自己做；需要独立上下文和持续关注时才开 W。
 
@@ -59,17 +60,31 @@ W: Possible API break at #192. Evidence: ... Suggested check: ...
 | 动作 | 输入与结果 | 行为 |
 | --- | --- | --- |
 | `create` | `prompt`，可选 `purposeKind, idleNotice`；返回真实 `branchId` | 使用现有分支创建；watch 是主 agent 选择的 brief，不是核心特殊模式 |
-| `get` | `branchId`；返回身份、用途、当前 prompt 及 revision、生命周期、执行状态、可用的 `activitySource`、订阅与用量 | 只读；列表复用 branch directory，详情按所属服务读取 |
+| `get` | `branchId`；返回身份、用途、委托及 revision、生命周期、执行状态、读取位置、可用的 `activitySource` 与本线用量 | 只读，包括已结束线；列表复用 branch directory，详情经本线所有者读取，不聚合 EventHub 私有状态 |
 | `update` | `branchId, prompt, expectedRevision`；返回新的 revision | 只更新该线的委托；相同内容不写新事实，revision 冲突返回当前版本供重读；订阅通过 EventHub 自己的入口修改 |
 | `end` | `branchId`；返回 `ending` 或 `ended` | 使用现有结束协议，保留历史并停止接收新输入；订阅通过 unsubscribe 或后续投递的 gone 结果清理，不把结束当作任务验收通过 |
 
-入口只管理其有权管理的线。未知分支、已结束分支、版本冲突、越权或依赖不可用都明确返回；不悄悄新建替代 watcher。工具的 branch ID、revision、订阅 ID 和错误必须出现在 `ToolResult.content`。
+入口按真实调用身份、Session、`source` 和父子关系校验以下允许范围，不能仅凭 branch ID 或 `purposeKind` 授权：
 
-状态不另起一套：生命周期使用 `open / ending / ended`；当前执行显示 Loop 的状态；订阅显示 EventHub 的记录及失败。`idle` 表示本轮结束，不能显示成观察已停止；无订阅、源不可用和从未检查不能显示成正在正常监控。最后检查位置来自 W 实际读过的材料，不以订阅成功或发布水位代替。
+| 调用者 | `get` | `update` | `end` |
+| --- | --- | --- | --- |
+| 模型：main | 自己及自己创建的 tool lines | 自己创建的 tool lines | 自己创建的 tool lines；按 ID 直达属于待补齐合同 |
+| 模型：tool line | 自己；父线材料仍走已有 `read` | 不允许自行改写委托，需请求 main 或用户 | 只结束自己 |
+| 模型：host line | 自己 | 不通过通用模型工具更新 | 不通过通用模型工具结束 |
+| 已获 Session 访问权的客户端 | 该 Session 的各线 | tool lines 和用户创建的 host lines；插件委托须走插件入口 | 该 Session 的非 main 线；结束 evaluator 时由 Goal 处理失败 |
+| 插件所有者 | 经既有公开入口管理自己创建的 host lines | 按自己的业务协议决定，不接受模型伪造来源 | Goal 按既有协议结束自己的 evaluator |
 
-当前主 agent 通过消息请求 tool line 自行结束；客户端通过现有结束入口操作。直接按 ID 结束自己的 tool line 属于通用工具扩展，在所有者接受之前不假装已有。host evaluator 的结束仍交给 Goal。
+模型 `create` 仍仅 main 可用。兄弟线、其他 Session 和 main 未创建的 host line 不向模型开放管理。管理入口拒绝对 ending/ended 线的更新；对已结束线再次 end 返回现有 `branch_ended`，不写新事实。未知目标、越权、版本冲突或依赖不可用都明确返回，不创建替代线。工具返回的身份、revision 与错误必须出现在 `ToolResult.content`。
 
-**空闲通知需要一个通用选择。** 当前 tool line 每轮结束时，如果本轮没有向主线发送过 `steer`，BranchLine 会自动发 `steer` 空闲通知，普通 `append` 建议不能阻止它。建议创建时可指定 `idleNotice: append`；省略保持现有 `steer` 行为。watch brief 使用前者，让检查完成只更新主线下次请求可见的状态，不唤醒主线。该设置由 BranchLine 执行并持久化，不能靠 prompt 模拟，也不由 `purposeKind` 隐式决定。
+目录与现有 `purpose` 保持创建时摘要的含义，不随 `update` 改写。`get` 从本线最新委托记录读 `purposeKind, prompt, revision`；未更新时来自开线委托，main 无委托时为空。列表仅列目录，不复制 prompt；展开详情显示“创建摘要”和“当前委托”，区分最新提交与模型是否已经采用。
+
+订阅由客户端另调 `eventhub.subscriptions`，模型另用 EventHub 的 `events` 入口，受各自入口权限限制；branch `get` 不代理管理权限或读取订阅文件。无 EventHub 管理权限的客户端显示订阅不可查看。创建方把父线 `get` 提供的活动 source 写入 W 的 brief，W 无需越权读取父线管理详情。
+
+状态不另起一套：生命周期使用 `open / ending / ended`；当前执行显示 Loop 的状态；订阅显示 EventHub 的记录及失败。`idle` 表示本轮结束，不能显示成观察已停止；无订阅、源不可用和从未读取不能显示成正在正常监控。“已读至”由 W 的 BranchLine 从自身成功的 `branch read` 调用目标和工具结果 `nextCursor` 派生，采用最近一次成功读取，不解析模型回答。它只证明材料已返回，不证明完整分析；没有读取则显示未读取。
+
+当前主 agent 通过 `branch.message`、显式 `mode: steer` 请求 tool line 自行结束，让空闲 W 也能收到并执行；发送成功不是已结束，以生命周期事实为准。客户端通过现有结束入口操作。直接按 ID 结束自己的 tool line 属于通用工具扩展，在所有者接受之前不假装已有。host evaluator 的自动结束仍交给 Goal，用户强制结束不被当作成功。
+
+**空闲通知需要一个通用选择。** 当前 tool line 每轮结束时，如果本轮没有向主线发送过 `steer`，BranchLine 会自动发 `steer` 空闲通知，普通 `append` 建议不能阻止它。建议创建时可指定 `idleNotice: none`，不产生自动空闲输入；省略保持现有 `steer` 行为。watch 使用 `none`，需要报告时主动发送消息；客户端仍从 W 的执行事实显示空闲。该设置由 BranchLine 持久化并执行，不能靠 prompt 模拟，也不由用途标签隐式决定；显式消息和结束通知不受影响。
 
 ### 2.3 Branch prompt
 
@@ -147,13 +162,13 @@ Timeline / Dispatcher 负责所属分支的事实与执行；EventHub 负责活�
 | `model/usage`、`context/compaction` | 实际用量、可用缓存字段、压缩用量 | W 执行部件 → 用量展示 | 复用，不解析回答估算实际账单 |
 | `branch/end`、`branch/ended` | 来源、目标、结束结果 | 分支 / TimelineTree → 目录、创建者 | 复用；订阅清理由 EventHub 自己完成 |
 | branch 委托记录 | `purposeKind, prompt, idleNotice`，revision 取提交位置 | 通用 branch 管理所有者 → 本线上下文、管理读取 | **通用合同需求**；建议复用有 key 的 adopted input，不覆盖已有分支身份，不新增 Side Eval 事件族 |
-| `dim-branch-idle` | branch、turn 结果，投递 mode | W 的 BranchLine → 主线 | 复用标记；**新增通用投递策略**，watch 选择 `append`，默认仍为 `steer` |
+| `dim-branch-idle` | branch、turn 结果，投递 mode | W 的 BranchLine → 主线 | 复用标记；**新增通用通知开关**，`none` 不写此输入，默认仍为 `steer` |
 
-活动 source 必须由真实生产者 row 声明并持有。多个 branch 实例不能冒用同一个 row 的 source；稳定命名、目录暴露和恢复由活动生产者所有者确定，不能先写死一个所有分支共享的 `branch.activity`。
+活动 source 必须由真实生产者 row 声明并持有。提议命名为 `b-` 加 `SHA-256` 摘要前 30 个小写十六进制字符，共 32 个 ASCII 字符；摘要输入是持久 `sessionId, branchId` 组成的紧凑 JSON 字符串数组的 UTF-8 字节。它满足 EventHub 名称约束，恢复后稳定，也区分复制到不同 Session 的同一 branch ID。生产者登记与本线 `get.activitySource` 使用同一派生值；只有声明可用时才报告可订阅，实际身份仍由发布属性指明。碰撞或别的 row 占用时按 `duplicate_source` 报错并显示源不可用，不改名冒用。此命名合同由第 7 节的生产者所有者落实。
 
 W 的订阅限定为允许观察的 B：精确类型，加 `match` 中的 Session 与 branch 身份，目标是 W。注册入口核对父子关系和实际调用者，过滤条件本身不是授权。仅发布水位，不广播父线正文；内容读取仍受现有 `branch read` 限制。
 
-跨线报告继续走 [Timeline branches](../timeline-branches.md) 已有的消息协议。EventHub 显式保留这条现有路径，Side Eval 无需为它提出专用豁免。提示通过 EventHub 进入 W 后再读取原始历史，也不依赖 EventHub 传输完整采样正文、排他投递或原子反馈批次。
+本提案建议父子任务协商、W 对父线的定向建议和请求子线结束继续使用 [Timeline branches](../timeline-branches.md) 已有的消息协议：它们面向已确定的协作方，依赖父子授权和接收方响应，而非寻找订阅者。活动提示仍走 EventHub，进入 W 后再读取历史，不传输完整采样正文。**这是待所有者确认的边界，不是 EventHub 已有的明确豁免**；其 Routing principle 仍需按第 7 节对齐。
 
 ## 6. Pursuit 是哪一种 side branch
 
@@ -174,11 +189,13 @@ Pursuit 可以进入同一个 side branch 列表，使用同样的详情与关�
 | --- | --- | --- |
 | TimelineTree / BranchLine | 已有创建、消息、读取、结束、目录和 purpose；缺少用途字段、可更新委托与统一 get/update；当前空闲通知固定唤醒主线 | 定义用途、prompt、`idleNotice` 的所有权、输入记录、revision、压缩保留和调用范围；委托经本线 input 顺序采用，重载从事实恢复，通知策略在首轮运行前确定；不为 watch 添加核心分支模式 |
 | BranchLine 的活动生产者 | 已有父线 head 提示不会唤醒空闲 W；EventHub 不自动镜像 Timeline，也不负责合并 | 发布通用、有界的活动水位，声明 source、目录与读取授权；依赖本线 Timeline/Dispatcher 和 EventHub；仅在分支发布后工作，关闭时取消，重载不补发旧事件；丢失通过后续水位和历史读取补偿 |
-| EventHub | 已有订阅、过滤、投递、回执及客户端管理；模型侧入口不能仅凭其出现在设计文档就视为可用 | 完成其所属的模型订阅入口，按调用范围验证目标；W 先管理自己的订阅。重用订阅存储和结束清理，不新增 Side Eval 订阅表；不要求全局队列、背压或历史重放 |
-| CLI / 客户端 | 已有 Lines 和分支操作，没有 watch 入口及关注展示 | `/watch` 将 brief 交给主 agent；按固定命令菜单规则加入；展示用途、真实执行/订阅状态、新回答及检查位置，UI 未读态不成为业务事实 |
+| EventHub | 已有订阅、过滤、投递、回执及客户端管理；模型入口尚需其合同闭环；Routing principle 未明确父子定向协议的边界 | 完成模型订阅入口，W 只管理自己的订阅；订阅读取沿用其公开入口。与 TimelineTree 所有者确认下述定向协议范围，不增加 Side Eval 特例、订阅表、全局队列或重放 |
+| CLI / 客户端 | 已有 Lines 和分支操作，没有 watch 入口及关注展示 | CLI 按菜单规则加入 `/watch`；TUI 与其他客户端共用 branch 详情及 EventHub 管理读取，不另算用途或订阅状态；无对应入口或权限时显示不可用，UI 未读态不成为业务事实 |
 | Goal / Pursuit | 已有 evaluator host branch 和严格结论协议 | 可提供 evaluate 用途信息用于统一展示；保持判定协议及 Goal 状态所有权，不把它迁为 watch 模式 |
 
 Side Eval 本身无需独立 Capability。需要扩展的 BranchLine 仍是本线 Capability，TimelineTree 仍拥有 Session 的分支生命周期；EventHub 拥有自己的订阅，Goal 拥有自己的判定。依赖按 [plugin contract](../plugin-contract.md) 与 [rutis usage](../rutis-usage.md) 声明，不增加跨 branch 服务注入或 Session 中的业务状态副本。
+
+**路由对齐是实现条件。** EventHub 的 Routing principle 覆盖交付型输入，现有 `branch.message` 则直接向固定父子线写输入。提议由 EventHub 与 TimelineTree 所有者在 #1312 确认：父子协作中的任务协商、定向建议、结束请求保留既有消息协议，面向订阅者的活动事件走 EventHub。现有消息已经提供父子授权与响应关系；改为 publish 会引入显式目标与订阅目标的并集，不能当作等价替换。若采纳本提议，序号、批次、中断与恢复均沿用原路径；若要求迁移，先由所有者明确受众、授权、mode、回执与恢复差异，再调整本提案。确认前不能将自动建议的直接路径作为已获批准的实现合同；本文件不修改 EventHub 的规则。
 
 ## 8. Rule check
 
@@ -194,7 +211,7 @@ Side Eval 本身无需独立 Capability。需要扩展的 BranchLine 仍是本�
 | §4.5 批次 | 沿用本地输入批次；跨 branch 不承诺原子检查与纠偏 |
 | §4.6 上下文 | 仅采用输入和工具结果；活动水位不直接导入父线上下文 |
 | §4.7 公开交互 | 不折叠其他分支私有状态；读取与消息沿用父子合同 |
-| §4.8 机制需求 | 通用管理与活动源缺口列于第 7 节，由所有者设计，不假装已有 |
+| §4.8 机制需求 | 通用管理、活动源和定向协议的路由边界列于第 7 节，由所有者确认后实现 |
 | §4.9 最少事实 | 不新增 Side Eval 事件族；用途/委托保留恢复所需事实，UI 未读仅为展示 |
 | ADR 002 D1 | 委托与读取状态属于本线，分支生命周期属于 Session，订阅属于 EventHub |
 | ADR 002 D2 | 不设 watcher 调度、报告转发或接线插件 |
@@ -204,6 +221,6 @@ Side Eval 本身无需独立 Capability。需要扩展的 BranchLine 仍是本�
 
 ## 9. 验证与删减
 
-实现时验证五条用户流程：创建并成功订阅后开始检查；主线持续运行时有界采样并标明覆盖；W 的提醒和自动消息可追溯，检查结束不会因空闲通知唤醒主线；修改/结束与迟到交付不伪造成功或丢掉历史；Pursuit 在同一列表中仍只有 Goal 能判定任务状态。另核对断线恢复、订阅失败与实际 token/缓存统计，不能仅用 prompt 示例证明行为成立。
+实现时验证五条用户流程：创建并成功订阅后开始检查；主线持续运行时有界采样并标明覆盖；W 的提醒和自动消息可追溯，检查结束不写自动空闲输入；合法修改/结束正确生效，子线不能越权读取或改写兄弟线/父线委托，空闲 W 能收到 steer 结束请求；Pursuit 在同一列表中仍只有 Goal 能判定任务状态。另核对创建摘要与当前委托的区分、读取游标而非分析结论、短 source 名称及碰撞拒绝、断线恢复、订阅失败和实际 token/缓存统计。
 
-保留的只有普通 branch、订阅、委托与已有消息；用途和状态用于管理，检查点用于避免逐事件调用模型。无需独立 watcher ID、专属工具、报告存储、疑点状态机、费用账本或跨线报告服务。严格纠偏准入、自动回滚和硬 token 配额不属于本方案，不能由提示词暗中承诺。
+保留的只有普通 branch、订阅、委托与已有消息；用途和状态用于管理，检查点用于避免逐事件调用模型。空闲通知选择 `none` 而非 `append`：父线无需每轮消费“正在等待”，客户端可直接读执行状态，因此连同无用途的输入事实一起省去。无需独立 watcher ID、专属工具、报告存储、疑点状态机、费用账本或跨线报告服务。独立只读权限、严格纠偏准入、自动回滚和硬 token 配额不属于本方案，不能由提示词暗中承诺。
