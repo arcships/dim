@@ -68,11 +68,13 @@ W: Possible API break at #192. Evidence: ... Suggested check: ...
 
 | 调用者 | `get` | `update` | `end` |
 | --- | --- | --- | --- |
-| 模型：main | 自己及自己创建的 tool lines | 自己创建的 tool lines | 自己创建的 tool lines；按 ID 直达属于待补齐合同 |
+| 模型：main | 自己及自己创建的 tool lines | 自己创建的 tool lines | 不直接调用 `end`；向自己创建的 tool lines 发送 `mode: steer` 消息，请其自行结束 |
 | 模型：tool line | 自己；父线材料仍走已有 `read` | 不允许自行改写委托，需请求 main 或用户 | 只结束自己 |
 | 模型：host line | 自己 | 不通过通用模型工具更新 | 不通过通用模型工具结束 |
-| 已获 Session 访问权的客户端 | 该 Session 的各线 | tool lines 和用户创建的 host lines；插件委托须走插件入口 | 该 Session 的非 main 线；结束 evaluator 时由 Goal 处理失败 |
+| 已获 Session 访问权的客户端 | 该 Session 的各线 | 仅 tool lines；所有 host lines 的委托更新须走其所有者入口 | 该 Session 的非 main 线；结束 evaluator 时由 Goal 处理失败 |
 | 插件所有者 | 经既有公开入口管理自己创建的 host lines | 按自己的业务协议决定，不接受模型伪造来源 | Goal 按既有协议结束自己的 evaluator |
+
+客户端 `update` 在提交委托前检查目标的 `source`，对所有 `Host` 目标拒绝通用更新，包括客户端创建的 host line。现有 `BranchSource::Host` 只记录 `operation_id`，没有创建者或所有者字段；不能根据 operation ID 的格式、用途标签或 Session 访问权推断归属。插件委托通过插件自身入口更新；没有相应入口时显示更新不可用。本提案不增加归属字段，也不改变持久格式。
 
 模型 `create` 仍仅 main 可用。兄弟线、其他 Session 和 main 未创建的 host line 不向模型开放管理。管理入口拒绝对 ending/ended 线的更新；对已结束线再次 end 返回现有 `branch_ended`，不写新事实。未知目标、越权、版本冲突或依赖不可用都明确返回，不创建替代线。工具返回的身份、revision 与错误必须出现在 `ToolResult.content`。
 
@@ -221,6 +223,6 @@ Side Eval 本身无需独立 Capability。需要扩展的 BranchLine 仍是本�
 
 ## 9. 验证与删减
 
-实现时验证五条用户流程：创建并成功订阅后开始检查；主线持续运行时有界采样并标明覆盖；W 的提醒和自动消息可追溯，检查结束不写自动空闲输入；合法修改/结束正确生效，子线不能越权读取或改写兄弟线/父线委托，空闲 W 能收到 steer 结束请求；Pursuit 在同一列表中仍只有 Goal 能判定任务状态。另核对创建摘要与当前委托的区分、读取游标而非分析结论、短 source 名称及碰撞拒绝、断线恢复、订阅失败和实际 token/缓存统计。
+实现时验证六条用户流程：创建并成功订阅后开始检查；主线持续运行时有界采样并标明覆盖；W 的提醒和自动消息可追溯，检查结束不写自动空闲输入；合法修改/结束正确生效，子线不能越权读取或改写兄弟线/父线委托，空闲 W 能收到 steer 结束请求；有 Session 访问权的客户端更新 Goal evaluator 等 host line 时被拒绝，委托及 revision 不变，客户端创建的 host line 同样被拒绝；Pursuit 在同一列表中仍只有 Goal 能判定任务状态。另核对创建摘要与当前委托的区分、读取游标而非分析结论、短 source 名称及碰撞拒绝、断线恢复、订阅失败和实际 token/缓存统计。
 
 保留的只有普通 branch、订阅、委托与已有消息；用途和状态用于管理，检查点用于避免逐事件调用模型。空闲通知选择 `none` 而非 `append`：父线无需每轮消费“正在等待”，客户端可直接读执行状态，因此连同无用途的输入事实一起省去。无需独立 watcher ID、专属工具、报告存储、疑点状态机、费用账本或跨线报告服务。独立只读权限、严格纠偏准入、自动回滚和硬 token 配额不属于本方案，不能由提示词暗中承诺。
