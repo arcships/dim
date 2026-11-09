@@ -8,7 +8,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Model failures](design/model-failures.md)（[中文](zh/design/model-failures.md)）: the failure kind, the fact on the terminal event, who words the line, and retry (#1197)
 - [模型请求重试与任务续接方案](design/research/model-retry-recovery.md)（中文，#1210）：请求重试的可见性、独立恢复能力的边界及所有者合同需求
 - [插件远程化：可行性与落地路径](design/research/remote-plugins.md)（中文，研究稿）：rutis 链路能跨什么、HostPlatform/exec/基础工具/存储各自能不能远程化、推荐拓扑与分阶段
-- [Side Eval：任务 watcher 设计](design/research/side-eval.md)（中文，设计提案）：独立 watcher branch、管理工具、事件合同与跨线交付、采样分析、提醒与自动建议、token 与缓存预算
+- [Side Eval：用 side branch 观察任务](design/research/side-eval.md)（中文，设计提案）：branch、订阅与 prompt 的组合，管理与关注、采样开销，以及 Pursuit evaluator 的归属
 - [Overall design for undesigned features](design/overview.md)（[中文](zh/design/overview.md)）
 - [Plugin designs index](design/plugins/README.md)（[中文](zh/design/plugins/README.md)）
 - [AcpGateway implementation contract](design/acp-gateway-implementation.md)（中文，#436）：protocol mapping, client-host plugin wiring, lifecycle and unsupported features
