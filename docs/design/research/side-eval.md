@@ -37,7 +37,7 @@ W
   -> read changes since its cut
   -> finish this turn; stay open for the next event
 
-Lines
+Lines (target interaction; client capability required by section 7)
   main   Fix login               working
   W      watch: API compatibility idle     read through: #184
          [Open] [Edit prompt] [Subscriptions] [End]
@@ -47,7 +47,7 @@ W: Possible API break at #192. Evidence: ... Suggested check: ...
    [Open evidence] [Send to main]
 ```
 
-`Tab` 补全、`Enter` 提交，其他行为遵循 [CLI command menu](../cli-commands.md#command-menu)。关注、打开和未读提示复用 Lines，不新增 watcher 仪表盘。`/watch` 首期是 CLI 入口；其他客户端沿用普通 branch 入口，不承诺创建体验一致。创建结果与详情注明共享工具和工作区，不加确认弹窗，也不显示“只读隔离”。
+`Tab` 补全、`Enter` 提交，其他行为遵循 [CLI command menu](../cli-commands.md#command-menu)。打开沿用 Lines；关注、新回答/未读提醒与检查位置展示是第 7 节提出的通用客户端能力，尚未实现，不新增 watcher 仪表盘。`/watch` 首期是 CLI 入口；其他客户端沿用普通 branch 入口，不承诺创建体验一致。创建结果与详情注明共享工具和工作区，不加确认弹窗，也不显示“只读隔离”。
 
 主 agent 组装 brief：用户目标及来源、关注范围、何时提醒、是否允许直接发送建议、何时结束。不能把自己的目标概括当作用户新增授权。用户明确要求观察时安排 W；主 agent 自行创建时沿用已有分支权限，并说明用途。能在当前任务中直接核对的事情就由主 agent 自己做；需要独立上下文和持续关注时才开 W。
 
@@ -82,7 +82,7 @@ W: Possible API break at #192. Evidence: ... Suggested check: ...
 
 订阅由客户端另调 `eventhub.subscriptions`，模型另用 EventHub 的 `events` 入口，受各自入口权限限制；branch `get` 不代理管理权限或读取订阅文件。无 EventHub 管理权限的客户端显示订阅不可查看。创建方把父线 `get` 提供的活动 source 写入 W 的 brief，W 无需越权读取父线管理详情。
 
-状态不另起一套：生命周期使用 `open / ending / ended`；当前执行显示 Loop 的状态；订阅显示 EventHub 的记录及失败。`idle` 表示本轮结束，不能显示成观察已停止；无订阅、源不可用和从未读取不能显示成正在正常监控。“已读至”由 W 的 BranchLine 从自身成功的 `branch read` 调用目标和工具结果 `nextCursor` 派生，采用最近一次成功读取，不解析模型回答。它只证明材料已返回，不证明完整分析；没有读取则显示未读取。
+状态不另起一套：生命周期使用 `open / ending / ended`；当前执行显示 Loop 的状态；订阅显示 EventHub 的记录及失败。`idle` 表示本轮结束，不能显示成观察已停止；无订阅、源不可用和从未读取不能显示成正在正常监控。“已读至”由 W 的 BranchLine 从自身成功的 `branch read` 调用目标和工具结果 `nextCursor` 派生，采用最近一次成功读取，不解析模型回答。它只证明材料已返回，不证明完整分析；没有读取则显示未读取。这是 W 检查父线的位置，不是用户已读 W 回答的位置；branch directory 的 head 也不表示用户已读。检查位置的公开读取与客户端展示仍需第 7 节的所有者落实。
 
 当前主 agent 通过 `branch.message`、显式 `mode: steer` 请求 tool line 自行结束，让空闲 W 也能收到并执行；发送成功不是已结束，以生命周期事实为准。客户端通过现有结束入口操作。直接按 ID 结束自己的 tool line 属于通用工具扩展，在所有者接受之前不假装已有。host evaluator 的自动结束仍交给 Goal，用户强制结束不被当作成功。
 
@@ -140,12 +140,12 @@ EventHub 没有持久待投队列。漏掉一个提示会延迟检查；下一�
 
 | 路径 | 如何交付 | 谁决定下一步 |
 | --- | --- | --- |
-| 提醒用户 | W 的普通回答保留证据与建议；客户端在被关注的线显示新回答和未读提示 | 用户查看、更新 brief、结束 W，或把建议发给主 agent |
+| 提醒用户 | W 的普通回答保留证据与建议；客户端在被关注的线显示新回答和未读提示，作为第 7 节的待实现验收能力 | 用户查看、更新 brief、结束 W，或把建议发给主 agent |
 | 用户发送建议 | 使用现有主线输入入口，包含来源 W 与证据位置 | 用户选择现有输入方式；主 agent 执行 |
 | 自动建议 | W 使用 `branch.message` 发给父线，默认 `append` | 主 agent 在下一次模型请求核对当前目标与事实，再决定是否采纳 |
 | 严格完成验收 | evaluator 按 Goal 的协议返回结论 | Goal 验证来源、目标版本并决定完成、续跑或阻塞 |
 
-自动建议不替用户批准工具，不直接回滚，也不在主线空闲时主动启动工作。主线空闲时，W 照常在自己的分支留下报告，客户端在 Lines 显示新回答和未读提示，用户可以立即查看；自动发给主线的建议仍用 `append`，等主线下一次模型请求才被消费，不自动升级为 `steer`。需要立即处理时由用户通过已有输入控制唤醒或打断主线。相同问题没有新证据时不重复发送，主 agent 不因 watcher 的建议改写用户目标。
+自动建议不替用户批准工具，不直接回滚，也不在主线空闲时主动启动工作。主线空闲时，W 照常在自己的分支留下报告；目标体验是客户端通过通用的新回答/未读提醒让用户发现并打开报告。业务所有者提供必要的回答事件或变化信息，交互界面决定如何展示提醒；当前 Lines 没有该能力，不能将其写成已有行为。第 7 节的客户端能力完成前，这条提醒流程不满足验收，不能以用户手动查线替代。自动发给主线的建议仍用 `append`，等主线下一次模型请求才被消费，不自动升级为 `steer`。需要立即处理时由用户通过已有输入控制唤醒或打断主线。相同问题没有新证据时不重复发送，主 agent 不因 watcher 的建议改写用户目标。
 
 建议是异步消息，不承诺与父线最新状态原子绑定。已交接的输入不能召回；更新 prompt、取消订阅或结束 W 都不能抹掉已经发出的建议。是否仍适用由接收方检查。这一限制适用于普通分支消息，无需另造 report、receipt、finding 或 feedback 状态机。
 
@@ -192,8 +192,10 @@ Pursuit 可以进入同一个 side branch 列表，使用同样的详情与关�
 | TimelineTree / BranchLine | 已有创建、消息、读取、结束、目录和 purpose；缺少用途字段、可更新委托与统一 get/update；当前空闲通知固定唤醒主线 | 定义用途、prompt、`idleNotice` 的所有权、输入记录、revision、压缩保留和调用范围；委托经本线 input 顺序采用，重载从事实恢复，通知策略在首轮运行前确定；不为 watch 添加核心分支模式 |
 | BranchLine 的活动生产者 | 已有父线 head 提示不会唤醒空闲 W；EventHub 不自动镜像 Timeline，也不负责合并 | 发布通用、有界的活动水位，声明 source、目录与读取授权；依赖本线 Timeline/Dispatcher 和 EventHub；仅在分支发布后工作，关闭时取消，重载不补发旧事件；丢失通过后续水位和历史读取补偿 |
 | EventHub | 已有订阅、过滤、投递、回执及客户端管理；模型入口尚需其合同闭环；Routing principle 未明确父子定向协议的边界 | 完成模型订阅入口，W 只管理自己的订阅；订阅读取沿用其公开入口。与 TimelineTree 所有者确认下述定向协议范围，不增加 Side Eval 特例、订阅表、全局队列或重放 |
-| CLI / 客户端 | 已有 Lines 和分支操作，没有 watch 入口及关注展示 | CLI 按菜单规则加入 `/watch`；TUI 与其他客户端共用 branch 详情及 EventHub 管理读取，不另算用途或订阅状态；无对应入口或权限时显示不可用，UI 未读态不成为业务事实 |
+| CLI / 客户端 | 已有 Lines 和分支操作，没有 watch 入口及关注展示 | CLI 按菜单规则加入 `/watch`；TUI 与其他客户端共用 branch 详情及 EventHub 管理读取，不另算用途或订阅状态；无对应入口或权限时显示不可用。新增通用的新回答/未读提醒与检查位置展示需求：业务所有者经公开边界提供必要的事件或变化信息，客户端决定提示形式；区分 W 的检查位置与用户对 W 回答的已读位置。当前 LineView/Lines 无对应展示；CLI、App Server 与相关客户端所有者须先确定公开数据合同、已读位置及提醒的清除和恢复语义，必要协议或持久化另行设计，UI 未读态不成为业务事实 |
 | Goal / Pursuit | 已有 evaluator host branch 和严格结论协议 | 可提供 evaluate 用途信息用于统一展示；保持判定协议及 Goal 状态所有权，不把它迁为 watch 模式 |
+
+**客户端提醒是功能验收条件。** 上述通用需求由 CLI / App Server / 相关客户端所有者在 #1312 闭环；BranchLine 所有者负责检查位置的公开读取边界。本文不指定新事件类型、wire 字段、持久格式或提醒清除规则，也不修改 timeline-ui 的合同。未完成必要的信息交付与客户端提示前，不宣称 idle main 下的未读提醒已可用。
 
 Side Eval 本身无需独立 Capability。需要扩展的 BranchLine 仍是本线 Capability，TimelineTree 仍拥有 Session 的分支生命周期；EventHub 拥有自己的订阅，Goal 拥有自己的判定。依赖按 [plugin contract](../plugin-contract.md) 与 [rutis usage](../rutis-usage.md) 声明，不增加跨 branch 服务注入或 Session 中的业务状态副本。
 
@@ -223,6 +225,6 @@ Side Eval 本身无需独立 Capability。需要扩展的 BranchLine 仍是本�
 
 ## 9. 验证与删减
 
-实现时验证六条用户流程：创建并成功订阅后开始检查；主线持续运行时有界采样并标明覆盖；W 的提醒和自动消息可追溯，检查结束不写自动空闲输入；合法修改/结束正确生效，子线不能越权读取或改写兄弟线/父线委托，空闲 W 能收到 steer 结束请求；有 Session 访问权的客户端更新 Goal evaluator 等 host line 时被拒绝，委托及 revision 不变，客户端创建的 host line 同样被拒绝；Pursuit 在同一列表中仍只有 Goal 能判定任务状态。另核对创建摘要与当前委托的区分、读取游标而非分析结论、短 source 名称及碰撞拒绝、断线恢复、订阅失败和实际 token/缓存统计。
+实现时验证六条用户流程：创建并成功订阅后开始检查；主线持续运行时有界采样并标明覆盖；W 的提醒和自动消息可追溯，检查结束不写自动空闲输入；合法修改/结束正确生效，子线不能越权读取或改写兄弟线/父线委托，空闲 W 能收到 steer 结束请求；有 Session 访问权的客户端更新 Goal evaluator 等 host line 时被拒绝，委托及 revision 不变，客户端创建的 host line 同样被拒绝；Pursuit 在同一列表中仍只有 Goal 能判定任务状态。另核对 main 空闲且 `idleNotice: none` 时，W 新回答能通过客户端提醒被发现并打开，自动 `append` 不启动 main；W 的检查位置与用户已读 W 回答的位置独立展示，不互相清除或替代，重新连接后的提示符合客户端所有者确定的恢复合同。该提醒流程必须在通用客户端能力完成后验收。另核对创建摘要与当前委托的区分、读取游标而非分析结论、短 source 名称及碰撞拒绝、断线恢复、订阅失败和实际 token/缓存统计。
 
 保留的只有普通 branch、订阅、委托与已有消息；用途和状态用于管理，检查点用于避免逐事件调用模型。空闲通知选择 `none` 而非 `append`：父线无需每轮消费“正在等待”，客户端可直接读执行状态，因此连同无用途的输入事实一起省去。无需独立 watcher ID、专属工具、报告存储、疑点状态机、费用账本或跨线报告服务。独立只读权限、严格纠偏准入、自动回滚和硬 token 配额不属于本方案，不能由提示词暗中承诺。
