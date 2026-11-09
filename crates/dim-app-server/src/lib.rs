@@ -11,6 +11,7 @@ mod exec_shell_settings;
 mod execution_settings;
 pub mod grok_oauth;
 pub mod hooks_settings;
+pub mod link;
 mod managed_oauth;
 pub mod managed_provider;
 pub mod mcp;
@@ -18,7 +19,6 @@ pub mod methods;
 pub mod model_catalog;
 pub mod model_log;
 mod outbound;
-pub mod link;
 pub mod permission_rules;
 #[cfg(windows)]
 mod pipe_client;
