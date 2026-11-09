@@ -122,6 +122,7 @@ These are Collaboration's message modes and words (`append`, `steer`), with the 
 - **Knowing when to read.** A read is on demand, so a line also needs to know its parent moved. The keyed `<dim-branch-parent>` block (§4, §7.1.1) states the parent's head and the line's cursor; the line decides which pages to read from it. The block never carries content, and reading it is not reading the parent.
 - **No caps.** There is no limit on the number of lines, messages or steers. A message loop ends through the prompt rules (§12), through a line ending itself, or through the user (interrupt or end). Why this is safe, and who would own limits, is in §6.1.
 - **Idle notice.** When a tool line's turn ends, BranchLine on that line writes one steer to `main` (`<dim-branch-idle>`, §12.1), unless one of the following holds:
+  - the line was created with `idleNotice: none`;
   - the turn already sent `main` a steer message;
   - the turn called `end`;
   - the line has a driving input pending.
@@ -180,7 +181,7 @@ Every line answers "which line am I, and which lines are mine" with blocks under
   - that it works in parallel from here on;
   - that messages above addressed to the parent, such as the roster, belong to the parent.
 
-  A tool line's identity also carries its purpose (the `create` prompt) and the line protocol. On a host line, the creator's prompt stays the opening input's `user` content, after the block.
+  A tool line's identity also carries its purpose (the `create` prompt) and the line protocol. For `idleNotice: none`, TimelineTree includes `idle-notice="none"` on that opening identity. BranchLine reads it from the line's own opening input when running or restoring the line. A missing attribute selects `steer`, including histories written before the option existed. The setting controls only automatic idle notices. On a host line, the creator's prompt stays the opening input's `user` content, after the block.
 - **On `main`: the roster.** BranchLine on `main` writes a keyed Append from `main`'s own facts:
   - `branch/create` with a tool source;
   - `branch/create-failed`;
@@ -364,12 +365,12 @@ The tool takes one action-based input, which replaces `{prompt, at?}`. Its risk 
 
 | Action | Input | Who | Effect | Result text |
 | --- | --- | --- | --- | --- |
-| `create` | `prompt`, `at?` | `main` | Opens a tool line cut at `at` (default: before this request's model start, as today) | `Line created: C` |
+| `create` | `prompt`, `at?`, `idleNotice?` (`steer` \| `none`) | `main` | Opens a tool line cut at `at` (default: before this request's model start). The idle notice defaults to `steer`. | `Line created: C` |
 | `message` | `to`, `content`, `mode?` (`append` \| `steer`) | `main` → its open tool line; tool line → its parent | One `input/message` on `to` | `Sent to C.` |
 | `read` | `branch`, `after?`, `limit?` (1–200) | `main` on its tool lines; a line on the line it was cut from | One page from the store, from the caller's cursor when `after` is absent (§6) | The page as JSON: items, `nextCursor`, `done` |
 | `end` | `content` | A tool line, on itself | A final message (steer) to the parent, then `TreeCommands.end(C, source)`, where `source` is this call | `Line C is ending; your final message was sent to P.` |
 
-The input schema is `{action, prompt?, at?, to?, content?, mode?, branch?, after?, limit?}`, with `action` required and `additionalProperties: false`.
+The input schema is `{action, prompt?, at?, idleNotice?, to?, content?, mode?, branch?, after?, limit?}`, with `action` required and `additionalProperties: false`. `idleNotice` is valid only for `create`.
 
 Refusals come back as error results (code in `structuredContent`) and write nothing:
 

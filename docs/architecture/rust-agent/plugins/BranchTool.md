@@ -7,6 +7,9 @@ It is installed with the default execution loop; the minimal execution profile
 leaves it out. The facts it emits and consumes are BranchLine's, the branch
 part below.
 
+`create` passes the optional idle notice policy to TimelineTree. The child
+restores it from its opening identity before BranchLine handles turn ends.
+
 ## Dependencies
 
 | Service | Purpose |

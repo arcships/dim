@@ -67,6 +67,7 @@ struct LineFacts {
 
 struct Node {
     info: TimelineInfo,
+    opening_idle_notice: IdleNotice,
     /// The built branch, before and after publication.
     context: Option<Arc<TimelineContext>>,
     ready: watch::Sender<Option<Result<Branch>>>,
@@ -140,10 +141,21 @@ impl TreeCommands {
         options: BranchOptions,
         admission: CancellationToken,
     ) -> Result<Branch> {
+        self.branch_with_idle_notice(parent, at, options, admission, IdleNotice::Steer)
+            .await
+    }
+    async fn branch_with_idle_notice(
+        &self,
+        parent: String,
+        at: u64,
+        options: BranchOptions,
+        admission: CancellationToken,
+        idle_notice: IdleNotice,
+    ) -> Result<Branch> {
         self.tree
             .upgrade()
             .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?
-            .branch(parent, at, options, admission)
+            .create_child(parent, at, options, admission, idle_notice)
             .await
     }
     // The data methods below spell out `std::result::Result` for rutis'
@@ -738,6 +750,7 @@ impl TimelineTree {
         &self,
         state: &mut TreeState,
         info: TimelineInfo,
+        idle_notice: IdleNotice,
     ) -> Result<watch::Receiver<Option<Result<Branch>>>> {
         if state.closing {
             return Err(AgentError::Closed("TimelineTree".into()));
@@ -753,6 +766,7 @@ impl TimelineTree {
             info.id.clone(),
             Node {
                 info,
+                opening_idle_notice: idle_notice,
                 context: None,
                 ready,
                 turn_end,
@@ -1611,6 +1625,106 @@ impl TimelineTree {
         }
         AgentError::aggregate(errors)
     }
+    fn create_child(
+        &self,
+        parent: String,
+        at: u64,
+        options: BranchOptions,
+        admission: CancellationToken,
+        idle_notice: IdleNotice,
+    ) -> BoxFuture<'_, Result<Branch>> {
+        Box::pin(async move {
+            if self.state.lock().unwrap().ended.contains_key(&parent) {
+                return Err(AgentError::BranchEnded(parent.clone()));
+            }
+            let parent_context = self
+                .owned_context(&parent)
+                .ok_or_else(|| AgentError::UnknownBranch(parent.clone()))?;
+            let timeline = parent_context.timeline();
+            let parent_length = timeline.sequence();
+            if at > parent_length {
+                return Err(AgentError::InvalidInput(
+                    "branch position is beyond committed history".into(),
+                ));
+            }
+            crate::history::validate_context_boundary_at(timeline, at)
+                .await?
+                .map_err(AgentError::InvalidInput)?;
+            let original = BranchCreateData {
+                at: if at == parent_length {
+                    BranchCreateAt::Create {}
+                } else {
+                    BranchCreateAt::Sequence { sequence: at }
+                },
+                source: options.source,
+                branch: uuid::Uuid::new_v4().to_string(),
+                prompt: options.prompt,
+            };
+            if parent_context.is_closing() {
+                return Err(AgentError::Closed(parent.clone()));
+            }
+            let mut ready = None;
+            let _ =
+                timeline.append_registered(EventKind::BranchCreate(original).into(), |event| {
+                    let EventKind::BranchCreate(final_data) = &event.kind else {
+                        unreachable!("before preserves kind")
+                    };
+                    let branch_point = match final_data.at {
+                        BranchCreateAt::Create {} => event.sequence,
+                        BranchCreateAt::Sequence { sequence } if sequence < event.sequence => {
+                            sequence
+                        }
+                        BranchCreateAt::Sequence { .. } => {
+                            return Err(AgentError::InvalidInput(
+                                "branch position is beyond committed history".into(),
+                            ));
+                        }
+                    };
+                    if parent_context.is_closing() {
+                        return Err(AgentError::Closed(parent.clone()));
+                    }
+                    if parent_context.ended() {
+                        return Err(AgentError::BranchEnded(parent.clone()));
+                    }
+                    if admission.is_cancelled() {
+                        return Err(AgentError::Cancelled("branch admission".into()));
+                    }
+                    let mut state = self.state.lock().unwrap();
+                    let mut above = Some(parent.clone());
+                    while let Some(id) = above {
+                        if state.ended.contains_key(&id) {
+                            return Err(AgentError::BranchEnded(id));
+                        }
+                        let node = state
+                            .nodes
+                            .get(&id)
+                            .ok_or_else(|| AgentError::UnknownBranch(id.clone()))?;
+                        if node.context.as_ref().is_some_and(|context| context.ended()) {
+                            return Err(AgentError::BranchEnded(id));
+                        }
+                        above = node.info.parent.clone();
+                    }
+                    ready = Some(self.reserve(
+                        &mut state,
+                        TimelineInfo {
+                            id: final_data.branch.clone(),
+                            parent: Some(parent.clone()),
+                            branch_point: Some(branch_point),
+                            create_anchor: Some(event.sequence),
+                            source: Some(final_data.source.clone()),
+                        },
+                        idle_notice,
+                    )?);
+                    Ok(())
+                })?;
+            tokio::select! {
+                result = Self::await_branch(ready.expect("committed branch reservation")) => result,
+                _ = admission.cancelled() => Err(AgentError::Cancelled(
+                    "stopped waiting; the branch creation continues".into(),
+                )),
+            }
+        })
+    }
     fn on_create(&self, parent: &str, timeline: &Timeline, event: &AgentEvent) -> Result<()> {
         let EventKind::BranchCreate(data) = &event.kind else {
             unreachable!("branch subscription")
@@ -1623,13 +1737,14 @@ impl TimelineTree {
         if state.closing {
             return Ok(());
         }
-        if !state
+        let Some(node) = state
             .nodes
-            .get(&data.branch)
-            .is_some_and(|node| !node.started)
-        {
+            .get_mut(&data.branch)
+            .filter(|node| !node.started)
+        else {
             return Ok(());
-        }
+        };
+        let idle_notice = std::mem::take(&mut node.opening_idle_notice);
         let mut ancestors = timeline.ancestors();
         ancestors.push((parent.into(), point));
         self.launch(
@@ -1642,7 +1757,7 @@ impl TimelineTree {
                     parent: Some(parent.into()),
                     create_event: Some(event.sequence),
                 },
-                first: Some(first_input(parent, data)),
+                first: Some(first_input(parent, data, idle_notice)),
             },
         );
         Ok(())
@@ -1741,6 +1856,7 @@ impl TimelineTreeControl for TimelineTree {
                         create_anchor: None,
                         source: None,
                     },
+                    IdleNotice::Steer,
                 )?;
                 self.launch(
                     &mut state,
@@ -1893,7 +2009,7 @@ impl TimelineTreeControl for TimelineTree {
                 };
                 let (ready, reported) = {
                     let mut state = self.state.lock().unwrap();
-                    let ready = self.reserve(&mut state, next.clone())?;
+                    let ready = self.reserve(&mut state, next.clone(), IdleNotice::Steer)?;
                     let (opening, reported) = if next.parent.is_none() && stored.sequence == 0 {
                         let start = BranchStartData {
                             parent: None,
@@ -1934,96 +2050,7 @@ impl TimelineTreeControl for TimelineTree {
         options: BranchOptions,
         admission: CancellationToken,
     ) -> BoxFuture<'_, Result<Branch>> {
-        Box::pin(async move {
-            if self.state.lock().unwrap().ended.contains_key(&parent) {
-                return Err(AgentError::BranchEnded(parent.clone()));
-            }
-            let parent_context = self
-                .owned_context(&parent)
-                .ok_or_else(|| AgentError::UnknownBranch(parent.clone()))?;
-            let timeline = parent_context.timeline();
-            let parent_length = timeline.sequence();
-            if at > parent_length {
-                return Err(AgentError::InvalidInput(
-                    "branch position is beyond committed history".into(),
-                ));
-            }
-            crate::history::validate_context_boundary_at(timeline, at)
-                .await?
-                .map_err(AgentError::InvalidInput)?;
-            let original = BranchCreateData {
-                at: if at == parent_length {
-                    BranchCreateAt::Create {}
-                } else {
-                    BranchCreateAt::Sequence { sequence: at }
-                },
-                source: options.source,
-                branch: uuid::Uuid::new_v4().to_string(),
-                prompt: options.prompt,
-            };
-            if parent_context.is_closing() {
-                return Err(AgentError::Closed(parent.clone()));
-            }
-            let mut ready = None;
-            let _ =
-                timeline.append_registered(EventKind::BranchCreate(original).into(), |event| {
-                    let EventKind::BranchCreate(final_data) = &event.kind else {
-                        unreachable!("before preserves kind")
-                    };
-                    let branch_point = match final_data.at {
-                        BranchCreateAt::Create {} => event.sequence,
-                        BranchCreateAt::Sequence { sequence } if sequence < event.sequence => {
-                            sequence
-                        }
-                        BranchCreateAt::Sequence { .. } => {
-                            return Err(AgentError::InvalidInput(
-                                "branch position is beyond committed history".into(),
-                            ));
-                        }
-                    };
-                    if parent_context.is_closing() {
-                        return Err(AgentError::Closed(parent.clone()));
-                    }
-                    if parent_context.ended() {
-                        return Err(AgentError::BranchEnded(parent.clone()));
-                    }
-                    if admission.is_cancelled() {
-                        return Err(AgentError::Cancelled("branch admission".into()));
-                    }
-                    let mut state = self.state.lock().unwrap();
-                    let mut above = Some(parent.clone());
-                    while let Some(id) = above {
-                        if state.ended.contains_key(&id) {
-                            return Err(AgentError::BranchEnded(id));
-                        }
-                        let node = state
-                            .nodes
-                            .get(&id)
-                            .ok_or_else(|| AgentError::UnknownBranch(id.clone()))?;
-                        if node.context.as_ref().is_some_and(|context| context.ended()) {
-                            return Err(AgentError::BranchEnded(id));
-                        }
-                        above = node.info.parent.clone();
-                    }
-                    ready = Some(self.reserve(
-                        &mut state,
-                        TimelineInfo {
-                            id: final_data.branch.clone(),
-                            parent: Some(parent.clone()),
-                            branch_point: Some(branch_point),
-                            create_anchor: Some(event.sequence),
-                            source: Some(final_data.source.clone()),
-                        },
-                    )?);
-                    Ok(())
-                })?;
-            tokio::select! {
-                result = Self::await_branch(ready.expect("committed branch reservation")) => result,
-                _ = admission.cancelled() => Err(AgentError::Cancelled(
-                    "stopped waiting; the branch creation continues".into(),
-                )),
-            }
-        })
+        self.create_child(parent, at, options, admission, IdleNotice::Steer)
     }
     fn get(&self, id: &str) -> Option<Branch> {
         self.state.lock().unwrap().nodes.get(id).and_then(|node| {
@@ -2320,6 +2347,14 @@ enum LineRole {
     Tool,
     Host,
 }
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum IdleNotice {
+    #[default]
+    Steer,
+    None,
+}
+const QUIET_IDLE_ATTRIBUTE: &str = "idle-notice";
 /// One line its parent opened, as the parent's own facts recorded it.
 struct Child {
     source: BranchSource,
@@ -2339,6 +2374,7 @@ enum Decision {
 struct LineView {
     role: Option<LineRole>,
     parent: Option<String>,
+    idle_notice: IdleNotice,
     /// The lines this line opened, open or not, by the order it opened them.
     children: BTreeMap<String, Child>,
     roster: Option<(String, bool)>,
@@ -2363,6 +2399,16 @@ struct LineView {
 impl LineView {
     fn input_block(&mut self, id: &str, text: &str, key: &str, retire: bool) {
         if key == line_key() {
+            if self.role == Some(LineRole::Tool)
+                && self.roster.is_none()
+                && !retire
+                && text.lines().next().is_some_and(|line| {
+                    line.starts_with("<dim-branch-line ")
+                        && line.ends_with(r#" idle-notice="none">"#)
+                })
+            {
+                self.idle_notice = IdleNotice::None;
+            }
             self.roster = Some((text.to_owned(), retire));
         } else if key == parent_key() {
             self.parent_input = Some(id.to_owned());
@@ -2962,7 +3008,9 @@ impl BranchLine {
                 None
             }
             EventKind::TurnEnd(data) => {
-                if view.held.values().any(|mode| *mode != InputMode::Append) {
+                if view.idle_notice == IdleNotice::None
+                    || view.held.values().any(|mode| *mode != InputMode::Append)
+                {
                     return None;
                 }
                 let status = match &data.outcome {
@@ -3329,6 +3377,8 @@ struct BranchInput {
     prompt: Option<String>,
     #[serde(default)]
     at: Option<u64>,
+    #[serde(default, rename = "idleNotice")]
+    idle_notice: IdleNotice,
     #[serde(default)]
     to: Option<String>,
     #[serde(default)]
@@ -3359,8 +3409,12 @@ impl BranchTool {
         context: ToolExecutionContext,
         cancel: CancellationToken,
     ) -> std::result::Result<ToolResult, HostError> {
+        let has_idle_notice = call.input.contains_key("idleNotice");
         let input: BranchInput =
             serde_json::from_value(serde_json::Value::Object(call.input)).map_err(invalid)?;
+        if input.action != "create" && has_idle_notice {
+            return Err(invalid("idleNotice is only available for create"));
+        }
         for value in [input.at, input.after] {
             if value.is_some_and(|value| value > MAX_SAFE_INTEGER) {
                 return Err(invalid("positions must be safe integers"));
@@ -3511,7 +3565,7 @@ impl BranchTool {
         };
         let branch = self
             .tree
-            .branch(
+            .branch_with_idle_notice(
                 context.branch_id.clone(),
                 at,
                 BranchOptions {
@@ -3523,6 +3577,7 @@ impl BranchTool {
                     },
                 },
                 cancel,
+                input.idle_notice,
             )
             .await
             .map_err(|error| match error {
@@ -4038,10 +4093,15 @@ fn parent_key() -> String {
     "branch:parent".into()
 }
 
-fn first_input(parent: &str, data: &BranchCreateData) -> InputMessageData {
+fn first_input(parent: &str, data: &BranchCreateData, idle_notice: IdleNotice) -> InputMessageData {
     let (blocks, user) = match data.source {
         BranchSource::Tool { .. } => (
-            vec![tool_line_identity(&data.branch, parent, &data.prompt)],
+            vec![tool_line_identity(
+                &data.branch,
+                parent,
+                &data.prompt,
+                idle_notice,
+            )],
             None,
         ),
         BranchSource::Host { .. } => (
@@ -4081,7 +4141,12 @@ fn parent_open_block(parent: &str, cut: u64) -> InputBlock {
     )
 }
 
-fn tool_line_identity(line: &str, parent: &str, prompt: &str) -> InputBlock {
+fn tool_line_identity(
+    line: &str,
+    parent: &str,
+    prompt: &str,
+    idle_notice: IdleNotice,
+) -> InputBlock {
     let prompt = crate::context_block::text(prompt);
     let body = [
         format!("You are line {line} of this session. Line {parent} opened you at this point of its history to work in parallel with it. You are the same agent as {parent}: everything above is your own history, and you continue from here on your own line. {parent} keeps working on its line; you can read its work after this point, and it can read yours. Messages above that were addressed to {parent}, such as its list of open lines, are {parent}'s, not yours."),
@@ -4097,12 +4162,12 @@ fn tool_line_identity(line: &str, parent: &str, prompt: &str) -> InputBlock {
         format!("- When your purpose is done, or cannot be done, call the branch tool with action \"end\" and content saying what you found, did, changed and left undone. If you already told {parent} that in a message, your end content carries only what is new. Read {parent} once more before you end if the parent block says {parent} has moved, so your last word still holds. That is your last action; {parent} receives it."),
     ]
     .join("\n");
+    let mut attrs = vec![("branch", line), ("parent", parent), ("source", "tool")];
+    if idle_notice == IdleNotice::None {
+        attrs.push((QUIET_IDLE_ATTRIBUTE, "none"));
+    }
     crate::context_block::raw(
-        crate::context_block::element(
-            "dim-branch-line",
-            &[("branch", line), ("parent", parent), ("source", "tool")],
-            &body,
-        ),
+        crate::context_block::element("dim-branch-line", &attrs, &body),
         Some(line_key()),
     )
 }
@@ -4149,6 +4214,7 @@ fn branch_definition(description: &str) -> ToolDefinition {
                 "action":{"type":"string","enum":["create","message","read","end"],"description":"What the call does."},
                 "prompt":{"type":"string","description":"create: the purpose of the new line."},
                 "at":{"type":"number","minimum":0,"description":"create: the position to cut at; defaults to before this request."},
+                "idleNotice":{"type":"string","enum":["steer","none"],"description":"create: automatic notice to the parent after the line goes idle. Use none for a line that should wait quietly. Defaults to steer."},
                 "to":{"type":"string","description":"message: the line to send to."},
                 "content":{"type":"string","description":"message: what to send. end: your final message."},
                 "mode":{"type":"string","enum":["append","steer"],"description":"message: append (default) or steer."},

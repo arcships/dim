@@ -6165,6 +6165,80 @@ async fn an_idle_line_tells_main_once_when_its_turn_ends_without_a_word() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tool_line_without_idle_notices_stays_quiet_after_restore() {
+    let store = Arc::new(MemoryTimelineStore::default());
+    let probe = Arc::new(Probe::default());
+    let agent = MinimalHost::start(&builder_with_store(&probe, store.clone()))
+        .await
+        .unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let id = session.id().to_owned();
+    let result = tool_call(
+        &session,
+        "main",
+        r#"{"action":"create","prompt":"watch the tests","idleNotice":"none"}"#,
+    )
+    .await;
+    assert_eq!(result.is_error, None, "{:?}", result.content);
+    let child = session
+        .branches()
+        .into_iter()
+        .find(|info| info.id != "main")
+        .expect("the create result names a published line")
+        .id;
+    until_events(&session, &child, |events| {
+        events.iter().any(|event| {
+            matches!(&event.kind, EventKind::TurnEnd(data) if matches!(&data.outcome, TurnOutcome::Completed { .. }))
+        })
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(blocks_with(&local_events(&session, "main").await, "<dim-branch-idle").is_empty());
+    soon(agent.close()).await.unwrap();
+
+    let agent = MinimalHost::start(&builder_with_store(&probe, store))
+        .await
+        .unwrap();
+    let session = soon(agent.restore_session(id)).await.unwrap();
+    soon(session.idle(&child)).await.unwrap();
+    let before = local_events(&session, &child)
+        .await
+        .last()
+        .unwrap()
+        .sequence;
+    session
+        .submit("Check again".into(), InputMode::Queue, &child)
+        .await
+        .unwrap();
+    until_events(&session, &child, |events| {
+        events.iter().any(|event| {
+            event.sequence > before
+                && matches!(&event.kind, EventKind::TurnEnd(data) if matches!(&data.outcome, TurnOutcome::Completed { .. }))
+        })
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(blocks_with(&local_events(&session, "main").await, "<dim-branch-idle").is_empty());
+
+    let result = tool_call(
+        &session,
+        &child,
+        r#"{"action":"message","to":"main","content":"A test failed","mode":"steer"}"#,
+    )
+    .await;
+    assert_eq!(result.is_error, None, "{:?}", result.content);
+    until_events(&session, "main", |events| {
+        blocks_with(events, "<dim-branch-message")
+            .iter()
+            .any(|text| text.contains("A test failed"))
+    })
+    .await;
+    soon(agent.close()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_turn_that_steered_main_writes_no_idle_notice() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
