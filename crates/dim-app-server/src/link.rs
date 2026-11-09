@@ -93,7 +93,11 @@ impl DynPlugin for LinkPlugin {
 }
 
 async fn dial(ctx: Ctx, config: LinkConfig) {
-    let credential = config.token.clone().map(Credential::Bearer);
+    let Some(token) = config.token.clone() else {
+        warn!("link: a dialer requires a token");
+        return;
+    };
+    let credential = Credential::Bearer(token);
     let trust = match &config.ca_pem {
         Some(ca) => match std::fs::read(ca) {
             Ok(ca) => Trust::only(ca),
@@ -109,7 +113,7 @@ async fn dial(ctx: Ctx, config: LinkConfig) {
         match websocket::dial(
             &config.address,
             &protocol(),
-            credential.as_ref(),
+            Some(&credential),
             &trust,
             &Limits::default(),
         )
