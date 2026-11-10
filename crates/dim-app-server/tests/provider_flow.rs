@@ -29,6 +29,7 @@ use dim_app_server::{
 use futures_util::{StreamExt, stream};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, Key, TypeKey};
 use rutis::{Ctx, Plugin};
+use rutis_bridge::session::{HostDispatch, Value as RpcValue, host_key};
 use rutis_loader::resolve::Build;
 use serde_json::{Value, json};
 use std::{
@@ -163,6 +164,20 @@ impl DynPlugin for Capture {
         })
     }
 }
+/// One call of a host port's face under its own name, as a caller of another
+/// language makes it.
+async fn face_call(root: &Ctx, port: &str, method: &str, args: Vec<RpcValue>) -> Value {
+    let dispatch = root
+        .get_at::<dyn HostDispatch>(&host_key(port))
+        .unwrap_or_else(|| panic!("{port} is a data face"));
+    match dispatch.invoke(method, RpcValue::List(args)).unwrap() {
+        RpcValue::Reference(reply) if reply.is_future() => {
+            reply.wait_async().await.unwrap().json().unwrap()
+        }
+        value => value.json().unwrap(),
+    }
+}
+
 /// Process-level names from the App Server's catalog, for parts mounted on a
 /// test root.
 fn names() -> Names<'static> {
@@ -1750,7 +1765,39 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
             .any(|model| model.target.provider_id == "openai-codex"),
         "an unauthenticated managed account is not selectable"
     );
+    // The same two reads through the faces other languages call: the models
+    // the Rust consumer sees, in its order.
+    let listed = face_call(&root, "selectableModelsHost", "selectableModels", vec![]).await;
+    let chat_face: Vec<dim_agent_types::ModelCapabilitySnapshot> =
+        serde_json::from_value(listed["models"].clone()).unwrap();
+    let listed = face_call(
+        &root,
+        "selectableModelsHost",
+        "selectableForModality",
+        vec![],
+    )
+    .await;
+    let modality_face: Vec<dim_agent_types::ModalityModelSnapshot> =
+        serde_json::from_value(listed["models"].clone()).unwrap();
     let chat = selectable.0.selectable(cancel.clone()).await.unwrap();
+    assert_eq!(chat_face, chat, "the face lists what the port lists");
+    assert_eq!(
+        modality_face,
+        selectable
+            .0
+            .selectable_for_modality(cancel.clone())
+            .await
+            .unwrap()
+    );
+    let resolved = face_call(
+        &root,
+        "modelSelectionHost",
+        "resolve",
+        vec![json!({"explicit": {"providerId": MINE, "modelId": "modality-text"}}).into()],
+    )
+    .await;
+    assert_eq!(resolved["providerId"], MINE);
+    assert_eq!(resolved["modelId"], "modality-text");
     let chat_ids: Vec<&str> = chat
         .iter()
         .filter(|model| model.target.provider_id == MINE)

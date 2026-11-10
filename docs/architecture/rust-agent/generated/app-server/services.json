@@ -3465,6 +3465,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#executionSettingsHost",
+        "provider": 24,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#localId",
         "provider": 1,
         "generation": 0,
@@ -3473,6 +3479,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#managementMethods",
         "provider": 9,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#modelSelectionHost",
+        "provider": 17,
         "generation": 1,
         "removing": false
       },
@@ -3489,8 +3501,20 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#promptSuggestionSettingsHost",
+        "provider": 26,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#rutis/loader",
         "provider": 2,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#selectableModelsHost",
+        "provider": 17,
         "generation": 1,
         "removing": false
       },
@@ -3515,6 +3539,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#settings",
         "provider": 18,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#toolchainSourceHost",
+        "provider": 25,
         "generation": 1,
         "removing": false
       },

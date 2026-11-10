@@ -83,7 +83,7 @@ impl DynPlugin for ExecutionSettingsPlugin {
                 },
             )?;
             let host = ExecutionSettingsHost(Arc::new(Storage { settings }));
-            ctx.provide_as::<ExecutionSettingsHost>(Arc::new(host))?;
+            dim_agent_capabilities::execution_settings::provide(ctx, &host)?;
             dim_agent_capabilities::execution_settings::prompt::register_parts(ctx, &parts)?;
             Ok(Effect::Done)
         })

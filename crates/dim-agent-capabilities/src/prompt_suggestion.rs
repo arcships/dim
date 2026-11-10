@@ -19,6 +19,7 @@ use crate::host::{
 use crate::methods::{
     Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply,
 };
+use crate::port_faces::{cancel_arg, cancelled_by, port_failure, unknown_method};
 use crate::session_broadcast::{
     SessionBroadcast, SessionBroadcastEvent, SessionNotice, notify, session_channel,
 };
@@ -34,6 +35,7 @@ use dim_agent_types::{
 use futures_util::StreamExt;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
+use rutis_bridge::session::{HostDispatch, Reply as BridgeReply, Value as BridgeValue, host_key};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -56,7 +58,7 @@ const REQUEST_ID: &str = "requestId";
 /// defaults and the range before the part reads it, so both members are
 /// present in every document either of them reads; a missing one is an error,
 /// never an invented value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PromptSuggestionSettings {
     pub enabled: bool,
@@ -88,6 +90,48 @@ pub trait PromptSuggestionSettingsSource: Send + Sync + 'static {
 }
 
 pub struct PromptSuggestionSettingsHost(pub Arc<dyn PromptSuggestionSettingsSource>);
+
+/// Provides one owner's [`PromptSuggestionSettingsHost`]: the document the
+/// Session part reads at each decision, and the
+/// `promptSuggestionSettingsHost` face other languages read it by.
+pub fn provide_settings(ctx: &Ctx, host: &PromptSuggestionSettingsHost) -> rutis::Result<()> {
+    ctx.provide_at(
+        Key::<PromptSuggestionSettingsHost>::of(),
+        Arc::new(PromptSuggestionSettingsHost(host.0.clone())),
+    )?;
+    ctx.provide_at(
+        host_key(&dim_agent_runtime::names::name_of::<
+            PromptSuggestionSettingsHost,
+        >()),
+        Arc::new(SettingsFace(host.0.clone())) as Arc<dyn HostDispatch>,
+    )?;
+    Ok(())
+}
+
+const SETTINGS: &str = "promptSuggestionSettingsHost";
+
+struct SettingsFace(Arc<dyn PromptSuggestionSettingsSource>);
+
+impl HostDispatch for SettingsFace {
+    fn methods(&self) -> Option<Value> {
+        Some(json!({"read": "async"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> BridgeReply {
+        if method != "read" {
+            return Err(unknown_method(SETTINGS, method));
+        }
+        let cancelled = cancel_arg(SETTINGS, args)?;
+        let source = self.0.clone();
+        Ok(BridgeValue::future(async move {
+            let cancel = CancellationToken::new();
+            let settings = cancelled_by(&cancel, cancelled, source.read(cancel.clone()))
+                .await
+                .map_err(|error| port_failure(SETTINGS, "failed", error.to_string()))?;
+            rutis_bridge::session::arg(&settings)
+        }))
+    }
+}
 
 /// Installs PromptSuggestion in every Session, resolving each request's
 /// connection through the process [`ProviderConnectionResolver`].

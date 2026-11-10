@@ -47,11 +47,17 @@ impl Plugin for ConfiguredModelsPlugin {
             generation: ctx.cancellation_token(),
         });
         ctx.provide(ProviderConnectionResolver(resolver.clone()))?;
-        ctx.provide(ModelSelectionHost(resolver.clone()))?;
+        dim_agent_capabilities::port_faces::provide_model_selection(
+            ctx,
+            &ModelSelectionHost(resolver.clone()),
+        )?;
         ctx.provide(ModalityConnectionHost(resolver.clone()))?;
-        ctx.provide(SelectableModelsHost(Arc::new(ConfiguredSelectable {
-            models: self.0.clone(),
-        })))?;
+        dim_agent_capabilities::port_faces::provide_selectable_models(
+            ctx,
+            &SelectableModelsHost(Arc::new(ConfiguredSelectable {
+                models: self.0.clone(),
+            })),
+        )?;
         let auxiliary = Arc::new(crate::auxiliary::ConfiguredAuxiliary {
             models: self.0.clone(),
             connection: resolver,

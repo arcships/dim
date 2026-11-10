@@ -82,7 +82,7 @@ impl DynPlugin for PromptSuggestionSettingsPlugin {
                 },
             )?;
             let host = PromptSuggestionSettingsHost(Arc::new(Storage { settings }));
-            ctx.provide_as::<PromptSuggestionSettingsHost>(Arc::new(host))?;
+            dim_agent_capabilities::prompt_suggestion::provide_settings(ctx, &host)?;
             Ok(Effect::Done)
         })
     }

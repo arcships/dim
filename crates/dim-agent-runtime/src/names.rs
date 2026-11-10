@@ -88,6 +88,24 @@ pub fn register<T: ?Sized + Send + Sync + 'static>(
     };
 }
 
+/// Registers `T`'s name as shared across languages: the name a face is
+/// provided under (`host_key`), which Rust parts also read the value at. The
+/// data face itself is the `HostDispatch` the owner provides at that key.
+pub fn share<T: ?Sized + Send + Sync + 'static>(catalog: &mut ServiceCatalog) {
+    catalog.register_shared(name_of::<T>());
+}
+
+/// Whether the catalog holds an entry for `name`. [`registered_key`] cannot
+/// answer it: every name the catalog does not register is still shared by
+/// name, at the key a registered shared name has. A name outside this copy's
+/// instances is named too.
+fn named(catalog: &ServiceCatalog, name: &str) -> bool {
+    !matches!(
+        rutis_loader::resolve::ExprScope::new(None, catalog).has(name),
+        Err(LoaderError::UnknownService(_))
+    )
+}
+
 /// A catalog for an assembly, holding the runtime's own names. Every name it
 /// does not register is shared across languages.
 pub fn catalog() -> ServiceCatalog {
@@ -219,12 +237,11 @@ impl<'a> Names<'a> {
         Ok(Key::of().instance(instance))
     }
     /// Whether the assembly names `T`: a part whose dependency on it is
-    /// optional includes it only then ([`Self::when`]).
+    /// optional includes it only then ([`Self::when`]). A name shared across
+    /// languages is named too: its face is what a part of another language
+    /// provides there.
     pub fn registered<T: ?Sized + 'static>(&self) -> bool {
-        !matches!(
-            registered_key(self.catalog, &name_of::<T>()),
-            Err(LoaderError::UnknownService(_))
-        )
+        named(self.catalog, &name_of::<T>())
     }
     /// The key of the service `name` as the catalog keys it for this copy.
     /// A name that crosses languages is at its dispatcher's key, so `T` is

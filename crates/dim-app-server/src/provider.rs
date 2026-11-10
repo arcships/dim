@@ -2959,9 +2959,15 @@ impl DynPlugin for ProviderPlugin {
             })?;
             let resolver = Arc::new(ProductResolver(service.clone()));
             ctx.provide(ProviderConnectionResolver(resolver.clone()))?;
-            ctx.provide(ModelSelectionHost(resolver.clone()))?;
+            dim_agent_capabilities::port_faces::provide_model_selection(
+                ctx,
+                &ModelSelectionHost(resolver.clone()),
+            )?;
             ctx.provide(ModalityConnectionHost(resolver.clone()))?;
-            ctx.provide(SelectableModelsHost(resolver))?;
+            dim_agent_capabilities::port_faces::provide_selectable_models(
+                ctx,
+                &SelectableModelsHost(resolver),
+            )?;
             let auxiliary = Arc::new(auxiliary::AuxiliaryModel {
                 owner: service.clone(),
                 host,

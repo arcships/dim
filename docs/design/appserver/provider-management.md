@@ -645,10 +645,10 @@ beside `ModelSelectionHost`. Provider provides it in `ProviderPlugin::apply`, an
 the configured model profile (`dim-agent-aimux`) provides it from the entries of
 its model file, so both deployments answer the same reads; that profile declares
 no modality operation, so its `selectableForModality` read answers none
-([aimux](../../../crates/dim-agent-aimux/README.md)). The App Server catalog
-registers it as the Rust-only name `selectableModelsHost`
-(no cross-language binding before
-[#4](https://github.com/arcships/dim/issues/4)):
+([aimux](../../../crates/dim-agent-aimux/README.md)). The catalog registers the
+shared name `selectableModelsHost`: each provider provides the Rust value Session
+parts read and, beside it, the face another language calls, with the operations §3.6
+states ([service faces §4.8](../service-faces.md#48-宿主端口executionsettingshost-等五个)):
 
 ```rust
 pub trait SelectableModels: Send + Sync + 'static {
@@ -671,10 +671,9 @@ both. A consumer that needs the read declares
 that must load without Provider reads the name when it is provided and gates
 nothing (Collaboration's `models` action); it takes a snapshot at load, so a
 Provider reload does not reload it. No consumer reads `ProviderService` directly.
-A non-Rust consumer reaches the port by name when the runtime-services-by-name requirement
-([#4](https://github.com/arcships/dim/issues/4)) is delivered; that requirement is
-raised once in [Modality §9](../plugins/Modality.md#9-requirements-raised-to-mechanism-owners)
-and is not raised again here.
+A non-Rust consumer calls `selectableModelsHost` by name, with the operations §3.6
+states; the face delegates to the same owner read, so a consumer of either language
+gets the models execution would.
 
 **Connection contract: `resolveModalityConnection`.** The same owner resolves the
 connection one non-conversational call uses, so an adapter holds no Provider
@@ -1135,7 +1134,7 @@ disposable database; see [the storage contract](native-storage-format.md#329-格
 | §4.5 | Owned related selections/models/preferences/routes commit together; existing adoption remains atomic |
 | §4.6 | Management data does not enter model context; only existing adoption paths change configuration |
 | §4.7 | Accounts use public methods; Modality reads selectable models through §3.6's core host port; Migration uses §3.7's Provider-owned judgment; other owners' references are not rewritten |
-| §4.8 | §5 raises no mechanism requirement; existing metadata and v19 top-level JSON suffice; §3.6 and §3.7 add no requirement, and a non-Rust consumer uses [#4](https://github.com/arcships/dim/issues/4) already raised by Modality |
+| §4.8 | §5 raises no mechanism requirement; existing metadata and v19 top-level JSON suffice; §3.6's read is a data face ([service faces §4.8](../service-faces.md#48-宿主端口executionsettingshost-等五个)), so a non-Rust consumer calls it by name; §3.7 adds no requirement |
 | §4.9 | No new Timeline event or pushed process notification |
 | §1 | Extend the existing process Provider; no Capability or wiring plugin |
 | ADR 002 D1 | Process records belong to Provider; adopted branch state to its owner; drafts to clients |

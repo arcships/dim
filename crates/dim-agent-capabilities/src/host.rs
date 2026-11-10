@@ -516,7 +516,7 @@ pub struct BedrockModelConnection {
     pub headers: HashMap<String, String>,
     pub auth: BedrockAuth,
 }
-fn optional_non_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(crate) fn optional_non_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: serde::Deserialize<'de>,

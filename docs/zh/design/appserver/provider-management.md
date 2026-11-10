@@ -415,8 +415,9 @@ Dispatcher、before 回调、Session 与分支部件；driver、路由和非 cha
 缓存、通知、crate 或模块。
 
 **Rust 绑定。** 端口定义在 `crates/dim-agent-capabilities/src/host.rs`，`ModelSelectionHost`
-旁。Provider 在 `ProviderPlugin::apply` 中提供该端口，App Server 的 catalog 以 Rust-only 名字
-`selectableModelsHost` 注册它（[#4](https://github.com/arcships/dim/issues/4) 之前没有跨语言绑定）：
+旁。Provider 在 `ProviderPlugin::apply` 中提供该端口；catalog 以 shared 名字
+`selectableModelsHost` 注册它，每个提供方同时给出 Session 部件读的 Rust 值和旁边的跨语言面，
+方法就是 §3.6 列出的那些（[服务面 §4.8](../../service-faces.md#48-宿主端口executionsettingshost-等五个)）：
 
 ```rust
 pub trait SelectableModels: Send + Sync + 'static {
@@ -439,9 +440,9 @@ owner 实现是 `ProviderService::selectable_models` 与
 （[aimux](../../../crates/dim-agent-aimux/README.md)）。需要这次读取的消费方在 `Deps` 中声明
 `Keyed<SelectableModelsHost>` 并以它作为加载门槛（Modality）；必须在没有该读取时也能加载的消费方
 在提供时按名读取、不设门槛（Collaboration 的 `models` 动作），并在加载时取得快照，因此提供方
-重载不会重载它。消费方不直接读取 `ProviderService`。非 Rust 消费方在
-运行时按名暴露服务的要求（[#4](https://github.com/arcships/dim/issues/4)）交付后按名访问；
-该要求已在 [Modality §9](../plugins/Modality.md#9-向机制所有者提出的需求) 提出，这里不重复提出。
+重载不会重载它。消费方不直接读取 `ProviderService`。非 Rust 消费方按名调用
+`selectableModelsHost`，方法即 §3.6 列出的那些；该面委托同一次 owner 读取，两种语言的
+消费方得到执行会选的同一批模型。
 
 **连接合同：`resolveModalityConnection`。** 同一个 owner 解析一次非对话调用所用的连接，
 适配器因此不持有 Provider 凭据，也不读取 Provider 记录。它是 `ProviderConnectionResolver`
@@ -790,7 +791,7 @@ RPC 流程覆盖 CAS 与丢失 create 回复后的恢复。Desktop UI 验收归�
 | §4.5 | 自有模型/选择/偏好/路由同事务；既有采用原子性不变 |
 | §4.6 | 管理数据不进模型上下文，配置只沿现有采用路径 |
 | §4.7 | 账号沿公开方法，Modality 经 §3.6 的 core host 端口读取可选模型，Migration 使用 §3.7 由 Provider 拥有的判断，不跨写其他 owner 引用 |
-| §4.8 | §5 无机制需求，复用 metadata 和 v19 顶层 JSON；§3.6、§3.7 不增加需求，非 Rust 消费方使用 Modality 已提出的 [#4](https://github.com/arcships/dim/issues/4) |
+| §4.8 | §5 无机制需求，复用 metadata 和 v19 顶层 JSON；§3.6 的读取是数据面（[服务面 §4.8](../../service-faces.md#48-宿主端口executionsettingshost-等五个)），非 Rust 消费方按名调用；§3.7 不增加需求 |
 | §4.9 | 不加 Timeline 事件或进程推送通知 |
 | §1 | 扩展现有进程 Provider，不增 Capability/接线插件 |
 | ADR 002 D1 | 进程记录归 Provider，已采用分支状态归原 owner，草稿归客户端 |

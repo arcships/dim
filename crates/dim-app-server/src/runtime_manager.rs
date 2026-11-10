@@ -1763,7 +1763,7 @@ impl DynPlugin for ToolchainSourcePlugin {
                 ctx: ctx.clone(),
                 service: self.service.clone(),
             };
-            ctx.provide_as::<ToolchainSourceHost>(Arc::new(ToolchainSourceHost(Arc::new(port))))?;
+            dim_agent_capabilities::toolchain::provide(ctx, &ToolchainSourceHost(Arc::new(port)))?;
             Ok(Effect::Done)
         })
     }

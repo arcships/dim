@@ -4,6 +4,11 @@
 //! HostPlatform appends to the PATH of the processes it starts and grants to a
 //! confined one read-only. A host without it starts every process with the
 //! PATH it would have without any runtime.
+use crate::port_faces::{no_args, port_failure, unknown_method};
+use rutis::Ctx;
+use rutis::host::{CtxHost, Key};
+use rutis_bridge::session::{HostDispatch, Reply, Value as BridgeValue, host_key};
+use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -41,4 +46,77 @@ impl ToolchainSourceHost {
         }
         Self(Arc::new(Fixed(toolchains)))
     }
+}
+
+/// Provides one owner's [`ToolchainSourceHost`]: the directories the
+/// `HostPlatform` reads, and the `toolchainSourceHost` face other languages
+/// read them by.
+pub fn provide(ctx: &Ctx, host: &ToolchainSourceHost) -> rutis::Result<()> {
+    ctx.provide_at(
+        Key::<ToolchainSourceHost>::of(),
+        Arc::new(ToolchainSourceHost(host.0.clone())),
+    )?;
+    ctx.provide_at(
+        host_key(&dim_agent_runtime::names::name_of::<ToolchainSourceHost>()),
+        Arc::new(ToolchainSourceFace(host.0.clone())) as Arc<dyn HostDispatch>,
+    )?;
+    Ok(())
+}
+
+/// One installed runtime on the wire. The two directories are UTF-8 paths, as
+/// every path that crosses is
+/// ([service faces §1](../../../docs/design/service-faces.md#1-规则)).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolchainView {
+    pub bin: String,
+    pub root: String,
+}
+
+/// The `toolchainSourceHost.list` reply: the installed runtimes, in order.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolchainSourceReply {
+    pub toolchains: Vec<ToolchainView>,
+}
+
+const NAME: &str = "toolchainSourceHost";
+
+struct ToolchainSourceFace(Arc<dyn ToolchainSource>);
+
+impl HostDispatch for ToolchainSourceFace {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({"list": "sync"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        if method != "list" {
+            return Err(unknown_method(NAME, method));
+        }
+        no_args(NAME, method, args)?;
+        let toolchains = self
+            .0
+            .toolchains()
+            .iter()
+            .map(view)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|path| {
+                port_failure(
+                    NAME,
+                    "failed",
+                    format!("toolchain path is not UTF-8: {}", path.display()),
+                )
+            })?;
+        rutis_bridge::session::arg(&ToolchainSourceReply { toolchains })
+    }
+}
+
+fn view(toolchain: &InstalledToolchain) -> Result<ToolchainView, PathBuf> {
+    fn text(path: &std::path::Path) -> Result<String, PathBuf> {
+        path.to_str().map(str::to_owned).ok_or_else(|| path.into())
+    }
+    Ok(ToolchainView {
+        bin: text(&toolchain.bin)?,
+        root: text(&toolchain.root)?,
+    })
 }
