@@ -945,6 +945,7 @@
       "parent": "dim_agent_capabilities",
       "file": "crates/dim-agent-capabilities/src/prompt_state.rs",
       "unexpandedMacros": [
+        "format",
         "unreachable",
         "vec"
       ]
@@ -13664,7 +13665,9 @@
       "from": "dim_agent_capabilities::prompt_state",
       "to": "dim_agent_runtime::error",
       "references": [
-        "path dim_agent_runtime::Result"
+        "path AgentError::Storage",
+        "path dim_agent_runtime::Result",
+        "use dim_agent_runtime::AgentError"
       ]
     },
     {
