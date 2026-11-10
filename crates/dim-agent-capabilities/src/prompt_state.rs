@@ -344,6 +344,19 @@ impl PromptSnapshot {
                                             std::slice::from_ref(&change),
                                         );
                                     } else {
+                                        // A source that leaves System for an
+                                        // input-delivered class: the prefix's
+                                        // configuration already carries the
+                                        // new System composition without it, so
+                                        // only the new value waits.
+                                        if let Some(removal) = snapshot.system_removal(&change)
+                                        {
+                                            snapshot.changed(
+                                                &line,
+                                                &revision,
+                                                std::slice::from_ref(&removal),
+                                            );
+                                        }
                                         waiting.push(change);
                                     }
                                 }
@@ -435,6 +448,26 @@ impl PromptSnapshot {
                 .get(&(source.clone(), scope.clone()))
                 .is_some_and(|entry| entry.delivery == PromptDelivery::System),
         }
+    }
+
+    /// The removal of the System entry `change` replaces, when the entry in
+    /// force for its source is System and the change is not: the source leaves
+    /// the System prompt, and the prefix's configuration already carries that
+    /// composition, so the removal applies where the change is found while
+    /// only the new value waits for its delivery.
+    fn system_removal(&self, change: &PromptChange) -> Option<PromptChange> {
+        let PromptChange::Set { entry } = change else {
+            return None;
+        };
+        if entry.delivery == PromptDelivery::System {
+            return None;
+        }
+        let key = (entry.source.clone(), entry.scope.clone());
+        let replaced = self.entries.get(&key)?;
+        (replaced.delivery == PromptDelivery::System).then(|| PromptChange::Revoke {
+            source: entry.source.clone(),
+            scope: entry.scope.clone(),
+        })
     }
 
     pub fn apply(&mut self, event: &AgentEvent) {

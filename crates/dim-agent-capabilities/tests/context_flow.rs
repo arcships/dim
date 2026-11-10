@@ -859,6 +859,8 @@ mod product_summary;
 mod replan;
 #[path = "context_flow/retention.rs"]
 mod retention;
+#[path = "context_flow/system_removal.rs"]
+mod system_removal;
 
 struct ExpandFinal {
     timeline: Key<Timeline>,
