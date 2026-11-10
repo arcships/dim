@@ -76,11 +76,11 @@ impl AgentBuilder {
 
 ### 2.5 存量迁移
 
-存量不一次改完。每个非 shared 名字按 §3 的分类标 reason（`object`/`hot-path`/`secret`/…）；#1300 的清单就是映射，出现 leaf 消费者时再改数据面。这样 `xtask check` 从第一天就能拦住“新写的服务忘了形状”，而不用等所有名字全部迁完。
+存量不是例外：公开服务从第一天起就按 data face 写，存量名字是迁移债，不是稳定分类。§3 的分组是迁移类别：可转的按批次转成 data face；确实不能跨的（`object`、`hot-path`、`lock-callback`、`secret`、`control`、`host-resource`）才保留 `internal(reason)`。`legacy-no-consumer` 只表示“还没转”，不是“可以一直 internal”；每个这样的名字要有迁移批次。`xtask check` 拦住新写的未标记服务，评审按 §3 盘点拦住把可转名字继续留成 internal。
 
 ## 3. 盘点（#1300）
 
-catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。§3 表覆盖这 91 个 internal 名字；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 是 #1292 的新名字，不在当前 catalog。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。
+catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。§3 表覆盖这 91 个 internal 名字；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 是 #1292 的新名字，不在当前 catalog。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。这些分组是迁移分类，不是永久结论：可转的都要转，永久 internal 只限确实不能跨的形态。
 
 ### 3.1 已经可以跨，但 catalog 列没体现
 
@@ -197,8 +197,8 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。
 | `skillsBranch` | branch | SkillsBranch | host-resource | 留宿主；本地资源 |
 | `managedProviders` | process | ManagedProviders | secret | 留宿主；只暴露操作 |
 
-### 3.7 数据内容，但还没有 leaf 消费者
-原因 `legacy-no-consumer`：内容是数据，但还没有 leaf 消费者。它们不是“永远不能跨”。
+### 3.7 待迁移的数据内容
+原因 `legacy-no-consumer`：内容是数据，但还没有转成 data face。没有 leaf 消费者不是保留 internal 的理由；这些名字按批次迁移，`legacy-no-consumer` 只是迁移状态，不是永久分类。
 
 | 名字 | scope | provider | reason | 动作 |
 | --- | --- | --- | --- | --- |
@@ -330,12 +330,12 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 2. **secret**：`providerService`、`mcpAuth`、OAuth 服务、`managedProviders` 保持 internal；数据面只暴露操作，不暴露值。
 3. **`workflowRuns` 已经是数据面**：optional Workflow 包已提供；#1292 只核对形状，不新增 provider。
 4. **`Faces` 的传播**：`Names`、`PartRegistry`、`SessionResolver` 都要拿到同一份原因表；独立 host / 测试用空表，检查只在装配和 leaf 加载处生效。
-5. **legacy 标记**：当前 91 个 internal 名字里 18 个是“数据内容、无消费者”，标 `legacy-no-consumer`；不是永久 internal。
+5. **legacy 标记**：当前 91 个 internal 名字里 18 个是待迁移的数据内容。`legacy-no-consumer` 是迁移状态，不是永久 internal；它们按批次转成 data face。
 6. **shared 与 dispatcher 不一致**：`managementMethods`、`localId` 已在 #1289 变成 `data`；`loaderService`、`pluginMounter` 是仅有的两个 `shared-no-dispatcher` 例外，检查不放行其他 shared-without-dispatcher。
 
 ## 7. 交付顺序
 
 1. **#1289**：`Faces`、`AgentBuilder::internal`、catalog `face`、双向 `xtask check`、leaf 拒绝、`managementMethods` 注册顺序、`localId` dispatcher；`loaderService`/`pluginMounter` 作为两个外部 `shared-no-dispatcher` 例外。
 2. **#1300**：按 §3 的分组在 catalog 里补齐 reason；`xtask graph` 的 diff 就是盘点结果。此 PR 不改服务。
-3. **#1292**：按 `scheduleJobs` → `wakeups` → `sessionFiles` → `managedSearch` 的顺序，一项一个 PR。`workflowRuns` 已是数据面，只核对；`settingsService`、`modelHost` 不迁移。
+3. **#1292**：存量 data face 迁移。先做 `scheduleJobs`、`wakeups`、`sessionFiles`、`managedSearch`，再按 §3 分类把可转的名字一批批转完；确实不能跨的写清原因。`workflowRuns` 已是数据面，只核对。
 4. 每项都带现有 flow 测试；不新增适配层，不写第二份逻辑。
