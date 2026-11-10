@@ -31,6 +31,18 @@ This repository is Dim: a Rust coding agent (Agent v4), its App Server and the n
 - `ToolResult.content` is the only text the model can read. Handles, cursors and state the model needs later must be written into `content`; `structuredContent` is only for persistence, UI and internal logic.
 - Incompatible persistence changes require an explicit format decision; do not silently reuse a version for incompatible committed formats. Validate against disposable databases, never a user's existing store.
 
+## Cross-language compatibility
+
+Every public service is written for the cross-language boundary by default; `internal` is the explicit exception. The contract is [service faces](docs/design/service-faces.md) §2; if this section and the design disagree, the design wins.
+
+- `internal` is a contract statement: the face cannot be implemented, provided or injected by another language or process. Mark it only when the face truly cannot be a data face, then give one reason from the closed set: `object`, `hot-path`, `lock-callback`, `secret`, `owner-api`, `control`, `host-resource`, `legacy-no-consumer` ([service faces](docs/design/service-faces.md) §2.4). A name cannot be both shared and internal.
+- A data face is a name shared in the catalog **and** a `HostDispatch` at `host_key(name)`. Shared alone is not enough.
+- Method parameters, replies and errors are data: serde types, ids, operations and events. Handles, `&mut`, iterators, channels and `PathBuf`/`OsString` do not cross; the bridge may carry references and callbacks, but they are not the default, and a callback is never called synchronously inside the commit lock.
+- A part is leaf-ready only if every `inject` is a data face, every name it `provides` is a data face, it uses only dispatched methods, and it captures no non-service Rust state.
+- Every design and implementation states the face of each service it adds or consumes; link to the owner contract instead of restating or changing it.
+- Do not add an adapter layer or a second business logic. The data face delegates to the owner.
+- Before review, check the name, shape, field spelling, cancellation and owner document against the current head.
+
 ## Comments
 
 - Prefer code that needs no comment. A comment is only for what code cannot carry: a stable external reference (`#169`, `ADR 006 D3`), a tool or compiler directive, a `// SAFETY:` precondition, a generated-file marker, or a license header.

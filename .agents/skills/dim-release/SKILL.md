@@ -12,8 +12,9 @@ Read [version preparation](../../../docs/release/README.md#version-preparation) 
 ## Requested stage
 
 - A version bump or release-PR request ends with a reviewable PR. It does not authorize merging, tags, builds, GitHub Release publication or npm writes.
-- A build request covers the GitHub-hosted build and draft inspection. npm publication is a separate stage.
+- A build request covers the GitHub-hosted build and draft inspection. npm and container-image publication are separate stages.
 - An explicit end-to-end publication request may authorize all stages. Honor authorization already given; do not ask again at each stage.
+- A container-image request covers its dry run and, with `publish=true`, GHCR publication; it does not authorize npm or GitHub Release changes.
 - A skill review or configuration check never runs a release. `publish-alpha.mjs --dry-run` builds the targets; it is not a read-only version check.
 
 ## Prepare the next GitHub alpha from main
@@ -70,6 +71,12 @@ git diff --check
 - `gh workflow run npm-publish.yml --ref main -f release_tag=vVERSION` performs read-only verification on hosted Ubuntu. Do not dispatch it just to review skill/configuration changes.
 - Actual publication requires an explicit npm-publication request, `NPM_ALPHA_PUBLISH_ENABLED=true`, and the same command with `-f publish=true`. Keep the switch unset or `false` during setup and ordinary verification; do not silently enable it for a preparation request.
 - The hosted job independently downloads the original tarballs and manifest from the GitHub Release and validates their bytes and registry state again. It snapshots protected tags using the Release's package set and publishes without building or repacking: six platform packages and `dimcode-web`, then `dimcode-alpha`, all on `alpha`. After completeness and provenance verification, it aligns only the wrapper's `latest` and `alpha` to that nightly. It never publishes `dimcode` or changes its tags, platform/Web non-alpha tags, or unrelated wrapper tags. Acceptance installs both default `dimcode-alpha` and `dimcode-alpha@alpha` with fresh prefixes/caches on npm and, after sync, npmmirror; both installed package versions and `dima --version` must match. Mirror lag fails acceptance. Retain the workflow's publication receipt.
+
+## Publish the container image
+
+- A published, non-draft Release is required; the workflow verifies that state before downloading assets. `gh workflow run image-publish.yml --ref main -f release_tag=vVERSION` builds both platform rootfs trees and the amd64 image on hosted Ubuntu, runs local acceptance, and pushes nothing. Create the `image-release` environment with protection rules and, after the first push, make the GHCR package public and link it to `arcships/dim`. The first dry run needs an alpha Release cut after the image workflow lands.
+- Actual publication requires an explicit image-publication request and the same command with `-f publish=true`. The workflow checks out the release tag's Dockerfile and staging script, verifies the original Linux and Web archives against `SHA256SUMS`, their manifests and expected names, refuses an existing version tag, and pushes the two-platform index with provenance and an SBOM.
+- Acceptance pulls that exact index digest on native amd64 and arm64 runners, checks `dimcode --version`, the version/revision/source labels, UID 1000, both CLI symlinks and the Web assets. Only then does it copy the accepted index to `alpha` and assert the digest is unchanged. A wrong image needs a new alpha; do not rebuild a version tag.
 
 ## Recovery
 

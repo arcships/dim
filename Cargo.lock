@@ -1277,6 +1277,7 @@ version = "0.1.0-alpha.18"
 dependencies = [
  "anstyle",
  "base64 0.22.1",
+ "chrono",
  "crossterm",
  "dim-acp",
  "dim-agent-capabilities",
@@ -1526,6 +1527,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "dim-report"
+version = "0.1.0-alpha.18"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "dim-agent-capabilities",
+ "dim-agent-runtime",
+ "dim-agent-types",
+ "dim-app-server",
+ "dim-client",
+ "futures-util",
+ "reqwest 0.12.28",
+ "rutis",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.29.0",
+ "tokio-util",
+ "url",
+ "uuid",
+ "zip",
+]
+
+[[package]]
 name = "dim-session-title"
 version = "0.1.0-alpha.18"
 dependencies = [
@@ -1568,6 +1594,7 @@ dependencies = [
  "dim-modality-aimux",
  "dim-oauth",
  "dim-ocr",
+ "dim-report",
  "dim-session-title",
  "futures-util",
  "http",
@@ -6024,6 +6051,7 @@ dependencies = [
  "dim-event-hub",
  "dim-goal",
  "dim-modality",
+ "dim-report",
  "dim-session-title",
  "futures-util",
  "libc",

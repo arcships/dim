@@ -55,6 +55,9 @@ There is no third channel. The two layers time different things:
   ModelProvider's retries; the interval from `step/tool-call` to `step/tool-result` covers a whole batch, with its
   dispatch and Approval. Per-call `step/tool-start` and `step/tool-completed` are written only when ToolExecutor's
   `emit_progress` is set, and the default assembly does not set it.
+  A thinking block's first `step/thinking` event is the one exception to commit-time `create_at`: it carries the
+  block's start, recorded when the block opened, so the block's span runs from that start to the next durable event
+  (#1330).
 - The process logs time an operation inside its owner, as the duration of its D4 span. `model.invoke` starts after
   `model/call` is dispatched and includes those retries; `tool.execute` includes Approval. Neither is network or
   handler time alone.

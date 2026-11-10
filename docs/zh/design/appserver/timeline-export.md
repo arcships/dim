@@ -114,7 +114,7 @@ UTF-8 JSONL，每行一个对象，各带一个 `kind`。外层字段用 snake_c
 
 ## 8. 区间指标
 
-导出不增加任何计时字段。每个事件都带 `create_at`，即 Timeline 提交它的时间，早于存储发布它。使用方用两端的事实为区间命名，不把它称为执行时间（ADR 005 D1）：例如 `model/call → step/model-output-end` 还包括存储写入、分发和 ModelProvider 的重试，`step/tool-call → step/tool-result` 覆盖整个工具批次及其 Approval。所有者内部的操作耗时在 `daemon.log` 中，即 D4 的 span。
+导出不增加任何计时字段。每个事件都带 `create_at`，即 Timeline 提交它的时间，早于存储发布它；唯一例外是 thinking 块的首个 `step/thinking` 事件，它携带该块打开时记下的起始时间，块自身跨度因此是从该起点到下一个持久事件的区间（#1330）。使用方用两端的事实为区间命名，不把它称为执行时间（ADR 005 D1）：例如 `model/call → step/model-output-end` 还包括存储写入、分发和 ModelProvider 的重试，`step/tool-call → step/tool-result` 覆盖整个工具批次及其 Approval。所有者内部的操作耗时在 `daemon.log` 中，即 D4 的 span。
 
 ## 9. 错误
 

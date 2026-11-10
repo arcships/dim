@@ -4,6 +4,8 @@ PR checks use self-hosted runners. Release preparation, packaging, npm publicati
 
 The source, including the Dim account plugin, uses MIT. An account-enabled distribution differs from the API-key one only by the OAuth client IDs compiled in from repository secrets.
 
+The Linux executable is also planned as an OCI image. [Container image release](docker-image.md) (Draft) designs its content, volumes, client shapes, image workflow and security boundary; it repackages the archives above rather than rebuilding them. No image is published yet.
+
 ## Release skills
 
 Both skills live in this repository and travel with its release workflow. Use the requested stage explicitly:
@@ -111,9 +113,11 @@ The separate PR workflow uses self-hosted macOS ARM64, Windows x64 and Linux x64
 
 The `Verify Python plugins` step is off by default. When a Python plugin ships, set the repository Actions variable `DIM_CI_PYTHON_PLUGINS` to `true` to run it whenever the Node check group is selected. It prepares CPython for the `python_plugin_` flows and reuses the App Server test binary from the workspace build. See the [App Server verification commands](../../crates/dim-app-server/README.md#verification) to run the suites locally.
 
+The `Verify downloaded Node runtime` step runs on pushes to `main` and manual dispatch. It switches a running system Node to the official downloaded archive and reuses the same App Server test binary. The public Node bindings check uses the installed interpreter.
+
 ### Action pins and updates
 
-External Actions in `ci.yml`, `release.yml` and `npm-publish.yml` use full commit SHAs. PR checks use the same policy because their Actions execute on persistent self-hosted runners. Pinning does not change the [CI trust boundary](#ci-trust-model).
+External Actions in `ci.yml`, `release.yml`, `npm-publish.yml` and `image-publish.yml` use full commit SHAs. PR checks use the same policy because their Actions execute on persistent self-hosted runners. Pinning does not change the [CI trust boundary](#ci-trust-model).
 
 Update an Action in a normal pull request:
 

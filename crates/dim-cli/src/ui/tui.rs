@@ -43,6 +43,7 @@ use crate::ui::render::fullscreen::MouseOutcome;
 use crate::ui::render::markdown::MarkdownRenderer;
 use crate::ui::render::panel::{clip, wrap, wrap_words};
 use crate::ui::render::{Frame, FullScreen, Overlay, Screen};
+use crate::ui::report_panel;
 use crate::ui::runtime_panel::RuntimePanel;
 use crate::ui::sessions_panel::SessionsPanel;
 use crate::ui::settings_panel::{Setting, SettingsPanel, Values as SettingValues};
@@ -957,6 +958,8 @@ struct App {
     tail_groups: Vec<(usize, String)>,
     notices: Vec<String>,
     reports: Vec<Block>,
+    report_error: Option<crate::report::Captured>,
+    report_sequence: u64,
     banner_committed: bool,
     snapshot: Option<ViewSnapshot>,
     /// The adopted model and its reasoning effort, once the session exists.
@@ -1321,6 +1324,7 @@ enum Prompt {
     Timeline(Box<TimelinePanel>),
     Queue(QueuePanel),
     Export(ListPanel),
+    Report(Box<report_panel::Panel>),
     Fork(ForkAsk),
     Models(ModelsPanel),
     Providers(Box<ProvidersPanel>),
@@ -1367,6 +1371,8 @@ impl App {
             home,
             notices: Vec::new(),
             reports: Vec::new(),
+            report_error: None,
+            report_sequence: 0,
             banner_committed: false,
             snapshot: None,
             label: None,
@@ -1778,6 +1784,7 @@ impl App {
             | Some(Prompt::Timeline(_))
             | Some(Prompt::Queue(_))
             | Some(Prompt::Export(_))
+            | Some(Prompt::Report(_))
             | Some(Prompt::Fork(_)) => {}
             Some(Prompt::Tasks(_)) if approval.is_none() && question.is_none() => {}
             Some(Prompt::Upgrade(_)) if approval.is_none() && question.is_none() => {}
@@ -2113,6 +2120,47 @@ impl App {
                 }
             }
             Update::Toast(text) => self.set_notice(text),
+            Update::Reportable { error, show_error } => {
+                let hint = t(crate::report::HINT);
+                let text = if show_error {
+                    format!("{}\n{hint}", crate::sanitize::safe_line(&error.message))
+                } else {
+                    hint.to_owned()
+                };
+                if show_error
+                    || !matches!(error.operation, crate::report::Operation::ModelGeneration)
+                {
+                    self.reports.push(Block::Status {
+                        text,
+                        tone: Tone::Warning,
+                    });
+                }
+                self.report_error = Some(error);
+            }
+            Update::ReportReply { panel, reply } => {
+                if let Some(Prompt::Report(report)) = &mut self.prompt
+                    && report.id == panel
+                {
+                    if let Some(action) = report.reply(reply) {
+                        self.host.send(Command::ErrorReport(crate::report::Request {
+                            panel,
+                            action,
+                        }));
+                    }
+                } else if let crate::report::Reply::Prepared(session, prepared) = reply {
+                    self.host.send(Command::ErrorReport(crate::report::Request {
+                        panel,
+                        action: crate::report::Action::Cancel {
+                            draft: crate::report::Draft {
+                                session,
+                                report_id: prepared.report_id,
+                                plan_id: prepared.plan.plan_id,
+                            },
+                            generation: false,
+                        },
+                    }));
+                }
+            }
             Update::Report { text, warning } => self.reports.push(Block::Status {
                 text,
                 tone: if warning { Tone::Warning } else { Tone::Muted },
@@ -2617,6 +2665,9 @@ impl App {
                     .remove(&(branch_id.clone(), request_id.clone()));
             }
             Update::Failed(message) => {
+                if let Some(Prompt::Report(report)) = &mut self.prompt {
+                    report.disconnected(&message);
+                }
                 self.restore_unsent();
                 self.failure = Some(message);
                 self.run_started = None;
@@ -2680,6 +2731,7 @@ impl App {
                     Some(Prompt::Settings(panel)) => panel.paste(&text),
                     Some(Prompt::Isolation(panel)) => panel.paste(&text),
                     Some(Prompt::Management(panel)) => panel.paste(&text),
+                    Some(Prompt::Report(panel)) => panel.paste(&text),
                     Some(Prompt::Ask(prompt)) => prompt.paste(&text),
                     Some(_) => {}
                 }
@@ -2704,6 +2756,35 @@ impl App {
             }
         };
         let ctrl = key.mods.contains(Modifiers::CTRL);
+        if let Some(Prompt::Report(report)) = &mut self.prompt {
+            let panel = report.id;
+            let action = match report.key(key, std::path::Path::new(&self.cwd_key)) {
+                report_panel::Input::None => None,
+                report_panel::Input::Send(action) => Some(action),
+                report_panel::Input::Close => {
+                    if let Some(path) = report.saved_path() {
+                        self.notices.push(format!(
+                            "{} {}",
+                            t("Saved ZIP"),
+                            crate::sanitize::safe_line(&path.display().to_string())
+                        ));
+                    }
+                    let draft = report.draft.take();
+                    self.prompt = None;
+                    draft.map(|draft| crate::report::Action::Cancel {
+                        draft,
+                        generation: false,
+                    })
+                }
+            };
+            if let Some(action) = action {
+                self.host.send(Command::ErrorReport(crate::report::Request {
+                    panel,
+                    action,
+                }));
+            }
+            return Outcome::Continue;
+        }
         if self.failure.is_some() {
             if (ctrl && matches!(key.code, KeyCode::Char('c' | 'd')))
                 || (key.code == KeyCode::Enter && self.composer.text().trim() == "/exit")
@@ -2764,6 +2845,7 @@ impl App {
                     ListEvent::None | ListEvent::Refresh => Effect::None,
                 },
                 Prompt::Fork(p) => p.handle_key(key),
+                Prompt::Report(_) => unreachable!("report handles its own input"),
                 Prompt::Models(p) => p.handle_key(key),
                 Prompt::Providers(p) => p.handle_key(key),
                 Prompt::Plugins(p) => p.handle_key(key),
@@ -4496,6 +4578,24 @@ impl App {
                     .send(Command::Configure(text.trim_end().to_owned()));
                 Outcome::Continue
             }
+            "report" => {
+                if !args.trim().is_empty() {
+                    self.set_notice(t("Usage: /report"));
+                } else if let Some(error) = self.report_error.clone() {
+                    self.report_sequence += 1;
+                    let panel = self.report_sequence;
+                    self.open_prompt(Prompt::Report(Box::new(report_panel::Panel::new(
+                        panel, &error,
+                    ))));
+                    self.host.send(Command::ErrorReport(crate::report::Request {
+                        panel,
+                        action: crate::report::Action::Prepare(error),
+                    }));
+                } else {
+                    self.set_notice(t("No reportable error in this interface."));
+                }
+                Outcome::Continue
+            }
             "exit" => Outcome::Exit(0),
             "tui" => Outcome::SwitchMode,
             "new" => {
@@ -5185,6 +5285,7 @@ impl App {
                         | Prompt::Timeline(_)
                         | Prompt::Queue(_)
                         | Prompt::Export(_)
+                        | Prompt::Report(_)
                 )
             );
         if !replaced {
@@ -5211,6 +5312,7 @@ impl App {
             Some(Prompt::Timeline(prompt)) => Some(prompt.cursor(width)),
             Some(Prompt::Queue(prompt)) => Some(prompt.cursor(width)),
             Some(Prompt::Export(prompt)) => Some(prompt.cursor(width)),
+            Some(Prompt::Report(prompt)) => Some(prompt.cursor()),
             Some(Prompt::Models(prompt)) => Some(prompt.cursor(width)),
             Some(Prompt::Providers(prompt)) => Some(prompt.cursor(width, height)),
             Some(Prompt::Login(prompt)) => Some(prompt.cursor(width, height)),
@@ -5251,6 +5353,7 @@ impl App {
                         }
                         Some(Prompt::Queue(prompt)) => Some(prompt.render(list_width, budget, p)),
                         Some(Prompt::Export(prompt)) => Some(prompt.render(list_width, budget, p)),
+                        Some(Prompt::Report(prompt)) => Some(prompt.render(list_width, budget, p)),
                         Some(Prompt::Fork(prompt)) => Some(prompt.render(list_width, budget, p)),
                         Some(Prompt::Models(prompt)) => Some(prompt.render(list_width, budget, p)),
                         Some(Prompt::Providers(prompt)) => {
@@ -5301,6 +5404,7 @@ impl App {
             Some(Prompt::Timeline(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Queue(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Export(prompt)) => Some(prompt.render(outer, panel_rows, p)),
+            Some(Prompt::Report(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Fork(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Models(prompt)) => Some(prompt.render(outer, panel_rows, p)),
             Some(Prompt::Providers(prompt)) => Some(prompt.render(outer, panel_rows, p)),
@@ -5701,7 +5805,9 @@ impl App {
         self.planner.reset();
         self.commits = CommitState::default();
         self.answered.clear();
-        self.prompt = None;
+        if !matches!(self.prompt, Some(Prompt::Report(_))) {
+            self.prompt = None;
+        }
         self.snapshot = None;
         self.runs = Runs::default();
         self.window_floor = 0;
@@ -8753,6 +8859,7 @@ mod tests {
         let row = |kind, text: &str, tool: Option<&str>| {
             std::sync::Arc::new(ViewRow {
                 failure: None,
+                reportable: false,
                 row_id: text.into(),
                 kind,
                 text: text.into(),
@@ -9142,6 +9249,7 @@ mod tests {
                 .map(|(id, text)| {
                     std::sync::Arc::new(ViewRow {
                         failure: None,
+                        reportable: false,
                         row_id: (*id).into(),
                         kind: RowKind::AssistantMessage,
                         text: (*text).into(),
@@ -9600,6 +9708,7 @@ mod tests {
             session_id: "s1".into(),
             rows: vec![std::sync::Arc::new(ViewRow {
                 failure: None,
+                reportable: false,
                 row_id: "r1".into(),
                 kind: RowKind::UserMessage,
                 text: "line work".into(),
@@ -9727,6 +9836,7 @@ mod tests {
             .map(|n| {
                 std::sync::Arc::new(ViewRow {
                     failure: None,
+                    reportable: false,
                     row_id: format!("u{n}"),
                     kind: RowKind::UserMessage,
                     text: format!("ask {n}"),
@@ -9768,6 +9878,7 @@ mod tests {
     fn message(pending: bool) -> std::sync::Arc<ViewRow> {
         std::sync::Arc::new(ViewRow {
             failure: None,
+            reportable: false,
             display: None,
             row_id: "u1".into(),
             kind: RowKind::UserMessage,
@@ -9798,6 +9909,7 @@ mod tests {
     fn stopped() -> std::sync::Arc<ViewRow> {
         std::sync::Arc::new(ViewRow {
             failure: None,
+            reportable: false,
             display: None,
             row_id: "stopped-1".into(),
             kind: RowKind::Status,
@@ -11408,6 +11520,219 @@ mod tests {
             Some(&["option 0".to_owned()][..]),
             "the question came back with its selection"
         );
+    }
+
+    fn open_test_report(app: &mut App) -> u64 {
+        app.apply(Update::Reportable {
+            error: crate::report::Captured::observed(
+                "s1",
+                "main",
+                crate::report::Operation::SessionRead,
+                Some("session_closed"),
+                "Could not read conversation state".into(),
+            ),
+            show_error: true,
+        });
+        press(app, KeyCode::Char('/'));
+        typed(app, "report");
+        press(app, KeyCode::Enter);
+        match &app.prompt {
+            Some(Prompt::Report(report)) => report.id,
+            _ => panic!("expected report panel"),
+        }
+    }
+
+    fn prepared_report(report_id: &str, plan_id: &str) -> crate::report::Prepared {
+        serde_json::from_value(serde_json::json!({
+            "reportId": report_id,
+            "plan": {
+                "planId": plan_id, "generation": {"kind": "local"},
+                "evidence": {"unavailable": "no_reference"}, "instructionsStatus": "none"
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn report_stays_open_on_snapshot_and_restores_the_pending_answer_on_close() {
+        use crate::report::{Action, Reply, Request};
+
+        for fullscreen in [false, true] {
+            let (mut app, sent, _home) = asked();
+            app.fullscreen = fullscreen;
+            press(&mut app, KeyCode::Char(' '));
+            let answer = selection(&app).expect("selected answer");
+            let panel = open_test_report(&mut app);
+            let mut snapshot = app.snapshot.clone().unwrap();
+            snapshot.history_complete = true;
+            app.apply(Update::Snapshot(Box::new(snapshot)));
+            assert!(matches!(app.prompt, Some(Prompt::Report(_))));
+            app.apply(Update::ReportReply {
+                panel,
+                reply: Reply::Prepared(Some("s1".into()), prepared_report("r1", "p1")),
+            });
+            press(&mut app, KeyCode::Esc);
+            assert_eq!(selection(&app), Some(answer));
+            assert!(matches!(
+                sent.borrow().last(),
+                Some(Command::ErrorReport(Request { action: Action::Cancel { draft, generation: false }, .. }))
+                    if draft.report_id == "r1"
+            ));
+        }
+    }
+
+    #[test]
+    fn report_replans_after_a_failed_generate_and_preserves_options_after_expiry() {
+        use crate::report::{Action, Reply, Request};
+
+        let (mut app, sent, _home) = asked();
+        let panel = open_test_report(&mut app);
+        app.apply(Update::ReportReply {
+            panel,
+            reply: Reply::Prepared(Some("s1".into()), prepared_report("r1", "p1")),
+        });
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        app.apply(Update::ReportReply {
+            panel,
+            reply: Reply::Plan(prepared_report("r1", "p2").plan),
+        });
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        typed(&mut app, "omit timeline");
+        press(&mut app, KeyCode::Enter);
+        let mut plan = prepared_report("r1", "p3").plan;
+        plan.evidence.unavailable = Some(crate::report::EvidenceUnavailable::Omitted);
+        app.apply(Update::ReportReply {
+            panel,
+            reply: Reply::Plan(plan),
+        });
+        let Some(Prompt::Report(report)) = &app.prompt else {
+            panic!("expected report panel");
+        };
+        assert!(
+            report
+                .render(90, 20, &app.palette)
+                .join("\n")
+                .contains(t("Evidence · Timeline omitted"))
+        );
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            sent.borrow().last(),
+            Some(Command::ErrorReport(Request { action: Action::Generate(draft), .. }))
+                if draft.plan_id == "p3"
+        ));
+        app.apply(Update::ReportReply {
+            panel,
+            reply: Reply::Failed {
+                message: "Generation cancelled".into(),
+                draft_missing: false,
+            },
+        });
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            sent.borrow().last(),
+            Some(Command::ErrorReport(Request { action: Action::Plan { draft, redact: false, instructions }, .. }))
+                if draft.report_id == "r1" && instructions == "omit timeline"
+        ));
+        app.apply(Update::ReportReply {
+            panel,
+            reply: Reply::Failed {
+                message: "Report not found".into(),
+                draft_missing: true,
+            },
+        });
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            sent.borrow().last(),
+            Some(Command::ErrorReport(Request { action: Action::Prepare(error), .. }))
+                if error.session == "s1" && error.message == "Could not read conversation state"
+        ));
+        app.apply(Update::ReportReply {
+            panel,
+            reply: Reply::Prepared(None, prepared_report("r2", "p4")),
+        });
+        assert!(matches!(
+            sent.borrow().last(),
+            Some(Command::ErrorReport(Request { action: Action::Plan { draft, redact: false, instructions }, .. }))
+                if draft.report_id == "r2" && draft.session.is_none() && instructions == "omit timeline"
+        ));
+    }
+
+    #[test]
+    fn report_saves_only_bounded_zip_bytes_after_disconnect() {
+        use crate::report::{Archive, GeneratedReport, Reply, Sharing};
+        use base64::{Engine, engine::general_purpose::STANDARD};
+
+        let valid = b"PK\x03\x04fixture".to_vec();
+        let mut oversized = valid.clone();
+        oversized.resize(64 * 1024 + 1, 0);
+        for (bytes, should_save) in [
+            (b"invalid".to_vec(), false),
+            (oversized, false),
+            (valid, true),
+        ] {
+            let (mut app, _sent, home) = asked();
+            app.cwd_key = home.path().display().to_string();
+            let panel = open_test_report(&mut app);
+            app.apply(Update::ReportReply {
+                panel,
+                reply: Reply::Generated(GeneratedReport {
+                    title: "Test report".into(),
+                    archive: Archive {
+                        base64: STANDARD.encode(&bytes),
+                    },
+                    sharing: Sharing {
+                        github_issue_url: "https://github.com/another/repo/issues/new".into(),
+                        discord_url: String::new(),
+                        description: String::new(),
+                    },
+                }),
+            });
+            app.apply(Update::Failed("Disconnected".into()));
+            press(&mut app, KeyCode::Enter);
+            let Some(Prompt::Report(report)) = &app.prompt else {
+                panic!("expected report panel");
+            };
+            assert_eq!(report.saved_path().is_some(), should_save);
+            if let Some(path) = report.saved_path() {
+                assert_eq!(path.parent(), Some(home.path()));
+                assert!(
+                    path.file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .starts_with("dim-report-")
+                );
+                assert_eq!(
+                    path.extension().and_then(std::ffi::OsStr::to_str),
+                    Some("zip")
+                );
+                assert_eq!(std::fs::read(path).unwrap(), bytes);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    assert_eq!(
+                        std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                        0o600
+                    );
+                }
+                press(&mut app, KeyCode::Down);
+                press(&mut app, KeyCode::Enter);
+                let Some(Prompt::Report(report)) = &app.prompt else {
+                    panic!("expected report panel");
+                };
+                assert!(
+                    report
+                        .render(90, 20, &app.palette)
+                        .join("\n")
+                        .contains(t("Could not open the share destination"))
+                );
+            } else {
+                assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
+            }
+        }
     }
 
     /// A question answered elsewhere while its panel is open is not

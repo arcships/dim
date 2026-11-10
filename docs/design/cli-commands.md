@@ -57,14 +57,14 @@ order, not alphabetically or by recent use. The menu draws no category column:
 /tasks /rename /web /connect /login
 /skills /reload-skills /mcp /plugins /runtime
 /hooks /scheduled /workflow /workflow:save
-/tools /tui /theme /language /keys /exit
+/tools /tui /theme /language /keys /report /exit
 ```
 
 `/fast` is listed only when the model advertises service tiers.
 Search relevance takes priority; equally ranked matches keep this order.
 The order is independent of the interface language. Opening `/` selects `/new`;
 `/exit` is last in the unfiltered command list.
-Exit requires its exact name or alias before dispatch: choosing an
+Report and exit require their exact name or alias before dispatch: choosing an
 incomplete match fills the command name and keeps the composer open. Exact typed
 commands, including hidden commands, retain their own dispatch behavior.
 Menu selection can still complete rather than dispatch an exact name: commands
@@ -1483,6 +1483,7 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode account PROVIDER` | Print the described account's non-secret state. |
 | `dimcode logout PROVIDER` | Sign the described account out. |
 | `/connect` | List the Providers `provider.management` reports; a described account opens its sign-in or sign-out step, and any other Provider opens the connection form. |
+| `/report` | Open the latest error that offered reporting in this TUI. Save the local report ZIP, see its path, or open a share destination after saving. [Report contract](plugins/Report.md#2-client-interaction). |
 | `/exit` | Detach and exit from the idle interactive prompt. |
 | `!command` / `!!command` | Call the Session's existing `shell.run` in record/private mode, including during a model turn. |
 | `--permission read-only\|workspace-write\|full-access` | Select the preset of a new or resumed Session for `dimcode`, `tui`, `exec` and `exec resume` ([permission controls](#permission-controls)). |

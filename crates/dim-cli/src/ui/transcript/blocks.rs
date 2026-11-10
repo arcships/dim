@@ -569,11 +569,20 @@ pub(crate) fn render_block(
         Block::Error {
             text,
             details,
+            reportable,
             expanded,
         } => {
             let mut rows = gutter_text(ERROR_MARK, &crate::sanitize::safe(text), width, &p.danger);
             if *expanded && let Some(details) = details {
                 rows.extend(detail_rows(details, width, p));
+            }
+            if *reportable {
+                rows.extend(gutter_text(
+                    STATUS_MARK,
+                    t(crate::report::HINT),
+                    width,
+                    &p.muted,
+                ));
             }
             rows
         }

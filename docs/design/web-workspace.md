@@ -102,9 +102,10 @@ For development against the repository checkout, and for a build that must carry
 | Item | Rule |
 | --- | --- |
 | Version | `hello` v3 with `clientKind: "web"`; v1/v2 → `protocol_version` |
-| Methods | Rpc Session built-ins and execution Session methods on every Session of the host, plus the explicit settings methods in §4.3 and read-only discovery methods below. Other management methods, including `daemon.shutdown` and Web-entry controls, return `-32601 unknown_method` |
+| Methods | Rpc Session built-ins and execution Session methods on every Session of the host, plus the explicit settings methods in §4.3 and the management methods below. Other management methods, including `daemon.shutdown` and Web-entry controls, return `-32601 unknown_method` |
 | Model list | The read-only management methods `provider.list`, `provider.catalog`, `provider.selection` and `account.providers` are also served (decision Q1); their replies carry no credentials (`provider.list` reports only `credentialConfigured` and header names). Managed Provider discovery follows §4.2. Switching uses the Session method `session.model.update` |
-| UI directory | UiExtensions contributes `ui.extensions.list`, which is explicitly allowlisted and advertised in `hello.features` while available. Connection forwards `ui.extensions.changed` over the reliable control channel; clients refetch the directory on this notice. No other contributed management method becomes reachable |
+| UI directory | UiExtensions contributes `ui.extensions.list`, which is explicitly allowlisted and advertised in `hello.features` while available. Connection forwards `ui.extensions.changed` over the reliable control channel; clients refetch the directory on this notice |
+| Error-only reports | Report contributes `report.prepare`, `report.plan`, `report.generate` and `report.cancel`. The authenticated local Web entry explicitly admits these four methods and advertises them in `hello.features` while available. They take no Session or branch ID and use no Session data. [Report contract](plugins/Report.md#4-report-methods) |
 
 Compatibility: the bare `/ws` keeps today's rules (`hello` and `daemon.ping` only in protected profiles). Execution Session methods become reachable from the web entry; this is the same widening RemoteGateway records as E3, limited here to loopback connections authenticated by the local user's token.
 

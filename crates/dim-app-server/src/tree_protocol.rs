@@ -265,6 +265,9 @@ pub struct ModelProgressNotice {
     /// Stable identity of the open thinking block, when one exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_part_id: Option<String>,
+    /// Unix milliseconds at which the open thinking block started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_started_at: Option<u64>,
     pub text: String,
     /// Unicode scalar values of this request's `step/text` deltas before `text`.
     pub text_offset: u64,
@@ -306,6 +309,7 @@ impl ModelProgressNotice {
             request_id: progress.request_id,
             text_part_id: progress.text_part_id,
             thinking_part_id: progress.thinking_part_id,
+            thinking_started_at: progress.thinking_started_at,
             text: progress.text,
             text_offset: progress.text_offset,
             thinking: progress.thinking,

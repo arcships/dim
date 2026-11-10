@@ -4242,6 +4242,27 @@ async fn ocr_offers_the_local_target_and_configure_sets_the_default() {
         )
         .await;
     assert_eq!(app_error(&refused), "modality_invalid_selection");
+    let cleared = client
+        .rpc(
+            "modality.configure",
+            json!({
+                "expectedRevision": configured["result"]["revision"],
+                "category": "ocr",
+                "operation": "recognize",
+                "model": null,
+            }),
+        )
+        .await;
+    assert_ok(&cleared);
+    let next = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&next);
+    assert_eq!(cleared["result"], next["result"]);
+    let recognize = operation_in(&next, "ocr", "recognize");
+    assert_eq!(recognize["default"], Value::Null, "{recognize}");
+    assert_eq!(
+        recognize["effective"],
+        json!({"providerId": OCR_PROVIDER, "modelId": OCR_MODEL, "source": "automatic"})
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

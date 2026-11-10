@@ -6,128 +6,128 @@ Generated from the real assembly: the App Server product profile (`serve` with a
 
 ## Services
 
-Each catalog name a part of the assembly provides or injects. A name that crosses languages lists the methods its dispatcher serves, each `sync` or `async` (callers in other languages always get a Promise); other methods of its Rust type are Rust-only. A Rust-only name has no dispatcher: Rust parts reach it at its type's key.
+Each catalog name a part of the assembly provides or injects. `data` means shared with a dispatcher; `internal(reason)` means the face cannot cross; `shared-no-dispatcher` is shared but a leaf cannot call it. Methods are `sync` or `async` (callers in other languages always get a Promise). A non-data name is reached by Rust parts at its type's key.
 
-| Name | Group | Provider | Crosses languages | Methods |
+| Name | Group | Provider | Face | Methods |
 | --- | --- | --- | --- | --- |
-| `agentDirectory` | process | AgentDirectory | Rust-only | — |
-| `agentIndex` | process | Agents | Rust-only | — |
-| `auxiliaryModel` | process | Provider | yes | `complete` async |
-| `auxiliaryModelHost` | process | Provider | Rust-only | — |
-| `basePromptSettingsHost` | process | PromptSettings | Rust-only | — |
-| `callChannel` | process | CallChannel | yes | `closed` async, `notify` async |
-| `callers` | process | CallChannel | Rust-only | — |
-| `collaboration` | process | Collaboration | Rust-only | — |
-| `collaborationDirectory` | process | CollaborationDirectory | Rust-only | — |
-| `connectionHub` | process | Connection | Rust-only | — |
-| `credentialVariablesHost` | process | root | Rust-only | — |
-| `eventHub` | process | eventhub | yes | `declare` async, `publish` async |
-| `eventSubscriptions` | process | eventhub | Rust-only | — |
-| `executionSettingsHost` | process | ExecutionSettings | Rust-only | — |
-| `fileStorage` | process | FileStorage | Rust-only | — |
-| `grokOAuthService` | process | GrokOAuth | Rust-only | — |
-| `hooksService` | process | HooksSettings | Rust-only | — |
-| `hostPlatform` | process | HostPlatform | Rust-only | — |
-| `listenAddresses` | process | Transport | Rust-only | — |
-| `loader` | process | rutis-loader | Rust-only | — |
-| `loaderService` | process | rutis-loader | yes | — |
-| `localId` | process | root | yes | — |
-| `managedProviders` | process | ManagedProviders | Rust-only | — |
-| `managementMethods` | process | ManagementMethods | Rust-only | — |
-| `mcpAuth` | process | Mcp | Rust-only | — |
-| `mcpService` | process | Mcp | Rust-only | — |
-| `mentionIndex` | process | WorkspaceToolsOwner | Rust-only | — |
-| `modalityConnectionHost` | process | Provider | Rust-only | — |
-| `modelHost` | process | Aimux | Rust-only | — |
-| `modelSelectionHost` | process | Provider | Rust-only | — |
-| `openAICodexOAuthService` | process | OpenAICodexOAuth | Rust-only | — |
-| `partRegistry` | process | PartRegistry | yes | `registerDefinition` async |
-| `pluginFileTransactions` | process | PluginFiles | Rust-only | — |
-| `pluginFiles` | process | PluginFiles | yes | `open` async |
-| `pluginMounter` | process | rutis-loader | yes | — |
-| `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | Rust-only | — |
-| `providerConnectionResolver` | process | Provider | Rust-only | — |
-| `providerService` | process | Provider | Rust-only | — |
-| `publication` | process | McpPublication | Rust-only | — |
-| `reservedMethods` | process | — | Rust-only | — |
-| `rutis/loader` | process | rutis-loader | yes | `create` async, `reload` async, `remove` async, `status` async |
-| `scheduleJobs` | process | Scheduler | Rust-only | — |
-| `selectableModelsHost` | process | Provider | Rust-only | — |
-| `serverControl` | process | ServerControl | Rust-only | — |
-| `sessionClientsHost` | process | Connection | Rust-only | — |
-| `sessionFilesHost` | process | SessionStore | Rust-only | — |
-| `sessionMetadata` | process | SessionStore | yes | `read` async, `setTitle` async |
-| `sessionPermissions` | process | AgentDirectory | yes | `permission` async, `permissionDefaults` async |
-| `sessionStore` | process | SessionStore | Rust-only | — |
-| `sessions` | process | AgentDirectory | yes | `delete` async, `exists` async, `history` async, `idle` async, `input` async, `launch` async, `lookup` async, `stop` async, `withdraw` async |
-| `settings` | process | Settings | yes | `projects` sync, `read` async, `register` async, `update` async |
-| `settingsService` | process | Settings | Rust-only | — |
-| `skillsCatalog` | process | SkillsCatalog | Rust-only | — |
-| `skillsInstructionsSettingsHost` | process | PromptSettings | Rust-only | — |
-| `sqliteStorage` | process | SqliteStorage | Rust-only | — |
-| `summaryPromptSettingsHost` | process | PromptSettings | Rust-only | — |
-| `toolchainSourceHost` | process | ToolchainSource | Rust-only | — |
-| `uiExtensions` | process | UiExtensions | Rust-only | — |
-| `uiHost` | process | UiHost | Rust-only | — |
-| `wakeups` | process | Scheduler | Rust-only | — |
-| `workflowFiles` | process | Settings | yes | `createDirectory` async, `list` async, `read` async, `replace` async |
-| `worktreeAssociations` | process | SessionStore | Rust-only | — |
-| `agentConfig` | session | SessionScope | Rust-only | — |
-| `collaborationConfig` | session | SessionScope | Rust-only | — |
-| `collaborationSession` | session | CollaborationSession | Rust-only | — |
-| `commandRulesHost` | session | CommandRules | Rust-only | — |
-| `compactionStrategyHost` | session | ProductSummaryStrategy | Rust-only | — |
-| `contextModelHost` | session | SessionScope | Rust-only | — |
-| `faultReporter` | session | SessionScope | Rust-only | — |
-| `guideEntries` | session | PromptGuide | yes | `register` async |
-| `historyRenderer` | session | SessionScope | Rust-only | — |
-| `initialPromptConfiguration` | session | PromptRegistry | Rust-only | — |
-| `mcpSession` | session | McpSession | Rust-only | — |
-| `prepareContextHost` | session | SessionScope | Rust-only | — |
-| `prepareModelHost` | session | PrepareModelHost | Rust-only | — |
-| `promptHost` | session | PromptRegistry | Rust-only | — |
-| `promptRegistry` | session | PromptRegistry | Rust-only | — |
-| `sessionConfig` | session | SessionScope | yes | `get` async |
-| `sessionIdentity` | session | SessionScope | yes | `get` async |
-| `sessionLanguage` | session | PromptSources | Rust-only | — |
-| `sessionLifecycle` | session | SessionScope | yes | `activated` async, `closing` async, `hold` async, `release` async |
-| `sessionLoader` | session | SessionScope | Rust-only | — |
-| `sessionMethods` | session | SessionMethods | yes | `register` async |
-| `sessionSkills` | session | Skills | Rust-only | — |
-| `skillsConfig` | session | SessionScope | Rust-only | — |
-| `submitChecks` | session | InputMethods | Rust-only | — |
-| `timelineFactory` | session | SessionScope | Rust-only | — |
-| `timelineStore` | session | SessionScope | Rust-only | — |
-| `timelineTree` | session | TimelineTree | Rust-only | — |
-| `timelineTreeControl` | session | TimelineTree | Rust-only | — |
-| `toolHost` | session | WorkspaceTools | Rust-only | — |
-| `toolRegistry` | session | ToolRegistry | yes | `register` async |
-| `toolSourcesView` | session | ToolRegistry | Rust-only | — |
-| `treeCommands` | session | TimelineTree | yes | `create` async, `end` async, `info` async, `input` async, `list` async, `page` async, `query` async |
-| `uiResources` | session | UiResources | yes | `publishFile` async, `withdraw` async |
-| `agentLoop` | branch | Loop | Rust-only | — |
-| `approval` | branch | Approval | Rust-only | — |
-| `backgroundExec` | branch | BackgroundExec | Rust-only | — |
-| `branchLifecycle` | branch | BranchScope | yes | `activated` async, `closing` async |
-| `branchLine` | branch | BranchLine | Rust-only | — |
-| `branchOpening` | branch | BranchScope | Rust-only | — |
-| `configurationPublisher` | branch | ContextPreparation | Rust-only | — |
-| `configureControl` | branch | Prompt | Rust-only | — |
-| `contextPreparation` | branch | ContextPreparation | Rust-only | — |
-| `dispatcher` | branch | BranchScope | yes | `changed` async, `committed` async, `consume` async, `listen` async, `notify` async, `sequence` async |
-| `fileReads` | branch | FileReads | Rust-only | — |
-| `inputQueue` | branch | InputQueue | Rust-only | — |
-| `loopState` | branch | Loop | Rust-only | — |
-| `modelProvider` | branch | ModelProvider | Rust-only | — |
-| `permission` | branch | Permission | Rust-only | — |
-| `prompt` | branch | Prompt | Rust-only | — |
-| `promptSourcesBranch` | branch | PromptSourcesBranch | Rust-only | — |
-| `skillsBranch` | branch | SkillsBranch | Rust-only | — |
-| `timeline` | branch | BranchScope | yes | `ancestors` async, `append` async, `branchId` async, `committed` async, `hasPending` async, `query` async, `sequence` async |
-| `timelineIdentity` | branch | BranchScope | yes | `get` async |
-| `toolBinding` | branch | ToolBinding | Rust-only | — |
-| `toolExecutor` | branch | ToolExecutor | Rust-only | — |
-| `wait` | branch | WaitBranch | Rust-only | — |
+| `agentDirectory` | process | AgentDirectory | internal(owner-api) | — |
+| `agentIndex` | process | Agents | internal(owner-api) | — |
+| `auxiliaryModel` | process | Provider | data | `complete` async |
+| `auxiliaryModelHost` | process | Provider | internal(owner-api) | — |
+| `basePromptSettingsHost` | process | PromptSettings | internal(owner-api) | — |
+| `callChannel` | process | CallChannel | data | `closed` async, `notify` async |
+| `callers` | process | CallChannel | internal(owner-api) | — |
+| `collaboration` | process | Collaboration | internal(host-resource) | — |
+| `collaborationDirectory` | process | CollaborationDirectory | internal(legacy-no-consumer) | — |
+| `connectionHub` | process | Connection | internal(control) | — |
+| `credentialVariablesHost` | process | root | internal(legacy-no-consumer) | — |
+| `eventHub` | process | eventhub | data | `declare` async, `publish` async |
+| `eventSubscriptions` | process | eventhub | internal(legacy-no-consumer) | — |
+| `executionSettingsHost` | process | ExecutionSettings | internal(legacy-no-consumer) | — |
+| `fileStorage` | process | FileStorage | internal(object) | — |
+| `grokOAuthService` | process | GrokOAuth | internal(secret) | — |
+| `hooksService` | process | HooksSettings | internal(host-resource) | — |
+| `hostPlatform` | process | HostPlatform | internal(object) | — |
+| `listenAddresses` | process | Transport | internal(legacy-no-consumer) | — |
+| `loader` | process | rutis-loader | internal(owner-api) | — |
+| `loaderService` | process | rutis-loader | shared-no-dispatcher | — |
+| `localId` | process | root | data | `get` sync |
+| `managedProviders` | process | ManagedProviders | internal(secret) | — |
+| `managementMethods` | process | ManagementMethods | data | `register` async |
+| `mcpAuth` | process | Mcp | internal(secret) | — |
+| `mcpService` | process | Mcp | internal(host-resource) | — |
+| `mentionIndex` | process | WorkspaceToolsOwner | internal(host-resource) | — |
+| `modalityConnectionHost` | process | Provider | internal(legacy-no-consumer) | — |
+| `modelHost` | process | Aimux | internal(owner-api) | — |
+| `modelSelectionHost` | process | Provider | internal(legacy-no-consumer) | — |
+| `openAICodexOAuthService` | process | OpenAICodexOAuth | internal(secret) | — |
+| `partRegistry` | process | PartRegistry | data | `registerDefinition` async |
+| `pluginFileTransactions` | process | PluginFiles | internal(host-resource) | — |
+| `pluginFiles` | process | PluginFiles | data | `open` async |
+| `pluginMounter` | process | rutis-loader | shared-no-dispatcher | — |
+| `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | internal(legacy-no-consumer) | — |
+| `providerConnectionResolver` | process | Provider | internal(host-resource) | — |
+| `providerService` | process | Provider | internal(secret) | — |
+| `publication` | process | McpPublication | internal(host-resource) | — |
+| `reservedMethods` | process | — | internal(legacy-no-consumer) | — |
+| `rutis/loader` | process | rutis-loader | data | `create` async, `reload` async, `remove` async, `status` async |
+| `scheduleJobs` | process | Scheduler | internal(owner-api) | — |
+| `selectableModelsHost` | process | Provider | internal(legacy-no-consumer) | — |
+| `serverControl` | process | ServerControl | internal(control) | — |
+| `sessionClientsHost` | process | Connection | internal(legacy-no-consumer) | — |
+| `sessionFilesHost` | process | SessionStore | internal(owner-api) | — |
+| `sessionMetadata` | process | SessionStore | data | `read` async, `setTitle` async |
+| `sessionPermissions` | process | AgentDirectory | data | `permission` async, `permissionDefaults` async |
+| `sessionStore` | process | SessionStore | internal(owner-api) | — |
+| `sessions` | process | AgentDirectory | data | `delete` async, `exists` async, `history` async, `idle` async, `input` async, `launch` async, `lookup` async, `stop` async, `withdraw` async |
+| `settings` | process | Settings | data | `projects` sync, `read` async, `register` async, `update` async |
+| `settingsService` | process | Settings | internal(owner-api) | — |
+| `skillsCatalog` | process | SkillsCatalog | internal(host-resource) | — |
+| `skillsInstructionsSettingsHost` | process | PromptSettings | internal(owner-api) | — |
+| `sqliteStorage` | process | SqliteStorage | internal(object) | — |
+| `summaryPromptSettingsHost` | process | PromptSettings | internal(owner-api) | — |
+| `toolchainSourceHost` | process | ToolchainSource | internal(legacy-no-consumer) | — |
+| `uiExtensions` | process | UiExtensions | internal(control) | — |
+| `uiHost` | process | UiHost | internal(control) | — |
+| `wakeups` | process | Scheduler | internal(owner-api) | — |
+| `workflowFiles` | process | Settings | data | `createDirectory` async, `list` async, `read` async, `replace` async |
+| `worktreeAssociations` | process | SessionStore | internal(legacy-no-consumer) | — |
+| `agentConfig` | session | SessionScope | internal(legacy-no-consumer) | — |
+| `collaborationConfig` | session | SessionScope | internal(legacy-no-consumer) | — |
+| `collaborationSession` | session | CollaborationSession | internal(legacy-no-consumer) | — |
+| `commandRulesHost` | session | CommandRules | internal(hot-path) | — |
+| `compactionStrategyHost` | session | ProductSummaryStrategy | internal(hot-path) | — |
+| `contextModelHost` | session | SessionScope | internal(hot-path) | — |
+| `faultReporter` | session | SessionScope | internal(hot-path) | — |
+| `guideEntries` | session | PromptGuide | data | `register` async |
+| `historyRenderer` | session | SessionScope | internal(hot-path) | — |
+| `initialPromptConfiguration` | session | PromptRegistry | internal(hot-path) | — |
+| `mcpSession` | session | McpSession | internal(object) | — |
+| `prepareContextHost` | session | SessionScope | internal(hot-path) | — |
+| `prepareModelHost` | session | PrepareModelHost | internal(hot-path) | — |
+| `promptHost` | session | PromptRegistry | internal(hot-path) | — |
+| `promptRegistry` | session | PromptRegistry | internal(hot-path) | — |
+| `sessionConfig` | session | SessionScope | data | `get` async |
+| `sessionIdentity` | session | SessionScope | data | `get` async |
+| `sessionLanguage` | session | PromptSources | internal(legacy-no-consumer) | — |
+| `sessionLifecycle` | session | SessionScope | data | `activated` async, `closing` async, `hold` async, `release` async |
+| `sessionLoader` | session | SessionScope | internal(control) | — |
+| `sessionMethods` | session | SessionMethods | data | `register` async |
+| `sessionSkills` | session | Skills | internal(host-resource) | — |
+| `skillsConfig` | session | SessionScope | internal(legacy-no-consumer) | — |
+| `submitChecks` | session | InputMethods | internal(hot-path) | — |
+| `timelineFactory` | session | SessionScope | internal(control) | — |
+| `timelineStore` | session | SessionScope | internal(object) | — |
+| `timelineTree` | session | TimelineTree | internal(owner-api) | — |
+| `timelineTreeControl` | session | TimelineTree | internal(owner-api) | — |
+| `toolHost` | session | WorkspaceTools | internal(object) | — |
+| `toolRegistry` | session | ToolRegistry | data | `register` async |
+| `toolSourcesView` | session | ToolRegistry | internal(owner-api) | — |
+| `treeCommands` | session | TimelineTree | data | `create` async, `end` async, `info` async, `input` async, `list` async, `page` async, `query` async |
+| `uiResources` | session | UiResources | data | `publishFile` async, `withdraw` async |
+| `agentLoop` | branch | Loop | internal(hot-path) | — |
+| `approval` | branch | Approval | internal(object) | — |
+| `backgroundExec` | branch | BackgroundExec | internal(object) | — |
+| `branchLifecycle` | branch | BranchScope | data | `activated` async, `closing` async |
+| `branchLine` | branch | BranchLine | internal(hot-path) | — |
+| `branchOpening` | branch | BranchScope | internal(hot-path) | — |
+| `configurationPublisher` | branch | ContextPreparation | internal(hot-path) | — |
+| `configureControl` | branch | Prompt | internal(hot-path) | — |
+| `contextPreparation` | branch | ContextPreparation | internal(hot-path) | — |
+| `dispatcher` | branch | BranchScope | data | `changed` async, `committed` async, `consume` async, `listen` async, `notify` async, `sequence` async |
+| `fileReads` | branch | FileReads | internal(hot-path) | — |
+| `inputQueue` | branch | InputQueue | internal(object) | — |
+| `loopState` | branch | Loop | internal(hot-path) | — |
+| `modelProvider` | branch | ModelProvider | internal(hot-path) | — |
+| `permission` | branch | Permission | internal(object) | — |
+| `prompt` | branch | Prompt | internal(hot-path) | — |
+| `promptSourcesBranch` | branch | PromptSourcesBranch | internal(hot-path) | — |
+| `skillsBranch` | branch | SkillsBranch | internal(host-resource) | — |
+| `timeline` | branch | BranchScope | data | `ancestors` async, `append` async, `branchId` async, `committed` async, `hasPending` async, `query` async, `sequence` async |
+| `timelineIdentity` | branch | BranchScope | data | `get` async |
+| `toolBinding` | branch | ToolBinding | internal(hot-path) | — |
+| `toolExecutor` | branch | ToolExecutor | internal(hot-path) | — |
+| `wait` | branch | WaitBranch | internal(object) | — |
 
 ## Capabilities
 

@@ -90,6 +90,7 @@ pub struct ViewRow {
     pub compaction: Option<CompactionView>,
     /// A model failure's details, shown when the row is expanded.
     pub failure: Option<FailureDetail>,
+    pub reportable: bool,
 }
 
 /// A model failure as its error row's details print it.

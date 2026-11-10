@@ -68,6 +68,7 @@ pub mod prompts;
 pub mod providers_panel;
 pub mod queue_panel;
 pub mod render;
+mod report_panel;
 pub mod rows;
 pub mod runtime_panel;
 pub mod sessions_panel;

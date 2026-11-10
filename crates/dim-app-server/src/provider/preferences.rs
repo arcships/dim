@@ -50,10 +50,17 @@ pub(super) fn catalog_defaults(
 }
 
 /// The model's declared default effort, when the picker would offer it.
+///
+/// A declaration that states reasoning is off by default (#1376) names only a
+/// strength the model does not use, so it offers the declaration's own `off`
+/// mapping instead of the `effort` beside it.
 fn declared_effort(snapshot: &ModelCapabilitySnapshot) -> Option<String> {
     let reasoning = snapshot.reasoning.as_ref()?;
     if !reasoning.supported || !snapshot.capabilities.reasoning {
         return None;
+    }
+    if reasoning.default_enabled == Some(false) {
+        return reasoning.off.as_ref().map(|_| "none".to_owned());
     }
     let effort = reasoning.effort.as_ref()?;
     let mut options = reasoning.effort_options.clone().unwrap_or_default();

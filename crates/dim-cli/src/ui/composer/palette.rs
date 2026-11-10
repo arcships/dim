@@ -464,6 +464,7 @@ mod tests {
             "theme",
             "language",
             "keys",
+            "report",
             "exit",
         ];
         for context in [
@@ -510,8 +511,8 @@ mod tests {
         );
         assert_eq!(names("/stg", SCROLLBACK), ["settings"]);
         assert_eq!(
-            &names("/re", SCROLLBACK)[..4],
-            ["resume", "rename", "reload-skills", "effort"]
+            &names("/re", SCROLLBACK)[..5],
+            ["resume", "rename", "reload-skills", "report", "effort"]
         );
         assert!(names("/ss", SCROLLBACK).contains(&"resume"));
         assert!(names("/quit", SCROLLBACK).contains(&"exit"));

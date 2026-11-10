@@ -167,7 +167,9 @@ the export to the Timeline.
 ## 8. Interval metrics
 
 The export adds no timing field. Every event carries `create_at`, the time the Timeline committed it, before storage
-published it. A consumer names an interval by its two endpoint facts and does not call it execution time (ADR 005 D1):
+published it. The one exception is a thinking block's first `step/thinking` event: it carries the block's start,
+recorded when it opened, so the block's own span is the interval from that start to its next durable event (#1330).
+A consumer names an interval by its two endpoint facts and does not call it execution time (ADR 005 D1):
 for example, `model/call → step/model-output-end` also covers the storage write, dispatch and ModelProvider's
 retries, and `step/tool-call → step/tool-result` covers a whole tool batch with its Approval. Operation timing inside
 an owner is in `daemon.log` as the D4 spans.

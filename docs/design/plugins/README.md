@@ -13,6 +13,7 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [Questions](Questions.md) | — | `ask_user` tool, `session.question.respond`, waiters of running `ask_user` calls; no events | — | M2; #262 |
 | [ShellInput](ShellInput.md) | — | `shell.*` methods, command runs | — | P1 |
 | [Attachments](Attachments.md) | — | `attachment.put`, Session files | — | P1 |
+| [Report](Report.md) | error-only `report.*` and its connection-bound drafts | `session.report.*` and its connection-bound drafts | — | [#1319](https://github.com/arcships/dim/issues/1319) |
 | [SessionTitle](SessionTitle.md) | — | observes adoption of the first user input, `session.rename` | — | P1 |
 | [PromptSuggestion](PromptSuggestion.md) | `PromptSuggestionSettings` in App Server: the `prompt-suggestion` Settings source | observes the completed turn's events, `session.suggestion.request` and `session.suggestion.respond`, the offer in flight and the shown offer; no events | — | P1; [#943](https://github.com/arcships/dim/issues/943) |
 | [Goal](Goal.md) | — | `goal_update` tool, `session.goal.*` | goal state folded from `goal:objective` and `goal:status` blocks, continuation | P2 |
@@ -45,6 +46,6 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 
 | Scope | Parts |
 | --- | --- |
-| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source), `CodeMode` when installed, light-ocr in the daemon, EventHub; AcpGateway in its client host process |
-| Session parts | Questions, ShellInput, Attachments, SessionTitle, PromptSuggestion, Goal, Web, Recall, EventHub, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table), Code Mode when enabled |
+| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source), `CodeMode` when installed, light-ocr in the daemon, EventHub, Report; AcpGateway in its client host process |
+| Session parts | Questions, ShellInput, Attachments, SessionTitle, Report, PromptSuggestion, Goal, Web, Recall, EventHub, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table), Code Mode when enabled |
 | Branch parts | Goal (with Pursuit), ModelRecovery, Hooks, Prompt, Code Mode when enabled |

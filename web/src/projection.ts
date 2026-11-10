@@ -49,7 +49,8 @@ export class Projection {
   model: ModelId | undefined
   private answers = new Map<string, Stream>()
   private thoughts = new Map<string, Stream>()
-  private requestStarts = new Map<string, number>()
+  /** The block start of each open thought, its first durable `thinking` event. */
+  private thoughtStarts = new Map<string, number>()
   private tools = new Map<string, number>()
   private lines = new Map<string, number>()
   /** `ask_user` calls whose batch has no `step/tool-result` yet, oldest first. */
@@ -165,19 +166,18 @@ export class Projection {
         break
       }
       case "model-start":
-        this.requestStarts.set(content.requestId, event.createAt)
         break
       case "thinking": {
         this.showedOutput.add(content.requestId)
+        if (!this.thoughts.has(content.requestId)) this.thoughtStarts.set(content.requestId, event.createAt)
         const thought = this.openThinking(content.requestId)
         commit(thought, content.delta)
-        const start = this.requestStarts.get(content.requestId)
-        this.update(thought.index, { text: shown(thought), ...(start === undefined ? {} : { elapsedMs: Math.max(0, event.createAt - start) }) })
+        this.update(thought.index, { text: shown(thought) })
         break
       }
       case "text": {
         this.showedOutput.add(content.requestId)
-        this.closeThinking(content.requestId)
+        this.closeThinking(content.requestId, event.createAt)
         const answer = this.openAnswer(content.requestId)
         commit(answer, content.delta)
         this.update(answer.index, { text: shown(answer) })
@@ -185,10 +185,12 @@ export class Projection {
       }
       case "tool-use":
         this.showedOutput.add(content.requestId)
-        this.closeThinking(content.requestId)
+        this.closeThinking(content.requestId, event.createAt)
         this.closeAnswer(content.requestId)
-        this.requestStarts.delete(content.requestId)
         this.tools.set(content.callId, this.push({ kind: "tool", key: `tool-${content.callId}`, callId: content.callId, name: content.name, input: content.input, pending: true }))
+        break
+      case "tool-use-start":
+        this.closeThinking(content.requestId, event.createAt)
         break
       case "tool-call":
         break
@@ -200,9 +202,8 @@ export class Projection {
         break
       case "model-end": {
         const incomplete = this.showedOutput.delete(content.requestId)
-        this.closeThinking(content.requestId)
+        this.closeThinking(content.requestId, event.createAt)
         this.closeAnswer(content.requestId)
-        this.requestStarts.delete(content.requestId)
         if (content.error !== undefined) {
           const failure = content.failure
           const text = content.presentation !== undefined
@@ -215,9 +216,8 @@ export class Projection {
       }
       case "turn-end": {
         this.lastTurnEnd = event.sequence
-        for (const requestId of [...this.thoughts.keys()]) this.closeThinking(requestId)
+        for (const requestId of [...this.thoughts.keys()]) this.closeThinking(requestId, event.createAt)
         for (const requestId of [...this.answers.keys()]) this.closeAnswer(requestId)
-        this.requestStarts.clear()
         // The marker belongs to this turn only, whatever the outcome.
         const shown = this.shownFailure
         this.shownFailure = undefined
@@ -244,6 +244,7 @@ export class Projection {
     if (progress.thinking !== "") {
       this.showedOutput.add(requestId)
       const thought = this.openThinking(requestId)
+      if (progress.thinkingStartedAt !== undefined && !this.thoughtStarts.has(requestId)) this.thoughtStarts.set(requestId, progress.thinkingStartedAt)
       thought.progress = { text: progress.thinking, offset: progress.thinkingOffset }
       this.update(thought.index, { text: shown(thought) })
     }
@@ -290,12 +291,14 @@ export class Projection {
     return answer
   }
 
-  /** A thought settles when the request moves on: progress never written (an interrupted thought) goes. */
-  private closeThinking(requestId: string): void {
+  /** A thought settles when the request moves on: progress never written (an interrupted thought) goes, and its duration spans its first event to `closedAt`. */
+  private closeThinking(requestId: string, closedAt: number): void {
     const thought = this.thoughts.get(requestId)
     if (thought === undefined) return
     this.thoughts.delete(requestId)
-    this.update(thought.index, { text: thought.written, streaming: false })
+    const start = this.thoughtStarts.get(requestId)
+    this.thoughtStarts.delete(requestId)
+    this.update(thought.index, { text: thought.written, streaming: false, ...(start === undefined ? {} : { elapsedMs: Math.max(0, closedAt - start) }) })
   }
 
   private closeAnswer(requestId: string): void {

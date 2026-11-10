@@ -285,6 +285,7 @@ pub async fn serve_home(
         texts.continuation = continuation.to_string();
     }
     dim_goal::install_with(&mut builder, texts);
+    dim_report::install(&mut builder);
     observe(&mut builder);
     Ok(serve(builder, config).await?)
 }

@@ -500,6 +500,7 @@ fn a_client_finding_another_daemons_upgrade_waits_for_it() {
         .open(home.0.join("rust/dimcode.sqlite.lock"))
         .unwrap();
     lease.lock().unwrap();
+    write_progress_note(&note, std::process::id(), 1);
     // It rewrites its progress note every 50 ms from a pid that is alive and
     // is not the client's own; no client holds `daemon.start.lock`.
     let stop = Arc::new(AtomicBool::new(false));
@@ -507,7 +508,7 @@ fn a_client_finding_another_daemons_upgrade_waits_for_it() {
         let stop = Arc::clone(&stop);
         let note = note.clone();
         thread::spawn(move || {
-            let mut counter = 0;
+            let mut counter = 1;
             while !stop.load(Ordering::SeqCst) {
                 counter += 1;
                 // A later version may add fields to the progress line; this

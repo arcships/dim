@@ -31,6 +31,7 @@ xai-ratatui-textarea = { path = "../../vendor/grok-build/xai-ratatui-textarea" }
 ignore = "0.4.25"
 url = "2"
 base64 = "0.22.1"
+chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
 image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 flate2 = "1.1"
 tar = { version = "0.4", default-features = false }

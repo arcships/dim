@@ -199,6 +199,9 @@ jobs:
           export DIM_TEST_JS_RUNTIME="$PWD/runtime/node_modules/@arcships/rutis-runtime"
           export DIM_TEST_PYTHON="$PWD/runtime/.venv/bin/python"
           node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow python_plugin_ --ignored
+      - name: Verify downloaded Node runtime
+        if: needs.changes.outputs.node == 'true' && github.event_name != 'pull_request'
+        run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow runtime_manager::runtime_switches_from_system_to_downloaded_node --ignored --exact
   acp-registry:
     needs: changes
     if: github.event_name != 'pull_request' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.scripts == 'true')

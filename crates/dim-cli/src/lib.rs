@@ -32,6 +32,7 @@ mod prompt_command;
 mod question;
 mod realtime_command;
 mod recording;
+mod report;
 mod sanitize;
 mod session;
 mod session_command;

@@ -166,7 +166,13 @@ through the same mapping an explicit value uses, and likewise for a declared
 default service tier. A declared default applies only when the model advertises
 the value (one of `effortOptions`, or `none` beside a reasoning-off declaration)
 and the protocol can express it; otherwise the adoption starts unchanged, and a
-default never fails an adoption.
+default never fails an adoption. A declaration that states reasoning is off by
+default (`defaultEnabled: false`) adopts off through the declaration's own
+reasoning-off mapping, never the `effort` beside it: that effort names a
+strength the model does not use until something turns reasoning on. Without
+such a mapping the adoption sends no reasoning at all, even where
+`effortOptions` lists `none`, because the model is already off and the request
+keeps the model's own default. A missing `defaultEnabled` is not read as off.
 `none` needs that declaration or an advertised native `none`. Unsupported values
 fail without adoption; no value is guessed from a model name.
 

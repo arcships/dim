@@ -68,6 +68,29 @@ async fn completions(
     )
 }
 
+/// The fake Gemini provider: records every request body and streams a reply.
+async fn google(
+    State(capture): State<Arc<Capture>>,
+    uri: axum::http::Uri,
+    Json(body): Json<Value>,
+) -> impl axum::response::IntoResponse {
+    capture.requests.lock().unwrap().push(body);
+    let reply = json!({"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},
+        "finishReason":"STOP","index":0}],
+        "usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3,"totalTokenCount":10}});
+    if uri.path().contains(":streamGenerateContent") {
+        (
+            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+            format!("data: {}\n\n", reply),
+        )
+    } else {
+        (
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            reply.to_string(),
+        )
+    }
+}
+
 struct Server {
     child: tokio::process::Child,
     socket: std::path::PathBuf,
@@ -144,13 +167,14 @@ fn directory(name: &str) -> std::path::PathBuf {
     directory
 }
 
-/// A model descriptor whose reasoning declaration carries `default` beside
-/// its offered efforts, and `off` when the model declares one. `reasoning`
-/// is the model's reasoning capability: `false` denies the control the
-/// declaration would otherwise describe, and the projection derives the
-/// capability from it.
+/// A model descriptor whose reasoning declaration carries whether reasoning is
+/// on by default, the `default` effort beside its offered efforts, and `off`
+/// when the model declares one. `reasoning` is the model's reasoning
+/// capability: `false` denies the control the declaration would otherwise
+/// describe, and the projection derives the capability from it.
 fn model_with_off(
     model_id: &str,
+    default_enabled: Option<bool>,
     default: Option<&str>,
     options: &[&str],
     off: Option<Value>,
@@ -161,6 +185,9 @@ fn model_with_off(
         ..dim_agent_types::CatalogCapabilities::with_limits(32_000, 4_096)
     };
     let mut declaration = json!({"supported":reasoning,"effortOptions":options});
+    if let Some(enabled) = default_enabled {
+        declaration["defaultEnabled"] = json!(enabled);
+    }
     if let Some(off) = off {
         declaration["off"] = off;
     }
@@ -176,6 +203,7 @@ fn model_with_off(
 fn model(model_id: &str, default: Option<&str>, options: &[&str]) -> Value {
     model_with_off(
         model_id,
+        None,
         default,
         options,
         Some(json!({"kind":"thinking_type","value":"disabled"})),
@@ -256,15 +284,13 @@ fn last_body(capture: &Capture) -> Value {
         .expect("the provider received a request")
 }
 
-/// The effort the last request carried, if any.
+/// The effort the last request carried, if any: the Anthropic effort field, or
+/// the effort field the compatible models write themselves.
 fn sent_effort(capture: &Capture) -> Option<String> {
-    capture
-        .requests
-        .lock()
-        .unwrap()
-        .last()
-        .and_then(|body| body.get("output_config"))
+    let body = capture.requests.lock().unwrap().last().cloned()?;
+    body.get("output_config")
         .and_then(|output| output.get("effort"))
+        .or_else(|| body.get("reasoning_effort"))
         .and_then(Value::as_str)
         .map(str::to_owned)
 }
@@ -416,6 +442,7 @@ async fn an_inexpressible_default_never_fails_an_adoption() {
                 model("outside", Some("high"), &["low"]),
                 model_with_off(
                     "unsupported-reasoning",
+                    None,
                     Some("high"),
                     &["low", "high"],
                     None,
@@ -720,10 +747,11 @@ async fn a_declared_default_none_needs_an_expressible_off_declaration() {
             "openai-compatible",
             &format!("http://{endpoint}/v1"),
             vec![
-                model_with_off("native", Some("none"), &["low", "none"], None, true),
+                model_with_off("native", None, Some("none"), &["low", "none"], None, true),
                 model("off", Some("none"), &["low"]),
                 model_with_off(
                     "unexpressible",
+                    None,
                     Some("none"),
                     &["low"],
                     Some(json!({"kind":"chat_template_kwargs","keys":["thinking"]})),
@@ -961,6 +989,213 @@ async fn a_configured_profile_shows_the_effort_it_sends() {
         let data = configured(&mut client, &plain).await;
         assert!(data.get("model_preferences").is_none(), "{data}");
         assert_eq!(sent_effort(&capture), None);
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// #1376: a model whose declaration says reasoning is off by default adopts
+/// no reasoning at all when its declaration carries no way to say off, while a
+/// model that declares reasoning on, and one that leaves the field undeclared,
+/// keep taking the declared effort.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_model_that_does_not_reason_by_default_adopts_no_declared_effort() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let capture = Arc::new(Capture::default());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/v1/messages", post(messages))
+            .with_state(capture.clone());
+        let http = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let directory = directory("default-enabled-off");
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        let provider = "018ec73f-0000-7000-8000-000000000110";
+        create_provider(
+            &mut client,
+            provider,
+            "anthropic",
+            &format!("http://{endpoint}"),
+            vec![
+                model_with_off(
+                    "off-by-default",
+                    Some(false),
+                    Some("high"),
+                    &["low", "high"],
+                    None,
+                    true,
+                ),
+                model_with_off(
+                    "on-by-default",
+                    Some(true),
+                    Some("high"),
+                    &["low", "high"],
+                    Some(json!({"kind":"thinking_type","value":"disabled"})),
+                    true,
+                ),
+                model_with_off(
+                    "undeclared",
+                    None,
+                    Some("high"),
+                    &["low", "high"],
+                    Some(json!({"kind":"thinking_type","value":"disabled"})),
+                    true,
+                ),
+            ],
+        )
+        .await;
+
+        for (model_id, expected) in [
+            ("off-by-default", None),
+            ("on-by-default", Some(json!({"reasoningEffort":"high"}))),
+            ("undeclared", Some(json!({"reasoningEffort":"high"}))),
+        ] {
+            let created = client
+                .rpc(
+                    "session.create",
+                    json!({"cwd":directory,"tools":[],
+                        "model":{"provider":provider,"modelId":model_id}}),
+                )
+                .await;
+            assert_ok(&created);
+            let session_id = created["result"]["sessionId"].clone();
+            assert_eq!(
+                created["result"].get("modelPreferences"),
+                expected.as_ref(),
+                "{model_id}: {created}"
+            );
+            turn(&mut client, &session_id, "hello").await;
+            assert_eq!(
+                configured(&mut client, &session_id)
+                    .await
+                    .get("model_preferences"),
+                expected.as_ref(),
+                "{model_id}"
+            );
+            let wire = last_body(&capture);
+            let effort = expected.as_ref().map(|_| "high");
+            assert_eq!(
+                sent_effort(&capture).as_deref(),
+                effort,
+                "{model_id}: {wire}"
+            );
+            assert!(wire.get("thinking").is_none(), "{model_id}: {wire}");
+        }
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// #1376: a model that declares reasoning off by default and declares how to
+/// say so adopts that declaration instead of the effort beside it, in each
+/// protocol that spells off its own way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_model_that_does_not_reason_by_default_adopts_its_off_declaration() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let capture = Arc::new(Capture::default());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/v1/messages", post(messages))
+            .route("/v1/chat/completions", post(completions))
+            .fallback(google)
+            .with_state(capture.clone());
+        let http = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let directory = directory("default-off-mapped");
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+
+        for (provider, driver, base_url, off, wire_off, wire_off_value) in [
+            (
+                "018ec73f-0000-7000-8000-000000000111",
+                "anthropic",
+                format!("http://{endpoint}"),
+                json!({"kind":"thinking_type","value":"disabled"}),
+                "/thinking/type",
+                json!("disabled"),
+            ),
+            (
+                "018ec73f-0000-7000-8000-000000000112",
+                "openai-compatible",
+                format!("http://{endpoint}/v1"),
+                json!({"kind":"thinking_type","value":"disabled"}),
+                "/thinking/type",
+                json!("disabled"),
+            ),
+            (
+                "018ec73f-0000-7000-8000-000000000113",
+                "gemini",
+                format!("http://{endpoint}/v1"),
+                json!({"kind":"thinking_budget","value":0}),
+                "/generationConfig/thinkingConfig/thinkingBudget",
+                json!(0),
+            ),
+        ] {
+            create_provider(
+                &mut client,
+                provider,
+                driver,
+                &base_url,
+                vec![
+                    model_with_off(
+                        "off-mapped",
+                        Some(false),
+                        Some("medium"),
+                        &["low", "medium"],
+                        Some(off.clone()),
+                        true,
+                    ),
+                    model_with_off(
+                        "off-mapped-without-effort",
+                        Some(false),
+                        None,
+                        &["low", "medium"],
+                        Some(off.clone()),
+                        true,
+                    ),
+                ],
+            )
+            .await;
+
+            for model_id in ["off-mapped", "off-mapped-without-effort"] {
+                let created = client
+                    .rpc(
+                        "session.create",
+                        json!({"cwd":directory,"tools":[],
+                            "model":{"provider":provider,"modelId":model_id}}),
+                    )
+                    .await;
+                assert_ok(&created);
+                assert_eq!(
+                    created["result"]["modelPreferences"],
+                    json!({"reasoningEffort":"none"}),
+                    "{driver} {model_id}: {created}"
+                );
+                let session_id = created["result"]["sessionId"].clone();
+                turn(&mut client, &session_id, "hello").await;
+                assert_eq!(
+                    configured(&mut client, &session_id).await["model_preferences"],
+                    json!({"reasoningEffort":"none"}),
+                    "{driver} {model_id}"
+                );
+                let wire = last_body(&capture);
+                assert_eq!(
+                    wire.pointer(wire_off),
+                    Some(&wire_off_value),
+                    "{driver} {model_id}: {wire}"
+                );
+                assert_eq!(sent_effort(&capture), None, "{driver} {model_id}: {wire}");
+            }
+        }
 
         server.child.kill().await.unwrap();
         http.abort();

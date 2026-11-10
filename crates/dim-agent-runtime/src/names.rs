@@ -119,6 +119,7 @@ pub fn catalog() -> ServiceCatalog {
 pub struct Names<'a> {
     catalog: &'a ServiceCatalog,
     place: Place<'a>,
+    faces: Option<&'a crate::Faces>,
 }
 enum Place<'a> {
     /// A copy running in these instances.
@@ -136,6 +137,20 @@ impl<'a> Names<'a> {
         Self {
             catalog,
             place: Place::Copy(build),
+            faces: None,
+        }
+    }
+    /// The names of a copy running in `build`'s instances, rejecting the
+    /// internal faces a leaf cannot borrow (#1289).
+    pub fn copy_with_faces(
+        catalog: &'a ServiceCatalog,
+        build: &'a Build,
+        faces: &'a crate::Faces,
+    ) -> Self {
+        Self {
+            catalog,
+            place: Place::Copy(build),
+            faces: Some(faces),
         }
     }
     /// The composition check of a part placed inside `groups`, innermost
@@ -148,6 +163,7 @@ impl<'a> Names<'a> {
         Self {
             catalog,
             place: Place::Check { groups, instance },
+            faces: None,
         }
     }
     /// The instance of the enclosing `group` the copy runs in.
@@ -161,8 +177,17 @@ impl<'a> Names<'a> {
         }
     }
     /// The key of `T`'s name for this copy.
+    fn reject_internal(&self, name: &str) -> Result<(), Error> {
+        if let Some(reason) = self.faces.and_then(|faces| faces.reason(name)) {
+            return Err(rutis::Error::from(ErrorKind::PluginFailed(
+                format!("internal_service: {name} is internal: {reason}").into(),
+            )));
+        }
+        Ok(())
+    }
     pub fn key<T: ?Sized + 'static>(&self) -> Result<Key<T>, Error> {
         let name = name_of::<T>();
+        self.reject_internal(&name)?;
         let failed = |message: String| rutis::Error::from(ErrorKind::PluginFailed(message.into()));
         let group = match self.catalog.key_in(&name, &Build::default()) {
             Ok(key) => {
@@ -206,6 +231,7 @@ impl<'a> Names<'a> {
     /// then `dyn HostDispatch`: there a provider of any language is found.
     /// [`Self::key`] is the form for a name registered with a Rust type.
     pub fn named<T: ?Sized + 'static>(&self, name: &str) -> Result<Key<T>, Error> {
+        self.reject_internal(name)?;
         let failed = |message: String| rutis::Error::from(ErrorKind::PluginFailed(message.into()));
         let key = match self.catalog.key_in(name, &Build::default()) {
             Ok(key) => key,

@@ -42,6 +42,7 @@ use crate::{
 
 mod inventory;
 mod member;
+mod report;
 mod tasks;
 mod workflow;
 use member::Members;
@@ -269,6 +270,7 @@ struct Worker {
     /// A stale request still occupies this slot until its reply arrives.
     task_history_request: Option<HistoryRequest>,
     methods: std::collections::HashSet<String>,
+    report_generations: std::collections::HashMap<u64, u64>,
     model_through: u64,
     task_stops: Option<StopBatch>,
     workflow: WorkflowReads,
@@ -656,6 +658,7 @@ impl Worker {
             task_history_queue: Default::default(),
             task_history_request: None,
             methods: Default::default(),
+            report_generations: Default::default(),
             model_through: 0,
             task_stops: None,
             workflow: WorkflowReads::default(),
@@ -814,10 +817,35 @@ impl Worker {
                 .await?;
             self.ui_id = None;
         }
-        let attached: Attached = self
+        let attached: Attached = match self
             .client
             .typed("session.attach", json!({"sessionId": session_id}))
-            .await?;
+            .await
+        {
+            Ok(attached) => attached,
+            Err(error)
+                if kind != SwitchKind::New
+                    && self.client.offers("report.prepare")
+                    && crate::report::session_admission_failed(&error) =>
+            {
+                self.send(Update::Switched {
+                    session_id: String::new(),
+                    kind,
+                });
+                self.reportable(
+                    crate::report::Captured::observed(
+                        &session_id,
+                        "main",
+                        crate::report::Operation::SessionRead,
+                        dim_client::app_error(&error),
+                        error.to_string(),
+                    ),
+                    true,
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         // Without a record, find the model in the catalog: this is the only
         // caller of `list()` besides `/resume`, and only for an older server.
         self.model_through = attached.sequence;
@@ -1126,7 +1154,20 @@ impl Worker {
                     self.side = Some(opened.branch.branch_id.clone());
                     self.publish();
                 }
-                self.report_failure(opened);
+                if let Err(error) = opened
+                    && !self.reportable(
+                        crate::report::Captured::observed(
+                            &session_id,
+                            &parent,
+                            crate::report::Operation::BranchCreate,
+                            dim_client::app_error(&error),
+                            error.to_string(),
+                        ),
+                        true,
+                    )
+                {
+                    self.send(Update::Notice(error.to_string()));
+                }
             }
             Command::Fork {
                 session_id,
@@ -1153,7 +1194,20 @@ impl Worker {
                     .await;
                 match forked {
                     Ok(forked) => self.attach(forked.session_id, SwitchKind::Forked).await?,
-                    Err(error) => self.send(Update::Notice(error.to_string())),
+                    Err(error) => {
+                        if !self.reportable(
+                            crate::report::Captured::observed(
+                                &session_id,
+                                "main",
+                                crate::report::Operation::SessionFork,
+                                dim_client::app_error(&error),
+                                error.to_string(),
+                            ),
+                            true,
+                        ) {
+                            self.send(Update::Notice(error.to_string()));
+                        }
+                    }
                 }
             }
             Command::Stop => {
@@ -1362,6 +1416,7 @@ impl Worker {
                 }
             }
             Command::Compact => self.compact().await,
+            Command::ErrorReport(request) => self.report_request(request).await,
             Command::Export(format) => {
                 let extension = match format {
                     crate::export::Format::Markdown => "md",
@@ -2233,6 +2288,14 @@ impl Worker {
         let (method, params) = match message {
             Message::Notice { method, params } => (method, params),
             Message::Response { id, result } => {
+                if let Some(panel) = self.report_generations.remove(&id) {
+                    let reply = result
+                        .map_err(Into::into)
+                        .and_then(|value| serde_json::from_value(value).map_err(Into::into))
+                        .map(crate::report::Reply::Generated);
+                    self.report_reply(panel, reply);
+                    return Ok(());
+                }
                 if let Some(read) = self.approval_details.remove(&id) {
                     self.member_approval_reply(read, result).await?;
                     return Ok(());
@@ -4066,11 +4129,24 @@ impl Worker {
             self.send(Update::Ready(configuration.clone()));
         }
         self.discover_task_branches(&event);
+        let captured = if self.report_available()
+            && (branch_id == self.focus || self.side.as_deref() == Some(branch_id))
+        {
+            crate::report::Captured::event(&self.session_id, branch_id, &event)
+        } else {
+            None
+        };
+        let inline_report = captured.as_ref().is_some_and(|error| {
+            matches!(error.operation, crate::report::Operation::ModelGeneration)
+        });
+        let mut inline_shown = false;
         if let Some(line) = self.lines.get_mut(branch_id)
             && event.sequence > line.cursor
         {
             line.cursor = event.sequence;
+            let previous_rows = line.projection.rows().len();
             line.projection.apply(branch_id, &event);
+            inline_shown = inline_report && line.projection.mark_reportable_error(previous_rows);
         }
         let cursor = self.cursors.entry(branch_id.to_owned()).or_default();
         if event.sequence <= *cursor {
@@ -4094,7 +4170,15 @@ impl Worker {
                 cache_read_tokens: data.usage.cache_read_tokens.map(tokens),
             });
         }
+        let previous_rows = self.projection.rows().len();
         self.projection.apply(branch_id, &event);
+        if let Some(error) = captured
+            && (!inline_report
+                || self.projection.mark_reportable_error(previous_rows)
+                || inline_shown)
+        {
+            self.reportable(error, false);
+        }
         if let EventContent::ExecEnded(data) = &event.content
             && self.output.as_ref().is_some_and(|output| {
                 output.target.branch_id == branch_id && output.target.task_id == data.task_id

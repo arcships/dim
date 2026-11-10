@@ -58,6 +58,7 @@ pub enum Block {
     Error {
         text: String,
         details: Option<crate::model::view::FailureDetail>,
+        reportable: bool,
         expanded: bool,
     },
     Status {
@@ -131,6 +132,7 @@ pub fn project_row(rows: &[Arc<ViewRow>], index: usize, detail: Detail) -> Block
         RowKind::Error => Block::Error {
             text: row.text.clone(),
             details: row.failure.clone(),
+            reportable: row.reportable,
             expanded: detail != Detail::Collapsed,
         },
         RowKind::StreamingAssistant | RowKind::Status | RowKind::Other => Block::Status {
@@ -185,6 +187,7 @@ mod tests {
     fn row(kind: RowKind, text: &str) -> ViewRow {
         ViewRow {
             failure: None,
+            reportable: false,
             row_id: "r".into(),
             kind,
             text: text.into(),

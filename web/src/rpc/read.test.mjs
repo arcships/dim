@@ -139,6 +139,26 @@ test("member approvals preserve the original action and retire by branch and rou
   assert.equal(readNotification("session.notice", { sessionId: "leader", source: "AnotherOwner", kind: "memberApprovalEnded", data: {} }), undefined)
 })
 
+test("model progress reads the open thinking block's producer start", () => {
+  assert.deepEqual(readNotification("session.model.progress", {
+    sessionId: "s", branchId: "main", requestId: "r1",
+    text: "", textOffset: 0, thinking: "weigh", thinkingOffset: 0, thinkingStartedAt: 1_002,
+  }), {
+    method: "session.model.progress",
+    progress: { sessionId: "s", branchId: "main", requestId: "r1", text: "", textOffset: 0, thinking: "weigh", thinkingOffset: 0, thinkingStartedAt: 1_002 },
+  })
+  assert.equal(readNotification("session.model.progress", {
+    sessionId: "s", branchId: "main", text: "", textOffset: 0, thinking: "", thinkingOffset: 0,
+  }).progress.thinkingStartedAt, undefined)
+})
+
+test("tool-use-start opens a call as its own output event", () => {
+  const started = page(event("step", "tool-use-start", {
+    turn_id: "turn", request_id: "request", call_id: "call", name: "echo",
+  }))
+  assert.deepEqual(started.events[0].content, { kind: "tool-use-start", requestId: "request", callId: "call", name: "echo" })
+})
+
 test("a loaded Skill block is read as a note, not as the operator's message", () => {
   const block = '<dim-skill name="checkin">\nSkill: checkin\nDescription: D\nFile: /x/SKILL.md\n\nInstructions:\nBODY\n</dim-skill>'
   const loaded = page(event("input", "message", {

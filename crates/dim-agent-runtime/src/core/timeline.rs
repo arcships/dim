@@ -226,6 +226,21 @@ impl Timeline {
     pub fn append(&self, original: EventDraft) -> std::result::Result<Arc<AgentEvent>, AgentError> {
         self.append_registered(original, |_| Ok(()))
     }
+    /// Appends one event stamped with the producer's `create_at`: the fact it
+    /// records began before the producer could commit it, as a thinking block
+    /// does with its first delta.
+    #[service(skip)]
+    pub fn append_with_create_at(
+        &self,
+        original: EventDraft,
+        create_at: u64,
+    ) -> std::result::Result<Arc<AgentEvent>, AgentError> {
+        let mut events =
+            self.append_batch_registered_with_create_at(vec![original], Some(create_at), |_| {
+                Ok(())
+            })?;
+        Ok(events.pop().expect("single-event batch returned one event"))
+    }
     /// Registers producer state before queueing; publication follows store commit.
     #[service(skip)]
     pub fn append_registered(
@@ -240,7 +255,15 @@ impl Timeline {
     #[service(skip)]
     pub fn append_batch_registered(
         &self,
+        originals: Vec<EventDraft>,
+        register: impl FnOnce(&[Arc<AgentEvent>]) -> Result<()>,
+    ) -> Result<Vec<Arc<AgentEvent>>> {
+        self.append_batch_registered_with_create_at(originals, None, register)
+    }
+    fn append_batch_registered_with_create_at(
+        &self,
         mut originals: Vec<EventDraft>,
+        create_at: Option<u64>,
         register: impl FnOnce(&[Arc<AgentEvent>]) -> Result<()>,
     ) -> Result<Vec<Arc<AgentEvent>>> {
         if let Ok(parent) = PARENT_CALL_ID.try_with(Clone::clone) {
@@ -252,7 +275,7 @@ impl Timeline {
         }
         let _append = AppendGuard::enter()?;
         let _commit = self.0.commit.lock().unwrap();
-        self.commit(originals, register)
+        self.commit(originals, create_at, register)
     }
     /// Appends an input once per submission id, including accepted inputs
     /// awaiting publication. Concurrent attempts return the same input.
@@ -276,7 +299,8 @@ impl Timeline {
                 return Ok(Appended::Existing(input.sequence));
             }
             admit()?;
-            let mut events = self.commit(vec![EventKind::InputMessage(data).into()], |_| Ok(()))?;
+            let mut events =
+                self.commit(vec![EventKind::InputMessage(data).into()], None, |_| Ok(()))?;
             return Ok(Appended::Written(
                 events.pop().expect("single-event batch returned one event"),
             ));
@@ -333,6 +357,7 @@ impl Timeline {
                     .into_iter()
                     .map(|input| EventKind::InputMessage(input).into())
                     .collect(),
+                None,
                 |_| Ok(()),
             )?;
             return Ok(AppendedBatch::Written(events));
@@ -421,6 +446,7 @@ impl Timeline {
     fn commit(
         &self,
         originals: Vec<EventDraft>,
+        create_at: Option<u64>,
         register: impl FnOnce(&[Arc<AgentEvent>]) -> Result<()>,
     ) -> Result<Vec<Arc<AgentEvent>>> {
         if let Some(error @ AgentError::Storage(_)) = self.0.faults.failure() {
@@ -460,7 +486,7 @@ impl Timeline {
             let event = Arc::new(AgentEvent {
                 id: event_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
                 sequence: first_sequence + events.len() as u64,
-                create_at: unix_millis(),
+                create_at: create_at.unwrap_or_else(unix_millis),
                 tags: draft.tags,
                 parent_call_id: draft.parent_call_id,
                 kind: draft.kind,

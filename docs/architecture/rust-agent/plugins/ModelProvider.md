@@ -36,7 +36,10 @@ The first event of each text/thinking block is preassigned its block id as the
 event `id`; later same-kind deltas are grouped by the open block until a
 thinking/text/tool event starts the next one. Provider `TextEnd`/`ThinkingEnd`
 are not durable boundaries. `ModelProgress` exposes the same ids as
-`text_part_id` / `thinking_part_id` while the block is open.
+`text_part_id` / `thinking_part_id` while the block is open, and the open
+thinking block's `thinking_started_at` is the Unix-millisecond time at which it
+opened. The block's first durable `step/thinking` event carries that same time
+as `create_at`, so the start survives history, replay and fork.
 Progress state is transient. Only one call runs at a time. Steer may replace a
 request before irreversible output; stop cancels and drains native work.
 Cleanup cancels, joins tasks and aggregates failures. Recovery fails unended

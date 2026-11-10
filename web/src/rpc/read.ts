@@ -73,6 +73,10 @@ function num(source: Json, key: string, at: string): number {
   return value
 }
 
+function optNum(source: Json, key: string, at: string): number | undefined {
+  return source[key] === undefined || source[key] === null ? undefined : num(source, key, at)
+}
+
 /** A nonnegative finite number; token counts are floats on the wire. */
 function finite(source: Json, key: string, at: string): number {
   const value = source[key]
@@ -560,6 +564,8 @@ function content(type: string, name: string, data: Json, at: string): EventConte
       return { kind: "thinking", requestId: str(data, "request_id", at), delta: str(data, "delta", at) }
     case "step/text":
       return { kind: "text", requestId: str(data, "request_id", at), delta: str(data, "delta", at) }
+    case "step/tool-use-start":
+      return { kind: "tool-use-start", requestId: str(data, "request_id", at), callId: str(data, "call_id", at), name: str(data, "name", at) }
     case "step/tool-call":
       return { kind: "tool-call", requestId: str(data, "request_id", at), asks: readAsks(arr(data.calls, `${at}.calls`), `${at}.calls`) }
     case "step/tool-use": {
@@ -732,6 +738,7 @@ export function readNotification(method: string, value: unknown): Notification |
     case "session.model.progress": {
       const requestId = optStr(params, "requestId", method)
       const retry = readRetryProgress(params.retry, `${method}.retry`)
+      const thinkingStartedAt = optNum(params, "thinkingStartedAt", method)
       return {
         method,
         progress: {
@@ -742,6 +749,7 @@ export function readNotification(method: string, value: unknown): Notification |
           textOffset: num(params, "textOffset", method),
           thinking: str(params, "thinking", method),
           thinkingOffset: num(params, "thinkingOffset", method),
+          ...(thinkingStartedAt === undefined ? {} : { thinkingStartedAt }),
           ...(retry === undefined ? {} : { retry }),
         },
       }

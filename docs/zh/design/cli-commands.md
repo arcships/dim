@@ -20,12 +20,12 @@ scrollback 与 fullscreen TUI 都按同一个固定的、经过整理的顺序�
 /tasks /rename /web /connect /login
 /skills /reload-skills /mcp /plugins /runtime
 /hooks /scheduled /workflow /workflow:save
-/tools /tui /theme /language /keys /exit
+/tools /tui /theme /language /keys /report /exit
 ```
 
 `/fast` 仅在模型声明支持服务层级时列出。搜索时匹配程度优先，同等匹配保持上述顺序。
 排序不受界面语言影响；打开 `/` 默认选中 `/new`，Enter 会新建会话。未筛选列表中的 `/exit` 始终在最后。
-退出必须完整匹配命令名或别名才执行：选择不完整匹配时只补全命令名并保留输入框。
+上报错误和退出必须完整匹配命令名或别名才执行：选择不完整匹配时只补全命令名并保留输入框。
 完整输入的命令（包括隐藏命令）仍走各自的处理流程。
 菜单选择即使完整匹配命令名，也可能只补全：带行内参数的命令和 `/goal` 会填入输入框，等待另一次提交。
 `Tab` 只补全选中行，从不执行也不发送：命令补全为其名称，带参数的命令同时补全名称后的空格，
@@ -920,6 +920,7 @@ Remove 先在提示栏询问，`Remove deny prefix git push? Enter confirm · Es
 | `dimcode account PROVIDER` | 打印被描述账号的非机密状态。 |
 | `dimcode logout PROVIDER` | 让被描述的账号退出。 |
 | `/connect` | 列出 `provider.management` 报告的提供方；被描述的账号打开签到或退出步骤，其他提供方打开连接表单。 |
+| `/report` | 打开当前 TUI 中最近一条可上报的错误。可将报告保存为 ZIP，查看保存路径，并在保存后打开分享页面。参见[报告契约](../../design/plugins/Report.md#2-client-interaction)。 |
 | `/exit` | 在空闲的交互提示符处断开并退出。 |
 | `!command` / `!!command` | 以 record/private 模式调用 Session 现有的 `shell.run`，模型回合进行中也可用。 |
 | `--permission read-only\|workspace-write\|full-access` | 为 `dimcode`、`tui`、`exec` 和 `exec resume` 选择新建或恢复的 Session 的预设（[权限控制](#权限控制)）。 |

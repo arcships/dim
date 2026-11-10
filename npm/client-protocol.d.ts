@@ -142,6 +142,7 @@ export type EventContent =
   | { kind: "model-start"; requestId: string }
   | { kind: "thinking"; requestId: string; delta: string }
   | { kind: "text"; requestId: string; delta: string }
+  | { kind: "tool-use-start"; requestId: string; callId: string; name: string }
   | { kind: "tool-use"; requestId: string; callId: string; name: string; input: Record<string, unknown> }
   | { kind: "tool-call"; requestId: string; asks: AskCall[] }
   | { kind: "tool-completed"; requestId: string; callId: string; result: ToolResult }
@@ -175,7 +176,7 @@ export type ModelFailure = {
 export type SessionEvent = {
   id: string
   sequence: number
-  /** Unix milliseconds the runtime wrote the event at. */
+  /** Unix milliseconds at which the event's fact was recorded: the commit time, except a thinking block's first `step/thinking`, which carries the block's start. Order by `sequence`, not this field. */
   createAt: number
   /** v4 only: the outer call of a child tool batch. */
   parentCallId?: string
@@ -202,6 +203,8 @@ export type ModelProgress = {
   thinking: string
   /** Unicode scalar values of the request's `step/thinking` deltas before `thinking`. */
   thinkingOffset: number
+  /** Unix milliseconds at which the open thinking block started; absent when no block is open. */
+  thinkingStartedAt?: number
   /** The retry this request is waiting to make, while it sleeps. */
   retry?: ModelRetryProgress
 }

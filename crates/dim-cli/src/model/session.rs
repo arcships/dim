@@ -159,6 +159,7 @@ pub enum SessionsScope {
 }
 
 pub enum Command {
+    ErrorReport(crate::report::Request),
     Submit(String, SubmitMode),
     /// A draft with pastes to store or content blocks to send.
     SubmitDraft(Vec<DraftPart>, SubmitMode),
@@ -1132,6 +1133,14 @@ pub enum RenameReply {
 
 #[allow(dead_code)]
 pub enum Update {
+    Reportable {
+        error: crate::report::Captured,
+        show_error: bool,
+    },
+    ReportReply {
+        panel: u64,
+        reply: crate::report::Reply,
+    },
     /// A queued input the TUI withdrew (`Command::InputControl` with action
     /// `withdraw`) is deleted: its complete content goes back into the draft.
     Withdrawn(dim_agent_types::UserInput),

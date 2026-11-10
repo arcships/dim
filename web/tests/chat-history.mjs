@@ -135,6 +135,38 @@ test("main-history failure buffers live output until an explicit retry completes
   assert.equal(chat.views.session.rows[0].text, "stored")
 })
 
+test("a tool start drops a stale progress tail instead of reopening the thought", async t => {
+  const chat = session(t, () => page([], 0))
+  await flush()
+  chat.receive({ method: "session.model.progress", progress: { sessionId: "session", branchId: "main", requestId: "r1", text: "", textOffset: 0, thinking: "weigh", thinkingOffset: 0, thinkingStartedAt: 1 } })
+  receive(chat, "main", event(1, { kind: "thinking", requestId: "r1", delta: "weigh" }))
+  receive(chat, "main", event(2, { kind: "tool-use-start", requestId: "r1", callId: "call", name: "echo" }))
+  await flush()
+  const thoughts = chat.views.session.rows.filter(row => row.kind === "thinking")
+  assert.equal(thoughts.length, 1)
+  assert.equal(thoughts[0].streaming, false)
+})
+
+test("a loaded tool start drops a stale progress tail instead of reopening the thought", async t => {
+  const held = deferred()
+  const chat = session(t, ({ branchId }) => branchId === "main" ? page([], 0) : held.promise)
+  await flush()
+  chat.receive({ method: "session.state", sessionId: "session", branchId: "worker", running: true, stopping: false })
+  await flush()
+  chat.ensureLine("session", "worker")
+  await flush()
+  chat.receive({ method: "session.model.progress", progress: { sessionId: "session", branchId: "worker", requestId: "r1", text: "", textOffset: 0, thinking: "weigh", thinkingOffset: 0, thinkingStartedAt: 1 } })
+  await flush()
+  held.resolve(page([
+    event(1, { kind: "thinking", requestId: "r1", delta: "weigh" }),
+    event(2, { kind: "tool-use-start", requestId: "r1", callId: "call", name: "echo" }),
+  ], 2))
+  await flush()
+  const thoughts = chat.views.session.branches.worker.rows.filter(row => row.kind === "thinking")
+  assert.equal(thoughts.length, 1)
+  assert.equal(thoughts[0].streaming, false)
+})
+
 test("a request timeout leaves the socket usable and reports a failure rather than a disconnect", async t => {
   const NativeSocket = globalThis.WebSocket
   const nativeLocation = globalThis.location

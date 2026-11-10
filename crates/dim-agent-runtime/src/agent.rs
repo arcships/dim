@@ -56,6 +56,11 @@ impl Agent {
     pub fn catalog(&self) -> &rutis_loader::ServiceCatalog {
         self.0.builder.catalog()
     }
+    /// The internal service faces and their reasons
+    /// ([`AgentBuilder::faces`]).
+    pub fn faces(&self) -> &crate::Faces {
+        self.0.builder.faces()
+    }
     pub async fn create_session(&self, config: SessionConfig) -> Result<Session> {
         self.create(
             Uuid::new_v4().to_string(),

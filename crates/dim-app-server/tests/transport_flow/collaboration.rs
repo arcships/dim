@@ -1058,8 +1058,8 @@ async fn plugin_tools_off_removes_the_plugin_tool_from_every_session() {
     fn declares(tools: &[dim_agent_types::ToolDefinition], name: &str) -> bool {
         tools.iter().any(|tool| tool.name == name)
     }
-    tokio::time::timeout(Duration::from_secs(20), async {
-        for (plugin_tools, declared) in [(true, true), (false, false)] {
+    for plugin_tools in [true, false] {
+        tokio::time::timeout(Duration::from_secs(60), async {
             let home =
                 std::env::temp_dir().join(format!("dim-plugin-tools-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&home).unwrap();
@@ -1073,9 +1073,12 @@ async fn plugin_tools_off_removes_the_plugin_tool_from_every_session() {
             };
             // The default profile, which a `default` Agent's members adopt,
             // names `plugin`: the member's own tools list is the profile's.
-            config.session_defaults.tools =
-                Some(["plugin", "echo", "wait", "agent"].map(String::from).to_vec());
-            let (server, agent) = launch_with(Arc::new(MockTools), config, |_| {}).await;
+            config.session_defaults.tools = Some(
+                ["plugin", "echo", "wait", "agent"]
+                    .map(String::from)
+                    .to_vec(),
+            );
+            let (server, agent) = launch_with_agent(Arc::new(MockTools), config).await;
             let mut client = Client::new_version(&server, false, 3).await;
             let created = client
                 .rpc(
@@ -1090,24 +1093,18 @@ async fn plugin_tools_off_removes_the_plugin_tool_from_every_session() {
             let lead_session = agent.get_session(&lead).unwrap();
             let model_tools = async |session: &Session| {
                 poll("model call", async || {
-                    events(session).await.iter().find_map(|event| match &event.kind {
-                        EventKind::ModelCall(data) => Some(data.request.tools.clone()),
-                        _ => None,
-                    })
+                    events(session)
+                        .await
+                        .iter()
+                        .find_map(|event| match &event.kind {
+                            EventKind::ModelCall(data) => Some(data.request.tools.clone()),
+                            _ => None,
+                        })
                 })
                 .await
                 .unwrap_or_default()
             };
-            say(&mut client, &lead, "plain".into(), "queue").await;
-            idle(&mut client, &lead).await;
-            let lead_tools = model_tools(&lead_session).await;
-            assert_eq!(
-                declares(&lead_tools, "plugin"),
-                declared,
-                "leader declares plugin={declared} with plugin_tools={plugin_tools}: {lead_tools:?}"
-            );
-            let default_agent = client.rpc("agent.list", json!({})).await["result"][0]
-                ["agentId"]
+            let default_agent = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
                 .as_str()
                 .unwrap()
                 .to_owned();
@@ -1118,6 +1115,12 @@ async fn plugin_tools_off_removes_the_plugin_tool_from_every_session() {
                 "queue",
             )
             .await;
+            let lead_tools = model_tools(&lead_session).await;
+            assert_eq!(
+                declares(&lead_tools, "plugin"),
+                plugin_tools,
+                "leader tools with plugin_tools={plugin_tools}: {lead_tools:?}"
+            );
             returned(&mut client, &lead, &lead_session, 1).await;
             let member = next_member(&lead_session, 0).await;
             let member_session = poll("member session", async || agent.get_session(&member)).await;
@@ -1128,16 +1131,18 @@ async fn plugin_tools_off_removes_the_plugin_tool_from_every_session() {
             );
             assert_eq!(
                 declares(&member_tools, "plugin"),
-                declared,
-                "member declares plugin={declared} with plugin_tools={plugin_tools}: {member_tools:?}"
+                plugin_tools,
+                "member tools with plugin_tools={plugin_tools}: {member_tools:?}"
             );
             drop(client);
             server.shutdown();
             server.join().await.unwrap();
-        }
-    })
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!("collaboration flow timed out with plugin_tools={plugin_tools}")
+        });
+    }
 }
 
 /// A leader Session of the default Agent; members inherit its policy.

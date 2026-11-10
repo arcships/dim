@@ -7212,6 +7212,48 @@ async fn a_fork_copies_main_through_the_cut_with_its_content_and_snapshots() {
     db.close().await.unwrap();
 }
 
+/// #1330: the first thinking event of a block records the block's start, so
+/// the span it forms with the next event survives a reload and a fork.
+#[tokio::test]
+async fn a_thinking_blocks_start_survives_a_reload_and_a_fork() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("source", &SessionConfig::default())
+        .await
+        .unwrap();
+    let mut opened = record(
+        1,
+        EventKind::Thinking(DeltaData {
+            turn_id: "turn".into(),
+            request_id: "request".into(),
+            delta: "weigh".into(),
+        }),
+    );
+    Arc::make_mut(&mut opened.event).create_at = 1_000;
+    let mut answer = text(2, "answer");
+    Arc::make_mut(&mut answer.event).create_at = 6_000;
+    append(&store, key("source", "main"), vec![opened, answer])
+        .await
+        .unwrap();
+    store.close().await.unwrap();
+
+    let store = SqliteTimelineStore::new(db.clone());
+    let read = store.read(&key("source", "main"), 1..=2).await.unwrap();
+    assert_eq!(read[0].event.create_at, 1_000);
+    assert_eq!(read[1].event.create_at, 6_000);
+
+    let config = store.session_config_text("source").await.unwrap().unwrap();
+    store
+        .fork_session("source", "fork", 2, &config)
+        .await
+        .unwrap();
+    let forked = store.read(&key("fork", "main"), 1..=2).await.unwrap();
+    assert_eq!(forked[0].event.create_at, 1_000);
+    assert_eq!(forked[1].event.create_at, 6_000);
+}
+
 #[tokio::test]
 async fn a_v22_store_upgrades_in_place_once() {
     let database = Database::new();

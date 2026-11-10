@@ -16,6 +16,7 @@ const rules=[
   [/^web\//,['web']],
   [/^scripts\/run-rust-test\.mjs$/,groups],
   [/^scripts\//,['scripts','web']],
+  [/^docker\//,['scripts']],
   [/^crates\/dim-cli\//,['rust','windows']],
   [/^crates\/dim-agent-types\//,['rust','windows','node']],
   [/^crates\/dimcode\//,['rust']],

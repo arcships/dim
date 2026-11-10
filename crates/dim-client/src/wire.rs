@@ -222,6 +222,9 @@ pub struct Progress {
     /// `thinking_offset` characters of the request's `step/thinking` deltas.
     pub thinking: String,
     pub thinking_offset: u64,
+    /// Unix milliseconds at which the open thinking block started; present
+    /// while a thinking block is open.
+    pub thinking_started_at: Option<u64>,
     /// The retry this request is waiting to make, while it sleeps.
     pub retry: Option<RetryProgress>,
 }

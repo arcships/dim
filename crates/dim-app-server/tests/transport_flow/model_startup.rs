@@ -349,11 +349,7 @@ async fn temporary_startup_connections_execute_all_formats_without_sharing_or_pe
         assert_ok(&cleared);
         submit(&mut client, &sid, "main").await;
         let body = seen.lock().unwrap().last().unwrap().2.clone();
-        assert_eq!(
-            body.pointer(effort_pointer),
-            (format == "openai-chat").then_some(&json!("none")),
-            "{body}"
-        );
+        assert!(body.pointer(effort_pointer).is_none(), "{body}");
         assert!(body.get("service_tier").is_none(), "{body}");
         sessions.push((sid, credential));
 
@@ -369,11 +365,7 @@ async fn temporary_startup_connections_execute_all_formats_without_sharing_or_pe
         let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();
         submit(&mut client, &sid, "main").await;
         let body = seen.lock().unwrap().last().unwrap().2.clone();
-        assert_eq!(
-            body.pointer(effort_pointer),
-            (format == "openai-chat").then_some(&json!("none")),
-            "{body}"
-        );
+        assert!(body.pointer(effort_pointer).is_none(), "{body}");
         sessions.push((sid, credential));
     }
     submit(&mut client, &sessions[0].0, "main").await;

@@ -1,5 +1,7 @@
 use crate::{host::*, steer::REPLACED_BY_STEER};
-use dim_agent_runtime::{ModelProgress, RetryProgress, StateCell, Timeline, ToolProgress};
+use dim_agent_runtime::{
+    ModelProgress, RetryProgress, StateCell, Timeline, ToolProgress, core::unix_millis,
+};
 use dim_agent_types::*;
 use futures_util::StreamExt;
 use std::{
@@ -107,6 +109,8 @@ pub(crate) struct Output {
     thinking_part_id: Option<String>,
     /// Whether the first thinking event carrying `thinking_part_id` was committed.
     thinking_part_committed: bool,
+    /// Unix milliseconds at which the current thinking block started.
+    thinking_started_at: Option<u64>,
     text_since: Option<Instant>,
     pub started: Vec<StartedCall>,
     committed_text: String,
@@ -137,6 +141,7 @@ impl Output {
             text_part_committed: false,
             thinking_part_id: None,
             thinking_part_committed: false,
+            thinking_started_at: None,
             text_since: None,
             started: Vec::new(),
             committed_text: String::new(),
@@ -197,10 +202,12 @@ impl Output {
                 if thinking {
                     progress.text_part_id = None;
                     progress.thinking_part_id = self.thinking_part_id.clone();
+                    progress.thinking_started_at = self.thinking_started_at;
                     progress.thinking.truncate(earlier);
                     progress.thinking.push_str(tail);
                 } else {
                     progress.thinking_part_id = None;
+                    progress.thinking_started_at = None;
                     progress.text_part_id = self.text_part_id.clone();
                     progress.text.truncate(earlier);
                     progress.text.push_str(tail);
@@ -249,15 +256,17 @@ impl Output {
         &mut self,
         kind: EventKind,
         id: Option<String>,
+        create_at: Option<u64>,
     ) -> Result<Arc<AgentEvent>, HostError> {
         let mut draft = EventDraft::new(kind);
         if let Some(id) = id {
             draft = draft.with_id(id);
         }
-        let event = self
-            .timeline
-            .append(draft)
-            .map_err(|error| HostError::failed(error.to_string()))?;
+        let event = match create_at {
+            Some(create_at) => self.timeline.append_with_create_at(draft, create_at),
+            None => self.timeline.append(draft),
+        }
+        .map_err(|error| HostError::failed(error.to_string()))?;
         let (turn_id, request_id) = match &event.kind {
             EventKind::Text(d) | EventKind::Thinking(d) => (&d.turn_id, &d.request_id),
             EventKind::ToolUseStart(d) => (&d.turn_id, &d.request_id),
@@ -278,10 +287,12 @@ impl Output {
         }
         self.thinking_part_id = None;
         self.thinking_part_committed = false;
+        self.thinking_started_at = None;
         let part_id = self.text_part_id.clone();
         self.show(|progress| {
             progress.text_part_id = part_id;
             progress.thinking_part_id = None;
+            progress.thinking_started_at = None;
             progress.text.push_str(&delta);
         });
         self.text.push_str(&delta);
@@ -317,6 +328,7 @@ impl Output {
                 delta,
             }),
             event_id,
+            None,
         )?;
         let EventKind::Text(data) = &event.kind else {
             return Err(HostError::failed("Committed output changed its kind"));
@@ -326,18 +338,25 @@ impl Output {
         self.hand_off(event.sequence, Handoff::Text(data.delta.len()));
         Ok(())
     }
+    /// Opens the current thinking block, or returns the one already open.
+    fn open_thinking(&mut self) -> Option<u64> {
+        if self.thinking_part_id.is_none() {
+            self.thinking_part_id = Some(uuid::Uuid::new_v4().to_string());
+            self.thinking_part_committed = false;
+            self.thinking_started_at = Some(unix_millis());
+        }
+        self.thinking_started_at
+    }
     fn thinking_delta(&mut self, thinking: String) -> Result<(), HostError> {
         self.flush_text()?;
         self.text_part_id = None;
         self.text_part_committed = false;
-        if self.thinking_part_id.is_none() {
-            self.thinking_part_id = Some(uuid::Uuid::new_v4().to_string());
-            self.thinking_part_committed = false;
-        }
+        let started_at = self.open_thinking();
         let part_id = self.thinking_part_id.clone();
         self.show(|progress| {
             progress.text_part_id = None;
             progress.thinking_part_id = part_id;
+            progress.thinking_started_at = started_at;
             progress.thinking.push_str(&thinking);
         });
         Ok(())
@@ -349,18 +368,17 @@ impl Output {
         if thinking.is_empty() {
             self.thinking_part_id = None;
             self.thinking_part_committed = false;
+            self.thinking_started_at = None;
             self.replace_tail(true, "");
             return Ok(());
         }
-        if self.thinking_part_id.is_none() {
-            self.thinking_part_id = Some(uuid::Uuid::new_v4().to_string());
-            self.thinking_part_committed = false;
-        }
-        let event_id = if self.thinking_part_committed {
-            None
-        } else {
+        let started_at = self.open_thinking();
+        let first = !self.thinking_part_committed;
+        let event_id = if first {
             self.thinking_part_committed = true;
             self.thinking_part_id.clone()
+        } else {
+            None
         };
         let event = self.commit(
             EventKind::Thinking(ThinkingData {
@@ -369,6 +387,7 @@ impl Output {
                 delta: thinking,
             }),
             event_id,
+            if first { started_at } else { None },
         )?;
         let EventKind::Thinking(data) = &event.kind else {
             return Err(HostError::failed("Committed output changed its kind"));
@@ -384,6 +403,7 @@ impl Output {
         self.text_part_committed = false;
         self.thinking_part_id = None;
         self.thinking_part_committed = false;
+        self.thinking_started_at = None;
         self.commit(
             EventKind::ToolUseStart(ToolUseStartData {
                 turn_id: self.scope.turn_id.clone(),
@@ -391,6 +411,7 @@ impl Output {
                 call_id: call_id.clone(),
                 name: name.clone(),
             }),
+            None,
             None,
         )?;
         self.started.push(StartedCall {
@@ -400,6 +421,7 @@ impl Output {
         self.show(|progress| {
             progress.text_part_id = None;
             progress.thinking_part_id = None;
+            progress.thinking_started_at = None;
             progress.tools.push(ToolProgress {
                 call_id,
                 name,
@@ -414,12 +436,14 @@ impl Output {
         self.text_part_committed = false;
         self.thinking_part_id = None;
         self.thinking_part_committed = false;
+        self.thinking_started_at = None;
         let event = self.commit(
             EventKind::ToolUse(ToolUseData {
                 turn_id: self.scope.turn_id.clone(),
                 request_id: self.scope.request_id.clone(),
                 call: call.clone(),
             }),
+            None,
             None,
         )?;
         if let EventKind::ToolUse(data) = &event.kind {
@@ -490,7 +514,7 @@ impl Output {
             request_id: self.scope.request_id.clone(),
             content,
         };
-        let event = self.commit(EventKind::ModelContent(data.clone()), None)?;
+        let event = self.commit(EventKind::ModelContent(data.clone()), None, None)?;
         if event.kind != EventKind::ModelContent(data) {
             return Err(HostError::failed(
                 "Complete model content was changed before commit",

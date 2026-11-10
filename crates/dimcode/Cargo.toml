@@ -19,6 +19,7 @@ dim-cli = { path = "../dim-cli" }
 dim-app-server.workspace = true
 dim-session-title.workspace = true
 dim-goal.workspace = true
+dim-report.workspace = true
 dim-modality.workspace = true
 dim-ocr.workspace = true
 dim-modality-aimux.workspace = true

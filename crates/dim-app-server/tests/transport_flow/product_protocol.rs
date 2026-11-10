@@ -2579,6 +2579,7 @@ async fn model_progress_reaches_v3_subscribers_without_persisting() {
         request_id: Some("request-1".into()),
         text_part_id: Some("text-part-1".into()),
         thinking_part_id: Some("thinking-part-1".into()),
+        thinking_started_at: Some(1_700_000_000_500),
         text: text.into(),
         text_offset: 3,
         thinking: "weighing".into(),
@@ -2607,6 +2608,7 @@ async fn model_progress_reaches_v3_subscribers_without_persisting() {
         last["params"],
         json!({"sessionId":sid,"branchId":"main","turnId":"turn-1","requestId":"request-1",
             "textPartId":"text-part-1","thinkingPartId":"thinking-part-1",
+            "thinkingStartedAt":1_700_000_000_500u64,
             "text":"x".repeat(updates),"textOffset":3,"thinking":"weighing","thinkingOffset":5,
             "tools":[{"callId":"call-1","name":"echo","arguments":"{\"text\":\"he"}]})
     );

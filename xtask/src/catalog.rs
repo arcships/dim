@@ -5,11 +5,11 @@
 //! shares when it hosts foreign parts (`session_typescript::share_names`), opens
 //! one Session and writes `generated/catalog.md` from that assembly: every
 //! catalog name one of its parts provides or injects, with its group, provider,
-//! whether it crosses languages and the methods its dispatcher serves, and the
+//! its face and the methods its dispatcher serves, and the
 //! parts that are Capabilities because they inject `dispatcher` or `timeline`.
 //! `check` builds the same assembly and fails when the file differs.
 use crate::app_server;
-use dim_agent_runtime::{Feature, SessionConfig, names::name_of_type};
+use dim_agent_runtime::{FACE_REASONS, Faces, Feature, SessionConfig, names::name_of_type};
 use rutis::host::diagnostics::RuntimeDiagnostics;
 use rutis::host::{CtxHost, InstanceId, TypeKey};
 use rutis::{Ctx, Plugin};
@@ -32,6 +32,8 @@ const CAPABILITY_NAMES: [&str; 2] = ["dispatcher", "timeline"];
 const EXPORT_PREFIX: &str = "rutis-export:";
 /// Groups in the order the table lists them.
 const GROUPS: [&str; 3] = ["process", "session", "branch"];
+/// Shared loader names with no host dispatch today (#1289).
+const EXTERNAL_SHARED: [&str; 2] = ["loaderService", "pluginMounter"];
 
 fn file(root: &Path) -> PathBuf {
     root.join("docs/architecture/rust-agent/generated/catalog.md")
@@ -79,6 +81,7 @@ async fn collect() -> Result<String> {
     let probe = Probe::default();
     let server = app_server::serve_product(&dir, |builder| {
         dim_app_server::session_typescript::share_names(builder.catalog_mut());
+        dim_app_server::register_faces(builder);
         let probe = probe.clone();
         builder.require_feature(
             Feature::new("CatalogProbe")
@@ -104,7 +107,7 @@ async fn collect() -> Result<String> {
         ];
         let ctx = probe.0.lock().unwrap().take();
         let ctx = ctx.ok_or("the catalog probe did not load")?;
-        let table = Table::new(agent.catalog(), &layers, &ctx)?.render();
+        let table = Table::new(agent.catalog(), agent.faces(), &layers, &ctx)?.render();
         session.close().await?;
         Ok::<_, Box<dyn std::error::Error>>(table)
     }
@@ -115,11 +118,29 @@ async fn collect() -> Result<String> {
     table
 }
 
+/// The face of one catalog name (#1289).
+fn face(name: &str, shared: bool, dispatcher: bool, reason: Option<&str>) -> Result<String> {
+    match (shared, dispatcher, reason) {
+        (true, true, None) => Ok("data".into()),
+        (true, false, None) if EXTERNAL_SHARED.contains(&name) => Ok("shared-no-dispatcher".into()),
+        (true, false, None) => Err(format!("{name}: shared but has no dispatcher").into()),
+        (false, true, _) => Err(format!("{name}: has a dispatcher but is not shared").into()),
+        (false, false, Some(reason)) if FACE_REASONS.contains(&reason) => {
+            Ok(format!("internal({reason})"))
+        }
+        (false, false, Some(reason)) => {
+            Err(format!("{name}: unknown internal reason {reason}").into())
+        }
+        (false, false, None) => Err(format!("{name}: no face and no internal reason").into()),
+        (true, _, Some(reason)) => Err(format!("{name}: shared and internal({reason})").into()),
+    }
+}
+
 #[derive(Default)]
 struct Service {
     group: &'static str,
     providers: BTreeSet<String>,
-    crosses: bool,
+    face: String,
     methods: BTreeMap<String, String>,
 }
 
@@ -137,6 +158,7 @@ struct Table {
 impl Table {
     fn new(
         catalog: &ServiceCatalog,
+        faces: &Faces,
         layers: &[(&'static str, RuntimeDiagnostics)],
         ctx: &Ctx,
     ) -> Result<Self> {
@@ -205,18 +227,29 @@ impl Table {
             }
         }
         for (name, service) in &mut services {
-            service.crosses = catalog.is_shared(name);
-            if service.crosses {
-                let key = match instances.get(service.group) {
-                    Some(instance) => host_key(name).instance(*instance),
-                    None => host_key(name),
-                };
-                if let Some(methods) = ctx
-                    .get_at::<dyn HostDispatch>(&key)
-                    .and_then(|dispatch| dispatch.methods())
-                {
-                    service.methods = serde_json::from_value(methods)?;
+            let shared = catalog.is_shared(name);
+            let key = match instances.get(service.group) {
+                Some(instance) => host_key(name).instance(*instance),
+                None => host_key(name),
+            };
+            let dispatch = ctx.get_at::<dyn HostDispatch>(&key);
+            let reason = faces.reason(name);
+            service.face = face(name, shared, dispatch.is_some(), reason)?;
+            if let Some(methods) = dispatch.and_then(|dispatch| dispatch.methods()) {
+                service.methods = serde_json::from_value(methods)?;
+            }
+        }
+        for (name, reason) in faces.iter() {
+            match services.get(name) {
+                None => {
+                    return Err(
+                        format!("{name}: internal({reason}) names no catalog service").into(),
+                    );
                 }
+                Some(service) if service.face == "data" => {
+                    return Err(format!("{name}: internal({reason}) is also a data face").into());
+                }
+                Some(_) => {}
             }
         }
         capabilities.sort_by(|a, b| (order(a.group), &a.part).cmp(&(order(b.group), &b.part)));
@@ -233,9 +266,9 @@ Generated from the real assembly: the App Server product profile (`serve` with a
 `cargo run -p xtask -- check` fails when this file is stale. \
 The rules for names are in [How Dim uses rutis §3](../../../design/rutis-usage.md#3-services-by-name).\n\n\
 ## Services\n\n\
-Each catalog name a part of the assembly provides or injects. A name that crosses languages lists the methods its dispatcher serves, each `sync` or `async` (callers in other languages always get a Promise); other methods of its Rust type are Rust-only. \
-A Rust-only name has no dispatcher: Rust parts reach it at its type's key.\n\n\
-| Name | Group | Provider | Crosses languages | Methods |\n| --- | --- | --- | --- | --- |\n",
+Each catalog name a part of the assembly provides or injects. `data` means shared with a dispatcher; `internal(reason)` means the face cannot cross; `shared-no-dispatcher` is shared but a leaf cannot call it. Methods are `sync` or `async` (callers in other languages always get a Promise). \
+A non-data name is reached by Rust parts at its type's key.\n\n\
+| Name | Group | Provider | Face | Methods |\n| --- | --- | --- | --- | --- |\n",
         );
         let mut rows: Vec<_> = self.services.iter().collect();
         rows.sort_by_key(|(name, service)| (order(service.group), *name));
@@ -250,7 +283,7 @@ A Rust-only name has no dispatcher: Rust parts reach it at its type's key.\n\n\
                     .collect::<Vec<_>>()
                     .join(", ")
             };
-            let crosses = if service.crosses { "yes" } else { "Rust-only" };
+            let face = service.face.as_str();
             let methods = if service.methods.is_empty() {
                 "—".to_owned()
             } else {
@@ -262,7 +295,7 @@ A Rust-only name has no dispatcher: Rust parts reach it at its type's key.\n\n\
                     .join(", ")
             };
             out += &format!(
-                "| `{name}` | {} | {provider} | {crosses} | {methods} |\n",
+                "| `{name}` | {} | {provider} | {face} | {methods} |\n",
                 service.group
             );
         }
@@ -327,5 +360,30 @@ impl Names<'_> {
             Err(_) => return None,
         };
         Some(Found { name, group })
+    }
+}
+
+#[cfg(test)]
+mod face_tests {
+    use super::face;
+    #[test]
+    fn data_and_internal_are_derived_from_shared_dispatcher_and_reason() {
+        assert_eq!(face("x", true, true, None).unwrap(), "data");
+        assert_eq!(
+            face("x", false, false, Some("secret")).unwrap(),
+            "internal(secret)"
+        );
+        assert_eq!(
+            face("loaderService", true, false, None).unwrap(),
+            "shared-no-dispatcher"
+        );
+    }
+    #[test]
+    fn contradictions_are_errors() {
+        assert!(face("x", false, true, None).is_err());
+        assert!(face("x", true, true, Some("secret")).is_err());
+        assert!(face("x", false, false, None).is_err());
+        assert!(face("x", true, false, None).is_err());
+        assert!(face("x", false, false, Some("hotpath")).is_err());
     }
 }

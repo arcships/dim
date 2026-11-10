@@ -193,6 +193,10 @@ pub const UI_HOST_METHODS: [&str; 6] = [
 /// Management methods available to authenticated loopback Web clients.
 /// Replies contain account metadata and credential presence, never credentials.
 pub const WEB_MANAGEMENT_METHODS: &[&str] = &[
+    "report.prepare",
+    "report.plan",
+    "report.generate",
+    "report.cancel",
     "ui.extensions.list",
     "provider.management",
     "provider.create",

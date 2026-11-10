@@ -2130,12 +2130,12 @@ async fn model_output_is_committed_per_block_and_shown_as_progress_until_then() 
             .wait_for(|progress| progress.thinking == "deep thought")
             .await
             .unwrap();
-        let thinking_part = session
-            .get::<ModelProgress>("main")
-            .unwrap()
-            .unwrap()
+        let open = session.get::<ModelProgress>("main").unwrap().unwrap();
+        let thinking_part = open
             .thinking_part_id
+            .clone()
             .expect("open thinking part id");
+        let thinking_started = open.thinking_started_at.expect("open thinking start");
         assert!(outputs(&chain_events(&session, "main", ..).await.unwrap()).is_empty());
         send(vec![
             ModelChunk::ThinkingEnd {
@@ -2152,6 +2152,7 @@ async fn model_output_is_committed_per_block_and_shown_as_progress_until_then() 
         assert_eq!((shown.text_offset, shown.thinking_offset), (0, 12));
         let first_text_part = shown.text_part_id.clone().expect("first text part id");
         assert!(shown.thinking_part_id.is_none());
+        assert!(shown.thinking_started_at.is_none());
         assert_eq!(
             outputs(&chain_events(&session, "main", ..).await.unwrap()),
             ["thinking:deep thought"]
@@ -2197,6 +2198,7 @@ async fn model_output_is_committed_per_block_and_shown_as_progress_until_then() 
         );
         let shown = session.get::<ModelProgress>("main").unwrap().unwrap();
         assert_eq!((shown.text_offset, shown.thinking_offset), (9005, 12));
+        assert!(shown.thinking_started_at.is_none());
         send(vec![
             ModelChunk::ToolArguments {
                 id: "call".into(),
@@ -2234,6 +2236,7 @@ async fn model_output_is_committed_per_block_and_shown_as_progress_until_then() 
             .find(|event| matches!(event.kind, EventKind::Thinking(_)))
             .expect("thinking event");
         assert_eq!(thinking_event.id, thinking_part);
+        assert_eq!(thinking_event.create_at, thinking_started);
         let text_events: Vec<_> = events
             .iter()
             .filter(|event| matches!(event.kind, EventKind::Text(_)))
@@ -2249,6 +2252,168 @@ async fn model_output_is_committed_per_block_and_shown_as_progress_until_then() 
         assert_eq!(
             session.get::<ModelProgress>("main").unwrap().unwrap(),
             ModelProgress::default()
+        );
+        agent.close().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// A thinking block's start is one producer-owned fact: progress keeps it
+/// across deltas and the durable first event carries it, so clients can show
+/// the same elapsed time while streaming and from history. A block that ends
+/// and a new one that starts each own their start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_thinking_block_keeps_its_start_in_progress_and_history() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (chunks, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let agent = MinimalHost::start(&builder(
+            Arc::new(ChannelModel(Mutex::new(Some(receiver)))),
+            Arc::new(MockTools),
+        ))
+        .await
+        .unwrap();
+        let session = agent
+            .create_session(SessionConfig::default())
+            .await
+            .unwrap();
+        session
+            .submit("go".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        let mut progress = session.on::<ModelProgress>("main").unwrap().unwrap();
+        let send = |list: Vec<ModelChunk>| {
+            for chunk in list {
+                chunks.send(chunk).unwrap();
+            }
+        };
+        send(vec![
+            ModelChunk::MessageStart {
+                message_id: "thinking-start".into(),
+            },
+            ModelChunk::Thinking("first".into()),
+        ]);
+        progress
+            .wait_for(|progress| progress.thinking == "first")
+            .await
+            .unwrap();
+        let open = session.get::<ModelProgress>("main").unwrap().unwrap();
+        let part_id = open
+            .thinking_part_id
+            .clone()
+            .expect("open thinking part id");
+        let started_at = open.thinking_started_at.expect("thinking start");
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        send(vec![ModelChunk::Thinking(" second".into())]);
+        progress
+            .wait_for(|progress| progress.thinking == "first second")
+            .await
+            .unwrap();
+        let open = session.get::<ModelProgress>("main").unwrap().unwrap();
+        assert_eq!(open.thinking_part_id.as_deref(), Some(part_id.as_str()));
+        assert_eq!(open.thinking_started_at, Some(started_at));
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        send(vec![ModelChunk::ThinkingEnd {
+            thinking: "first second".into(),
+        }]);
+        progress
+            .wait_for(|progress| progress.thinking_offset == 12 && progress.thinking.is_empty())
+            .await
+            .unwrap();
+        let open = session.get::<ModelProgress>("main").unwrap().unwrap();
+        assert_eq!(
+            open.thinking_part_id.as_deref(),
+            Some(part_id.as_str()),
+            "a committed block stays open until another block replaces it"
+        );
+        assert_eq!(open.thinking_started_at, Some(started_at));
+
+        send(vec![ModelChunk::Text("answer".into())]);
+        progress
+            .wait_for(|progress| progress.text == "answer")
+            .await
+            .unwrap();
+        let open = session.get::<ModelProgress>("main").unwrap().unwrap();
+        assert_eq!(open.thinking_started_at, None);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        send(vec![ModelChunk::Thinking("again".into())]);
+        progress
+            .wait_for(|progress| progress.thinking == "again")
+            .await
+            .unwrap();
+        let next = session.get::<ModelProgress>("main").unwrap().unwrap();
+        let next_part_id = next.thinking_part_id.clone().expect("next part id");
+        let next_started_at = next.thinking_started_at.expect("next start");
+        assert_ne!(next_part_id, part_id);
+        assert!(
+            next_started_at > started_at,
+            "{next_started_at} <= {started_at}"
+        );
+
+        send(vec![
+            ModelChunk::ThinkingEnd {
+                thinking: "again".into(),
+            },
+            ModelChunk::ToolStart {
+                id: "call".into(),
+                name: "echo".into(),
+            },
+        ]);
+        progress
+            .wait_for(|progress| progress.tools.iter().any(|tool| tool.call_id == "call"))
+            .await
+            .unwrap();
+        let shown = session.get::<ModelProgress>("main").unwrap().unwrap();
+        assert!(
+            shown.thinking_part_id.is_none(),
+            "a tool start ends the thought"
+        );
+        assert_eq!(shown.thinking_started_at, None);
+
+        send(vec![
+            ModelChunk::ToolArguments {
+                id: "call".into(),
+                name: "echo".into(),
+                delta: "{\"text\":\"hi\"}".into(),
+            },
+            ModelChunk::ToolUse(ToolCall {
+                id: "call".into(),
+                name: "echo".into(),
+                input: serde_json::from_value(serde_json::json!({"text":"hi"})).unwrap(),
+            }),
+            ModelChunk::MessageStop {
+                message_id: "thinking-start".into(),
+                reason: ModelStopReason::ToolUse,
+            },
+        ]);
+        drop(chunks);
+        session.idle("main").await.unwrap();
+        let events = chain_events(&session, "main", ..).await.unwrap();
+        let thinking = events
+            .iter()
+            .find(|event| matches!(event.kind, EventKind::Thinking(_)))
+            .expect("thinking event");
+        assert_eq!(thinking.id, part_id);
+        assert_eq!(thinking.create_at, started_at);
+        let second = events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::Thinking(_)))
+            .nth(1)
+            .expect("second thinking event");
+        assert_eq!(second.id, next_part_id);
+        assert_eq!(second.create_at, next_started_at);
+        let text = events
+            .iter()
+            .find(|event| matches!(event.kind, EventKind::Text(_)))
+            .expect("text event");
+        assert!(
+            text.create_at > thinking.create_at,
+            "the block spans wall-clock time: {} -> {}",
+            thinking.create_at,
+            text.create_at
         );
         agent.close().await.unwrap();
     })

@@ -20,7 +20,7 @@ TUI /report        Desktop or Web "Report this error"
 
 The Session part owns the draft and reads only the admitted Session. If that Session opens but its history read fails, the same draft proceeds with the observed error and an explicit missing-evidence reason. If Session admission itself fails, the Session handler is unreachable. The process part serves an error-only draft using the same flow without accepting a Session or branch ID. It owns the draft because there may be no loaded Session.
 
-The error-only entry uses `managementMethods` on the local App Server connection and requires explicit admission on the authenticated local Web entry (§7). Paired connections can use `session.report.*` while Session admission succeeds. The paired error-only entry is a separate admission decision in §7. During a transport outage the client keeps the error in view and can open the report after reconnecting.
+The error-only entry uses `managementMethods` on the local App Server connection and requires explicit admission on the authenticated local Web entry (§7). Paired connections can use `session.report.*` while Session admission succeeds. The paired error-only entry is a separate admission decision in §7. Preparing a report requires a live connection. A TUI that already received the generated ZIP can still save it after the connection closes.
 
 ## 2. Client interaction
 
@@ -39,16 +39,18 @@ Both TUI modes display the hint below a reportable error, including a failed con
 | [Generate report]                                 [Cancel]   |
 +--------------------------------------------------------------+
 
-+-- Report preview --------------------------------------------+
-| <Title and issue body>                                       |
-| ZIP contents    [report.md]  [diagnostics.json]              |
-| [Save ZIP]      [GitHub]     [Discord]             [Close]   |
++-- Report ready ----------------------------------------------+
+| <Report title>                                               |
+| ZIP contents: report.md, diagnostics.json                    |
+| > Save ZIP                                                   |
+|   Close                                                      |
 +--------------------------------------------------------------+
+  After saving: <ZIP path> · GitHub · Discord
 ```
 
-The model picker starts from the Session's adopted model identity and offers other selectable models from the client's admitted catalog and **Generate locally**. A missing model or connection leaves those choices available. Redaction starts checked. Options accepts a short instruction about what to omit or keep. There are no required fields. With a model selected, the dialog exposes the exact model material and limits before Generate can send it. Local mode displays zero model requests. Cancellation or model failure returns to the same evidence with local generation available.
+Local generation is available on its own. Clients can expose a model picker once the one-shot operation in §7 is available. Its initial model is the adopted model of the referenced branch, or of the Session's main branch for an observed-only report. It also offers models from the client's admitted catalog and **Generate locally**. Redaction starts checked. Options accepts a short instruction about what to omit or keep. There are no required fields. With a model selected, the dialog exposes the exact model material and limits before Generate can send it. Local mode displays zero model requests. After a stale plan or a failed generation, the client offers to refresh the plan. When the draft expires, the client offers to prepare a report from the original error and reapplies the chosen options.
 
-The overlay follows the TUI's focus and list conventions. Tab moves between controls, Enter activates the focused control, and Esc closes a picker first, cancels generation while busy, or closes the report. Focus starts on Model. At narrow widths, labels and controls stack and previews scroll within the overlay with the focused action visible. Place `/report` immediately before `/exit` in both curated menus, following the existing exact-name, Enter and Tab behavior. The CLI command owner owns that order change (§7). [TUI design](Tui.md), [command menu contract](../cli-commands.md#command-menu).
+The overlay follows the TUI's focus and list conventions. Up and Down move between controls, and Tab and Shift+Tab cycle focus. Enter activates the focused control. Esc closes a picker first, cancels generation while busy, or closes the report. Focus starts on Model. The TUI shortens the error and report title to fit the overlay and keeps the focused action visible. The result lists the archive contents and shows the saved path so users can inspect the files with their own tools. Place `/report` immediately before `/exit` in both curated menus, following the existing exact-name, Enter and Tab behavior. The CLI command owner owns that order change (§7). [TUI design](Tui.md), [command menu contract](../cli-commands.md#command-menu).
 
 ## 3. Evidence and redaction
 
@@ -78,6 +80,8 @@ Register the Session namespace in `sessionMethods` and discover it via `session.
 | `generate` | `{reportId, planId}` | `{title, body, files: {"report.md", "diagnostics.json"}, archive: {filename, base64}, sharing: {githubIssueUrl, discordUrl, description}}` |
 | `cancel` | `{reportId, target: "generation", planId}` or `{reportId, target: "report"}` | `{cancelled: boolean}`. Generation cancellation affects only the named in-flight plan and keeps the evidence available for a new plan. An inactive plan returns `{cancelled: false}`. Report cancellation drops the draft. |
 
+The local plan uses `generation: {kind: "local"}`. The `evidence` object includes the filtered sources and a Timeline availability reason when the excerpt is absent. Options recognizes comma- or newline-separated `omit` and `keep` directives for `timeline`, `error codes`, and `correlation ids`. The reply reports `instructionsStatus` as `none`, `applied`, `partially_applied`, or `unsupported`. It does not echo the entered text. Redaction always removes correlation IDs, so `keep correlation ids` is unsupported while redaction is on.
+
 The observed error contains `operation` (`session_read`, `session_fork`, `branch_create` or `model_generation`), `code?`, `observedAt` (UTC timestamp) and `clientVersion` (build version). These fields carry neither Session authority nor a provider connection. The report ID and plan ID are opaque. Access requires the same caller connection and, for a Session draft, the same admitted Session. A missing, expired or foreign draft returns `report_not_found`. Invalid fields return `invalid_params`. A replaced or consumed plan returns `report_plan_stale`. A concurrent generation returns `report_busy`. A missing or changed model selection returns `report_model_unavailable` before a request. The other execution failures use `report_generation_failed` or `report_cancelled`. Error messages use stable summaries. Prepare returns a local plan when no usable model is available and retains the adopted model identity when known.
 
 An immutable plan binds the exact material, selected model connection revision and output allowance. Generate atomically consumes the plan before starting work. Duplicate or late requests cannot resend it. Changing settings or retrying requires a new plan and a new explicit Generate. A model timeout or an ambiguous provider failure consumes the plan. Cancellation fences late replies, and a new generation waits for the old work to settle. Successful generation releases the draft and transfers the finished preview to the client. Closing the dialog or losing the connection releases any draft still open. The part cancels and settles accepted work on Session closing or unload using the existing call lifecycle and caller-closed signal. A bounded Session hold keeps the dialog alive between calls. [Part lifecycle](../plugin-contract.md#7-lifecycle-of-a-part), [call channels](../contracts/session-boundary.md#a2-call-channel), [activity holds](../appserver/idle-unload.md#51-activity-hold).
@@ -92,7 +96,7 @@ The Agent's operation uses the one-shot auxiliary model boundary, with the singl
 
 ## 6. Preview and sharing
 
-Build `report.md` and versioned `diagnostics.json` from the same approved content shown in the preview. Diagnostics v1 contains `{version: 1, evidence, unavailable}`. The ZIP contains exactly those two files. Return the two UTF-8 file contents and the base64-encoded ZIP in the direct reply so clients can save after the connection closes. Cap the ZIP at 64 KiB before encoding. The client displays the body and both file contents before exposing share actions. It treats diagnostics and report text as data when rendering them.
+Build `report.md` and versioned `diagnostics.json` from the same approved content used for the report. Diagnostics v1 contains `{version: 1, evidence, unavailable}`. The ZIP contains exactly those two files. Return the two UTF-8 file contents and the base64-encoded ZIP in the direct reply so clients can save after the connection closes. Cap the ZIP at 64 KiB before encoding. The TUI exposes share actions after the ZIP has been saved and the user can open it. It leaves the saved path in the transcript when the dialog closes. Clients with inline previews display the body and both file contents before exposing share actions and treat them as data when rendering them.
 
 | Action | Client behavior |
 | --- | --- |
@@ -132,7 +136,7 @@ The Session part declares `sessionMethods`, Session lifecycle, public Session/br
 - Exercise a failed authorized history read and failed Session admission separately. Confirm the process route does not read Session data, the local Web route requires authentication, and guessed, foreign or stale report IDs do not expose drafts.
 - Seed forbidden fields and free-text secrets into source errors and evidence. Assert their absence from the model material and both ZIP members under either redaction setting. Compare the returned preview files byte-for-byte with the archive entries.
 - Use a counting provider to verify zero local requests, one model request after Generate, and no retry after a failed or duplicate call. Verify cancellation, expiry, close and reconnect settle work, discard late output and allow local generation from the same evidence while the draft remains open. A late cancellation for a settled plan leaves its successor running.
-- Save a report ZIP on a client connected to another host and exercise the GitHub draft and Discord flows without `gh`. Verify explicit sharing follows preview and that a failed share leaves the saved bytes available.
+- Save a report ZIP on a client connected to another host and exercise the GitHub draft and Discord flows without `gh`. Verify explicit sharing follows review or local save and that a failed share leaves the saved bytes available.
 
 ## 10. Ablation
 
