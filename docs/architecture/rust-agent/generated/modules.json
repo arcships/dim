@@ -3353,6 +3353,7 @@
       "unexpandedMacros": [
         "assert_eq",
         "format",
+        "json",
         "matches",
         "params",
         "tracing::error",
