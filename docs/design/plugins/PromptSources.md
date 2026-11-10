@@ -18,6 +18,8 @@ Each source is one name with an owner, a delivery and a class ([model-facing pro
 | `dim/environment/date` | State (`<dim-state>`) | 210 | PromptSources | Fact |
 | `dim/language` | State (`<dim-state>`) | 220 | PromptSources | Fact (designed, §3) |
 
+The delivery decides where a change takes effect. A `System` source is part of the composed system prompt: another line inherits it through the prefix's configuration and applies it where the fact appears. A `Context` or `State` source is delivered as an Append input block, written in the same batch as its `prompt/changed`; a line that inherits that change without the block's input consumed in its prefix does not count the change as adopted and adopts the source's current value itself, so the block arrives at that line's own consumption point.
+
 ### 1.1 Policy
 
 `dim/base` is policy: the identity sentence and the rules — safety, tone, objectivity, engineering, git, working method, ending a turn, and the linking conventions. It is guidance about how to work; the runtime behaves the same whatever it says.

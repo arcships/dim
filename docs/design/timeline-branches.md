@@ -243,6 +243,7 @@ Lines differ only in their tails:
 
 - The root adopts system and model. Children do not change them ([prompt](../architecture/rust-agent/prompt.md)).
 - Prompt sources load with main's scope and are inherited ([PromptSources](../architecture/rust-agent/plugins/PromptSources.md)).
+- A rule or state change an ancestor appended without its delivery input consumed in the inherited prefix is not part of the line's inherited state: the line adopts the source's current value itself, and that block is its own event after the cut ([Prompt](../architecture/rust-agent/prompt.md)).
 - One ToolRegistry per Session gives every line the same tool list. That is why `create` on a child is refused through the tool result instead of by removing the tool.
 - The request marks that prefix for cache where the protocol caches only what it is told to: up to two breakpoints, at the end of the System and on the last block of the last user or tool-result message, each placed only when its conditions hold ([Anthropic cache breakpoints](../../crates/dim-agent-aimux/README.md#anthropic-提示缓存断点)).
 - The identity block is the child's first event of its own, directly after the inherited prefix. A child's first request therefore reuses the parent's prefix up to the cut.

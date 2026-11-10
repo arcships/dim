@@ -242,6 +242,7 @@ key 与模式互不相关（[history.rs](../../../crates/dim-agent-capabilities/
 
 - 根线确定 system 和模型，子分支不改它们（[prompt](../../architecture/rust-agent/prompt.md)）。
 - 提示词来源按 main 的作用域加载，由子分支继承（[PromptSources](../../architecture/rust-agent/plugins/PromptSources.md)）。
+- 祖先追加了投递输入、但该输入还没有在继承前缀里被消费的规则或状态变更，不属于这条线继承的状态：本线按来源的当前值自行采用，那个块是本线切点之后自己的事件（[prompt](../../architecture/rust-agent/prompt.md)）。
 - 每个 Session 只有一个 ToolRegistry，所以每条线的工具列表都一样。这就是子分支上的 `create` 由工具结果拒绝、而不是拿掉工具的原因。
 - 协议只缓存显式标记内容时，请求会给这份前缀打上缓存断点：最多两个，System 末尾一个，最后一条用户或工具结果消息的最后一个块一个，且只在各自条件成立时才放置（[Anthropic 提示缓存断点](../../../crates/dim-agent-aimux/README.md#anthropic-提示缓存断点)）。
 - 身份块是子分支自己的第一个事件，紧跟在继承的前缀之后。所以子分支的第一次请求能复用父分支到切点为止的前缀。

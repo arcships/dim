@@ -48,7 +48,7 @@ Prompt 是 Timeline 级 rutis Plugin，依赖通过 `Deps` 声明。来源 I/O �
 
 未发布配置的既有宿主保留 `PrepareModelHost` 路径；一旦采用完整配置，Loop 直接读取固定前缀中的配置，不再调用该路径选择模型。两条路径都带有输入指南的同一份组合：采用的 System 由发布器在每次发布配置的采用处组合进 `context/configured`——渲染 System 的采用组合新的来源文字，只更新模型或工具的采用在已记录的来源文字上重新渲染指南，来源尚未记录的旧配置保留已采用的 System（[Prompt 设计 §6.3](../../design/plugins/Prompt.md#63-contextpreparation-the-entries-and-the-published-system)）；宿主准备的请求在构建时按当时生效的条目组合。`Session::input` 接收结构化 `user` 与 raw `blocks`；RPC 只接收操作者内容，不接收块。没有指定模式且没有 `user` 的输入按 Append 等待合法输入边界；只有块的输入不唤醒空闲分支。
 
-system 只保存静态内容。Context 与 State 投递的提示词变化由 Prompt 写成 Append 输入（`<dim-rule>`、`<dim-state>`，每项一条，与 `prompt/changed` 同一批次，按 `order` 排列；作用域结束时写 expired），在 Loop 消费的位置进入上下文，不改写已交付历史。分支创建或恢复时，Prompt 在 `branch/start`、`branch/resume` 分发时加载全部来源并写入变化；新 Session 的根分支同时采用 system 与模型，子分支与恢复的分支不改 system。来源由各能力在自己的 `apply` 中注册到 PromptRegistry，注册在该能力卸载时撤回。
+system 只保存静态内容。Context 与 State 投递的提示词变化由 Prompt 写成 Append 输入（`<dim-rule>`、`<dim-state>`，每项一条，与 `prompt/changed` 同一批次，按 `order` 排列；作用域结束时写 expired），在 Loop 消费的位置进入上下文，不改写已交付历史。分支创建或恢复时，Prompt 在 `branch/start`、`branch/resume` 分发时加载全部来源并写入变化；新 Session 的根分支同时采用 system 与模型，子分支与恢复的分支不改 system。比较的基准是继承前缀里已交付的状态：祖先线上已采用、但投递输入还没有在继承前缀里被消费的变更不计入本线状态，本线按来源的实际值重新采用它，块在本线自己的消费处进入上下文；这类变更的 `System` 内容已经随前缀的配置生效，照常在找到处应用。来源由各能力在自己的 `apply` 中注册到 PromptRegistry，注册在该能力卸载时撤回。
 
 已完成压缩事实（`context/compaction` 的 `Completed`）包含 source through、cursor、summary 与 cursor 处的有效状态基线，是持久历史事实；恢复快照是可选的派生缓存，不能替代它（AGENTS 规则 9，见 [Timeline 存储](timeline-storage.md#压缩检查点)）。产生方从固定历史计算基线，摘要、基线和后缀一起验收并计入预算，不能用请求上界 through 的最新状态代替 cursor 处状态。采用与后续恢复使用最终提交的事实，包括可信 before 对基线的变形，不在消费方重新计算并覆盖。基线按 key 维护：每个仍有效的 key 的最新块原样重放，已结束（retire）的 key 不重放。投影取最新的 completed 事实；其 cursor 无法投影到固定历史时明确失败，不跳过、不重新生成摘要。快照缺失或无效只回退完整事实重放。
 
