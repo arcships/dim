@@ -88,6 +88,10 @@ fn install_inner(
     let texts = std::sync::Arc::new(texts);
     dim_agent_runtime::names::register::<ScheduleJobs>(builder.catalog_mut(), None);
     dim_agent_runtime::names::register::<Wakeups>(builder.catalog_mut(), None);
+    builder
+        .catalog_mut()
+        .register_shared(dim_agent_runtime::names::name_of::<ScheduleJobs>())
+        .register_shared(dim_agent_runtime::names::name_of::<Wakeups>());
     builder.optional_plugin(move |names| {
         Ok(Box::new(make(names, texts.clone())?) as Box<dyn DynPlugin>)
     });

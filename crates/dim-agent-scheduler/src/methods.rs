@@ -21,7 +21,9 @@ use dim_app_server::{
 };
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
-use rutis_bridge::session::{HostDispatch, host_key};
+use rutis_bridge::session::{
+    Error as BridgeError, HostDispatch, Reply, Value as BridgeValue, host_key,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{collections::HashSet, sync::Arc};
@@ -131,13 +133,22 @@ impl DynPlugin for SchedulerPlugin {
                         }
                     })?;
             }
-            ctx.provide_as::<ScheduleJobs>(Arc::new(ScheduleJobs {
+            let jobs = Arc::new(ScheduleJobs {
                 shared: shared.clone(),
-            }))?;
+            });
+            ctx.provide_as::<ScheduleJobs>(jobs.clone())?;
+            ctx.provide_at(
+                host_key("scheduleJobs"),
+                Arc::new(ScheduleJobsFace(jobs.clone())),
+            )?;
             let wakeups = Arc::new(crate::wakeups::Wakeups {
                 shared: shared.clone(),
             });
             ctx.provide_as::<crate::wakeups::Wakeups>(wakeups.clone())?;
+            ctx.provide_at(
+                host_key("wakeups"),
+                Arc::new(crate::wakeups::WakeupsFace(wakeups.clone())),
+            )?;
             methods.register(
                 ctx,
                 NAMESPACE,
@@ -859,6 +870,8 @@ struct JobPatch {
 }
 
 /// The saving branch: the target a tool create saves (A.2, §2.1).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Caller {
     pub session_id: String,
     pub branch_id: String,
@@ -1124,4 +1137,61 @@ fn truncate(text: &str, limit: usize) -> &str {
         end -= 1;
     }
     &text[..end]
+}
+
+/// The `scheduleJobs` data face: Scheduler's flat `JobRequest` over the
+/// typed `call(request, caller)`.
+pub struct ScheduleJobsFace(Arc<ScheduleJobs>);
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct JobRequestWire {
+    action: ToolAction,
+    #[serde(default)]
+    job_id: Option<String>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    limit: Option<u32>,
+    #[serde(default)]
+    job: Option<JobPatch>,
+    caller: Caller,
+}
+
+impl HostDispatch for ScheduleJobsFace {
+    fn methods(&self) -> Option<Value> {
+        Some(json!({ "call": "async" }))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        if method != "call" {
+            return Err(BridgeError::Value(format!(
+                "unknown scheduleJobs method {method}"
+            )));
+        }
+        let value = args
+            .json()
+            .map_err(|error| BridgeError::Value(error.to_string()))?;
+        let request: JobRequestWire =
+            serde_json::from_value(value).map_err(|error| BridgeError::Value(error.to_string()))?;
+        let jobs = self.0.clone();
+        Ok(BridgeValue::future(async move {
+            let reply = jobs
+                .call(
+                    ToolRequest {
+                        action: request.action,
+                        job_id: request.job_id,
+                        enabled: request.enabled,
+                        limit: request.limit,
+                        job: request.job,
+                    },
+                    request.caller,
+                )
+                .await;
+            Ok(match reply {
+                Ok(reply) => json!({ "content": reply.content, "records": reply.records }).into(),
+                Err(error) => json!({ "code": error.code, "message": error.message }).into(),
+            })
+        }))
+    }
 }

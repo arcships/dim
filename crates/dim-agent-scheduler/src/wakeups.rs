@@ -13,6 +13,7 @@ use crate::{
 use chrono::{DateTime, Duration, Utc};
 use dim_agent_capabilities::session_broadcast::{SessionNotice, notify};
 use dim_agent_types::markup::escaped;
+use rutis_bridge::session::{Error as BridgeError, HostDispatch, Reply, Value as BridgeValue};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
@@ -499,5 +500,129 @@ impl Wakeups {
             self.notice(record);
         }
         Ok(())
+    }
+}
+
+/// The `wakeups` data face, following Scheduler §10.2.
+pub struct WakeupsFace(pub(crate) Arc<Wakeups>);
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateWire {
+    session_id: String,
+    branch_id: String,
+    at: String,
+    prompt: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ListWire {
+    session_id: String,
+    #[serde(default)]
+    branch_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CancelWire {
+    session_id: String,
+    wakeup_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WakeupWire<'a> {
+    wakeup_id: &'a str,
+    at: &'a str,
+    prompt: &'a str,
+    state: &'static str,
+}
+
+fn wire(wakeup: &Wakeup) -> WakeupWire<'_> {
+    WakeupWire {
+        wakeup_id: &wakeup.wakeup_id,
+        at: &wakeup.at,
+        prompt: &wakeup.prompt,
+        state: wakeup.state.name(),
+    }
+}
+
+fn invalid(message: impl Into<String>) -> BridgeError {
+    BridgeError::Value(message.into())
+}
+
+fn parse_at(at: &str) -> Result<DateTime<Utc>, BridgeError> {
+    DateTime::parse_from_rfc3339(at)
+        .map(|at| at.with_timezone(&Utc))
+        .map_err(|error| invalid(format!("invalid at: {error}")))
+}
+
+impl HostDispatch for WakeupsFace {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({ "create": "async", "list": "async", "cancel": "async" }))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        let launch = |wakeups: Arc<Wakeups>, args: BridgeValue| match method {
+            "create" => {
+                let request: CreateWire = serde_json::from_value(args.json()?)
+                    .map_err(|error| invalid(error.to_string()))?;
+                Ok(BridgeValue::future(async move {
+                    let at = parse_at(&request.at)?;
+                    match wakeups
+                        .create(WakeupRequest {
+                            session_id: request.session_id,
+                            branch_id: request.branch_id,
+                            at,
+                            prompt: request.prompt,
+                        })
+                        .await
+                    {
+                        Ok(wakeup) => Ok(json!({ "wakeupId": wakeup.wakeup_id }).into()),
+                        Err(error) => {
+                            Ok(json!({ "code": error.code, "message": error.message }).into())
+                        }
+                    }
+                }))
+            }
+            "list" => {
+                let request: ListWire = serde_json::from_value(args.json()?)
+                    .map_err(|error| invalid(error.to_string()))?;
+                Ok(BridgeValue::future(async move {
+                    let branch = request.branch_id.as_deref().unwrap_or("main");
+                    match wakeups.list(&request.session_id, branch).await {
+                        Ok(wakeups) => {
+                            let records: Vec<_> = wakeups.iter().map(wire).collect();
+                            Ok(json!({ "wakeups": records }).into())
+                        }
+                        Err(error) => {
+                            Ok(json!({ "code": error.code, "message": error.message }).into())
+                        }
+                    }
+                }))
+            }
+            "cancel" => {
+                let request: CancelWire = serde_json::from_value(args.json()?)
+                    .map_err(|error| invalid(error.to_string()))?;
+                Ok(BridgeValue::future(async move {
+                    match wakeups
+                        .cancel(&request.session_id, &request.wakeup_id)
+                        .await
+                    {
+                        Ok((record, changed)) => Ok(if changed {
+                            json!({}).into()
+                        } else {
+                            json!({ "state": record.state.name() }).into()
+                        }),
+                        Err(error) => {
+                            Ok(json!({ "code": error.code, "message": error.message }).into())
+                        }
+                    }
+                }))
+            }
+            _ => Err(invalid(format!("unknown wakeups method {method}"))),
+        };
+        launch(self.0.clone(), args)
     }
 }

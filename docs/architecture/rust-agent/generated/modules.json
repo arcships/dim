@@ -19747,6 +19747,7 @@
       "to": "dim_agent_runtime::names",
       "references": [
         "path Names",
+        "path dim_agent_runtime::names::name_of",
         "path dim_agent_runtime::names::register",
         "use dim_agent_runtime::Names"
       ]
@@ -20100,6 +20101,7 @@
       "to": "dim_agent_scheduler::wakeups",
       "references": [
         "path crate::wakeups::Wakeups",
+        "path crate::wakeups::WakeupsFace",
         "path crate::wakeups::read"
       ]
     },

@@ -3495,6 +3495,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#scheduleJobs",
+        "provider": 70,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#sessionMetadata",
         "provider": 8,
         "generation": 1,
@@ -3515,6 +3521,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#settings",
         "provider": 18,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#wakeups",
+        "provider": 70,
         "generation": 1,
         "removing": false
       },

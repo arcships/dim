@@ -80,7 +80,7 @@ impl AgentBuilder {
 
 ## 3. 盘点（#1300）
 
-catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。§3 表覆盖这 91 个 internal 名字；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 是 #1292 的新名字，不在当前 catalog。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。这些分组是迁移分类，不是永久结论：可转的都要转，永久 internal 只限确实不能跨的形态。
+catalog 现在 118 个名字：27 data、89 internal、2 shared-no-dispatcher。§3 表覆盖这 89 个 internal 名字；`scheduleJobs`、`wakeups` 已在 #1292 转成 data；`sessionFiles`、`managedSearch` 是 #1292 的新名字，不在当前 catalog。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。这些分组是迁移分类，不是永久结论：可转的都要转，永久 internal 只限确实不能跨的形态。
 
 ### 3.1 已经可以跨，但 catalog 列没体现
 
@@ -94,8 +94,8 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。
 
 | 名字 | 目标 | 备注 |
 | --- | --- | --- |
-| `scheduleJobs` | 新数据面 `scheduleJobs.call(JobRequest)` | 按 [Scheduler](plugins/Scheduler.md) 的 flat `JobRequest`/`JobReply`；Rust 实现是 `call(request, caller)`，dispatcher 拼成 flat request。`Caller`/`JobReply` 补 serde，`Caller` 用 camelCase |
-| `wakeups` | 新数据面 `wakeups.create/list/cancel` | SchedulerSession 同时注入 `ScheduleJobs` 和 `Wakeups`；只做 `scheduleJobs` 不够。形状按 [Scheduler](plugins/Scheduler.md) §10.2 |
+| `scheduleJobs` | 已转 data：`scheduleJobs.call(JobRequest)` | 按 [Scheduler](plugins/Scheduler.md) 的 flat `JobRequest`/`JobReply`；Rust 实现是 `call(request, caller)`，dispatcher 拼成 flat request。`Caller` 用 camelCase |
+| `wakeups` | 已转 data：`wakeups.create/list/cancel` | 形状按 [Scheduler](plugins/Scheduler.md) §10.2；`SchedulerSession` 同时注入 `ScheduleJobs` 和 `Wakeups` |
 | `sessionFiles` | 新数据面，按 owner 契约 | 名字、base64 `content`、`owned_paths`、取消都按 [Session files](appserver/session-files.md) §9.1；`SessionFilesHost` 保持 Rust 类型键 |
 | `managedSearch` | 新数据面，只含 `search` | `managedProviders`（§3.6）保持 internal(secret)，账号/token 不出去 |
 
@@ -330,7 +330,7 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 2. **secret**：`providerService`、`mcpAuth`、OAuth 服务、`managedProviders` 保持 internal；数据面只暴露操作，不暴露值。
 3. **`workflowRuns` 已经是数据面**：optional Workflow 包已提供；#1292 只核对形状，不新增 provider。
 4. **`Faces` 的传播**：`Names`、`PartRegistry`、`SessionResolver` 都要拿到同一份原因表；独立 host / 测试用空表，检查只在装配和 leaf 加载处生效。
-5. **legacy 标记**：当前 91 个 internal 名字里 18 个是待迁移的数据内容。`legacy-no-consumer` 是迁移状态，不是永久 internal；它们按批次转成 data face。
+5. **legacy 标记**：当前 89 个 internal 名字里 16 个是待迁移的数据内容。`legacy-no-consumer` 是迁移状态，不是永久 internal；它们按批次转成 data face。
 6. **shared 与 dispatcher 不一致**：`managementMethods`、`localId` 已在 #1289 变成 `data`；`loaderService`、`pluginMounter` 是仅有的两个 `shared-no-dispatcher` 例外，检查不放行其他 shared-without-dispatcher。
 
 ## 7. 交付顺序

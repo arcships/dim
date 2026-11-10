@@ -51,7 +51,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `publication` | process | McpPublication | internal(host-resource) | — |
 | `reservedMethods` | process | — | internal(legacy-no-consumer) | — |
 | `rutis/loader` | process | rutis-loader | data | `create` async, `reload` async, `remove` async, `status` async |
-| `scheduleJobs` | process | Scheduler | internal(owner-api) | — |
+| `scheduleJobs` | process | Scheduler | data | `call` async |
 | `selectableModelsHost` | process | Provider | internal(legacy-no-consumer) | — |
 | `serverControl` | process | ServerControl | internal(control) | — |
 | `sessionClientsHost` | process | Connection | internal(legacy-no-consumer) | — |
@@ -69,7 +69,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `toolchainSourceHost` | process | ToolchainSource | internal(legacy-no-consumer) | — |
 | `uiExtensions` | process | UiExtensions | internal(control) | — |
 | `uiHost` | process | UiHost | internal(control) | — |
-| `wakeups` | process | Scheduler | internal(owner-api) | — |
+| `wakeups` | process | Scheduler | data | `cancel` async, `create` async, `list` async |
 | `workflowFiles` | process | Settings | data | `createDirectory` async, `list` async, `read` async, `replace` async |
 | `worktreeAssociations` | process | SessionStore | internal(legacy-no-consumer) | — |
 | `agentConfig` | session | SessionScope | internal(legacy-no-consumer) | — |
