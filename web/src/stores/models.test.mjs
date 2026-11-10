@@ -33,8 +33,43 @@ function discovery() {
     } })
     throw new Error(`Unexpected method ${method}`)
   }
-  return { models: useModelsStore(), state }
+  return { models: useModelsStore(), state, connection }
 }
+
+test("refresh updates the picker even if a catalog read was already in flight", async () => {
+  const { models, connection } = discovery()
+  const call = connection.client.call.bind(connection.client)
+  const oldRead = Promise.withResolvers()
+  const oldStarted = Promise.withResolvers()
+  const remoteRefreshed = Promise.withResolvers()
+  let refreshed = false
+  connection.client.call = async (method, params, read) => {
+    if (method === "provider.refresh") {
+      assert.deepEqual(params, { providerId: "managed" })
+      refreshed = true
+      remoteRefreshed.resolve()
+      return read({})
+    }
+    if (method === "provider.catalog" && params.providerId === "managed") {
+      if (!refreshed) {
+        oldStarted.resolve()
+        await oldRead.promise
+        return read({ catalog: { models: [], disabledModelIds: [] } })
+      }
+      return read({ catalog: { models: [{ id: "new", name: "New model" }], disabledModelIds: [] } })
+    }
+    return call(method, params, read)
+  }
+  const initialLoad = models.load()
+  await oldStarted.promise
+  const refresh = models.refresh("managed")
+  await remoteRefreshed.promise
+  oldRead.resolve()
+  await Promise.all([initialLoad, refresh])
+  assert.deepEqual(models.providers.find((provider) => provider.providerId === "managed")?.models, [
+    { id: "new", name: "New model" },
+  ])
+})
 
 test("model discovery merges provider identities with the managed descriptor taking precedence", async () => {
   const { models, state } = discovery()

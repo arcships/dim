@@ -3,7 +3,7 @@
 //! and the record version used for partial writes.
 
 use crate::model::session::{
-    ACCOUNT_NAMESPACE, Account, OauthEvent, ProviderAction, ProviderEntry, Usage,
+    ACCOUNT_NAMESPACE, Account, Area, OauthEvent, ProviderAction, ProviderEntry, Usage,
 };
 use crate::ui::i18n::{t, tf};
 use crate::ui::line_input::{LineInput, window};
@@ -38,6 +38,7 @@ enum Field {
     Apply,
     Disconnect,
     ToggleEnabled,
+    EditModels,
 }
 
 struct Form {
@@ -76,15 +77,18 @@ impl Form {
         if self.version.is_none() {
             return rows;
         }
-        if !self.api_key.text().trim().is_empty()
-            || self.base_url.text().trim() != self.original_base_url
-        {
+        let changed = !self.api_key.text().trim().is_empty()
+            || self.base_url.text().trim() != self.original_base_url;
+        if changed {
             rows.push(Field::Apply);
         }
         if self.connected {
             rows.push(Field::Disconnect);
         }
         rows.push(Field::ToggleEnabled);
+        if !changed {
+            rows.push(Field::EditModels);
+        }
         rows
     }
 }
@@ -399,6 +403,12 @@ impl ProvidersPanel {
                             enabled: Some(!form.enabled),
                         })
                     }
+                    Field::EditModels => Effect::OpenArea {
+                        area: Area::Models {
+                            provider_id: form.provider_id.clone(),
+                        },
+                        note: None,
+                    },
                 }
             }
             _ => Effect::None,
@@ -512,6 +522,7 @@ impl ProvidersPanel {
                 }
                 Field::Apply => action_row(t("Test + apply"), focused, inner, p),
                 Field::Disconnect => action_row(t("Disconnect"), focused, inner, p),
+                Field::EditModels => action_row(t("Edit models"), focused, inner, p),
                 Field::ToggleEnabled => action_row(
                     t(if form.enabled {
                         "Disable provider"
@@ -867,7 +878,12 @@ mod tests {
         };
         assert_eq!(
             form.rows(),
-            vec![Field::BaseUrl, Field::ApiKey, Field::ToggleEnabled]
+            vec![
+                Field::BaseUrl,
+                Field::ApiKey,
+                Field::ToggleEnabled,
+                Field::EditModels
+            ]
         );
         form.api_key = LineInput::new("k");
         form.connected = true;
@@ -946,7 +962,8 @@ mod tests {
                 Field::BaseUrl,
                 Field::ApiKey,
                 Field::Disconnect,
-                Field::ToggleEnabled
+                Field::ToggleEnabled,
+                Field::EditModels,
             ]
         );
 

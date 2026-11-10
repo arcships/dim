@@ -40,7 +40,15 @@ async fn worktree_usage_survives_reopen_but_is_not_copied_by_fork_or_owned_by_se
         .associate_worktree("other", worktree.clone(), worktree.root.join("packages/b"))
         .await
         .unwrap();
-    sessions.fork_session("source", "fork", 0).await.unwrap();
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+    sessions
+        .fork_session("source", "fork", 0, &config)
+        .await
+        .unwrap();
     let expected = vec![
         WorktreeUsage {
             session_id: "other".into(),

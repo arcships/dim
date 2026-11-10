@@ -114,9 +114,11 @@ child calls: each child uses the invoked tool's own risk.
 
 The model-visible description states only the contract the model must act on: the raw JavaScript
 function body, top-level `await`/`return`, the `tools.list`/`tools.describe`/`tools.call` shapes,
-`args` as an object, `structuredContent` before `content`, `ToolCallError`, the exclusion of
-`codemode`, the absent host APIs, the JSON return value, and that child results do not enter model
-context. Host bounds, engine name, memory, program count and error-code tables are not prompt text.
+`args` as an object, the whole child `ToolResult` (`content` and `structuredContent` together,
+with the guidance to return `content` unless a program needs the structured fields),
+`ToolCallError`, the exclusion of `codemode`, the absent host APIs, the JSON return value, and that
+child results do not enter model context. Host bounds, engine name, memory, program count and
+error-code tables are not prompt text.
 
 The outer result is a normal `ToolResult`. `content` is the program's returned value serialized as
 JSON, or a stable terminal message on failure. `effects`, when present, are the confirmed effects of
@@ -131,12 +133,14 @@ The program sees only:
 ```text
 tools.list() -> [{name, description}]
 tools.describe(name) -> declaration | undefined
-tools.call(name, arguments) -> tool value
+tools.call(name, arguments) -> the whole child ToolResult
 ```
 
-`arguments` is a JSON object. `tools.call` returns `structuredContent` when the child result has it,
-otherwise `content`. A child result with `isError` throws `ToolCallError` with `code`, `message` and
-optional `data`. The error object is data, not a second result shape.
+`arguments` is a JSON object. `tools.call` returns the child `ToolResult` as the program's value:
+`content` (a string or content blocks) and `structuredContent` are both carried, so a program reads
+the same content the model would read and the structured data the tool published. A child result
+with `isError` throws `ToolCallError` with `code`, `message` and optional `data`. The error object is
+data, not a second result shape.
 
 The context has no `process`, environment, filesystem, network, timer, console, child-process or
 module loader. The host bridge is passed as the function argument; no host object is exposed as a

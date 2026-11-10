@@ -262,7 +262,7 @@ Rows follow the sections of the [feature list](../feature-list.md), which descri
 | Capability | CLI | Web | Source |
 | --- | --- | --- | --- |
 | `/settings`: theme, language, startup form, mouse, notifications, approvals | done | later phase (needs a decision on management methods, §6) | Model selection uses `/model` (`/models`), not `/settings`. |
-| `/settings`: subagent model, auxiliary model, default multimodal model, execution shell, sandbox, prompt language | designed elsewhere, no client UI | — | overview B.1, [Modality](plugins/Modality.md) |
+| `/settings`: subagent model, auxiliary model, default multimodal model, execution shell, sandbox, prompt language | designed elsewhere, no client UI; the reply language is a Session setting (`session.language.get/update`), not a `/settings` item | — | overview B.1, [Modality](plugins/Modality.md), [PromptSources §3](plugins/PromptSources.md#3-the-agent-prompt-language-state-source) |
 | `/settings`: VS Code focus, resource monitoring, plan usage display | none | — | |
 | `/settings`: ACP Session display | done: a saved "Show ACP sessions" switch, off by default; `/resume` labels rows by creation origin | — | [AcpGateway](plugins/AcpGateway.md#a5-client-labels), [Session classification](appserver/session-classification.md) |
 | `/usage` | context usage and, for active Dim OAuth models, account usage | — | [CLI usage report](cli-commands.md#usage-report) |

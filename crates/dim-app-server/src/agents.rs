@@ -1736,11 +1736,23 @@ impl AgentIndex {
         let version = self
             .version_of(source)
             .ok_or_else(|| AgentError::Closed(source.into()))?;
-        let mut config = session.config().clone();
+        // The record is the Session's current configuration: an in-place
+        // update (`session.language.update`) rewrites it, while the live
+        // Session keeps the value its apply ran with at creation. One read
+        // feeds the live fork and the record the copy writes, so a concurrent
+        // update cannot make them disagree.
+        let stored = store
+            .session_config_text(source)
+            .await?
+            .ok_or_else(|| AgentError::Closed(source.to_owned()))?;
+        let mut config = serde_json::from_str::<SessionConfig>(&stored)
+            .map_err(|error| AgentError::Storage(format!("the source configuration: {error}")))?;
+        // A fork of an older protocol keeps the live Session's codemode
+        // exclusion; the stored record is written without it, as on create.
         config.exclude_codemode_below(version);
         let source = source.to_owned();
         let (id, prepare) = self.prepared(config.cwd.clone(), move |fork| {
-            Box::pin(async move { store.fork_session(&source, &fork, at).await })
+            Box::pin(async move { store.fork_session(&source, &fork, at, &stored).await })
         });
         let creation = usage
             .host
@@ -2153,6 +2165,20 @@ impl DynPlugin for AgentsPlugin {
                     Ok(Some(
                         Box::new(configuration::AgentsSessionPlugin::new(mount.names)?)
                             as Box<dyn DynPlugin>,
+                    ))
+                },
+            )?;
+            let with_store = self.stored.is_some();
+            parts.register(
+                ctx,
+                dim_agent_runtime::PartScope::Session,
+                "SessionLanguage",
+                move |mount| {
+                    Ok(Some(
+                        Box::new(crate::session_language::SessionLanguagePlugin::new(
+                            mount.names,
+                            with_store,
+                        )?) as Box<dyn DynPlugin>,
                     ))
                 },
             )?;

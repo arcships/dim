@@ -43,6 +43,9 @@ TASKS_DIR = BENCHMARKS / "tasks"
 EVAL_CACHE = Path(os.environ.get(
     "DIM_EVAL_EVAL_CACHE", str(Path.home() / "dim-eval" / "eval-cache")))
 
+_VERSIONED_ROOT = re.compile(r"/v[0-9]+$")
+
+
 @dataclass(frozen=True)
 class ProviderSettings:
     """Where the model lives, read from the eval machine's dimcode model config.
@@ -68,9 +71,9 @@ class ProviderSettings:
 
     @property
     def probe_base_url(self) -> str:
-        """Where a plain OpenAI-compatible request goes."""
+        """OpenAI-compatible API root, preserving explicit numeric /vN paths."""
         base = self.base_url.rstrip("/")
-        return base if base.endswith("/v1") else f"{base}/v1"
+        return base if _VERSIONED_ROOT.search(urlsplit(base).path) else f"{base}/v1"
 
 
 def provider_settings() -> ProviderSettings:

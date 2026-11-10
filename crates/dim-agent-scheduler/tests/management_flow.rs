@@ -73,7 +73,7 @@ fn job(name: &str) -> Value {
         "name": name,
         "schedule": {"every_minutes": 60},
         "prompt": "Summarize the day.",
-        "cwd": "/workspace",
+        "target": {"kind": "launch", "cwd": "/workspace"},
     })
 }
 
@@ -97,7 +97,23 @@ async fn jobs_are_saved_with_revisions_toggled_and_deleted_through_the_namespace
     assert_eq!(saved["enabled"], true, "{created}");
     let anchor = saved["enabled_at"].as_str().unwrap().to_owned();
     assert!(anchor.ends_with('Z') && anchor.len() == 24, "{anchor}");
-    assert!(saved["policy_cap"]["preset"].is_string(), "{created}");
+    assert_eq!(
+        saved["target"],
+        json!({"kind": "launch", "cwd": "/workspace", "max_run_minutes": 60}),
+        "{created}"
+    );
+    assert!(
+        saved["cwd"].is_null(),
+        "legacy fields are not reported: {created}"
+    );
+    assert!(
+        saved["mode"].is_null(),
+        "legacy fields are not reported: {created}"
+    );
+    assert!(
+        saved["policy_cap"].is_null(),
+        "legacy fields are not reported: {created}"
+    );
 
     let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
     assert!(listed["jobs"][0]["next_window"].is_string(), "{listed}");
@@ -107,7 +123,7 @@ async fn jobs_are_saved_with_revisions_toggled_and_deleted_through_the_namespace
         .rpc(
             "schedule.save",
             json!({"job": {"id": id, "name": "nightly", "schedule": {"every_minutes": 60},
-                "prompt": "Summarize the day.", "cwd": "/workspace"}, "revision": 0}),
+                "prompt": "Summarize the day."}, "revision": 0}),
         )
         .await
         .unwrap_err();
@@ -117,7 +133,7 @@ async fn jobs_are_saved_with_revisions_toggled_and_deleted_through_the_namespace
         .typed(
             "schedule.save",
             json!({"job": {"id": id, "name": "nightly-build", "schedule": {"every_minutes": 60},
-                "prompt": "Summarize the day.", "cwd": "/workspace"}, "revision": 1}),
+                "prompt": "Summarize the day."}, "revision": 1}),
         )
         .await
         .unwrap();
@@ -140,6 +156,11 @@ async fn jobs_are_saved_with_revisions_toggled_and_deleted_through_the_namespace
     assert_eq!(partial["job"]["prompt"], "Summarize the day.", "{partial}");
     assert_eq!(partial["job"]["revision"], 3, "{partial}");
     assert_eq!(partial["job"]["enabled"], true, "{partial}");
+    assert_eq!(
+        partial["job"]["target"],
+        json!({"kind": "launch", "cwd": "/workspace", "max_run_minutes": 60}),
+        "an omitted target keeps the stored one: {partial}"
+    );
 
     let paused: Value = client
         .typed(
@@ -162,7 +183,7 @@ async fn jobs_are_saved_with_revisions_toggled_and_deleted_through_the_namespace
         .rpc(
             "schedule.save",
             json!({"job": {"name": "bad", "schedule": {"every_minutes": 0},
-                "prompt": "x", "cwd": "/workspace"}}),
+                "prompt": "x", "target": {"kind": "launch", "cwd": "/workspace"}}}),
         )
         .await
         .unwrap_err();

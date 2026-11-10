@@ -119,6 +119,12 @@ impl ToolDriver for TestTools {
         match call.name.as_str() {
             "write_effect" => Box::pin(async move {
                 let mut result = ToolResult::text("wrote");
+                result.structured_content = Some(
+                    json!({"path": "/tmp/codemode"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                );
                 result.effects = Some(vec![ToolEffect::FileWritten {
                     path: "/tmp/codemode".into(),
                 }]);
@@ -253,8 +259,7 @@ fn text(result: &ToolResult) -> &str {
 async fn the_program_calls_a_pinned_tool_and_the_outer_result_carries_its_value() {
     let fixture = Fixture::new().await;
     let session = fixture.session().await;
-    let code =
-        r#"const value = await tools.call("echo", {text: "hello"}); return {content: value};"#;
+    let code = r#"const value = await tools.call("echo", {text: "hello"}); return value;"#;
     fixture
         .model
         .push(&[("codemode", "c1", json!({ "code": code }))]);
@@ -290,6 +295,31 @@ async fn the_program_calls_a_pinned_tool_and_the_outer_result_carries_its_value(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_child_result_reaches_the_program_whole() {
+    let fixture = Fixture::new().await;
+    let session = fixture
+        .session_with_tools(
+            vec!["codemode".into(), "write_effect".into()],
+            false,
+            PermissionPolicy::default(),
+        )
+        .await;
+    let code = r#"const value = await tools.call("write_effect", {}); return value;"#;
+    fixture
+        .model
+        .push(&[("codemode", "c1", json!({ "code": code }))]);
+    session
+        .submit("write".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    let result = result(&session, "c1").await;
+    let value: serde_json::Value = serde_json::from_str(text(&result)).unwrap();
+    assert_eq!(value["content"], "wrote");
+    assert_eq!(value["structuredContent"], json!({"path": "/tmp/codemode"}));
+    fixture.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_child_ask_user_waits_and_returns_the_answer() {
     let fixture = Fixture::new().await;
     let session = fixture
@@ -299,7 +329,7 @@ async fn a_child_ask_user_waits_and_returns_the_answer() {
             PermissionPolicy::default(),
         )
         .await;
-    let code = r#"const answer = await tools.call("ask_user", {questions: [{id: "q", question: "Pick", options: [{label: "A"}, {label: "B"}]}]}); return {selected: answer.answers[0].selected[0]};"#;
+    let code = r#"const answer = await tools.call("ask_user", {questions: [{id: "q", question: "Pick", options: [{label: "A"}, {label: "B"}]}]}); return {selected: answer.structuredContent.answers[0].selected[0]};"#;
     fixture
         .model
         .push(&[("codemode", "c1", json!({ "code": code }))]);
@@ -373,7 +403,7 @@ async fn a_child_branch_records_the_child_call_as_its_source() {
             PermissionPolicy::default(),
         )
         .await;
-    let code = r#"const line = await tools.call("branch", {action: "create", prompt: "child line"}); return {content: line};"#;
+    let code = r#"const line = await tools.call("branch", {action: "create", prompt: "child line"}); return {content: line.content};"#;
     fixture
         .model
         .push(&[("codemode", "c1", json!({ "code": code }))]);
@@ -482,7 +512,7 @@ async fn a_child_approval_names_the_child_call() {
             },
         )
         .await;
-    let code = r#"const value = await tools.call("run", {}); return {content: value};"#;
+    let code = r#"const value = await tools.call("run", {}); return {content: value.content};"#;
     fixture
         .model
         .push(&[("codemode", "c1", json!({ "code": code }))]);

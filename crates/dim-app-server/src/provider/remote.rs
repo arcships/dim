@@ -174,9 +174,6 @@ impl ProviderService {
                     .await
                     .map_err(ProviderError::from)?
                     .ok_or(ProviderError::NotFound)?;
-                if !record.enabled {
-                    return Err(ProviderError::InvalidConfig("Provider is disabled".into()));
-                }
                 let expected = serde_json::to_value(&record).map_err(ProviderError::from)?;
                 let models = owner.discover(&provider_id, &record, &cancel).await?;
                 reject_user_model_conflicts(&record, &models)?;

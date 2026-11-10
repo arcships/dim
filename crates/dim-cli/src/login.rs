@@ -261,18 +261,15 @@ pub async fn login(
     let method = format!("{}.login.browser.complete", provider.namespace);
     let mut complete = attempt(&provider.namespace, provider_id, &browser.attempt_id);
     complete["callbackUrl"] = json!(callback);
-    let complete = client.rpc(&method, complete);
-    tokio::pin!(complete);
     tokio::select! {
-        result = &mut complete => { result?; }
+        result = client.rpc(&method, complete) => { result?; }
         signal = tokio::signal::ctrl_c() => {
             signal?;
             eprintln!("Login is still settling; use account {provider_id} to inspect the result");
             return Ok(130);
         }
     }
-    println!("Signed in.");
-    Ok(0)
+    Ok(finish_sign_in(client, &provider).await)
 }
 
 /// `dimcode account PROVIDER`: the non-secret identity the account reports.
@@ -347,10 +344,7 @@ async fn poll(client: &mut Client, provider: &Described, attempt_id: &str) -> Re
             .await?;
         match status {
             State::Pending => {}
-            State::Completed => {
-                println!("Signed in.");
-                return Ok(0);
-            }
+            State::Completed => return Ok(finish_sign_in(client, provider).await),
             State::Failed { error } => return Err(format!("Login failed: {}", safe(&error)).into()),
             State::Cancelled => return Err("Login was cancelled".into()),
             State::Expired => return Err("Login expired; start login again".into()),
@@ -360,6 +354,30 @@ async fn poll(client: &mut Client, provider: &Described, attempt_id: &str) -> Re
             _ = tokio::time::sleep(Duration::from_secs(1)) => {},
         }
     }
+}
+
+async fn finish_sign_in(client: &mut Client, provider: &Described) -> i32 {
+    println!("Signed in.");
+    if provider.namespace == ACCOUNT_NAMESPACE
+        && let Err(error) = refresh_models(client, &provider.provider_id).await
+    {
+        eprintln!(
+            "Model list refresh failed: {error}. Retry with dimcode models {} --refresh.",
+            safe(&provider.provider_id)
+        );
+    }
+    0
+}
+
+pub(crate) async fn refresh_models(
+    client: &mut Client,
+    provider_id: &str,
+) -> std::result::Result<(), String> {
+    client
+        .rpc("provider.refresh", json!({"providerId": provider_id}))
+        .await
+        .map(|_| ())
+        .map_err(|error| crate::sanitize::safe_line(&error.to_string()))
 }
 
 async fn cancel(client: &mut Client, provider: &Described, attempt_id: &str) -> Result<()> {

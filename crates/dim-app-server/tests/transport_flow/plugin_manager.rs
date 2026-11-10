@@ -2582,8 +2582,8 @@ async def apply(ctx, config):
 /// through its link under `<home>/plugins/.python/`, the Python runtime's
 /// import path, registers its tool, and reload picks up an edit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
-async fn node_python_plugin_installs_and_reloads_through_its_link() {
+#[ignore = "requires DIM_TEST_NODE, DIM_TEST_JS_RUNTIME and DIM_TEST_PYTHON"]
+async fn python_plugin_installs_and_reloads_through_its_link() {
     let home = home();
     let mut config = config(&home);
     config.product_home = None;

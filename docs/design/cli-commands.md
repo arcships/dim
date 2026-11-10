@@ -431,7 +431,10 @@ account. A signed-out account says `Sign in`, and opening it starts its only
 flow; a signed-in one shows its state and offers `Sign out`. A row whose
 namespace is `account` opens the Dim account's `/login` panel instead, with its
 identity, plan and usage. A Provider without a descriptor keeps the connection
-form, and opening it starts nothing.
+form, and opening it starts nothing. With a saved connection and no pending
+edits, `Edit models` opens the Provider's [model management panel](#the-models-area)
+(`Models · <name>`), including when disabled. Ctrl+R in that management panel
+fetches the catalog when the Provider offers `refresh`.
 
 ```text
 /connect
@@ -461,6 +464,26 @@ form, and opening it starts nothing.
 Authorization URL rows have no side borders, including wrapped continuation
 rows, so native terminal selection does not copy dialog borders into the URL.
 The other rows keep their borders; Enter on the URL still opens the full link.
+
+After Dim account sign-in, the terminal UI and line client await
+`provider.refresh` for that account's Provider. The terminal UI opens
+`/models` once the refresh succeeds. On a refresh error it shows the signed-in
+account and the reason in the account panel, with focus on `Refresh model list`.
+Enter on that row refreshes the same Provider and shows the outcome in the
+panel. `Open models` reads the stored catalog. The line client reports a
+refresh error on stderr and gives the `dimcode models PROVIDER --refresh`
+retry command. The sign-in still succeeds.
+
+```text
++-- DimAgent OAuth -----------------------------------+
+|   Signed-in account                                |
+|   Open models                                      |
+| > Refresh model list                               |
+|   View plan                                        |
+|   Sign out                                         |
+|   Error: Model list refresh failed: Relay timeout  |
++---------------------- Up/Down move, Enter activate -+
+```
 
 `dimcode login [PROVIDER]` starts the same flow in the line client and prints
 the URL or the code the daemon returns; without a PROVIDER it lists the
@@ -941,10 +964,13 @@ Scheduler (#815): the `/scheduled` panel, `/schedule` its alias in both modes, a
 scheduled list|enable ID|disable ID|edit ID|set ID PATH|add PATH|remove ID|run ID|history ID`
 over `schedule.list`, `schedule.save`, `schedule.delete`, `schedule.set_enabled`,
 `schedule.run_now` and `schedule.history` ([Scheduler §A.3](plugins/Scheduler.md#a3-management-methods)).
-Every job is an entry: its name is the label, and its schedule, next window and last delivery are
-its detail. A job whose schedule the owner cannot use is marked invalid and its detail carries the
-owner's message; a job the scheduler holds while it is disabled says it has no next window. The
-owner reports no grouping, so the jobs share one heading, `jobs`.
+Every job is an entry: its name is the label, and its schedule, next window, last delivery, target
+and disabled reason are its detail. The target line says where the job delivers — `Delivers to
+Session {session} branch {branch} ({mode}).` for a session target, or `Launches a new Session in
+{cwd}.` for a launch target. A job whose schedule the owner cannot use is marked invalid and its
+detail carries the owner's message; a job the scheduler holds while it is disabled says it has no
+next window, and a job the owner disabled because its target was gone adds `Disabled: {code} at
+{instant}.`. The owner reports no grouping, so the jobs share one heading, `jobs`.
 
 A job's document is the record the owner wrote; the client changes only the fields `schedule.save` takes — `name`, `schedule`, `prompt` and `target` — and carries the id on the Save action and the job's revision as the revision the draft was read at. `schedule.save` is a patch merged over the stored job, so an edit writes only the members the draft changed: the adapter reads the job again, refuses a draft whose revision is no longer the job's, and sends the changed members with the id and the revision. A draft that changes no editable member writes nothing, and a member the draft deletes cannot be cleared because the patch has no null: the write is refused before it is sent and names the member. The exception is `target`, which an update keeps when the draft omits it, so an edit cannot retarget a job. A stale revision is `schedule_conflict`, the typed conflict: nothing is written, the jobs are read again, and the next edit opens the current record. `created_by`, `enabled_at` and `disabled_reason` are the owner's to derive and are never sent; enabling and pausing are `schedule.set_enabled`, not a save. A new entry starts from the owner's create shape — a name, an example `every` schedule, a prompt and a target — and writes with `schedule.save` without a revision. `inspect` is `history`: the job's recent deliveries, newest first, with the state the owner recorded.
 
@@ -953,23 +979,27 @@ A job's document is the record the owner wrote; the client changes only the fiel
 │ >                                                                                                                    │
 │                                                                                                                      │
 │   jobs                                                                                                               │
-│ › nightly-build   enabled                                                                                            │
-│   release         disabled  invalid                                                                                  │
+│ › nightly-build   disabled                                                                                           │
+│   release         enabled  invalid                                                                                   │
 │                                                                                                                      │
 │   every 60 minutes                                                                                                   │
-│   Next run 2026-11-02T09:00:00.000Z.                                                                                 │
-│   Last run completed at 2026-11-01T09:00:12.000Z.                                                                    │
+│   No next run.                                                                                                       │
+│   Last run delivered at 2026-11-01T09:00:12.000Z.                                                                    │
+│   Delivers to Session session-1 branch main (queue).                                                                 │
+│   Disabled: session_closed at 2026-11-01T10:00:00.000Z.                                                              │
 ╰───── Enter toggle · Ctrl+E edit · Ctrl+R reload · Ctrl+N add · Ctrl+X remove · Ctrl+T run · Tab inspect · Esc close ─╯
 ```
 
-Ctrl+T runs the selected job now and reports what the owner answered — `launching`, or the reason
-the run was skipped — and Tab shows the job's history in place of the list:
+Ctrl+T runs the selected job now and reports the delivery the owner recorded for the manual
+window — `delivering`, or `missed` with its reason, for a session target; `launching`, or `skipped`
+with its reason, for a launch target — and Tab shows the job's history in place of the list:
 
 ```text
 ╭─ Recent runs of nightly-build ─────────────────────────────╮
-│ 2026-11-01T09:00:12.000Z  completed                        │
-│ 2026-11-01T08:00:05.000Z  skipped (overlap)                │
-│ 2026-10-31T09:00:03.000Z  completed                        │
+│ 2026-11-01T09:00:12.000Z  delivered                        │
+│ 2026-11-01T08:00:05.000Z  missed                           │
+│ (previous_delivery_unsettled)                              │
+│ 2026-10-31T09:00:03.000Z  delivered                        │
 ╰───────────────────────────────────── ↑↓ scroll · Esc back ─╯
 ```
 
@@ -1413,15 +1443,15 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode hooks edit` | Open the user's hook document in `$VISUAL`, `$EDITOR` or the platform default, and write it over `hooks.save` with the revision `hooks.catalog` reported; an interactive edit needs a terminal. |
 | `dimcode hooks set PATH` | Write the user's hook document from `PATH`, or from stdin for `-`, with the revision read immediately before the write; unchanged text writes nothing. |
 | `/hooks` | Open the Hooks panel of the Session's workspace ([management surfaces](#management-surfaces)): a source per entry, the project's toggle and the user document's edit. |
-| `dimcode scheduled list` | List the jobs the Scheduler holds over `schedule.list` ([Scheduler](plugins/Scheduler.md#a3-management-methods)): each job's id, name, schedule, state, next window and last delivery, then the jobs whose schedule the owner cannot use. |
+| `dimcode scheduled list` | List the jobs the Scheduler holds over `schedule.list` ([Scheduler](plugins/Scheduler.md#a3-management-methods)): each job's id, name, schedule, state, next window, last delivery and target, then the jobs whose schedule the owner cannot use. |
 | `dimcode scheduled enable\|disable ID` | Enable or pause one job over `schedule.set_enabled`, then report the jobs again. |
 | `dimcode scheduled edit ID` | Open one job's document in `$VISUAL`, `$EDITOR` or the platform default, and write it over `schedule.save` with the revision the listing reported; an interactive edit needs a terminal. |
 | `dimcode scheduled set ID PATH` | Write one job's document from `PATH`, or from stdin for `-`, with the revision read immediately before the write; unchanged text writes nothing. |
 | `dimcode scheduled add PATH` | Create a job from `PATH`, or from stdin for `-`, over `schedule.save` without a revision: the document states a target, and the owner derives the id, `created_by` and `enabled_at`. |
 | `dimcode scheduled remove ID` | Delete one job over `schedule.delete` without a prompt: the id on the command line is the intent. |
-| `dimcode scheduled run ID` | Run one job now over `schedule.run_now` and report what the owner returned, or why it skipped the window. |
-| `dimcode scheduled history ID` | Print one job's recent deliveries over `schedule.history`, newest first, with each delivery's state and time. |
-| `/scheduled`, `/schedule` | Open the Scheduler panel ([management surfaces](#management-surfaces)): a job per entry with its schedule, next window and last delivery, and the toggle, edit, add, remove, run and inspect kinds; the Scheduler's verb for inspect is history. Jobs are the host's, not the Session's or workspace's; a new job states its target. |
+| `dimcode scheduled run ID` | Run one job now over `schedule.run_now` and report the delivery it records for the manual window, or why the manual window was skipped. |
+| `dimcode scheduled history ID` | Print one job's recent deliveries over `schedule.history`, newest first, each with its time and its state with the owner's detail. |
+| `/scheduled`, `/schedule` | Open the Scheduler panel ([management surfaces](#management-surfaces)): a job per entry with its schedule, next window, last delivery, target and disabled reason, and the toggle, edit, add, remove, run and inspect kinds; the Scheduler's verb for inspect is history. Jobs are the host's, not the Session's or workspace's; a new job states its target. |
 | `dimcode workflow list` | List the definitions over `workflow.list` ([Workflow](plugins/Workflow.md#a3-management-methods)): each definition's name, source, state and description, then the issues of the invalid ones. |
 | `dimcode workflow enable\|disable NAME` | Enable or disable the project definition of that name over `settings.read` and `settings.update`, then report the definitions again. |
 | `dimcode workflow edit NAME` | Open the user definition's document in `$VISUAL`, `$EDITOR` or the platform default, and save it over `workflow.save` with the revision the user document was read at; a project name names the file to edit instead. |

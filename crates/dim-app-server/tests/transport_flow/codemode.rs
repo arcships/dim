@@ -49,7 +49,7 @@ impl ModelDriver for CodeModeModel {
                     id: "c1".into(),
                     name: "codemode".into(),
                     input: serde_json::from_value(json!({
-                        "code": r#"const value = await tools.call("echo", {text: "live"}); return {content: value};"#
+                        "code": r#"const value = await tools.call("echo", {text: "live"}); return value;"#
                     }))
                     .expect("codemode input"),
                 })),

@@ -292,6 +292,9 @@ fullscreen 把同一元素画在输入框的下边框，位于运行状态旁：
 终端界面在 `/connect` 的每一行上提供这些操作：未登录的账号显示 `Sign in`，打开即进入它唯一的
 流程；已登录的账号显示状态并提供 `Sign out`。命名空间为 `account` 的行改为打开 Dim 账号的
 `/login` 面板，其中包含身份、套餐与用量。没有描述符的提供方保留连接表单，打开时什么也不启动。
+连接已保存且没有未保存的编辑时，「编辑模型」打开该提供方的[模型管理面板](#models-领域)
+（`Models · <name>`），禁用的提供方也可进入。若提供方提供 `refresh` 动作，在该管理面板按
+Ctrl+R 会拉取目录。
 
 ```text
 /connect
@@ -316,6 +319,23 @@ fullscreen 把同一元素画在输入框的下边框，位于运行状态旁：
 │   Restart device login                       │
 │   Waiting for authorization                  │
 ╰─ Select to copy · Enter opens link ──────────╯
+```
+
+终端界面和行客户端登录 Dim 账号成功后，都会等待该账号提供方的 `provider.refresh` 请求完成。
+刷新成功后，终端界面打开 `/models`。刷新失败时，账号面板显示已登录的账号和失败原因，
+焦点停在「刷新模型列表」。在该行按 Enter 可刷新同一提供方的模型，并在面板查看结果。
+「打开模型列表」读取已保存的目录。行客户端将刷新失败写入标准错误，并提示用
+`dimcode models PROVIDER --refresh` 重试。登录仍然成功。
+
+```text
++-- DimAgent OAuth -------------------------+
+|   已登录账号                             |
+|   打开模型列表                           |
+| > 刷新模型列表                           |
+|   查看套餐                               |
+|   退出登录                               |
+|   错误：刷新模型列表失败：连接超时       |
++---------------- Up/Down 移动, Enter 执行 -+
 ```
 
 `dimcode login [PROVIDER]` 在行客户端启动同样的流程，并打印守护进程返回的 URL 或验证码；
@@ -610,7 +630,7 @@ Hooks（#809）：`/hooks` 面板与 `dimcode hooks list|enable|disable|edit|set
 
 ### Scheduler 领域
 
-Scheduler（#815）：`/scheduled` 面板，`/schedule` 在两种模式下都是它的别名，以及 `dimcode scheduled list|enable ID|disable ID|edit ID|set ID PATH|add PATH|remove ID|run ID|history ID`，经 `schedule.list`、`schedule.save`、`schedule.delete`、`schedule.set_enabled`、`schedule.run_now` 与 `schedule.history`（[Scheduler §A.3](plugins/Scheduler.md#a3-管理方法)）。每个任务是条目：名称是标签，调度、下次窗口与上次投递分别是详情。所有者无法使用其调度的任务标记为无效，详情带上所有者的消息；已停用的任务说明没有下次窗口。所有者不报告分组，所以任务共用 `jobs` 一个分组。
+Scheduler（#815）：`/scheduled` 面板，`/schedule` 在两种模式下都是它的别名，以及 `dimcode scheduled list|enable ID|disable ID|edit ID|set ID PATH|add PATH|remove ID|run ID|history ID`，经 `schedule.list`、`schedule.save`、`schedule.delete`、`schedule.set_enabled`、`schedule.run_now` 与 `schedule.history`（[Scheduler §A.3](plugins/Scheduler.md#a3-管理方法)）。每个任务是条目：名称是标签，调度、下次窗口、上次投递、目标与停用原因是详情。目标行说明任务在哪里投递——session 目标是 `Delivers to Session {session} branch {branch} ({mode}).`，launch 目标是 `Launches a new Session in {cwd}.`。所有者无法使用其调度的任务标记为无效，详情带上所有者的消息；已停用的任务说明没有下次窗口，所有者因目标消失而停用的任务另加 `Disabled: {code} at {instant}.`。所有者不报告分组，所以任务共用 `jobs` 一个分组。
 
 任务的文档就是所有者写入的那条记录；客户端只改动 `schedule.save` 接受的字段——`name`、`schedule`、`prompt` 与 `target`——并把 id 放在 Save 动作上、把任务的 revision 作为草稿读取时的 revision。`schedule.save` 是合并到已存任务上的补丁，所以一次编辑只写入草稿改动的成员：适配器重新读取该任务，草稿的 revision 不再等于任务的就拒绝，然后带着 id 与 revision 只发送改动的成员。没有改动任何可编辑成员的草稿不写入；草稿删除的成员无法清除，因为补丁没有 null：写入在发送前就被拒绝，并指出该成员。例外是 `target`，草稿省略时更新保留已存值，所以编辑不能改变任务的目标。revision 过期就是 `schedule_conflict`，即类型化的冲突：什么都不写，重新读取任务，下次编辑打开当前记录。`created_by`、`enabled_at` 与 `disabled_reason` 由所有者推导，客户端从不发送；启用与暂停是 `schedule.set_enabled`，不是一次保存。新条目从所有者的创建形态开始——一个名称、一个 `every` 示例调度、一个提示词与一个目标——以不带 revision 的 `schedule.save` 写入。`inspect` 就是 `history`：任务最近的投递，最新的在前，带所有者记录的状态。
 
@@ -619,22 +639,25 @@ Scheduler（#815）：`/scheduled` 面板，`/schedule` 在两种模式下都是
 │ >                                                                                                                    │
 │                                                                                                                      │
 │   jobs                                                                                                               │
-│ › nightly-build   enabled                                                                                            │
-│   release         disabled  invalid                                                                                  │
+│ › nightly-build   disabled                                                                                           │
+│   release         enabled  invalid                                                                                   │
 │                                                                                                                      │
 │   every 60 minutes                                                                                                   │
-│   Next run 2026-11-02T09:00:00.000Z.                                                                                 │
-│   Last run completed at 2026-11-01T09:00:12.000Z.                                                                    │
+│   No next run.                                                                                                       │
+│   Last run delivered at 2026-11-01T09:00:12.000Z.                                                                    │
+│   Delivers to Session session-1 branch main (queue).                                                                 │
+│   Disabled: session_closed at 2026-11-01T10:00:00.000Z.                                                              │
 ╰───── Enter toggle · Ctrl+E edit · Ctrl+R reload · Ctrl+N add · Ctrl+X remove · Ctrl+T run · Tab inspect · Esc close ─╯
 ```
 
-Ctrl+T 立即运行所选任务，并报告所有者的答复——`launching`，或运行被跳过的原因；Tab 用任务的历史替代列表显示：
+Ctrl+T 立即运行所选任务，并报告所有者为手动窗口记录的投递——session 目标答复 `delivering`，或带原因的 `missed`；launch 目标答复 `launching` 或带原因的 `skipped`——Tab 用任务的历史替代列表显示：
 
 ```text
 ╭─ Recent runs of nightly-build ─────────────────────────────╮
-│ 2026-11-01T09:00:12.000Z  completed                        │
-│ 2026-11-01T08:00:05.000Z  skipped (overlap)                │
-│ 2026-10-31T09:00:03.000Z  completed                        │
+│ 2026-11-01T09:00:12.000Z  delivered                        │
+│ 2026-11-01T08:00:05.000Z  missed                           │
+│ (previous_delivery_unsettled)                              │
+│ 2026-10-31T09:00:03.000Z  delivered                        │
 ╰───────────────────────────────────── ↑↓ scroll · Esc back ─╯
 ```
 
@@ -854,15 +877,15 @@ Remove 先在提示栏询问，`Remove deny prefix git push? Enter confirm · Es
 | `dimcode hooks edit` | 用 `$VISUAL`、`$EDITOR` 或平台默认编辑器打开用户 Hook 文档，并以 `hooks.catalog` 报告的 revision 经 `hooks.save` 写回；交互式编辑需要终端。 |
 | `dimcode hooks set PATH` | 从 `PATH`（`-` 表示 stdin）读取用户 Hook 文档并写入，用写入前紧邻读到的 revision；内容没有变化时不写入。 |
 | `/hooks` | 打开会话所在工作区的 Hooks 面板（[管理界面](#管理界面)）：每个来源一个条目，项目来源提供 toggle，用户文档提供 edit。 |
-| `dimcode scheduled list` | 经 `schedule.list` 列出 Scheduler 持有的任务（[Scheduler](plugins/Scheduler.md#a3-管理方法)）：每个任务的 id、名称、计划、状态、下一次窗口与上次投递，然后是计划无法被 owner 使用的任务。 |
+| `dimcode scheduled list` | 经 `schedule.list` 列出 Scheduler 持有的任务（[Scheduler](plugins/Scheduler.md#a3-管理方法)）：每个任务的 id、名称、计划、状态、下一次窗口、上次投递与目标，然后是计划无法被 owner 使用的任务。 |
 | `dimcode scheduled enable\|disable ID` | 经 `schedule.set_enabled` 启用或暂停单个任务，然后再次报告任务。 |
 | `dimcode scheduled edit ID` | 用 `$VISUAL`、`$EDITOR` 或平台默认编辑器打开单个任务的文档，并以列表报告的 revision 经 `schedule.save` 写回；交互式编辑需要终端。 |
 | `dimcode scheduled set ID PATH` | 从 `PATH`（`-` 表示 stdin）读取单个任务的文档并写入，用写入前紧邻读到的 revision；内容没有变化时不写入。 |
 | `dimcode scheduled add PATH` | 从 `PATH`(`-` 表示 stdin)读取文档，不经 revision 经 `schedule.save` 创建任务：文档写明目标，id、`created_by` 与 `enabled_at` 由 owner 推导。 |
 | `dimcode scheduled remove ID` | 不经确认，经 `schedule.delete` 删除单个任务：命令行上的 id 就是意图。 |
-| `dimcode scheduled run ID` | 经 `schedule.run_now` 立即运行单个任务，并报告 owner 返回的内容，或它跳过这个窗口的原因。 |
-| `dimcode scheduled history ID` | 经 `schedule.history` 打印单个任务最近的投递，最新的在前，并带上每次投递的状态与时间。 |
-| `/scheduled`、`/schedule` | 打开 Scheduler 面板([管理界面](#管理界面))：每个任务一个条目，带计划、下一次窗口与上次投递，以及 toggle、edit、add、remove、run 与 inspect 种类；Scheduler 中 inspect 的动词是 history。任务属于主机，不属于会话或工作区；新建任务要写明目标。 |
+| `dimcode scheduled run ID` | 经 `schedule.run_now` 立即运行单个任务，并报告它为手动窗口记录的投递，或手动窗口被跳过的原因。 |
+| `dimcode scheduled history ID` | 经 `schedule.history` 打印单个任务最近的投递，最新的在前，每次带上时间与状态及 owner 的详情。 |
+| `/scheduled`、`/schedule` | 打开 Scheduler 面板([管理界面](#管理界面))：每个任务一个条目，带计划、下一次窗口、上次投递、目标与停用原因，以及 toggle、edit、add、remove、run 与 inspect 种类；Scheduler 中 inspect 的动词是 history。任务属于主机，不属于会话或工作区；新建任务要写明目标。 |
 | `dimcode workflow list` | 经 `workflow.list` 列出定义（[Workflow](plugins/Workflow.md#a3-管理方法)）：每个定义的名称、来源、状态与描述，然后是无效定义的问题。 |
 | `dimcode workflow enable\|disable NAME` | 经 `settings.read` 与 `settings.update` 启用或停用该名称的项目定义，然后再次报告定义。 |
 | `dimcode workflow edit NAME` | 用 `$VISUAL`、`$EDITOR` 或平台默认编辑器打开用户定义的文档，并以用户文档读取时的 revision 经 `workflow.save` 写回；给出项目名称时改为给出要编辑的文件。 |

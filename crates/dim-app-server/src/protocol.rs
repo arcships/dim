@@ -558,6 +558,12 @@ pub struct Create {
     /// `acp` from an editor (#557). Any other value is refused at the boundary.
     #[serde(default, deserialize_with = "optional_non_null")]
     pub origin: Option<SessionOrigin>,
+    /// The operator's reply language for this Session. Absent means none was
+    /// selected and the base rule stands; clients send it only when the
+    /// daemon's `hello.features` names `session.language`, because older
+    /// daemons reject unknown fields.
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub language: Option<dim_agent_runtime::ReplyLanguage>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

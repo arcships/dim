@@ -1,9 +1,9 @@
 //! The `schedule` settings document: the jobs a user writes, and their
 //! validation at the document boundary ([design](../../../docs/design/plugins/Scheduler.md),
-//! A.1, A.4, §7.1).
+//! A.1, A.4, §2.3, §7.1).
 use chrono::{DateTime, Local, SecondsFormat, Utc};
 use croner::Cron;
-use dim_agent_types::{PermissionPolicy, PermissionPreset};
+use dim_agent_types::{InputMode, PermissionPolicy, PermissionPreset};
 use dim_app_server::settings::{BusinessDocument, SettingsError};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, str::FromStr};
@@ -11,6 +11,8 @@ use std::{collections::HashSet, str::FromStr};
 pub const MAX_PROMPT_BYTES: usize = 32 * 1024;
 pub const DEFAULT_MAX_RUN_MINUTES: u32 = 60;
 pub const DEFAULT_MAX_CONCURRENT_RUNS: u32 = 4;
+/// The most jobs one Session may create through the `schedule` tool (A13).
+pub const MAX_TOOL_JOBS_PER_SESSION: usize = 16;
 
 /// The `schedule` document. `Default` is what Settings uses when no file
 /// exists.
@@ -51,6 +53,8 @@ impl BusinessDocument for ScheduleDocument {
     }
 }
 
+/// A legacy job's `mode` (§2.3). New jobs store a target instead and never
+/// write this field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
@@ -58,7 +62,8 @@ pub enum Mode {
     Reuse,
 }
 
-/// Who last authorized a job's save ([design §3.3](../../../docs/design/plugins/Scheduler.md)).
+/// Who created a job (A.1). It decides a legacy job's target (§2.3) and is
+/// otherwise provenance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Origin {
@@ -71,6 +76,42 @@ pub enum Origin {
     },
 }
 
+/// A job's target (§2.1): the branch that saved the job, or a Session each
+/// window launches.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Target {
+    Session {
+        session_id: String,
+        #[serde(default = "default_branch_id")]
+        branch_id: String,
+        #[serde(default)]
+        input_mode: InputMode,
+    },
+    Launch {
+        cwd: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        policy: Option<PermissionPreset>,
+        #[serde(default = "default_max_run_minutes")]
+        max_run_minutes: u32,
+    },
+}
+
+/// Why a delivery's target-gone failure disabled the job (A.1, A.3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisabledReason {
+    pub code: String,
+    /// The UTC instant the delivery settled at.
+    pub at: String,
+}
+
+fn default_branch_id() -> String {
+    "main".into()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Job {
@@ -78,24 +119,35 @@ pub struct Job {
     pub name: String,
     pub schedule: Schedule,
     pub prompt: String,
-    pub cwd: String,
+    /// The job's target. A job saved before this change has none and is
+    /// mapped by [`Job::effective_target`] (A.1, §2.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<Target>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<DisabledReason>,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled_at: Option<String>,
+    pub revision: u64,
+    pub created_by: Origin,
+    // Legacy fields (A.1, §2.3): read and mapped, preserved by every write,
+    // never reported, and never written by a save.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<Mode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-    pub mode: Mode,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<PermissionPreset>,
-    pub policy_cap: PermissionPolicy,
-    pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled_at: Option<String>,
-    #[serde(default = "default_max_run_minutes")]
-    pub max_run_minutes: u32,
-    pub revision: u64,
-    pub created_by: Origin,
+    pub policy_cap: Option<PermissionPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_run_minutes: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -148,18 +200,115 @@ pub fn format_instant(instant: DateTime<Utc>) -> String {
 }
 
 impl Job {
+    /// The target this job delivers to: its stored target, or the fixed
+    /// legacy mapping of §2.3. `None` is a document the mapping cannot
+    /// express, which validation rejects.
+    pub fn effective_target(&self) -> Option<Target> {
+        if let Some(target) = &self.target {
+            return Some(target.clone());
+        }
+        match &self.created_by {
+            Origin::Tool {
+                session_id,
+                branch_id,
+            } => Some(Target::Session {
+                session_id: session_id.clone(),
+                branch_id: branch_id.clone(),
+                input_mode: InputMode::Queue,
+            }),
+            Origin::User => {
+                if self.mode == Some(Mode::Reuse)
+                    && let Some(session_id) = &self.session_id
+                {
+                    return Some(Target::Session {
+                        session_id: session_id.clone(),
+                        branch_id: default_branch_id(),
+                        input_mode: InputMode::Queue,
+                    });
+                }
+                Some(Target::Launch {
+                    cwd: self.cwd.clone()?,
+                    agent_id: self.agent_id.clone(),
+                    policy: self.policy,
+                    max_run_minutes: self.max_run_minutes.unwrap_or(DEFAULT_MAX_RUN_MINUTES),
+                })
+            }
+        }
+    }
+
+    /// Whether the job's stored target replaced the Session its legacy
+    /// `reuse` binding names (A.7): the one legacy form that releases the
+    /// binding's launch ownership. A client that sends the mapped target
+    /// explicitly has not replaced it, so nothing is released.
+    pub fn replaced_reuse_binding(&self) -> bool {
+        if self.mode != Some(Mode::Reuse) {
+            return false;
+        }
+        let (Some(session_id), Some(target)) = (&self.session_id, &self.target) else {
+            return false;
+        };
+        *target
+            != Target::Session {
+                session_id: session_id.clone(),
+                branch_id: default_branch_id(),
+                input_mode: InputMode::Queue,
+            }
+    }
+
     pub fn validate(&self) -> Result<(), SettingsError> {
-        if self.name.is_empty() || self.cwd.is_empty() {
-            return Err(SettingsError::Invalid("a job needs a name and a cwd"));
+        if self.name.is_empty() {
+            return Err(SettingsError::Invalid("a job needs a name"));
         }
         if self.prompt.len() > MAX_PROMPT_BYTES {
             return Err(SettingsError::Invalid("a job prompt is at most 32 KiB"));
         }
-        if self.max_run_minutes < 1 {
-            return Err(SettingsError::Invalid("max_run_minutes must be at least 1"));
+        match &self.target {
+            Some(Target::Session {
+                session_id,
+                branch_id,
+                ..
+            }) => {
+                if session_id.is_empty() || branch_id.is_empty() {
+                    return Err(SettingsError::Invalid(
+                        "a session target needs a Session and a branch",
+                    ));
+                }
+            }
+            Some(Target::Launch {
+                cwd,
+                max_run_minutes,
+                ..
+            }) => {
+                if cwd.is_empty() {
+                    return Err(SettingsError::Invalid("a launch target needs a cwd"));
+                }
+                if *max_run_minutes < 1 {
+                    return Err(SettingsError::Invalid("max_run_minutes must be at least 1"));
+                }
+            }
+            None => match self.effective_target() {
+                Some(Target::Session { .. }) => {}
+                Some(Target::Launch {
+                    cwd,
+                    max_run_minutes,
+                    ..
+                }) if !cwd.is_empty() && max_run_minutes >= 1 => {}
+                _ => {
+                    return Err(SettingsError::Invalid(
+                        "a job needs a target or the legacy fields it maps from",
+                    ));
+                }
+            },
         }
-        if self.mode == Mode::Create && self.session_id.is_some() {
-            return Err(SettingsError::Invalid("only reuse jobs bind a Session"));
+        if let Some(reason) = &self.disabled_reason
+            && (!matches!(
+                reason.code.as_str(),
+                "session_closed" | "branch_missing" | "branch_ended"
+            ) || canonical_instant(&reason.at).is_none())
+        {
+            return Err(SettingsError::Invalid(
+                "disabled_reason needs a target-gone code and an instant",
+            ));
         }
         match (self.enabled, &self.enabled_at) {
             (true, Some(text)) if canonical_instant(text).is_some() => {}
@@ -167,6 +316,23 @@ impl Job {
             _ => return Err(SettingsError::Invalid("enabled_at matches enabled")),
         }
         self.schedule.validate()
+    }
+
+    /// The job as an owner reports it (A.1, A.3): the normalised record
+    /// shape with its target, and none of the legacy fields.
+    pub fn reported(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "name": self.name,
+            "schedule": self.schedule,
+            "prompt": self.prompt,
+            "target": self.effective_target(),
+            "disabled_reason": self.disabled_reason,
+            "enabled": self.enabled,
+            "enabled_at": self.enabled_at,
+            "revision": self.revision,
+            "created_by": self.created_by,
+        })
     }
 
     /// The latest window at or before `now`, if any has come due (A.4): after

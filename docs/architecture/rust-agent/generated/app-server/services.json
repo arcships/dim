@@ -23,7 +23,7 @@
         "reads": []
       },
       {
-        "id": 72,
+        "id": 73,
         "parent": 2,
         "name": "Attachments",
         "state": "Active",
@@ -53,7 +53,7 @@
         ]
       },
       {
-        "id": 71,
+        "id": 72,
         "parent": 2,
         "name": "goal",
         "state": "Active",
@@ -100,7 +100,7 @@
         ]
       },
       {
-        "id": 70,
+        "id": 71,
         "parent": 2,
         "name": "eventhub",
         "state": "Active",
@@ -181,8 +181,8 @@
         ]
       },
       {
-        "id": 73,
-        "parent": 70,
+        "id": 74,
+        "parent": 71,
         "name": "eventhub-ready",
         "state": "Active",
         "generation": 1,
@@ -197,11 +197,126 @@
           {
             "service": "dim_event_hub::bridge::EventHub",
             "scope": null,
-            "provider": 70,
+            "provider": 71,
             "generation": 1
           }
         ],
         "reads": []
+      },
+      {
+        "id": 70,
+        "parent": 2,
+        "name": "Scheduler",
+        "state": "Active",
+        "generation": 1,
+        "injects": [
+          {
+            "service": "dim_agent_runtime::parts::PartRegistry",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
+            "service": "dim_app_server::agents::sessions::SessionPermissions",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
+            "service": "dim_app_server::methods::ManagementMethods",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
+            "service": "dim_app_server::plugin_files::PluginFileTransactions",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
+            "service": "dim_app_server::settings::SettingsService",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
+            "service": "dyn rutis_bridge::session::services::HostDispatch#sessions",
+            "scope": null,
+            "status": "Ready"
+          }
+        ],
+        "resolved": [
+          {
+            "service": "dim_agent_runtime::parts::PartRegistry",
+            "scope": null,
+            "provider": 45,
+            "generation": 1
+          },
+          {
+            "service": "dim_app_server::agents::sessions::SessionPermissions",
+            "scope": null,
+            "provider": 37,
+            "generation": 1
+          },
+          {
+            "service": "dim_app_server::methods::ManagementMethods",
+            "scope": null,
+            "provider": 9,
+            "generation": 1
+          },
+          {
+            "service": "dim_app_server::plugin_files::PluginFileTransactions",
+            "scope": null,
+            "provider": 13,
+            "generation": 1
+          },
+          {
+            "service": "dim_app_server::settings::SettingsService",
+            "scope": null,
+            "provider": 18,
+            "generation": 1
+          },
+          {
+            "service": "dyn rutis_bridge::session::services::HostDispatch#sessions",
+            "scope": null,
+            "provider": 37,
+            "generation": 1
+          }
+        ],
+        "reads": [
+          {
+            "service": "dim_agent_runtime::parts::PartRegistry",
+            "provider": 45,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_app_server::agents::sessions::SessionPermissions",
+            "provider": 37,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_app_server::methods::ManagementMethods",
+            "provider": 9,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_app_server::plugin_files::PluginFileTransactions",
+            "provider": 13,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_app_server::settings::SettingsService",
+            "provider": 18,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dyn rutis_bridge::session::services::HostDispatch#sessions",
+            "provider": 37,
+            "declared": true,
+            "external": true
+          }
+        ]
       },
       {
         "id": 69,
@@ -3116,6 +3231,18 @@
         "removing": false
       },
       {
+        "service": "dim_agent_scheduler::methods::ScheduleJobs",
+        "provider": 70,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dim_agent_scheduler::wakeups::Wakeups",
+        "provider": 70,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dim_app_server::agents::AgentDirectory",
         "provider": 37,
         "generation": 1,
@@ -3261,13 +3388,13 @@
       },
       {
         "service": "dim_event_hub::bridge::EventHub",
-        "provider": 70,
+        "provider": 71,
         "generation": 1,
         "removing": false
       },
       {
         "service": "dim_event_hub::subscriptions::EventSubscriptions",
-        "provider": 70,
+        "provider": 71,
         "generation": 1,
         "removing": false
       },
@@ -3303,7 +3430,7 @@
       },
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#eventHub",
-        "provider": 70,
+        "provider": 71,
         "generation": 1,
         "removing": false
       },

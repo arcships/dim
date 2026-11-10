@@ -88,6 +88,7 @@ flowchart LR
   p60 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p75
   p60 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p75
   p43 -->|"dim_agent_capabilities::host::PromptHost@session"| p74
+  p44 -->|"dim_agent_capabilities::prompt_sources::SessionLanguage@session"| p74
   p60 -->|"dim_agent_runtime::config::BranchLifecycle@main"| p74
   p73 -->|"dim_agent_runtime::state::StateCell<dim_agent_capabilities::prompt_state::PromptSnapshot>@main"| p74
   p73 -->|"dyn dim_agent_runtime::contracts::ConfigureControl@main"| p74

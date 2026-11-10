@@ -1,5 +1,9 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Refresh model list" => "모델 목록 새로 고침",
+        "Model list refreshed" => "모델 목록을 새로 고쳤습니다",
+        "Model list refresh failed: {reason}" => "모델 목록을 새로 고치지 못했습니다: {reason}",
+        "Refreshing model list… · esc close" => "모델 목록을 새로 고치는 중… · Esc 닫기",
         // providers_panel.rs
         "Providers" => "프로바이더",
         "Enter open · Esc clear/close" => "Enter 열기 · Esc 지우기/닫기",

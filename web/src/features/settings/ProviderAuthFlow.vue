@@ -11,9 +11,10 @@ import { useModelsStore } from "../../stores/models"
 import { messageFrom, reloadSettingsOnReconnect } from "./context"
 
 const props = defineProps<{ provider: ManagementProvider }>()
-const emit = defineEmits<{ finished: [] }>()
+const emit = defineEmits<{ finished: [modelRefreshError?: string] }>()
 const { t } = useI18n({ messages: settingsMessages })
 const connection = useConnectionStore()
+const models = useModelsStore()
 const mode = ref(props.provider.account?.loginMethods.includes("browser") ? "browser" : "device")
 const directory = ref("")
 const enterprise = ref(false)
@@ -57,15 +58,20 @@ async function poll(): Promise<void> {
       attempt.value = undefined
       callback.value = ""
       if (status === "completed") {
+        busy.value = true
         email.value = ""
-        await useModelsStore().load()
-        emit("finished")
+        const refreshError = await (namespace === "account" ? models.refresh(props.provider.providerId) : models.load())
+          .then(() => undefined, messageFrom)
+        if (mounted && generation === epoch) emit("finished", refreshError)
       } else error.value = t(status)
     }
   } catch (cause) {
     if (mounted && generation === epoch) error.value = messageFrom(cause)
   } finally {
-    if (mounted && generation === epoch) polling.value = false
+    if (mounted && generation === epoch) {
+      busy.value = false
+      polling.value = false
+    }
   }
 }
 async function start(): Promise<void> {

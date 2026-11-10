@@ -442,7 +442,7 @@ The HostPlatform exec-shell change recorded in ADR 002 (business configuration r
 | System | `/exit`, `/theme`, `/keys`, upgrade | CLI |
 | System | `/settings` | Each item belongs to its plugin; the CLI aggregates |
 | System | `/usage` | Extension: ContextPreparation, ManagedProviders |
-| System | `/language` | CLI; Extension: PromptSources |
+| System | `/language` | CLI (the interface locale); the Session's reply language arrives through `session.language.get/update` from PromptSources |
 | System | `/debug`, debug logs | Existing: process logs (`daemon.log`, `RUST_LOG`, [ADR 005](../adr/005-observability.md) D1) |
 | System | `/stats`, mouse settings | Out of scope |
 | Agent behaviour | `/agent` | Extension: Agents, Prompt, PromptSources |
@@ -492,7 +492,7 @@ A **supplement** adds services, methods or configuration. A **change** alters ex
 | Permission | Supplement | Command rules read at use time (no new risk category: unknown risks are unclassified, #45) | `/approvals` |
 | ModelProvider | Supplement | When building a request, sends an image in user content or in a tool result, or replaces it with a text placeholder if the model lacks image support or the request cannot carry it; history is unchanged (moved out of Rpc) | Attachments |
 | Prompt, PromptSources | Supplement | Prompt's published adopted model configuration; atomic adoption of a profile's prompt and optional model, using PromptSources' existing `dim/session` System entry | `/effort`, `/fast`, `/agent` |
-| PromptSources | Supplement | Prompt language source | `/language` |
+| PromptSources | Supplement | Prompt language source | The Session's reply language (`session.language.*`) |
 | ContextPreparation | Supplement | Usage query; manual compaction; production compaction host implementing `ResolveContextModel` | `/usage`, `/compact` |
 | FileStorage | Supplement | Directory listing and removal under a root (S6); directory creation (S5a, [session files](appserver/session-files.md#7-filestorage-additions)) | Session files, cleanup |
 | HostPlatform | Supplement | OS isolation at process start for agent-decided commands (`exec` and the persistent shell; macOS seatbelt, Linux bubblewrap, Windows explicitly unavailable), per-node host-local configuration; a process start that writes the given bytes to the child's stdin and closes it, for configuration commands such as hook commands, which run without the agent sandbox as MCP stdio servers do ([ADR 003](../adr/003-approval-scope.md) D2, [Hooks A.6.3](plugins/Hooks.md#a63-process-start-with-an-initial-stdin)); exec-argv helper; a confined start for a host-owned helper with a timeout, bounded output and no network, independent of the user's switch; exec shell read per spawn (ADR 002); when the link to the control node drops, the node's HostPlatform ends the processes it started | Sandbox; ShellInput, Hooks, ExternalAgent |

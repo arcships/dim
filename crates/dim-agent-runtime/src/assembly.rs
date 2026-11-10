@@ -1302,32 +1302,12 @@ impl TimelineFactory {
             let handed = std::mem::take(&mut *owner.handed.lock().unwrap());
             let result = AssertUnwindSafe(async {
                 let created = started.as_ref().map_err(|(error, _)| error.clone())?;
-                let branch = {
-                    let mut loaded = owner.loaded.lock().unwrap();
-                    let current = loaded
-                        .as_ref()
-                        .ok_or_else(|| AgentError::Build("branch scope did not load".into()))?;
-                    let branch = Arc::new(LoadedBranch {
-                        scope: Loaded {
-                            ctx: current.scope.ctx.clone(),
-                            scope: current.scope.scope,
-                            children: created.children.clone(),
-                            required: current.scope.required.clone(),
-                            awaited: handed
-                                .required
-                                .iter()
-                                .chain(&mounted.required)
-                                .cloned()
-                                .collect(),
-                        },
-                        timeline: current.timeline.clone(),
-                        dispatcher: current.dispatcher.clone(),
-                        lifecycle: current.lifecycle.clone(),
-                        opening: current.opening.clone(),
-                    });
-                    *loaded = Some(branch.clone());
-                    branch
-                };
+                let branch = owner
+                    .loaded
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .ok_or_else(|| AgentError::Build("branch scope did not load".into()))?;
                 if parent.closing.is_cancelled() {
                     return Err(AgentError::Closed(parent.id.clone()));
                 }
@@ -1338,9 +1318,14 @@ impl TimelineFactory {
                     id,
                     ctx.clone(),
                     created.view.clone(),
-                    branch.scope.children.clone(),
+                    created.children.clone(),
                     branch.scope.required.clone(),
-                    branch.scope.awaited.clone(),
+                    handed
+                        .required
+                        .iter()
+                        .chain(&mounted.required)
+                        .cloned()
+                        .collect(),
                     owner.copies.clone(),
                     scope,
                     branch.timeline.clone(),
@@ -1355,7 +1340,10 @@ impl TimelineFactory {
             .await
             .unwrap_or_else(|_| Err(AgentError::Build("timeline assembly panicked".into())));
             match result {
-                Ok(value) => Ok(value),
+                Ok(value) => {
+                    owner.loaded.lock().unwrap().take();
+                    Ok(value)
+                }
                 Err(error) => {
                     let branch = owner.loaded.lock().unwrap().take();
                     if let Some(branch) = &branch {

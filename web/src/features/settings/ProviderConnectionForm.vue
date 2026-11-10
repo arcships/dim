@@ -6,11 +6,10 @@ import { settingsMessages } from "../../i18n/settings"
 import { readManagementProvider, readProbe, type ManagementProvider, type ManagementView, type ModelEntry } from "../../rpc/management"
 import { RpcError } from "../../rpc/client"
 import { useConnectionStore } from "../../stores/connection"
-import { useModelsStore } from "../../stores/models"
 import { messageFrom } from "./context"
 
 const props = defineProps<{ provider?: ManagementProvider; drivers: ManagementView["drivers"] }>()
-const emit = defineEmits<{ saved: [provider: ManagementProvider]; reload: [] }>()
+const emit = defineEmits<{ saved: [provider: ManagementProvider]; reload: []; cancel: [] }>()
 const dirty = defineModel<boolean>("dirty", { default: false })
 const { t } = useI18n({ messages: settingsMessages })
 const connection = useConnectionStore()
@@ -28,7 +27,6 @@ const sessionToken = ref("")
 const proxy = ref("")
 const timeout = ref("")
 const enabled = ref(true)
-const models = ref("")
 const headers = ref<{ name: string; value: string; remove: boolean; existing: boolean }[]>([])
 const saving = ref(false)
 const error = ref("")
@@ -38,7 +36,11 @@ const baseline = ref("")
 const version = ref<number | null>(null)
 const accountOwned = computed(() => !!props.provider && props.provider.credentialAuthority !== "static")
 const authTypes = computed(() => props.drivers.find((d) => d.driverKind === driver.value)?.authTypes ?? [])
-function snapshot(): string { return JSON.stringify([id.value, name.value, driver.value, auth.value, authHeader.value, prefix.value, baseUrl.value, key.value, clearKey.value, accessKey.value, sessionToken.value, proxy.value, timeout.value, enabled.value, models.value, headers.value]) }
+const usesStoredKeyAtNewUrl = computed(() => {
+  const saved = props.provider?.connection
+  return saved?.credentialConfigured && baseUrl.value !== saved.baseUrl && !credential()
+})
+function snapshot(): string { return JSON.stringify([id.value, name.value, driver.value, auth.value, authHeader.value, prefix.value, baseUrl.value, key.value, clearKey.value, accessKey.value, sessionToken.value, proxy.value, timeout.value, enabled.value, headers.value]) }
 function adopt(): void {
   const p = props.provider, c = p?.connection
   id.value = p?.providerId ?? crypto.randomUUID()
@@ -55,7 +57,7 @@ function adopt(): void {
   proxy.value = c?.proxyUrl ?? ""
   timeout.value = c?.timeoutMs?.toString() ?? ""
   enabled.value = p?.enabled ?? true
-  models.value = ""
+  probed.value = undefined
   headers.value = (c?.headerNames ?? []).map((name) => ({ name, value: "", remove: false, existing: true }))
   version.value = p?.version ?? null
   baseline.value = snapshot()
@@ -63,7 +65,10 @@ function adopt(): void {
   conflict.value = false
 }
 watch(() => props.provider, () => { if (!dirty.value) adopt() }, { immediate: true })
-watch(snapshot, (current) => { dirty.value = current !== baseline.value })
+watch(snapshot, (current) => {
+  dirty.value = current !== baseline.value
+  probed.value = undefined
+})
 watch(driver, () => { if (!props.provider && !authTypes.value.includes(auth.value)) auth.value = authTypes.value[0] ?? "anonymous" })
 function credential(): Record<string, unknown> | undefined {
   if (clearKey.value) return { action: "clear" }
@@ -103,9 +108,7 @@ async function save(): Promise<void> {
   error.value = ""
   try {
     const p = props.provider
-    const requestedModels = [...new Set(models.value.split(/[\n,]/).map((v) => v.trim()).filter(Boolean))]
-    const entries: ModelEntry[] = requestedModels.map((modelId) => probed.value?.find((m) => m.modelId === modelId) ?? { modelId, displayName: modelId, status: "active", capabilities: { modalities: ["text"], toolCalling: true, streaming: true, structuredOutput: true, vision: false, audio: false, reasoning: false } })
-    const result = await connection.client.call(p ? "provider.update" : "provider.create", p ? { providerId: p.providerId, expectedVersion: version.value, patch: patch() } : { providerId: id.value, displayName: name.value, enabled: enabled.value, connection: newConnection(), models: entries }, readManagementProvider)
+    const result = await connection.client.call(p ? "provider.update" : "provider.create", p ? { providerId: p.providerId, expectedVersion: version.value, patch: patch() } : { providerId: id.value, displayName: name.value, enabled: enabled.value, connection: newConnection(), models: probed.value ?? [] }, readManagementProvider)
     key.value = ""
     accessKey.value = ""
     sessionToken.value = ""
@@ -113,7 +116,6 @@ async function save(): Promise<void> {
     dirty.value = false
     baseline.value = snapshot()
     emit("saved", result)
-    await useModelsStore().load()
   } catch (cause) {
     conflict.value = cause instanceof RpcError && cause.appError === "provider_conflict"
     error.value = conflict.value ? t("conflict") : messageFrom(cause)
@@ -122,9 +124,9 @@ async function save(): Promise<void> {
 async function probe(): Promise<void> {
   saving.value = true
   error.value = ""
+  probed.value = undefined
   try {
     probed.value = await connection.client.call("provider.probe", { providerId: props.provider?.providerId ?? id.value, connection: props.provider ? patch() : newConnection() }, readProbe)
-    if (!props.provider && models.value === "") models.value = probed.value.map((m) => m.modelId).join("\n")
   } catch (cause) { error.value = messageFrom(cause) }
   finally { saving.value = false }
 }
@@ -134,14 +136,16 @@ onBeforeUnmount(() => { key.value = ""; accessKey.value = ""; sessionToken.value
 <template>
   <form class="settings-form" @submit.prevent="save">
     <fieldset class="settings-form" :disabled="saving || connection.phase !== 'connected'" style="border: 0; padding: 0; margin: 0; min-width: 0">
-      <label><span>{{ t("name") }}</span><input v-model="name" class="ui-field" required :readonly="provider && provider.source !== 'custom'" /></label>
+      <label v-if="!provider || provider.source === 'custom'"><span>{{ t("providerName") }}</span><input v-model="name" class="ui-field" required /></label>
+      <label v-if="!accountOwned"><span>{{ t("baseUrl") }}</span><input v-model="baseUrl" class="ui-field" type="url" placeholder="https://api.example.com/v1" required autocomplete="off" /></label>
       <template v-if="!provider">
-        <label><span>{{ t("driver") }}</span><select v-model="driver" class="ui-field"><option v-for="d in drivers" :key="d.driverKind" :value="d.driverKind">{{ d.driverKind }}</option></select></label>
-        <label><span>{{ t("authType") }}</span><select v-model="auth" class="ui-field"><option v-for="kind in authTypes" :key="kind" :value="kind">{{ kind }}</option></select></label>
+        <div class="settings-grid">
+          <label><span>{{ t("apiProtocol") }}</span><select v-model="driver" class="ui-field"><option v-for="d in drivers" :key="d.driverKind" :value="d.driverKind">{{ d.driverKind }}</option></select></label>
+          <label><span>{{ t("authType") }}</span><select v-model="auth" class="ui-field"><option v-for="kind in authTypes" :key="kind" :value="kind">{{ t(`providerAuth.${kind}`) }}</option></select></label>
+        </div>
         <div v-if="['api_key', 'custom_header'].includes(auth)" class="settings-grid"><label><span>{{ t("headerName") }}</span><input v-model="authHeader" class="ui-field" required /></label><label v-if="auth === 'api_key'"><span>{{ t("headerPrefix") }}</span><input v-model="prefix" class="ui-field" /></label></div>
       </template>
       <template v-if="!accountOwned">
-        <label><span>{{ t("baseUrl") }}</span><input v-model="baseUrl" class="ui-field" type="url" required autocomplete="off" /></label>
         <label v-if="auth === 'aws_bedrock'"><span>AWS Access Key ID</span><input v-model="accessKey" class="ui-field" type="password" autocomplete="new-password" /></label>
         <label v-if="auth !== 'anonymous'"><span>{{ auth === 'aws_bedrock' ? 'AWS Secret Access Key' : t("apiKey") }}</span><input v-model="key" class="ui-field" type="password" autocomplete="new-password" :placeholder="provider?.connection?.credentialConfigured ? t('keepSecret') : ''" :disabled="clearKey" /></label>
         <label v-if="auth === 'aws_bedrock'"><span>AWS Session Token</span><input v-model="sessionToken" class="ui-field" type="password" autocomplete="new-password" /></label>
@@ -156,14 +160,15 @@ onBeforeUnmount(() => { key.value = ""; accessKey.value = ""; sessionToken.value
         </div></details>
       </template>
       <details><summary>{{ t("advanced") }}</summary><div class="settings-grid" style="margin-top: 12px"><label><span>{{ t("proxy") }}</span><input v-model="proxy" class="ui-field" autocomplete="off" type="url" /></label><label><span>{{ t("timeout") }}</span><input v-model="timeout" class="ui-field" type="number" min="1" step="1" :placeholder="t('default')" /></label></div></details>
-      <label v-if="!provider"><span>{{ t("modelIds") }}</span><textarea v-model="models" class="ui-field" rows="4" /></label>
-      <label class="settings-check"><input v-model="enabled" type="checkbox" />{{ t("enabled") }}</label>
+      <label class="settings-check"><input v-model="enabled" type="checkbox" />{{ t("enableProvider") }}</label>
     </fieldset>
     <p v-if="error" class="ui-banner" data-tone="danger" role="alert">{{ error }} <button v-if="conflict" class="ui-button" data-variant="ghost" type="button" @click="$emit('reload')">{{ t("reload") }}</button></p>
-    <p v-if="probed" class="settings-help">{{ t("probeResult") }} {{ probed.map((m) => m.modelId).join(', ') }}</p>
+    <p v-if="usesStoredKeyAtNewUrl" class="settings-help">{{ t("storedKeyAtNewUrl") }}</p>
+    <p v-if="probed" class="settings-help" role="status">{{ t("providerProbeResult", { count: probed.length }) }}</p>
     <div class="settings-actions">
+      <button class="ui-button" data-variant="ghost" type="button" :disabled="saving" @click="$emit('cancel')">{{ t("cancel") }}</button>
       <button v-if="!accountOwned" class="ui-button" data-variant="secondary" type="button" :disabled="saving || !baseUrl || connection.phase !== 'connected'" @click="probe">{{ t("probe") }}</button>
-      <button class="ui-button" data-variant="primary" type="submit" :disabled="saving || conflict || connection.phase !== 'connected' || (provider && !dirty)">{{ saving ? t("saving") : provider ? t("save") : t("create") }}</button>
+      <button class="ui-button" data-variant="primary" type="submit" :disabled="saving || conflict || connection.phase !== 'connected' || (provider && !dirty)">{{ saving ? t("saving") : t(provider ? "save" : "saveProvider") }}</button>
     </div>
   </form>
 </template>

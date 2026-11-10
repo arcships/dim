@@ -27,6 +27,15 @@ const EFFECTS_WARNING: &str =
 
 const TOOLS_FACTORY: &str = r#"
 (function (__host) {
+  const resultText = (content) => {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((block) => (block && block.type === "text" ? block.text : ""))
+        .join("\n");
+    }
+    return "";
+  };
   return {
     list: () => JSON.parse(__host.list()),
     describe: (name) => {
@@ -36,18 +45,13 @@ const TOOLS_FACTORY: &str = r#"
     call: async (name, args) => {
       const value = JSON.parse(await __host.call(String(name), JSON.stringify(args ?? {})));
       if (value.isError) {
-        const message = value.message || value.content || "tool failed";
-        const error = new Error(
-          typeof message === "string" ? message : JSON.stringify(message)
-        );
+        const error = new Error(value.message || resultText(value.content) || "tool failed");
         error.name = "ToolCallError";
         error.code = value.error || "tool_error";
         if (value.structuredContent !== undefined) error.data = value.structuredContent;
         throw error;
       }
-      return value.structuredContent !== undefined
-        ? value.structuredContent
-        : value.content;
+      return value;
     },
   };
 })

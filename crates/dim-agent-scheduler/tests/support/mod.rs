@@ -1,7 +1,7 @@
 //! A real App Server with the Scheduler installed and a scripted model.
 #![allow(dead_code)]
 use dim_agent_capabilities::{defaults, history::HistoryRenderer, host::*};
-use dim_agent_runtime::{AgentBuilder, AgentConfig};
+use dim_agent_runtime::{AgentBuilder, AgentConfig, SessionConfig};
 use dim_agent_types::*;
 use dim_app_server::{RunningServer, ServerConfig, serve};
 use dim_client::{Client, ConnectionConfig, Server};
@@ -114,16 +114,46 @@ pub fn home() -> tempfile::TempDir {
 }
 
 pub async fn start(home: &Path, model: Arc<Script>) -> RunningServer {
+    start_with(home, model, SessionConfig::default()).await
+}
+
+/// The hooks of each started server, by home, newest last.
+static HOLDS: Mutex<Vec<(std::path::PathBuf, Arc<dim_agent_scheduler::testing::Holds>)>> =
+    Mutex::new(Vec::new());
+
+/// The hooks of the server started last for `home`.
+pub fn holds(home: &Path) -> Arc<dim_agent_scheduler::testing::Holds> {
+    HOLDS
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|(path, _)| path == home)
+        .map(|(_, holds)| holds.clone())
+        .expect("a server started for this home")
+}
+
+/// [`start`] with the host's Session defaults, so a flow can set the role or
+/// the authority bound a Session is created under.
+pub async fn start_with(home: &Path, model: Arc<Script>, defaults: SessionConfig) -> RunningServer {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install(&mut builder);
     defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model);
-    dim_agent_scheduler::install(&mut builder);
+    let holds = Arc::new(dim_agent_scheduler::testing::Holds::default());
+    HOLDS.lock().unwrap().push((home.to_owned(), holds.clone()));
+    dim_agent_scheduler::install_with_testing(
+        &mut builder,
+        dim_agent_scheduler::SchedulerTexts::default(),
+        holds,
+    )
+    .expect("the built-in texts are valid");
     serve(
         builder,
         ServerConfig {
             startup_timeout: Duration::from_secs(60),
             database_path: Some(home.join("dimcode.sqlite")),
             product_home: Some(home.to_owned()),
+            session_defaults: defaults,
             unix_path: Some(home.join("native.sock")),
             ..Default::default()
         },
@@ -191,12 +221,22 @@ pub async fn wait_for(description: &str, mut check: impl FnMut() -> bool) {
 
 /// An interactive leader Session that may call `schedule`.
 pub async fn create_session(client: &mut Client, home: &Path, interactive: bool) -> String {
+    create_session_with(client, home, &["schedule"], interactive).await
+}
+
+/// A Session that may call `schedule` and the named tools.
+pub async fn create_session_with(
+    client: &mut Client,
+    home: &Path,
+    tools: &[&str],
+    interactive: bool,
+) -> String {
     let created = client
         .rpc(
             "session.create",
             json!({
                 "cwd": home,
-                "tools": ["schedule"],
+                "tools": tools,
                 "interactive": interactive,
                 "permissionPolicy": {"preset": "full-access", "allowedTools": [], "disallowedTools": []}
             }),
@@ -240,7 +280,7 @@ pub async fn settled(client: &mut Client, job_id: &str, run_id: &str) -> Value {
     run_where(client, job_id, run_id, |run| {
         !matches!(
             run["state"].as_str(),
-            Some("launching" | "submitted" | "running")
+            Some("delivering" | "launching" | "submitted" | "running")
         )
     })
     .await

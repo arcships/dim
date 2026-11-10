@@ -12,11 +12,11 @@ mod session;
 mod wakeups;
 mod watch;
 
+#[cfg(feature = "testing")]
+pub mod testing;
+
 #[cfg(test)]
 extern crate self as dim_agent_scheduler;
-#[cfg(test)]
-#[path = "../tests/support/binding_flow.rs"]
-mod binding_flow;
 #[cfg(test)]
 #[path = "../tests/support/mod.rs"]
 mod support;
@@ -24,7 +24,7 @@ mod support;
 #[path = "../tests/support/wakeup_pass.rs"]
 mod wakeup_pass;
 
-use dim_agent_runtime::AgentBuilder;
+use dim_agent_runtime::{AgentBuilder, Names};
 use rutis::host::DynPlugin;
 
 pub use document::ScheduleDocument;
@@ -63,14 +63,44 @@ impl Default for SchedulerTexts {
 /// is refused, since the guide entry tells the model the report's last line
 /// is guidance.
 pub fn install_with(builder: &mut AgentBuilder, texts: SchedulerTexts) -> Result<(), String> {
-    if texts.report_guidance.contains(['\n', '\r']) {
-        return Err("Scheduler report_guidance must be one line".into());
-    }
-    let texts = std::sync::Arc::new(texts);
+    install_inner(builder, texts, SchedulerPlugin::new)
+}
+
+/// [`install_with`] with the flow tests' holds in force (feature `testing`).
+#[cfg(feature = "testing")]
+pub fn install_with_testing(
+    builder: &mut AgentBuilder,
+    texts: SchedulerTexts,
+    holds: std::sync::Arc<testing::Holds>,
+) -> Result<(), String> {
+    install_inner(builder, texts, move |names, texts| {
+        SchedulerPlugin::new_with_testing(names, texts, holds.clone())
+    })
+}
+
+/// The installation both entry points share: the two plugin constructors
+/// differ only by the flow tests' holds, so the registration and the
+/// optional-plugin wiring live here once.
+fn install_inner(
+    builder: &mut AgentBuilder,
+    texts: SchedulerTexts,
+    make: impl Fn(&Names<'_>, std::sync::Arc<SchedulerTexts>) -> rutis::Result<SchedulerPlugin>
+    + Send
+    + Sync
+    + 'static,
+) -> Result<(), String> {
+    let texts = checked(texts)?;
     dim_agent_runtime::names::register::<ScheduleJobs>(builder.catalog_mut(), None);
     dim_agent_runtime::names::register::<Wakeups>(builder.catalog_mut(), None);
     builder.optional_plugin(move |names| {
-        Ok(Box::new(SchedulerPlugin::new(names, texts.clone())?) as Box<dyn DynPlugin>)
+        Ok(Box::new(make(names, texts.clone())?) as Box<dyn DynPlugin>)
     });
     Ok(())
+}
+
+fn checked(texts: SchedulerTexts) -> Result<std::sync::Arc<SchedulerTexts>, String> {
+    if texts.report_guidance.contains(['\n', '\r']) {
+        return Err("Scheduler report_guidance must be one line".into());
+    }
+    Ok(std::sync::Arc::new(texts))
 }

@@ -1837,27 +1837,14 @@
       "unexpandedMacros": []
     },
     {
-      "id": "dim_agent_scheduler::binding_flow",
-      "crate": "dim_agent_scheduler",
-      "parent": "dim_agent_scheduler",
-      "file": "crates/dim-agent-scheduler/src/../tests/support/binding_flow.rs",
-      "unexpandedMacros": [
-        "assert",
-        "assert_eq",
-        "assert_ne",
-        "eprintln",
-        "json",
-        "matches",
-        "vec"
-      ]
-    },
-    {
       "id": "dim_agent_scheduler::document",
       "crate": "dim_agent_scheduler",
       "parent": "dim_agent_scheduler",
       "file": "crates/dim-agent-scheduler/src/document.rs",
       "unexpandedMacros": [
-        "format"
+        "format",
+        "matches",
+        "serde_json::json"
       ]
     },
     {
@@ -1897,6 +1884,17 @@
       ]
     },
     {
+      "id": "dim_agent_scheduler::runs::tests",
+      "crate": "dim_agent_scheduler",
+      "parent": "dim_agent_scheduler::runs",
+      "file": "crates/dim-agent-scheduler/src/runs.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "serde_json::json"
+      ]
+    },
+    {
       "id": "dim_agent_scheduler::session",
       "crate": "dim_agent_scheduler",
       "parent": "dim_agent_scheduler",
@@ -1920,6 +1918,13 @@
         "tokio::select",
         "vec"
       ]
+    },
+    {
+      "id": "dim_agent_scheduler::testing",
+      "crate": "dim_agent_scheduler",
+      "parent": "dim_agent_scheduler",
+      "file": "crates/dim-agent-scheduler/src/testing.rs",
+      "unexpandedMacros": []
     },
     {
       "id": "dim_agent_scheduler::wakeup_pass",
@@ -3127,6 +3132,18 @@
       ]
     },
     {
+      "id": "dim_app_server::session_language",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server",
+      "file": "crates/dim-app-server/src/session_language.rs",
+      "unexpandedMacros": [
+        "json",
+        "tokio::select",
+        "tracing::warn",
+        "vec"
+      ]
+    },
+    {
       "id": "dim_app_server::session_typescript",
       "crate": "dim_app_server",
       "parent": "dim_app_server",
@@ -3927,10 +3944,10 @@
       "parent": "dim_cli",
       "file": "crates/dim-cli/src/login.rs",
       "unexpandedMacros": [
+        "eprintln",
         "format",
         "json",
         "println",
-        "tokio::pin",
         "tokio::select"
       ]
     },
@@ -8643,7 +8660,9 @@
       "from": "dim_agent_capabilities",
       "to": "dim_agent_capabilities::prompt_sources",
       "references": [
-        "mod prompt_sources"
+        "mod prompt_sources",
+        "path prompt_sources::PromptSourcesBranch",
+        "path prompt_sources::SessionLanguage"
       ]
     },
     {
@@ -13474,8 +13493,10 @@
       "to": "dim_agent_runtime::config",
       "references": [
         "path BranchLifecycle",
+        "path ReplyLanguage",
         "path SessionConfig",
         "use dim_agent_runtime::BranchLifecycle",
+        "use dim_agent_runtime::ReplyLanguage",
         "use dim_agent_runtime::SessionConfig"
       ]
     },
@@ -19732,14 +19753,9 @@
       "from": "dim_agent_scheduler",
       "to": "dim_agent_runtime::names",
       "references": [
-        "path dim_agent_runtime::names::register"
-      ]
-    },
-    {
-      "from": "dim_agent_scheduler",
-      "to": "dim_agent_scheduler::binding_flow",
-      "references": [
-        "mod binding_flow"
+        "path Names",
+        "path dim_agent_runtime::names::register",
+        "use dim_agent_runtime::Names"
       ]
     },
     {
@@ -19764,7 +19780,9 @@
       "references": [
         "mod methods",
         "path ScheduleJobs",
+        "path SchedulerPlugin",
         "path SchedulerPlugin::new",
+        "path SchedulerPlugin::new_with_testing",
         "use methods::ScheduleJobs",
         "use methods::SchedulerPlugin"
       ]
@@ -19796,6 +19814,14 @@
     },
     {
       "from": "dim_agent_scheduler",
+      "to": "dim_agent_scheduler::testing",
+      "references": [
+        "mod testing",
+        "path testing::Holds"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler",
       "to": "dim_agent_scheduler::wakeup_pass",
       "references": [
         "mod wakeup_pass"
@@ -19818,24 +19844,12 @@
       ]
     },
     {
-      "from": "dim_agent_scheduler::binding_flow",
-      "to": "dim_agent_scheduler::support",
+      "from": "dim_agent_scheduler::document",
+      "to": "dim_agent_types::events",
       "references": [
-        "path support::Script::default",
-        "path support::connect",
-        "path support::home",
-        "path support::run_where",
-        "path support::settled",
-        "path support::start",
-        "use crate::support"
-      ]
-    },
-    {
-      "from": "dim_agent_scheduler::binding_flow",
-      "to": "dim_client",
-      "references": [
-        "path Client",
-        "use dim_client::Client"
+        "path InputMode",
+        "path InputMode::Queue",
+        "use dim_agent_types::InputMode"
       ]
     },
     {
@@ -19875,11 +19889,16 @@
         "path Mode::Reuse",
         "path Origin::Tool",
         "path Origin::User",
+        "path Target",
+        "path Target::Launch",
+        "path Target::Session",
         "path canonical_instant",
+        "path crate::document::DisabledReason",
         "use crate::document::Job",
         "use crate::document::Mode",
         "use crate::document::Origin",
         "use crate::document::Schedule",
+        "use crate::document::Target",
         "use crate::document::canonical_instant"
       ]
     },
@@ -19887,20 +19906,11 @@
       "from": "dim_agent_scheduler::engine",
       "to": "dim_agent_scheduler::methods",
       "references": [
-        "path Binding::Bound",
-        "path Binding::Changed",
         "path Shared",
-        "path bind_job",
-        "path host_bound",
         "path read_document",
-        "path session_policy",
         "path window_after",
-        "use crate::methods::Binding",
         "use crate::methods::Shared",
-        "use crate::methods::bind_job",
-        "use crate::methods::host_bound",
         "use crate::methods::read_document",
-        "use crate::methods::session_policy",
         "use crate::methods::window_after"
       ]
     },
@@ -19908,33 +19918,35 @@
       "from": "dim_agent_scheduler::engine",
       "to": "dim_agent_scheduler::runs",
       "references": [
+        "path Delivery",
+        "path DeliveryState",
+        "path DeliveryState::Cancelled",
+        "path DeliveryState::Completed",
+        "path DeliveryState::Delivered",
+        "path DeliveryState::Delivering",
+        "path DeliveryState::Failed",
+        "path DeliveryState::Launching",
+        "path DeliveryState::Lost",
+        "path DeliveryState::Missed",
+        "path DeliveryState::Running",
+        "path DeliveryState::Skipped",
+        "path DeliveryState::Submitted",
+        "path DeliveryState::TimedOut",
         "path ReportTo",
-        "path Run",
-        "path RunState",
-        "path RunState::Cancelled",
-        "path RunState::Completed",
-        "path RunState::Failed",
-        "path RunState::Launching",
-        "path RunState::Lost",
-        "path RunState::Missed",
-        "path RunState::Running",
-        "path RunState::Skipped",
-        "path RunState::Submitted",
-        "path RunState::TimedOut",
         "path SchedulerError",
         "path SchedulerError::invalid_data",
         "path SchedulerError::new",
         "path SessionOrigin",
         "path SessionOrigin::Launch",
-        "path SessionOrigin::Reuse",
         "path runs",
         "path runs::read",
+        "path runs::retire_launch_ownership",
         "path runs::update",
         "path stamp",
         "use crate::runs",
+        "use crate::runs::Delivery",
+        "use crate::runs::DeliveryState",
         "use crate::runs::ReportTo",
-        "use crate::runs::Run",
-        "use crate::runs::RunState",
         "use crate::runs::SchedulerError",
         "use crate::runs::SessionOrigin",
         "use crate::runs::stamp"
@@ -19971,6 +19983,7 @@
       "references": [
         "path PermissionPolicy",
         "path PermissionPolicy::default",
+        "path PermissionPreset",
         "path PermissionPreset::ReadOnly",
         "use dim_agent_types::PermissionPolicy",
         "use dim_agent_types::PermissionPreset"
@@ -20045,35 +20058,27 @@
     },
     {
       "from": "dim_agent_scheduler::methods",
-      "to": "dim_agent_scheduler::binding_flow",
-      "references": [
-        "path crate::binding_flow::pause"
-      ]
-    },
-    {
-      "from": "dim_agent_scheduler::methods",
       "to": "dim_agent_scheduler::document",
       "references": [
-        "path DEFAULT_MAX_RUN_MINUTES",
         "path Job",
-        "path Mode",
-        "path Mode::Create",
+        "path MAX_TOOL_JOBS_PER_SESSION",
         "path Mode::Reuse",
-        "path ModelSelection",
         "path Origin",
         "path Origin::Tool",
         "path Origin::User",
         "path Schedule",
-        "path ScheduleDocument",
-        "path ScheduleDocument::NAMESPACE",
+        "path Target",
+        "path Target::Launch",
+        "path Target::Session",
         "path canonical_instant",
-        "use crate::document::DEFAULT_MAX_RUN_MINUTES",
+        "path crate::document::ScheduleDocument",
+        "path crate::document::ScheduleDocument::NAMESPACE",
         "use crate::document::Job",
+        "use crate::document::MAX_TOOL_JOBS_PER_SESSION",
         "use crate::document::Mode",
-        "use crate::document::ModelSelection",
         "use crate::document::Origin",
         "use crate::document::Schedule",
-        "use crate::document::ScheduleDocument",
+        "use crate::document::Target",
         "use crate::document::canonical_instant"
       ]
     },
@@ -20084,6 +20089,7 @@
         "path crate::engine::accept",
         "path crate::engine::prune",
         "path crate::engine::recover",
+        "path crate::engine::settle_delivering",
         "path crate::engine::tick"
       ]
     },
@@ -20091,16 +20097,21 @@
       "from": "dim_agent_scheduler::methods",
       "to": "dim_agent_scheduler::runs",
       "references": [
-        "path Run",
+        "path Delivery",
         "path SchedulerError",
         "path SchedulerError::invalid_data",
         "path SchedulerError::new",
+        "path SessionOrigin::Launch",
         "path runs",
         "path runs::read",
+        "path runs::retire_launch_ownership",
+        "path runs::update",
         "path stamp",
         "use crate::runs",
-        "use crate::runs::Run",
+        "use crate::runs::Delivery",
+        "use crate::runs::DeliveryState",
         "use crate::runs::SchedulerError",
+        "use crate::runs::SessionOrigin",
         "use crate::runs::stamp"
       ]
     },
@@ -20109,6 +20120,13 @@
       "to": "dim_agent_scheduler::session",
       "references": [
         "path crate::SchedulerSession::new"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::methods",
+      "to": "dim_agent_scheduler::testing",
+      "references": [
+        "path crate::testing::Holds"
       ]
     },
     {
@@ -20129,12 +20147,18 @@
     },
     {
       "from": "dim_agent_scheduler::methods",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path InputMode",
+        "use dim_agent_types::InputMode"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::methods",
       "to": "dim_agent_types::permission",
       "references": [
         "path PermissionPolicy",
-        "path PermissionPreset",
-        "use dim_agent_types::PermissionPolicy",
-        "use dim_agent_types::PermissionPreset"
+        "use dim_agent_types::PermissionPolicy"
       ]
     },
     {
@@ -20142,12 +20166,7 @@
       "to": "dim_app_server::agents::sessions",
       "references": [
         "path SessionPermissions",
-        "path SessionRef",
-        "path SessionsError::BranchMissing",
-        "path SessionsError::SessionClosed",
-        "use dim_app_server::SessionPermissions",
-        "use dim_app_server::SessionRef",
-        "use dim_app_server::SessionsError"
+        "use dim_app_server::SessionPermissions"
       ]
     },
     {
@@ -20194,6 +20213,13 @@
     },
     {
       "from": "dim_agent_scheduler::runs",
+      "to": "dim_agent_scheduler::runs::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::runs",
       "to": "dim_agent_types::permission",
       "references": [
         "path PermissionPolicy",
@@ -20213,6 +20239,14 @@
         "path PluginFileTransactions",
         "use dim_app_server::plugin_files::PluginFileError",
         "use dim_app_server::plugin_files::PluginFileTransactions"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::runs::tests",
+      "to": "dim_agent_scheduler::runs",
+      "references": [
+        "path Delivery",
+        "path SessionOrigin::Reuse"
       ]
     },
     {
@@ -20343,6 +20377,7 @@
       "from": "dim_agent_scheduler::support",
       "to": "dim_agent_capabilities::defaults",
       "references": [
+        "path defaults",
         "path defaults::install",
         "path defaults::mock_hosts_with_model",
         "use dim_agent_capabilities::defaults"
@@ -20386,14 +20421,26 @@
       "to": "dim_agent_runtime::config",
       "references": [
         "path AgentConfig::default",
-        "use dim_agent_runtime::AgentConfig"
+        "path SessionConfig",
+        "path SessionConfig::default",
+        "use dim_agent_runtime::AgentConfig",
+        "use dim_agent_runtime::SessionConfig"
       ]
     },
     {
       "from": "dim_agent_scheduler::support",
       "to": "dim_agent_scheduler",
       "references": [
-        "path dim_agent_scheduler::install"
+        "path dim_agent_scheduler::SchedulerTexts::default",
+        "path dim_agent_scheduler::install_with_testing"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::support",
+      "to": "dim_agent_scheduler::testing",
+      "references": [
+        "path dim_agent_scheduler::testing::Holds",
+        "path dim_agent_scheduler::testing::Holds::default"
       ]
     },
     {
@@ -20544,8 +20591,8 @@
       "from": "dim_agent_scheduler::watch",
       "to": "dim_agent_scheduler::runs",
       "references": [
-        "path Run",
-        "use crate::runs::Run"
+        "path Delivery",
+        "use crate::runs::Delivery"
       ]
     },
     {
@@ -21524,6 +21571,13 @@
     },
     {
       "from": "dim_app_server",
+      "to": "dim_app_server::session_language",
+      "references": [
+        "mod session_language"
+      ]
+    },
+    {
+      "from": "dim_app_server",
       "to": "dim_app_server::session_typescript",
       "references": [
         "mod session_typescript",
@@ -21945,6 +21999,13 @@
         "path crate::protocol::SessionInfo",
         "use crate::protocol::AgentInfo",
         "use crate::protocol::SessionOrigin"
+      ]
+    },
+    {
+      "from": "dim_app_server::agents",
+      "to": "dim_app_server::session_language",
+      "references": [
+        "path crate::session_language::SessionLanguagePlugin::new"
       ]
     },
     {
@@ -27685,6 +27746,13 @@
     },
     {
       "from": "dim_app_server::protocol",
+      "to": "dim_agent_runtime::config",
+      "references": [
+        "path dim_agent_runtime::ReplyLanguage"
+      ]
+    },
+    {
+      "from": "dim_app_server::protocol",
       "to": "dim_agent_types",
       "references": [
         "path JS_MAX_SAFE_INTEGER",
@@ -28719,7 +28787,6 @@
         "path ProviderError::AuthRequired",
         "path ProviderError::Conflict",
         "path ProviderError::Failed",
-        "path ProviderError::InvalidConfig",
         "path ProviderError::NotFound",
         "path ProviderError::Unsupported",
         "path ProviderError::from",
@@ -28963,6 +29030,7 @@
         "path ProviderRecordError",
         "path ProviderService",
         "path StaticAuth",
+        "path StaticAuth::Anonymous",
         "path StaticProviderRecord",
         "path StaticRecordKind::Builtin",
         "path bundled_seeds",
@@ -29196,6 +29264,75 @@
     },
     {
       "from": "dim_app_server::session_grants",
+      "to": "dim_app_server::storage::timeline",
+      "references": [
+        "path SessionStore",
+        "use crate::storage::SessionStore"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_language",
+      "to": "dim_agent_capabilities::methods",
+      "references": [
+        "path MethodCall",
+        "path RpcError",
+        "path RpcError::app",
+        "path RpcError::closed",
+        "path RpcError::from",
+        "path SessionMethods",
+        "path params",
+        "use dim_agent_capabilities::methods::Interruption",
+        "use dim_agent_capabilities::methods::MethodCall",
+        "use dim_agent_capabilities::methods::MethodDecl",
+        "use dim_agent_capabilities::methods::RpcError",
+        "use dim_agent_capabilities::methods::SessionMethods",
+        "use dim_agent_capabilities::methods::params"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_language",
+      "to": "dim_agent_capabilities::prompt_sources",
+      "references": [
+        "path PromptSourcesBranch",
+        "path prompt_sources::language_update",
+        "use dim_agent_capabilities::prompt_sources",
+        "use dim_agent_capabilities::prompt_sources::PromptSourcesBranch"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_language",
+      "to": "dim_agent_capabilities::timeline_tree",
+      "references": [
+        "path TreeCommands",
+        "use dim_agent_capabilities::timeline_tree::TreeCommands"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_language",
+      "to": "dim_agent_runtime::config",
+      "references": [
+        "path ReplyLanguage",
+        "use dim_agent_runtime::ReplyLanguage"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_language",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path AgentError::Closed",
+        "use dim_agent_runtime::AgentError"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_language",
+      "to": "dim_agent_runtime::names",
+      "references": [
+        "path Names",
+        "use dim_agent_runtime::Names"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_language",
       "to": "dim_app_server::storage::timeline",
       "references": [
         "path SessionStore",
@@ -30755,8 +30892,10 @@
       "from": "dim_app_server::storage::timeline",
       "to": "dim_agent_runtime::config",
       "references": [
+        "path ReplyLanguage",
         "path SessionConfig",
         "path SessionConfig::default",
+        "use dim_agent_runtime::ReplyLanguage",
         "use dim_agent_runtime::SessionConfig"
       ]
     },
@@ -33282,6 +33421,7 @@
       "from": "dim_cli::login",
       "to": "dim_cli::sanitize",
       "references": [
+        "path crate::sanitize::safe_line",
         "use crate::sanitize::safe"
       ]
     },
@@ -34176,6 +34316,7 @@
         "path scheduler::Answer::Jobs",
         "path scheduler::Catalog",
         "path scheduler::Failure::ReadFailed",
+        "path scheduler::Target::column",
         "path scheduler::apply",
         "path scheduler::catalog",
         "use crate::management::scheduler"
@@ -36569,6 +36710,7 @@
         "path crate::login::attempt",
         "path crate::login::browser_begin",
         "path crate::login::device_begin",
+        "path crate::login::refresh_models",
         "path crate::login::target"
       ]
     },
@@ -36663,6 +36805,7 @@
         "path Command::ReadPromptSettings",
         "path Command::ReadSuggestionSetting",
         "path Command::Recording",
+        "path Command::RefreshAccountModels",
         "path Command::Rename",
         "path Command::ResetIsolation",
         "path Command::ResetPromptSetting",
@@ -36721,6 +36864,7 @@
         "path OauthEvent::Device",
         "path OauthEvent::Done",
         "path OauthEvent::Exchanging",
+        "path OauthEvent::ModelsRefreshed",
         "path OauthEvent::Url",
         "path OauthStart",
         "path PluginItem",
@@ -40177,6 +40321,7 @@
         "path OauthEvent::Device",
         "path OauthEvent::Done",
         "path OauthEvent::Exchanging",
+        "path OauthEvent::ModelsRefreshed",
         "path OauthEvent::SlowDown",
         "path OauthEvent::Url",
         "path OauthStart",
@@ -40229,6 +40374,7 @@
       "references": [
         "path Effect",
         "path Effect::Connected",
+        "path Effect::LoginStatus",
         "path Effect::LoginUsage",
         "path Effect::Logout",
         "path Effect::None",
@@ -40238,6 +40384,7 @@
         "path Effect::OauthStart",
         "path Effect::OpenModels",
         "path Effect::OpenUrl",
+        "path Effect::RefreshAccountModels",
         "use crate::ui::prompts::Effect"
       ]
     },
@@ -40946,6 +41093,7 @@
       "references": [
         "path ACCOUNT_NAMESPACE",
         "path Account",
+        "path Area::Models",
         "path OauthEvent",
         "path ProviderAction::Configure",
         "path ProviderAction::Create",
@@ -40954,6 +41102,7 @@
         "path Usage",
         "use crate::model::session::ACCOUNT_NAMESPACE",
         "use crate::model::session::Account",
+        "use crate::model::session::Area",
         "use crate::model::session::OauthEvent",
         "use crate::model::session::ProviderAction",
         "use crate::model::session::ProviderEntry",
@@ -41022,6 +41171,7 @@
         "path Effect::None",
         "path Effect::OauthBack",
         "path Effect::OauthCancel",
+        "path Effect::OpenArea",
         "path Effect::Provider",
         "path Effect::Refresh",
         "use crate::ui::prompts::Effect"
@@ -43858,6 +44008,7 @@
         "path Command::ReadPromptSettings",
         "path Command::ReadSuggestionSetting",
         "path Command::Recording",
+        "path Command::RefreshAccountModels",
         "path Command::Rename",
         "path Command::ResetIsolation",
         "path Command::ResetPromptSetting",
@@ -44314,6 +44465,7 @@
         "path Effect::ReadIsolation",
         "path Effect::ReadModelPolicy",
         "path Effect::Refresh",
+        "path Effect::RefreshAccountModels",
         "path Effect::ResetIsolation",
         "path Effect::ResetPrompt",
         "path Effect::Restart",
@@ -49200,6 +49352,18 @@
     {
       "module": "dim_app_server::runtime_manager::tests",
       "path": "SimpleFileOptions::default"
+    },
+    {
+      "module": "dim_app_server::session_language",
+      "path": "Change::Clear"
+    },
+    {
+      "module": "dim_app_server::session_language",
+      "path": "Change::Code"
+    },
+    {
+      "module": "dim_app_server::session_language",
+      "path": "ClearAction::Clear"
     },
     {
       "module": "dim_app_server::session_typescript",

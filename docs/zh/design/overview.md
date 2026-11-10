@@ -441,7 +441,7 @@ ADR 002 中记录的 HostPlatform exec shell 变更（作为业务配置在每�
 | 系统 | `/exit`、`/theme`、`/keys`、升级 | CLI |
 | 系统 | `/settings` | 每项属于各自插件；由 CLI 汇总 |
 | 系统 | `/usage` | 扩展：ContextPreparation、ManagedProviders |
-| 系统 | `/language` | CLI；扩展：PromptSources |
+| 系统 | `/language` | CLI（界面语言）；Session 的回复语言经 PromptSources 的 `session.language.get/update` 到达 |
 | 系统 | `/debug`、调试日志 | 现有：进程日志（`daemon.log`、`RUST_LOG`，[ADR 005](../../adr/005-observability.md) D1） |
 | 系统 | `/stats`、鼠标设置 | 不在范围内 |
 | Agent 行为 | `/agent` | 扩展：Agents、Prompt、PromptSources |
@@ -491,7 +491,7 @@ ADR 002 中记录的 HostPlatform exec shell 变更（作为业务配置在每�
 | Permission | 补充 | 命令规则在使用时读取（不新增风险类别：未知风险按未分类处理，#45） | `/approvals` |
 | ModelProvider | 补充 | 构建请求时发送用户内容或工具结果中的图像，模型不支持图像或请求无法携带时改为文本占位；历史不变（从 Rpc 移出） | Attachments |
 | Prompt, PromptSources | 补充 | Prompt 发布的已采纳模型配置；使用 PromptSources 现有的 `dim/session` System 条目，原子采纳 profile 的提示词和可选模型 | `/effort`、`/fast`、`/agent` |
-| PromptSources | 补充 | 提示词语言来源 | `/language` |
+| PromptSources | 补充 | 提示词语言来源 | Session 的回复语言（`session.language.*`） |
 | ContextPreparation | 补充 | 用量查询；手动压缩；实现 `ResolveContextModel` 的生产环境压缩宿主 | `/usage`、`/compact` |
 | FileStorage | 补充 | 根目录下的目录列举与删除（S6）；目录创建（S5a，[Session 文件](appserver/session-files.md#7-filestorage-新增操作)） | Session 文件、清理 |
 | HostPlatform | 补充 | 进程启动时的 OS 隔离只用于 agent 决定的命令（`exec` 与持久 shell；macOS seatbelt、Linux bubblewrap、Windows 明确不可用）、按节点的宿主本地配置；把给定字节写入子进程 stdin 然后关闭的进程启动，用于 Hook 命令这类配置命令，它们不施加 agent 沙箱，与 MCP stdio 服务器相同（[ADR 003](../adr/003-approval-scope.md) D2，[Hooks A.6.3](plugins/Hooks.md#a63-带初始-stdin-的进程启动)）；exec argv 辅助；宿主自有助手的受限启动（超时、受限输出、无网络，与用户的开关无关）；每次 spawn 时读取 exec shell（ADR 002）；到控制节点的链接断开时，该节点的 HostPlatform 结束它启动的进程 | 沙箱；ShellInput、Hooks、ExternalAgent |

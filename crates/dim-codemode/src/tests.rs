@@ -52,6 +52,18 @@ impl NestedGate for MockGate {
                     }]);
                     Ok(result)
                 }
+                "blocks" => Ok(ToolResult {
+                    content: ToolContent::Blocks(vec![
+                        dim_agent_types::ContentBlock::Text {
+                            text: "not found".into(),
+                        },
+                        dim_agent_types::ContentBlock::Text {
+                            text: r#"{"code":"missing"}"#.into(),
+                        },
+                    ]),
+                    is_error: Some(true),
+                    ..ToolResult::text("")
+                }),
                 "slow" => {
                     tokio::time::sleep(Duration::from_millis(200)).await;
                     Ok(ToolResult::text("slow"))
@@ -91,6 +103,7 @@ fn host() -> Arc<MockHost> {
             definition("fail", "fail", json!({"type": "object"})),
             definition("write", "write", json!({"type": "object"})),
             definition("slow", "slow", json!({"type": "object"})),
+            definition("blocks", "blocks", json!({"type": "object"})),
             codemode,
         ],
     })
@@ -121,10 +134,10 @@ fn text(result: &ToolResult) -> &str {
 }
 
 #[tokio::test]
-async fn calls_a_pinned_tool_and_returns_its_value() {
+async fn calls_a_pinned_tool_and_returns_its_whole_result() {
     let result = run(r#"const value = await tools.call("echo", {x: 1}); return value;"#).await;
     let value: serde_json::Value = serde_json::from_str(text(&result)).unwrap();
-    assert_eq!(value, "{\"x\":1}");
+    assert_eq!(value, json!({"content": "{\"x\":1}"}));
 }
 
 #[tokio::test]
@@ -137,7 +150,17 @@ async fn lists_only_request_tools() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(names, vec!["echo", "fail", "write", "slow"]);
+    assert_eq!(names, vec!["echo", "fail", "write", "slow", "blocks"]);
+}
+
+#[tokio::test]
+async fn a_block_error_message_keeps_its_blocks_apart() {
+    let result = run(
+        r#"try { await tools.call("blocks", {}); } catch (error) { return {message: error.message}; }"#,
+    )
+    .await;
+    let value: serde_json::Value = serde_json::from_str(text(&result)).unwrap();
+    assert_eq!(value["message"], "not found\n{\"code\":\"missing\"}");
 }
 
 #[tokio::test]
@@ -166,7 +189,7 @@ async fn the_call_budget_is_enforced() {
     )
     .await;
     let value: serde_json::Value = serde_json::from_str(text(&result)).unwrap();
-    assert_eq!(value[0], "{\"i\":0}");
+    assert_eq!(value[0]["content"], "{\"i\":0}");
     assert_eq!(value[1], "call_limit");
 }
 

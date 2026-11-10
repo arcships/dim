@@ -15,6 +15,7 @@ dim-agent-attachments.workspace = true
 dim-agent-questions.workspace = true
 dim-app-server.workspace = true
 dim-session-title.workspace = true
+dim-agent-scheduler = { path = "../crates/dim-agent-scheduler" }
 dim-goal.workspace = true
 dim-event-hub.workspace = true
 dim-modality.workspace = true

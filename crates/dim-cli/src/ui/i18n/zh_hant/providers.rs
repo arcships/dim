@@ -1,5 +1,9 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Refresh model list" => "重新整理模型清單",
+        "Model list refreshed" => "模型清單已重新整理",
+        "Model list refresh failed: {reason}" => "無法重新整理模型清單：{reason}",
+        "Refreshing model list… · esc close" => "正在重新整理模型清單… · Esc 關閉",
         // providers_panel.rs
         "Providers" => "模型供應商",
         "Enter open · Esc clear/close" => "Enter 開啟 · Esc 清除/關閉",

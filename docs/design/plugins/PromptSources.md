@@ -68,7 +68,7 @@ The body states the setting itself, and asks for nothing: a state block is read 
 
 **No selection, no block.** When the operator has chosen no language — the system default — the source produces no entry and the base sentence's rule stands.
 
-**The value's carrier is missing.** The operator selects the language with `/language`, which saves the interface locale in the product's settings file; that file is the client's, the daemon and its capabilities do not read it, and `SessionConfig` has no language field. Nothing therefore tells a Session which language its operator selected, and this issue adds no configuration ([#548](https://github.com/arcships/dim/issues/548)'s "Not changed"). What is missing is one host fact: the operator's language for the Session, from the client that owns the setting. Until it exists, the source is designed and produces no entry; a run of `/language` keeps the base rule standing as it does today.
+**The carrier.** The client carries the operator's choice into the Session: `session.create {language?}` seeds it and `session.language.update` changes it, and the value is `SessionConfig.language`, an optional member of the Session's config record. The daemon never reads the client's interface-locale file. The PromptSources Session part provides the Session's live value as the `SessionLanguage` cell and reads it on every load; the branch part re-exposes that cell on each branch for the Session methods that change it, as the Skill list is re-exposed. A Session created without a choice, including a record written by an older client, has no value and produces no entry. An update adopts the value on `main` and, before it replies, on every loaded branch, so that branch's next request carries it without a wake; a branch loaded later reads the current value when it loads, and each branch's periodic check remains the fallback.
 
 ## 4. Dependencies
 
@@ -78,9 +78,11 @@ The body states the setting itself, and asks for nothing: a state block is read 
 | `P:HostPlatform` | Home, environment and the operator's shell |
 | `S:SessionConfig` | Working directory and the host's system prompt |
 
+The language source reads the part's own `SessionLanguage` cell rather than an injected service.
+
 ## 5. Cross-module requirements
 
-1. **The operator's language for the Session** (§3): one host fact, from the client that owns the `/language` setting, carried without a new configuration file. The owner decides its form; this design states the need and the block it fills.
+1. **The operator's language for the Session** (§3): the Session's config carries it (`SessionConfig.language`), `session.create {language?}` seeds it and `session.language.get/update` read and change it, and this plugin reads the Session's live value. No configuration file carries it, and no other module decides it.
 2. **The plugin bridge** ([Prompt §6.1](Prompt.md#61-the-plugin-bridge)): no further requirement reaches PromptSources; the markers its sources feed are Prompt's, and Prompt's page raises what they need.
 
 ## 6. Rule check
@@ -91,7 +93,7 @@ The body states the setting itself, and asks for nothing: a state block is read 
 | §3 Orthogonality | The sources travel on the existing prompt-source contract; this design adds no route of its own |
 | §4 rule 1 Apply registers, cleanup releases | The sources register from `apply` and end with the part's generation |
 | §4 rule 6 Context from consumed events | Sources keep reaching the model through adoption and Append inputs; this design adds no path |
-| §4 rule 7 Public events and services | No new service: the language source is one more name in an existing set |
+| §4 rule 7 Public events and services | The source adds no protocol method or event of its own: it is one more name in an existing set. The Session's value is a service the owning part provides at the Session scope and re-exposes on each branch, as the Skill list does (ADR 002 D1, D2) |
 | §4 rule 8 Infrastructure unchanged | None is changed. The language fact is raised, not built |
 | ADR 002 D1 Scope | The sources live in the Session, where their state lives |
 | D4 Configuration | No configuration file is added; the policy members are the plugin's factory configuration, as the summary strategy's system prompt is |

@@ -46,7 +46,7 @@ for(const [signal,code] of [['SIGINT',130],['SIGTERM',143]]){
     for(const child of active) terminate(child);
   });
 }
-await Promise.all(Array.from({length:workspace?2:1},async()=>{
+await Promise.all(Array.from({length:workspace?5:1},async()=>{
   while(matches.length&&!stopping){
     const record=matches.shift();
     const started=performance.now();

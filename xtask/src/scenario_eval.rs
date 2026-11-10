@@ -415,9 +415,11 @@ const RUN_TOOLS: &[&str] = &[
     "member_approval_allow",
     "member_approval_reject",
     "recall",
+    "schedule",
     "settings",
     "skill",
     "wait",
+    "wakeup",
     "web_fetch",
     "web_search",
 ];
@@ -608,6 +610,10 @@ const TEXTS: &[(&str, TextMember)] = &[
     (
         "eventhub/tool",
         TextMember::Rust(|overrides, text| overrides.eventhub_tool = Some(text)),
+    ),
+    (
+        "scheduler/description",
+        TextMember::Rust(|overrides, text| overrides.scheduler_description = Some(text)),
     ),
 ];
 
@@ -2682,16 +2688,32 @@ fn carried_parts(configuration: &Configuration) -> Option<(Option<String>, Optio
 }
 
 /// The assembly overrides as JSON, and back.
+///
+/// Every field is destructured first so a member added to [`Overrides`] but
+/// missing from this round trip fails the build, as `child_overrides`' struct
+/// literal already does.
 fn overrides_value(overrides: &Overrides) -> Value {
+    let Overrides {
+        summary_prompt,
+        plugin_configs,
+        branch_description,
+        roster_closing,
+        goal_objective,
+        goal_continuation,
+        eventhub_entry,
+        eventhub_tool,
+        scheduler_description,
+    } = overrides;
     json!({
-        "summaryPrompt": overrides.summary_prompt.as_ref().map(ToString::to_string),
-        "eventhubEntry": overrides.eventhub_entry.as_ref().map(ToString::to_string),
-        "eventhubTool": overrides.eventhub_tool.as_ref().map(ToString::to_string),
-        "pluginConfigs": overrides.plugin_configs,
-        "branchDescription": overrides.branch_description.as_ref().map(ToString::to_string),
-        "rosterClosing": overrides.roster_closing.as_ref().map(ToString::to_string),
-        "goalObjective": overrides.goal_objective.as_ref().map(ToString::to_string),
-        "goalContinuation": overrides.goal_continuation.as_ref().map(ToString::to_string),
+        "summaryPrompt": summary_prompt.as_ref().map(ToString::to_string),
+        "eventhubEntry": eventhub_entry.as_ref().map(ToString::to_string),
+        "eventhubTool": eventhub_tool.as_ref().map(ToString::to_string),
+        "pluginConfigs": plugin_configs,
+        "branchDescription": branch_description.as_ref().map(ToString::to_string),
+        "rosterClosing": roster_closing.as_ref().map(ToString::to_string),
+        "goalObjective": goal_objective.as_ref().map(ToString::to_string),
+        "goalContinuation": goal_continuation.as_ref().map(ToString::to_string),
+        "schedulerDescription": scheduler_description.as_ref().map(ToString::to_string),
     })
 }
 
@@ -2714,6 +2736,7 @@ fn child_overrides(value: &Value) -> Overrides {
         roster_closing: text("rosterClosing"),
         goal_objective: text("goalObjective"),
         goal_continuation: text("goalContinuation"),
+        scheduler_description: text("schedulerDescription"),
     }
 }
 
@@ -6968,6 +6991,149 @@ mod tests {
             workspace_files(&flooding.directory),
             workspace_files(&never_ending.directory),
             "flooding and never-ending start from one workspace"
+        );
+    }
+
+    /// The scheduler set parses through the runner's own reader (Scheduler
+    /// §5.1): three scenarios, each with a statement to see and a statement
+    /// not to see, and no EventHub source, since the subject is the `schedule`
+    /// tool. No model runs, so CI catches a schema or layout drift before a
+    /// manual run.
+    #[test]
+    fn the_scheduler_scenario_set_parses() {
+        let root = repository()
+            .join("xtask")
+            .join("scenario-eval")
+            .join("scheduler");
+        let scenarios = read_scenarios(&root).unwrap();
+        let ids: Vec<_> = scenarios
+            .iter()
+            .map(|scenario| scenario.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "a-target-the-tool-cannot-set",
+                "recurring-job-from-a-request",
+                "rename-an-existing-job",
+            ],
+            "the committed set is the three scenarios"
+        );
+        for scenario in &scenarios {
+            assert!(
+                scenario.sources.is_empty() && scenario.events.is_empty(),
+                "{}: the schedule tool is the subject, not an EventHub source",
+                scenario.id
+            );
+            assert!(
+                scenario
+                    .probes
+                    .iter()
+                    .any(|probe| probe.kind == ProbeKind::MustShow),
+                "{}: a statement to see",
+                scenario.id
+            );
+            assert!(
+                scenario
+                    .probes
+                    .iter()
+                    .any(|probe| probe.kind == ProbeKind::MustNotShow),
+                "{}: a statement not to see",
+                scenario.id
+            );
+        }
+    }
+
+    /// The `schedule` description is injected through the product's own
+    /// factory member (Scheduler §5.1, model-prompts §8.1): `--text
+    /// scheduler/description` lands on the `Overrides` field
+    /// [`app_server::serve_home`] hands `SchedulerTexts`, never on a
+    /// product string patched for the evaluation.
+    #[test]
+    fn the_schedule_description_is_a_factory_member() {
+        let overrides = overrides_in(
+            TEXTS,
+            &[(
+                "scheduler/description".to_owned(),
+                Arc::from("candidate description"),
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            overrides.scheduler_description.as_deref(),
+            Some("candidate description")
+        );
+        assert!(overrides.branch_description.is_none());
+    }
+
+    /// The `scheduler/description` candidate survives the serve child's JSON
+    /// overrides and arrives in the run's model request as the `schedule`
+    /// tool's declaration (§5.1): the candidate arm's every request names the
+    /// tool with the candidate text, the current arm's with the shipped one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_schedule_description_candidate_reaches_the_run_through_the_child() {
+        const CANDIDATE: &str = "CANDIDATE SCHEDULE TOOL DESCRIPTION";
+        /// The shipped description's opening (`session.rs` `DESCRIPTION`).
+        const SHIPPED: &str = "Manage scheduled jobs across this host";
+        fn answers(text: &str) -> Option<Value> {
+            judged(text).or_else(|| Some(content("ok")))
+        }
+        let fixture = Fixture::start(
+            "scheduler-description",
+            answers,
+            json!({
+                "message": "Say ok.",
+                "budget": {"turns": 2, "seconds": 60, "window": 24000},
+                "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
+            }),
+            &[],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let candidate = overrides(&pairs(&[("scheduler/description", CANDIDATE)])).unwrap();
+        for (arm, overrides) in [("current", Overrides::default()), ("candidate", candidate)] {
+            let record = run_arm(&fixture, &options, arm, &overrides, 0).await;
+            assert_eq!(record.error, None, "{arm}");
+            assert!(!record.failed, "{arm}");
+        }
+        // The `schedule` tool's description in each request of an arm, one
+        // entry per request that declares the tool.
+        let descriptions = |arm: &str| -> Vec<Option<String>> {
+            fixture
+                .arm(arm)
+                .iter()
+                .filter_map(|request| serde_json::from_str::<Value>(request).ok())
+                .filter_map(|request| {
+                    request["tools"].as_array().and_then(|tools| {
+                        tools
+                            .iter()
+                            .find(|tool| tool["function"]["name"] == "schedule")
+                            .map(|tool| tool["function"]["description"].as_str().map(str::to_owned))
+                    })
+                })
+                .collect()
+        };
+        let current = descriptions("current");
+        let offered = descriptions("candidate");
+        assert!(
+            !current.is_empty(),
+            "the current arm's request declares the schedule tool"
+        );
+        assert!(
+            !offered.is_empty(),
+            "the candidate arm's request declares the schedule tool"
+        );
+        assert!(
+            current.iter().all(|description| description
+                .as_deref()
+                .is_some_and(|text| text.contains(SHIPPED))),
+            "the current arm carries the shipped description: {current:?}"
+        );
+        assert!(
+            offered
+                .iter()
+                .all(|description| description.as_deref() == Some(CANDIDATE)),
+            "the candidate arm's schedule tool description is the candidate text: {offered:?}"
         );
     }
 

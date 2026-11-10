@@ -1041,8 +1041,13 @@ async fn text_candidates_survive_output_merging_reopen_fork_and_session_deletion
         rows.is_empty(),
         "a missing indexed word does not enumerate all requests"
     );
+    let config = store
+        .session_config_text("properties")
+        .await
+        .unwrap()
+        .unwrap();
     store
-        .fork_session("properties", "copy", 1003)
+        .fork_session("properties", "copy", 1003, &config)
         .await
         .unwrap();
     let mut copied = scope(1004);

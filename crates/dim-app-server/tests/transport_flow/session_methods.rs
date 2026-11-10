@@ -412,6 +412,8 @@ async fn contributed_session_methods_dispatch_through_the_session_they_name() {
             {"name": "session.collaboration.pending", "mutating": false},
             {"name": "session.input.pending", "mutating": false},
             {"name": "session.input.withdraw", "mutating": true},
+            {"name": "session.language.get", "mutating": false},
+            {"name": "session.language.update", "mutating": true},
             {"name": "session.tool.get", "mutating": false},
             {"name": "session.turn.get", "mutating": false},
         ]})
@@ -497,6 +499,7 @@ async fn a_reloading_or_closed_session_namespace_answers_as_specified() {
             {"name": "session.collaboration.cancel", "mutating": true},
             {"name": "session.collaboration.pending", "mutating": false},
             {"name": "session.input.pending", "mutating": false}, {"name": "session.input.withdraw", "mutating": true},
+            {"name": "session.language.get", "mutating": false}, {"name": "session.language.update", "mutating": true},
             {"name": "session.tool.get", "mutating": false},
             {"name": "session.turn.get", "mutating": false}]})
     );

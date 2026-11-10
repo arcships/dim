@@ -1,5 +1,9 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Refresh model list" => "刷新模型列表",
+        "Model list refreshed" => "模型列表已刷新",
+        "Model list refresh failed: {reason}" => "刷新模型列表失败：{reason}",
+        "Refreshing model list… · esc close" => "正在刷新模型列表… · Esc 关闭",
         "Providers" => "模型服务",
         "Enter open · Esc clear/close" => "Enter 打开 · Esc 清除/关闭",
         "↑↓/Tab move · Enter activate · Esc back" => "↑↓/Tab 移动 · Enter 执行 · Esc 返回",

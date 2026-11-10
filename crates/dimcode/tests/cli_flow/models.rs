@@ -42,6 +42,78 @@ fn hello(wire: &mut Wire) {
     ]);
 }
 
+#[test]
+fn tui_connect_disabled_provider_refreshes_its_model_management_panel() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let daemon = home.daemon(|wire| {
+            wire.hello(&[
+                "provider.management",
+                "provider.create",
+                "provider.update",
+                "provider.probe",
+                "provider.refresh",
+            ]);
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let history = wire.read("session.history");
+            wire.reply(
+                &history,
+                json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+            );
+            wire.no_context();
+            let accounts = wire.read("account.providers");
+            wire.reply(&accounts, json!([]));
+            let mut record = json!({
+                "providerId":"fixture", "source":"custom", "displayName":"Fixture",
+                "enabled":false, "version":3, "preferences":{}, "actions":["refresh"],
+                "connection":{"driverKind":"new-api-router", "auth":{"type":"bearer"},
+                    "baseUrl":"https://fixture.invalid/v1", "credentialConfigured":true},
+                "models":[]
+            });
+            let listed = wire.read("provider.management");
+            assert_eq!(listed["params"], json!({}));
+            wire.reply(&listed, json!({"providers":[record],"errors":[]}));
+            for _ in 0..2 {
+                let area = wire.read("provider.management");
+                assert_eq!(area["params"], json!({"providerId":"fixture"}));
+                wire.reply(&area, json!({"providers":[record],"errors":[]}));
+            }
+            let refresh = wire.read("provider.refresh");
+            assert_eq!(refresh["params"], json!({"providerId":"fixture"}));
+            wire.reply(&refresh, json!({}));
+            let reread = wire.read("provider.management");
+            assert_eq!(reread["params"], json!({"providerId":"fixture"}));
+            let mut fresh = model("fresh", "Fresh catalog model", "default", true, &[]);
+            fresh["unavailableReason"] = json!("provider_unavailable");
+            record["version"] = json!(4);
+            record["models"] = json!([fresh]);
+            wire.reply(&reread, json!({"providers":[record],"errors":[]}));
+            wire.hold();
+        });
+        let mut command = home.command();
+        if fullscreen {
+            command.arg("--fullscreen");
+        }
+        sized(&mut command, 100, 32);
+        let mut terminal = Terminal::resume_tui(command);
+        terminal.until("test / model");
+        terminal.write(b"/connect\r");
+        terminal.until("Fixture");
+        terminal.raw(b"\r");
+        terminal.until("Enable provider");
+        terminal.until("Edit models");
+        terminal.raw(b"\x1b[B\x1b[B\r");
+        terminal.until("Models · Fixture");
+        terminal.raw(b"\x12");
+        terminal.until("Fresh catalog model");
+        terminal.until("unavailable");
+        home.kill(&terminal);
+        terminal.wait();
+        daemon.join().unwrap();
+    }
+}
+
 /// One model as `provider.management` reports it.
 fn model(id: &str, name: &str, source: &str, enabled: bool, actions: &[&str]) -> Value {
     json!({

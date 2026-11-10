@@ -1,5 +1,11 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Refresh model list" => "Modellliste aktualisieren",
+        "Model list refreshed" => "Modellliste aktualisiert",
+        "Model list refresh failed: {reason}" => {
+            "Modellliste konnte nicht aktualisiert werden: {reason}"
+        }
+        "Refreshing model list… · esc close" => "Modellliste wird aktualisiert… · Esc schließt",
         // providers_panel.rs
         "Providers" => "Provider",
         "Enter open · Esc clear/close" => "Enter öffnen · Esc leeren/schließen",

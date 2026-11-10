@@ -667,21 +667,27 @@ Public API-key, provider, native subscription, managed provider and transport fl
 cargo test --locked -p dim-app-server --test provider_flow --test managed_oauth_flow --test managed_provider_flow --test model_catalog_flow --test transport_flow
 ```
 
-The separately enabled Node flows load public SDK fixtures: plugins through the actual rutis runtime, and MCP servers built on the official MCP SDK. They cover C4 Session tool/method binding, isolation, restore, cancellation and invalid boundaries; Python rows and an unmodified Cordis 4 plugin in their groups; and stdio and legacy SSE MCP discovery, calls, cancellation and cleanup. They do not require a private account package. The Python rows need Python 3.12 or later with the pinned `rutis` package:
+The separately enabled Node flows load plugins through the actual rutis runtime and MCP servers built on the official MCP SDK. They cover C4 Session tool and method binding, isolation, restore, cancellation, an unmodified Cordis 4 branch plugin, and stdio and legacy SSE MCP flows.
 
 ```sh
 npm ci --prefix runtime --ignore-scripts
-python3 -m venv runtime/.venv
-runtime/.venv/bin/python -m pip install --require-hashes --no-deps -r runtime/python-requirements.txt
-DIM_TEST_NODE="$(command -v node)" \
-DIM_TEST_JS_RUNTIME="$PWD/runtime/node_modules/@arcships/rutis-runtime" \
-DIM_TEST_RUTIS_SDK="$PWD/runtime/node_modules/@arcships/rutis/src/index.mjs" \
-DIM_TEST_PYTHON="$PWD/runtime/.venv/bin/python" \
-  cargo test --locked -p dim-app-server --test transport_flow --test mcp_http_flow \
+export DIM_TEST_NODE="$(command -v node)"
+export DIM_TEST_JS_RUNTIME="$PWD/runtime/node_modules/@arcships/rutis-runtime"
+export DIM_TEST_RUTIS_SDK="$PWD/runtime/node_modules/@arcships/rutis/src/index.mjs"
+cargo test --locked -p dim-app-server --test transport_flow --test mcp_http_flow \
   node_ -- --ignored
 ```
 
-CI selects these flows by the `node_` prefix, so a `node_*` flow may depend only on Node, Python and the public npm and PyPI packages the repository pins, never on credentials or remote services. `context7_live_through_rust_plugins` calls the hosted Context7 MCP server with `CONTEXT7_API_KEY`, so it is a manual live check that CI does not run:
+The separate Python flows cover plugin installation, reload and scoped parts. In the same shell, use Python 3.12 or later with the pinned `rutis` package.
+
+```sh
+python3 -m venv runtime/.venv
+runtime/.venv/bin/python -m pip install --require-hashes --no-deps -r runtime/python-requirements.txt
+DIM_TEST_PYTHON="$PWD/runtime/.venv/bin/python" \
+  cargo test --locked -p dim-app-server --test transport_flow python_plugin_ -- --ignored
+```
+
+The `node_` and `python_plugin_` flows use pinned public packages and local fixtures. See the [CI workflow checks](../../docs/release/README.md#github-workflows) for when they run. Run the live Context7 check manually with `CONTEXT7_API_KEY`.
 
 ```sh
 cargo test --locked -p dim-app-server --test mcp_http_flow \

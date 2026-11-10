@@ -1,7 +1,8 @@
 //! Prompt sources: the system prompt (`dim/base`, `dim/session`), the
 //! AGENTS.md rules (`dim/instructions/project`, `dim/instructions/user`) and
-//! the runtime environment and date states. Prompt delivers them; each loaded
-//! branch checks the changing ones and has Prompt adopt changes.
+//! the runtime environment, date and reply-language states. Prompt delivers
+//! them; each loaded branch checks the changing ones and has Prompt adopt
+//! changes.
 use crate::{
     context_block,
     host::{HostError, HostFuture, LoadPrompt, PromptHost},
@@ -13,7 +14,7 @@ use crate::{
 };
 use dim_agent_runtime::{
     AgentBuilder, BranchLifecycle, ConfigureControl, ConfigureUpdate, Names, PromptSourceTarget,
-    SessionConfig, StateCell,
+    ReplyLanguage, SessionConfig, StateCell,
 };
 use dim_agent_types::*;
 use rutis::Ctx;
@@ -32,9 +33,17 @@ pub const USER_INSTRUCTIONS: &str = "dim/instructions/user";
 pub const SESSION: &str = "dim/session";
 pub const ENVIRONMENT: &str = "dim/environment/context";
 pub const DATE: &str = "dim/environment/date";
+pub const LANGUAGE: &str = "dim/language";
 /// Sources whose content changes while a Session runs, compared by each
-/// loaded branch.
-const CHECKED: [&str; 4] = [PROJECT_INSTRUCTIONS, USER_INSTRUCTIONS, ENVIRONMENT, DATE];
+/// loaded branch. The reply language is Session-wide: a side branch that was
+/// loaded before an update adopts it through this comparison.
+const CHECKED: [&str; 5] = [
+    PROJECT_INSTRUCTIONS,
+    USER_INSTRUCTIONS,
+    ENVIRONMENT,
+    DATE,
+    LANGUAGE,
+];
 
 /// Today's date as `YYYY-MM-DD` in the process-local time zone.
 pub type Today = Arc<dyn Fn() -> String + Send + Sync>;
@@ -67,6 +76,8 @@ pub fn install_with_clock(builder: &mut AgentBuilder, today: Today, every: Durat
                     host: names.key()?,
                     configure: names.key()?,
                     prompts: names.state_cell()?,
+                    language: names.key()?,
+                    service: names.key()?,
                     every,
                 }))
             }),
@@ -74,13 +85,14 @@ pub fn install_with_clock(builder: &mut AgentBuilder, today: Today, every: Durat
 }
 
 /// Every source this capability provides, in delivery order.
-const SOURCES: [&str; 6] = [
+const SOURCES: [&str; 7] = [
     BASE,
     SESSION,
     PROJECT_INSTRUCTIONS,
     USER_INSTRUCTIONS,
     ENVIRONMENT,
     DATE,
+    LANGUAGE,
 ];
 
 /// Refreshes dynamic sources without replacing adopted System entries.
@@ -89,6 +101,25 @@ pub fn refresh_update() -> ConfigureUpdate {
         sources: targets(CHECKED),
         model: None,
     }
+}
+
+/// The update that has Prompt adopt the reply-language state alone.
+pub fn language_update() -> ConfigureUpdate {
+    ConfigureUpdate {
+        sources: targets([LANGUAGE]),
+        model: None,
+    }
+}
+
+/// The one sentence the `dim/language` state carries: the setting itself,
+/// never an instruction ([PromptSources §3]).
+///
+/// [PromptSources §3]: ../../../docs/design/plugins/PromptSources.md
+pub fn language_body(language: ReplyLanguage) -> String {
+    format!(
+        "The operator set this session's reply language to {}.",
+        language.name()
+    )
 }
 
 /// The Session System entry used by both creation and explicit profile adoption.
@@ -331,6 +362,50 @@ pub trait BasePromptSettings: Send + Sync + 'static {
 }
 
 pub struct BasePromptSettingsHost(pub Arc<dyn BasePromptSettings>);
+/// The Session's reply language, when the operator selected one: the live
+/// value the `dim/language` source reads and the App Server's
+/// `session.language.*` methods change. It starts from `SessionConfig.language`
+/// when the Session is created or restored.
+pub struct SessionLanguage {
+    language: std::sync::Mutex<Option<ReplyLanguage>>,
+    /// Serializes the Session's reads and updates of the value and its
+    /// adopted entry with each branch's own check: an update writes the
+    /// record and the value and then has Prompt adopt it, and a check that
+    /// ran between those steps would adopt the value the update replaces.
+    gate: tokio::sync::Mutex<()>,
+}
+impl SessionLanguage {
+    pub fn new(language: Option<ReplyLanguage>) -> Self {
+        Self {
+            language: std::sync::Mutex::new(language),
+            gate: tokio::sync::Mutex::new(()),
+        }
+    }
+    /// The Session's language gate: held across a value's whole update and
+    /// across a branch's whole check, so the two never interleave.
+    pub async fn gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.gate.lock().await
+    }
+    pub fn get(&self) -> Option<ReplyLanguage> {
+        *self.language.lock().expect("session language")
+    }
+    /// Replaces the value with `language`.
+    pub fn replace(&self, language: Option<ReplyLanguage>) -> Option<ReplyLanguage> {
+        *self.language.lock().expect("session language") = language;
+        language
+    }
+}
+
+/// The Session's reply-language cell, reachable from its branches: the App
+/// Server's Session methods read and change it through `main`'s service.
+pub struct PromptSourcesBranch {
+    language: Arc<SessionLanguage>,
+}
+impl PromptSourcesBranch {
+    pub fn language(&self) -> Arc<SessionLanguage> {
+        self.language.clone()
+    }
+}
 
 struct Sources {
     platform: Arc<HostPlatform>,
@@ -338,6 +413,7 @@ struct Sources {
     today: Today,
     stopped: CancellationToken,
     policy: PromptSourcesConfig,
+    language: Arc<SessionLanguage>,
 }
 
 impl LoadPrompt for Sources {
@@ -392,6 +468,11 @@ impl LoadPrompt for Sources {
                     PromptDelivery::State,
                     210,
                 ),
+                LANGUAGE => (
+                    self.language.get().map(language_body),
+                    PromptDelivery::State,
+                    220,
+                ),
                 SESSION => {
                     return Ok(session_entry(
                         self.config.system_prompt.clone(),
@@ -419,6 +500,7 @@ pub struct PromptSourcesPlugin {
     platform: Key<HostPlatform>,
     config: Key<SessionConfig>,
     registry: Key<PromptRegistry>,
+    language: Key<SessionLanguage>,
     settings: Option<Key<BasePromptSettingsHost>>,
     pub today: Today,
     policy: PromptSourcesConfig,
@@ -438,6 +520,7 @@ impl PromptSourcesPlugin {
             platform: names.key()?,
             config: names.key()?,
             registry: names.key()?,
+            language: names.key()?,
             settings: names
                 .registered::<BasePromptSettingsHost>()
                 .then(|| names.key::<BasePromptSettingsHost>())
@@ -463,6 +546,10 @@ impl DynPlugin for PromptSourcesPlugin {
             let platform = ctx.require_at(&self.platform)?;
             let config = ctx.require_at(&self.config)?;
             let registry = ctx.require_at(&self.registry)?;
+            // Apply runs once per Session instance: builder rows cannot
+            // reload, and every rebuilt daemon or fork creates a new
+            // instance, each reading its record.
+            let language = Arc::new(SessionLanguage::new(config.language));
             let mut policy = self.policy.clone();
             if policy.base.is_none() {
                 let settings = match &self.settings {
@@ -489,26 +576,30 @@ impl DynPlugin for PromptSourcesPlugin {
                 today: self.today.clone(),
                 stopped: ctx.cancellation_token(),
                 policy,
+                language: language.clone(),
             });
             for name in SOURCES {
                 registry.register(ctx, name, sources.clone())?;
             }
+            ctx.provide_at(self.language.clone(), language)?;
             Ok(Effect::Done)
         })
     }
 }
 
 /// Branch part: while the branch is loaded, compares what the checked
-/// sources hold now (AGENTS.md, runtime environment, date) with what Prompt
-/// adopted on this branch, and has Prompt adopt any difference. The first
-/// check runs when the branch becomes Active, then every `every`. What a new
-/// or resumed branch receives first is Prompt's, at `branch/start` and
-/// `branch/resume`.
+/// sources hold now (AGENTS.md, runtime environment, date, reply language)
+/// with what Prompt adopted on this branch, and has Prompt adopt any
+/// difference. The first check runs when the branch becomes Active, then
+/// every `every`. What a new or resumed branch receives first is Prompt's,
+/// at `branch/start` and `branch/resume`.
 pub struct PromptSourcesBranchPlugin {
     branch: Key<BranchLifecycle>,
     host: Key<PromptHost>,
     configure: Key<dyn ConfigureControl>,
     prompts: Key<StateCell<PromptSnapshot>>,
+    language: Key<SessionLanguage>,
+    service: Key<PromptSourcesBranch>,
     every: Duration,
 }
 impl DynPlugin for PromptSourcesBranchPlugin {
@@ -521,6 +612,7 @@ impl DynPlugin for PromptSourcesBranchPlugin {
             self.host.erase(),
             self.configure.erase(),
             self.prompts.erase(),
+            self.language.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -529,7 +621,9 @@ impl DynPlugin for PromptSourcesBranchPlugin {
             let host = ctx.require_at(&self.host)?;
             let configure = ctx.require_at(&self.configure)?;
             let prompts = ctx.require_at(&self.prompts)?;
+            let language = ctx.require_at(&self.language)?;
             let (every, lifecycle) = (self.every, ctx.cancellation_token());
+            let checked_language = language.clone();
             let tasks = TaskTracker::new();
             tasks.spawn(async move {
                 tokio::select! {
@@ -540,6 +634,15 @@ impl DynPlugin for PromptSourcesBranchPlugin {
                     let mut changed = Vec::new();
                     for target in targets(CHECKED) {
                         let key = (target.source.clone(), target.scope.clone());
+                        // The reply language is Session-wide and changes
+                        // between turns: its load and comparison hold the
+                        // Session's gate, so a check never reads a value an
+                        // update is replacing. The other sources change on
+                        // their own and take no gate.
+                        let _held = match key.0.as_str() {
+                            LANGUAGE => Some(checked_language.gate().await),
+                            _ => None,
+                        };
                         let current = tokio::select! {
                             _ = lifecycle.cancelled() => return,
                             loaded = host.0.load(target, lifecycle.child_token()) => loaded,
@@ -553,6 +656,13 @@ impl DynPlugin for PromptSourcesBranchPlugin {
                         }
                     }
                     if !changed.is_empty() {
+                        // The adoption that carries the language holds the
+                        // same gate, so the update and the check never
+                        // interleave their record, value and entry writes.
+                        let _held = match changed.iter().any(|source| source == LANGUAGE) {
+                            true => Some(checked_language.gate().await),
+                            false => None,
+                        };
                         let update = ConfigureUpdate {
                             sources: targets(changed.iter().map(String::as_str)),
                             model: None,
@@ -576,6 +686,10 @@ impl DynPlugin for PromptSourcesBranchPlugin {
                 tasks.wait().await;
                 Ok(())
             })?;
+            ctx.provide_at(
+                self.service.clone(),
+                Arc::new(PromptSourcesBranch { language }),
+            )?;
             Ok(Effect::Done)
         })
     }

@@ -101,12 +101,6 @@ async fn scheduler_reports_do_not_replace_the_first_operator_input_for_titles() 
         panic!("schedule returns text")
     };
     let saved: Value = serde_json::from_str(text).unwrap();
-    let original = history
-        .iter()
-        .find(|e| matches!(&e.kind, EventKind::InputMessage(data) if data.user.is_some()))
-        .unwrap()
-        .id
-        .clone();
     settings["enabled"] = json!(true);
     configure(&mut client, settings).await;
     let started = client
@@ -129,7 +123,7 @@ async fn scheduler_reports_do_not_replace_the_first_operator_input_for_titles() 
                 .find(|r| r["run_id"] == started["run_id"])
                 && !matches!(
                     run["state"].as_str(),
-                    Some("launching" | "submitted" | "running")
+                    Some("delivering" | "launching" | "submitted" | "running")
                 )
             {
                 break run.clone();
@@ -139,75 +133,126 @@ async fn scheduler_reports_do_not_replace_the_first_operator_input_for_titles() 
     })
     .await
     .unwrap();
-    assert_eq!(run["state"], "completed", "{run}");
-    let report_id = format!("scheduler-report:{}", run["run_id"].as_str().unwrap());
-    tokio::time::timeout(Duration::from_secs(10), async {
+    assert_eq!(run["state"], "delivered", "{run}");
+
+    // Answer every model request from here on: title questions with the
+    // title, anything else with a short answer. Every title question must be
+    // about the first operator input, never the scheduled run.
+    let title_questions = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let answered = {
+        let title_questions = title_questions.clone();
+        tokio::spawn(async move {
+            while let Some((request, release)) = requests.recv().await {
+                if request["messages"][0]["content"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("Write a short title"))
+                {
+                    title_questions
+                        .lock()
+                        .unwrap()
+                        .push(request["messages"][1]["content"].clone());
+                    let _ = release.send("Scheduled review".into());
+                } else {
+                    let _ = release.send("done".into());
+                }
+            }
+        })
+    };
+    let mut titled = false;
+    for attempt in 0..2 {
+        if attempt == 1 {
+            client
+                .rpc(
+                    "session.submit",
+                    json!({"sessionId":id,"branchId":"main","text":"Check the scheduled result"}),
+                )
+                .await
+                .unwrap();
+        }
+        titled = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let listed = client.rpc("session.summaries", json!({})).await.unwrap();
+                if listed
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|e| e["sessionId"] == id && e["title"] == "Scheduled review")
+                {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or(false);
+        if titled {
+            break;
+        }
+    }
+    assert!(titled, "the first operator input titles the Session");
+    let questions = title_questions.lock().unwrap().clone();
+    assert!(!questions.is_empty(), "a title question was asked");
+    for question in &questions {
+        assert_eq!(
+            question, &first,
+            "a title question asks about the first operator input only"
+        );
+    }
+    // The scheduled run reached the Session's own branch: its input carries
+    // the `dim-scheduler` marker and the saved prompt, and the branch
+    // consumed it.
+    let run_id = run["run_id"].as_str().unwrap().to_owned();
+    let reached = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let history = branch_events(&session, "main", ..).await.unwrap();
-            if let Some(report) = history.iter().find(|event| {
+            let input = history.iter().find(|event| {
                 matches!(&event.kind, EventKind::InputMessage(data)
-                    if data.submission_id.as_deref() == Some(&report_id))
-            }) && history.iter().any(|event| {
-                matches!(&event.kind, EventKind::InputApplied(data) if data.input_id == report.id)
-            }) {
-                assert!(history.iter().any(|event| {
-                    matches!(&event.kind, EventKind::InputApplied(data) if data.input_id == original)
-                        && event.sequence < report.sequence
-                }));
-                break;
+                    if data.submission_id.as_deref() == Some(format!("scheduler:{run_id}").as_str()))
+            });
+            if let Some(input) = input {
+                let EventKind::InputMessage(data) = &input.kind else {
+                    unreachable!()
+                };
+                let marker = data
+                    .blocks
+                    .iter()
+                    .map(|block| match block {
+                        dim_agent_types::InputBlock::Raw { text, .. } => text.as_str(),
+                    })
+                    .collect::<String>();
+                let prompt = data
+                    .user
+                    .as_ref()
+                    .map(|user| {
+                        user.content
+                            .iter()
+                            .map(|block| match block {
+                                dim_agent_types::ContentBlock::Text { text } => text.as_str(),
+                                dim_agent_types::ContentBlock::Image { .. } => "",
+                            })
+                            .collect::<String>()
+                    })
+                    .unwrap_or_default();
+                assert!(
+                    marker.contains("dim-scheduler") && prompt.contains("Review the project"),
+                    "the scheduled input carries the marker and the saved prompt: {marker:?} {prompt:?}"
+                );
+                if history.iter().any(|event| {
+                    matches!(&event.kind, EventKind::InputConsumed(data)
+                        if data.input_id == input.id)
+                }) {
+                    return;
+                }
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
-    .await
-    .unwrap();
-    client
-        .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
-        .await
-        .unwrap();
-    let summary = client.rpc("session.summaries", json!({})).await.unwrap();
+    .await;
     assert!(
-        summary
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|e| e["sessionId"] == id)
-            .unwrap()["title"]
-            .is_null()
+        reached.is_ok(),
+        "the scheduled-run input is consumed by the Session's branch"
     );
-    assert!(
-        requests.try_recv().is_err(),
-        "an adopted raw report does not trigger a title"
-    );
-    client
-        .rpc(
-            "session.submit",
-            json!({"sessionId":id,"branchId":"main","text":"Check the scheduled result"}),
-        )
-        .await
-        .unwrap();
-    let (request, release) = tokio::time::timeout(Duration::from_secs(10), requests.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(request["messages"][1]["content"], first);
-    release.send("Scheduled review".into()).unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let listed = client.rpc("session.summaries", json!({})).await.unwrap();
-            if listed
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|e| e["sessionId"] == id && e["title"] == "Scheduled review")
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
+    answered.abort();
     drop(client);
     server.shutdown();
     server.join().await.unwrap();

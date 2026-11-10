@@ -18,6 +18,7 @@
 //! ╰──────────────────────────╯    │   █████░░░░░░░░░░░░░░░░░░░░░░░░░░░░  │
 //!                                 │                                      │
 //!                                 │ › Open models                        │
+//!                                 │   Refresh model list                 │
 //!                                 │   View plan                          │
 //!                                 │   Sign out                           │
 //!                                 │                                      │
@@ -56,6 +57,7 @@ enum Phase {
     AwaitingCallback,
     AwaitingDevice,
     Exchanging,
+    RefreshingModels,
     Error,
     Cancelled,
 }
@@ -66,6 +68,7 @@ enum Focus {
     Enterprise,
     DeviceTab,
     Models,
+    RefreshModels,
     Plan,
     Logout,
     BrowserTab,
@@ -223,6 +226,7 @@ impl OauthView {
         };
         if self.phase == Phase::Idle {
             self.focus = match account {
+                Account::SignedIn(_) if self.focus == Focus::RefreshModels => Focus::RefreshModels,
                 Account::SignedIn(_) => Focus::Models,
                 _ => Focus::Submit,
             };
@@ -282,7 +286,7 @@ impl OauthView {
     fn rows(&self, width: usize, p: Option<&Palette>) -> Vec<(Row, String)> {
         let mut rows: Vec<(Row, String)> = Vec::new();
         let dim = self.dim;
-        if dim && self.phase == Phase::Idle {
+        if dim && matches!(self.phase, Phase::Idle | Phase::RefreshingModels) {
             match (&self.account, p) {
                 (_, None) => {}
                 (None, _) => rows.push((Row::Section, t("Checking account…").to_owned())),
@@ -300,6 +304,10 @@ impl OauthView {
             rows.push((Row::Section, String::new()));
             if self.dim_signed_in() {
                 rows.push((Row::Action(Focus::Models), t("Open models").into()));
+                rows.push((
+                    Row::Action(Focus::RefreshModels),
+                    t("Refresh model list").into(),
+                ));
                 rows.push((Row::Action(Focus::Plan), t("View plan").into()));
                 rows.push((Row::Action(Focus::Logout), t("Sign out").into()));
             } else {
@@ -592,7 +600,37 @@ impl OauthView {
                 self.message = Some(t("Waiting after server slow-down").to_owned());
                 Effect::None
             }
-            OauthEvent::Done(Ok(_)) => Effect::Connected(self.provider_id.clone()),
+            OauthEvent::ModelsRefreshed {
+                after_login,
+                result,
+            } => {
+                let pending = if after_login {
+                    Phase::Exchanging
+                } else {
+                    Phase::RefreshingModels
+                };
+                if self.phase != pending {
+                    return Effect::None;
+                }
+                self.phase = Phase::Idle;
+                match result {
+                    Ok(()) if after_login => return Effect::Connected(self.provider_id.clone()),
+                    Ok(()) => self.message = Some(t("Model list refreshed").into()),
+                    Err(error) => {
+                        self.error = Some(tf(
+                            "Model list refresh failed: {reason}",
+                            &[("reason", &error)],
+                        ));
+                        self.focus = Focus::RefreshModels;
+                    }
+                }
+                if after_login {
+                    Effect::LoginStatus(self.provider_id.clone())
+                } else {
+                    Effect::None
+                }
+            }
+            OauthEvent::Done(Ok(())) => Effect::Connected(self.provider_id.clone()),
             OauthEvent::Done(Err(None)) => {
                 self.phase = Phase::Cancelled;
                 self.error = Some(t("OAuth login cancelled").to_owned());
@@ -609,7 +647,10 @@ impl OauthView {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
-        let busy = matches!(self.phase, Phase::Starting | Phase::Exchanging);
+        let busy = matches!(
+            self.phase,
+            Phase::Starting | Phase::Exchanging | Phase::RefreshingModels
+        );
         let ctrl = key.mods.contains(Modifiers::CTRL);
         match key.code {
             KeyCode::Esc => {
@@ -619,7 +660,7 @@ impl OauthView {
                         self.focus = Focus::Enterprise;
                         Effect::None
                     }
-                    Phase::Idle => Effect::OauthBack,
+                    Phase::Idle | Phase::RefreshingModels => Effect::OauthBack,
                     Phase::Error | Phase::Cancelled if self.dim => {
                         self.phase = Phase::Idle;
                         self.error = None;
@@ -764,14 +805,29 @@ impl OauthView {
             Focus::DeviceTab if self.phase == Phase::Idle => self.start(true, None),
             Focus::DeviceTab | Focus::BrowserTab => Effect::None,
             Focus::Models => Effect::OpenModels,
+            Focus::RefreshModels if self.dim_signed_in() => {
+                self.attempt += 1;
+                self.phase = Phase::RefreshingModels;
+                self.message = None;
+                self.error = None;
+                Effect::RefreshAccountModels {
+                    provider_id: self.provider_id.clone(),
+                    attempt: self.attempt,
+                }
+            }
+            Focus::RefreshModels => Effect::None,
             Focus::Plan => match self.plan_url() {
                 Some(url) => Effect::OpenUrl(url),
                 None => Effect::None,
             },
-            Focus::Logout => Effect::Logout(AccountTarget {
-                provider_id: self.provider_id.clone(),
-                namespace: self.namespace.clone(),
-            }),
+            Focus::Logout => {
+                self.message = None;
+                self.error = None;
+                Effect::Logout(AccountTarget {
+                    provider_id: self.provider_id.clone(),
+                    namespace: self.namespace.clone(),
+                })
+            }
             Focus::RestartDevice => self.start(true, None),
             Focus::Link => match &self.auth_url {
                 Some(url) => Effect::OpenUrl(url.clone()),
@@ -788,6 +844,7 @@ impl OauthView {
         t(match self.phase {
             Phase::Starting => "Preparing login... · esc cancel",
             Phase::Exchanging => "Completing login... · esc cancel",
+            Phase::RefreshingModels => "Refreshing model list… · esc close",
             Phase::Error | Phase::Cancelled => "enter restart · esc back",
             _ if matches!(self.focus, Focus::Email | Focus::Input) => {
                 "type value · ↑↓/tab move · enter submit · esc cancel"
@@ -1247,6 +1304,7 @@ mod tests {
                 "Checking usage…",
                 "",
                 "Open models",
+                "Refresh model list",
                 "View plan",
                 "Sign out"
             ]
@@ -1255,6 +1313,7 @@ mod tests {
             view.handle_key(key(KeyCode::Enter)),
             Effect::OpenModels
         ));
+        view.handle_key(key(KeyCode::Down));
         view.handle_key(key(KeyCode::Down));
         assert!(matches!(
             view.handle_key(key(KeyCode::Enter)),

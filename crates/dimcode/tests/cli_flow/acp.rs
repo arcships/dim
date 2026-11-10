@@ -1267,6 +1267,7 @@ fn acp_terminal_auth_helper_rediscovers_the_method_and_uses_the_same_home() {
                 "account.providers",
                 "provider.management",
                 "account.login.begin",
+                "provider.refresh",
             ]);
             wire.hello(&methods);
             providers(&mut wire);
@@ -1289,6 +1290,9 @@ fn acp_terminal_auth_helper_rediscovers_the_method_and_uses_the_same_home() {
             let status = wire.read("account.login.status");
             assert_eq!(status["params"]["attemptId"], "terminal-attempt");
             wire.reply(&status, json!({"status":"completed"}));
+            let refresh = wire.read("provider.refresh");
+            assert_eq!(refresh["params"], json!({"providerId":"fixture"}));
+            wire.reply(&refresh, json!({"version":1,"models":[]}));
             detached_eof(&mut wire);
         });
         let mut command = home.command();

@@ -28,18 +28,15 @@ fn run(state: &str, detail: &str, ended: &str) -> Value {
     })
 }
 
-/// One job as `schedule.list` reports it: the record, its next window and
-/// its last run.
+/// One job as `schedule.list` reports it: the record, its target, its next
+/// window and its last run (Scheduler A.1, A.3).
 fn job(id: &str, name: &str, revision: i64, enabled: bool, last_run: Value) -> Value {
     json!({
         "id": id,
         "name": name,
         "schedule": {"every_minutes": 60},
         "prompt": "Summarize the day.",
-        "cwd": "/workspace",
-        "mode": "create",
-        "max_run_minutes": 60,
-        "policy_cap": {"preset": "read-only", "allowedTools": [], "disallowedTools": []},
+        "target": {"kind": "launch", "cwd": "/workspace", "max_run_minutes": 60},
         "created_by": "user",
         "enabled": enabled,
         "revision": revision,
@@ -48,9 +45,25 @@ fn job(id: &str, name: &str, revision: i64, enabled: bool, last_run: Value) -> V
     })
 }
 
+/// One job that delivers into a Session branch (Scheduler §2.1).
+fn session_job(id: &str, name: &str, revision: i64, enabled: bool, last_run: Value) -> Value {
+    let mut job = job(id, name, revision, enabled, last_run);
+    job["target"] = json!({"kind": "session", "session_id": "session-1",
+        "branch_id": "main", "input_mode": "queue"});
+    job
+}
+
 fn jobs(enabled: bool) -> Value {
     json!({"jobs": [
-        job("job-1", "nightly", 3, enabled, run("completed", "", "2026-11-01T09:00:12.000Z")),
+        job("job-1", "nightly", 3, enabled, run("delivered", "", "2026-11-01T09:00:12.000Z")),
+        job("job-2", "release", 7, false, Value::Null),
+    ]})
+}
+
+/// The same two jobs, with job-1 delivering into a Session branch.
+fn session_jobs(enabled: bool) -> Value {
+    json!({"jobs": [
+        session_job("job-1", "nightly", 3, enabled, run("delivered", "", "2026-11-01T09:00:12.000Z")),
         job("job-2", "release", 7, false, Value::Null),
     ]})
 }
@@ -58,7 +71,7 @@ fn jobs(enabled: bool) -> Value {
 /// The jobs after another writer saved job-1: its revision moved on.
 fn newer_jobs() -> Value {
     json!({"jobs": [
-        job("job-1", "nightly", 4, true, run("completed", "", "2026-11-01T09:00:12.000Z")),
+        job("job-1", "nightly", 4, true, run("delivered", "", "2026-11-01T09:00:12.000Z")),
         job("job-2", "release", 7, false, Value::Null),
     ]})
 }
@@ -99,12 +112,12 @@ fn scheduled_list_prints_the_jobs_and_their_runs() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "job-1\tnightly\tevery 60 minutes\tenabled\t2026-11-02T09:00:00.000Z\tcompleted at 2026-11-01T09:00:12.000Z\n\
-         job-2\trelease\tevery 60 minutes\tdisabled\t—\t—\n"
+        "job-1\tnightly\tevery 60 minutes\tenabled\t2026-11-02T09:00:00.000Z\tdelivered at 2026-11-01T09:00:12.000Z\tlaunch /workspace\n\
+         job-2\trelease\tevery 60 minutes\tdisabled\t—\t—\tlaunch /workspace\n"
     );
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
-        "Columns: id, name, schedule, state, next run, last run.\n"
+        "Columns: id, name, schedule, state, next run, last run, target.\n"
     );
 }
 
@@ -183,10 +196,7 @@ fn scheduled_run_keeps_the_owners_answer_when_the_read_back_fails() {
         hello(wire);
         let request = wire.read("schedule.run_now");
         assert_eq!(request["params"], json!({"job_id":"job-1"}));
-        wire.reply(
-            &request,
-            run("skipped", "overlap", "2026-11-01T09:00:00.000Z"),
-        );
+        wire.reply(&request, run("launching", "", "2026-11-01T09:00:00.000Z"));
         let request = wire.read("schedule.list");
         read_failed(wire, &request);
     });
@@ -199,7 +209,7 @@ fn scheduled_run_keeps_the_owners_answer_when_the_read_back_fails() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "Run job-1: skipped (overlap).\n"
+        "Run job-1: launching.\n"
     );
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
@@ -217,7 +227,7 @@ fn scheduled_add_keeps_the_owners_answer_when_the_read_back_fails() {
         "name": "digest",
         "schedule": {"every_minutes": 60},
         "prompt": "Summarize the day.",
-        "cwd": "/workspace",
+        "target": {"kind": "launch", "cwd": "/workspace", "max_run_minutes": 60},
     });
     fs::write(&path, serde_json::to_string(&new_job).unwrap()).unwrap();
     let daemon = home.daemon(|wire| {
@@ -327,8 +337,8 @@ fn scheduled_history_prints_the_jobs_recent_runs() {
         wire.reply(
             &request,
             json!({"runs": [
-                run("completed", "", "2026-11-01T09:00:12.000Z"),
-                run("skipped", "overlap", "2026-11-01T08:00:05.000Z"),
+                run("delivered", "", "2026-11-01T09:00:12.000Z"),
+                run("missed", "previous_delivery_unsettled", "2026-11-01T08:00:05.000Z"),
             ]}),
         );
     });
@@ -345,8 +355,8 @@ fn scheduled_history_prints_the_jobs_recent_runs() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "2026-11-01T09:00:12.000Z  completed\n\
-         2026-11-01T08:00:05.000Z  skipped (overlap)\n"
+        "2026-11-01T09:00:12.000Z  delivered\n\
+         2026-11-01T08:00:05.000Z  missed (previous_delivery_unsettled)\n"
     );
 }
 
@@ -414,7 +424,7 @@ fn scheduled_prints_owner_text_without_escape_sequences() {
         "name": "victim\u{1b}[2J",
         "schedule": {"every_minutes": 60},
         "prompt": "Summarize the day.",
-        "cwd": "/workspace",
+        "target": {"kind": "launch", "cwd": "/workspace", "max_run_minutes": 60},
     });
     fs::write(&path, serde_json::to_string(&document).unwrap()).unwrap();
     let daemon = home.daemon(|wire| {
@@ -454,7 +464,7 @@ fn scheduled_prints_owner_text_without_escape_sequences() {
         let request = wire.read("schedule.history");
         wire.reply(
             &request,
-            json!({"runs": [run("completed", "ok\u{1b}[2J", "2026-11-01T09:00:12.000Z")]}),
+            json!({"runs": [run("delivered", "ok\u{1b}[2J", "2026-11-01T09:00:12.000Z")]}),
         );
     });
     let output = home
@@ -465,7 +475,7 @@ fn scheduled_prints_owner_text_without_escape_sequences() {
     daemon.join().unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(stdout, "2026-11-01T09:00:12.000Z  completed (ok)\n");
+    assert_eq!(stdout, "2026-11-01T09:00:12.000Z  delivered (ok)\n");
     assert!(
         !stdout.contains('\u{1b}') && !stdout.contains("[2J"),
         "{stdout:?}"
@@ -476,13 +486,11 @@ fn scheduled_prints_owner_text_without_escape_sequences() {
 /// the job reported them.
 fn edited_document() -> Value {
     json!({
-        "cwd": "/workspace",
         "enabled": true,
-        "max_run_minutes": 60,
-        "mode": "create",
         "name": "nightly",
         "prompt": "Summarize the day in one line.",
         "schedule": {"every_minutes": 60},
+        "target": {"kind": "launch", "cwd": "/elsewhere", "max_run_minutes": 60},
     })
 }
 
@@ -494,7 +502,11 @@ fn scheduled_set_writes_a_job_with_the_revision_read_before_it() {
     // Only the member the draft changed travels, with the id and the
     // revision.
     let expected = json!({
-        "job": {"id": "job-1", "prompt": "Summarize the day in one line."},
+        "job": {
+            "id": "job-1",
+            "prompt": "Summarize the day in one line.",
+            "target": {"kind": "launch", "cwd": "/elsewhere", "max_run_minutes": 60},
+        },
         "revision": 3,
     });
     let daemon = home.daemon(move |wire| {
@@ -535,10 +547,7 @@ fn scheduled_set_writes_a_job_with_the_revision_read_before_it() {
 /// draft that changes one of them.
 fn job_document() -> Value {
     json!({
-        "cwd": "/workspace",
         "enabled": true,
-        "max_run_minutes": 60,
-        "mode": "create",
         "name": "nightly",
         "prompt": "Summarize the day.",
         "schedule": {"every_minutes": 60},
@@ -551,12 +560,8 @@ fn job_document() -> Value {
 fn scheduled_set_refuses_a_deleted_member_the_owner_cannot_clear() {
     let home = Home::new();
     let path = home.0.join("job.json");
-    // The stored job has a policy; the draft leaves it out.
-    let listed = || {
-        let mut job = job("job-1", "nightly", 3, true, Value::Null);
-        job["policy"] = json!("read-only");
-        json!({"jobs": [job]})
-    };
+    // The stored job has a target; the draft leaves it out.
+    let listed = || jobs(true);
     fs::write(&path, serde_json::to_string(&job_document()).unwrap()).unwrap();
     let daemon = home.daemon(move |wire| {
         hello(wire);
@@ -579,7 +584,7 @@ fn scheduled_set_refuses_a_deleted_member_the_owner_cannot_clear() {
     daemon.join().unwrap();
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("The document deleted policy"), "{stderr}");
+    assert!(stderr.contains("The document deleted target"), "{stderr}");
     assert!(stderr.contains("Your text is kept in"), "{stderr}");
 }
 
@@ -630,9 +635,11 @@ fn scheduled_set_refuses_a_patch_that_changes_nothing() {
         hello(wire);
         let request = wire.read("schedule.list");
         wire.reply(&request, jobs(true));
-        // The job gained the draft's prompt since the draft was read.
+        // The job gained the draft's prompt and target since the draft was
+        // read.
         let mut job = job("job-1", "nightly", 3, true, Value::Null);
         job["prompt"] = json!("Summarize the day in one line.");
+        job["target"] = json!({"kind": "launch", "cwd": "/elsewhere", "max_run_minutes": 60});
         let request = wire.read("schedule.list");
         wire.reply(&request, json!({"jobs": [job]}));
         let mut line = String::new();
@@ -692,20 +699,16 @@ fn scheduled_set_refuses_a_job_that_is_gone_at_the_re_read() {
     assert!(stderr.contains("Your text is kept in"), "{stderr}");
 }
 
-/// Setting a reuse job's mode to create clears its Session: the draft
-/// deleted it, the owner clears it itself, and the patch carries no
-/// session_id.
+/// A session target is replaced whole: a draft that turns it into a launch
+/// target sends that one target, not the fields it used to hold.
 #[test]
-fn scheduled_set_sends_no_session_id_when_the_mode_becomes_create() {
+fn scheduled_set_sends_a_whole_target_when_it_changes() {
     let home = Home::new();
     let path = home.0.join("job.json");
-    let listed = || {
-        let mut job = job("job-1", "nightly", 3, true, Value::Null);
-        job["mode"] = json!("reuse");
-        job["session_id"] = json!("session-1");
-        json!({"jobs": [job]})
-    };
-    fs::write(&path, serde_json::to_string(&job_document()).unwrap()).unwrap();
+    let listed = || json!({"jobs": [session_job("job-1", "nightly", 3, true, Value::Null)]});
+    let mut draft = job_document();
+    draft["target"] = json!({"kind": "launch", "cwd": "/workspace", "max_run_minutes": 60});
+    fs::write(&path, serde_json::to_string(&draft).unwrap()).unwrap();
     let daemon = home.daemon(move |wire| {
         hello(wire);
         let request = wire.read("schedule.list");
@@ -715,7 +718,9 @@ fn scheduled_set_sends_no_session_id_when_the_mode_becomes_create() {
         let request = wire.read("schedule.save");
         assert_eq!(
             request["params"],
-            json!({"job": {"id": "job-1", "mode": "create"}, "revision": 3})
+            json!({"job": {"id": "job-1",
+                "target": {"kind": "launch", "cwd": "/workspace", "max_run_minutes": 60}},
+                "revision": 3})
         );
         wire.reply(
             &request,
@@ -830,7 +835,7 @@ fn scheduled_edit_writes_what_the_editor_leaves() {
     let script = editor(
         &home,
         "editor.sh",
-        "printf '%s' '{\"cwd\":\"/workspace\",\"enabled\":true,\"max_run_minutes\":60,\"mode\":\"create\",\"name\":\"nightly\",\"prompt\":\"Edited.\",\"schedule\":{\"every_minutes\":60}}' > \"$1\"",
+        "printf '%s' '{\"enabled\":true,\"name\":\"nightly\",\"prompt\":\"Edited.\",\"schedule\":{\"every_minutes\":60},\"target\":{\"kind\":\"launch\",\"cwd\":\"/workspace\",\"max_run_minutes\":60}}' > \"$1\"",
     );
     let daemon = home.daemon(|wire| {
         hello(wire);
@@ -872,7 +877,7 @@ fn scheduled_add_reads_a_job_from_a_file_and_from_stdin() {
         "name": "example",
         "schedule": {"every_minutes": 60},
         "prompt": "Summarize the day.",
-        "cwd": "/workspace",
+        "target": {"kind": "launch", "cwd": "/workspace", "max_run_minutes": 60},
     });
     for stdin in [false, true] {
         let home = Home::new();
@@ -1074,31 +1079,31 @@ fn tui_scheduled_panel_lists_and_manages_jobs() {
         }
         wait_shown.recv_timeout(PATIENCE).unwrap();
         let request = wire.read("schedule.list");
-        wire.reply(&request, jobs(true));
+        wire.reply(&request, session_jobs(true));
         // Enter pauses the selected job.
         let request = wire.read("schedule.set_enabled");
         assert_eq!(
             request["params"],
             json!({"job_id": "job-1", "enabled": false})
         );
-        wire.reply(&request, json!({"job": {}}));
+        wire.reply(&request, json!({"job": session_job("job-1", "nightly", 3, false, Value::Null)}));
         let request = wire.read("schedule.list");
-        wire.reply(&request, jobs(false));
+        wire.reply(&request, session_jobs(false));
         // Ctrl+T runs it now, and the message reports the owner's answer.
         let request = wire.read("schedule.run_now");
         assert_eq!(request["params"], json!({"job_id": "job-1"}));
-        wire.reply(&request, run("skipped", "overlap", "2026-11-01T10:00:00.000Z"));
+        wire.reply(&request, run("delivering", "", "2026-11-01T10:00:00.000Z"));
         let request = wire.read("schedule.list");
-        wire.reply(&request, jobs(false));
+        wire.reply(&request, session_jobs(false));
         // Tab asks for the job's history: the adapter names the job from the
         // catalog it reads first.
         let request = wire.read("schedule.list");
-        wire.reply(&request, jobs(false));
+        wire.reply(&request, session_jobs(false));
         let request = wire.read("schedule.history");
         assert_eq!(request["params"], json!({"job_id": "job-1", "limit": 20}));
         wire.reply(
             &request,
-            json!({"runs": [run("completed", "", "2026-11-01T09:00:12.000Z")]}),
+            json!({"runs": [run("delivered", "", "2026-11-01T09:00:12.000Z")]}),
         );
         // Ctrl+X asks, Enter removes.
         let request = wire.read("schedule.delete");
@@ -1121,14 +1126,15 @@ fn tui_scheduled_panel_lists_and_manages_jobs() {
     terminal.until("release");
     terminal.until("every 60 minutes");
     terminal.until("Next run 2026-11-02T09:00:00.000Z.");
-    terminal.until("Last run completed at 2026-11-01T09:00:12.000Z.");
+    terminal.until("Last run delivered at 2026-11-01T09:00:12.000Z.");
+    terminal.until("Delivers to Session session-1 branch main (queue).");
     terminal.raw(b"\r");
     terminal.until("Disabled nightly.");
     terminal.raw(b"\x14");
-    terminal.until("Run nightly: skipped (overlap).");
+    terminal.until("Run nightly: delivering.");
     terminal.raw(b"\t");
     terminal.until("Recent runs of nightly");
-    terminal.until("2026-11-01T09:00:12.000Z  completed");
+    terminal.until("2026-11-01T09:00:12.000Z  delivered");
     terminal.raw(b"\x1b");
     thread::sleep(Duration::from_millis(200));
     terminal.raw(b"\x18");
@@ -1167,8 +1173,8 @@ fn edit_command(home: &Home, program: &std::path::Path, fullscreen: bool) -> Com
 }
 
 const EDITS_THE_PROMPT: &str = "case \"$(cat \"$1\")\" in\n\
-    *nightly*) printf '%s' '{\"cwd\":\"/workspace\",\"enabled\":true,\"max_run_minutes\":60,\"mode\":\"create\",\"name\":\"nightly\",\"prompt\":\"Edited.\",\"schedule\":{\"every_minutes\":60}}' > \"$1\";;\n\
-    *) printf '%s' '{\"cwd\":\"/workspace\",\"name\":\"example\",\"prompt\":\"New.\",\"schedule\":{\"every_minutes\":60}}' > \"$1\";;\n\
+    *nightly*) printf '%s' '{\"enabled\":true,\"name\":\"nightly\",\"prompt\":\"Edited.\",\"schedule\":{\"every_minutes\":60},\"target\":{\"kind\":\"launch\",\"cwd\":\"/workspace\",\"max_run_minutes\":60}}' > \"$1\";;\n\
+    *) printf '%s' '{\"name\":\"example\",\"prompt\":\"New.\",\"schedule\":{\"every_minutes\":60},\"target\":{\"kind\":\"launch\",\"cwd\":\"/workspace\",\"max_run_minutes\":60}}' > \"$1\";;\n\
     esac";
 
 /// Ctrl+E opens the job's document, Ctrl+N the create document, and each
@@ -1215,7 +1221,7 @@ fn tui_scheduled_panel_edits_and_creates_jobs() {
             let request = wire.read("schedule.save");
             assert_eq!(request["params"].get("revision"), None);
             assert_eq!(request["params"]["job"]["name"], "example");
-            assert_eq!(request["params"]["job"]["cwd"], "/workspace");
+            assert_eq!(request["params"]["job"]["target"]["cwd"], "/workspace");
             wire.reply(&request, json!({"job": job("job-3", "example", 1, true, Value::Null)}));
             let request = wire.read("schedule.list");
             wire.reply(&request, jobs(true));
@@ -1227,7 +1233,7 @@ fn tui_scheduled_panel_edits_and_creates_jobs() {
             assert_eq!(request["params"], json!({"job_id": "job-1", "limit": 20}));
             wire.reply(
                 &request,
-                json!({"runs": [run("completed", "", "2026-11-01T09:00:12.000Z")]}),
+                json!({"runs": [run("delivered", "", "2026-11-01T09:00:12.000Z")]}),
             );
             // Ctrl+X asks, Enter removes.
             let request = wire.read("schedule.delete");
@@ -1380,7 +1386,7 @@ fn tui_scheduled_panel_reports_a_conflict_on_remove() {
         // The conflict wrote nothing, so the jobs are read again.
         let request = wire.read("schedule.list");
         wire.reply(&request, json!({"jobs": [
-            job("job-1", "nightly", 4, true, run("completed", "", "2026-11-01T09:00:12.000Z")),
+            job("job-1", "nightly", 4, true, run("delivered", "", "2026-11-01T09:00:12.000Z")),
             job("job-2", "release", 7, false, Value::Null),
         ]}));
         let mut line = String::new();
@@ -1438,18 +1444,21 @@ fn tui_scheduled_panel_shows_every_key_and_confirmation_at_80_columns() {
                 }
             }
             wait_shown.recv_timeout(PATIENCE).unwrap();
+            let mut disabled = job(
+                "job-2",
+                "a job whose name is exactly sixty cells wide to wrap it well",
+                4,
+                false,
+                Value::Null,
+            );
+            disabled["disabled_reason"] = json!({"code": "session_closed",
+                "at": "2026-11-01T08:00:00.000Z"});
             let request = wire.read("schedule.list");
             wire.reply(
                 &request,
                 json!({"jobs": [
                     job("job-1", "a job whose name is rather long", 3, true, Value::Null),
-                    job(
-                        "job-2",
-                        "a job whose name is exactly sixty cells wide to wrap it well",
-                        4,
-                        false,
-                        Value::Null,
-                    ),
+                    disabled,
                 ]}),
             );
             let mut line = String::new();
@@ -1490,6 +1499,7 @@ fn tui_scheduled_panel_shows_every_key_and_confirmation_at_80_columns() {
         // their actions are drawn whole, never cut.
         terminal.raw(b"\x1b[B");
         thread::sleep(Duration::from_millis(200));
+        terminal.until("Disabled: session_closed at 2026-11-01T08:00:00.000Z.");
         terminal.raw(b"\x18");
         // The confirmation names the selected job, then its keys.
         terminal.until("sixty cells wide to wrap it well?");
@@ -1593,11 +1603,11 @@ fn tui_scheduled_panel_keeps_a_refused_edit_for_its_own_job() {
              printf '\\n---\\n' >> \"{0}\"\n\
              case \"$(cat \"$1\")\" in\n\
              *'\"name\": \"release\"'*)\n\
-               printf '%s' '{{\"cwd\":\"/workspace\",\"enabled\":false,\"max_run_minutes\":60,\"mode\":\"create\",\"name\":\"release\",\"prompt\":\"Release edited.\",\"schedule\":{{\"every_minutes\":60}}}}' > \"$1\" ;;\n\
+               printf '%s' '{{\"enabled\":false,\"name\":\"release\",\"prompt\":\"Release edited.\",\"schedule\":{{\"every_minutes\":60}},\"target\":{{\"kind\":\"launch\",\"cwd\":\"/workspace\",\"max_run_minutes\":60}}}}' > \"$1\" ;;\n\
              *'\"prompt\":\"Broken\"'*)\n\
-               printf '%s' '{{\"cwd\":\"/workspace\",\"enabled\":true,\"max_run_minutes\":60,\"mode\":\"create\",\"name\":\"nightly\",\"prompt\":\"Fixed.\",\"schedule\":{{\"every_minutes\":60}}}}' > \"$1\" ;;\n\
+               printf '%s' '{{\"enabled\":true,\"name\":\"nightly\",\"prompt\":\"Fixed.\",\"schedule\":{{\"every_minutes\":60}},\"target\":{{\"kind\":\"launch\",\"cwd\":\"/workspace\",\"max_run_minutes\":60}}}}' > \"$1\" ;;\n\
              *)\n\
-               printf '%s' '{{\"cwd\":\"/workspace\",\"enabled\":true,\"max_run_minutes\":60,\"mode\":\"create\",\"name\":\"nightly\",\"prompt\":\"Broken\",\"schedule\":{{\"cron\":\"not a cron\"}}}}' > \"$1\" ;;\n\
+               printf '%s' '{{\"enabled\":true,\"name\":\"nightly\",\"prompt\":\"Broken\",\"schedule\":{{\"cron\":\"not a cron\"}},\"target\":{{\"kind\":\"launch\",\"cwd\":\"/workspace\",\"max_run_minutes\":60}}}}' > \"$1\" ;;\n\
              esac\n",
             seen.display()
         ),
@@ -1724,7 +1734,7 @@ fn scheduled_draws_a_job_name_on_one_line() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "job-1\tevil x y\tevery 60 minutes\tenabled\t2026-11-02T09:00:00.000Z\t—\n"
+        "job-1\tevil x y\tevery 60 minutes\tenabled\t2026-11-02T09:00:00.000Z\t—\tlaunch /workspace\n"
     );
     // The panel's row and the confirmation it asks in.
     let home = Home::new();
@@ -1793,7 +1803,7 @@ fn tui_scheduled_panel_reports_an_unreadable_create_reply_as_applied() {
         &format!(
             "cat \"$1\" >> \"{0}\"\n\
              printf '\\n---\\n' >> \"{0}\"\n\
-             printf '%s' '{{\"cwd\":\"/workspace\",\"name\":\"attempt\",\"prompt\":\"Attempt.\",\"schedule\":{{\"every_minutes\":60}}}}' > \"$1\"\n",
+             printf '%s' '{{\"name\":\"attempt\",\"prompt\":\"Attempt.\",\"schedule\":{{\"every_minutes\":60}},\"target\":{{\"kind\":\"launch\",\"cwd\":\"/workspace\",\"max_run_minutes\":60}}}}' > \"$1\"\n",
             seen.display()
         ),
     );

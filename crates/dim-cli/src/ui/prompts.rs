@@ -231,6 +231,10 @@ pub enum Effect {
     OauthBack,
     /// A callback URL the user pasted.
     OauthPaste(String),
+    RefreshAccountModels {
+        provider_id: String,
+        attempt: u64,
+    },
     /// A signed-in provider: close the panel and offer its models.
     Connected(String),
     /// Open the `/models` picker in place of this panel.

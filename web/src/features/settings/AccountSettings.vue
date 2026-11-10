@@ -17,6 +17,7 @@ import { messageFrom } from "./context"
 const { t, locale } = useI18n({ messages: settingsMessages })
 const text = useSettingsText()
 const connection = useConnectionStore()
+const models = useModelsStore()
 const provider = ref<ManagementProvider>()
 const usage = ref<AccountUsage>()
 const referral = ref<AccountReferral>()
@@ -31,6 +32,7 @@ const saving = ref(false)
 const error = ref("")
 const recoveryProvider = ref<string>()
 const usageError = ref("")
+const modelRefresh = ref<"refreshed" | { error: string }>()
 const confirm = ref<InstanceType<typeof ConfirmDialog>>()
 const identity = computed(() => provider.value?.account?.state.identity)
 const signedIn = computed(() => provider.value?.account?.state.authenticated === true)
@@ -48,6 +50,7 @@ watch([() => provider.value?.providerId, () => identity.value?.issuer, () => ide
   pendingReset.value = undefined
   usage.value = undefined
   referral.value = undefined
+  modelRefresh.value = undefined
 }, { flush: "sync" })
 async function load(): Promise<void> {
   loading.value = true
@@ -79,9 +82,25 @@ async function recover(): Promise<void> {
   saving.value = true
   try {
     await connection.client.call("account.recover", { providerId: recoveryProvider.value }, readAck)
-    await Promise.all([load(), useModelsStore().load()])
+    await Promise.all([load(), models.load()])
   } catch (cause) { error.value = messageFrom(cause) }
   finally { saving.value = false }
+}
+async function signedInFromAuth(refreshError?: string): Promise<void> {
+  await load()
+  if (signedIn.value && refreshError) modelRefresh.value = { error: refreshError }
+}
+async function refreshModels(): Promise<void> {
+  const current = provider.value
+  if (!current?.actions.includes("refresh") || loading.value || saving.value || connection.phase !== "connected") return
+  saving.value = true
+  modelRefresh.value = undefined
+  try {
+    await models.refresh(current.providerId)
+    if (signedIn.value) modelRefresh.value = "refreshed"
+  } catch (cause) {
+    if (signedIn.value) modelRefresh.value = { error: messageFrom(cause) }
+  } finally { saving.value = false }
 }
 async function logout(): Promise<void> {
   const current = provider.value
@@ -90,7 +109,7 @@ async function logout(): Promise<void> {
   try {
     await connection.client.call("account.logout", { providerId: current.providerId }, readAck)
     pendingReset.value = undefined
-    await Promise.all([load(), useModelsStore().load()])
+    await Promise.all([load(), models.load()])
   } catch (cause) { error.value = messageFrom(cause) }
   finally { saving.value = false }
 }
@@ -135,14 +154,19 @@ onMounted(load)
     <section v-else-if="!provider && !error" class="settings-card"><p class="settings-help">{{ t("accountUnavailable") }}</p></section>
     <template v-if="provider">
       <section class="settings-card">
-        <div v-if="signedIn" class="settings-identity">
-          <span class="settings-avatar">{{ title.slice(0, 2).toUpperCase() }}</span>
-          <div class="settings-identity-text"><strong>{{ title }}</strong><p v-if="identity?.email">{{ identity.email }}</p><p v-if="identity?.subject">{{ t("uid") }}: {{ identity.subject }}</p></div>
-          <button class="ui-button" data-variant="ghost" :disabled="saving || loading || connection.phase !== 'connected'" @click="logout">{{ t("signOut") }}</button>
-        </div>
+        <template v-if="signedIn">
+          <div class="settings-identity">
+            <span class="settings-avatar">{{ title.slice(0, 2).toUpperCase() }}</span>
+            <div class="settings-identity-text"><strong>{{ title }}</strong><p v-if="identity?.email">{{ identity.email }}</p><p v-if="identity?.subject">{{ t("uid") }}: {{ identity.subject }}</p></div>
+            <button v-if="provider.actions.includes('refresh')" class="ui-button" data-variant="secondary" :disabled="saving || loading || connection.phase !== 'connected'" @click="refreshModels"><RefreshCw aria-hidden="true" />{{ t("refreshModelList") }}</button>
+            <button class="ui-button" data-variant="ghost" :disabled="saving || loading || connection.phase !== 'connected'" @click="logout">{{ t("signOut") }}</button>
+          </div>
+          <p v-if="modelRefresh === 'refreshed'" class="settings-help" role="status">{{ t("modelListRefreshed") }}</p>
+          <p v-else-if="modelRefresh" class="ui-banner settings-banner" data-tone="danger" role="alert">{{ t("modelRefreshFailed", { reason: modelRefresh.error }) }}</p>
+        </template>
         <template v-else>
           <div class="account-login-heading"><BrandMark aria-hidden="true" /><h3>{{ t("signIn") }}</h3></div>
-          <ProviderAuthFlow :key="provider.providerId" :provider="provider" @finished="load" />
+          <ProviderAuthFlow :key="provider.providerId" :provider="provider" @finished="signedInFromAuth" />
         </template>
       </section>
       <section v-if="signedIn" class="settings-card settings-usage">

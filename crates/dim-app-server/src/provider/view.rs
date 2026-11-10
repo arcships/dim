@@ -150,7 +150,9 @@ impl ProviderService {
         ];
         if authority == "static" {
             actions.extend(["models.create", "models.delete"]);
-            if record.enabled && self.remote_model_list(&provider_id, &record) {
+            if self.remote_model_list(&provider_id, &record)
+                && (record.auth == StaticAuth::Anonymous || record.credential.is_some())
+            {
                 actions.push("refresh");
             }
         } else {

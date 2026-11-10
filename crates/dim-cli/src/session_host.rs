@@ -1701,6 +1701,13 @@ impl Worker {
                 });
             }
             Command::OauthPaste(url) => self.login_complete(url, None).await,
+            Command::RefreshAccountModels {
+                provider_id,
+                attempt,
+            } => {
+                self.refresh_account_models(&provider_id, attempt, false)
+                    .await;
+            }
             Command::LoginStatus(provider_id) => {
                 let account = self
                     .account(&provider_id)
@@ -3796,21 +3803,27 @@ impl Worker {
         }
     }
 
-    /// Refreshes the provider's catalog, so `/models` lists its models at
-    /// once. The account namespace owns a cached catalog; a native OAuth
-    /// namespace's provider keeps the bundled one.
     async fn login_done(&mut self, login: Login) {
-        if login.namespace == ACCOUNT_NAMESPACE
-            && let Err(error) = self
-                .client
-                .rpc("provider.refresh", json!({"providerId": login.provider_id}))
-                .await
-        {
-            self.send(Update::Notice(format!(
-                "Model catalog refresh failed: {error}"
-            )));
+        if login.namespace == ACCOUNT_NAMESPACE {
+            if login.poll_at.is_some() {
+                self.login_event(login.tag, OauthEvent::Exchanging);
+            }
+            self.refresh_account_models(&login.provider_id, login.tag, true)
+                .await;
+        } else {
+            self.login_event(login.tag, OauthEvent::Done(Ok(())));
         }
-        self.login_event(login.tag, OauthEvent::Done(Ok(login.provider_id.clone())));
+    }
+
+    async fn refresh_account_models(&mut self, provider_id: &str, attempt: u64, after_login: bool) {
+        let result = crate::login::refresh_models(&mut self.client, provider_id).await;
+        self.login_event(
+            attempt,
+            OauthEvent::ModelsRefreshed {
+                after_login,
+                result,
+            },
+        );
     }
 
     async fn respond_question(

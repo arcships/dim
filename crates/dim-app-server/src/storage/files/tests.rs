@@ -365,6 +365,42 @@ async fn an_interrupted_delete_converges_on_retry_and_the_next_sweep() {
     fixture.close().await;
 }
 
+/// A fork persists the configuration its caller read: a source update that
+/// lands after that read changes neither the live fork nor its record.
+#[tokio::test]
+async fn a_fork_persists_the_configuration_its_caller_read() {
+    let fixture = Fixture::new().await;
+    let store = SessionStore::new(fixture.db.clone(), fixture.root.clone(), 0);
+    fixture.session("source").await;
+    let read = store.session_config_text("source").await.unwrap().unwrap();
+    // A concurrent update lands between the read and the fork.
+    fixture
+        .connection()
+        .execute(
+            "UPDATE agent_sessions SET config = json_set(config, '$.language', 'ko') \
+             WHERE session_id = 'source'",
+            [],
+        )
+        .unwrap();
+    store
+        .fork_session("source", "fork", 0, &read)
+        .await
+        .unwrap();
+    let stored: String = fixture
+        .connection()
+        .query_row(
+            "SELECT config FROM agent_sessions WHERE session_id='fork'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, read);
+    assert!(!stored.contains("\"language\""));
+
+    drop(store);
+    fixture.close().await;
+}
+
 /// ADR 013 D4: the fork copies every output row, including one for a file
 /// that does not exist yet. `run_background` registers the output path before
 /// its command writes it, so the fork must own the file the command creates
@@ -382,8 +418,13 @@ async fn a_fork_owns_output_registered_before_the_file_exists() {
         .unwrap();
     assert!(!log.exists());
 
+    let config = store
+        .session_config_text("running-source")
+        .await
+        .unwrap()
+        .unwrap();
     store
-        .fork_session("running-source", "running-fork", 0)
+        .fork_session("running-source", "running-fork", 0, &config)
         .await
         .unwrap();
     std::fs::create_dir_all(log.parent().unwrap()).unwrap();
@@ -427,9 +468,18 @@ async fn a_fork_waits_for_a_delete_that_removed_output() {
         tokio::spawn(async move { store.delete_session("paused-source").await })
     };
     let _reached = reached.acquire().await.unwrap();
+    let config = store
+        .session_config_text("paused-source")
+        .await
+        .unwrap()
+        .unwrap();
     let forking = {
         let store = store.clone();
-        tokio::spawn(async move { store.fork_session("paused-source", "paused-fork", 0).await })
+        tokio::spawn(async move {
+            store
+                .fork_session("paused-source", "paused-fork", 0, &config)
+                .await
+        })
     };
     release.add_permits(1);
     assert!(deleting.await.unwrap().unwrap());
@@ -481,7 +531,11 @@ async fn concurrent_deletes_remove_a_shared_output_directory() {
         .register("source".into(), log.clone())
         .await
         .unwrap();
-    store.fork_session("source", "fork", 0).await.unwrap();
+    let config = store.session_config_text("source").await.unwrap().unwrap();
+    store
+        .fork_session("source", "fork", 0, &config)
+        .await
+        .unwrap();
 
     let (source, fork) = tokio::join!(store.delete_session("source"), store.delete_session("fork"));
     assert!(source.unwrap());
@@ -528,7 +582,11 @@ async fn a_delete_removes_shell_output_of_its_last_owner() {
         .register("source".into(), log.clone())
         .await
         .unwrap();
-    store.fork_session("source", "fork", 0).await.unwrap();
+    let config = store.session_config_text("source").await.unwrap().unwrap();
+    store
+        .fork_session("source", "fork", 0, &config)
+        .await
+        .unwrap();
 
     assert!(store.delete_session("source").await.unwrap());
     assert!(log.exists());

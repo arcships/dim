@@ -1,6 +1,6 @@
 import { computed, ref } from "vue"
 import { defineStore } from "pinia"
-import { readAccountProviders, readProviderCatalog, readProviderList, readProviderSelection } from "../rpc/read"
+import { readAccountProviders, readAck, readProviderCatalog, readProviderList, readProviderSelection } from "../rpc/read"
 import type { ModelId, ProviderModel } from "../rpc/protocol"
 import { useConnectionStore } from "./connection"
 
@@ -20,6 +20,15 @@ export const useModelsStore = defineStore("models", () => {
   function load(): Promise<void> {
     loading ??= loadProviders().finally(() => { loading = undefined })
     return loading
+  }
+
+  async function refresh(providerId: string): Promise<void> {
+    try {
+      await useConnectionStore().client.call("provider.refresh", { providerId }, readAck)
+    } finally {
+      await loading
+      await load()
+    }
   }
 
   async function loadProviders(): Promise<void> {
@@ -64,5 +73,5 @@ export const useModelsStore = defineStore("models", () => {
     return provider?.models.find((item) => item.id === model.modelId)?.name ?? model.modelId
   }
 
-  return { providers, error, available, load, defaultFor, nameOf }
+  return { providers, error, available, load, refresh, defaultFor, nameOf }
 })

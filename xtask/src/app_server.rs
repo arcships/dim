@@ -54,6 +54,9 @@ pub struct Overrides {
     /// The `events` tool's description in place of the shipped one (EventHub
     /// design A.4).
     pub eventhub_tool: Option<Arc<str>>,
+    /// The `schedule` tool's description in place of the shipped one
+    /// (Scheduler design §5.1).
+    pub scheduler_description: Option<Arc<str>>,
 }
 
 /// What one run adds to the product assembly: the overrides above, the model
@@ -147,10 +150,19 @@ pub async fn serve_home(
     observe: impl FnOnce(&mut AgentBuilder),
 ) -> Result<RunningServer> {
     let home = home.to_path_buf();
-    // The product CLI creates `<root>/eventhub` beside `scheduler/` for the
+    // The product CLI creates `<root>/scheduler` and `<root>/eventhub` for the
     // authorized file transactions (`crates/dim-app-server/src/cli.rs`); a
-    // served profile creates it too.
-    std::fs::create_dir_all(home.join("eventhub"))?;
+    // served profile creates them too.
+    for name in ["scheduler", "eventhub"] {
+        let mut directory = std::fs::DirBuilder::new();
+        directory.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            directory.mode(0o700);
+        }
+        directory.create(home.join(name))?;
+    }
     let product = run.model_config.is_none();
     let mut config = ServerConfig {
         websocket_address: Some(([127, 0, 0, 1], 0).into()),
@@ -245,6 +257,15 @@ pub async fn serve_home(
     dim_agent_capabilities::prompt_suggestion::install(&mut builder);
     dim_app_server::collaboration::install(&mut builder);
     dim_agent_questions::install(&mut builder);
+    // The product installs Scheduler (`crates/dimcode/src/main.rs`), so the
+    // served profile installs it too; its `schedule` description comes from
+    // the factory configuration the product leaves at the shipped text
+    // (Scheduler design §5.1).
+    let mut scheduler = dim_agent_scheduler::SchedulerTexts::default();
+    if let Some(description) = &run.overrides.scheduler_description {
+        scheduler.description = description.to_string();
+    }
+    dim_agent_scheduler::install_with(&mut builder, scheduler)?;
     // The product installs EventHub (`crates/dimcode/src/main.rs`), so the
     // served profile installs it too; its entry text comes from the factory
     // configuration the product leaves at the shipped text (EventHub A.6).

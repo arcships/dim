@@ -4380,14 +4380,14 @@ fn a_failed_open_replaces_the_previous_startup_note() {
         .unwrap();
     std::fs::write(
         startup_note(&database.0),
-        "dimcode-startup-failure v1 pid=1\nCannot open native store /previous.\n  Store format: v39\n",
+        "dimcode-startup-failure v1 pid=1\nCannot open native store /previous.\n  Store format: v37\n",
     )
     .unwrap();
     assert!(SqliteStorage::open(database.0.clone()).is_err());
     let note = read_startup_note(&database.0);
     assert!(note.contains("Store format: v34"), "{note}");
     assert!(!note.contains("/previous"), "{note}");
-    assert!(!note.contains("v39"), "{note}");
+    assert!(!note.contains("v37"), "{note}");
 }
 
 #[test]
@@ -7091,7 +7091,15 @@ async fn a_fork_copies_main_through_the_cut_with_its_content_and_snapshots() {
             .unwrap();
     }
 
-    sessions.fork_session("source", "fork", 4).await.unwrap();
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+    sessions
+        .fork_session("source", "fork", 4, &config)
+        .await
+        .unwrap();
     let column = |sql: &str| -> Vec<String> {
         connection
             .prepare(sql)
@@ -7192,8 +7200,10 @@ async fn a_fork_copies_main_through_the_cut_with_its_content_and_snapshots() {
         Some(3)
     );
 
+    // The source can disappear after the caller's read; the copy still
+    // refuses a source the transaction cannot find.
     assert!(matches!(
-        sessions.fork_session("missing", "orphan", 0).await,
+        sessions.fork_session("missing", "orphan", 0, "{}").await,
         Err(AgentError::Closed(_))
     ));
     assert!(column("SELECT session_id FROM agent_sessions WHERE session_id='orphan'").is_empty());
@@ -7871,7 +7881,8 @@ async fn session_grants_upsert_remove_survive_restart_and_are_not_forked() {
         ]
     );
 
-    sessions.fork_session("s", "f", 0).await.unwrap();
+    let config = sessions.session_config_text("s").await.unwrap().unwrap();
+    sessions.fork_session("s", "f", 0, &config).await.unwrap();
     assert!(sessions.grants("f").await.unwrap().is_empty());
 
     drop(sessions);
@@ -7972,7 +7983,15 @@ async fn output_ownership_survives_a_fork_and_a_source_delete() {
             .unwrap()
     );
 
-    sessions.fork_session("source", "fork", 0).await.unwrap();
+    let config = sessions
+        .session_config_text("source")
+        .await
+        .unwrap()
+        .unwrap();
+    sessions
+        .fork_session("source", "fork", 0, &config)
+        .await
+        .unwrap();
     assert!(sessions.owns("fork", output.clone()).await.unwrap());
     assert!(sessions.owns("fork", attachment.clone()).await.unwrap());
     assert_eq!(

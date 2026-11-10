@@ -129,6 +129,129 @@ fn a_described_device_provider_signs_in_and_cancels_from_the_cli() {
 }
 
 #[test]
+fn dim_device_login_refreshes_the_model_catalog_before_exiting() {
+    for fail in [false, true] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&[
+                "provider.management",
+                "account.login.begin",
+                "account.login.status",
+                "provider.refresh",
+            ]);
+            let listed = wire.read("provider.management");
+            wire.reply(&listed, management(json!([described(
+                "dim-fixture", "DimAgent", "account", &["device"], false
+            )])));
+            let begin = wire.read("account.login.begin");
+            wire.reply(&begin, json!({"attemptId":"dim-attempt","verificationUri":"https://fixture.invalid/device","userCode":"DIM-CODE"}));
+            let status = wire.read("account.login.status");
+            assert_eq!(status["params"], json!({"providerId":"dim-fixture","attemptId":"dim-attempt"}));
+            wire.reply(&status, json!({"status":"completed"}));
+            let refresh = wire.read("provider.refresh");
+            assert_eq!(refresh["params"], json!({"providerId":"dim-fixture"}));
+            if fail {
+                wire.send(json!({"jsonrpc":"2.0","id":refresh["id"],"error":{"code":-32000,"message":"Relay timeout"}}));
+            } else {
+                wire.reply(&refresh, json!({"version":1,"models":[]}));
+            }
+        });
+        let output = home
+            .command()
+            .args(["login", "dim-fixture", "--device"])
+            .output()
+            .unwrap();
+        daemon.join().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Signed in."));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if fail {
+            assert!(
+                stderr.contains("Model list refresh failed: Relay timeout"),
+                "{stderr}"
+            );
+            assert!(
+                stderr.contains("dimcode models dim-fixture --refresh"),
+                "{stderr}"
+            );
+        } else {
+            assert!(!stderr.contains("Model list refresh failed"), "{stderr}");
+        }
+    }
+}
+
+#[test]
+fn dim_device_login_can_retry_the_model_refresh_from_the_account_panel() {
+    const PROVIDER: &str = "dimcode-api-oauth";
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["account.login.begin", "account.login.status", "provider.refresh"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let listed = json!([{"providerId":PROVIDER,"displayName":"DimAgent","loginMethods":["device"]}]);
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, listed.clone());
+        let status = wire.read("account.status");
+        wire.reply(&status, json!({"account":null}));
+        let begin = wire.read("account.login.begin");
+        wire.reply(&begin, json!({"attemptId":"dim-attempt","verificationUri":"https://fixture.invalid/device","userCode":"DIM-CODE"}));
+        let status = wire.read("account.login.status");
+        wire.reply(&status, json!({"status":"completed"}));
+        let refresh = wire.read("provider.refresh");
+        assert_eq!(refresh["params"], json!({"providerId":PROVIDER}));
+        wire.send(json!({"jsonrpc":"2.0","id":refresh["id"],"error":{"code":-32000,"message":"Relay timeout"}}));
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, listed.clone());
+        let status = wire.read("account.status");
+        let signed_in = json!({"account":{"issuer":"https://fixture.invalid","subject":"fixture","name":"Fixture Account"}});
+        wire.reply(&status, signed_in.clone());
+        let usage = wire.read("account.usage");
+        wire.reply(&usage, json!({}));
+        let retry = wire.read("provider.refresh");
+        assert_eq!(retry["params"], json!({"providerId":PROVIDER}));
+        let catalog = json!({"version":1,"disabledModelIds":[],"models":[{
+            "id":"fixture-model","name":"Refreshed Model",
+            "capabilities":{"modalities":["text"],"toolCalling":true,"streaming":true,"structuredOutput":true,
+                "vision":false,"audio":false,"reasoning":false,"contextWindow":128000,"maxOutputTokens":16384}
+        }]});
+        wire.reply(&retry, catalog.clone());
+        let providers = wire.read("provider.list");
+        wire.reply(&providers, json!({"providers":[]}));
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, listed);
+        let status = wire.read("account.status");
+        wire.reply(&status, signed_in);
+        let models = wire.read("provider.catalog");
+        assert_eq!(models["params"], json!({"providerId":PROVIDER}));
+        wire.reply(&models, json!({"catalog":catalog}));
+        wire.hold();
+    });
+    let mut command = home.command();
+    command.arg("--fullscreen");
+    sized(&mut command, 100, 32);
+    let mut terminal = Terminal::resume_tui(command);
+    terminal.until("test / model");
+    terminal.write(b"/login\r");
+    terminal.until("Not signed in");
+    terminal.write(b"\t\t\r");
+    terminal.until("Model list refresh failed: Relay timeout");
+    terminal.until_anywhere("Fixture Account");
+    terminal.until_anywhere("Refresh model list");
+    terminal.write(b"\r");
+    terminal.until("Model list refreshed");
+    terminal.write(b"\x1b[A\r");
+    terminal.until("DimAgent / fixture-model");
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+}
+
+#[test]
 fn login_without_a_provider_lists_the_described_accounts() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {

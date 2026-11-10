@@ -61,12 +61,97 @@ pub struct SessionConfig {
         skip_serializing_if = "is_interactive"
     )]
     pub interactive: bool,
+    /// The language the model writes to the operator in (model-facing prompts
+    /// §7), when the operator selected one. Absent means no selection and the
+    /// base rule stands. Unlike the other fields, the native store updates this
+    /// member in place while the Session runs; a fork copies it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<ReplyLanguage>,
 }
 fn default_interactive() -> bool {
     true
 }
 fn is_interactive(interactive: &bool) -> bool {
     *interactive
+}
+
+/// The operator's reply-language choices, by their stable wire codes. The
+/// names are the ones the operator selects, named in English for the prompt
+/// text ([PromptSources §3]).
+///
+/// [PromptSources §3]: ../../../docs/design/plugins/PromptSources.md
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReplyLanguage {
+    #[serde(rename = "en")]
+    English,
+    #[serde(rename = "zh-CN")]
+    SimplifiedChinese,
+    #[serde(rename = "zh-Hant")]
+    TraditionalChinese,
+    #[serde(rename = "ja")]
+    Japanese,
+    #[serde(rename = "ko")]
+    Korean,
+    #[serde(rename = "id")]
+    Indonesian,
+    #[serde(rename = "de")]
+    German,
+    #[serde(rename = "fr")]
+    French,
+    #[serde(rename = "es")]
+    Spanish,
+    #[serde(rename = "pt-BR")]
+    PortugueseBrazil,
+    #[serde(rename = "pt-PT")]
+    PortuguesePortugal,
+}
+impl ReplyLanguage {
+    /// Every choice, in the order the design names them.
+    pub const ALL: [Self; 11] = [
+        Self::English,
+        Self::SimplifiedChinese,
+        Self::TraditionalChinese,
+        Self::Japanese,
+        Self::Korean,
+        Self::Indonesian,
+        Self::German,
+        Self::French,
+        Self::Spanish,
+        Self::PortugueseBrazil,
+        Self::PortuguesePortugal,
+    ];
+    /// The stable wire code.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::SimplifiedChinese => "zh-CN",
+            Self::TraditionalChinese => "zh-Hant",
+            Self::Japanese => "ja",
+            Self::Korean => "ko",
+            Self::Indonesian => "id",
+            Self::German => "de",
+            Self::French => "fr",
+            Self::Spanish => "es",
+            Self::PortugueseBrazil => "pt-BR",
+            Self::PortuguesePortugal => "pt-PT",
+        }
+    }
+    /// The English name the prompt states for this choice.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::English => "English",
+            Self::SimplifiedChinese => "Simplified Chinese",
+            Self::TraditionalChinese => "Traditional Chinese",
+            Self::Japanese => "Japanese",
+            Self::Korean => "Korean",
+            Self::Indonesian => "Bahasa Indonesia",
+            Self::German => "German",
+            Self::French => "French",
+            Self::Spanish => "Spanish",
+            Self::PortugueseBrazil => "Portuguese (Brazil)",
+            Self::PortuguesePortugal => "Portuguese (Portugal)",
+        }
+    }
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -111,6 +196,7 @@ impl Default for SessionConfig {
             excluded_tools: Vec::new(),
             collaboration_role: CollaborationRole::Leader,
             interactive: default_interactive(),
+            language: None,
         }
     }
 }

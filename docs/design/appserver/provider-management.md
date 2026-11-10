@@ -277,6 +277,10 @@ overrides, preferences and explicit disables, with its existing
 admitted-configuration conflict check. A managed refresh for a different account
 clears preferences together with descriptor overrides and disables; a same-account
 refresh preserves them.
+For a static Provider with a saved credential or anonymous authentication,
+explicit refresh is available whenever its driver and definition support remote
+listing. A disabled Provider stays disabled after refresh, and its models remain
+unavailable for execution.
 Descriptor edits to a user model replace that model's `userModels` entry; they
 never write the user ID into `modelConfigOverrides`. `models.set_enabled` accepts IDs
 from both defaults and user models and names the complete set the account can use:

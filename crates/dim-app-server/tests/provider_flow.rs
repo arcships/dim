@@ -3601,12 +3601,8 @@ async fn a_listing_that_collides_with_a_user_model_names_it_and_writes_nothing()
     std::fs::remove_dir_all(home).unwrap();
 }
 
-/// A connection change that lands on a disabled record drops the record's own
-/// models in the same write, without a request, so enabling it leaves an empty
-/// listable catalog that the picker's refresh fills from the new endpoint. A
-/// bundled catalog and a driver that cannot list stay as they are.
 #[tokio::test]
-async fn a_disabled_re_point_drops_an_own_catalog_and_the_refill_lists_the_new_endpoint() {
+async fn a_disabled_provider_can_refresh_its_catalog_after_a_connection_change() {
     use axum::{
         http::{StatusCode, Uri},
         routing::get,
@@ -3691,25 +3687,13 @@ async fn a_disabled_re_point_drops_an_own_catalog_and_the_refill_lists_the_new_e
         requests.try_recv().is_err(),
         "a disabled re-point sends no listing request"
     );
-
-    let enabled = provider
-        .update(
-            REMOTE.into(),
-            2,
-            serde_json::from_value(json!({"enabled":true})).unwrap(),
-            &cancel,
-        )
-        .await
-        .unwrap();
-    assert_eq!(enabled.version, Some(3));
     assert_eq!(
-        serde_json::to_value(&enabled).unwrap().get("modelsListed"),
-        None
+        disabled.enabled,
+        Some(false),
+        "editing the connection keeps the provider disabled"
     );
-    assert!(enabled.models.as_ref().unwrap().is_empty());
+    assert!(disabled.actions.contains(&"refresh"));
 
-    // What the picker's refill sends: `provider.refresh` lists the new
-    // endpoint and stores it.
     let refresh = {
         let provider = provider.clone();
         let cancel = cancel.clone();
@@ -3734,6 +3718,26 @@ async fn a_disabled_re_point_drops_an_own_catalog_and_the_refill_lists_the_new_e
             .collect::<Vec<_>>(),
         ["new-model"],
         "the old endpoint's model is gone and the new one is listed"
+    );
+    assert_eq!(
+        refreshed.models[0].unavailable_reason.as_deref(),
+        Some("provider_unavailable")
+    );
+    let enabled = provider
+        .update(
+            REMOTE.into(),
+            refreshed.version,
+            serde_json::from_value(json!({"enabled":true})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let models = enabled.models.unwrap();
+    assert_eq!(models[0].model.model_id, "new-model");
+    assert!(models[0].unavailable_reason.is_none());
+    assert!(
+        requests.try_recv().is_err(),
+        "enabling reuses the refreshed catalog"
     );
 
     // A builtin's models are the bundled catalog's, not the endpoint's.

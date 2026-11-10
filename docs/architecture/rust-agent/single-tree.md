@@ -198,6 +198,8 @@ Session 与分支能力不向进程服务登记自己：RPC 经 `Session::servic
 
 成对能力（TimelineTree/TreeTimeline 等）的分支半边经 `Deps` 取得 Session 服务。
 
+分支作用域的装配状态只保留到 `TimelineContext` 接管或装配失败回滚。已装配的行与部件句柄由 `TimelineContext` 持有，分支装配对象不持有指回自身的作用域句柄。
+
 Session 与 Timeline 在结构图中分别由 `SessionScopePlugin` 和 `BranchScopePlugin` 表示；Timeline 是后者提供并管理的服务，不另建 `TimelinePlugin`。`TimelineTreePlugin` 管分支目录和创建，创建关系不等于 BranchScope 注入 TimelineTree。
 
 `SessionConfig.collaboration_role: Leader | Member` 是 Session 创建时确定的协作角色，缺省 `Leader`，创建后不变。只有 `CollaborationPlugin` 创建成员 Session 时写入 `Member`；`session.create` 不接受该字段。

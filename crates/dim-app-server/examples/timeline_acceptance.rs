@@ -681,7 +681,13 @@ async fn read_load(
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let sessions = SessionStore::new(db.clone(), rutis::Ctx::root()?, 0);
     let fork_start = Instant::now();
-    sessions.fork_session("source", "fork", through).await?;
+    let config = sessions
+        .session_config_text("source")
+        .await?
+        .ok_or("the source record is missing")?;
+    sessions
+        .fork_session("source", "fork", through, &config)
+        .await?;
     let fork_end = Instant::now();
     let fork_ms = fork_start.elapsed().as_secs_f64() * 1000.;
     tokio::time::sleep(Duration::from_millis(500)).await;

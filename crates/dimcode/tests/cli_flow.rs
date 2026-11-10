@@ -6046,12 +6046,12 @@ fn fullscreen_login_releases_mouse_for_the_link_and_restores_the_preference_on_c
 }
 
 #[test]
-fn browser_login_hides_callback_and_uses_only_generic_account_rpc() {
+fn browser_login_hides_callback_and_refreshes_the_managed_catalog() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
         wire.2 = true;
         let hello = wire.read("hello");
-        wire.reply(&hello,json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods","provider.list","provider.management","account.login.browser.begin","account.login.browser.complete"]}));
+        wire.reply(&hello,json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods","provider.list","provider.management","account.login.browser.begin","account.login.browser.complete","provider.refresh"]}));
         let listed = wire.read("provider.management");
         wire.reply(&listed,json!({"providers":[{"providerId":"fixture","displayName":"Fixture","account":{"namespace":"account","loginMethods":["browser"]}}]}));
         let begin = wire.read("account.login.browser.begin");
@@ -6060,6 +6060,9 @@ fn browser_login_hides_callback_and_uses_only_generic_account_rpc() {
         let complete = wire.read("account.login.browser.complete");
         assert_eq!(complete["params"]["callbackUrl"],"http://localhost:1455/auth/callback?code=secret-code&state=state");
         wire.reply(&complete,json!({"credentialEpoch":"epoch","generation":1,"account":{"issuer":"fixture","subject":"test","grantedScopes":[]}}));
+        let refresh = wire.read("provider.refresh");
+        assert_eq!(refresh["params"], json!({"providerId":"fixture"}));
+        wire.reply(&refresh, json!({"version":1,"models":[]}));
     });
     let mut command = home.command();
     command.env("DIMCODE_OAUTH_MANUAL", "1").args([

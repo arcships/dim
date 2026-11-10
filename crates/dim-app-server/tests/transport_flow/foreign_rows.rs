@@ -45,7 +45,7 @@ fn home(prefix: &str) -> PathBuf {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires DIM_TEST_NODE, DIM_TEST_JS_RUNTIME and DIM_TEST_PYTHON"]
-async fn node_python_plugin_is_one_row_and_its_parts_mount_in_session_and_branch() {
+async fn python_plugin_is_one_row_and_its_parts_mount_in_session_and_branch() {
     let mut parts = fixture();
     parts.python = Some(PythonConfig {
         interpreter: std::env::var_os("DIM_TEST_PYTHON")
@@ -215,7 +215,7 @@ async fn controlled(
 /// Session and its native tools are unaffected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires DIM_TEST_NODE, DIM_TEST_JS_RUNTIME and DIM_TEST_PYTHON"]
-async fn node_python_import_failure_is_local_to_its_row() {
+async fn python_plugin_import_failure_is_local_to_its_row() {
     let mut parts = fixture();
     parts.python = Some(PythonConfig {
         interpreter: std::env::var_os("DIM_TEST_PYTHON")
@@ -321,69 +321,69 @@ async fn node_a_second_provider_of_a_name_in_one_instance_fails() {
 /// status and reloads a row, but cannot add or remove one: Dim configures no
 /// editable layer, so PluginManager stays the only writer of rows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires DIM_TEST_NODE, DIM_TEST_JS_RUNTIME and DIM_TEST_PYTHON"]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
 async fn node_a_row_injecting_loader_reloads_and_reads_but_cannot_add_or_remove_rows() {
     let project = home("dm-loader");
     std::fs::create_dir_all(&project).unwrap();
     let (applied, outcome) = (project.join("applied"), project.join("outcome.json"));
+    let target = project.join("target.mjs");
+    let probe = project.join("loader-probe.mjs");
     std::fs::write(
-        project.join("target.py"),
+        &target,
         format!(
-            "def apply(ctx, config):\n    with open({:?}, 'a') as applied:\n        applied.write('x')\n",
+            r#"import {{ appendFileSync }} from 'node:fs'
+
+export function apply() {{
+  appendFileSync({:?}, 'x')
+}}
+"#,
             applied.to_str().unwrap()
         ),
     )
     .unwrap();
     std::fs::write(
-        project.join("loader_probe.py"),
+        &probe,
         format!(
-            r#"import asyncio
-import json
-import pathlib
+            r#"import {{ renameSync, writeFileSync }} from 'node:fs'
 
-inject = ["rutis/loader"]
-tasks = []
+export const inject = ['rutis/loader']
 
+async function attempt(call) {{
+  try {{
+    await call()
+    return 'ok'
+  }} catch {{
+    return 'refused'
+  }}
+}}
 
-async def script(loader):
-    outcome = {{}}
+async function script(loader) {{
+  const status = await loader.status()
+  const outcome = {{
+    rows: status.rows.map(row => row.id).sort(),
+    reload: await attempt(() => loader.reload('target')),
+    create: await attempt(() => loader.create({{ id: 'added', name: {target:?} }})),
+    remove: await attempt(() => loader.remove('target')),
+  }}
+  const result = {outcome:?}
+  const temporary = result + '.tmp'
+  writeFileSync(temporary, JSON.stringify(outcome))
+  renameSync(temporary, result)
+}}
 
-    async def attempt(label, call):
-        try:
-            await call
-            outcome[label] = "ok"
-        except Exception:
-            outcome[label] = "refused"
-
-    status = await loader.status()
-    outcome["rows"] = sorted(row["id"] for row in status["rows"])
-    await attempt("reload", loader.reload("target"))
-    await attempt("create", loader.create({{"id": "added", "name": "py:target"}}))
-    await attempt("remove", loader.remove("target"))
-    result = pathlib.Path({:?})
-    temporary = result.with_suffix(".tmp")
-    temporary.write_text(json.dumps(outcome))
-    temporary.replace(result)
-
-
-def apply(ctx, config):
-    tasks.append(asyncio.get_running_loop().create_task(script(ctx.use("rutis/loader"))))
+export function apply(ctx) {{
+  void script(ctx.get('rutis/loader'))
+}}
 "#,
-            outcome.to_str().unwrap()
+            target = target.to_str().unwrap(),
+            outcome = outcome.to_str().unwrap(),
         ),
     )
     .unwrap();
     let mut parts = fixture();
-    parts.python = Some(PythonConfig {
-        interpreter: std::env::var_os("DIM_TEST_PYTHON")
-            .expect("DIM_TEST_PYTHON")
-            .into(),
-        project: project.clone(),
-        packages: None,
-    });
     parts.rows = vec![
-        json!({"id": "target", "name": "py:target", "provides": {}}),
-        json!({"id": "probe", "name": "py:loader_probe", "provides": {}}),
+        json!({"id": "target", "name": target, "provides": {}}),
+        json!({"id": "probe", "name": probe, "provides": {}}),
     ];
     let (server, _, _) = super::session_typescript::start(ServerConfig {
         session_typescript: Some(parts),

@@ -16,9 +16,10 @@ const DESCRIPTION: &str = "Run a raw JavaScript async function body in a fresh c
 
 tools.list() -> [{name, description}]
 tools.describe(name) -> full declaration | undefined
-tools.call(name, args) -> tool value
+tools.call(name, args) -> the whole tool result
   args is a JSON object.
-  Returns structuredContent when present, otherwise content.
+  {content, structuredContent?, isError?, and other optional fields}: content is a string or content blocks, structuredContent is the tool's structured data; neither replaces the other.
+  Return content unless you need the structured fields.
   A failed tool throws ToolCallError with code, message and optional data.
   Only the request's tools are callable; codemode is excluded.
 

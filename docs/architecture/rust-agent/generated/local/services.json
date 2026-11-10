@@ -507,6 +507,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_agent_capabilities::prompt_sources::SessionLanguage@session",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_runtime::config::BranchLifecycle@main",
             "scope": null,
             "status": "Ready"
@@ -527,6 +532,12 @@
             "service": "dim_agent_capabilities::host::PromptHost@session",
             "scope": null,
             "provider": 43,
+            "generation": 1
+          },
+          {
+            "service": "dim_agent_capabilities::prompt_sources::SessionLanguage@session",
+            "scope": null,
+            "provider": 44,
             "generation": 1
           },
           {
@@ -552,6 +563,12 @@
           {
             "service": "dim_agent_capabilities::host::PromptHost@session",
             "provider": 43,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_agent_capabilities::prompt_sources::SessionLanguage@session",
+            "provider": 44,
             "declared": true,
             "external": true
           },
@@ -1836,6 +1853,12 @@
       {
         "service": "dim_agent_capabilities::prompt::Prompt@main",
         "provider": 73,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dim_agent_capabilities::prompt_sources::PromptSourcesBranch@main",
+        "provider": 74,
         "generation": 1,
         "removing": false
       },
@@ -3742,6 +3765,12 @@
       {
         "service": "dim_agent_capabilities::prompt_registry::PromptRegistry@session",
         "provider": 43,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dim_agent_capabilities::prompt_sources::SessionLanguage@session",
+        "provider": 44,
         "generation": 1,
         "removing": false
       },

@@ -135,7 +135,8 @@ async fn an_at_job_runs_once_when_its_instant_arrives_and_then_disables() {
         .typed(
             "schedule.save",
             json!({"job": {"name": "once", "schedule": {"at": at},
-                "prompt": "Summarize the day.", "cwd": home.path()}}),
+                "prompt": "Summarize the day.",
+                "target": {"kind": "launch", "cwd": home.path()}}}),
         )
         .await
         .unwrap();

@@ -105,6 +105,10 @@
   },
   {
     "from": "dim-agent-scheduler",
+    "to": "dim-agent-scheduler"
+  },
+  {
+    "from": "dim-agent-scheduler",
     "to": "dim-client"
   },
   {
@@ -518,6 +522,10 @@
   {
     "from": "xtask",
     "to": "dim-agent-runtime"
+  },
+  {
+    "from": "xtask",
+    "to": "dim-agent-scheduler"
   },
   {
     "from": "xtask",

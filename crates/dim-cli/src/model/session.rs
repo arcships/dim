@@ -345,6 +345,11 @@ pub enum Command {
     OauthCancel,
     /// A callback URL the user pasted.
     OauthPaste(String),
+    /// Refresh the signed-in account's model catalog from its panel.
+    RefreshAccountModels {
+        provider_id: String,
+        attempt: u64,
+    },
     /// The `/login` panel opened: report the provider's account.
     LoginStatus(String),
     /// The `/login` panel shows a signed-in account: report its usage.
@@ -860,8 +865,12 @@ pub enum OauthEvent {
     Exchanging,
     #[allow(dead_code)]
     SlowDown(u64),
+    ModelsRefreshed {
+        after_login: bool,
+        result: Result<(), String>,
+    },
     /// Signed in, or why not (`None` error text = cancelled).
-    Done(Result<String, Option<String>>),
+    Done(Result<(), Option<String>>),
 }
 
 /// One change to a provider.

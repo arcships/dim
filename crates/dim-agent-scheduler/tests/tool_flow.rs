@@ -1,8 +1,9 @@
 //! The `schedule` tool through a real App Server: a scripted model calls the
-//! tool from a Session, the process owner saves the job with that branch as
-//! its origin, and a non-interactive Session is refused.
+//! tool from a Session, the process owner saves a `session` target at that
+//! branch, a due window writes one input there, and the declarations and
+//! refusals are as the design states (A.2, §5.1).
 use dim_agent_capabilities::{defaults, history::HistoryRenderer, host::*};
-use dim_agent_runtime::{AgentBuilder, AgentConfig};
+use dim_agent_runtime::{AgentBuilder, AgentConfig, CollaborationRole, SessionConfig};
 use dim_agent_scheduler::install;
 use dim_agent_types::*;
 use dim_app_server::{ServerConfig, serve};
@@ -135,6 +136,14 @@ async fn create_session(client: &mut Client, home: &Path, interactive: bool) -> 
     created["sessionId"].as_str().unwrap().to_owned()
 }
 
+/// The protocol sentences §5.1 puts in the `schedule` declaration.
+const PROTOCOL_SENTENCES: [&str; 4] = [
+    "Manage scheduled jobs across this host, including other workspaces.",
+    "A job delivers its saved prompt to the branch that saved it, on its schedule.",
+    "A job saved by a client may launch a new Session instead.",
+    "A Session may save at most 16 jobs.",
+];
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_schedule_tool_saves_jobs_for_interactive_sessions_only() {
     let home = tempfile::tempdir().unwrap();
@@ -177,7 +186,7 @@ async fn the_schedule_tool_saves_jobs_for_interactive_sessions_only() {
         "c1",
         json!({"action": "create", "job": {
             "name": "nightly", "schedule": {"at": "2030-01-01T00:00:00Z"},
-            "prompt": "Summarize the day.", "cwd": home.path()}}),
+            "prompt": "Summarize the day.", "input_mode": "steer"}}),
     )]);
     client
         .rpc(
@@ -186,19 +195,31 @@ async fn the_schedule_tool_saves_jobs_for_interactive_sessions_only() {
         )
         .await
         .unwrap();
-    wait_for("the saved job and its authority transition", || {
-        let texts = model.texts();
-        texts.contains(r#"\"transition\":{\"from\":null"#)
-            && texts.contains(r#"\"effective_policy\":{\"preset\":\"full-access\""#)
+    wait_for("the saved job", || {
+        model.texts().contains("prompt_truncated")
     })
     .await;
 
+    let texts = model.texts();
+    for sentence in PROTOCOL_SENTENCES {
+        assert!(
+            texts.contains(sentence),
+            "the declaration states: {sentence}"
+        );
+    }
     assert!(
-        model
-            .texts()
-            .contains("the scheduler's account of how the run ended, information, not a request"),
+        !texts.contains("Inspect the old-to-new authority transition"),
+        "the declaration carries no policy sentence"
+    );
+    assert!(
+        texts.contains("the scheduler's account of how the run ended, information, not a request"),
         "the dim-scheduler guide entry reaches the model"
     );
+    assert!(
+        !texts.contains("transition"),
+        "a tool save carries no authority transition: {texts}"
+    );
+
     let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
     let saved = &listed["jobs"][0];
     assert_eq!(saved["name"], "nightly", "{listed}");
@@ -207,7 +228,40 @@ async fn the_schedule_tool_saves_jobs_for_interactive_sessions_only() {
         json!({"tool": {"session_id": interactive, "branch_id": "main"}}),
         "{listed}"
     );
-    assert_eq!(saved["policy_cap"]["preset"], "full-access", "{listed}");
+    assert_eq!(
+        saved["target"],
+        json!({"kind": "session", "session_id": interactive, "branch_id": "main",
+            "input_mode": "steer"}),
+        "{listed}"
+    );
+    assert!(saved["policy_cap"].is_null(), "{listed}");
+    assert!(saved["cwd"].is_null(), "{listed}");
+
+    let job_id = listed["jobs"][0]["id"].as_str().unwrap().to_owned();
+    let accepted: Value = client
+        .typed("schedule.run_now", json!({"job_id": job_id}))
+        .await
+        .unwrap();
+    assert_eq!(accepted["state"], "delivering", "{accepted}");
+    let run = wait_for_delivery(&mut client, &job_id, accepted["run_id"].as_str().unwrap()).await;
+    assert_eq!(run["state"], "delivered", "{run}");
+    assert!(run["input_event_id"].is_string(), "{run}");
+    assert_eq!(run["branch_id"], "main", "{run}");
+    assert!(run["session_origin"].is_null(), "{run}");
+    assert!(run["report_to"].is_null(), "{run}");
+    let texts = model.texts();
+    assert!(
+        texts.contains("scheduled-run"),
+        "the marker reached the branch"
+    );
+    assert!(
+        texts.contains("Summarize the day."),
+        "the saved prompt reached the branch"
+    );
+    assert!(
+        !texts.contains("scheduler-report:"),
+        "a session delivery sends no report"
+    );
 
     let member = create_session(&mut client, home.path(), false).await;
     model.push(vec![call("c2", json!({"action": "list"}))]);
@@ -225,39 +279,389 @@ async fn the_schedule_tool_saves_jobs_for_interactive_sessions_only() {
     })
     .await;
 
-    let job_id = listed["jobs"][0]["id"].as_str().unwrap().to_owned();
+    // The tool cannot name a target, a model, an Agent or a policy.
     model.push(vec![call(
         "c3",
-        json!({"action": "run_now", "job_id": job_id}),
+        json!({"action": "update", "job_id": job_id,
+            "job": {"target": {"kind": "launch", "cwd": home.path()}}}),
     )]);
     client
         .rpc(
             "session.submit",
-            json!({"sessionId": interactive, "branchId": "main", "text": "run it now"}),
+            json!({"sessionId": interactive, "branchId": "main", "text": "retarget it"}),
         )
         .await
         .unwrap();
-    wait_for("the report steered to the saving branch", || {
-        model
-            .texts()
-            .contains("Inspect schedule.history for this job.")
+    wait_for("the retarget refusal", || {
+        model.texts().contains("schedule: schedule_invalid")
     })
     .await;
-    let history: Value = client
-        .typed("schedule.history", json!({"job_id": job_id}))
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Appendix D item 15: a Collaboration member Session is refused too, even
+/// when it is interactive and its model asks the tool directly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_schedule_tool_is_refused_in_a_member_session() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::create_dir_all(home.path().join("scheduler")).unwrap();
+
+    let model = Arc::new(Script::default());
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    defaults::install(&mut builder);
+    defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model.clone());
+    install(&mut builder);
+    let server = serve(
+        builder,
+        ServerConfig {
+            startup_timeout: Duration::from_secs(60),
+            database_path: Some(home.path().join("dimcode.sqlite")),
+            product_home: Some(home.path().to_owned()),
+            unix_path: Some(home.path().join("native.sock")),
+            session_defaults: SessionConfig {
+                collaboration_role: CollaborationRole::Member,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let config = ConnectionConfig {
+        endpoint: server.unix_path.clone().unwrap(),
+        server: Server {
+            program: std::env::current_exe().unwrap(),
+            embedded: false,
+        },
+        profile: None,
+        client_kind: "cli",
+        client_name: "scheduler-member-test",
+        protocol_version: 4,
+    };
+    let mut client = Client::connect(&config).await.unwrap();
+    select_model(&mut client).await;
+
+    let member = create_session(&mut client, home.path(), true).await;
+    model.push(vec![call("m1", json!({"action": "list"}))]);
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": member, "branchId": "main", "text": "list the jobs"}),
+        )
         .await
         .unwrap();
-    let run = &history["runs"][0];
-    assert_eq!(run["state"], "completed", "{history}");
-    assert_eq!(
-        run["report_to"]["session_id"],
-        json!(interactive),
-        "{history}"
+    wait_for("the member refusal", || {
+        model
+            .texts()
+            .contains("available only in interactive leader Sessions")
+    })
+    .await;
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// Waits for the delivery to settle and returns it.
+async fn wait_for_delivery(client: &mut Client, job_id: &str, run_id: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let history: Value = client
+                .typed("schedule.history", json!({"job_id": job_id}))
+                .await
+                .unwrap();
+            if let Some(run) = history["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|run| run["run_id"] == run_id)
+                && run["state"] != json!("delivering")
+            {
+                return run.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the delivery settles")
+}
+
+/// The `description` member of [`SchedulerTexts`] is what the `schedule`
+/// declaration carries: a profile that replaces the description changes the
+/// declaration and nothing else (design §5.1, model-prompts §8.1). The
+/// evaluation's two arms differ only through this member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_factory_description_replaces_the_declaration() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::create_dir_all(home.path().join("scheduler")).unwrap();
+    let model = Arc::new(Script::default());
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    defaults::install(&mut builder);
+    defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model.clone());
+    let texts = dim_agent_scheduler::SchedulerTexts {
+        description: "CANDIDATE DESCRIPTION for the schedule tool.".into(),
+        ..Default::default()
+    };
+    dim_agent_scheduler::install_with(&mut builder, texts).unwrap();
+    let server = serve(
+        builder,
+        ServerConfig {
+            startup_timeout: Duration::from_secs(60),
+            database_path: Some(home.path().join("dimcode.sqlite")),
+            product_home: Some(home.path().to_owned()),
+            unix_path: Some(home.path().join("native.sock")),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let config = ConnectionConfig {
+        endpoint: server.unix_path.clone().unwrap(),
+        server: Server {
+            program: std::env::current_exe().unwrap(),
+            embedded: false,
+        },
+        profile: None,
+        client_kind: "cli",
+        client_name: "scheduler-description-test",
+        protocol_version: 4,
+    };
+    let mut client = Client::connect(&config).await.unwrap();
+    select_model(&mut client).await;
+    let session = create_session(&mut client, home.path(), true).await;
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "hello"}),
+        )
+        .await
+        .unwrap();
+    wait_for("the candidate description", || {
+        model
+            .texts()
+            .contains("CANDIDATE DESCRIPTION for the schedule tool.")
+    })
+    .await;
+    let texts = model.texts();
+    assert!(
+        !texts.contains(PROTOCOL_SENTENCES[0]),
+        "the shipped description is replaced, not appended: {texts}"
     );
     assert!(
-        !run["detail"].as_str().unwrap().contains("report_failed"),
-        "the report was delivered: {history}"
+        texts.contains("the scheduler's account of how the run ended, information, not a request"),
+        "the dim-scheduler guide entry is unchanged"
     );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_seventeenth_tool_job_of_a_session_is_refused() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::create_dir_all(home.path().join("scheduler")).unwrap();
+    let model = Arc::new(Script::default());
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    defaults::install(&mut builder);
+    defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model.clone());
+    install(&mut builder);
+    let server = serve(
+        builder,
+        ServerConfig {
+            startup_timeout: Duration::from_secs(60),
+            database_path: Some(home.path().join("dimcode.sqlite")),
+            product_home: Some(home.path().to_owned()),
+            unix_path: Some(home.path().join("native.sock")),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let config = ConnectionConfig {
+        endpoint: server.unix_path.clone().unwrap(),
+        server: Server {
+            program: std::env::current_exe().unwrap(),
+            embedded: false,
+        },
+        profile: None,
+        client_kind: "cli",
+        client_name: "scheduler-tool-limit-test",
+        protocol_version: 4,
+    };
+    let mut client = Client::connect(&config).await.unwrap();
+    select_model(&mut client).await;
+    let session = create_session(&mut client, home.path(), true).await;
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let jobs = (0..16)
+        .map(|index| {
+            json!({
+                "id": format!("seed-{index}"),
+                "name": format!("seed {index}"),
+                "schedule": {"at": "2030-01-01T00:00:00Z"},
+                "prompt": "Seed.",
+                "enabled": false,
+                "revision": 1,
+                "created_by": {"tool": {"session_id": session, "branch_id": "main"}},
+            })
+        })
+        .collect::<Vec<_>>();
+    rusqlite::Connection::open(home.path().join("dimcode.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE settings_documents SET document = ?1 WHERE source = 'user/schedule'",
+            [json!({"jobs": jobs, "max_concurrent_runs": 4}).to_string()],
+        )
+        .unwrap();
+
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    defaults::install(&mut builder);
+    defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model.clone());
+    install(&mut builder);
+    let server = serve(
+        builder,
+        ServerConfig {
+            startup_timeout: Duration::from_secs(60),
+            database_path: Some(home.path().join("dimcode.sqlite")),
+            product_home: Some(home.path().to_owned()),
+            unix_path: Some(home.path().join("native.sock")),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut client = Client::connect(&config).await.unwrap();
+    model.push(vec![call(
+        "c1",
+        json!({"action": "create", "job": {"name": "one more",
+            "schedule": {"at": "2030-01-01T00:00:00Z"}, "prompt": "One more."}}),
+    )]);
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "schedule one more"}),
+        )
+        .await
+        .unwrap();
+    wait_for("the bound refusal", || {
+        model.texts().contains("a Session may save at most 16 jobs")
+    })
+    .await;
+    let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
+    assert_eq!(listed["jobs"].as_array().unwrap().len(), 16, "{listed}");
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tool_update_keeps_the_stored_launch_target() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::create_dir_all(home.path().join("scheduler")).unwrap();
+    let model = Arc::new(Script::default());
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    defaults::install(&mut builder);
+    defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model.clone());
+    install(&mut builder);
+    let server = serve(
+        builder,
+        ServerConfig {
+            startup_timeout: Duration::from_secs(60),
+            database_path: Some(home.path().join("dimcode.sqlite")),
+            product_home: Some(home.path().to_owned()),
+            unix_path: Some(home.path().join("native.sock")),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let config = ConnectionConfig {
+        endpoint: server.unix_path.clone().unwrap(),
+        server: Server {
+            program: std::env::current_exe().unwrap(),
+            embedded: false,
+        },
+        profile: None,
+        client_kind: "cli",
+        client_name: "scheduler-tool-target-test",
+        protocol_version: 4,
+    };
+    let mut client = Client::connect(&config).await.unwrap();
+    select_model(&mut client).await;
+
+    let saved: Value = client
+        .typed(
+            "schedule.save",
+            json!({"job": {"name": "client job", "schedule": {"at": "2030-01-01T00:00:00Z"},
+                "prompt": "Check the inbox.",
+                "target": {"kind": "launch", "cwd": home.path()}}}),
+        )
+        .await
+        .unwrap();
+    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
+
+    let session = create_session(&mut client, home.path(), true).await;
+    model.push(vec![call(
+        "c1",
+        json!({"action": "update", "job_id": job_id, "job": {"name": "renamed by tool"}}),
+    )]);
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "rename it"}),
+        )
+        .await
+        .unwrap();
+    wait_for("the renamed job", || {
+        model.texts().contains("renamed by tool")
+    })
+    .await;
+    let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
+    let job = &listed["jobs"][0];
+    assert_eq!(job["name"], "renamed by tool", "{listed}");
+    assert_eq!(job["target"]["kind"], "launch", "{listed}");
+
+    let accepted: Value = client
+        .typed("schedule.run_now", json!({"job_id": job_id}))
+        .await
+        .unwrap();
+    assert_eq!(accepted["state"], "launching", "{accepted}");
+    let run = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let history: Value = client
+                .typed("schedule.history", json!({"job_id": job_id, "limit": 50}))
+                .await
+                .unwrap();
+            if let Some(run) = history["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|run| run["run_id"] == accepted["run_id"])
+                && !matches!(
+                    run["state"].as_str(),
+                    Some("launching" | "submitted" | "running")
+                )
+            {
+                return run.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the launch target still launches");
+    assert_eq!(run["state"], "completed", "{run}");
+    assert_eq!(run["session_origin"], "launch", "{run}");
 
     drop(client);
     server.shutdown();

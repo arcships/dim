@@ -683,11 +683,11 @@ async fn uv_runtime_manager_downloads_the_pinned_tool() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires node 22.19+ and python3 3.12+ with pip on PATH, and the npm and PyPI registries"]
-async fn node_runtime_manager_starts_rows_once_their_runtime_is_acquired() {
+#[ignore = "requires node 22.19+ and the npm registry"]
+async fn node_runtime_manager_restarts_a_failed_runtime() {
     let home = PathBuf::from("/tmp").join(format!("drm-{}", uuid::Uuid::new_v4()));
     let plugins = home.join("sources");
-    std::fs::create_dir_all(plugins.join("probe-py")).unwrap();
+    std::fs::create_dir_all(&plugins).unwrap();
     let defaults = home.join("default-plugins.json");
     std::fs::write(
         &defaults,
@@ -705,36 +705,8 @@ async fn node_runtime_manager_starts_rows_once_their_runtime_is_acquired() {
         ),
     )
     .unwrap();
-    let python_marker = home.join("python-started");
-    std::fs::write(
-        plugins.join("probe-py/entry.py"),
-        format!(
-            "import pathlib\n\ninject = []\nprovides = {{}}\n\n\n\
-             async def apply(ctx, config):\n    pathlib.Path({:?}).write_text('yes')\n",
-            python_marker.to_str().unwrap()
-        ),
-    )
-    .unwrap();
-    std::fs::create_dir_all(home.join("plugins/.python")).unwrap();
-    std::os::unix::fs::symlink(
-        plugins.join("probe-py"),
-        home.join("plugins/.python/probe_py"),
-    )
-    .unwrap();
-    let rows = vec![
-        json!({"id": "probe", "name": plugins.join("probe.mjs"), "provides": {}}),
-        json!({"id": "probe-py", "name": "py:probe_py.entry", "provides": {}}),
-    ];
-    let runtimes = Arc::new(
-        Runtimes::load(
-            &home,
-            &dim_app_server::plugin_manager::Defaults::read(&defaults)
-                .unwrap()
-                .runtimes,
-            None,
-        )
-        .unwrap(),
-    );
+    let rows = vec![json!({"id": "probe", "name": plugins.join("probe.mjs"), "provides": {}})];
+    let runtimes = load_runtimes(&home, &defaults, None);
     let server = launch(
         Arc::new(MockTools),
         ServerConfig {
@@ -749,12 +721,6 @@ async fn node_runtime_manager_starts_rows_once_their_runtime_is_acquired() {
     let list = client.rpc("runtime.list", json!({})).await;
     assert_ok(&list);
     assert_eq!(list["result"][0]["name"], "node");
-    assert_eq!(list["result"][1]["status"], "off", "{list}");
-    assert!(
-        list["result"][1]["path"].is_null(),
-        "a runtime that is off resolved nothing: {list}"
-    );
-    assert!(!python_marker.exists());
     let ready = status(&mut client, 0, "ready").await;
     assert_eq!(
         ready["path"],
@@ -784,17 +750,10 @@ async fn node_runtime_manager_starts_rows_once_their_runtime_is_acquired() {
     assert_ne!(std::fs::read_to_string(&node_marker).unwrap(), pid);
     status(&mut client, 0, "ready").await;
 
-    let install = client
-        .rpc("runtime.install", json!({"name": "python"}))
-        .await;
-    assert_ok(&install);
-    appears(&python_marker).await;
-    status(&mut client, 1, "ready").await;
     let records: Value =
         serde_json::from_slice(&std::fs::read(home.join("runtimes/runtimes.json")).unwrap())
             .unwrap();
     assert_eq!(records["node"]["source"], "system");
-    assert_eq!(records["python"]["source"], "system");
     let checked = std::process::Command::new("node")
         .arg("--version")
         .output()
@@ -809,28 +768,62 @@ async fn node_runtime_manager_starts_rows_once_their_runtime_is_acquired() {
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires python3 3.12+ with pip on PATH and the PyPI registry"]
+async fn python_plugin_starts_after_runtime_install_and_daemon_restart() {
+    let home = PathBuf::from("/tmp").join(format!("drm-{}", uuid::Uuid::new_v4()));
+    let plugin = home.join("plugins/.python/probe_py");
+    std::fs::create_dir_all(&plugin).unwrap();
+    let defaults = write_defaults(&home, r#"{"python": {"source": "system", "auto": false}}"#);
+    let python_marker = home.join("python-started");
+    std::fs::write(
+        plugin.join("entry.py"),
+        format!(
+            "import pathlib\n\ninject = []\nprovides = {{}}\n\n\n\
+             async def apply(ctx, config):\n    pathlib.Path({:?}).write_text('yes')\n",
+            python_marker.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let start = || {
+        let runtimes = load_runtimes(&home, &defaults, None);
+        let rows = vec![json!({"id": "probe-py", "name": "py:probe_py.entry", "provides": {}})];
+        launch(
+            Arc::new(MockTools),
+            ServerConfig {
+                target_home: Some(home.clone()),
+                session_typescript: Some(SessionTypeScriptConfig::acquired(&home, runtimes, rows)),
+                ..Default::default()
+            },
+        )
+    };
+    let server = start().await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let off = status(&mut client, 1, "off").await;
+    assert!(off["path"].is_null(), "{off}");
+    assert!(!python_marker.exists());
+
+    assert_ok(
+        &client
+            .rpc("runtime.install", json!({"name": "python"}))
+            .await,
+    );
+    appears(&python_marker).await;
+    let ready = status(&mut client, 1, "ready").await;
+    assert_eq!(ready["source"], "system", "{ready}");
+    let records: Value =
+        serde_json::from_slice(&std::fs::read(home.join("runtimes/runtimes.json")).unwrap())
+            .unwrap();
+    assert_eq!(records["python"]["source"], "system");
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
 
     std::fs::remove_file(&python_marker).unwrap();
-    let runtimes = Arc::new(
-        Runtimes::load(
-            &home,
-            &dim_app_server::plugin_manager::Defaults::read(&defaults)
-                .unwrap()
-                .runtimes,
-            None,
-        )
-        .unwrap(),
-    );
-    let rows = vec![json!({"id": "probe-py", "name": "py:probe_py.entry", "provides": {}})];
-    let server = launch(
-        Arc::new(MockTools),
-        ServerConfig {
-            target_home: Some(home.clone()),
-            session_typescript: Some(SessionTypeScriptConfig::acquired(&home, runtimes, rows)),
-            ..Default::default()
-        },
-    )
-    .await;
+    let server = start().await;
     appears(&python_marker).await;
     server.shutdown();
     server.join().await.unwrap();

@@ -3668,6 +3668,13 @@ impl App {
             Effect::OauthCancel => self.host.send(Command::OauthCancel),
             Effect::OauthBack => {}
             Effect::OauthPaste(url) => self.host.send(Command::OauthPaste(url)),
+            Effect::RefreshAccountModels {
+                provider_id,
+                attempt,
+            } => self.host.send(Command::RefreshAccountModels {
+                provider_id,
+                attempt,
+            }),
             Effect::Connected(provider_id) => {
                 self.set_notice(tf("Connected {provider}", &[("provider", &provider_id)]));
                 if provider_id == DIM_OAUTH_ID {

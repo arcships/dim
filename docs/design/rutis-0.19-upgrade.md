@@ -576,13 +576,14 @@ The checks `.github/workflows/ci.yml` runs, at the workspace root, in its order:
 6. The public Node bindings:
    - `runtime/plugin-sdk.test.mjs`;
    - the goal and session-title plugin tests, the scheduler and workflow `tsc` checks, now with
-     `RUTIS_HOST` (M10);
-   - the Python environment from `runtime/python-requirements.txt`.
-7. The Node- and Python-backed Rust flows, with `DIM_TEST_NODE`, `DIM_TEST_JS_RUNTIME`,
-   `DIM_TEST_RUTIS_SDK` and `DIM_TEST_PYTHON`:
+     `RUTIS_HOST` (M10).
+7. The Node-backed Rust flows use `DIM_TEST_NODE`, `DIM_TEST_JS_RUNTIME` and `DIM_TEST_RUTIS_SDK`:
    - `cargo test --locked -p dim-app-server --test transport_flow --test mcp_http_flow node_ -- --ignored`;
    - `cargo test --locked -p dim-migration --test migration_flow node_ -- --ignored`;
    - `cargo test --locked -p xtask node_ -- --ignored`.
+8. The separate Python plugin flows also use `DIM_TEST_PYTHON` with the environment from
+   `runtime/python-requirements.txt`. Run `cargo test --locked -p dim-app-server --test transport_flow python_plugin_ -- --ignored`.
+   See the [CI workflow checks](../release/README.md#github-workflows) for the opt-in gate.
 
 Flow checks the suite must cover; extend existing tests only where the contract moved:
 

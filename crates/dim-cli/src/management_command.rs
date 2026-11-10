@@ -1206,7 +1206,8 @@ fn rule_notes(rules: &permission::Rules) -> Vec<String> {
     }
 }
 
-/// One job: its id, name, schedule, state, next window and last outcome.
+/// One job: its id, name, schedule, state, next window, last outcome and
+/// where it delivers.
 fn job_rows(catalog: &scheduler::Catalog) -> Vec<String> {
     catalog
         .jobs
@@ -1217,14 +1218,19 @@ fn job_rows(catalog: &scheduler::Catalog) -> Vec<String> {
                 || "—".to_owned(),
                 |run| format!("{} at {}", run.outcome(), run.instant()),
             );
+            let target = job
+                .target
+                .as_ref()
+                .map_or_else(|| "—".to_owned(), scheduler::Target::column);
             format!(
-                "{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 safe_line(&job.id),
                 safe_line(&job.name),
                 safe_line(&scheduler::schedule_text(&job.schedule)),
                 if job.enabled { "enabled" } else { "disabled" },
                 safe_line(next),
                 safe_line(&last),
+                safe_line(&target),
             )
         })
         .collect()
@@ -1234,7 +1240,7 @@ fn job_notes(catalog: &scheduler::Catalog) -> Vec<String> {
     let mut notes = if catalog.jobs.is_empty() {
         vec!["No job is scheduled.".to_owned()]
     } else {
-        vec!["Columns: id, name, schedule, state, next run, last run.".to_owned()]
+        vec!["Columns: id, name, schedule, state, next run, last run, target.".to_owned()]
     };
     for job in &catalog.jobs {
         if let Some(error) = &job.schedule_error {

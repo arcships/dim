@@ -122,7 +122,7 @@ jobs:
       - name: Run compiled workspace tests
         if: needs.changes.outputs.rust == 'true'
         run: |
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl --workspace --test-threads=4
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl --workspace --test-threads=5
           cargo test --workspace --doc --locked ${{ needs.changes.outputs.eval == 'true' && '--features xtask/eval-tests' || '' }}
       - name: Verify wall-clock background handoff
         if: needs.changes.outputs.execution == 'true'
@@ -169,6 +169,21 @@ jobs:
           # Node-backed Rust flows below still load it for real, and `tsc`
           # checks it.
           node runtime/node_modules/typescript/bin/tsc -p runtime/plugins/workflow/tsconfig.json
+          export DIM_TEST_NODE="$(command -v node)"
+          export DIM_TEST_JS_RUNTIME="$PWD/runtime/node_modules/@arcships/rutis-runtime"
+          export DIM_TEST_RUTIS_SDK="$PWD/runtime/node_modules/@arcships/rutis/src/index.mjs"
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow node_ --ignored
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl mcp_http_flow node_ --ignored
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl migration_flow node_ --ignored
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl hub_flow node_ --ignored
+          if [[ '${{ needs.changes.outputs.eval }}' == true ]]; then
+            node scripts/run-rust-test.mjs target/test-artifacts.jsonl xtask node_ --ignored
+          fi
+      - name: Verify Python plugins
+        if: needs.changes.outputs.node == 'true' && vars.DIM_CI_PYTHON_PLUGINS == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
           # The Python of `py:` rows: a relocatable CPython, pinned by hash, so the
           # self-hosted runner needs neither a system Python 3.10+ nor sudo.
           python_build="cpython-3.12.15+20261003-aarch64-apple-darwin-install_only.tar.gz"
@@ -182,15 +197,8 @@ jobs:
           export PATH="$RUNNER_TEMP/python/bin:$PATH"
           export DIM_TEST_NODE="$(command -v node)"
           export DIM_TEST_JS_RUNTIME="$PWD/runtime/node_modules/@arcships/rutis-runtime"
-          export DIM_TEST_RUTIS_SDK="$PWD/runtime/node_modules/@arcships/rutis/src/index.mjs"
           export DIM_TEST_PYTHON="$PWD/runtime/.venv/bin/python"
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow node_ --ignored
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl mcp_http_flow node_ --ignored
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl migration_flow node_ --ignored
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl hub_flow node_ --ignored
-          if [[ '${{ needs.changes.outputs.eval }}' == true ]]; then
-            node scripts/run-rust-test.mjs target/test-artifacts.jsonl xtask node_ --ignored
-          fi
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow python_plugin_ --ignored
   acp-registry:
     needs: changes
     if: github.event_name != 'pull_request' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.scripts == 'true')

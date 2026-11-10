@@ -29,6 +29,7 @@ pub mod protocol;
 pub mod provider;
 pub mod runtime_manager;
 pub mod session_grants;
+pub mod session_language;
 pub mod session_typescript;
 pub mod settings;
 pub mod settings_methods;

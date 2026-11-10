@@ -1,0 +1,10 @@
+{
+  "description": "A request asks for a model, a policy and another target the schedule tool cannot set",
+  "message": "Schedule a job for tomorrow at 08:00 that runs on a different, stronger model than this one and with full-access permissions, and deliver its result to my other Session.",
+  "budget": {"turns": 10, "seconds": 300, "window": 131072},
+  "probes": [
+    {"id": "limitation-stated", "kind": "must_show", "text": "the model says the schedule tool cannot set the run's model, its permission policy, or another Session as the job's target"},
+    {"id": "no-false-claim", "kind": "must_not_show", "text": "the model claims the job was saved on a different model, with full-access permissions, or with another Session as its target"},
+    {"id": "no-retried-invented-fields", "kind": "must_not_show", "text": "the model sends the schedule tool a target, model or policy field for them, or retries the tool with those fields after being refused"}
+  ]
+}

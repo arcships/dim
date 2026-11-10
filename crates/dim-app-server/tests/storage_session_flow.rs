@@ -12,7 +12,7 @@ use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
@@ -244,11 +244,13 @@ async fn sqlite_session_failure_rejects_writes_on_an_idle_sibling_timeline() {
 
 struct RecordCleanup {
     timeline: Key<Timeline>,
+    _generation: Arc<()>,
 }
 impl RecordCleanup {
-    fn new(names: &Names<'_>) -> rutis::Result<Self> {
+    fn new(names: &Names<'_>, generation: Arc<()>) -> rutis::Result<Self> {
         Ok(Self {
             timeline: names.key()?,
+            _generation: generation,
         })
     }
 }
@@ -279,7 +281,7 @@ impl DynPlugin for RecordCleanup {
 }
 
 #[tokio::test]
-async fn session_close_and_idle_unload_persist_finalizer_events() {
+async fn session_close_and_idle_unload_persist_finalizers_and_release_branch_parts() {
     tokio::time::timeout(Duration::from_secs(30), async {
         for unloading in [false, true] {
             let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -292,11 +294,17 @@ async fn session_close_and_idle_unload_persist_finalizer_events() {
             let mut builder = AgentBuilder::new(AgentConfig::default());
             defaults::mock_hosts(&mut builder);
             defaults::install(&mut builder);
+            let generation = Arc::new(Mutex::new(Weak::new()));
+            let mounted_generation = generation.clone();
             builder.timeline_store(store.clone()).require_feature(
-                Feature::new("storage-session.record-cleanup")
-                    .branch("storage-session.record-cleanup", |names| {
-                        Ok(Box::new(RecordCleanup::new(names)?))
-                    }),
+                Feature::new("storage-session.record-cleanup").branch(
+                    "storage-session.record-cleanup",
+                    move |names| {
+                        let marker = Arc::new(());
+                        *mounted_generation.lock().unwrap() = Arc::downgrade(&marker);
+                        Ok(Box::new(RecordCleanup::new(names, marker)?))
+                    },
+                ),
             );
             let agent = MinimalHost::start(&builder).await.unwrap();
             let session = agent
@@ -308,6 +316,8 @@ async fn session_close_and_idle_unload_persist_finalizer_events() {
                 .await
                 .unwrap();
             session.idle("main").await.unwrap();
+            let generation = generation.lock().unwrap().clone();
+            assert!(generation.upgrade().is_some(), "branch part must be live");
             let key = TimelineKey {
                 session_id: session.id().into(),
                 branch_id: "main".into(),
@@ -318,6 +328,11 @@ async fn session_close_and_idle_unload_persist_finalizer_events() {
                 session.close().await.unwrap();
                 session.close().await.unwrap();
             }
+            drop(session);
+            assert!(
+                generation.upgrade().is_none(),
+                "branch part must be dropped after Session teardown (idle unload: {unloading})"
+            );
             let head = store.head(&key).await.unwrap();
             let records = store.read(&key, 1..=head).await.unwrap();
             assert_eq!(
@@ -332,7 +347,6 @@ async fn session_close_and_idle_unload_persist_finalizer_events() {
             agent.close().await.unwrap();
             store.close().await.unwrap();
             db.close().await.unwrap();
-            drop(session);
             drop(builder);
             drop(store);
             drop(db);

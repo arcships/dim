@@ -159,7 +159,7 @@ async function save(): Promise<void> {
           <div class="settings-inline-actions"><button v-if="entry.actions.includes('edit')" class="ui-button" data-variant="ghost" data-size="sm" :disabled="busy" @click="open(entry)">{{ t("edit") }}</button><button v-if="entry.actions.includes('reset')" class="ui-button" data-variant="ghost" data-size="sm" :disabled="busy || connection.phase !== 'connected'" @click="remove(entry, true)">{{ t("reset") }}</button><button v-if="entry.actions.includes('delete')" class="ui-button" data-variant="danger-ghost" data-size="sm" :disabled="busy || connection.phase !== 'connected'" @click="remove(entry, false)">{{ t("remove") }}</button></div>
         </div>
       </div>
-      <p v-if="!models.length" class="settings-empty">{{ t(query ? 'noResults' : 'noModels') }}</p>
+      <p v-if="!models.length" class="settings-empty">{{ t(query ? "noResults" : provider.actions.includes("refresh") ? "noModelsRefresh" : provider.actions.includes("models.create") ? "noModelsAdd" : "noProviderModels") }}</p>
     </template>
   </section>
 </template>
