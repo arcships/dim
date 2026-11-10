@@ -343,6 +343,46 @@ async fn input_id_plan(store: &SqliteTimelineStore, values: Vec<Value>) -> Vec<S
         .collect()
 }
 
+/// A list over a context switch: the physical pre-filter carries an integer
+/// per candidate there, and both lengths must return the same rows. This is
+/// the shape a wrongly typed pre-filter breaks, because a real query over it
+/// then matches nothing.
+#[tokio::test]
+async fn a_context_switch_list_matches_in_both_lengths() {
+    let (store, memory, database) = stores().await;
+    let mut records = Vec::new();
+    for sequence in 1..=6u64 {
+        records.push(record(
+            sequence,
+            EventKind::Text(DeltaData {
+                turn_id: "turn".into(),
+                request_id: "request".into(),
+                delta: format!("delta {sequence}"),
+            }),
+        ));
+    }
+    append_both(&store, &memory, records).await;
+    let mut query = fields(&["position.sequence"]);
+    let switches = |values: Vec<Value>| QueryFilter::In {
+        value: QueryOperand::Field {
+            path: "context.render".into(),
+        },
+        values,
+    };
+    query.filter = Some(switches(vec![json!(true)]));
+    let short = same_result(&store, &memory, &scope(6), &query).await;
+    query.filter = Some(switches(vec![json!(true), json!(false)]));
+    let both = same_result(&store, &memory, &scope(6), &query).await;
+    assert_eq!(
+        short.len() + both.len(),
+        12,
+        "the two lists select four and six rows: {short:?} {both:?}"
+    );
+    drop(store);
+    drop(memory);
+    drop(database);
+}
+
 /// An empty list selects nothing; it is not an absent condition.
 #[tokio::test]
 async fn an_empty_membership_list_selects_nothing() {

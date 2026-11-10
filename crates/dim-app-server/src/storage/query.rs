@@ -320,6 +320,7 @@ impl<'a> Compiler<'a> {
             .filter_map(|value| match value {
                 Value::String(value) => Some(json!(value)),
                 Value::Bool(value) => Some(json!(i64::from(*value))),
+                Value::Number(value) => Some(Value::Number(value.clone())),
                 _ => None,
             })
             .collect();
