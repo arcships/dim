@@ -87,7 +87,11 @@ async fn a_snapshot_read_over_a_long_delivered_prefix_has_no_list_length_limit()
         let rounds = Arc::new(AtomicUsize::new(0));
         let mut builder = AgentBuilder::new(AgentConfig::default());
         dim_agent_capabilities::defaults::mock_hosts(&mut builder);
-        dim_agent_capabilities::defaults::install_with_prompt(&mut builder, Arc::new(Rounds(rounds.clone())), None);
+        dim_agent_capabilities::defaults::install_with_prompt(
+            &mut builder,
+            Arc::new(Rounds(rounds.clone())),
+            None,
+        );
         builder.timeline_store(store.clone());
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent

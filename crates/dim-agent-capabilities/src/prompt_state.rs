@@ -355,8 +355,7 @@ impl PromptSnapshot {
                                         // configuration already carries the
                                         // new System composition without it, so
                                         // only the new value waits.
-                                        if let Some(removal) = snapshot.system_removal(&change)
-                                        {
+                                        if let Some(removal) = snapshot.system_removal(&change) {
                                             snapshot.changed(
                                                 &line,
                                                 &revision,

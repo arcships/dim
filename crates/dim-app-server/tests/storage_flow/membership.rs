@@ -5,8 +5,7 @@
 use super::*;
 use dim_agent_runtime::{
     QueryFilter, QueryOperand, QueryOutput, QueryPage, QuerySelect, QuerySpec, QueryValue,
-    TimelineReadScope,
-    TimelineReadSegment,
+    TimelineReadScope, TimelineReadSegment,
 };
 use serde_json::{Value, json};
 use std::num::NonZeroU64;
@@ -153,7 +152,7 @@ async fn a_mixed_membership_list_matches_each_candidate_by_its_type() {
         json!(true),
         json!(null),
         json!({"nested":1}),
-        json!([1,2]),
+        json!([1, 2]),
         json!("absent"),
     ];
     let records: Vec<_> = values
