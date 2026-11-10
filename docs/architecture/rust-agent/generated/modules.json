@@ -950,6 +950,17 @@
       ]
     },
     {
+      "id": "dim_agent_capabilities::prompt_state::tests",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::prompt_state",
+      "file": "crates/dim-agent-capabilities/src/prompt_state.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "vec"
+      ]
+    },
+    {
       "id": "dim_agent_capabilities::prompt_suggestion",
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities",
@@ -10099,6 +10110,7 @@
         "path ContextCompactionResult::Cancelled",
         "path ContextPrepareData",
         "path EventDraft",
+        "path EventDraft::new",
         "path EventKind::ContextCompaction",
         "path EventKind::ContextConfigured",
         "path EventKind::ContextPrepare",
@@ -13522,6 +13534,13 @@
     },
     {
       "from": "dim_agent_capabilities::prompt_state",
+      "to": "dim_agent_capabilities::prompt_state::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt_state",
       "to": "dim_agent_runtime::core::timeline",
       "references": [
         "path Timeline",
@@ -13548,6 +13567,7 @@
       "from": "dim_agent_capabilities::prompt_state",
       "to": "dim_agent_runtime::timeline_query::properties",
       "references": [
+        "path QueryFilter::And",
         "path QueryFilter::In",
         "path QueryOperand::Field",
         "path QueryOutput::Rows",
@@ -13555,6 +13575,7 @@
         "path QueryPick::Last",
         "path QuerySelect::Fields",
         "path QuerySpec",
+        "path QueryValue::Missing",
         "path QueryValue::Value",
         "path TimelineQuery",
         "use dim_agent_runtime::QueryFilter",
@@ -13573,6 +13594,7 @@
       "to": "dim_agent_types::checkpoint",
       "references": [
         "path PromptCheckpointState",
+        "path TimelinePosition",
         "path checkpoint"
       ]
     },
@@ -13588,6 +13610,13 @@
         "path EventKind::TurnEnd",
         "path EventKind::TurnStart",
         "path events"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt_state",
+      "to": "dim_agent_types::input",
+      "references": [
+        "path input"
       ]
     },
     {
@@ -13616,6 +13645,88 @@
       "to": "dim_agent_types::tool",
       "references": [
         "path kind"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt_state::tests",
+      "to": "dim_agent_capabilities::prompt_state",
+      "references": [
+        "path PromptSnapshot",
+        "path PromptSnapshot::read"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt_state::tests",
+      "to": "dim_agent_runtime::config",
+      "references": [
+        "path SessionConfig::default",
+        "use dim_agent_runtime::SessionConfig"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt_state::tests",
+      "to": "dim_agent_runtime::core::timeline",
+      "references": [
+        "path Timeline",
+        "path Timeline::new"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt_state::tests",
+      "to": "dim_agent_runtime::memory_timeline_store",
+      "references": [
+        "path MemoryTimelineStore",
+        "path MemoryTimelineStore::default",
+        "use dim_agent_runtime::MemoryTimelineStore"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt_state::tests",
+      "to": "dim_agent_runtime::timeline_store",
+      "references": [
+        "path TimelineKey",
+        "use dim_agent_runtime::TimelineKey",
+        "use dim_agent_runtime::TimelineStore"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt_state::tests",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path BranchCreateAt::Create",
+        "path BranchCreateData",
+        "path BranchSource::Host",
+        "path EventDraft",
+        "path EventDraft::new",
+        "path EventKind::BranchCreate",
+        "path EventKind::InputConsumed",
+        "path EventKind::InputMessage",
+        "path EventKind::PromptChanged",
+        "path InputConsumedData",
+        "path InputMessageData",
+        "path InputMode::Append"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt_state::tests",
+      "to": "dim_agent_types::prompt",
+      "references": [
+        "path PromptChange",
+        "path PromptChange::Revoke",
+        "path PromptChange::Set",
+        "path PromptChangeReason::Refresh",
+        "path PromptChangedData",
+        "path PromptDelivery::State",
+        "path PromptDelivery::System",
+        "path PromptEntry",
+        "path PromptScope::Branch"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt_state::tests",
+      "to": "dim_agent_types::tool",
+      "references": [
+        "path child"
       ]
     },
     {

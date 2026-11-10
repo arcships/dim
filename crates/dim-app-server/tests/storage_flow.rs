@@ -4205,8 +4205,8 @@ fn a_newer_store_leaves_an_actionable_startup_note() {
     Connection::open(&database.0)
         .unwrap()
         .execute_batch(
-            "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 39));
-             INSERT INTO agent_store_format VALUES (39);",
+            "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 40));
+             INSERT INTO agent_store_format VALUES (40);",
         )
         .unwrap();
     let original = std::fs::read(&database.0).unwrap();
@@ -4216,10 +4216,10 @@ fn a_newer_store_leaves_an_actionable_startup_note() {
     assert!(message.contains("unsupported SQLite schema"), "{message}");
     assert_eq!(std::fs::read(&database.0).unwrap(), original);
     let note = read_startup_note(&database.0);
-    assert!(note.contains("Store format: v39"), "{note}");
-    assert!(note.contains("Daemon format: v38"), "{note}");
+    assert!(note.contains("Store format: v40"), "{note}");
+    assert!(note.contains("Daemon format: v39"), "{note}");
     assert!(note.contains("Existing data was preserved"), "{note}");
-    assert!(note.contains("Run a build supporting v39"), "{note}");
+    assert!(note.contains("Run a build supporting v40"), "{note}");
     assert!(note.contains("--home PATH"), "{note}");
 }
 
@@ -4237,7 +4237,7 @@ fn a_mismatched_store_note_does_not_claim_a_downgrade() {
     assert!(SqliteStorage::open(database.0.clone()).is_err());
     assert_eq!(std::fs::read(&database.0).unwrap(), original);
     let note = read_startup_note(&database.0);
-    assert!(note.contains("Store format: v29 (schema is v38)"), "{note}");
+    assert!(note.contains("Store format: v29 (schema is v39)"), "{note}");
     assert!(note.contains("marker and schema disagree"), "{note}");
     assert!(
         note.contains("Use the build that wrote this store"),
@@ -4281,7 +4281,7 @@ fn an_empty_marker_table_is_reported_as_missing_or_ambiguous() {
     assert_eq!(std::fs::read(&database.0).unwrap(), original);
     let note = read_startup_note(&database.0);
     assert!(
-        note.contains("Store format: v38 (format marker is missing or ambiguous)"),
+        note.contains("Store format: v39 (format marker is missing or ambiguous)"),
         "{note}"
     );
     assert!(!note.contains("Run a build supporting"), "{note}");
@@ -7740,6 +7740,23 @@ async fn a_v31_store_upgrades_in_place_once() {
         .unwrap();
     assert_eq!(schema(&connection), schema_of(31));
     upgrades_in_place_once(&database, connection, 31).await;
+}
+
+/// #1361: a prompt change's optional `inputs` makes a marker-only step.
+#[tokio::test]
+async fn a_v38_store_upgrades_in_place_once() {
+    let database = Database::new();
+    let connection = Connection::open(&database.0).unwrap();
+    let mut statements = schema_of(38);
+    statements.sort_by_key(|sql| !sql.starts_with("CREATE TABLE"));
+    for sql in statements {
+        connection.execute_batch(&sql).unwrap();
+    }
+    connection
+        .execute("INSERT INTO agent_store_format VALUES (38)", [])
+        .unwrap();
+    assert_eq!(schema(&connection), schema_of(38));
+    upgrades_in_place_once(&database, connection, 38).await;
 }
 
 /// A store upgrade that outlives `startup_timeout` still opens while it

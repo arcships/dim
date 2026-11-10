@@ -66,6 +66,16 @@ pub struct PromptChangedData {
     pub previous: Option<PromptReference>,
     pub reason: PromptChangeReason,
     pub changes: Vec<PromptChange>,
+    /// The `input/message` events this change delivers with, in block order:
+    /// they are written in the same batch and render the change when a
+    /// request consumes them. A line that inherits this change through its
+    /// prefix applies it only once every input here was consumed there; one
+    /// of these inputs never consumed leaves the change undelivered. Empty
+    /// for changes delivered as System content, which the prefix's
+    /// configuration already carries, and for facts written before the field
+    /// existed; a reader applies those where they are found.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
 }
 
 /// The model-owned part of configuration. Tool declarations and system content
