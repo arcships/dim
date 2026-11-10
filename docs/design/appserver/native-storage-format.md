@@ -1,6 +1,6 @@
 # Rust 会话存储格式
 
-The current native format is **v38**, with property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records, source-owned `settings_documents`,
+The current native format is **v39**, with property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records, source-owned `settings_documents`,
 SessionStore's Session-file rows, its title metadata, request messages stored
 as lists of content-addressed nodes, extension event rows, Session
 configurations and Agent profiles that may omit their mount list, the two
@@ -8,12 +8,13 @@ branch end events, the tool-effect and digest fields, and tool schemas that may
 omit `type`, the Session catalog projection, a configuration's System source,
 a model limit that only a declaration writes, a delegation's Agent owner and
 member leader, a Session's creation origin, Session file grants, command output
-ownership and the two context reading switches on timeline events. Startup
-requires the exact v38 SQL schema and a single
-format marker of 38 before writable PRAGMAs, or the exact v37, v36, v35, v34, v33, v32, v31, v30, v29, v28, v27, v26, v25, v24, v23,
+ownership, the two context reading switches on timeline events and a prompt
+change's delivery inputs. Startup
+requires the exact v39 SQL schema and a single
+format marker of 39 before writable PRAGMAs, or the exact v38, v37, v36, v35, v34, v33, v32, v31, v30, v29, v28, v27, v26, v25, v24, v23,
 v22, v21, v20, v19, v18, v17, v16, v15 or v13 schema with its own marker,
-which the same startup transaction upgrades in place to v38 one step after
-another ([v38 session protocol](#v38-session-protocol), [v37 child tool-call parent](#v37-child-tool-call-parent), [v36 text candidates](#v36-property-text-candidates), [v35 submission index](#v35-submission-identity-index), [#1099 v34 decision](#1099-v34-格式决定), [#911 v33 decision](#911-v33-格式决定), [#605 v32 decision](#605-v32-格式决定), [#708 v31 decision](#708-v31-格式决定), [#557 v30 decision](#557-v30-格式决定), [ADR 013 v29 decision](#adr-013-v29-格式决定), [#717 v28 decision](#717-v28-格式决定), [#593 v27 decision](#593-v27-格式决定),
+which the same startup transaction upgrades in place to v39 one step after
+another ([#1361 v39 decision](#1361-v39-格式决定), [v38 session protocol](#v38-session-protocol), [v37 child tool-call parent](#v37-child-tool-call-parent), [v36 text candidates](#v36-property-text-candidates), [v35 submission index](#v35-submission-identity-index), [#1099 v34 decision](#1099-v34-格式决定), [#911 v33 decision](#911-v33-格式决定), [#605 v32 decision](#605-v32-格式决定), [#708 v31 decision](#708-v31-格式决定), [#557 v30 decision](#557-v30-格式决定), [ADR 013 v29 decision](#adr-013-v29-格式决定), [#717 v28 decision](#717-v28-格式决定), [#593 v27 decision](#593-v27-格式决定),
 [S5a v15 decision](#s5a-v15-格式决定),
 [S5b v16 decision](#s5b-v16-格式决定), [#193 v17 decision](#193-v17-格式决定),
 [#2 v18 decision](#2-v18-格式决定), [#364 v19 decision](#364-v19-格式决定),
@@ -26,7 +27,7 @@ branch-only v14 `user_configuration` format are unsupported and preserved, never
 migrated, downgraded or interpreted as an admitted format.
 No migration API or startup option is provided. S5c (Session deletion and fork)
 kept v15 unchanged ([S5c decision](#s5c-格式决定)). v13 document bytes remain
-valid in v38, and v16 request rows stay readable as written.
+valid in v39, and v16 request rows stay readable as written.
 除格式自身的 SQL 外，每次打开都接受派生索引：`timeline_history_anchors`
 （`(session_id, branch_id, kind, sequence) WHERE kind IN ('turn/start', 'input/message')`，
 [latest-turn 窗口 §5.1](session-history-window.md#51-the-derived-index)）、
@@ -423,7 +424,7 @@ ProjectionCheckpoint = {
   - `PromptChangedData` 拒绝未知字段，v38 读取器解不了 `inputs`。
   - 自 #193 的 v17 起，能打开某版本库的守护进程都能解码其中每一行；打开 Session 时还会解码每条已存事件（`validate_session`），所以留在 v38 会让含该字段的 Session 打不开。
 - **SQL 不变**：表、列与索引不变，`agent_store_format` 的约束改为 `CHECK (version = 39)`。
-- **协议不变**：v1 连接不投影 `prompt/changed`（`v1::EventRef` 排除该事件），v1 形状不变；v2 与 v3 携带原生事件，`inputs` 缺省时照旧省略，不新增协议版本。
+- **协议不变**：`prompt/changed` 是 Timeline 内部事实，任何产品连接都不携带它：v1 的 `EventRef` 排除该事件，`ProductEvent::new` 对 v1、v2 与 v3 同样排除它，所以 `inputs` 不出现在任何连接上，三种连接的形状与协议版本都不变。
 - **读取或转换路径**：在现有的启动准入事务内处理：
   - 空库直接建 v39。
   - 结构恰为 v38 且标记相符的库，在同一事务内只重建 `agent_store_format` 并写入 39，不读取、不改写任何业务行；失败则回滚，原 v38 库保持不变。
