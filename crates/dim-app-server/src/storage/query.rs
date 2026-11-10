@@ -167,6 +167,24 @@ struct Requirement {
     join: bool,
 }
 
+/// The longest `In` list the compiler writes as one comparison per
+/// candidate. A longer list travels as one JSON array parameter, so neither
+/// the expression depth nor the parameter count grows with the list.
+const MAX_LIST_PARAMETERS: usize = 64;
+
+/// The candidates of an `In` as the JSON text each element of which is one
+/// candidate's serialized form: `query_compare` parses an element exactly as
+/// it parses a bound candidate, so the candidate keeps its scalar type and a
+/// structured candidate still matches nothing.
+fn compared(values: &[Value]) -> Value {
+    Value::Array(
+        values
+            .iter()
+            .map(|value| Value::String(value.to_string()))
+            .collect(),
+    )
+}
+
 struct Compiler<'a> {
     fields: Vec<(&'a str, Requirement)>,
     parameters: Vec<SqlValue>,
@@ -419,18 +437,23 @@ impl<'a> Compiler<'a> {
             }
             QueryFilter::In { value, values } => {
                 let value = self.operand(value, row, outer, element);
-                let comparisons: Vec<_> = values
-                    .iter()
-                    .map(|candidate| {
-                        let candidate = self.bind(candidate.to_string());
-                        format!("query_compare({value},{candidate},0)")
-                    })
-                    .collect();
-                if comparisons.is_empty() {
-                    "0".into()
-                } else {
-                    format!("({})", comparisons.join(" OR "))
+                if values.is_empty() {
+                    return "0".into();
                 }
+                if values.len() <= MAX_LIST_PARAMETERS {
+                    let comparisons: Vec<_> = values
+                        .iter()
+                        .map(|candidate| {
+                            let candidate = self.bind(candidate.to_string());
+                            format!("query_compare({value},{candidate},0)")
+                        })
+                        .collect();
+                    return format!("({})", comparisons.join(" OR "));
+                }
+                let candidates = self.bind(compared(values).to_string());
+                format!(
+                    "(EXISTS(SELECT 1 FROM json_each({candidates}) candidate WHERE query_compare({value},candidate.value,0)))"
+                )
             }
             QueryFilter::Present { value } => {
                 format!("({} IS NOT NULL)", self.operand(value, row, outer, element))
@@ -815,7 +838,7 @@ impl<'a> Compiler<'a> {
                 if path == "kind" && values.len() == 1 && values[0] == "input/message" {
                     return Some("e.kind='input/message'".into());
                 }
-                if path == "id" && partial {
+                if path == "id" && partial && values.len() <= MAX_LIST_PARAMETERS {
                     let ids = values
                         .iter()
                         .filter_map(|value| value.as_str().map(|value| self.bind(value.to_owned())))
@@ -832,6 +855,9 @@ impl<'a> Compiler<'a> {
                 if matches!(path.as_str(), "data.request_id" | "data.input_id")
                     && values.iter().any(|value| !value.is_string())
                 {
+                    return None;
+                }
+                if values.len() > MAX_LIST_PARAMETERS {
                     return None;
                 }
                 let (column, boolean) = column(path)?;

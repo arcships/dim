@@ -4,6 +4,12 @@ mod recall;
 #[path = "storage_flow/property_queries.rs"]
 mod property_queries;
 
+#[path = "storage_flow/membership.rs"]
+mod membership;
+
+#[path = "storage_flow/snapshot_read.rs"]
+mod snapshot_read;
+
 use dim_agent_capabilities::file_storage::FileStoragePlugin;
 use dim_agent_capabilities::history::HistoryRenderer;
 use dim_agent_runtime::testing::{chain_events, timeline_events};
