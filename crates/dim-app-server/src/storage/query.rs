@@ -12,7 +12,7 @@ use rusqlite::{
     Connection, OptionalExtension, functions::FunctionFlags, params, params_from_iter,
     types::Value as SqlValue,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use tokio_util::sync::CancellationToken;
 
@@ -168,20 +168,39 @@ struct Requirement {
 }
 
 /// The longest `In` list the compiler writes as one comparison per
-/// candidate. A longer list travels as one JSON array parameter, so neither
-/// the expression depth nor the parameter count grows with the list.
+/// candidate. A longer list travels as one JSON array parameter probed once
+/// per row, so neither the expression depth nor the parameter count grows
+/// with the list.
 const MAX_LIST_PARAMETERS: usize = 64;
 
 /// The candidates of an `In` as the JSON text each element of which is one
-/// candidate's serialized form: `query_compare` parses an element exactly as
+/// candidate's serialized form: `query_match_key` parses an element exactly as
 /// it parses a bound candidate, so the candidate keeps its scalar type and a
-/// structured candidate still matches nothing.
+/// structured candidate still yields no key.
 fn compared(values: &[Value]) -> Value {
     Value::Array(
         values
             .iter()
             .map(|value| Value::String(value.to_string()))
             .collect(),
+    )
+}
+
+/// A long `In` as one keyed-set membership test: the set is built once from
+/// the bound array and each row is probed once, instead of walking the
+/// candidates for every row.
+///
+/// Both sides go through `query_match_key`, so the membership is exactly
+/// `query_compare` equality: numbers compare numerically across integer and
+/// float, and strings, booleans and `null` compare by value. A structured
+/// candidate has no key and is left out of the set; a structured property has
+/// no key and matches nothing. `coalesce` keeps the result 0 or 1, because
+/// `NOT` over a membership that is NULL would drop rows the in-memory store
+/// keeps.
+fn keyed(value: &str, candidates: &str) -> String {
+    format!(
+        "coalesce({value} IN (SELECT query_match_key(candidate.value) FROM json_each({candidates}) candidate \
+         WHERE query_match_key(candidate.value) IS NOT NULL),0)"
     )
 }
 
@@ -287,6 +306,39 @@ impl<'a> Compiler<'a> {
     fn bind(&mut self, value: impl Into<SqlValue>) -> String {
         self.parameters.push(value.into());
         format!("?{}", self.parameters.len())
+    }
+
+    /// A pre-filter's membership list: one parameter per candidate up to
+    /// [`MAX_LIST_PARAMETERS`], and above that one array parameter that yields
+    /// the same bound values through `json_each`. A physical predicate only
+    /// narrows candidate rows, and the same types travel either way (text for
+    /// a text column, an integer for a boolean one), so the expression indexes
+    /// stay usable whatever the list length.
+    fn in_list(&mut self, values: &[Value]) -> Option<String> {
+        let typed: Vec<Value> = values
+            .iter()
+            .filter_map(|value| match value {
+                Value::String(value) => Some(json!(value)),
+                Value::Bool(value) => Some(json!(i64::from(*value))),
+                _ => None,
+            })
+            .collect();
+        if typed.is_empty() {
+            return None;
+        }
+        if typed.len() <= MAX_LIST_PARAMETERS {
+            let bindings: Vec<_> = typed
+                .iter()
+                .map(|value| match value {
+                    Value::String(value) => self.bind(value.clone()),
+                    Value::Number(value) => self.bind(value.as_i64().expect("an encoded boolean")),
+                    _ => unreachable!("a typed candidate is a string or an integer"),
+                })
+                .collect();
+            return Some(bindings.join(","));
+        }
+        let candidates = self.bind(Value::Array(typed).to_string());
+        Some(format!("SELECT value FROM json_each({candidates})"))
     }
 
     fn column(&self, alias: &str, field: &str) -> String {
@@ -451,9 +503,8 @@ impl<'a> Compiler<'a> {
                     return format!("({})", comparisons.join(" OR "));
                 }
                 let candidates = self.bind(compared(values).to_string());
-                format!(
-                    "(EXISTS(SELECT 1 FROM json_each({candidates}) candidate WHERE query_compare({value},candidate.value,0)))"
-                )
+                let value = format!("query_match_key({value})");
+                format!("({})", keyed(&value, &candidates))
             }
             QueryFilter::Present { value } => {
                 format!("({} IS NOT NULL)", self.operand(value, row, outer, element))
@@ -838,18 +889,13 @@ impl<'a> Compiler<'a> {
                 if path == "kind" && values.len() == 1 && values[0] == "input/message" {
                     return Some("e.kind='input/message'".into());
                 }
-                if path == "id" && partial && values.len() <= MAX_LIST_PARAMETERS {
-                    let ids = values
-                        .iter()
-                        .filter_map(|value| value.as_str().map(|value| self.bind(value.to_owned())))
-                        .collect::<Vec<_>>();
-                    return Some(if ids.is_empty() {
-                        "0".into()
-                    } else {
-                        format!(
-                            "(e.event_id IN ({}) OR e.kind IN ('step/text','step/thinking'))",
-                            ids.join(",")
-                        )
+                if path == "id" && partial {
+                    let ids = self.in_list(values);
+                    return Some(match ids {
+                        Some(ids) => format!(
+                            "(e.event_id IN ({ids}) OR e.kind IN ('step/text','step/thinking'))"
+                        ),
+                        None => "0".into(),
                     });
                 }
                 if matches!(path.as_str(), "data.request_id" | "data.input_id")
@@ -857,22 +903,18 @@ impl<'a> Compiler<'a> {
                 {
                     return None;
                 }
-                if values.len() > MAX_LIST_PARAMETERS {
-                    return None;
-                }
                 let (column, boolean) = column(path)?;
                 let values = values
                     .iter()
                     .filter_map(|value| match (boolean, value) {
-                        (true, Value::Bool(value)) => Some(self.bind(i64::from(*value))),
-                        (false, Value::String(value)) => Some(self.bind(value.clone())),
+                        (true, Value::Bool(value)) => Some(json!(i64::from(*value))),
+                        (false, Value::String(value)) => Some(json!(value)),
                         _ => None,
                     })
                     .collect::<Vec<_>>();
-                Some(if values.is_empty() {
-                    "0".into()
-                } else {
-                    format!("{column} IN ({})", values.join(","))
+                Some(match self.in_list(&values) {
+                    Some(values) => format!("{column} IN ({values})"),
+                    None => "0".into(),
                 })
             }
             QueryFilter::And { conditions } => {
