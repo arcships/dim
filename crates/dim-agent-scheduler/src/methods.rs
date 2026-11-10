@@ -1147,7 +1147,7 @@ pub struct ScheduleJobsFace(Arc<ScheduleJobs>);
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct JobRequestWire {
     action: ToolAction,
-    #[serde(default)]
+    #[serde(default, rename = "job_id")]
     job_id: Option<String>,
     #[serde(default)]
     enabled: Option<bool>,
