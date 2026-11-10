@@ -330,7 +330,7 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 2. **secret**：`providerService`、`mcpAuth`、OAuth 服务、`managedProviders` 保持 internal；数据面只暴露操作，不暴露值。
 3. **`workflowRuns` 已经是数据面**：optional Workflow 包已提供；#1292 只核对形状，不新增 provider。
 4. **`Faces` 的传播**：`Names`、`PartRegistry`、`SessionResolver` 都要拿到同一份原因表；独立 host / 测试用空表，检查只在装配和 leaf 加载处生效。
-5. **legacy 标记**：当前 89 个 internal 名字里 16 个是待迁移的数据内容。`legacy-no-consumer` 是迁移状态，不是永久 internal；它们按批次转成 data face。
+5. **legacy 标记**：当前 89 个 internal 名字里 18 个是待迁移的数据内容。`legacy-no-consumer` 是迁移状态，不是永久 internal；它们按批次转成 data face。
 6. **shared 与 dispatcher 不一致**：`managementMethods`、`localId` 已在 #1289 变成 `data`；`loaderService`、`pluginMounter` 是仅有的两个 `shared-no-dispatcher` 例外，检查不放行其他 shared-without-dispatcher。
 
 ## 7. 交付顺序
