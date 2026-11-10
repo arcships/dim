@@ -127,10 +127,10 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。
 
 | 名字 | 现在的对象 | 目标操作 |
 | --- | --- | --- |
-| `hostPlatform` | `ProcessTree`、`PtyProcessTree`、临时目录 | `start`/`wait`/`kill`/`output`/`shell`/`write`/`resize` |
-| `fileStorage` | `FilePath`、根与代次 | `open`/`read`/`write`/`close`/`list`/`remove` |
-| `sqliteStorage` | 连接与事务 | store 端口（#1298） |
-| `timelineStore` | 连接与批次 | `append`/`query`/`ack`（#1298） |
+| `hostPlatform` | `ProcessTree`、`PtyProcessTree`、临时目录 | 资源 leaf 的新数据面 `execHost`：`start`/`wait`/`kill`/`output`/`shell`/`write`/`resize`（[resource leaf data faces](resource-faces.md) §3，#1295） |
+| `fileStorage` | `FilePath`、根与代次 | 资源 leaf 的新数据面 `fsHost`：`facts`/`read`/`write`/`edit`/`glob`/`grep`/`mentions`（[resource leaf data faces](resource-faces.md) §4，#1297）；`fileStorage` 本身留在节点内部 |
+| `sqliteStorage` | 连接与事务 | 不是 leaf 数据面：远程 PostgreSQL 由 #1298 交付（[resource leaf data faces](resource-faces.md) §5） |
+| `timelineStore` | 连接与批次 | 同上：不是 leaf 数据面，`append`/`query`/`ack` 只在进程内（#1298） |
 | `toolHost` | `ToolDriver` | `execute` 数据面 |
 | `mcpSession` | 会话对象 | 每 server 的 id 操作 |
 | `backgroundExec` | 任务对象 | task id 操作 |
@@ -140,6 +140,8 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。
 | `promptSourcesBranch` | 分支 prompt 装配 | 留宿主；`hot-path` |
 
 这些面即使有数据接口，实例核心仍默认留在宿主；它们列在这里是为了说明“对象形状”不是永久 internal，而是需要操作化；原因 `object`。
+
+`hostPlatform`、`fileStorage` 的数据面是资源 leaf 上的新名字 `execHost`、`fsHost`，不把原服务变成 wire 对象：leaf 用节点自己的 HostPlatform 和 FileStorage 实现这些操作，原有名字继续留在节点内部，原因仍是 `object`。`sqliteStorage`、`timelineStore` 不做 leaf 面：存储接口是进程内的仓储操作，跨链会把提交和发布绑在网络往返上；远程 PostgreSQL 由 #1298 作为后端替换交付，不加 `dbHost` 之类的名字（[resource leaf data faces](resource-faces.md) §5）。
 
 ### 3.5 热路径与顺序：契约上 internal
 原因 `hot-path`：每回合/每条输入的状态机、严格本地顺序，或同步回调。跨了要重写顺序和失败语义，收益不成比例。
