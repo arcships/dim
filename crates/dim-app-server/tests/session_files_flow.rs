@@ -10,6 +10,10 @@ use dim_app_server::storage::{SessionStore, SessionStorePlugin, SqliteStoragePlu
 use rusqlite::Connection;
 use rutis::host::{CtxHost, FiberState};
 use rutis::{Ctx, Plugin};
+use rutis_bridge::session::{
+    Error as BridgeError, HostDispatch, Value as RpcValue, host_key, settle,
+};
+use serde_json::{Value as Json, json};
 use std::{
     path::PathBuf,
     sync::{Arc, OnceLock},
@@ -145,6 +149,22 @@ impl Store {
             .await
             .unwrap()
     }
+    /// The `sessionFiles` data face, as a part in another language finds it.
+    fn face(&self) -> Arc<dyn HostDispatch> {
+        self.root
+            .get_at::<dyn HostDispatch>(&host_key("sessionFiles"))
+            .expect("the sessionFiles data face is provided")
+    }
+}
+
+/// One data-face call: one request object argument, a future reply.
+async fn face_call(
+    dispatch: &Arc<dyn HostDispatch>,
+    method: &str,
+    request: Json,
+) -> Result<Json, BridgeError> {
+    let reply = dispatch.invoke(method, RpcValue::List(vec![request.into()]))?;
+    settle(reply).await?.json()
 }
 
 #[tokio::test]
@@ -461,5 +481,102 @@ async fn a_session_reads_its_own_file_without_an_approval_request() {
         session.close().await.unwrap();
     }
     agent.close().await.unwrap();
+    store.root.shutdown().await.unwrap();
+}
+
+/// The `sessionFiles` data face: the owner's four operations as data, with
+/// §10's errors and §9.1's field spelling.
+#[tokio::test]
+async fn the_session_files_data_face_serves_the_owner() {
+    let home = Home::new();
+    let store = Store::mount(&home, true).await;
+    store.session("s1").await;
+    store.session("s2").await;
+    let face = store.face();
+
+    let stored = face_call(
+        &face,
+        "put",
+        json!({"sessionId": "s1", "name": "paste.txt", "content": "cGFzdGVkIHRleHQ="}),
+    )
+    .await
+    .unwrap();
+    let file_id = stored["fileId"].as_str().unwrap().to_owned();
+    let id = uuid::Uuid::parse_str(&file_id).unwrap();
+    assert_eq!(id.get_version_num(), 4);
+    let path = home.files().join(&file_id).join("paste.txt");
+    assert_eq!(stored["path"], path.to_str().unwrap(), "{stored}");
+    assert_eq!(stored["bytes"], 11);
+    assert_eq!(std::fs::read(&path).unwrap(), b"pasted text");
+
+    let owned = |session: &str| json!({"sessionId": session, "path": path.to_str().unwrap()});
+    assert_eq!(
+        face_call(&face, "owns", owned("s1")).await.unwrap(),
+        json!({"owned": true})
+    );
+    assert_eq!(
+        face_call(&face, "owns", owned("s2")).await.unwrap(),
+        json!({"owned": false})
+    );
+
+    let output = home.0.join("out.txt");
+    assert_eq!(
+        face_call(
+            &face,
+            "register",
+            json!({"sessionId": "s1", "path": output.to_str().unwrap()}),
+        )
+        .await
+        .unwrap(),
+        json!({})
+    );
+    assert_eq!(
+        face_call(&face, "owns", owned("s1")).await.unwrap(),
+        json!({"owned": true})
+    );
+    assert_eq!(
+        face_call(&face, "owned_paths", json!({"sessionId": "s1"}))
+            .await
+            .unwrap(),
+        json!({"paths": [
+            home.files().join(&file_id).to_str().unwrap(),
+            output.to_str().unwrap(),
+        ]})
+    );
+
+    let missing = face_call(
+        &face,
+        "put",
+        json!({"sessionId": "missing", "name": "paste.txt", "content": "eA=="}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(missing.code(), Some("not_found"), "{missing}");
+    for content in ["not base64!", "eA"] {
+        let invalid = face_call(
+            &face,
+            "put",
+            json!({"sessionId": "s1", "name": "paste.txt", "content": content}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(invalid.code(), Some("invalid"), "{invalid}");
+    }
+    let invalid = face_call(
+        &face,
+        "put",
+        json!({"sessionId": "s1", "name": "auth.json", "content": "eA=="}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(invalid.code(), Some("invalid"), "{invalid}");
+    let unknown = face_call(&face, "read", json!({"sessionId": "s1"}))
+        .await
+        .unwrap_err();
+    assert!(
+        unknown.to_string().contains("unknown sessionFiles method"),
+        "{unknown}"
+    );
+
     store.root.shutdown().await.unwrap();
 }

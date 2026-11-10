@@ -3471,6 +3471,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#managedSearch",
+        "provider": 12,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#managementMethods",
         "provider": 9,
         "generation": 1,
@@ -3491,6 +3497,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#rutis/loader",
         "provider": 2,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#sessionFiles",
+        "provider": 8,
         "generation": 1,
         "removing": false
       },

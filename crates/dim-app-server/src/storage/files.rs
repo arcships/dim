@@ -13,6 +13,7 @@
 //! with no row at all, such as a directory a power loss restored after its
 //! row was deleted.
 use super::{SqliteStorage, sqlite::error};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use dim_agent_capabilities::{
     file_storage::{FileStorage, FileStorageError},
     host::{SessionFileError, SessionFileErrorCode, SessionFilesService, StoredSessionFile},
@@ -20,6 +21,9 @@ use dim_agent_capabilities::{
 };
 use rusqlite::{Connection, TransactionBehavior, params};
 use rutis::Ctx;
+use rutis_bridge::session::{Error as BridgeError, HostDispatch, Reply, Value as ServiceValue};
+use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
     ffi::OsString,
@@ -922,6 +926,150 @@ impl Files {
             }
         }
     }
+}
+
+/// The `sessionFiles` data face ([Session files](../../../../docs/design/appserver/session-files.md)
+/// §9.1): the owner's four operations as data. Cancellation is the call being
+/// dropped, which cancels the token a put reads before txn 2.
+pub(super) struct SessionFilesFace(pub(super) SessionFiles);
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PutRequest {
+    session_id: String,
+    name: String,
+    content: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PathRequest {
+    session_id: String,
+    path: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SessionRequest {
+    session_id: String,
+}
+
+impl HostDispatch for SessionFilesFace {
+    fn methods(&self) -> Option<Value> {
+        Some(json!({
+            "put": "async",
+            "register": "async",
+            "owns": "async",
+            "owned_paths": "async",
+        }))
+    }
+
+    fn invoke(&self, method: &str, args: ServiceValue) -> Reply {
+        match method {
+            "put" => {
+                let PutRequest {
+                    session_id,
+                    name,
+                    content,
+                } = request(args)?;
+                let content = STANDARD.decode(&content).map_err(|_| {
+                    failure(file_error(
+                        SessionFileErrorCode::Invalid,
+                        "content is not padded base64",
+                    ))
+                })?;
+                let files = self.0.clone();
+                Ok(ServiceValue::cancellable_future(async move {
+                    let cancel = CancellationToken::new();
+                    let _dropped = cancel.clone().drop_guard();
+                    match files.put(session_id, name, content, cancel).await {
+                        Ok(stored) => Ok(json!({
+                            "fileId": stored.file_id,
+                            "path": path_text(stored.path).map_err(failure)?,
+                            "bytes": stored.bytes,
+                        })
+                        .into()),
+                        Err(error) => Err(failure(error)),
+                    }
+                }))
+            }
+            "register" => {
+                let PathRequest { session_id, path } = request(args)?;
+                let files = self.0.clone();
+                Ok(ServiceValue::future(async move {
+                    match files.register(session_id, PathBuf::from(path)).await {
+                        Ok(()) => Ok(json!({}).into()),
+                        Err(error) => Err(failure(error)),
+                    }
+                }))
+            }
+            "owns" => {
+                let PathRequest { session_id, path } = request(args)?;
+                let files = self.0.clone();
+                Ok(ServiceValue::future(async move {
+                    match files.owns(session_id, PathBuf::from(path)).await {
+                        Ok(owned) => Ok(json!({ "owned": owned }).into()),
+                        Err(error) => Err(failure(error)),
+                    }
+                }))
+            }
+            "owned_paths" => {
+                let SessionRequest { session_id } = request(args)?;
+                let files = self.0.clone();
+                Ok(ServiceValue::future(async move {
+                    match files.owned_paths(session_id).await {
+                        Ok(paths) => {
+                            let paths = paths
+                                .into_iter()
+                                .map(path_text)
+                                .collect::<Result<Vec<String>, SessionFileError>>()
+                                .map_err(failure)?;
+                            Ok(json!({ "paths": paths }).into())
+                        }
+                        Err(error) => Err(failure(error)),
+                    }
+                }))
+            }
+            _ => Err(BridgeError::Value(format!(
+                "unknown sessionFiles method {method}"
+            ))),
+        }
+    }
+}
+
+/// One request object; anything else is the caller's programming error.
+fn request<T: DeserializeOwned>(args: ServiceValue) -> Result<T, BridgeError> {
+    let invalid = |detail: String| {
+        BridgeError::Value(format!(
+            "expected one sessionFiles request object: {detail}"
+        ))
+    };
+    let Value::Array(args) = args.json()? else {
+        return Err(invalid("not an argument list".into()));
+    };
+    let [request] = <[Value; 1]>::try_from(args)
+        .map_err(|args| invalid(format!("{} arguments", args.len())))?;
+    serde_json::from_value(request).map_err(|error| invalid(error.to_string()))
+}
+
+/// The error a caller reads, carrying §10's code.
+fn failure(error: SessionFileError) -> BridgeError {
+    let code = match error.code {
+        SessionFileErrorCode::NotFound => "not_found",
+        SessionFileErrorCode::Invalid => "invalid",
+        SessionFileErrorCode::TooLarge => "too_large",
+        SessionFileErrorCode::NodeUnavailable => "node_unavailable",
+        SessionFileErrorCode::Cancelled => "cancelled",
+        SessionFileErrorCode::Storage => "storage",
+    };
+    rutis_bridge::exports::failure("SessionFileError", code, error.message, None)
+}
+
+fn path_text(path: PathBuf) -> Result<String, SessionFileError> {
+    path.into_os_string().into_string().map_err(|_| {
+        file_error(
+            SessionFileErrorCode::Storage,
+            "a Session file path is not UTF-8",
+        )
+    })
 }
 
 #[cfg(test)]

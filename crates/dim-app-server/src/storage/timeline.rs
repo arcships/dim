@@ -1491,7 +1491,12 @@ impl DynPlugin for SessionStorePlugin {
             files.start();
             ctx.provide_as::<SessionStore>(store.clone())?;
             ctx.provide_as::<WorktreeAssociations>(Arc::new(WorktreeAssociations(store.clone())))?;
+            let face = files::SessionFilesFace(files.clone());
             ctx.provide_as::<SessionFilesHost>(Arc::new(SessionFilesHost(Arc::new(files))))?;
+            ctx.provide_at(
+                host_key("sessionFiles"),
+                Arc::new(face) as Arc<dyn HostDispatch>,
+            )?;
             ctx.provide_at(
                 host_key("sessionMetadata"),
                 Arc::new(metadata::Dispatch(store)) as Arc<dyn HostDispatch>,

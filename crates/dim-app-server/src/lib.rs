@@ -1351,6 +1351,8 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
         "pluginFiles",
         "sessions",
         "sessionMetadata",
+        "sessionFiles",
+        "managedSearch",
         "auxiliaryModel",
         "settings",
         "ocrHelper",

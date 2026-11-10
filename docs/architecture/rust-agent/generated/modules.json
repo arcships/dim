@@ -2512,6 +2512,8 @@
       "parent": "dim_app_server",
       "file": "crates/dim-app-server/src/managed_provider.rs",
       "unexpandedMacros": [
+        "format",
+        "json",
         "matches",
         "vec"
       ]
@@ -3294,6 +3296,7 @@
       "file": "crates/dim-app-server/src/storage/files.rs",
       "unexpandedMacros": [
         "format",
+        "json",
         "matches",
         "params",
         "tokio::select",
@@ -30540,6 +30543,7 @@
       "references": [
         "path SessionFiles",
         "path SessionFiles::new",
+        "path failure",
         "path like_prefix",
         "path release",
         "path share"
@@ -31039,6 +31043,7 @@
         "path SessionFiles",
         "path SessionFiles::new",
         "path files",
+        "path files::SessionFilesFace",
         "path files::release",
         "path files::share",
         "path files::share_output",

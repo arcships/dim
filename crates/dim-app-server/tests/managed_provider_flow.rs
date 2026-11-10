@@ -3,7 +3,7 @@ use dim_agent_runtime::Names;
 use dim_app_server::managed_provider::{
     AccountSnapshot, AccountView, CredentialLease, LeaseOwner, ManagedCatalog, ManagedError,
     ManagedFuture, ManagedProvider, ManagedProviderBinding, ManagedProviders,
-    ManagedProvidersPlugin, ProviderDescriptor, WebSearchRequest, WebSearchResponse,
+    ManagedProvidersPlugin, ProviderDescriptor, WebSearchHit, WebSearchRequest, WebSearchResponse,
     management::{
         BrowserLogin, BrowserLoginBegin, DeviceLogin, LoginBegin, LoginState,
         ManagedBrowserLoginComplete, ManagedLoginAttempt, Usage,
@@ -11,6 +11,10 @@ use dim_app_server::managed_provider::{
 };
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, Key, TypeKey};
 use rutis::{Ctx, Plugin};
+use rutis_bridge::session::{
+    Error as BridgeError, HostDispatch, Value as RpcValue, host_key, settle,
+};
+use serde_json::{Value as Json, json};
 use std::sync::{
     Arc, Mutex, OnceLock, Weak,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -41,6 +45,8 @@ struct Fixture {
     settled: AtomicUsize,
     /// The account recovery reports.
     recovered_generation: Mutex<u64>,
+    /// The searches this provider was asked for.
+    searches: Mutex<Vec<WebSearchRequest>>,
 }
 fn account(generation: u64) -> AccountSnapshot {
     AccountSnapshot {
@@ -145,10 +151,20 @@ impl ManagedProvider for Provider {
     }
     fn web_search(
         &self,
-        _: WebSearchRequest,
+        request: WebSearchRequest,
         _: CancellationToken,
     ) -> ManagedFuture<WebSearchResponse> {
-        unused()
+        self.0.searches.lock().unwrap().push(request);
+        Box::pin(async {
+            Ok(WebSearchResponse {
+                results: vec![WebSearchHit {
+                    title: "Dim".into(),
+                    url: "https://example.com/dim".into(),
+                    snippet: "a coding agent".into(),
+                    published_at: Some("2026-01-02T03:04:05Z".into()),
+                }],
+            })
+        })
     }
     fn catalog(&self, _: &str) -> ManagedFuture<ManagedCatalog> {
         unused()
@@ -425,5 +441,68 @@ async fn malformed_leases_are_refused_at_the_host_and_released() {
     issued.sort();
     assert_eq!(issued.len(), cases.len() + 2);
     assert_eq!(released, issued);
+    root.shutdown().await.unwrap();
+}
+
+/// One data-face call: one request object argument, a future reply.
+async fn face_call(
+    dispatch: &Arc<dyn HostDispatch>,
+    method: &str,
+    request: Json,
+) -> Result<Json, BridgeError> {
+    let reply = dispatch.invoke(method, RpcValue::List(vec![request.into()]))?;
+    settle(reply).await?.json()
+}
+
+/// The `managedSearch` data face answers with the owner's hits and the
+/// contract's field spelling (service faces §4.6).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_managed_search_face_answers_with_the_owner_hits() {
+    let (root, fixture, _owner, _binding) = setup().await;
+    let face = root
+        .get_at::<dyn HostDispatch>(&host_key("managedSearch"))
+        .expect("the managedSearch data face is provided");
+
+    let reply = face_call(&face, "search", json!({"query": "dim agent", "count": 3}))
+        .await
+        .unwrap();
+    assert_eq!(
+        reply,
+        json!({"results": [{
+            "title": "Dim",
+            "url": "https://example.com/dim",
+            "snippet": "a coding agent",
+            "publishedAt": "2026-01-02T03:04:05Z",
+        }]})
+    );
+    assert_eq!(
+        fixture.searches.lock().unwrap().as_slice(),
+        [WebSearchRequest {
+            query: "dim agent".into(),
+            count: 3,
+        }]
+    );
+    let unknown = face_call(&face, "providers", json!({})).await.unwrap_err();
+    assert!(
+        unknown.to_string().contains("unknown managedSearch method"),
+        "{unknown}"
+    );
+    root.shutdown().await.unwrap();
+}
+
+/// Without a bound provider the face answers the contract's `unavailable`,
+/// not a request failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_managed_search_face_reports_an_unbound_provider() {
+    let root = Ctx::root().unwrap();
+    let view = root.plugin(ManagedProvidersPlugin);
+    active(&view).await;
+    let face = root
+        .get_at::<dyn HostDispatch>(&host_key("managedSearch"))
+        .expect("the managedSearch data face is provided");
+    let error = face_call(&face, "search", json!({"query": "x", "count": 1}))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Some("unavailable"), "{error}");
     root.shutdown().await.unwrap();
 }
