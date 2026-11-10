@@ -958,11 +958,10 @@ async fn node_runtime_manager_reads_the_configuration_when_it_applies_it() {
 
 /// Switching a running runtime's source replaces its launch command and
 /// starts the new interpreter, and leaves the other runtime alone: the case a
-/// configuration change exists for. It downloads the archive, so it runs only
-/// with the other ignored flows.
+/// configuration change exists for. It downloads the official archive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "downloads the Node archive and installs its packages"]
-async fn node_runtime_manager_switches_a_running_runtime_to_another_source() {
+async fn runtime_switches_from_system_to_downloaded_node() {
     let home = PathBuf::from("/tmp").join(format!("drm-switch-{}", uuid::Uuid::new_v4()));
     let plugins = home.join("sources");
     std::fs::create_dir_all(&plugins).unwrap();
@@ -1026,10 +1025,10 @@ async fn node_runtime_manager_switches_a_running_runtime_to_another_source() {
         if seen != before {
             break seen;
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the new interpreter never started a new process: {seen}"
-        );
+        if tokio::time::Instant::now() >= deadline {
+            let listed = client.rpc("runtime.list", json!({})).await;
+            panic!("the new interpreter never replaced process {seen}: {listed}");
+        }
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
     assert_ne!(after, before, "the new interpreter started a new process");

@@ -687,7 +687,14 @@ DIM_TEST_PYTHON="$PWD/runtime/.venv/bin/python" \
   cargo test --locked -p dim-app-server --test transport_flow python_plugin_ -- --ignored
 ```
 
-The `node_` and `python_plugin_` flows use pinned public packages and local fixtures. See the [CI workflow checks](../../docs/release/README.md#github-workflows) for when they run. Run the live Context7 check manually with `CONTEXT7_API_KEY`.
+The `node_` and `python_plugin_` flows use pinned public packages and local fixtures. The switch to the official Node archive runs separately. See the [CI workflow checks](../../docs/release/README.md#github-workflows) for when these run.
+
+```sh
+cargo test --locked -p dim-app-server --test transport_flow \
+  runtime_manager::runtime_switches_from_system_to_downloaded_node -- --ignored --exact
+```
+
+Run the live Context7 check manually with `CONTEXT7_API_KEY`.
 
 ```sh
 cargo test --locked -p dim-app-server --test mcp_http_flow \
