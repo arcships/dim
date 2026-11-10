@@ -1,6 +1,6 @@
 use dim_agent_runtime::{
-    QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
-    QueryValue, Timeline, TimelineQuery, TimelineQueryScope,
+    AgentError, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect,
+    QuerySpec, QueryValue, Timeline, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use std::{
@@ -260,12 +260,17 @@ impl PromptSnapshot {
             change: usize,
         }
         let branch = timeline.branch_id();
-        let at = |position: &TimelinePosition| {
+        let at = |position: &TimelinePosition| -> dim_agent_runtime::Result<(usize, u64)> {
             let index = chain
                 .iter()
                 .position(|branch| *branch == position.branch_id)
-                .expect("a fact lies inside the queried chain");
-            (index, position.sequence)
+                .ok_or_else(|| {
+                    AgentError::Storage(format!(
+                        "a prompt fact names branch {} outside the queried chain",
+                        position.branch_id
+                    ))
+                })?;
+            Ok((index, position.sequence))
         };
         let mut snapshot = Self::default();
         let mut needed = BTreeSet::new();
@@ -298,8 +303,9 @@ impl PromptSnapshot {
                 };
                 let position: TimelinePosition = serde_json::from_value(position)
                     .expect("a position follows the query contract");
+                let here = at(&position)?;
                 while let Some(Reverse(waiting)) = pending.peek().copied() {
-                    if waiting.delivery >= at(&position) {
+                    if waiting.delivery >= here {
                         break;
                     }
                     let Reverse(waiting) = pending.pop().expect("a pending change");
@@ -366,7 +372,7 @@ impl PromptSnapshot {
                                         delivery = None;
                                         break;
                                     };
-                                    let position = at(position);
+                                    let position = at(position)?;
                                     delivery =
                                         Some(delivery.map_or(position, |last| last.max(position)));
                                 }
@@ -377,7 +383,7 @@ impl PromptSnapshot {
                                     deferred.push((line, revision, waiting));
                                     pending.push(Reverse(Waiting {
                                         delivery,
-                                        written: at(&position),
+                                        written: here,
                                         change,
                                     }));
                                 }
