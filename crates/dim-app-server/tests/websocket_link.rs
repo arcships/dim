@@ -13,7 +13,7 @@ use rutis_bridge::{
     LocalId, Session,
     channel::PeerId,
     session::{HostDispatch, Reply, Value, host_key},
-    websocket::{self, Admitted, Limits, ListenerConfig, Upgrade},
+    websocket::{self, Admitted, Credential, Limits, ListenerConfig, Trust, Upgrade},
 };
 use serde_json::json;
 
@@ -129,4 +129,67 @@ async fn a_link_mounts_a_remote_kernel_and_withdraws_its_services() {
 
     relay.abort();
     drop(listener);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_listening_link_accepts_a_remote_kernel() {
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = probe.local_addr().unwrap();
+    drop(probe);
+
+    let listener = Ctx::root().unwrap();
+    listener
+        .provide(LocalId(PeerId::new("listener").unwrap()))
+        .unwrap();
+    listener.plugin(ClockPlugin);
+    listener.plugin(LinkPlugin::new(LinkConfig {
+        mode: LinkMode::Listen,
+        address: address.to_string(),
+        token: Some("test".into()),
+        ca_pem: None,
+        cert_pem: None,
+        key_pem: None,
+    }));
+
+    let dialer = Ctx::root().unwrap();
+    dialer
+        .provide(LocalId(PeerId::new("dialer").unwrap()))
+        .unwrap();
+    let protocol = format!("rutis.{}", rutis_bridge::session::ENDPOINT_PROTOCOL);
+    let credential = Credential::Bearer("test".into());
+    let mut channel = None;
+    for _ in 0..100 {
+        match websocket::dial(
+            &format!("ws://{address}/rutis"),
+            &protocol,
+            Some(&credential),
+            &Trust::default(),
+            &Limits::default(),
+        )
+        .await
+        {
+            Ok(connected) => {
+                channel = Some(connected);
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    let session = dialer.plugin(Session::new(channel.expect("the listener accepts")));
+
+    let mut clock = None;
+    for _ in 0..100 {
+        if let Some(found) = dialer.get_at::<dyn HostDispatch>(&host_key("clock")) {
+            clock = Some(found);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let clock = clock.expect("the client sees the listener's service");
+    let reply = tokio::task::spawn_blocking(move || clock.invoke("now", Value::List(vec![])))
+        .await
+        .unwrap()
+        .expect("the clock answers");
+    assert_eq!(Value::json(reply).unwrap(), json!(0));
+    session.dispose().await.unwrap();
 }
