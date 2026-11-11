@@ -820,12 +820,12 @@ impl DynPlugin for InputMethodsPlugin {
                         };
                         if let Some(event) = replacement {
                             result["steer"] = serde_json::json!({"inputId": event.id, "sequence": event.sequence});
-                        }
-                        // The batch writes its Steer input whether or not the
-                        // old one was held, so a `notHeld` reply that carried a
-                        // steer still wrote the input its warnings describe.
-                        if !checks_warnings.is_empty() {
-                            result["warnings"] = serde_json::json!(checks_warnings);
+                            // A warning describes the replacement this call
+                            // wrote; a withdrawal that wrote none carries
+                            // neither.
+                            if !checks_warnings.is_empty() {
+                                result["warnings"] = serde_json::json!(checks_warnings);
+                            }
                         }
                         reply(result)
                     })

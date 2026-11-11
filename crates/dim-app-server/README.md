@@ -70,11 +70,12 @@ reply without one is byte-identical to the one before this field existed, and no
 protocol version is added. A built-in served to a frozen encoding fills none:
 `session.submit` on protocol v1 and v2, and `session.branch_create` on v2, which
 `validate_call` admits from v2 on; `session.input.withdraw` is a Session method,
-served from v3 on. The withdraw reply carries the list whenever it carries a
-`steer`, `deleted` or `notHeld`, because the batch writes that Steer input either
-way. The list is never model context: it enters no `user` content, and a client
-that does not know the field ignores it. A block discards it — the `input_blocked`
-error already names the hook that stopped the input.
+served from v3 on. The withdraw reply carries the list only beside the `steer`
+receipt of the replacement this call wrote; a withdrawal that wrote no
+replacement carries neither. The list is never model context: it enters no
+`user` content, and a client that does not know the field ignores it. A block
+discards it — the `input_blocked` error already names the hook that stopped the
+input.
 This repository's clients: the native CLI draws one warning row per element
 (`Update::Report { warning: true }` in the terminal UI, `Display::record` in the
 line client, stderr in `exec`); the ACP gateway and the Web workspace ignore it;

@@ -3017,31 +3017,29 @@ async fn a_failed_prompt_hook_reports_a_warning_on_a_steer() {
             "type": "command", "command": "printf 'boom' >&2; exit 3",
         }))],
     })));
-    let session = env.session().await;
-    let reply = withdraw(
-        &session,
-        serde_json::json!({"sessionId": session.id(), "branchId": "main",
-            "inputId": "unknown", "steer": {"content": [{"type": "text", "text": "new"}]}}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(reply["status"], "notHeld", "{reply}");
+    let (session, release, old_id, call) = steer_into_a_pending_prompt(&env).await;
+    let reply = call.await.unwrap().expect("the failing check proceeds");
+    assert_eq!(reply["status"], "deleted", "{reply}");
+    assert!(
+        reply["steer"]["inputId"].is_string(),
+        "an accepted withdrawal carries the replacement it committed: {reply}"
+    );
     assert_eq!(
         reply["warnings"],
         serde_json::json!([{
             "check": "hooks",
             "message": "Hook user did not finish: exited with exit status: 3",
         }]),
-        "the reply names the hook and its reason"
+        "the warning rides with the replacement's receipt"
     );
     let steer = reply["steer"]["inputId"].as_str().unwrap();
-    let event = branch_events(&session, "main", ..)
+    let replaced = branch_events(&session, "main", ..)
         .await
         .unwrap()
         .into_iter()
         .find(|event| event.id == steer)
         .expect("the steer input was written");
-    let EventKind::InputMessage(data) = &event.kind else {
+    let EventKind::InputMessage(data) = &replaced.kind else {
         panic!("the steer input is an input message");
     };
     let user = data
@@ -3053,14 +3051,27 @@ async fn a_failed_prompt_hook_reports_a_warning_on_a_steer() {
         vec![ContentBlock::Text { text: "new".into() }],
         "the failure is not model context"
     );
+    let local = branch_events(&session, "main", ..).await.unwrap();
+    assert!(
+        local.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::InputDeleted(data) if data.input_id == old_id
+        )),
+        "the accepted withdrawal deleted the old input"
+    );
+    let _ = release.send(());
     env.close().await;
 }
 
-/// A.6.2: a withdrawal with no `steer` runs no submit check, so it carries no
-/// warnings even when a prompt hook would fail: there is no input they could
-/// name.
+/// A.6.2 and session-access A.4: a withdrawal's warnings ride with the `steer`
+/// receipt of the replacement this call wrote, so a reply that carries no
+/// receipt carries none either. A withdrawal with no `steer` runs no check at
+/// all. Whether a `notHeld` decision writes the replacement is InputQueue's
+/// format decision (#1413): while the write happens, the receipt and the
+/// warnings describe it together, and a reply without the receipt never names
+/// work.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_withdrawal_without_a_steer_carries_no_warnings() {
+async fn a_withdrawal_without_a_replacement_carries_no_warnings() {
     let env = Env::new().await;
     env.sources.set(document(serde_json::json!({
         "UserPromptSubmit": [command(serde_json::json!({
@@ -3068,17 +3079,30 @@ async fn a_withdrawal_without_a_steer_carries_no_warnings() {
         }))],
     })));
     let session = env.session().await;
-    let reply = withdraw(
+    let steered = withdraw(
+        &session,
+        serde_json::json!({"sessionId": session.id(), "branchId": "main",
+            "inputId": "unknown", "steer": {"content": [{"type": "text", "text": "new"}]}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(steered["status"], "notHeld", "{steered}");
+    assert_eq!(
+        steered.get("steer").is_some(),
+        steered.get("warnings").is_some(),
+        "the warnings and the receipt that describes their write stand together: {steered}"
+    );
+    let plain = withdraw(
         &session,
         serde_json::json!({"sessionId": session.id(), "branchId": "main",
             "inputId": "unknown"}),
     )
     .await
     .unwrap();
-    assert_eq!(reply["status"], "notHeld", "{reply}");
+    assert_eq!(plain["status"], "notHeld", "{plain}");
     assert!(
-        reply.get("warnings").is_none(),
-        "a withdrawal that wrote no steer names no work: {reply}"
+        plain.get("steer").is_none() && plain.get("warnings").is_none(),
+        "a withdrawal that wrote no steer runs no check: {plain}"
     );
     env.close().await;
 }
