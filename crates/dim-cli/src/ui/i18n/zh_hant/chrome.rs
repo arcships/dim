@@ -327,6 +327,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Skill loaded: {name}" => "已載入技能：{name}",
         "Hook context · {count} line" => "鉤子上下文 · {count} 行",
         "Hook context · {count} lines" => "鉤子上下文 · {count} 行",
+        "Stop hook follow-up · {count} line" => "Stop 鉤子後續輸入 · {count} 行",
+        "Stop hook follow-up · {count} lines" => "Stop 鉤子後續輸入 · {count} 行",
         "Commands" => "指令",
         "Command Palette" => "命令面板",
         "No matches" => "無相符項目",

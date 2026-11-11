@@ -385,6 +385,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Skill loaded: {name}" => "Skill chargé: {name}",
         "Hook context · {count} line" => "Contexte du hook · {count} ligne",
         "Hook context · {count} lines" => "Contexte du hook · {count} lignes",
+        "Stop hook follow-up · {count} line" => "Suite du hook Stop · {count} ligne",
+        "Stop hook follow-up · {count} lines" => "Suite du hook Stop · {count} lignes",
         "Commands" => "Commandes",
         "Command Palette" => "Palette de commandes",
         "No matches" => "Aucun résultat",

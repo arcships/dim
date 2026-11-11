@@ -278,6 +278,11 @@ impl Projection {
                     ShellRun::parse(text).is_some().then(|| text.clone())
                 }) {
                     self.push(format!("user-{sequence}"), RowKind::Shell, text);
+                } else if let Some(body) = data.blocks.iter().find_map(|block| {
+                    let dim_agent_types::InputBlock::Raw { text, .. } = block;
+                    hook_follow_up(text)
+                }) {
+                    self.push(format!("follow-up-{sequence}"), RowKind::HookFollowUp, body);
                 } else if let Some(row) = data.blocks.iter().find_map(|block| {
                     let dim_agent_types::InputBlock::Raw { text, .. } = block;
                     branch_notice(text, data.mode)
@@ -1717,6 +1722,25 @@ pub(crate) fn result_text(result: &ToolResult) -> String {
     }
 }
 
+/// The body of a `Stop` follow-up: the input a hook wrote to continue the
+/// conversation. Any other element and any other hook kind writes no row.
+///
+/// The body is stored escaped, as every runtime block's is, and is unescaped
+/// here for the row that draws it.
+///
+/// The attribute search stops at the opening tag's `>` on purpose: a hook's
+/// body escapes `<` and `>` but not `"`, so its text can hold a literal
+/// `kind="follow-up"` and must not answer for the marker.
+fn hook_follow_up(text: &str) -> Option<String> {
+    if markup::element(text)? != "dim-hooks" {
+        return None;
+    }
+    let open = text.strip_prefix("<dim-hooks")?;
+    let attributes = open.split_once('>')?.0;
+    (attr(attributes, "kind")? == "follow-up")
+        .then(|| unescape(&element_body(text, "</dim-hooks>")))
+}
+
 fn branch_notice(text: &str, mode: Option<InputMode>) -> Option<String> {
     if let Some(rest) = text.strip_prefix("<dim-branch-message") {
         let from = attr(rest, "from")?;
@@ -1803,7 +1827,8 @@ pub(crate) fn user_text(blocks: &[ContentBlock]) -> String {
         .join("\n")
 }
 
-/// The body of each hook context a message carries, in order.
+/// The body of each hook context a message carries, in order, unescaped: the
+/// producers store it escaped, and the row draws the hook's own words.
 pub(crate) fn hook_contexts(blocks: &[ContentBlock]) -> Vec<String> {
     blocks
         .iter()
@@ -1813,9 +1838,20 @@ pub(crate) fn hook_contexts(blocks: &[ContentBlock]) -> Vec<String> {
                 return None;
             };
             (markup::runtime_element(index, text) == Some("dim-hooks"))
-                .then(|| element_body(text, "</dim-hooks>"))
+                .then(|| unescape(&element_body(text, "</dim-hooks>")))
         })
         .collect()
+}
+
+/// The one line the plain log prints for an input no operator wrote: a
+/// `Stop` follow-up's label. Every other raw block stays silent there, as it
+/// always has, because the log has no disclosure to open the body behind.
+pub(crate) fn raw_input_line(blocks: &[dim_agent_types::InputBlock]) -> Option<String> {
+    blocks.iter().find_map(|block| {
+        let dim_agent_types::InputBlock::Raw { text, .. } = block;
+        let body = hook_follow_up(text)?;
+        Some(hook_follow_up_label(body.trim().lines().count().max(1)))
+    })
 }
 
 /// The one line that names a loaded Skill, in the interface language: the
@@ -1855,6 +1891,19 @@ pub(crate) fn hook_context_label(lines: usize) -> String {
         1 => crate::ui::i18n::tf("Hook context · {count} line", &[("count", "1")]),
         count => crate::ui::i18n::tf(
             "Hook context · {count} lines",
+            &[("count", &count.to_string())],
+        ),
+    }
+}
+
+/// The one line that names a `Stop` hook's follow-up, in the interface
+/// language: the TUI row and the plain log both say it. `lines` counts the
+/// stored lines of the body the same way [`hook_context_label`] does.
+pub(crate) fn hook_follow_up_label(lines: usize) -> String {
+    match lines {
+        1 => crate::ui::i18n::tf("Stop hook follow-up · {count} line", &[("count", "1")]),
+        count => crate::ui::i18n::tf(
+            "Stop hook follow-up · {count} lines",
             &[("count", &count.to_string())],
         ),
     }
@@ -2694,8 +2743,7 @@ mod tests {
     /// queued form of the same input does not repeat the body.
     #[test]
     fn a_hooks_context_is_its_own_row_and_never_the_operators_words() {
-        let hook =
-            "<dim-hooks kind=\"prompt-submit\">\nread src/parser.rs\nkeep it short\n</dim-hooks>";
+        let hook = "<dim-hooks kind=\"prompt-submit\">\nread src/parser.rs\nif a &lt; b &amp;&amp; c &gt; d, keep it short\n</dim-hooks>";
         let input = serde_json::json!({
             "id": "hooked", "sequence": 9, "create_at": 1,
             "type": "input", "name": "message",
@@ -2729,11 +2777,132 @@ mod tests {
         assert_eq!(rows[0].kind, RowKind::UserMessage);
         assert_eq!(rows[0].text, "why does the parser stall?");
         assert_eq!(rows[1].kind, RowKind::HookContext);
-        assert_eq!(rows[1].text, "read src/parser.rs\nkeep it short");
+        assert_eq!(
+            rows[1].text, "read src/parser.rs\nif a < b && c > d, keep it short",
+            "the row draws the hook's words, not their escaped form"
+        );
         assert_eq!(
             rows.len(),
             2,
             "one hook block is one row, and the message is the other"
+        );
+    }
+
+    /// #1381: three capabilities write a `user`-less input to the same channel
+    /// — a `Stop` follow-up, a `SessionStart` context and a `PostToolUse`
+    /// context — and a Goal continuation travels it too. Only the follow-up
+    /// draws a row, and it is not a message.
+    #[test]
+    fn only_a_follow_up_draws_a_hook_row() {
+        let raw = |sequence: u64, text: &str| {
+            serde_json::json!({
+                "id": format!("raw-{sequence}"), "sequence": sequence, "create_at": 1,
+                "type": "input", "name": "message",
+                "data": {"blocks": [{"type": "raw", "text": text}], "mode": "queue"},
+            })
+        };
+        let mut projection = Projection::default();
+        apply(
+            &mut projection,
+            &[
+                raw(
+                    1,
+                    "<dim-hooks kind=\"follow-up\">\nrun the suite\nfix parser::tests\nif a &lt; b &gt; c &amp;&amp; d, keep the diff small\n</dim-hooks>",
+                ),
+                raw(
+                    2,
+                    "<dim-hooks kind=\"session-start\">\nthe project's conventions\n</dim-hooks>",
+                ),
+                raw(
+                    3,
+                    "<dim-hooks kind=\"post-tool\" call_id=\"c1\" tool=\"exec\">\nthe command failed\n</dim-hooks>",
+                ),
+                raw(
+                    4,
+                    "<dim-goal kind=\"continuation\" branch=\"main\">\nkeep going\n</dim-goal>",
+                ),
+            ],
+        );
+        let rows = projection.snapshot().rows;
+        assert_eq!(
+            rows.len(),
+            1,
+            "one row for four inputs: {:?}",
+            rows.iter().map(|row| &row.text).collect::<Vec<_>>()
+        );
+        assert_eq!(rows[0].kind, RowKind::HookFollowUp);
+        assert_eq!(
+            rows[0].text,
+            "run the suite\nfix parser::tests\nif a < b > c && d, keep the diff small",
+            "the row draws the hook's words, not their escaped form"
+        );
+        assert!(
+            !rows[0].kind.is_message(),
+            "a follow-up is not a message: no pick, count or rail reads it"
+        );
+        assert_eq!(rows[0].cut, None, "it carries no cut");
+    }
+
+    /// #1381: an operator message can still be pending when a `Stop` follow-up
+    /// is written after it — `turn/end` and the follow-up write are separated
+    /// by the hook run, and `Hooks.md` only drops the follow-up for an input
+    /// *consumed* before the write. The follow-up then follows timeline UI
+    /// §4.8 like a branch notice: it is a settled row after a pending message,
+    /// and it never joins that message's rows the way a hook context does.
+    #[test]
+    fn a_follow_up_after_a_pending_message_is_its_own_settled_row() {
+        let mut projection = Projection::default();
+        apply(
+            &mut projection,
+            &[
+                serde_json::json!({
+                    "id": "spoken", "sequence": 1, "create_at": 1,
+                    "type": "input", "name": "message",
+                    "data": {"user": {"content": [
+                        {"type": "text", "text": "still there?"},
+                        {"type": "text", "text": "<dim-hooks kind=\"prompt-submit\">\nread the briefing\n</dim-hooks>"},
+                    ]}, "mode": "queue"},
+                }),
+                serde_json::json!({
+                    "id": "spoken-applied", "sequence": 2, "create_at": 1,
+                    "type": "input", "name": "applied",
+                    "data": {"input_id": "spoken", "mode": "queue"},
+                }),
+                serde_json::json!({
+                    "id": "follow-up", "sequence": 3, "create_at": 1,
+                    "type": "input", "name": "message",
+                    "data": {"blocks": [{"type": "raw", "text":
+                        "<dim-hooks kind=\"follow-up\">\nrun the suite\n</dim-hooks>"}],
+                        "mode": "queue"},
+                }),
+            ],
+        );
+        let rows = projection.snapshot().rows;
+        let kinds: Vec<RowKind> = rows.iter().map(|row| row.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                RowKind::UserMessage,
+                RowKind::HookContext,
+                RowKind::HookFollowUp
+            ],
+            "the pending message, its hook context, then the later follow-up"
+        );
+        assert!(rows[0].pending, "the message is still unread");
+        assert_eq!(
+            rows[1].parent_row.as_deref(),
+            Some(rows[0].row_id.as_str()),
+            "a hook context belongs to its message's group"
+        );
+        assert_eq!(
+            rows[2].parent_row, None,
+            "a follow-up belongs to no message: it is a later input, so nothing \
+             that settles that message settles it"
+        );
+        assert!(
+            !rows[2].pending,
+            "a follow-up has no pending state: a raw input cannot be withdrawn \
+             from the queue UI, so its row never changes"
         );
     }
 

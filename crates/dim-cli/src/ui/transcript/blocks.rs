@@ -13,7 +13,7 @@ use crate::ui::text::{
 };
 use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::fg;
-use crate::ui::transcript::block::{Block, Tone};
+use crate::ui::transcript::block::{Block, HookRow, Tone};
 use crate::ui::transcript::tool_group::render_group;
 
 pub(crate) const SHELL_PREVIEW_LINES: usize = 10;
@@ -205,11 +205,16 @@ fn thinking_row(text: &str, width: usize, p: &Palette) -> String {
     format!("{}{}", fg(&bar, &p.border), fg(text, &p.muted))
 }
 
-/// A hook's context: one muted status row naming how many lines it holds, and
-/// with the detail setting expanded, those lines under a blank gutter. The body
-/// is the hook's own words for the model, so it is drawn as text, not Markdown.
-fn hook_context(body: &str, expanded: bool, width: usize, p: &Palette) -> Vec<String> {
-    let label = crate::projection::hook_context_label(body.trim().lines().count().max(1));
+/// A runtime block a hook wrote: one muted status row naming how many lines it
+/// holds, and with the detail setting expanded, those lines under a blank
+/// gutter. The body is the hook's own words for the model, so it is drawn as
+/// text, not Markdown.
+fn hook_row(row: HookRow, body: &str, expanded: bool, width: usize, p: &Palette) -> Vec<String> {
+    let lines = body.trim().lines().count().max(1);
+    let label = match row {
+        HookRow::Context => crate::projection::hook_context_label(lines),
+        HookRow::FollowUp => crate::projection::hook_follow_up_label(lines),
+    };
     let summary = if expanded {
         format!("{label} ▾")
     } else {
@@ -530,7 +535,11 @@ pub(crate) fn render_block(
             },
         ),
         Block::Assistant(text) => markdown.render(&crate::sanitize::safe(text), width, 0),
-        Block::HookContext { body, expanded } => hook_context(body, *expanded, width, p),
+        Block::Hook {
+            row,
+            body,
+            expanded,
+        } => hook_row(*row, body, *expanded, width, p),
         Block::Thinking {
             text,
             elapsed_ms,

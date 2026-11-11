@@ -381,6 +381,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Skill loaded: {name}" => "Skill dimuat: {name}",
         "Hook context · {count} line" => "Konteks hook · {count} baris",
         "Hook context · {count} lines" => "Konteks hook · {count} baris",
+        "Stop hook follow-up · {count} line" => "Tindak lanjut hook Stop · {count} baris",
+        "Stop hook follow-up · {count} lines" => "Tindak lanjut hook Stop · {count} baris",
         "Commands" => "Perintah",
         "Command Palette" => "Palet Perintah",
         "No matches" => "Tak ada hasil",

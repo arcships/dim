@@ -116,6 +116,10 @@ mod tests {
                 "Prompt suggestion",
                 "Prompt suggestion: {error}",
                 "Suggestions are paused in this session because offers went unused. Turn them off and on in /settings to resume.",
+                "Hook context · {count} line",
+                "Hook context · {count} lines",
+                "Stop hook follow-up · {count} line",
+                "Stop hook follow-up · {count} lines",
             ] {
                 assert_ne!(t(key), key, "{code} lacks {key:?}");
             }

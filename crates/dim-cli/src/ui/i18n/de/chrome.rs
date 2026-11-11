@@ -395,6 +395,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Skill loaded: {name}" => "Skill geladen: {name}",
         "Hook context · {count} line" => "Hook-Kontext · {count} Zeile",
         "Hook context · {count} lines" => "Hook-Kontext · {count} Zeilen",
+        "Stop hook follow-up · {count} line" => "Stop-Hook-Folgeeingabe · {count} Zeile",
+        "Stop hook follow-up · {count} lines" => "Stop-Hook-Folgeeingabe · {count} Zeilen",
         "Commands" => "Befehle",
         "Command Palette" => "Befehlspalette",
         "No matches" => "Keine Treffer",

@@ -20869,6 +20869,7 @@
       "from": "dim_agent_types::markup::tests",
       "to": "dim_agent_types::markup",
       "references": [
+        "use super::element",
         "use super::escaped",
         "use super::runtime_context",
         "use super::runtime_element"
@@ -33030,6 +33031,7 @@
       "references": [
         "path crate::projection::context_lines",
         "path crate::projection::failure_phrase",
+        "path crate::projection::raw_input_line",
         "path crate::projection::retry_seconds",
         "path crate::projection::user_text"
       ]
@@ -35683,6 +35685,7 @@
         "path dim_agent_types::CollaborationDeliveredData",
         "path dim_agent_types::CollaborationRequestData",
         "path dim_agent_types::ExecStartedData",
+        "path dim_agent_types::InputBlock",
         "path dim_agent_types::InputBlock::Raw",
         "path dim_agent_types::ProviderPresentation",
         "path dim_agent_types::ToolUseData",
@@ -35721,6 +35724,7 @@
       "from": "dim_cli::projection",
       "to": "dim_agent_types::markup",
       "references": [
+        "path markup::element",
         "path markup::runtime_context",
         "path markup::runtime_element",
         "use dim_agent_types::markup"
@@ -35819,6 +35823,7 @@
         "path RowKind::Compaction",
         "path RowKind::Error",
         "path RowKind::HookContext",
+        "path RowKind::HookFollowUp",
         "path RowKind::Shell",
         "path RowKind::Status",
         "path RowKind::StreamingAssistant",
@@ -35977,6 +35982,7 @@
       "to": "dim_cli::model::view",
       "references": [
         "path CompactionState",
+        "path RowKind",
         "path RowKind::Error",
         "path TaskOutcome::Completed",
         "path TaskOutcome::Failed",
@@ -43785,6 +43791,7 @@
         "path RowKind::Compaction",
         "path RowKind::Error",
         "path RowKind::HookContext",
+        "path RowKind::HookFollowUp",
         "path RowKind::Other",
         "path RowKind::Shell",
         "path RowKind::Status",
@@ -43965,7 +43972,8 @@
       "from": "dim_cli::ui::transcript::blocks",
       "to": "dim_cli::projection",
       "references": [
-        "path crate::projection::hook_context_label"
+        "path crate::projection::hook_context_label",
+        "path crate::projection::hook_follow_up_label"
       ]
     },
     {
@@ -44081,7 +44089,7 @@
         "path Block::Compaction",
         "path Block::Error",
         "path Block::Failure",
-        "path Block::HookContext",
+        "path Block::Hook",
         "path Block::Line",
         "path Block::LoadMore",
         "path Block::Note",
@@ -44090,10 +44098,14 @@
         "path Block::Thinking",
         "path Block::ToolGroup",
         "path Block::User",
+        "path HookRow",
+        "path HookRow::Context",
+        "path HookRow::FollowUp",
         "path Tone::Danger",
         "path Tone::Muted",
         "path Tone::Warning",
         "use crate::ui::transcript::block::Block",
+        "use crate::ui::transcript::block::HookRow",
         "use crate::ui::transcript::block::Tone"
       ]
     },
@@ -45293,7 +45305,7 @@
         "path Block::Compaction",
         "path Block::Error",
         "path Block::Failure",
-        "path Block::HookContext",
+        "path Block::Hook",
         "path Block::Line",
         "path Block::LoadMore",
         "path Block::Note",
