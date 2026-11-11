@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn tui_shows_the_transcript_and_accepts_a_draft_before_owner_inventory_finishes() {
+fn tui_shows_the_transcript_and_submits_input_before_owner_inventory_finishes() {
     let home = Home::new();
     let (ready, readiness) = std::sync::mpsc::channel();
     let (proceed, control) = std::sync::mpsc::channel();
@@ -28,8 +28,6 @@ fn tui_shows_the_transcript_and_accepts_a_draft_before_owner_inventory_finishes(
             }
         };
         ready.send(()).unwrap();
-        control.recv_timeout(Duration::from_secs(10)).unwrap();
-        wire.reply(&inventory, json!({"branchId":"main","through":8,"inputs":[],"next":null}));
         loop {
             let request = wire.frame();
             match request["method"].as_str().unwrap() {
@@ -44,6 +42,9 @@ fn tui_shows_the_transcript_and_accepts_a_draft_before_owner_inventory_finishes(
                 _ => assert!(wire.empty_state(&request)),
             }
         }
+        control.recv_timeout(Duration::from_secs(10)).unwrap();
+        wire.reply(&inventory, json!({"branchId":"main","through":8,"inputs":[],"next":null}));
+        ready.send(()).unwrap();
         wire.2 = true;
         assert_eq!(wire.trailing_request(), None);
     });
@@ -52,8 +53,9 @@ fn tui_shows_the_transcript_and_accepts_a_draft_before_owner_inventory_finishes(
     terminal.until("first transcript before controls");
     terminal.write(b"draft while controls load");
     terminal.until("draft while controls load");
-    proceed.send(()).unwrap();
     terminal.write(b"\r");
+    readiness.recv_timeout(Duration::from_secs(10)).unwrap();
+    proceed.send(()).unwrap();
     readiness.recv_timeout(Duration::from_secs(10)).unwrap();
     home.kill(&terminal);
     terminal.wait();
