@@ -265,6 +265,11 @@ impl RunningServer {
     pub fn service<T: ?Sized + Send + Sync + 'static>(&self) -> Option<Arc<T>> {
         self.root.get::<T>()
     }
+    /// The process service under `key`, for one the profile provides without a
+    /// catalog name.
+    pub fn service_at<T: ?Sized + Send + Sync + 'static>(&self, key: &Key<T>) -> Option<Arc<T>> {
+        self.root.get_at(key)
+    }
     /// Emits a Session notice from the process root, standing in for an
     /// owner of process-level state after its commit. Feature `testing` only.
     #[cfg(feature = "testing")]
