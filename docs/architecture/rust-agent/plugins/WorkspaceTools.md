@@ -282,6 +282,19 @@ is written to.
 - `read`, `glob` and `grep` declare nothing else: they neither change a
   workspace file nor run a command.
 
+### File mutation display results
+
+A successful `write` returns `path`, `bytesWritten`, `revision` and `diff` in
+structured content. The display-only `diff` compares the revision-validated old
+bytes decoded with the read binding against the text actually encoded for the
+replacement, folding CRLF to LF and excluding the BOM. It begins with
+`--- /dev/null\n+++ <path>\n` for creation, or
+`--- <path>\n+++ <path>\n` for overwrite, including empty files and unchanged
+text. Its hunks use the same three context lines as `edit`; `edit` retains its
+existing hunk-only format. These display diffs are not byte patches and have no
+output-size cap. Consumers use the recorded diff rather than rereading the
+current file; older results without it do not provide a comparison.
+
 ### Rule check
 
 The read-only [`session.exec.output`](../../../design/background-task-output.md)

@@ -4,6 +4,7 @@ use super::super::file_reads::{
     Bom, EncodingSource, FileReads, TextEncoding, TextFileBinding, WriteBinding,
 };
 use super::codec;
+use super::edit::unified_diff;
 use super::{
     Access, Cancelled, FileTools, NotRegular, PathError, Target, TargetError, blocking, cancelled,
     failed, field, hex, invalid_input, not_regular, refused, resolve_path, revision, wrote,
@@ -152,7 +153,7 @@ fn write_locked(
     } else {
         None
     };
-    let (binding, text) = if exists {
+    let (binding, before, text) = if exists {
         let binding = match binding {
             WriteBinding::None => {
                 return done(failed(
@@ -168,12 +169,17 @@ fn write_locked(
             }
             WriteBinding::Text(binding) => binding,
         };
-        if let Some(conflict) = revision_conflict(&target, &binding.raw_revision, display) {
-            return done(conflict);
-        }
+        let bytes = match validated_bytes(&target, &binding.raw_revision, display) {
+            Ok(bytes) => bytes,
+            Err(conflict) => return done(conflict),
+        };
         Cancelled::check(cancel)?;
+        let before = match codec::decode_text(&bytes, &binding) {
+            Ok(text) => text,
+            Err(error) => return done(error.into_result()),
+        };
         let text = codec::normalize_eol(content, binding.eol);
-        (binding, text)
+        (binding, before, text)
     } else {
         let binding = TextFileBinding {
             raw_revision: [0; 32],
@@ -182,12 +188,18 @@ fn write_locked(
             bom: Bom::None,
             eol: codec::detect_eol(content),
         };
-        (binding, content.to_owned())
+        (binding, String::new(), content.to_owned())
     };
     let bytes = match codec::encode_text(&text, &binding) {
         Ok(bytes) => bytes,
         Err(error) => return done(error.into_result()),
     };
+    Cancelled::check(cancel)?;
+    let diff = format!(
+        "--- {}\n+++ {display}\n{}",
+        if exists { display } else { "/dev/null" },
+        unified_diff(&before.replace("\r\n", "\n"), &text.replace("\r\n", "\n")),
+    );
     Cancelled::check(cancel)?;
     // Path-based writes create missing parents here, as they always did; the
     // bounded target created them during its walk, relative to the handles.
@@ -217,7 +229,7 @@ fn write_locked(
     let raw_revision = revision(&bytes);
     let result = wrote(
         format!("Wrote {display}"),
-        json!({ "path": display, "bytesWritten": bytes.len(), "revision": hex(&raw_revision) }),
+        json!({ "path": display, "bytesWritten": bytes.len(), "revision": hex(&raw_revision), "diff": diff }),
         display,
     );
     let binding = TextFileBinding {
@@ -229,7 +241,11 @@ fn write_locked(
 }
 
 /// Fails closed: anything but the recorded bytes is a conflict.
-fn revision_conflict(target: &Target, expected: &[u8; 32], display: &str) -> Option<ToolResult> {
+fn validated_bytes(
+    target: &Target,
+    expected: &[u8; 32],
+    display: &str,
+) -> Result<Vec<u8>, ToolResult> {
     let modified = || {
         failed(
             "File was modified after it was last read. Use the read tool again before writing.",
@@ -239,17 +255,17 @@ fn revision_conflict(target: &Target, expected: &[u8; 32], display: &str) -> Opt
     let mut bytes = Vec::new();
     let read = match target.open_regular() {
         Ok(Ok(mut file)) => file.read_to_end(&mut bytes),
-        Ok(Err(NotRegular)) => return Some(not_regular(display)),
-        Err(TargetError::Refused) => return Some(refused(target.path())),
+        Ok(Err(NotRegular)) => return Err(not_regular(display)),
+        Err(TargetError::Refused) => return Err(refused(target.path())),
         Err(TargetError::Io(error)) => Err(error),
     };
     match read {
-        Ok(_) if revision(&bytes) == *expected => None,
-        Err(error) if error.kind() == ErrorKind::PermissionDenied => Some(failed(
+        Ok(_) if revision(&bytes) == *expected => Ok(bytes),
+        Err(error) if error.kind() == ErrorKind::PermissionDenied => Err(failed(
             format!("Permission denied: {display}"),
             json!({ "code": "permission_denied" }),
         )),
-        _ => Some(modified()),
+        _ => Err(modified()),
     }
 }
 
@@ -358,7 +374,7 @@ pub(super) fn write_target(
     }
     Cancelled::check(cancel)?;
     if let Some(original) = original {
-        if let Some(conflict) = revision_conflict(target, expected, display) {
+        if let Err(conflict) = validated_bytes(target, expected, display) {
             return Ok(Err(conflict));
         }
         let same = target

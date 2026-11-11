@@ -8,6 +8,8 @@
 //! through [`render_group`], so a group that settles lands on exactly the rows
 //! it occupied while it ran.
 
+use std::collections::HashMap;
+
 use serde_json::Value;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -49,6 +51,8 @@ enum Tone {
     Muted,
     Success,
     Danger,
+    DiffAdd,
+    DiffRemove,
     Path,
     Program,
     Flag,
@@ -111,6 +115,7 @@ struct Line {
     hang: usize,
     /// A member card's line: the delegation (request event id) it opens.
     action: Option<String>,
+    disclosure: Option<(String, bool)>,
 }
 
 fn header_line(indent: usize, mark: Mark, spans: Vec<Span>) -> Line {
@@ -121,6 +126,7 @@ fn header_line(indent: usize, mark: Mark, spans: Vec<Span>) -> Line {
         overflow: Overflow::Truncate,
         hang: 0,
         action: None,
+        disclosure: None,
     }
 }
 
@@ -132,6 +138,7 @@ fn body_line(indent: usize, text: impl Into<String>, tone: Tone, overflow: Overf
         overflow,
         hang: 0,
         action: None,
+        disclosure: None,
     }
 }
 
@@ -140,6 +147,8 @@ fn body_line(indent: usize, text: impl Into<String>, tone: Tone, overflow: Overf
 pub struct ToolGroup {
     pub state: State,
     pub detail: Detail,
+    pub id: String,
+    interactive: bool,
     /// The delegations its member cards show, by request event id.
     pub cards: Vec<String>,
     collapsed: Vec<Line>,
@@ -149,6 +158,9 @@ pub struct ToolGroup {
 
 impl ToolGroup {
     fn lines(&self) -> &[Line] {
+        if self.interactive {
+            return &self.expanded;
+        }
         match self.detail {
             Detail::Collapsed => &self.collapsed,
             Detail::Summary => &self.summary,
@@ -329,6 +341,27 @@ fn rejected(card: &MemberCard) -> bool {
 
 /// One batch of calls as a group.
 pub fn project_group(rows: &[&ViewRow], detail: Detail) -> ToolGroup {
+    project(rows, detail, None, false)
+}
+
+pub fn group_id(row: &ViewRow) -> String {
+    format!("group:{}", row.batch.as_deref().unwrap_or(&row.row_id))
+}
+
+pub fn project_fullscreen_group(
+    rows: &[&ViewRow],
+    detail: Detail,
+    choices: Option<&HashMap<String, bool>>,
+) -> ToolGroup {
+    project(rows, detail, choices, true)
+}
+
+fn project(
+    rows: &[&ViewRow],
+    detail: Detail,
+    choices: Option<&HashMap<String, bool>>,
+    interactive: bool,
+) -> ToolGroup {
     let items: Vec<Item<'_>> = rows.iter().map(|row| classify(Call::of(row))).collect();
     let states: Vec<State> = items.iter().map(|item| item.call().state).collect();
     let state = group_state(&states);
@@ -342,7 +375,7 @@ pub fn project_group(rows: &[&ViewRow], detail: Detail) -> ToolGroup {
         .filter(|item| item.call().parent.is_some())
         .collect();
     let sections = ordered_sections(&roots);
-    let mut header = header_spans(&roots, &sections);
+    let mut header = header_spans(&roots, &sections, interactive);
     if let Some(first) = header.first_mut() {
         first.text = capitalize(&first.text);
     }
@@ -364,6 +397,51 @@ pub fn project_group(rows: &[&ViewRow], detail: Detail) -> ToolGroup {
             tf(" · {count} failed", &[("count", &failed.to_string())]),
             Tone::Danger,
         ));
+    }
+
+    let id = group_id(rows[0]);
+    let cards = items
+        .iter()
+        .filter_map(|item| Some(item.call().member?.task.id.clone()))
+        .collect();
+    if interactive {
+        let open = choices
+            .and_then(|choices| choices.get(&id).copied())
+            .unwrap_or(detail != Detail::Collapsed);
+        let mut first = header_line(0, mark, header);
+        first.disclosure = Some((id.clone(), open));
+        let mut expanded = vec![first];
+        if open {
+            let single_program = roots.len() == 1 && roots[0].section() == Section::Program;
+            let parent = single_program
+                .then(|| {
+                    rows.iter()
+                        .find(|row| row.parent_call_id.is_none())
+                        .and_then(|row| row.call_id.as_deref())
+                })
+                .flatten();
+            append_interactive(&mut expanded, &items, rows, parent, 2, detail, choices);
+            if single_program && children.is_empty() && state == State::Running {
+                expanded.push(body_line(
+                    4,
+                    t("Waiting for result…"),
+                    Tone::Muted,
+                    Overflow::Wrap,
+                ));
+            } else if single_program && state == State::Failed {
+                append_error(&mut expanded, roots[0].call(), 4);
+            }
+        }
+        return ToolGroup {
+            state,
+            detail,
+            id,
+            interactive,
+            cards,
+            collapsed: Vec::new(),
+            summary: Vec::new(),
+            expanded,
+        };
     }
 
     let mut expanded = vec![header_line(0, mark, header.clone())];
@@ -424,20 +502,275 @@ pub fn project_group(rows: &[&ViewRow], detail: Detail) -> ToolGroup {
     ToolGroup {
         state,
         detail,
-        cards: items
-            .iter()
-            .filter_map(|item| Some(item.call().member?.task.id.clone()))
-            .collect(),
+        id,
+        interactive,
+        cards,
         collapsed,
         summary,
         expanded,
     }
 }
 
+fn append_interactive(
+    lines: &mut Vec<Line>,
+    items: &[Item<'_>],
+    rows: &[&ViewRow],
+    parent: Option<&str>,
+    indent: usize,
+    detail: Detail,
+    choices: Option<&HashMap<String, bool>>,
+) {
+    for (item, row) in items.iter().zip(rows) {
+        let belongs = match parent {
+            Some(parent) => item.call().parent == Some(parent),
+            None => item.call().parent.is_none_or(|parent| {
+                !rows
+                    .iter()
+                    .any(|row| row.call_id.as_deref() == Some(parent))
+            }),
+        };
+        if !belongs {
+            continue;
+        }
+        let call = item.call();
+        let children = row.call_id.as_deref().map_or(0, |id| {
+            items
+                .iter()
+                .filter(|item| item.call().parent == Some(id))
+                .count()
+        });
+        let mut content = Vec::new();
+        match item {
+            Item::Edit { write, .. } => {
+                let diff = if call.state == State::Done {
+                    call.diff.map(read_diff_lines).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                let label = if !write {
+                    "Edit"
+                } else if call
+                    .diff
+                    .is_some_and(|diff| diff.starts_with("--- /dev/null\n"))
+                {
+                    "Create"
+                } else {
+                    "Write"
+                };
+                let mut spans = vec![
+                    span(format!("{} ", t(label)), Tone::Text),
+                    span(call.path(), Tone::Path),
+                ];
+                let (added, removed) = diff_counts(&diff);
+                if added > 0 {
+                    spans.push(span(format!(" +{added}"), Tone::Success));
+                }
+                if removed > 0 {
+                    spans.push(span(format!(" −{removed}"), Tone::Danger));
+                }
+                content.push(header_line(2, state_mark(call.state), spans));
+                if call.state == State::Failed {
+                    append_error(&mut content, call, 4);
+                } else if call.state == State::Done {
+                    if call.diff.is_none() {
+                        content.push(body_line(
+                            4,
+                            t("Before/after comparison is unavailable for this record."),
+                            Tone::Muted,
+                            Overflow::Wrap,
+                        ));
+                    } else if diff.is_empty() {
+                        content.push(body_line(
+                            4,
+                            t("No content changes."),
+                            Tone::Muted,
+                            Overflow::Wrap,
+                        ));
+                    } else {
+                        append_diff(&mut content, &diff, true);
+                    }
+                }
+            }
+            Item::Command { command, .. } => {
+                append_command(&mut content, call, command);
+                if let Some(header) = content.first_mut() {
+                    header.spans = highlight_command(&first_line(Some(command)));
+                    header.overflow = Overflow::Truncate;
+                }
+                if command.lines().count() > 1 {
+                    content.insert(1, body_line(4, command, Tone::Text, Overflow::Rows(8)));
+                }
+                if call.state == State::Running {
+                    let output = output_lines(call.result);
+                    if !output.is_empty() {
+                        content.push(body_line(4, output.join("\n"), Tone::Muted, Overflow::Tail));
+                    } else {
+                        content.push(body_line(
+                            4,
+                            t("Waiting for result…"),
+                            Tone::Muted,
+                            Overflow::Wrap,
+                        ));
+                    }
+                }
+            }
+            Item::Agent { .. } if call.member.is_some() => {
+                append_card(&mut content, call, now_ms(), Detail::Expanded);
+                let last = content.len().saturating_sub(1);
+                for (at, line) in content.iter_mut().enumerate() {
+                    if at != last {
+                        line.action = None;
+                    }
+                }
+            }
+            _ => {
+                append_summary(&mut content, item);
+                if let Some(header) = content.first_mut() {
+                    header.action = None;
+                    if let Item::Explore { label, detail, .. } = item {
+                        match call.name.as_str() {
+                            "read" => {
+                                header.spans = vec![
+                                    span(format!("{} ", t(label)), Tone::Text),
+                                    span(call.path(), Tone::Path),
+                                ];
+                                if let Some(offset) = call
+                                    .input
+                                    .and_then(|input| input.get("offset"))
+                                    .and_then(Value::as_u64)
+                                {
+                                    header
+                                        .spans
+                                        .push(span(format!(" · L{offset}"), Tone::Muted));
+                                }
+                            }
+                            "grep" | "glob" => {
+                                header.spans = vec![
+                                    span(format!("{} ", t(label)), Tone::Text),
+                                    span(
+                                        quote(
+                                            call.string("pattern")
+                                                .or_else(|| call.string("query"))
+                                                .unwrap_or(""),
+                                        ),
+                                        Tone::Text,
+                                    ),
+                                    span(format!(" {}", call.path()), Tone::Path),
+                                ];
+                            }
+                            _ => {
+                                header.spans = vec![
+                                    span(format!("{} ", t(label)), Tone::Text),
+                                    span(detail, Tone::Text),
+                                ];
+                            }
+                        }
+                    } else if matches!(item, Item::Program { .. }) {
+                        header.spans = vec![span(
+                            format!("{} · {children} tool calls", t("Ran code")),
+                            Tone::Text,
+                        )];
+                    }
+                }
+                if !matches!(item, Item::Program { .. }) {
+                    if matches!(item, Item::Tool { .. })
+                        && let Some(input) = call.input
+                    {
+                        content.push(body_line(
+                            4,
+                            format!(
+                                "{}\n{}",
+                                t("Input"),
+                                serde_json::to_string_pretty(input).unwrap()
+                            ),
+                            Tone::Muted,
+                            Overflow::Rows(8),
+                        ));
+                    }
+                    let output = output_lines(call.result);
+                    if !output.is_empty() {
+                        if matches!(item, Item::Tool { .. }) {
+                            content.push(body_line(
+                                4,
+                                t("Result"),
+                                Tone::Muted,
+                                Overflow::Truncate,
+                            ));
+                        }
+                        content.push(body_line(
+                            4,
+                            output.join("\n"),
+                            if call.state == State::Failed {
+                                Tone::Danger
+                            } else {
+                                Tone::Text
+                            },
+                            Overflow::Tail,
+                        ));
+                    } else if call.state == State::Running {
+                        content.push(body_line(
+                            4,
+                            t("Waiting for result…"),
+                            Tone::Muted,
+                            Overflow::Wrap,
+                        ));
+                    }
+                } else if call.state == State::Failed {
+                    append_error(&mut content, call, 4);
+                }
+            }
+        }
+        if content.len() == 1 && call.state == State::Running && children == 0 {
+            content.push(body_line(
+                4,
+                t("Waiting for result…"),
+                Tone::Muted,
+                Overflow::Wrap,
+            ));
+        }
+        let foldable = content.len() > 1 || children > 0;
+        let id = format!("call:{}", row.row_id);
+        let open = choices
+            .and_then(|choices| choices.get(&id).copied())
+            .unwrap_or(if children > 0 {
+                detail != Detail::Collapsed
+            } else {
+                detail == Detail::Expanded
+            });
+        let mut header = content.remove(0);
+        header.indent = indent;
+        header.disclosure = foldable.then_some((id, open));
+        if call.state == State::Running {
+            header
+                .spans
+                .push(span(format!(" · {}", t("Running…")), Tone::Muted));
+        }
+        lines.push(header);
+        if !foldable || !open {
+            continue;
+        }
+        for mut line in content {
+            line.indent += indent;
+            lines.push(line);
+        }
+        if children > 0 {
+            append_interactive(
+                lines,
+                items,
+                rows,
+                row.call_id.as_deref(),
+                indent + 2,
+                detail,
+                choices,
+            );
+        }
+    }
+}
+
 fn append_summary(lines: &mut Vec<Line>, item: &Item<'_>) {
     let call = item.call();
     let mut spans = match item {
-        Item::Edit { .. } => edit_header(&[item]),
+        Item::Edit { .. } => edit_header(&[item], false),
         _ => {
             let detail = if let Item::Agent { detail, .. } = item {
                 detail.clone()
@@ -632,11 +965,11 @@ fn explore_command(
     }
 }
 
-fn header_spans(items: &[&Item<'_>], sections: &[Section]) -> Vec<Span> {
+fn header_spans(items: &[&Item<'_>], sections: &[Section], recorded: bool) -> Vec<Span> {
     if let [section] = sections {
         return match section {
             Section::Explore => explore_header(items),
-            _ => phrase(phrase_key(items[0]), items),
+            _ => phrase(phrase_key(items[0]), items, recorded),
         };
     }
     let mut keys: Vec<PhraseKey> = Vec::new();
@@ -656,7 +989,7 @@ fn header_spans(items: &[&Item<'_>], sections: &[Section]) -> Vec<Span> {
             .copied()
             .filter(|item| phrase_key(item) == key)
             .collect();
-        spans.extend(phrase(key, &members));
+        spans.extend(phrase(key, &members, recorded));
     }
     spans
 }
@@ -697,7 +1030,7 @@ fn running(members: &[&Item<'_>]) -> bool {
 }
 
 /// `ran 2 commands`: the verb in the progressive while any member runs.
-fn phrase(key: PhraseKey, members: &[&Item<'_>]) -> Vec<Span> {
+fn phrase(key: PhraseKey, members: &[&Item<'_>], recorded: bool) -> Vec<Span> {
     let verb = |past: &'static str, progressive: &'static str| {
         t(if running(members) { progressive } else { past })
     };
@@ -736,7 +1069,7 @@ fn phrase(key: PhraseKey, members: &[&Item<'_>]) -> Vec<Span> {
             format!("{verb} {items}")
         }
         PhraseKey::Command => format!("{} {}", verb("ran", "running"), counted(n, COMMAND)),
-        PhraseKey::Edit => return edit_header(members),
+        PhraseKey::Edit => return edit_header(members, recorded),
         PhraseKey::Check => format!("{} {}", verb("checked on", "checking on"), counted(n, TASK)),
         PhraseKey::Agent => {
             let rejected = members.iter().filter(|item| item.rejected()).count();
@@ -793,7 +1126,7 @@ fn explore_header(members: &[&Item<'_>]) -> Vec<Span> {
 }
 
 /// File paths and total line changes, using `changed` when a write is among them.
-fn edit_header(members: &[&Item<'_>]) -> Vec<Span> {
+fn edit_header(members: &[&Item<'_>], recorded: bool) -> Vec<Span> {
     let verb = match (all_edits(members), running(members)) {
         (true, false) => "edited",
         (true, true) => "editing",
@@ -805,7 +1138,15 @@ fn edit_header(members: &[&Item<'_>]) -> Vec<Span> {
         if let Item::Edit { call, write } = item
             && call.state != State::Failed
         {
-            let (a, r) = diff_counts(&edit_lines(call, *write));
+            let diff = if recorded {
+                call.diff
+                    .filter(|_| call.state == State::Done)
+                    .map(read_diff_lines)
+                    .unwrap_or_default()
+            } else {
+                edit_lines(call, *write)
+            };
+            let (a, r) = diff_counts(&diff);
             added += a;
             removed += r;
         }
@@ -880,6 +1221,7 @@ fn append_section(lines: &mut Vec<Line>, section: Section, items: &[&Item<'_>], 
                     overflow: Overflow::Truncate,
                     hang: 0,
                     action: None,
+                    disclosure: None,
                 });
             }
         }
@@ -1112,6 +1454,7 @@ fn append_command(lines: &mut Vec<Line>, call: &Call<'_>, command: &str) {
         overflow: Overflow::Whole,
         hang: 0,
         action: None,
+        disclosure: None,
     });
     if call.state == State::Running || (call.background() && call.state == State::Done) {
         return;
@@ -1154,7 +1497,7 @@ fn append_edit(lines: &mut Vec<Line>, call: &Call<'_>, write: bool, single: bool
     match call.state {
         State::Failed => append_error(lines, call, 4),
         State::Running => {}
-        State::Done => append_diff(lines, &diff),
+        State::Done => append_diff(lines, &diff, false),
     }
 }
 
@@ -1200,19 +1543,18 @@ fn append_error(lines: &mut Vec<Line>, call: &Call<'_>, indent: usize) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DiffLine {
     /// The unchanged stretch a hunk skips.
-    Gap,
+    Gap(usize),
     Line {
         marker: char,
-        /// Old file line for `-`, new file line for `+` and context; 0 when
-        /// the change was rebuilt from the input and has no real numbers.
-        line: usize,
+        old: usize,
+        new: usize,
         text: String,
     },
 }
 
 /// The diff as printed: `...` for each skipped stretch, then every hunk
 /// line behind its file line number, changes coloured whole, context plain.
-fn append_diff(lines: &mut Vec<Line>, diff: &[DiffLine]) {
+fn append_diff(lines: &mut Vec<Line>, diff: &[DiffLine], compare: bool) {
     let shown = if diff.len() <= DIFF_MAX_LINES + 1 {
         diff
     } else {
@@ -1221,23 +1563,65 @@ fn append_diff(lines: &mut Vec<Line>, diff: &[DiffLine]) {
     let width = shown
         .iter()
         .filter_map(|line| match line {
-            DiffLine::Line { line, .. } if *line > 0 => Some(line.to_string().len()),
+            DiffLine::Line { old, new, .. } => Some(old.max(new).to_string().len()),
             _ => None,
         })
         .max()
         .unwrap_or(0)
         .max(LINE_NUMBER_MIN_WIDTH);
+    if compare {
+        lines.push(body_line(
+            4,
+            format!(
+                "{:>width$} {:>width$}   {}",
+                t("Old"),
+                t("New"),
+                t("Changes")
+            ),
+            Tone::Muted,
+            Overflow::Truncate,
+        ));
+    }
     for line in shown {
-        let DiffLine::Line { marker, line, text } = line else {
-            lines.push(body_line(4, "...", Tone::Muted, Overflow::Truncate));
+        let DiffLine::Line {
+            marker,
+            old,
+            new,
+            text,
+        } = line
+        else {
+            if let DiffLine::Gap(skipped) = line {
+                if !compare {
+                    lines.push(body_line(4, "...", Tone::Muted, Overflow::Truncate));
+                } else if *skipped > 0 {
+                    lines.push(body_line(
+                        4,
+                        tf(
+                            "… {count} unchanged lines",
+                            &[("count", &skipped.to_string())],
+                        ),
+                        Tone::Muted,
+                        Overflow::Truncate,
+                    ));
+                }
+            }
             continue;
         };
-        let number = if *line > 0 {
-            format!("{line:>width$}")
+        let number = |n: usize| {
+            if n > 0 {
+                format!("{n:>width$}")
+            } else {
+                " ".repeat(width)
+            }
+        };
+        let numbers = if compare {
+            format!("{} {} ", number(*old), number(*new))
         } else {
-            " ".repeat(width)
+            format!("{} ", number(if *marker == '-' { *old } else { *new }))
         };
         let tone = match marker {
+            '+' if compare => Tone::DiffAdd,
+            '-' if compare => Tone::DiffRemove,
             '+' => Tone::Success,
             '-' => Tone::Danger,
             _ => Tone::Text,
@@ -1246,12 +1630,30 @@ fn append_diff(lines: &mut Vec<Line>, diff: &[DiffLine]) {
             indent: 4,
             mark: None,
             spans: vec![
-                span(format!("{number} "), Tone::Muted),
-                span(format!("{marker}  {text}"), tone),
+                span(numbers.clone(), Tone::Muted),
+                span(
+                    format!(
+                        "{}  ",
+                        if *marker == '-' && compare {
+                            '−'
+                        } else {
+                            *marker
+                        }
+                    ),
+                    if *marker == '-' {
+                        Tone::Danger
+                    } else if *marker == '+' {
+                        Tone::Success
+                    } else {
+                        Tone::Text
+                    },
+                ),
+                span(text, tone),
             ],
             overflow: Overflow::Wrap,
-            hang: width + 4,
+            hang: numbers.len() + 3,
             action: None,
+            disclosure: None,
         });
     }
     let hidden = diff.len() - shown.len();
@@ -1275,13 +1677,14 @@ fn edit_lines(call: &Call<'_>, write: bool) -> Vec<DiffLine> {
         };
         let content = normalize(content);
         let body = content.strip_suffix('\n').unwrap_or(&content);
-        return std::iter::once(DiffLine::Gap)
+        return std::iter::once(DiffLine::Gap(0))
             .chain(
                 body.split('\n')
                     .enumerate()
                     .map(|(index, text)| DiffLine::Line {
                         marker: '+',
-                        line: index + 1,
+                        old: 0,
+                        new: index + 1,
                         text: text.to_owned(),
                     }),
             )
@@ -1304,7 +1707,8 @@ fn edit_lines(call: &Call<'_>, write: bool) -> Vec<DiffLine> {
         .map(|line| match line {
             DiffLine::Line { marker, text, .. } => DiffLine::Line {
                 marker,
-                line: 0,
+                old: 0,
+                new: 0,
                 text,
             },
             gap => gap,
@@ -1320,8 +1724,9 @@ fn read_diff_lines(diff: &str) -> Vec<DiffLine> {
     let mut numbers: Option<(usize, usize)> = None;
     for line in diff.split('\n') {
         if let Some(header) = hunk_header(line) {
+            let previous = numbers.map_or(1, |(old, _)| old);
+            lines.push(DiffLine::Gap(header.0.saturating_sub(previous)));
             numbers = Some(header);
-            lines.push(DiffLine::Gap);
             continue;
         }
         let Some((old, new)) = numbers.as_mut() else {
@@ -1330,17 +1735,16 @@ fn read_diff_lines(diff: &str) -> Vec<DiffLine> {
         if line.is_empty() || line.starts_with('\\') {
             continue;
         }
-        let (marker, number) = match line.as_bytes()[0] {
-            b'+' => ('+', post_increment(new)),
-            b'-' => ('-', post_increment(old)),
-            _ => {
-                *old += 1;
-                (' ', post_increment(new))
-            }
+        let (marker, old, new) = match line.as_bytes()[0] {
+            b'+' => ('+', 0, post_increment(new)),
+            b'-' => ('-', post_increment(old), 0),
+            b' ' => (' ', post_increment(old), post_increment(new)),
+            _ => continue,
         };
         lines.push(DiffLine::Line {
             marker,
-            line: number,
+            old,
+            new,
             text: line[1..].to_owned(),
         });
     }
@@ -1673,6 +2077,29 @@ pub fn render_group(group: &ToolGroup, width: usize, p: &Palette, spinner: &str)
     lay_out_group(group, width, p, spinner).0
 }
 
+pub fn disclosure_at<'a>(
+    group: &'a ToolGroup,
+    width: usize,
+    p: &Palette,
+    row: usize,
+) -> Option<(&'a str, bool)> {
+    let (_, starts) = lay_out_group(group, width, p, RUNNING_MARK);
+    let at = starts.binary_search(&row).ok()?;
+    group.lines()[at]
+        .disclosure
+        .as_ref()
+        .map(|(id, open)| (id.as_str(), *open))
+}
+
+pub fn disclosure_rows(group: &ToolGroup, width: usize, p: &Palette) -> Vec<usize> {
+    let (_, starts) = lay_out_group(group, width, p, RUNNING_MARK);
+    starts
+        .into_iter()
+        .zip(group.lines())
+        .filter_map(|(start, line)| line.disclosure.as_ref().map(|_| start))
+        .collect()
+}
+
 /// The delegation a row of the drawn group opens: a member card's line.
 pub fn action_at<'a>(
     group: &'a ToolGroup,
@@ -1736,7 +2163,11 @@ fn lay_out_group(
     let mut starts = Vec::with_capacity(lines.len());
     for (at, line) in lines.iter().enumerate() {
         starts.push(rows.len());
-        let disclosure = if at == 0 {
+        let disclosure = if group.interactive {
+            line.disclosure
+                .as_ref()
+                .map(|(_, open)| if *open { "▾" } else { "▸" })
+        } else if at == 0 {
             Some(match group.detail {
                 Detail::Collapsed => "▸",
                 Detail::Summary | Detail::Expanded => "▾",
@@ -1749,8 +2180,17 @@ fn lay_out_group(
             .then_some("▾")
         };
         let mark = line.mark.map(|mark| mark_text(mark, spinner, p));
-        let lead = line.indent + if mark.is_some() { 2 } else { 0 };
-        let reserve = if disclosure.is_some() { 2 } else { 0 };
+        let lead = line.indent
+            + if mark.is_some() {
+                if group.interactive { 4 } else { 2 }
+            } else {
+                0
+            };
+        let reserve = if disclosure.is_some() && !group.interactive {
+            2
+        } else {
+            0
+        };
         let rest_indent = line.indent + line.hang;
         let first_width = width.saturating_sub(lead + reserve).max(1);
         let laid = if at == 0 && line.spans.iter().any(|span| span.tone == Tone::Path) {
@@ -1772,19 +2212,25 @@ fn lay_out_group(
         }
         let last = laid.len().saturating_sub(1);
         for (index, cells) in laid.iter().enumerate() {
-            let disclosure = match disclosure {
+            let suffix = match disclosure {
+                _ if group.interactive => String::new(),
                 Some(glyph) if index == last => format!(" {}", fg(glyph, &p.text)),
                 _ => String::new(),
             };
             let prefix = if index == 0 {
                 match &mark {
+                    Some(mark) if group.interactive => format!(
+                        "{}{} {mark} ",
+                        " ".repeat(line.indent),
+                        fg(disclosure.unwrap_or(" "), &p.text)
+                    ),
                     Some(mark) => format!("{}{mark} ", " ".repeat(line.indent)),
                     None => " ".repeat(line.indent),
                 }
             } else {
                 " ".repeat(rest_indent)
             };
-            rows.push(format!("{prefix}{}{disclosure}", paint_cells(cells, p)));
+            rows.push(format!("{prefix}{}{suffix}", paint_cells(cells, p)));
         }
     }
     (rows, starts)
@@ -1828,6 +2274,8 @@ fn paint_cells(cells: &[Cell], p: &Palette) -> String {
             Tone::Muted | Tone::Operator => (&p.muted, false, false),
             Tone::Success | Tone::Quoted => (&p.success, false, false),
             Tone::Danger => (&p.danger, false, false),
+            Tone::DiffAdd => (&p.success, false, false),
+            Tone::DiffRemove => (&p.danger, false, false),
             Tone::Path => (&p.accent, false, true),
             Tone::Program => (&p.text, true, false),
             Tone::Flag => (&p.warning, false, false),
@@ -1836,6 +2284,11 @@ fn paint_cells(cells: &[Cell], p: &Palette) -> String {
             &text,
             Paint {
                 fg: Some(color),
+                bg: match tone {
+                    Tone::DiffAdd => p.diff_add.as_deref(),
+                    Tone::DiffRemove => p.diff_remove.as_deref(),
+                    _ => None,
+                },
                 bold,
                 underline,
                 ..Paint::default()
