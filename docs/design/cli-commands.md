@@ -95,6 +95,8 @@ are isolated by Session, line, request and call identity, remain in client
 memory only, and are not Timeline facts. The preset affects unchosen and future
 nodes without clearing manual choices. Scrollback already
 written to the terminal remains append-only; fullscreen redraws retained history.
+A hook context's body follows the same rule: collapsed and summary keep it closed,
+only expanded opens it, and a click on the row toggles that row alone.
 
 ## Command menu
 
