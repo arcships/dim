@@ -40,8 +40,11 @@ use std::{
 use tokio::sync::Notify;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-/// One file's limit: a put is one message, and storage holds it in memory.
-const MAX_BYTES: usize = 16 * 1024 * 1024;
+/// One file's limit. A put is one call message whose `content` is base64, so
+/// the stored bytes and their 4/3 expansion plus the call envelope must fit
+/// the runtime's 16 MiB frame; 11 MiB is the largest whole MiB that does, and
+/// the owner also holds the content in memory for one call.
+pub const MAX_SESSION_FILE_BYTES: usize = 11 * 1024 * 1024;
 
 /// The `sessionFiles` service of one SessionStore generation.
 #[derive(Clone)]
@@ -580,10 +583,10 @@ impl SessionFilesService for SessionFiles {
                     "a Session file name is 1 to 64 of A-Z, a-z, 0-9, '.', '_' and '-', without a leading dot, and not auth.json",
                 ));
             }
-            if content.len() > MAX_BYTES {
+            if content.len() > MAX_SESSION_FILE_BYTES {
                 return Err(file_error(
                     SessionFileErrorCode::TooLarge,
-                    "a Session file holds at most 16 MiB",
+                    "a Session file holds at most 11 MiB, the most a put carries in the 16 MiB call frame",
                 ));
             }
             let call = cancel.child_token();
@@ -659,6 +662,7 @@ impl Files {
             Err(FileStorageError::Closed) => return Err(node_unavailable()),
             Err(other) => return Err(file_error(SessionFileErrorCode::Invalid, other)),
         };
+        let reply_path = path_text(root.join(&file_directory).join(&name))?;
         let permissions = read_only(&self.db.path)
             .map_err(|failure| file_error(SessionFileErrorCode::Storage, failure))?;
 
@@ -738,7 +742,7 @@ impl Files {
             .await;
         match committed {
             Ok(Commit::Owned) => Ok(StoredSessionFile {
-                path: path_text(root.join(&file_directory).join(&name))?,
+                path: reply_path,
                 file_id,
                 bytes,
             }),

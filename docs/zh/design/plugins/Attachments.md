@@ -46,7 +46,7 @@ Attachments 从不写 Timeline，从不看到图片，也不拥有任何数据�
 依赖的契约：
 
 - `sessionMethods` 的分发、错误与调用归属（C1，[session-boundary A.1](../contracts/session-boundary.md#a1-方法贡献)）：Rpc 授权 `sessionId`，获取 Session（未加载时恢复它），在调用结算前一直持有它，并从该 Session 的方法表读取提供方。Attachments 使用 `drain` 中断方式（A.2），不使用进度。
-- SessionStore 的 `sessionFiles.put`（S5a，[Session 文件 §9](../appserver/session-files.md#9-接口)）：`{sessionId, name, content} -> {fileId, path, bytes}`，错误码 `not_found`、`invalid`、`too_large`、`node_unavailable`、`cancelled`、`storage`。名称规则和 16 MiB 上限归 SessionStore，它在提交（txn 2）之前检查取消。
+- SessionStore 的 `sessionFiles.put`（S5a，[Session 文件 §9](../appserver/session-files.md#9-接口)）：`{sessionId, name, content} -> {fileId, path, bytes}`，错误码 `not_found`、`invalid`、`too_large`、`node_unavailable`、`cancelled`、`storage`。名称规则和 11 MiB 上限归 SessionStore，它在提交（txn 2）之前检查取消。
 - FileStorage（S6，[#87](https://github.com/arcships/dim/pull/87)）：只经 SessionStore 访问，SessionStore 每次调用时按 Session 的节点查找它（#38）。Attachments 不引用任何 FileStorage 操作。
 - `read`（WorkspaceTools）：读取绝对路径；`put` 返回的文件是 Session 自有文件，无需授权即可满足文件范围，工具准入仍遵循预设和工具列表（[Permission 合同](../../../architecture/rust-agent/plugins/Permission.md#policy-contract)）。
 - ModelProvider 构建请求时对图片的处理（S11；需求见 [A.4](#a4-对其他所有者的需求)）。
@@ -274,7 +274,7 @@ sessionFiles.put(own sessionId, name or "paste.txt", UTF-8 bytes, call token)
   |-- {fileId, path, bytes} ----------------------------------> {attachmentId, path, bytes}
   |-- not_found: Session record gone before txn 2 ------------> session_closed
   |-- invalid: name rejected ---------------------------------> attachment_invalid
-  |-- too_large: over 16 MiB (cannot follow the 10 MiB check) -> attachment_too_large
+  |-- too_large: over 11 MiB (cannot follow the 10 MiB check) -> attachment_too_large
   |-- node_unavailable: node's FileStorage not reachable -----> node_unavailable
   |-- cancelled: an unload fired the call's token ------------> service_reloading
   '-- storage: SQLite or FileStorage failure, Unsynced -------> storage_failed
@@ -303,7 +303,7 @@ CLI 读取图片（剪贴板、`@`、粘贴的路径），检查后（A.1）在 
 
 工具结果中的图片不在这项需求内。S11 如何读取能力、在 ModelProvider 的哪里转换，属于 S11 的设计。
 
-**SessionStore：`sessionFiles`（S5a，[#59](https://github.com/arcships/dim/issues/59)，已在 [#95](https://github.com/arcships/dim/pull/95) 合入）。** 不超出 S5a 的设计：带上述错误码的 `put`、名称规则和 16 MiB 上限、在 txn 2 之前检查令牌，以及 dim-agent-capabilities `host` 中的 `SessionFilesHost`（Session 文件附录 A）。本次复核让 Session 文件 §9.2 与 A.2 一致：回复中没有 `lines`，`cancelled` 映射为 `service_reloading`，`storage` 映射为 `storage_failed`。
+**SessionStore：`sessionFiles`（S5a，[#59](https://github.com/arcships/dim/issues/59)，已在 [#95](https://github.com/arcships/dim/pull/95) 合入）。** 不超出 S5a 的设计：带上述错误码的 `put`、名称规则和 11 MiB 上限、在 txn 2 之前检查令牌，以及 dim-agent-capabilities `host` 中的 `SessionFilesHost`（Session 文件附录 A）。本次复核让 Session 文件 §9.2 与 A.2 一致：回复中没有 `lines`，`cancelled` 映射为 `service_reloading`，`storage` 映射为 `storage_failed`。
 
 **FileStorage（S6，[#51](https://github.com/arcships/dim/issues/51)）。** 无：Attachments 只经 SessionStore 访问文件。
 

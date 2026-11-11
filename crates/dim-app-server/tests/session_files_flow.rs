@@ -1,12 +1,15 @@
 //! SessionStore Session files through the `sessionFiles` service and the
 //! native store (session-files design §16).
+use base64::{Engine, engine::general_purpose::STANDARD};
 use dim_agent_capabilities::{
     file_storage::FileStoragePlugin,
     host::{SessionFileErrorCode, SessionFilesHost, StoredSessionFile},
 };
 use dim_agent_runtime::SessionConfig;
 use dim_agent_runtime::testing::chain_events;
-use dim_app_server::storage::{SessionStore, SessionStorePlugin, SqliteStoragePlugin};
+use dim_app_server::storage::{
+    MAX_SESSION_FILE_BYTES, SessionStore, SessionStorePlugin, SqliteStoragePlugin,
+};
 use rusqlite::Connection;
 use rutis::host::{CtxHost, FiberState};
 use rutis::{Ctx, Plugin};
@@ -92,13 +95,21 @@ impl Store {
     /// Mounts the native store with the database directory as FileStorage
     /// root 0, or without FileStorage.
     async fn mount(home: &Home, file_storage: bool) -> Self {
+        Self::mount_at(&home.0, home.database(), file_storage).await
+    }
+    /// The same, for a database directory that is not a `Home`.
+    async fn mount_at(
+        directory: &std::path::Path,
+        database: std::path::PathBuf,
+        file_storage: bool,
+    ) -> Self {
         let root = Ctx::root().unwrap();
         if file_storage {
-            (&root.plugin(FileStoragePlugin::new(vec![home.0.clone()])))
+            (&root.plugin(FileStoragePlugin::new(vec![directory.to_path_buf()])))
                 .await
                 .unwrap();
         }
-        root.plugin(SqliteStoragePlugin::new(home.database()));
+        root.plugin(SqliteStoragePlugin::new(database));
         let catalog = dim_app_server::catalog();
         let build = rutis_loader::resolve::Build::default();
         let names = dim_agent_runtime::Names::copy(&catalog, &build);
@@ -266,7 +277,7 @@ async fn a_put_stores_an_immutable_file_its_session_owns() {
     }
     assert_eq!(
         store
-            .put("s1", "big.txt", &vec![0; 16 * 1024 * 1024 + 1])
+            .put("s1", "big.txt", &vec![0; MAX_SESSION_FILE_BYTES + 1])
             .await,
         Err(SessionFileErrorCode::TooLarge)
     );
@@ -685,4 +696,78 @@ async fn the_typed_binding_and_the_wire_are_one_contract() {
     );
 
     store.root.shutdown().await.unwrap();
+}
+
+/// The face limit is the largest whole MiB whose base64 fits the runtime's
+/// 16 MiB call frame; one byte more is `too_large` before anything is written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_put_over_the_face_limit_is_too_large_before_it_writes() {
+    let home = Home::new();
+    let store = Store::mount(&home, true).await;
+    store.session("s1").await;
+    let face = store.face();
+    assert!(
+        4 * MAX_SESSION_FILE_BYTES.div_ceil(3) < 16 * 1024 * 1024,
+        "the limit's base64 must fit the runtime's 16 MiB frame"
+    );
+
+    let at_limit = STANDARD.encode(vec![b'a'; MAX_SESSION_FILE_BYTES]);
+    let stored = face_call(
+        &face,
+        "put",
+        json!({"sessionId": "s1", "name": "at-limit.txt", "content": at_limit}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stored["bytes"], MAX_SESSION_FILE_BYTES);
+
+    let over = STANDARD.encode(vec![b'a'; MAX_SESSION_FILE_BYTES + 1]);
+    let refused = face_call(
+        &face,
+        "put",
+        json!({"sessionId": "s1", "name": "over.txt", "content": over}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.code(), Some("too_large"), "{refused}");
+    assert_eq!(home.entries().len(), 1);
+    assert_eq!(
+        home.rows("SELECT file_id FROM session_files"),
+        [format!("Text(\"{}\")", stored["fileId"].as_str().unwrap())]
+    );
+    store.root.shutdown().await.unwrap();
+}
+
+/// A non-UTF-8 database path cannot be carried in the reply, so the put is
+/// refused before txn 1: nothing is written and nothing is owned.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_non_utf8_database_directory_refuses_a_put_before_it_writes() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let base = std::env::temp_dir().join(format!("dim-session-files-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&base).unwrap();
+    let directory = base.join(std::ffi::OsString::from_vec(b"db-\xff".to_vec()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let database = directory.join("dimcode.sqlite");
+
+    let store = Store::mount_at(&directory, database.clone(), true).await;
+    store.session("s1").await;
+    assert_eq!(
+        store.put("s1", "paste.txt", b"pasted text").await,
+        Err(SessionFileErrorCode::Storage)
+    );
+    let session_files = database.with_file_name("dimcode.sqlite.session-files");
+    assert!(
+        !session_files.exists() || std::fs::read_dir(&session_files).unwrap().next().is_none(),
+        "nothing is written"
+    );
+    let connection = Connection::open(&database).unwrap();
+    let rows: i64 = connection
+        .query_row("SELECT COUNT(*) FROM session_files", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0, "nothing is owned");
+
+    store.root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(&base).unwrap();
 }

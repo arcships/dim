@@ -30017,7 +30017,8 @@
       "from": "dim_app_server::storage",
       "to": "dim_app_server::storage::files",
       "references": [
-        "mod files"
+        "mod files",
+        "use files::MAX_SESSION_FILE_BYTES"
       ]
     },
     {

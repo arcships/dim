@@ -99,7 +99,7 @@ catalog 现在 119 个名字：27 data、90 internal、2 shared-no-dispatcher（
 | `sessionFiles` | 已转 data：`sessionFiles.put/register/owns/owned_paths` | 名字、base64 `content`、`owned_paths`、取消都按 [Session files](appserver/session-files.md) §9.1；`SessionFilesHost` 是同一契约的进程内绑定（String 路径、同一组 error code），不另立 API |
 | `managedSearch` | 已转 data：`managedSearch.search` | `managedProviders` 不再是服务；实现 `ManagedProviders` 留在 `managedSearch` 之后，账号操作走 `account` 方法命名空间 |
 
-`workflowRuns` 已经是数据面：optional Workflow 包（`runtime/plugins/workflow`）提供 `workflowRuns`，`call: async`，`RunRequest`/`RunReply` 与 [Workflow](plugins/Workflow.md) 一致。它不在 Rust product-profile 的 118 个名字里，而在该包自己的 provides 目录里；#1292 不新增 provider，只核对形状。
+`workflowRuns` 已经是数据面：optional Workflow 包（`runtime/plugins/workflow`）提供 `workflowRuns`，`call: async`，`RunRequest`/`RunReply` 与 [Workflow](plugins/Workflow.md) 一致。它不在 Rust product-profile 的 119 个名字里，而在该包自己的 provides 目录里；#1292 不新增 provider，只核对形状。
 
 两个 owner API **不进第一批**：它们保留类型化调用。`settings.read` 会新建取消 token、并返回 `SettingsResult` 信封；GoalBranch 需要自己的 stop token，改成数据面会丢取消。`auxiliaryModel.complete` 没有 tools、config 和 cached prefix；PromptSuggestion 克隆的是整轮 `ModelRequest`，换过去是行为变化，不只是形状。它们已有数据兄弟给其他消费者；有 leaf 消费者时再按 §4 的规则扩展。
 
@@ -281,7 +281,7 @@ sessionFiles.owned_paths {sessionId} -> {paths: [string]}
 ```
 
 - 名字、`content`（base64）、`owned_paths` 和取消都按 §9.1；取消是协议动作（调用方丢弃调用或发 bridge cancel），不是 `cancel?` 字段。
-- 路径是 UTF-8 字符串。16 MiB 上限不变；先测是否超过 Channel 单条消息上限，超了在 owner 契约里加分块，不偷偷截断。
+- 路径是 UTF-8 字符串。一次 put 就是一条调用消息，`content` 的 base64 膨胀后必须放进 16 MiB 帧：实测 16 MiB 内容放不下，所以 owner 契约把上限降为 11 MiB，face 在写入前返回 `too_large`；不做分块，也不截断。
 - 消费者：Attachments 已声明 `P:sessionFiles`；WorkspaceTools/ShellSession（`register`）、FileAccessFacts（`owns`/`owned_paths`）。
 - 测试：`session_files_flow.rs`、`attachments_flow.rs`，加 loopback。
 
@@ -298,7 +298,7 @@ managedSearch.search {query, count}
 - 取消是协议动作（调用方丢弃调用或发 bridge cancel），不是请求字段。
 - 实现 `ManagedProviders` 不再是 catalog 名字或可注入的服务：账号、登录、token、租约留在实现内，账号操作仍走 `account` 方法命名空间；实现只对 App Server 自己的部件暴露进程内键。
 - Web 的搜索改调 `managedSearch`；Web 的 settings 仍走 `settings`。
-- 新名字使 catalog 多一行；它不在当前 91 个 internal 名字里。
+- 新名字使 catalog 多一行（`managedProviders` 同时不再是服务）；它不在当前 90 个 internal 名字里。
 
 ### 4.7 `wakeups`
 
@@ -325,11 +325,11 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 
 ## 6. 风险与开放问题
 
-1. **Channel 单条消息上限**：`sessionFiles.put` 的 16 MiB 可能超过限制。先测；超了就分块，不降低上限。
+1. **Channel 单条消息上限（已决）**：`sessionFiles.put` 的 16 MiB 内容按 base64 膨胀是 ~21.3 MiB，超过 16 MiB 帧。face 上限改为 11 MiB（base64 15.4 MiB），写在 owner 契约 §10 并由 owner 在写入前检查；不分块。
 2. **secret**：`providerService`、`mcpAuth`、OAuth 服务保持 internal；managed provider 的实现不占名字，只有 `managedSearch` 这一个数据面，数据面只暴露操作，不暴露值。
 3. **`workflowRuns` 已经是数据面**：optional Workflow 包已提供；#1292 只核对形状，不新增 provider。
 4. **`Faces` 的传播**：`Names`、`PartRegistry`、`SessionResolver` 都要拿到同一份原因表；独立 host / 测试用空表，检查只在装配和 leaf 加载处生效。
-5. **legacy 标记**：当前 91 个 internal 名字里 18 个是“数据内容、无消费者”，标 `legacy-no-consumer`；不是永久 internal。
+5. **legacy 标记**：当前 90 个 internal 名字里 18 个是“数据内容、无消费者”，标 `legacy-no-consumer`；不是永久 internal。
 6. **shared 与 dispatcher 不一致**：`managementMethods`、`localId` 已在 #1289 变成 `data`；`loaderService`、`pluginMounter` 是仅有的两个 `shared-no-dispatcher` 例外，检查不放行其他 shared-without-dispatcher。
 
 ## 7. 交付顺序

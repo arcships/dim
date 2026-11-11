@@ -46,7 +46,7 @@ Attachments never writes the Timeline, never sees images and owns no data. Its o
 Contracts depended on:
 
 - `sessionMethods` dispatch, errors and call ownership (C1, [session-boundary A.1](../contracts/session-boundary.md#a1-method-contributions)): Rpc authorizes `sessionId`, acquires the Session (restoring an unloaded one), holds it until the call settles and reads the provider from the Session's method table. Attachments uses `drain` interruption (A.2) and no progress.
-- SessionStore `sessionFiles.put` (S5a, [session files §9](../appserver/session-files.md#9-interface)): `{sessionId, name, content} -> {fileId, path, bytes}`, codes `not_found`, `invalid`, `too_large`, `node_unavailable`, `cancelled`, `storage`. SessionStore owns the name rule and the 16 MiB cap, and checks cancellation right before its commit (txn 2).
+- SessionStore `sessionFiles.put` (S5a, [session files §9](../appserver/session-files.md#9-interface)): `{sessionId, name, content} -> {fileId, path, bytes}`, codes `not_found`, `invalid`, `too_large`, `node_unavailable`, `cancelled`, `storage`. SessionStore owns the name rule and the 11 MiB cap, and checks cancellation right before its commit (txn 2).
 - FileStorage (S6, [#87](https://github.com/arcships/dim/pull/87)): reached only through SessionStore, which looks the Session's node up on each call (#38). Attachments names no FileStorage operation.
 - `read` (WorkspaceTools): reads an absolute path; the Session-owned file `put` returns satisfies file scope without a grant. Tool admission still follows the preset and tool lists ([Permission contract](../../architecture/rust-agent/plugins/Permission.md#policy-contract)).
 - ModelProvider's image handling at request build (S11; requirements in [A.4](#a4-requirements-to-other-owners)).
@@ -274,7 +274,7 @@ sessionFiles.put(own sessionId, name or "paste.txt", UTF-8 bytes, call token)
   |-- {fileId, path, bytes} ----------------------------------> {attachmentId, path, bytes}
   |-- not_found: Session record gone before txn 2 ------------> session_closed
   |-- invalid: name rejected ---------------------------------> attachment_invalid
-  |-- too_large: over 16 MiB (cannot follow the 10 MiB check) -> attachment_too_large
+  |-- too_large: over 11 MiB (cannot follow the 10 MiB check) -> attachment_too_large
   |-- node_unavailable: node's FileStorage not reachable -----> node_unavailable
   |-- cancelled: an unload fired the call's token ------------> service_reloading
   '-- storage: SQLite or FileStorage failure, Unsynced -------> storage_failed
@@ -303,7 +303,7 @@ The CLI reads images (clipboard, `@`, pasted paths), checks them (A.1) and sends
 
 Images in tool results are outside this requirement. How S11 reads the capability and where in ModelProvider it converts are S11's design.
 
-**SessionStore: `sessionFiles` (S5a, [#59](https://github.com/arcships/dim/issues/59), merged in [#95](https://github.com/arcships/dim/pull/95)).** Nothing beyond S5a's design: `put` with the codes above, the name rule and the 16 MiB cap, the token checked right before txn 2, and `SessionFilesHost` in dim-agent-capabilities `host` (session files Appendix A). This review aligns session files §9.2 with A.2: the reply has no `lines`, `cancelled` maps to `service_reloading`, and `storage` to `storage_failed`.
+**SessionStore: `sessionFiles` (S5a, [#59](https://github.com/arcships/dim/issues/59), merged in [#95](https://github.com/arcships/dim/pull/95)).** Nothing beyond S5a's design: `put` with the codes above, the name rule and the 11 MiB cap, the token checked right before txn 2, and `SessionFilesHost` in dim-agent-capabilities `host` (session files Appendix A). This review aligns session files §9.2 with A.2: the reply has no `lines`, `cancelled` maps to `service_reloading`, and `storage` to `storage_failed`.
 
 **FileStorage (S6, [#51](https://github.com/arcships/dim/issues/51)).** None: Attachments reaches files only through SessionStore.
 

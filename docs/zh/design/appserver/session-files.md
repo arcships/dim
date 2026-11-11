@@ -296,8 +296,9 @@ CREATE INDEX session_file_owners_by_file ON session_file_owners(file_id)
 | `owns` | async | `{sessionId: string, path: string}` | `{owned: bool}` |
 | `owned_paths` | async | `{sessionId: string}` | `{paths: string[]}`，一个 Session 文件目录及每条输出路径 |
 
-- `path` 是 Session 资源节点上的绝对路径，与 `read` 为该 Session 解析的结果一致；`bytes` 是保存的长度。
+- `path` 是 Session 资源节点上的绝对路径，与 `read` 为该 Session 解析的结果一致；`bytes` 是保存的长度。回复无法承载的非 UTF-8 路径在 txn 1 之前以 `storage` 拒绝：什么都不写，也不持有任何文件。
 - `register`、`owns` 和 `owned_paths` 是 ADR 013 的所有权接口。`register` 解析路径并在调用方把路径交给模型之前记录；`owns` 同时读取两张所有权表，ADR 014 把它读作写入的 Session 自有事实。
+- 一次 put 是一条调用消息：`content` 是 base64，所以字节数按 4/3 膨胀后必须放进运行时的 16 MiB 帧。§10 给出放得下的 11 MiB 上限。
 - 取消是协议动作：调用方放弃调用，或发送桥接协议的取消请求。取消在 txn 2 之前有效；之后文件已提交，回复有效。
 - 错误是数据 `{code, message}`（§10）。
 - SessionStore 不提供修改、重命名或移除单个文件的操作。共享和释放只发生在 S5c 的分叉和删除事务内，它们是 SessionStore 自己的 Rust 步骤，不是服务方法。
@@ -321,7 +322,7 @@ Attachments（[A.2](../plugins/Attachments.md#a2-attachmentput)）在 `Deps` 中
 | --- | --- | --- |
 | `not_found` | 没有该 id 的 Session 记录，或它在 txn 2 之前被删除。与 SessionStore 元数据服务的码相同（[SessionTitle](../plugins/SessionTitle.md)） | 不拥有任何文件；放弃的目录会被清扫 |
 | `invalid` | `name` 违反下面的规则 | 无 |
-| `too_large` | 内容超过 16 MiB | 无 |
+| `too_large` | 内容超过 11 MiB | 无 |
 | `node_unavailable` | Session 资源节点上的 FileStorage 不可达；在控制节点上即 FileStorage 正在重载或已关闭。可重试 | 不拥有任何文件；放弃的目录会被清扫 |
 | `cancelled` | 在 txn 2 之前被取消，包括 SessionStore 卸载，以及后一代次的清扫认领了 pending 行 | 不拥有任何文件；会被清扫 |
 | `storage` | SQLite 或 FileStorage 失败，包括 `Unsynced`（持久性未确认） | 不拥有任何文件；会被清扫 |
@@ -330,7 +331,7 @@ Attachments（[A.2](../plugins/Attachments.md#a2-attachmentput)）在 `Deps` 中
 
 | 限制 | 归属 | 原因 |
 | --- | --- | --- |
-| 单个文件至多 16 MiB | SessionStore | 一次写入是一条消息，`replace` 把内容放在内存里；这个上限约束单次调用的内存 |
+| 单个文件至多 11 MiB | SessionStore | 一次写入是一条调用消息，`content` 以 base64 传输，所以字节数按 4/3 膨胀后加调用信封必须放进运行时的 16 MiB 帧；11 MiB 是放得下的最大整 MiB，也约束单次调用持有的内存 |
 | `name`：`[A-Za-z0-9._-]{1,64}`，不以点开头，不论大小写都不是 `auth.json` 或 `auth.json.lock`，并且节点的 FileStorage 接受它作为一个路径组成部分（Windows 设备名） | SessionStore | 文件名会成为 SessionStore 目录下的路径组成部分。`auth.json` 会让 `replace` 改走 FileStorage 的账户标记协议 |
 | 内容规则（非空文本、10 MiB、默认 `paste.txt`） | 各使用方（Attachments A.2） | 功能的业务规则 |
 | 不设每个 Session 的数量或总量配额 | 无 | 磁盘占用随 Session 删除和清理（S5c）结束；配额需要一个业务所有者，目前没有 |
@@ -473,7 +474,7 @@ S5c 在 §5.2、§5.3 和 §5.4 的基础上实现 `session.fork` 和 `session.d
 3. 对未知或已删除的 Session 写入：`not_found`；没有所有者行；若已创建目录，则被清扫。
 4. 另一个代次的 pending 行及其目录，在新代次第一次写入时被清扫，没有行的目录也一样。同一目录下第二个数据库的 Session 文件目录保持不动。
 5. FileStorage 未激活：`node_unavailable`；什么都不写；SessionStore 和 Attachments 保持加载。
-6. 在 txn 2 之前取消：不拥有任何文件；目录被清扫。文件名无效（包括 `AUTH.JSON`）或内容超过 16 MiB：`invalid` 或 `too_large`；什么都不写。
+6. 在 txn 2 之前取消：不拥有任何文件；目录被清扫。文件名无效（包括 `AUTH.JSON`）或内容超过 11 MiB：`invalid` 或 `too_large`；什么都不写。
 7. 空库建为 v15。一次性 v13 库原地升级为精确的 v15 结构，所有业务行不变，再次打开时为 v15。执行升级的那次打开报告升级，§8 的日志行由此而来；再次打开不报告。分支专用 v14 和未知结构被拒绝并保留。
 8. FileStorage 流程：`create_directory` 以 `0700` 创建并同步父目录；已存在的目录成功；父目录缺失以 `NotFound` 失败。保留名、保留目录的大小写别名，以及（在大小写不敏感的文件系统上）`auth.json.lock` 的大小写别名，都以 `InvalidPath` 失败且不创建任何东西。已存在的文件或链接被拒绝且不改动。创建前取消则什么都不创建。
 9. 读取准入，经由 Session 的工具路径：`put` 之后，在产品默认的 `workspace-write` 和 `read-only` 下，该 Session 对返回路径的 `read` 返回内容；分支不写 `approval/request`，它的权限状态（版本和策略）不变。拒绝读取另一个 Session 的文件或数据库目录属于 §11.1 事实之外读取询问的验收：两者都不在该 Session 的事实中。
