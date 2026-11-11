@@ -78,6 +78,15 @@ impl AgentBuilder {
 
 存量不是例外：公开服务从第一天起就按 data face 写，存量名字是迁移债，不是稳定分类。§3 的分组是迁移类别：可转的按批次转成 data face；确实不能跨的（`object`、`hot-path`、`lock-callback`、`secret`、`control`、`host-resource`）才保留 `internal(reason)`。`legacy-no-consumer` 只表示“还没转”，不是“可以一直 internal”；每个这样的名字要有迁移批次。`xtask check` 拦住新写的未标记服务，评审按 §3 盘点拦住把可转名字继续留成 internal。
 
+### 2.6 一个契约，typed 只是 binding
+
+公开服务只有一个契约：data face。Rust 的 typed 客户端是同一个 face 的 binding，不是第二个 API。
+
+- binding 调用 face 的 operation；本地同一进程可以直接传 typed 值，不经过 JSON，但不绕过 face 去调 owner 内部。
+- owner trait 是实现，不是第二个公开服务。迁移时把它降为内部实现或生成的 binding，不能同时保留两个公开面。
+- 一份定义生成 wire 类型、dispatcher 和 typed binding；测试必须证明 typed binding 与 wire 返回同一结果。
+- `SessionFilesHost` + `sessionFiles` 这种并存是迁移中的临时状态，不是目标；最终只留一个公开契约。
+
 ## 3. 盘点（#1300）
 
 catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。§3 表覆盖这 91 个 internal 名字；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 是 #1292 的新名字，不在当前 catalog。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。这些分组是迁移分类，不是永久结论：可转的都要转，永久 internal 只限确实不能跨的形态。
