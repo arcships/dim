@@ -8763,9 +8763,9 @@ fn tui_queue_panel_deletes_steers_and_keeps_unconsumed_inputs_visible() {
             wire.reply(&stop, json!({"sequence":13}));
             wire.notice("session.state", json!({"sessionId":"session","branchId":"main","running":false}));
             wire.no_context();
-            let delete = wire.read("session.input.withdraw");
-            assert_eq!(delete["params"]["inputId"], "steer this");
-            wire.reply(&delete, json!({"status":"notHeld"}));
+            let submit = wire.read("session.submit");
+            assert_eq!(submit["params"]["text"], "next input");
+            wire.reply(&submit, json!({"event":{}}));
             wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":{"id":"consumed","sequence":14,"create_at":1,"type":"input","name":"consumed","data":{"input_id":"steer this"}}}));
             wire.hold();
         });
@@ -8802,7 +8802,9 @@ fn tui_queue_panel_deletes_steers_and_keeps_unconsumed_inputs_visible() {
             !panel.contains("Enter steer") && !panel.contains("delete held"),
             "{panel}"
         );
-        terminal.write(b"x");
+        terminal.write(b"x\r\x1b");
+        terminal.until("/queue view");
+        terminal.write(b"next input\r/queue\r");
         terminal.until("No queued messages.");
         let shown = strip_ansi(&terminal.transcript);
         assert!(
@@ -8812,6 +8814,125 @@ fn tui_queue_panel_deletes_steers_and_keeps_unconsumed_inputs_visible() {
         home.kill(&terminal);
         terminal.wait();
         daemon.join().unwrap();
+    }
+}
+
+#[test]
+fn tui_rapid_queue_controls_settle_each_held_input_once() {
+    for fullscreen in [false, true] {
+        for shortcut in ["enter", "ctrl-s", "panel", "delete", "recall", "not-held"] {
+            let steering = !matches!(shortcut, "delete" | "recall");
+            let home = Home::new();
+            let daemon = home.daemon(move |wire| {
+                wire.hello(&[]);
+                let attach = wire.read("session.attach");
+                let mut record = attach_record(&attach);
+                record["running"] = json!(true);
+                wire.reply(&attach, record);
+                let history = wire.read("session.history");
+                wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+                wire.no_context();
+                let providers = wire.read("account.providers");
+                wire.reply(&providers, json!([]));
+                wire.notice("session.state", json!({"sessionId":"session","branchId":"main","running":true}));
+                let submit = wire.read("session.submit");
+                assert_eq!(submit["params"]["text"], "steer once");
+                wire.reply(&submit, json!({"event":{}}));
+                wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":{"id":"queued","sequence":9,"create_at":1,"type":"input","name":"message","data":{"user":{"content":[{"type":"text","text":"steer once"}]},"mode":"queue"}}}));
+                let rejected = wire.read("session.input.withdraw");
+                wire.send(json!({"jsonrpc":"2.0","id":rejected["id"],"error":{"code":-32000,"message":"queue control blocked","data":{"appError":"input_blocked"}}}));
+                let control = wire.read("session.input.withdraw");
+                assert_eq!(control["params"]["inputId"], "queued");
+                if steering {
+                    assert_eq!(control["params"]["steer"], json!({"content":[{"type":"text","text":"steer once"}]}));
+                    let reply = if shortcut == "not-held" {
+                        json!({"status":"notHeld"})
+                    } else {
+                        json!({"status":"deleted","sequence":12,"steer":{"inputId":"replacement","sequence":11}})
+                    };
+                    wire.reply(&control, reply);
+                } else {
+                    assert!(control["params"].get("steer").is_none());
+                    wire.reply(&control, json!({"status":"deleted","sequence":12}));
+                }
+                let mut attempts = 1;
+                let submit = loop {
+                    let request = wire.read_any();
+                    if request["method"] == "session.submit" {
+                        break request;
+                    }
+                    assert_eq!(request["method"], "session.input.withdraw");
+                    attempts += 1;
+                    wire.reply(&request, json!({"status":"notHeld"}));
+                };
+                assert_eq!(submit["params"]["text"], "steer once");
+                wire.reply(&submit, json!({"event":{}}));
+                for event in [
+                    json!({"id":"withdraw","sequence":10,"type":"input","name":"withdraw","data":{"input_id":"queued"}}),
+                    json!({"id":"replacement","sequence":11,"type":"input","name":"message","data":{"user":{"content":[{"type":"text","text":"steer once"}]},"mode":"steer"}}),
+                    json!({"id":"deleted","sequence":12,"type":"input","name":"deleted","data":{"input_id":"queued"}}),
+                    json!({"id":"applied","sequence":13,"type":"input","name":"applied","data":{"input_id":"replacement","mode":"steer"}}),
+                ] {
+                    if !steering && matches!(event["id"].as_str(), Some("replacement" | "applied")) {
+                        continue;
+                    }
+                    let mut event = event;
+                    event["create_at"] = json!(1);
+                    wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":event}));
+                }
+                wire.event(14, "text", json!({"turn_id":"turn","request_id":"request","delta":"queue controls settled"}));
+                wire.hold();
+                assert_eq!(attempts, 1, "one held input must settle only once after retry");
+            });
+            let mut command = home.command();
+            if fullscreen {
+                command.arg("--fullscreen");
+            }
+            let mut terminal = Terminal::resume_tui(command);
+            terminal.until("test / model");
+            terminal.write(b"steer once\r");
+            terminal.until("Queue (1)");
+            if matches!(shortcut, "panel" | "delete") {
+                terminal.write(b"/queue\r");
+                terminal.until("awaiting application");
+            }
+            let key: &[u8] = match shortcut {
+                "ctrl-s" => b"\x13",
+                "delete" => b"x",
+                "recall" => b"\x1b[1;2D",
+                _ => b"\r",
+            };
+            terminal.write(key);
+            terminal.until("queue control blocked");
+            terminal.write(&key.repeat(8));
+            if shortcut == "delete" {
+                terminal.write(b"\r\r\r\r");
+            }
+            if matches!(shortcut, "panel" | "delete") {
+                terminal.write(b"\x1b");
+                terminal.until("/queue manage");
+            }
+            terminal.until_anywhere("already left the queue");
+            if shortcut == "recall" {
+                terminal.until_row(if fullscreen { "│" } else { "›" }, "steer once");
+                terminal.write(b"\r");
+            } else {
+                terminal.write(b"steer once\r");
+            }
+            terminal.until("queue controls settled");
+            if !fullscreen {
+                assert_eq!(
+                    strip_ansi(&terminal.transcript)
+                        .matches("already left the queue")
+                        .count(),
+                    1,
+                    "{shortcut}: suppressed controls report only once"
+                );
+            }
+            home.kill(&terminal);
+            terminal.wait();
+            daemon.join().unwrap();
+        }
     }
 }
 

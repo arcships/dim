@@ -28703,6 +28703,7 @@
         "path ModelProtocol::XaiResponses",
         "path ProviderOptions",
         "path ProviderReasoningConfig::default",
+        "path SummaryStyle::Detailed",
         "use dim_agent_capabilities::host::ModelProtocol"
       ]
     },
