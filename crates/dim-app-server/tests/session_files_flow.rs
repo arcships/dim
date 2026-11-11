@@ -15,7 +15,7 @@ use rutis_bridge::session::{
 };
 use serde_json::{Value as Json, json};
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, OnceLock},
 };
 use tokio_util::sync::CancellationToken;
@@ -142,10 +142,10 @@ impl Store {
             .await
             .map_err(|error| error.code)
     }
-    async fn owns(&self, session: &str, path: &std::path::Path) -> bool {
+    async fn owns(&self, session: &str, path: &str) -> bool {
         self.files
             .0
-            .owns(session.into(), path.to_path_buf())
+            .owns(session.into(), path.to_owned())
             .await
             .unwrap()
     }
@@ -179,9 +179,14 @@ async fn a_put_stores_an_immutable_file_its_session_owns() {
     assert_eq!(stored.file_id, id.hyphenated().to_string());
     assert_eq!(
         stored.path,
-        home.files().join(&stored.file_id).join("paste.txt")
+        home.files()
+            .join(&stored.file_id)
+            .join("paste.txt")
+            .to_str()
+            .unwrap()
     );
-    assert!(stored.path.is_absolute());
+    let path = std::path::Path::new(&stored.path);
+    assert!(path.is_absolute());
     assert_eq!(stored.bytes, 11);
     assert_eq!(std::fs::read(&stored.path).unwrap(), b"pasted text");
     assert!(
@@ -195,9 +200,9 @@ async fn a_put_stores_an_immutable_file_its_session_owns() {
         use std::os::unix::fs::PermissionsExt;
         let mode =
             |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(&stored.path), 0o400);
+        assert_eq!(mode(path), 0o400);
         assert_eq!(mode(&home.files()), 0o700);
-        assert_eq!(mode(stored.path.parent().unwrap()), 0o700);
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
     }
     assert_eq!(
         home.rows("SELECT file_id || '|' || ifnull(node, '-') || '|' || ifnull(writer, '-') FROM session_files"),
@@ -218,12 +223,16 @@ async fn a_put_stores_an_immutable_file_its_session_owns() {
     assert!(store.owns("s1", &stored.path).await);
     assert!(store.owns("s1", &again.path).await);
     assert!(!store.owns("s2", &stored.path).await);
-    assert!(!store.owns("s1", &home.0.join("outside.txt")).await);
+    assert!(
+        !store
+            .owns("s1", &home.0.join("outside.txt").to_string_lossy())
+            .await
+    );
     let stranger = home
         .files()
         .join(uuid::Uuid::new_v4().to_string())
         .join("paste.txt");
-    assert!(!store.owns("s1", &stranger).await);
+    assert!(!store.owns("s1", &stranger.to_string_lossy()).await);
 
     let rows = |home: &Home| {
         (
@@ -438,7 +447,7 @@ async fn a_session_reads_its_own_file_without_an_approval_request() {
             .put(session.id(), "paste.txt", b"pasted for the model")
             .await
             .unwrap();
-        assert!(!stored.path.starts_with(&work));
+        assert!(!std::path::Path::new(&stored.path).starts_with(&work));
         let before = session.get::<PermissionState>("main").unwrap().unwrap();
         session
             .submit(
@@ -576,6 +585,103 @@ async fn the_session_files_data_face_serves_the_owner() {
     assert!(
         unknown.to_string().contains("unknown sessionFiles method"),
         "{unknown}"
+    );
+
+    store.root.shutdown().await.unwrap();
+}
+
+/// The typed `SessionFilesService` binding and the `sessionFiles` wire are one
+/// contract: the same operations, field spelling and error codes.
+#[tokio::test]
+async fn the_typed_binding_and_the_wire_are_one_contract() {
+    let home = Home::new();
+    let store = Store::mount(&home, true).await;
+    store.session("s1").await;
+    let face = store.face();
+
+    let typed = store.put("s1", "paste.txt", b"pasted text").await.unwrap();
+    let wire = face_call(
+        &face,
+        "put",
+        json!({"sessionId": "s1", "name": "paste.txt", "content": "cGFzdGVkIHRleHQ="}),
+    )
+    .await
+    .unwrap();
+    let encoded = serde_json::to_value(&typed).unwrap();
+    for reply in [&wire, &encoded] {
+        assert_eq!(
+            reply.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["fileId", "path", "bytes"],
+            "{reply}"
+        );
+        assert_eq!(reply["bytes"], 11);
+        assert_eq!(
+            Path::new(reply["path"].as_str().unwrap()),
+            home.files()
+                .join(reply["fileId"].as_str().unwrap())
+                .join("paste.txt"),
+            "{reply}"
+        );
+    }
+
+    let output = home.0.join("out.txt");
+    std::fs::write(&output, b"output").unwrap();
+    let output = output.to_str().unwrap();
+    assert!(
+        store
+            .files
+            .0
+            .register("s1".into(), output.into())
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        face_call(
+            &face,
+            "register",
+            json!({"sessionId": "s1", "path": output}),
+        )
+        .await
+        .unwrap(),
+        json!({})
+    );
+    assert!(store.owns("s1", output).await);
+    assert_eq!(
+        face_call(&face, "owns", json!({"sessionId": "s1", "path": output}))
+            .await
+            .unwrap(),
+        json!({"owned": true})
+    );
+    assert_eq!(
+        face_call(&face, "owned_paths", json!({"sessionId": "s1"}))
+            .await
+            .unwrap(),
+        json!({"paths": store.files.0.owned_paths("s1".into()).await.unwrap()})
+    );
+
+    let typed_error = store
+        .files
+        .0
+        .put(
+            "missing".into(),
+            "paste.txt".into(),
+            b"x".to_vec(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(typed_error.code.code(), "not_found");
+    let wire_error = face_call(
+        &face,
+        "put",
+        json!({"sessionId": "missing", "name": "paste.txt", "content": "eA=="}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        wire_error.code(),
+        Some(typed_error.code.code()),
+        "{wire_error}"
     );
 
     store.root.shutdown().await.unwrap();

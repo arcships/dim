@@ -405,9 +405,9 @@ impl SessionFiles {
     pub(super) async fn register(
         &self,
         session_id: String,
-        path: PathBuf,
+        path: String,
     ) -> Result<(), SessionFileError> {
-        let resolved = resolve(&path).ok_or_else(|| {
+        let resolved = resolve(Path::new(&path)).ok_or_else(|| {
             file_error(
                 SessionFileErrorCode::Invalid,
                 "an output path must be absolute and resolvable",
@@ -450,8 +450,9 @@ impl SessionFiles {
     pub(super) async fn owns(
         &self,
         session_id: String,
-        path: PathBuf,
+        path: String,
     ) -> Result<bool, SessionFileError> {
+        let path = PathBuf::from(path);
         if path.components().any(|component| {
             !matches!(
                 component,
@@ -526,7 +527,7 @@ impl SessionFiles {
     pub(super) async fn owned_paths(
         &self,
         session_id: String,
-    ) -> Result<Vec<PathBuf>, SessionFileError> {
+    ) -> Result<Vec<String>, SessionFileError> {
         let directory = self.session_files_directory();
         let (files, outputs) = self
             .0
@@ -550,11 +551,12 @@ impl SessionFiles {
             })
             .await
             .map_err(|failure| file_error(SessionFileErrorCode::Storage, failure))?;
-        Ok(files
+        let mut paths = files
             .into_iter()
-            .map(|file_id| directory.join(file_id))
-            .chain(outputs.into_iter().map(PathBuf::from))
-            .collect())
+            .map(|file_id| path_text(directory.join(file_id)))
+            .collect::<Result<Vec<String>, SessionFileError>>()?;
+        paths.extend(outputs);
+        Ok(paths)
     }
 
     fn session_files_directory(&self) -> PathBuf {
@@ -605,7 +607,7 @@ impl SessionFilesService for SessionFiles {
     fn register(
         &self,
         session_id: String,
-        path: PathBuf,
+        path: String,
     ) -> Pin<Box<dyn Future<Output = Result<(), SessionFileError>> + Send + '_>> {
         Box::pin(SessionFiles::register(self, session_id, path))
     }
@@ -613,7 +615,7 @@ impl SessionFilesService for SessionFiles {
     fn owns(
         &self,
         session_id: String,
-        path: PathBuf,
+        path: String,
     ) -> Pin<Box<dyn Future<Output = Result<bool, SessionFileError>> + Send + '_>> {
         Box::pin(SessionFiles::owns(self, session_id, path))
     }
@@ -621,7 +623,7 @@ impl SessionFilesService for SessionFiles {
     fn owned_paths(
         &self,
         session_id: String,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PathBuf>, SessionFileError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, SessionFileError>> + Send + '_>> {
         Box::pin(SessionFiles::owned_paths(self, session_id))
     }
 }
@@ -736,7 +738,7 @@ impl Files {
             .await;
         match committed {
             Ok(Commit::Owned) => Ok(StoredSessionFile {
-                path: root.join(&file_directory).join(&name),
+                path: path_text(root.join(&file_directory).join(&name))?,
                 file_id,
                 bytes,
             }),
@@ -929,8 +931,9 @@ impl Files {
 }
 
 /// The `sessionFiles` data face ([Session files](../../../../docs/design/appserver/session-files.md)
-/// §9.1): the owner's four operations as data. Cancellation is the call being
-/// dropped, which cancels the token a put reads before txn 2.
+/// §9.1): the JSON spelling of the operations the typed `SessionFilesService`
+/// binding calls in process. Cancellation is the call being dropped, which
+/// cancels the token a put reads before txn 2.
 pub(super) struct SessionFilesFace(pub(super) SessionFiles);
 
 #[derive(Deserialize)]
@@ -981,12 +984,7 @@ impl HostDispatch for SessionFilesFace {
                     let cancel = CancellationToken::new();
                     let _dropped = cancel.clone().drop_guard();
                     match files.put(session_id, name, content, cancel).await {
-                        Ok(stored) => Ok(json!({
-                            "fileId": stored.file_id,
-                            "path": path_text(stored.path).map_err(failure)?,
-                            "bytes": stored.bytes,
-                        })
-                        .into()),
+                        Ok(stored) => rutis_bridge::session::arg(&stored),
                         Err(error) => Err(failure(error)),
                     }
                 }))
@@ -995,7 +993,7 @@ impl HostDispatch for SessionFilesFace {
                 let PathRequest { session_id, path } = request(args)?;
                 let files = self.0.clone();
                 Ok(ServiceValue::future(async move {
-                    match files.register(session_id, PathBuf::from(path)).await {
+                    match files.register(session_id, path).await {
                         Ok(()) => Ok(json!({}).into()),
                         Err(error) => Err(failure(error)),
                     }
@@ -1005,7 +1003,7 @@ impl HostDispatch for SessionFilesFace {
                 let PathRequest { session_id, path } = request(args)?;
                 let files = self.0.clone();
                 Ok(ServiceValue::future(async move {
-                    match files.owns(session_id, PathBuf::from(path)).await {
+                    match files.owns(session_id, path).await {
                         Ok(owned) => Ok(json!({ "owned": owned }).into()),
                         Err(error) => Err(failure(error)),
                     }
@@ -1016,14 +1014,7 @@ impl HostDispatch for SessionFilesFace {
                 let files = self.0.clone();
                 Ok(ServiceValue::future(async move {
                     match files.owned_paths(session_id).await {
-                        Ok(paths) => {
-                            let paths = paths
-                                .into_iter()
-                                .map(path_text)
-                                .collect::<Result<Vec<String>, SessionFileError>>()
-                                .map_err(failure)?;
-                            Ok(json!({ "paths": paths }).into())
-                        }
+                        Ok(paths) => Ok(json!({ "paths": paths }).into()),
                         Err(error) => Err(failure(error)),
                     }
                 }))
@@ -1052,17 +1043,10 @@ fn request<T: DeserializeOwned>(args: ServiceValue) -> Result<T, BridgeError> {
 
 /// The error a caller reads, carrying §10's code.
 fn failure(error: SessionFileError) -> BridgeError {
-    let code = match error.code {
-        SessionFileErrorCode::NotFound => "not_found",
-        SessionFileErrorCode::Invalid => "invalid",
-        SessionFileErrorCode::TooLarge => "too_large",
-        SessionFileErrorCode::NodeUnavailable => "node_unavailable",
-        SessionFileErrorCode::Cancelled => "cancelled",
-        SessionFileErrorCode::Storage => "storage",
-    };
-    rutis_bridge::exports::failure("SessionFileError", code, error.message, None)
+    rutis_bridge::exports::failure("SessionFileError", error.code.code(), error.message, None)
 }
 
+/// `path` as the face's UTF-8 string.
 fn path_text(path: PathBuf) -> Result<String, SessionFileError> {
     path.into_os_string().into_string().map_err(|_| {
         file_error(

@@ -973,11 +973,14 @@ pub trait ResolveContextModel: Send + Sync + 'static {
 pub struct ContextModelHost(pub Option<Arc<dyn ResolveContextModel>>);
 
 /// A Session file SessionStore stored. `path` is absolute on the Session's
-/// resource node and names the same bytes for the file's whole life.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// resource node and names the same bytes for the file's whole life. The
+/// fields are the `sessionFiles` put reply
+/// ([Session files §9.1](../../../../docs/design/appserver/session-files.md#91-language-neutral-adr-002-d5)).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StoredSessionFile {
     pub file_id: String,
-    pub path: std::path::PathBuf,
+    pub path: String,
     pub bytes: u64,
 }
 /// The `sessionFiles` error codes: `not_found`, `invalid`, `too_large`,
@@ -991,14 +994,30 @@ pub enum SessionFileErrorCode {
     Cancelled,
     Storage,
 }
+impl SessionFileErrorCode {
+    /// The code a caller reads, whichever spelling of the face it uses.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::NotFound => "not_found",
+            Self::Invalid => "invalid",
+            Self::TooLarge => "too_large",
+            Self::NodeUnavailable => "node_unavailable",
+            Self::Cancelled => "cancelled",
+            Self::Storage => "storage",
+        }
+    }
+}
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{message}")]
 pub struct SessionFileError {
     pub code: SessionFileErrorCode,
     pub message: String,
 }
-/// The process service `sessionFiles`, provided by SessionStore: it stores a
-/// Session file and answers which artifacts a Session owns (ADR 013 D1).
+/// The process service `sessionFiles` ([Session files §9.1](../../../../docs/design/appserver/session-files.md#91-language-neutral-adr-002-d5)),
+/// provided by SessionStore: it stores a Session file and answers which
+/// artifacts a Session owns (ADR 013 D1). This trait is that face's
+/// in-process binding: it takes and returns the face's data, with the bytes
+/// of `content` taken decoded, and its errors carry the face's codes.
 pub trait SessionFilesService: Send + Sync + 'static {
     /// Stores `content` once, read-only, as the file `name` owned by
     /// `session_id`. Cancellation takes effect until the file is committed;
@@ -1015,7 +1034,7 @@ pub trait SessionFilesService: Send + Sync + 'static {
     fn register(
         &self,
         session_id: String,
-        path: std::path::PathBuf,
+        path: String,
     ) -> Pin<Box<dyn Future<Output = Result<(), SessionFileError>> + Send + '_>>;
     /// Whether `session_id` owns the artifact at `path`, a resolved absolute
     /// path: an exact registered output path, or an attachment path inside
@@ -1024,14 +1043,14 @@ pub trait SessionFilesService: Send + Sync + 'static {
     fn owns(
         &self,
         session_id: String,
-        path: std::path::PathBuf,
+        path: String,
     ) -> Pin<Box<dyn Future<Output = Result<bool, SessionFileError>> + Send + '_>>;
     /// Every path `session_id` owns: a Session file's directory and each
     /// registered output path.
     fn owned_paths(
         &self,
         session_id: String,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<std::path::PathBuf>, SessionFileError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, SessionFileError>> + Send + '_>>;
 }
 /// The process service `sessionFiles`, provided by SessionStore, so that its
 /// consumers name no App Server type.

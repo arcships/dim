@@ -494,28 +494,28 @@ S5c 在 §5.2、§5.3 和 §5.4 的基础上实现 `session.fork` 和 `session.d
 
 ## 附录 A. Rust 绑定
 
-放在 `dim-agent-capabilities::host`，与其他宿主端口并列，这样 Attachments 不依赖任何 App Server 类型：
+放在 `dim-agent-capabilities::host`，与其他宿主端口并列，这样 Attachments 不依赖任何 App Server 类型。这个绑定是 §9.1 的进程内写法，不是第二份契约：`path` 是同一个 UTF-8 字符串，`content` 是同一份字节（不带 wire 的 base64），回复就是 `put` 回复的字段，`SessionFileErrorCode::code` 是 §10 那些码唯一的拼写：
 
 ```rust
-pub struct StoredSessionFile { pub file_id: String, pub path: PathBuf, pub bytes: u64 }
+pub struct StoredSessionFile { pub file_id: String, pub path: String, pub bytes: u64 }
 pub enum SessionFileErrorCode { NotFound, Invalid, TooLarge, NodeUnavailable, Cancelled, Storage }
 pub struct SessionFileError { pub code: SessionFileErrorCode, pub message: String }
 pub trait SessionFilesService: Send + Sync + 'static {
     fn put(&self, session_id: String, name: String, content: Vec<u8>, cancel: CancellationToken)
         -> Pin<Box<dyn Future<Output = Result<StoredSessionFile, SessionFileError>> + Send + '_>>;
-    fn register(&self, session_id: String, path: PathBuf)
+    fn register(&self, session_id: String, path: String)
         -> Pin<Box<dyn Future<Output = Result<(), SessionFileError>> + Send + '_>>;
-    fn owns(&self, session_id: String, path: PathBuf)
+    fn owns(&self, session_id: String, path: String)
         -> Pin<Box<dyn Future<Output = Result<bool, SessionFileError>> + Send + '_>>;
     fn owned_paths(&self, session_id: String)
-        -> Pin<Box<dyn Future<Output = Result<Vec<PathBuf>, SessionFileError>> + Send + '_>>;
+        -> Pin<Box<dyn Future<Output = Result<Vec<String>, SessionFileError>> + Send + '_>>;
 }
 pub struct SessionFilesHost(pub Arc<dyn SessionFilesService>);
 ```
 
 `register` 保存解析后的输出路径；生产者已按自己的根检查过它。`owns` 接收解析后的绝对路径并读取两张所有权表：`session_output_owners` 的精确行，或路径位于 `<db>.session-files/<fileId>/` 内且 `session_file_owners` 拥有该 fileId。查询失败是错误，会导致拒绝访问。`owned_paths` 列出拥有的 fileId 目录和输出路径。
 
-`SessionStorePlugin` 接收数据库目录的根索引，提供 `SessionFilesHost`，并在每次调用时用 `ctx.get_as` 读取 `FileStorage`。分叉、释放和清扫步骤是 SessionStore 基于原生存储连接的方法，供 S5c 使用。
+`SessionStorePlugin` 接收数据库目录的根索引，提供 `SessionFilesHost` 和 `sessionFiles` dispatcher，并在每次调用时用 `ctx.get_as` 读取 `FileStorage`。dispatcher 反序列化 §9.1 的请求、解码 `content`，然后调用这个绑定，所以两种写法跑同一份实现。分叉、释放和清扫步骤是 SessionStore 基于原生存储连接的方法，供 S5c 使用。
 
 FileStorage：
 

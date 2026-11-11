@@ -731,21 +731,23 @@ only S5a.
 ## Appendix A. Rust binding
 
 In `dim-agent-capabilities::host`, next to the other host ports, so Attachments depends on no
-App Server type:
+App Server type. This binding is the in-process spelling of §9.1, not a second contract: `path`
+is the same UTF-8 string, `content` is the same bytes without the wire's base64, the reply is
+the `put` reply's fields, and `SessionFileErrorCode::code` is the one spelling of §10's codes:
 
 ```rust
-pub struct StoredSessionFile { pub file_id: String, pub path: PathBuf, pub bytes: u64 }
+pub struct StoredSessionFile { pub file_id: String, pub path: String, pub bytes: u64 }
 pub enum SessionFileErrorCode { NotFound, Invalid, TooLarge, NodeUnavailable, Cancelled, Storage }
 pub struct SessionFileError { pub code: SessionFileErrorCode, pub message: String }
 pub trait SessionFilesService: Send + Sync + 'static {
     fn put(&self, session_id: String, name: String, content: Vec<u8>, cancel: CancellationToken)
         -> Pin<Box<dyn Future<Output = Result<StoredSessionFile, SessionFileError>> + Send + '_>>;
-    fn register(&self, session_id: String, path: PathBuf)
+    fn register(&self, session_id: String, path: String)
         -> Pin<Box<dyn Future<Output = Result<(), SessionFileError>> + Send + '_>>;
-    fn owns(&self, session_id: String, path: PathBuf)
+    fn owns(&self, session_id: String, path: String)
         -> Pin<Box<dyn Future<Output = Result<bool, SessionFileError>> + Send + '_>>;
     fn owned_paths(&self, session_id: String)
-        -> Pin<Box<dyn Future<Output = Result<Vec<PathBuf>, SessionFileError>> + Send + '_>>;
+        -> Pin<Box<dyn Future<Output = Result<Vec<String>, SessionFileError>> + Send + '_>>;
 }
 pub struct SessionFilesHost(pub Arc<dyn SessionFilesService>);
 ```
@@ -756,9 +758,11 @@ pub struct SessionFilesHost(pub Arc<dyn SessionFilesService>);
 in `<db>.session-files/<fileId>/`. A query failure is an error that denies access.
 `owned_paths` lists the owned file-id directories and output paths.
 
-`SessionStorePlugin` takes the database directory's root index, provides `SessionFilesHost`, and
-reads `FileStorage` with `ctx.get_as` on each call. The fork, release and sweep steps are
-SessionStore methods over the native store connection, used by S5c.
+`SessionStorePlugin` takes the database directory's root index, provides `SessionFilesHost` and
+the `sessionFiles` dispatcher, and reads `FileStorage` with `ctx.get_as` on each call. The
+dispatcher deserializes the §9.1 request, decodes `content`, and calls this binding, so both
+spellings run one implementation. The fork, release and sweep steps are SessionStore methods
+over the native store connection, used by S5c.
 
 FileStorage:
 

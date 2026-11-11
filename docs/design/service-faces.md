@@ -96,7 +96,7 @@ catalog 现在 120 个名字：27 data、91 internal、2 shared-no-dispatcher。
 | --- | --- | --- |
 | `scheduleJobs` | 新数据面 `scheduleJobs.call(JobRequest)` | 按 [Scheduler](plugins/Scheduler.md) 的 flat `JobRequest`/`JobReply`；Rust 实现是 `call(request, caller)`，dispatcher 拼成 flat request。`Caller`/`JobReply` 补 serde，`Caller` 用 camelCase |
 | `wakeups` | 新数据面 `wakeups.create/list/cancel` | SchedulerSession 同时注入 `ScheduleJobs` 和 `Wakeups`；只做 `scheduleJobs` 不够。形状按 [Scheduler](plugins/Scheduler.md) §10.2 |
-| `sessionFiles` | 已转 data：`sessionFiles.put/register/owns/owned_paths` | 名字、base64 `content`、`owned_paths`、取消都按 [Session files](appserver/session-files.md) §9.1；`SessionFilesHost` 保持 Rust 类型键 |
+| `sessionFiles` | 已转 data：`sessionFiles.put/register/owns/owned_paths` | 名字、base64 `content`、`owned_paths`、取消都按 [Session files](appserver/session-files.md) §9.1；`SessionFilesHost` 是同一契约的进程内绑定（String 路径、同一组 error code），不另立 API |
 | `managedSearch` | 已转 data：`managedSearch.search` | `managedProviders`（§3.6）保持 internal(secret)，账号/token 不出去 |
 
 `workflowRuns` 已经是数据面：optional Workflow 包（`runtime/plugins/workflow`）提供 `workflowRuns`，`call: async`，`RunRequest`/`RunReply` 与 [Workflow](plugins/Workflow.md) 一致。它不在 Rust product-profile 的 118 个名字里，而在该包自己的 provides 目录里；#1292 不新增 provider，只核对形状。
@@ -114,7 +114,7 @@ catalog 现在 120 个名字：27 data、91 internal、2 shared-no-dispatcher。
 | `modelHost` | `auxiliaryModel` | PromptSuggestion 保留 typed；`auxiliaryModel` 给无 tools 的完成 |
 | `auxiliaryModelHost` | `auxiliaryModel` | 模型调用走 `complete` |
 | `loader` | `rutis/loader` | 插件管理走数据面 |
-| `sessionFilesHost` | `sessionFiles` | Rust 绑定；wire 名按 owner 契约 |
+| `sessionFilesHost` | `sessionFiles` | 同一契约的进程内绑定；wire 名按 owner 契约 |
 | `basePromptSettingsHost` | — | 宿主 prompt settings 端口；`owner-api` |
 | `skillsInstructionsSettingsHost` | — | 宿主 skills settings 端口；`owner-api` |
 | `summaryPromptSettingsHost` | — | 宿主 summary settings 端口；`owner-api` |

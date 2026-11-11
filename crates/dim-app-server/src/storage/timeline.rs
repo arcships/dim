@@ -1163,7 +1163,7 @@ impl SessionStore {
     /// ADR 013 D2: records `path` as output owned by `session_id` before the
     /// tool result hands it to the model. A repeated path is a no-op; a
     /// missing Session fails.
-    pub async fn register(&self, session_id: &str, path: PathBuf) -> Result<()> {
+    pub async fn register(&self, session_id: &str, path: String) -> Result<()> {
         self.files
             .register(session_id.to_owned(), path)
             .await
@@ -1171,7 +1171,7 @@ impl SessionStore {
     }
     /// ADR 013 D3: whether `session_id` owns the resolved `path` through
     /// either ownership table.
-    pub async fn owns(&self, session_id: &str, path: PathBuf) -> Result<bool> {
+    pub async fn owns(&self, session_id: &str, path: String) -> Result<bool> {
         self.files
             .owns(session_id.to_owned(), path)
             .await
@@ -1179,7 +1179,7 @@ impl SessionStore {
     }
     /// ADR 013 D3: the Session file directories and output paths the Session
     /// owns.
-    pub async fn owned_paths(&self, session_id: &str) -> Result<Vec<PathBuf>> {
+    pub async fn owned_paths(&self, session_id: &str) -> Result<Vec<String>> {
         self.files
             .owned_paths(session_id.to_owned())
             .await
