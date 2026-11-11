@@ -688,6 +688,9 @@ pub fn append_blocks(user: &mut Option<UserInput>, blocks: Vec<String>) {
         return;
     };
     for text in blocks {
+        // The submit-check table decides this drop for every in-tree entry;
+        // the gate here guards a caller that appends blocks without going
+        // through the table.
         if !markup::runtime_context(user.content.len(), &text) {
             tracing::warn!("submit check context dropped: it is not a runtime marker element");
             continue;
