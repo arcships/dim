@@ -154,7 +154,8 @@ jobs:
           (cd runtime && npm install --no-save --ignore-scripts --install-links ./plugins/workflow)
           export DIM_TEST_APP_SERVER="$PWD/target/debug/dim-app-server"
           export DIM_TEST_NPM_WRAPPER="$PWD/npm/bin/dimcode.mjs"
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl cli_flow --ignored --test-threads=2
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl cli_flow --ignored --test-threads=2 \
+            --skip modality::ocr_recognizes_through_apple_vision
       - name: Verify public Node bindings
         if: needs.changes.outputs.node == 'true'
         shell: bash

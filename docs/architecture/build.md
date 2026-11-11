@@ -25,6 +25,13 @@ Full-workspace CI uses self-hosted macOS ARM64 runners; pull requests run only t
 
 The macOS clipboard flows use private pasteboards and serialize access to the shared pasteboard server; other tests remain parallel.
 
+Apple Vision recognition through the sandboxed helper and the product CLI is opt-in acceptance on macOS ARM64. Ordinary workspace tests cover OCR engine results and helper error handling. Run the native acceptance explicitly:
+
+```sh
+cargo test --locked -p dimcode --test ocr_helper_flow -- --ignored
+cargo test --locked -p dimcode --test cli_flow modality::ocr_recognizes_through_apple_vision -- --ignored --exact
+```
+
 Each runner's OS/libc baseline must be recorded and verified before declaring that platform supported. Cross-built executables are checked for the target architecture during staging, but installation and runtime acceptance still require the corresponding target system.
 
 Public Node provider and MCP interoperability fixtures use development dependencies declared in `runtime/package.json`. Install them with `npm ci --prefix runtime --ignore-scripts`; distribution staging uses `--omit=dev` and does not ship those SDKs.

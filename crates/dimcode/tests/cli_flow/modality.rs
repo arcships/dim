@@ -342,6 +342,7 @@ fn the_first_interrupt_prints_the_id_and_exits_130() {
 /// through `modality task`.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
+#[ignore = "requires Apple Vision under the product daemon's macOS sandbox"]
 fn ocr_recognizes_through_apple_vision() {
     let home = Home::new();
     // The first command starts the product daemon for this home; every later
