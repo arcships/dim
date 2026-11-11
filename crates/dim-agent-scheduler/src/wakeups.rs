@@ -577,6 +577,13 @@ pub(crate) async fn create_wakeup(
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| SchedulerError::new("wakeup_face", "create reply had no wakeupId"))?
         .to_owned();
+    if let Ok(records) = list_wakeups(dispatch, &request.session_id, &request.branch_id).await
+        && let Some(record) = records
+            .into_iter()
+            .find(|record| record.wakeup_id == wakeup_id)
+    {
+        return Ok(record);
+    }
     Ok(synthetic(
         &request.session_id,
         &request.branch_id,
@@ -716,6 +723,20 @@ fn parse_at(at: &str) -> Result<DateTime<Utc>, BridgeError> {
         .map_err(|error| invalid(format!("invalid at: {error}")))
 }
 
+fn unpack(args: BridgeValue) -> Result<serde_json::Value, BridgeError> {
+    let value = args.json()?;
+    Ok(match value {
+        serde_json::Value::Array(mut values) => {
+            values.drain(..).next().unwrap_or(serde_json::Value::Null)
+        }
+        value => value,
+    })
+}
+
+fn wire_error(code: &str, message: impl Into<String>) -> Reply {
+    Ok(json!({ "code": code, "message": message.into() }).into())
+}
+
 impl HostDispatch for WakeupsFace {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(json!({ "create": "async", "list": "async", "cancel": "async" }))
@@ -724,10 +745,22 @@ impl HostDispatch for WakeupsFace {
     fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
         let launch = |wakeups: Arc<Wakeups>, args: BridgeValue| match method {
             "create" => {
-                let request: CreateWire = serde_json::from_value(args.json()?)
+                let request: CreateWire = serde_json::from_value(unpack(args)?)
                     .map_err(|error| invalid(error.to_string()))?;
+                if request.session_id.is_empty() || request.branch_id.is_empty() {
+                    return wire_error("invalid_data", "sessionId and branchId must not be empty");
+                }
+                if request.prompt.is_empty() {
+                    return wire_error("invalid_data", "prompt must not be empty");
+                }
+                if request.prompt.len() > MAX_PROMPT_BYTES {
+                    return wire_error("invalid_data", "prompt is too large");
+                }
                 Ok(BridgeValue::future(async move {
-                    let at = parse_at(&request.at)?;
+                    let at = match parse_at(&request.at) {
+                        Ok(at) => at,
+                        Err(error) => return wire_error("invalid_data", error.to_string()),
+                    };
                     match wakeups
                         .create(WakeupRequest {
                             session_id: request.session_id,
@@ -745,8 +778,12 @@ impl HostDispatch for WakeupsFace {
                 }))
             }
             "list" => {
-                let request: ListWire = serde_json::from_value(args.json()?)
+                let request: ListWire = serde_json::from_value(unpack(args)?)
                     .map_err(|error| invalid(error.to_string()))?;
+                let branch = request.branch_id.clone().unwrap_or_else(|| "main".into());
+                if request.session_id.is_empty() || branch.is_empty() {
+                    return wire_error("invalid_data", "sessionId and branchId must not be empty");
+                }
                 Ok(BridgeValue::future(async move {
                     let branch = request.branch_id.as_deref().unwrap_or("main");
                     match wakeups.list(&request.session_id, branch).await {
@@ -761,8 +798,11 @@ impl HostDispatch for WakeupsFace {
                 }))
             }
             "cancel" => {
-                let request: CancelWire = serde_json::from_value(args.json()?)
+                let request: CancelWire = serde_json::from_value(unpack(args)?)
                     .map_err(|error| invalid(error.to_string()))?;
+                if request.session_id.is_empty() || request.wakeup_id.is_empty() {
+                    return wire_error("invalid_data", "sessionId and wakeupId must not be empty");
+                }
                 Ok(BridgeValue::future(async move {
                     match wakeups
                         .cancel(&request.session_id, &request.wakeup_id)

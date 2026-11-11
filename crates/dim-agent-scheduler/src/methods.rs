@@ -1218,6 +1218,10 @@ impl HostDispatch for ScheduleJobsFace {
         let value = args
             .json()
             .map_err(|error| BridgeError::Value(error.to_string()))?;
+        let value = match value {
+            Value::Array(mut values) => values.drain(..).next().unwrap_or(Value::Null),
+            value => value,
+        };
         let request: JobRequestWire =
             serde_json::from_value(value).map_err(|error| BridgeError::Value(error.to_string()))?;
         let jobs = self.0.clone();
