@@ -79,7 +79,8 @@ input.
 This repository's clients: the native CLI draws one warning row per element
 (`Update::Report { warning: true }` in the terminal UI, `Display::record` in the
 line client, stderr in `exec`); the ACP gateway and the Web workspace ignore it;
-Desktop sees it only after its own change to `npm/client-protocol.d.ts`.
+Desktop receives the field in the published client types and shows it once it
+renders `warnings`, which is Desktop's remaining UI work.
 
 After commit, failure to confirm publication remains uncertain even on a live
 connection: `submission_unknown`, an opaque `-32603` publication/storage error,
