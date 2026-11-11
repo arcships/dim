@@ -1,5 +1,5 @@
 use super::{AgentIndex, SESSION_NAMESPACE};
-use crate::connection::{configuration_outcome, provider_error};
+use crate::connection::{configuration_outcome, port_error};
 use dim_agent_capabilities::{
     host::ModelSelectionRequest,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
@@ -138,12 +138,9 @@ async fn adopt_profile(
             index
                 .model_selection()
                 .ok_or_else(RpcError::reloading)?
-                .resolve(
-                    ModelSelectionRequest::at(Some(target), None)
-                        .map_err(|error| provider_error(error.into()))?,
-                )
+                .resolve(ModelSelectionRequest::at(Some(target), None).map_err(port_error)?)
                 .await
-                .map_err(|error| provider_error(error.into()))?,
+                .map_err(port_error)?,
         ),
         Some(target) => Some(ModelSelection {
             provider_id: target.provider_id,

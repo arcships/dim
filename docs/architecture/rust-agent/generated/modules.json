@@ -22099,9 +22099,9 @@
       "from": "dim_app_server::agents::configuration",
       "to": "dim_app_server::connection",
       "references": [
-        "path provider_error",
+        "path port_error",
         "use crate::connection::configuration_outcome",
-        "use crate::connection::provider_error"
+        "use crate::connection::port_error"
       ]
     },
     {
@@ -23831,10 +23831,13 @@
       "from": "dim_app_server::connection",
       "to": "dim_agent_capabilities::host",
       "references": [
+        "path ModelPortError",
+        "path ModelPortError::Cancelled",
         "path ModelSelectionRequest::at",
         "path dim_agent_capabilities::host::HostError",
         "path dim_agent_capabilities::host::HostError::Cancelled",
         "path dim_agent_capabilities::host::HostError::failed",
+        "use dim_agent_capabilities::host::ModelPortError",
         "use dim_agent_capabilities::host::ModelSelectionRequest"
       ]
     },
@@ -48141,18 +48144,12 @@
       "from": "dim_modality",
       "to": "dim_agent_capabilities::host",
       "references": [
-        "path HostError",
-        "path HostError::Cancelled",
-        "path HostError::Failed",
-        "path HostErrorKind::OwnerClosed",
         "path ModelPortError",
         "path ModelPortError::Cancelled",
         "path ModelPortError::OwnerClosed",
         "path ModelSelectionHost",
         "path ModelSelectionRequest::at",
         "path SelectableModelsHost",
-        "use dim_agent_capabilities::host::HostError",
-        "use dim_agent_capabilities::host::HostErrorKind",
         "use dim_agent_capabilities::host::ModelPortError",
         "use dim_agent_capabilities::host::ModelSelectionHost",
         "use dim_agent_capabilities::host::ModelSelectionRequest",

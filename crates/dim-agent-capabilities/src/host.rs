@@ -727,27 +727,6 @@ pub enum ModelPortError {
     #[error("{message}")]
     Failed { message: String },
 }
-impl From<ModelPortError> for HostError {
-    /// The face's code back as the host failure a Rust caller maps to its own
-    /// error: the codes a caller acts on keep their kinds, and the rest is the
-    /// owner's message.
-    fn from(error: ModelPortError) -> Self {
-        let message = error.to_string();
-        match error {
-            ModelPortError::Cancelled { .. } => HostError::Cancelled(message),
-            ModelPortError::OwnerClosed { .. } => {
-                HostError::classified(HostErrorKind::OwnerClosed, message)
-            }
-            ModelPortError::InvalidRequest { .. } => {
-                HostError::classified(HostErrorKind::InvalidRequest, message)
-            }
-            ModelPortError::ModelUnavailable { .. } | ModelPortError::Failed { .. } => {
-                HostError::failed(message)
-            }
-        }
-    }
-}
-
 impl From<HostError> for ModelPortError {
     /// The failure as the face reports it: the kind a caller acts on becomes
     /// its own code, and every other failure is `failed`.
