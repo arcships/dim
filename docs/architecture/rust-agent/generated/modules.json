@@ -48299,7 +48299,6 @@
       "references": [
         "path crate::branch::key_block",
         "path crate::branch::model_state_agrees",
-        "path goal_inputs",
         "path live_inputs",
         "use crate::branch::goal_inputs",
         "use crate::branch::live_inputs"

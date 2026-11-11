@@ -16,6 +16,8 @@ Issue: [#1320](https://github.com/arcships/dim/issues/1320)、[#1147](https://gi
 
 不读取用户正文、模型请求、输出、工具结果、exec、轮次历史、续行历史或评估关系来恢复执行。不装载旧 goal/recovered 及 goal/driving-node 的运行状态；未知 goal/state schema 不能冒充旧历史。
 
+旧输入候选还必须包含 goal:state、goal:objective、goal:status 键，或 kind="goal" 业务变更。单独的 continuation、report、evaluate、evaluate-again 不进入定义重建。返回新实例前仅保留目标、业务状态、judge、有效键及其来源位置，解释旧格式时产生的执行字段全部丢弃。
+
 ## 3. 查询条件与保留的遍历
 
 新格式 goal/state 存在时不执行旧候选读取。没有新格式时：

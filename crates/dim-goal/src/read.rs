@@ -26,6 +26,16 @@ pub(crate) struct Loaded {
 }
 
 pub(crate) fn pause_reloaded(fold: &mut Fold) {
+    let previous = std::mem::take(fold);
+    fold.objective = previous.objective;
+    fold.state = previous.state;
+    fold.judge = previous.judge;
+    fold.live = previous.live;
+    fold.local_blocks = previous.local_blocks;
+    fold.last_block = previous.last_block;
+    fold.last_change = previous.last_change;
+    fold.state_after = previous.state_after;
+    fold.record_after = previous.record_after;
     if fold.objective.is_some() && fold.state == text::State::Active {
         fold.state = text::State::Paused("interrupted_reload".into());
     }
@@ -338,8 +348,32 @@ async fn legacy(
     cancel: &CancellationToken,
 ) -> Result<Fold, AgentError> {
     let mut query = recovery::request(branch_id, start, through, &[], &["position.sequence"]);
+    let business_inputs = QueryFilter::And {
+        conditions: vec![
+            goal_inputs(),
+            QueryFilter::Any {
+                field: "data.blocks".into(),
+                condition: Box::new(QueryFilter::Or {
+                    conditions: vec![
+                        QueryFilter::In {
+                            value: QueryOperand::Element { path: "key".into() },
+                            values: [text::STATE_KEY, text::OBJECTIVE_KEY, text::STATUS_KEY]
+                                .map(Into::into)
+                                .to_vec(),
+                        },
+                        QueryFilter::Contains {
+                            value: QueryOperand::Element {
+                                path: "text".into(),
+                            },
+                            text: "kind=\"goal\"".into(),
+                        },
+                    ],
+                }),
+            },
+        ],
+    };
     let mut exists = query.clone();
-    exists.query.filter = Some(live_inputs(goal_inputs()));
+    exists.query.filter = Some(live_inputs(business_inputs.clone()));
     exists.query.select = QuerySelect::Exists;
     exists.page = None;
     let QueryOutput::Exists { exists } = query_fn(exists).await?.result else {
@@ -359,7 +393,7 @@ async fn legacy(
     query.query.filter = Some(live_inputs(match before {
         Some(before) => QueryFilter::And {
             conditions: vec![
-                goal_inputs(),
+                business_inputs,
                 QueryFilter::Compare {
                     left: QueryOperand::Field {
                         path: "position.sequence".into(),
@@ -371,7 +405,7 @@ async fn legacy(
                 },
             ],
         },
-        None => goal_inputs(),
+        None => business_inputs,
     }));
     query.query.select = QuerySelect::Fields {
         fields: [
