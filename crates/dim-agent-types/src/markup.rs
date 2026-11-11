@@ -40,27 +40,34 @@ const MARKERS: &[&str] = &[
     "dim-workflow",             // Workflow: a run's report and its stage markers
 ];
 
-/// Whether the text block at `index` is runtime context a capability injected
-/// rather than the operator's own words.
+/// The element name of the runtime block at `index`, when the text block is
+/// one a capability wrote rather than the operator's own words.
 ///
 /// The first block is always the operator's: a message can start with a
 /// marker because the operator pasted one, and it stays their text.
-pub fn runtime_context(index: usize, text: &str) -> bool {
+///
+/// A reader that shows different elements differently dispatches on the name;
+/// one that only wants the operator's words asks [`runtime_context`].
+pub fn runtime_element(index: usize, text: &str) -> Option<&'static str> {
     if index == 0 {
-        return false;
+        return None;
     }
-    let Some(open) = text.strip_prefix('<') else {
-        return false;
-    };
-    MARKERS.iter().any(|marker| {
+    let open = text.strip_prefix('<')?;
+    MARKERS.iter().copied().find(|marker| {
         open.strip_prefix(marker)
             .is_some_and(|rest| rest.starts_with('>') || rest.starts_with(char::is_whitespace))
     })
 }
 
+/// Whether the text block at `index` is runtime context a capability injected
+/// rather than the operator's own words.
+pub fn runtime_context(index: usize, text: &str) -> bool {
+    runtime_element(index, text).is_some()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{escaped, runtime_context};
+    use super::{escaped, runtime_context, runtime_element};
 
     #[test]
     fn every_markup_character_is_escaped() {
@@ -83,32 +90,131 @@ mod tests {
 
     #[test]
     fn every_written_marker_after_the_first_is_runtime_context() {
-        for text in [
-            r#"<dim-hooks kind="prompt-submit">a hook's context</dim-hooks>"#,
-            r#"<dim-skill name="check">instructions</dim-skill>"#,
-            r#"<dim-goal kind="state" branch="main">a goal</dim-goal>"#,
-            r#"<dim-workflow kind="report" run="wf-1" status="completed">done</dim-workflow>"#,
-            "<dim-summary>\nan earlier stretch\n</dim-summary>",
-            r#"<dim-branch-message from="C" to="main">hello</dim-branch-message>"#,
-            r#"<dim-branch-line branch="C" parent="main">purpose</dim-branch-line>"#,
-            r#"<dim-shell-input kind="command" status="completed">$ ls\n</dim-shell-input>"#,
-            r#"<dim-rule source="dim/instructions/project" scope="branch" op="set">rule</dim-rule>"#,
-            r#"<dim-state source="dim/environment/date">today</dim-state>"#,
-            r#"<dim-scheduler kind="wakeup">wake</dim-scheduler>"#,
-            r#"<dim-event source="im" type="im.message" id="1">an event</dim-event>"#,
-            r#"<dim-event-guide source="im">a guide</dim-event-guide>"#,
-            r#"<dim-notification source="exec" task="t">a command ended</dim-notification>"#,
-            r#"<dim-digest>wrote src/cache.rs</dim-digest>"#,
-            r#"<dim-agent-report agent="a" session="s">done</dim-agent-report>"#,
-            r#"<dim-agent-message agent="a" session="s">hello</dim-agent-message>"#,
-            "<dim-agent-approval>\n{}</dim-agent-approval>",
-            "<dim-agent-approval-ended>\n{}</dim-agent-approval-ended>",
-            r#"<dim-branch-lines branch="main">open lines</dim-branch-lines>"#,
-            r#"<dim-branch-parent branch="C" cut="7">the line cut here</dim-branch-parent>"#,
-            r#"<dim-branch-idle from="C">a line went idle</dim-branch-idle>"#,
-            r#"<dim-branch-ended from="C">a line ended</dim-branch-ended>"#,
+        for (text, name) in [
+            (
+                r#"<dim-hooks kind="prompt-submit">a hook's context</dim-hooks>"#,
+                "dim-hooks",
+            ),
+            (
+                r#"<dim-skill name="check">instructions</dim-skill>"#,
+                "dim-skill",
+            ),
+            (
+                r#"<dim-goal kind="state" branch="main">a goal</dim-goal>"#,
+                "dim-goal",
+            ),
+            (
+                r#"<dim-workflow kind="report" run="wf-1" status="completed">done</dim-workflow>"#,
+                "dim-workflow",
+            ),
+            (
+                "<dim-summary>\nan earlier stretch\n</dim-summary>",
+                "dim-summary",
+            ),
+            (
+                r#"<dim-branch-message from="C" to="main">hello</dim-branch-message>"#,
+                "dim-branch-message",
+            ),
+            (
+                r#"<dim-branch-line branch="C" parent="main">purpose</dim-branch-line>"#,
+                "dim-branch-line",
+            ),
+            (
+                r#"<dim-shell-input kind="command" status="completed">$ ls\n</dim-shell-input>"#,
+                "dim-shell-input",
+            ),
+            (
+                r#"<dim-rule source="dim/instructions/project" scope="branch" op="set">rule</dim-rule>"#,
+                "dim-rule",
+            ),
+            (
+                r#"<dim-state source="dim/environment/date">today</dim-state>"#,
+                "dim-state",
+            ),
+            (
+                r#"<dim-scheduler kind="wakeup">wake</dim-scheduler>"#,
+                "dim-scheduler",
+            ),
+            (
+                r#"<dim-event source="im" type="im.message" id="1">an event</dim-event>"#,
+                "dim-event",
+            ),
+            (
+                r#"<dim-event-guide source="im">a guide</dim-event-guide>"#,
+                "dim-event-guide",
+            ),
+            (
+                r#"<dim-notification source="exec" task="t">a command ended</dim-notification>"#,
+                "dim-notification",
+            ),
+            (
+                r#"<dim-digest>wrote src/cache.rs</dim-digest>"#,
+                "dim-digest",
+            ),
+            (
+                r#"<dim-agent-report agent="a" session="s">done</dim-agent-report>"#,
+                "dim-agent-report",
+            ),
+            (
+                r#"<dim-agent-message agent="a" session="s">hello</dim-agent-message>"#,
+                "dim-agent-message",
+            ),
+            (
+                "<dim-agent-approval>\n{}</dim-agent-approval>",
+                "dim-agent-approval",
+            ),
+            (
+                "<dim-agent-approval-ended>\n{}</dim-agent-approval-ended>",
+                "dim-agent-approval-ended",
+            ),
+            (
+                r#"<dim-branch-lines branch="main">open lines</dim-branch-lines>"#,
+                "dim-branch-lines",
+            ),
+            (
+                r#"<dim-branch-parent branch="C" cut="7">the line cut here</dim-branch-parent>"#,
+                "dim-branch-parent",
+            ),
+            (
+                r#"<dim-branch-idle from="C">a line went idle</dim-branch-idle>"#,
+                "dim-branch-idle",
+            ),
+            (
+                r#"<dim-branch-ended from="C">a line ended</dim-branch-ended>"#,
+                "dim-branch-ended",
+            ),
         ] {
+            assert_eq!(runtime_element(1, text), Some(name), "{text}");
             assert!(runtime_context(1, text), "{text}");
+        }
+    }
+
+    /// The name a reader dispatches on is the element it opens, and the first
+    /// block is the operator's whatever it opens: a message can start with a
+    /// marker they typed.
+    #[test]
+    fn the_element_name_is_the_one_the_block_opens() {
+        assert_eq!(
+            runtime_element(1, r#"<dim-hooks kind="prompt-submit">x</dim-hooks>"#),
+            Some("dim-hooks")
+        );
+        assert_eq!(
+            runtime_element(1, r#"<dim-skill name="x">body</dim-skill>"#),
+            Some("dim-skill")
+        );
+        assert_eq!(
+            runtime_element(0, r#"<dim-hooks kind="prompt-submit">typed</dim-hooks>"#),
+            None
+        );
+        assert_eq!(runtime_element(0, "ordinary words"), None);
+        for text in [
+            "<dimension>a word, not a tag</dimension>",
+            "<dim-hooksx kind=\"prompt-submit\">no such element</dim-hooksx>",
+            "a sentence that mentions <dim-hooks>",
+            "<dim-",
+            "<dim-branch-lines-extra branch=\"main\">not the roster</dim-branch-lines-extra>",
+        ] {
+            assert_eq!(runtime_element(1, text), None, "{text}");
         }
     }
 

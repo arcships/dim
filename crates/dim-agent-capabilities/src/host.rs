@@ -882,6 +882,35 @@ pub trait ContextModel: Send + Sync + 'static {
     fn output_tokens(&self) -> f64;
     fn threshold_tokens(&self) -> f64;
     fn count_tokens(&self, request: &ModelRequest) -> f64;
+    /// Additive counting for persisted context statistics, or `None` when this
+    /// model's complete-request count cannot be composed from contributions.
+    fn contribution_counter(&self) -> Option<&dyn ContextCounter> {
+        None
+    }
+}
+
+/// A contribution counted with one [`ContextCounter::algorithm`]. Contributions
+/// may be summed component by component only within that algorithm.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextContribution {
+    pub serialized_bytes: u64,
+    pub images: u64,
+}
+
+/// Additive counts whose fixed contribution is included exactly once per
+/// request. For every request, estimating its fixed contribution plus its
+/// message contributions must equal [`ContextModel::count_tokens`].
+pub trait ContextCounter: Send + Sync {
+    /// Stable identity of the counting rules, including serialization ranges.
+    fn algorithm(&self) -> &str;
+    fn fixed(
+        &self,
+        system: Option<&SystemPrompt>,
+        tools: Option<&[ToolDefinition]>,
+    ) -> ContextContribution;
+    fn message(&self, message: &Message) -> ContextContribution;
+    fn estimate(&self, contribution: ContextContribution) -> f64;
 }
 /// A strategy's diagnostics: its model calls, their summed usage and its own
 /// record.
@@ -963,6 +992,10 @@ pub trait CompactionStrategy: Send + Sync + 'static {
 /// when both are `Some`.
 pub struct CompactionStrategyHost(pub Option<Arc<dyn CompactionStrategy>>);
 pub trait ResolveContextModel: Send + Sync + 'static {
+    /// A model exposing a contribution counter must resolve its algorithm and
+    /// limits from provider/model, capabilities, config and metadata alone.
+    /// Statistics recovery passes empty messages and absent system/tools;
+    /// their saved contributions are not read again to resolve the counter.
     fn resolve(
         &self,
         request: Arc<ModelRequest>,

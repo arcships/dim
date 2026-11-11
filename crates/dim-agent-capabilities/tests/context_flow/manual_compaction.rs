@@ -496,7 +496,12 @@ async fn steers_wait_for_compaction_and_explicit_interrupts_still_cancel() {
                 previous = at;
             }
             assert!(matches!(
-                events.last().unwrap().kind,
+                events
+                    .iter()
+                    .rev()
+                    .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                    .unwrap()
+                    .kind,
                 EventKind::TurnEnd(TurnEndData {
                     outcome: TurnOutcome::Completed { .. },
                     ..
@@ -591,6 +596,10 @@ async fn a_manual_compaction_with_no_turn_writes_only_its_facts() {
     let after: Vec<_> = events
         .iter()
         .filter(|event| event.sequence >= command)
+        .filter(|event| {
+            !matches!(&event.kind, EventKind::Extension(data)
+            if data.domain() == "context-usage" && matches!(data.name(), "node" | "recovered"))
+        })
         .collect();
     assert_eq!(after.len(), 3, "{after:#?}");
     let EventKind::ContextCompactionStart(start) = &after[1].kind else {
@@ -710,6 +719,7 @@ async fn a_checkpointed_step_renders_its_context_once() {
     })
     .await
     .expect("the compaction step saves its snapshot");
+    session.idle("main").await.unwrap();
     let events = chain_events(&session, "main", ..).await.unwrap();
     let anchor = events
         .iter()
@@ -864,7 +874,10 @@ async fn a_manual_compaction_inside_a_turn_runs_at_the_next_step_boundary() {
     session.idle("main").await.unwrap();
     let events = until(&session, |events| {
         matches!(
-            events.last().map(|event| &event.kind),
+            events.iter().rev().find_map(|event| match &event.kind {
+                EventKind::TurnEnd(_) => Some(&event.kind),
+                _ => None,
+            }),
             Some(EventKind::TurnEnd(_))
         )
     })
@@ -928,7 +941,12 @@ async fn a_manual_compaction_inside_a_turn_runs_at_the_next_step_boundary() {
         3
     );
     assert!(matches!(
-        &events.last().unwrap().kind,
+        &events
+            .iter()
+            .rev()
+            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+            .unwrap()
+            .kind,
         EventKind::TurnEnd(TurnEndData {
             outcome: TurnOutcome::Completed { .. },
             ..
@@ -1420,7 +1438,10 @@ async fn a_failed_manual_compaction_lets_the_turn_continue_and_recovery_compacts
     session.idle("main").await.unwrap();
     let events = until(&session, |events| {
         matches!(
-            events.last().map(|event| &event.kind),
+            events.iter().rev().find_map(|event| match &event.kind {
+                EventKind::TurnEnd(_) => Some(&event.kind),
+                _ => None,
+            }),
             Some(EventKind::TurnEnd(_))
         )
     })
@@ -1454,7 +1475,12 @@ async fn a_failed_manual_compaction_lets_the_turn_continue_and_recovery_compacts
         CompactionTrigger::ProviderOutputBudgetExhausted
     );
     assert!(matches!(
-        &events.last().unwrap().kind,
+        &events
+            .iter()
+            .rev()
+            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+            .unwrap()
+            .kind,
         EventKind::TurnEnd(TurnEndData {
             outcome: TurnOutcome::Completed { .. },
             ..
@@ -1466,12 +1492,12 @@ async fn a_failed_manual_compaction_lets_the_turn_continue_and_recovery_compacts
 
 /// Captures the branch Timeline so a test can write a `context/compact`
 /// that does not come through `AgentLoop::compact`.
-struct RawTimeline {
+pub(super) struct RawTimeline {
     timeline_cell: Arc<std::sync::OnceLock<Arc<Timeline>>>,
     timeline: Key<Timeline>,
 }
 impl RawTimeline {
-    fn new(
+    pub(super) fn new(
         names: &Names<'_>,
         timeline_cell: Arc<std::sync::OnceLock<Arc<Timeline>>>,
     ) -> rutis::Result<Self> {

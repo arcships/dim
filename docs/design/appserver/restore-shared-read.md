@@ -1,5 +1,8 @@
 # Restore-scoped shared history read
 
+> Current restoration has no whole-history validation pass. All validation-pass rows and timings below
+> describe the historical implementation; the [restore read boundary](restore-validation.md) is authoritative.
+
 Status: Implemented in [#235](https://github.com/arcships/dim/pull/235); §17 (TimelineTree's restore facts,
 [#239](https://github.com/arcships/dim/issues/239)) extends it. Phase 3 of
 [#193](https://github.com/arcships/dim/issues/193). Phase 1, a bounded content cache shared across the pages of a read,
@@ -397,15 +400,7 @@ twice (read C and one fill). Traced on v17 for a child cut at 3,002 events of `m
 and `main`'s prefix 5 times; with the prototype, twice each (own: scan and fill; prefix: read C and fill), plus a
 one-event tail.
 
-**Validation hand-over (read A) is out of scope.** Storage validates every branch before the runtime builds anything,
-page by page, without loading request bodies — it checks that every reference and every node's parent resolves — in
-bounded connection holds
-([timeline-storage §4](../../architecture/rust-agent/timeline-storage.md#有界读取与恢复扫描), "恢复" row). Handing its
-decoded events to the runtime would hold every branch's history from validation until the last branch opens, change
-what the `TimelineStore` port returns or keep state between its calls, and contradict the bounded-read convention.
-Making validation itself cheaper is storage's work and needs no runtime change
-([restore validation reuse](restore-validation.md)); the first pass of a process still decodes every event, and a
-later restore with an unchanged directory reuses it.
+**Historical validation hand-over (read A).** The measured implementation validated each branch before building the runtime. This design did not adopt handing those decoded events to the runtime. The entire admission pass and its validation cache have since been removed; [Native Session restore read boundary](restore-validation.md) is the current contract. Neither first open nor re-acquisition decodes every event as an admission check.
 
 **TimelineTree's scan (read B) stays in this design**, which changes no capability code: it ran before the branch's
 Timeline existed. §17 takes it up: the failed creates are read from the copy while the branch opens, and a child's

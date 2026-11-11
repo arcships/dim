@@ -283,7 +283,8 @@ async fn v2_tree_history_resume_and_protocol_isolation_work_on_both_transports()
                 assert!(sequence > at, "events before attach are not replayed");
             } else {
                 assert_eq!(entry["branchId"], child_id);
-                if sequence == child_end {
+                if entry["event"]["type"] == "turn" && entry["event"]["name"] == "end" {
+                    assert!(sequence <= child_end);
                     break;
                 }
             }
@@ -483,8 +484,9 @@ async fn tree_attach_forwards_later_events_of_every_branch_in_branch_order() {
             first
                 .entry(branch.clone())
                 .or_insert_with(|| params["event"].clone());
-            if branch == grandchild_id && sequence == end {
-                assert_eq!(params["event"]["type"], "stop");
+            if branch == grandchild_id && params["event"]["type"] == "stop" {
+                assert_eq!(params["event"]["name"], "interrupt");
+                assert!(sequence <= end);
                 break;
             }
         }

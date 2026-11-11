@@ -239,7 +239,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 | `session_output_owners` | S 拥有的每条输出路径给 F 一行，包括分叉时仍在运行的命令登记的行（ADR 013 D4）。不复制文件；F 读取当前内容，并在 S 删除后继续保留 |
 | 标题元数据（S5b） | 不复制：分叉没有标题（[SessionTitle](../plugins/SessionTitle.md) A7） |
 
-**为什么子分支不带事件。** 子分支的事件与 `main` 的切点之间没有先后顺序，子分支没有哪个前缀对应 `at`。整体复制的子分支带着切点之后发生的事，它待处理的工作（尚未开始的第一个输入、Queue 或 Steer 输入、后台任务的唤醒）会在 F 中启动轮次，在同一个 `cwd` 里重做源已经做过或正在做的工作（§6.5）。存储仍要求每个 `branch/create` 都有对应分支的目录，并在加载 Session 时检查（[timeline.rs](../../../../crates/dim-app-server/src/storage/timeline.rs) 的 `validate_session`）；头部为 0 的目录能通过检查。TimelineTree 把缺少 `branch/start` 和第一个 Queue 输入的子分支当作从未开始的创建（[timeline_tree.rs](../../../../crates/dim-agent-capabilities/src/timeline_tree.rs) 的 `restore`）：F 首次加载时，它在 F 的 `main` 上写 `branch/create-failed`（`error: "branch creation failed"`），不构建这个分支；之后的加载看到这条事实就跳过它。创建已提交、子分支尚未开始时崩溃，走的就是这条路径。在 F 中，这条事实表示该分支不属于 F；分支和它的工作留在 S 中，客户端可以在那里继续。这条事实不进入模型上下文，切点处的提示词前缀不变。
+**为什么子分支不带事件。** 子分支的事件与 `main` 的切点之间没有先后顺序，子分支没有哪个前缀对应 `at`。整体复制的子分支带着切点之后发生的事，它待处理的工作（尚未开始的第一个输入、Queue 或 Steer 输入、后台任务的唤醒）会在 F 中启动轮次，在同一个 `cwd` 里重做源已经做过或正在做的工作（§6.5）。分叉复制每个子分支目录，头部为 0。恢复目录不扫描创建事件，见[恢复读取边界](../../../design/appserver/restore-validation.md)。TimelineTree 把缺少 `branch/start` 和第一个 Queue 输入的子分支当作从未开始的创建（[timeline_tree.rs](../../../../crates/dim-agent-capabilities/src/timeline_tree.rs) 的 `restore`）：F 首次加载时，它在 F 的 `main` 上写 `branch/create-failed`（`error: "branch creation failed"`），不构建这个分支；之后的加载看到这条事实就跳过它。创建已提交、子分支尚未开始时崩溃，走的就是这条路径。在 F 中，这条事实表示该分支不属于 F；分支和它的工作留在 S 中，客户端可以在那里继续。这条事实不进入模型上下文，切点处的提示词前缀不变。
 
 **为什么只复制被引用的内容。** 内容行按 Session 存放。全部复制的话，从长 Session 的早期分叉会把切点之后所有请求的内容也复制过去，而复制期间一直持有存储的写锁。
 

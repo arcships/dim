@@ -372,9 +372,9 @@ fork's conversation would then not be its `main`, which clients, `session.summar
 **Why child branches come without their events.** A child's events are not ordered against `main`'s cut, so no prefix
 of a child corresponds to `at`. Copied whole, a child holds what happened after the cut, and its pending work (an
 unstarted first input, a Queue or Steer input, a background task's wake) would start turns in F for work the source
-already ran or is running, in the same `cwd` (§6.5). The store still requires a directory for every `branch/create`
-and checks it when it loads a Session ([timeline.rs](../../../crates/dim-app-server/src/storage/timeline.rs)
-`validate_session`); a directory with head 0 passes. TimelineTree treats a child without its `branch/start` and first
+already ran or is running, in the same `cwd` (§6.5). Fork copies each child directory with head 0.
+Directory restore does not scan creation events; see [restore read boundary](restore-validation.md).
+TimelineTree treats a child without its `branch/start` and first
 Queue input as a creation that never started ([timeline_tree.rs](../../../crates/dim-agent-capabilities/src/timeline_tree.rs)
 `restore`): at F's first load it writes `branch/create-failed` (`error: "branch creation failed"`) on F's `main` and
 builds nothing, and later loads skip the child because of that fact. A crash between a creation's commit and the

@@ -307,72 +307,43 @@ async fn d4_a_deleted_input_does_not_suppress_and_restores_the_decision() {
     let continuation = env
         .wait_for(
             "main",
-            &format!(r#"kind="continuation" count="2" after="{}""#, end.sequence),
-        )
-        .await;
-    assert_eq!(
-        continuation.text,
-        texts::continuation("main", 2, None, 1, end.sequence)
-    );
-    env.close().await;
-}
-
-#[tokio::test]
-async fn d4_a_withdrawn_pause_restates_the_state_its_record_keeps() {
-    let env = Env::start().await;
-    let set = env.set("ship it").await;
-    env.goal("pause", json!({})).await.expect("pause writes");
-    let pause = env.wait_for("main", r#"op="pause""#).await;
-    let end = env.turn("main", &[&set, &pause]);
-    assert_eq!(
-        env.settled("main").await.len(),
-        4,
-        "a paused goal writes no continuation at its turn end"
-    );
-
-    // The pause never took effect: the fold is recomputed without it, and the
-    // state the branch has again is stated at the deletion (R2).
-    let deleted = env.emit(
-        "main",
-        EventKind::InputDeleted(InputDeletedData {
-            input_id: pause.id.clone(),
-        }),
-    );
-    let again = env
-        .wait_for(
-            "main",
-            &format!(
-                r#"kind="state" status="active" after="{}""#,
-                deleted.sequence
-            ),
-        )
-        .await;
-    assert_eq!(
-        again.text,
-        texts::set_state(
-            "main",
-            "ship it",
-            &texts::Answer::After(deleted.sequence),
-            false
-        )
-    );
-    // The deletion takes the undecided turn end again: the goal is active, so
-    // it continues.
-    let continuation = env
-        .wait_for(
-            "main",
             &format!(r#"kind="continuation" count="1" after="{}""#, end.sequence),
         )
         .await;
     assert_eq!(
         continuation.text,
-        texts::continuation("main", 1, None, 0, end.sequence)
+        texts::continuation("main", 1, None, 1, end.sequence)
+    );
+    env.close().await;
+}
+
+#[tokio::test]
+async fn deleting_a_goal_pause_repairs_the_target_without_restarting_old_work() {
+    let env = Env::start().await;
+    let set = env.set("ship it").await;
+    env.goal("pause", json!({})).await.unwrap();
+    let pause = env.wait_for("main", r#"op="pause""#).await;
+    env.turn("main", &[&set, &pause]);
+    env.delete("main", &pause);
+    let read = env.goal("get", json!({})).await.unwrap();
+    assert_eq!(read["goal"]["objective"], "ship it");
+    assert_eq!(
+        read["goal"]["status"],
+        json!({"kind":"paused","reason":"input_deleted"})
     );
     let writes = env.settled("main").await;
+    assert!(
+        writes
+            .iter()
+            .all(|write| !write.marker.contains(r#"kind="continuation""#))
+    );
+    env.goal("resume", json!({})).await.unwrap();
+    let resume = env.wait_for("main", r#"op="resume""#).await;
+    let end = env.turn("main", &[&resume]);
+    let continuation = env.wait_for("main", r#"kind="continuation""#).await;
     assert_eq!(
-        writes.len(),
-        6,
-        "the two triggers, their records, the deletion's and the continuation: {writes:#?}"
+        continuation.text,
+        texts::continuation("main", 1, None, 0, end.sequence)
     );
     env.close().await;
 }
@@ -426,18 +397,27 @@ async fn d5_a_restored_line_repeats_no_decision() {
         "the restored generation repeats no decision"
     );
 
-    // The fold still knows the goal and its count.
+    let read = env.goal("get", json!({})).await.unwrap();
+    assert_eq!(read["goal"]["status"]["kind"], "paused");
     let continuation = env.writes("main").await[1].clone();
-    let end = env.turn("main", &[&continuation]);
+    env.turn("main", &[&continuation]);
+    assert_eq!(
+        env.settled("main").await.len(),
+        2,
+        "late old work cannot resume the Goal"
+    );
+    env.goal("resume", json!({})).await.unwrap();
+    let resume = env.wait_for("main", r#"op="resume""#).await;
+    let end = env.turn("main", &[&resume]);
     let next = env
         .wait_for(
             "main",
-            &format!(r#"kind="continuation" count="2" after="{}""#, end.sequence),
+            &format!(r#"kind="continuation" count="1" after="{}""#, end.sequence),
         )
         .await;
     assert_eq!(
         next.text,
-        texts::continuation("main", 2, None, 1, end.sequence)
+        texts::continuation("main", 1, None, 0, end.sequence)
     );
     env.close().await;
 }
@@ -508,6 +488,77 @@ async fn d3_a_deleted_answered_command_writes_the_state_again() {
             .rfind(|block| block.marker.contains(r#"kind="state""#))
             .is_some_and(|record| record.text == again.text),
         "the newest live record is the deletion's: {writes:#?}"
+    );
+    env.close().await;
+}
+
+#[tokio::test]
+async fn deleting_two_changes_does_not_reapply_an_earlier_compensation() {
+    let env = Env::start_refusing().await;
+    let first = env.set("first objective").await;
+    env.goal("set", json!({"objective":"second objective"}))
+        .await
+        .unwrap();
+    let second = env
+        .writes("main")
+        .await
+        .into_iter()
+        .find(|block| {
+            block.marker.contains(r#"kind="goal" op="set""#)
+                && block.text.contains("second objective")
+        })
+        .expect("the second set trigger");
+    env.settled("main").await;
+    let first_delete = env.emit(
+        "main",
+        EventKind::InputDeleted(InputDeletedData {
+            input_id: first.id.clone(),
+        }),
+    );
+    env.dispatched("main", first_delete.sequence).await;
+    assert_eq!(
+        env.goal("get", json!({})).await.unwrap()["goal"]["objective"],
+        "second objective"
+    );
+    assert_eq!(
+        env.settled("main").await.len(),
+        4,
+        "deleting a superseded set does not write a compensation"
+    );
+    let second_delete = env.emit(
+        "main",
+        EventKind::InputDeleted(InputDeletedData {
+            input_id: second.id.clone(),
+        }),
+    );
+    let compensation = env
+        .wait_for("main", &format!(r#"after="{}""#, second_delete.sequence))
+        .await;
+    assert_eq!(
+        compensation.text,
+        texts::cleared("main", &texts::Answer::After(second_delete.sequence)),
+        "neither deleted change contributes an objective"
+    );
+    env.refusing().arm("main");
+    let reads = env.reads().len();
+    assert!(env.goal("get", json!({})).await.unwrap()["goal"].is_null());
+    assert_eq!(env.refusing().refused(), 0, "live get reads owner state");
+    assert_eq!(env.reads().len(), reads, "live get performs no query");
+    env.refusing().disarm();
+    let env = env.restore().await;
+    assert!(env.goal("get", json!({})).await.unwrap()["goal"].is_null());
+    let duplicate = env.emit(
+        "main",
+        EventKind::InputDeleted(InputDeletedData {
+            input_id: first.id.clone(),
+        }),
+    );
+    env.dispatched("main", duplicate.sequence).await;
+    assert!(env.goal("get", json!({})).await.unwrap()["goal"].is_null());
+    assert_eq!(
+        env.settled("main").await.len(),
+        5,
+        "a duplicate deletion writes no additional state"
     );
     env.close().await;
 }
@@ -626,19 +677,15 @@ async fn r4_a_record_with_an_older_after_is_not_written() {
         .wait_for(
             "main",
             &format!(
-                r#"kind="state" status="active" after="{}""#,
+                r#"kind="state" status="paused" reason="input_deleted" after="{}""#,
                 deleted.sequence
             ),
         )
         .await;
+    assert!(again.text.contains("ship it"));
     assert_eq!(
-        again.text,
-        texts::set_state(
-            "main",
-            "ship it",
-            &texts::Answer::After(deleted.sequence),
-            false
-        )
+        env.goal("get", json!({})).await.unwrap()["goal"]["status"]["kind"],
+        "paused"
     );
     let _ = release.send(());
 
@@ -658,18 +705,11 @@ async fn r4_a_record_with_an_older_after_is_not_written() {
         Some(again.text.clone()),
         "the newest live record is the compensation: {writes:#?}"
     );
-    // The fold states the same: the goal is active, so the next turn end
-    // continues it.
-    let next = env.turn_ids("main", &[]);
-    let continuation = env
-        .wait_for(
-            "main",
-            &format!(r#"kind="continuation" count="2" after="{}""#, next.sequence),
-        )
-        .await;
+    env.turn_ids("main", &[]);
     assert_eq!(
-        continuation.text,
-        texts::continuation("main", 2, None, 0, next.sequence)
+        env.settled("main").await.len(),
+        writes.len(),
+        "the repaired target is paused until explicit resume"
     );
     env.close().await;
 }
@@ -1609,7 +1649,7 @@ async fn pursuit_5_a_change_consumed_while_the_creation_check_runs_writes_no_pau
         ),
     );
     env.dispatched("main", resume.sequence).await;
-    release.send(()).expect("the creation check still waits");
+    let _ = release.send(());
 
     // The resume is answered with the state record; the evaluation it
     // overtook writes no pause.
@@ -1697,8 +1737,8 @@ async fn deletion_rebuild_catches_another_deletion_and_blocks_changes() {
         "the new change follows both deletions: {state:?}"
     );
     assert!(
-        state.marker.contains(r#"status="active""#),
-        "the withdrawn pause cannot survive: {state:?}"
+        state.marker.contains(r#"status="paused""#),
+        "the withdrawn pause repairs the target without resuming execution: {state:?}"
     );
     env.close().await;
 }
@@ -1768,7 +1808,7 @@ async fn closing_cancels_a_deletion_read() {
 }
 
 #[tokio::test]
-async fn cancelling_an_uncommitted_record_allows_the_rebuilt_decision_to_write() {
+async fn a_failed_turn_pauses_once_when_an_ordinary_input_is_deleted() {
     let env = Env::start_gated().await;
     let set = env.set("ship it").await;
     let removable = env.emit(
@@ -1777,19 +1817,14 @@ async fn cancelling_an_uncommitted_record_allows_the_rebuilt_decision_to_write()
     );
     env.turn_start("main", "work");
     env.consume("main", &set.id);
-    let (entered, release) = env.gated().hold_query("input/message");
+    let (entered, release) = env.gated().hold_state(None);
     let end = env.end_turn("main", "work", "failed");
     tokio::time::timeout(std::time::Duration::from_secs(15), entered)
         .await
         .unwrap()
         .unwrap();
-    let deleted = env.emit(
-        "main",
-        EventKind::InputDeleted(InputDeletedData {
-            input_id: removable.id.clone(),
-        }),
-    );
-    env.dispatched("main", deleted.sequence).await;
+    env.delete_id("main", &removable.id);
+    release.send(()).unwrap();
     let paused = env.wait_for("main", r#"reason="turn_failed""#).await;
     assert_eq!(
         paused.text,
@@ -1801,66 +1836,49 @@ async fn cancelling_an_uncommitted_record_allows_the_rebuilt_decision_to_write()
             end.sequence
         )
     );
-    assert!(
-        release.send(()).is_err(),
-        "the stale uncommitted write was cancelled"
-    );
-    let writes = env.settled("main").await;
     assert_eq!(
-        writes
+        env.settled("main")
+            .await
             .iter()
-            .filter(|block| block.marker.contains(r#"reason="turn_failed""#))
+            .filter(|write| write.marker.contains(r#"reason="turn_failed""#))
             .count(),
-        1,
-        "the restored decision commits once"
+        1
     );
     env.close().await;
 }
 
 #[tokio::test]
-async fn a_change_waiting_to_commit_recomposes_after_its_goal_is_deleted() {
+async fn a_change_waits_for_the_deleted_goal_definition_to_be_repaired() {
     let env = Env::start_gated().await;
     let set = env.set("original objective").await;
     env.dispatched("main", set.sequence).await;
-    let (entered, release) = env.gated().hold_query("input/message");
-    {
-        let change = env.goal("edit", json!({"objective": "edited objective"}));
-        tokio::pin!(change);
-        tokio::select! {
-            result = &mut change => panic!("change committed before the held read: {result:?}"),
-            result = entered => result.unwrap(),
-        }
-        env.emit(
-            "main",
-            EventKind::InputDeleted(InputDeletedData { input_id: set.id }),
-        );
-        tokio::time::timeout(std::time::Duration::from_secs(15), change)
-            .await
-            .unwrap()
-            .unwrap();
-    }
-    assert!(
-        release.send(()).is_err(),
-        "the obsolete composition was cancelled before commit"
-    );
-    let writes = env.settled("main").await;
-    let record = writes
-        .iter()
-        .rev()
-        .find(|block| block.marker.contains(r#"kind="state""#))
+    let (entered, release) = env.gated().hold_read(&["goal/state"]);
+    env.delete_id("main", &set.id);
+    tokio::time::timeout(std::time::Duration::from_secs(15), entered)
+        .await
+        .unwrap()
         .unwrap();
-    assert!(
-        record.marker.contains(r#"status="none""#),
-        "editing after the set was deleted cannot revive its active state: {record:?}"
-    );
-    assert!(record.text.contains("edited objective"));
+    {
+        let change = env.goal("edit", json!({"objective":"edited objective"}));
+        tokio::pin!(change);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut change)
+                .await
+                .is_err()
+        );
+        release.send(()).unwrap();
+        change.await.unwrap();
+    }
+    let read = env.goal("get", json!({})).await.unwrap();
+    assert_eq!(read["goal"]["objective"], "edited objective");
+    assert_eq!(read["goal"]["status"]["kind"], "none");
     assert_eq!(
-        writes
+        env.settled("main")
+            .await
             .iter()
-            .filter(|block| block.marker.contains(r#"op="edit""#))
+            .filter(|write| write.marker.contains(r#"op="edit""#))
             .count(),
-        1,
-        "only the recomposed batch commits"
+        1
     );
     env.close().await;
 }

@@ -45,7 +45,7 @@ pub fn event_property(event: &AgentEvent, branch_id: &str, path: &str) -> Result
             },
             None => QueryValue::Missing,
         },
-        _ if path.starts_with("tags[]") => match &event.tags {
+        _ if path.starts_with("tags[") => match &event.tags {
             Some(tags) => project_property(tags, &path[4..])?,
             None => QueryValue::Missing,
         },
@@ -62,6 +62,11 @@ pub fn project_property(value: &impl Serialize, path: &str) -> Result<QueryValue
 
 /// Checks a validated event property path without serializing the property's value.
 pub fn event_property_present(event: &AgentEvent, path: &str) -> Result<bool> {
+    if path.starts_with("tags[") {
+        return select_mode(&event.tags, &path[4..], Leaf::Presence)
+            .map(|value| !matches!(value, QueryValue::Missing))
+            .map_err(|error| AgentError::fault("event property", error.to_string()));
+    }
     if path == "parent_call_id" {
         return Ok(event.parent_call_id.is_some());
     }

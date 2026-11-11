@@ -3,7 +3,7 @@
 //! The trigger reserve is a provisional heuristic (#128).
 use crate::host::*;
 use dim_agent_types::*;
-use std::sync::Arc;
+use std::{io, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
 /// The trigger leaves `RESERVE_RATIO` of the input budget, at least
@@ -132,37 +132,89 @@ impl ContextModel for WindowFacts {
         })
     }
     fn count_tokens(&self, request: &ModelRequest) -> f64 {
-        let mut bytes = size(&request.system) + size(&request.tools);
-        let mut images = 0.;
+        let mut contribution = self.fixed(
+            request.system.as_deref(),
+            request.tools.as_deref().map(Vec::as_slice),
+        );
         for message in &request.messages {
-            match &message.content {
-                MessageContent::Text(_) => bytes += size(message.as_ref()),
-                MessageContent::Parts(parts) => {
-                    for part in parts {
-                        match part {
-                            MessagePart::Image { .. } => images += 1.,
-                            MessagePart::ToolResult {
-                                content: ToolContent::Blocks(blocks),
-                                ..
-                            } => {
-                                for block in blocks {
-                                    match block {
-                                        ContentBlock::Image { .. } => images += 1.,
-                                        block => bytes += size(block),
-                                    }
+            let next = self.message(message);
+            contribution.serialized_bytes += next.serialized_bytes;
+            contribution.images += next.images;
+        }
+        self.estimate(contribution)
+    }
+    fn contribution_counter(&self) -> Option<&dyn ContextCounter> {
+        Some(self)
+    }
+}
+
+impl ContextCounter for WindowFacts {
+    fn algorithm(&self) -> &str {
+        "dim/window-facts/v1"
+    }
+
+    fn fixed(
+        &self,
+        system: Option<&SystemPrompt>,
+        tools: Option<&[ToolDefinition]>,
+    ) -> ContextContribution {
+        ContextContribution {
+            serialized_bytes: size(&system) + size(&tools),
+            images: 0,
+        }
+    }
+
+    fn message(&self, message: &Message) -> ContextContribution {
+        let mut contribution = ContextContribution::default();
+        match &message.content {
+            MessageContent::Text(_) => contribution.serialized_bytes += size(message),
+            MessageContent::Parts(parts) => {
+                for part in parts {
+                    match part {
+                        MessagePart::Image { .. } => contribution.images += 1,
+                        MessagePart::ToolResult {
+                            content: ToolContent::Blocks(blocks),
+                            ..
+                        } => {
+                            for block in blocks {
+                                match block {
+                                    ContentBlock::Image { .. } => contribution.images += 1,
+                                    block => contribution.serialized_bytes += size(block),
                                 }
                             }
-                            part => bytes += size(part),
                         }
+                        part => contribution.serialized_bytes += size(part),
                     }
                 }
             }
         }
-        bytes / BYTES_PER_TOKEN + images * IMAGE_TOKENS
+        contribution
+    }
+
+    fn estimate(&self, contribution: ContextContribution) -> f64 {
+        contribution.serialized_bytes as f64 / BYTES_PER_TOKEN
+            + contribution.images as f64 * IMAGE_TOKENS
     }
 }
 
-/// Serialized JSON size; request parts serialize by construction.
-fn size(value: &impl serde::Serialize) -> f64 {
-    serde_json::to_vec(value).map_or(0, |bytes| bytes.len()) as f64
+struct SerializedSize(u64);
+
+impl io::Write for SerializedSize {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_add(bytes.len() as u64)
+            .expect("serialized context size fits u64");
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn size(value: &impl serde::Serialize) -> u64 {
+    let mut size = SerializedSize(0);
+    serde_json::to_writer(&mut size, value).expect("model request parts serialize");
+    size.0
 }

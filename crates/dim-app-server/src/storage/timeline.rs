@@ -19,8 +19,7 @@ use dim_agent_runtime::{
     StoredBranch, StoredEvent, TimelineKey, TimelineStore, TimelineTrace, panic_message,
 };
 use dim_agent_types::{
-    AgentEvent, BranchCreateAt, ContextCompactionResult, EventKind, ModelRequest, RecoverySnapshot,
-    SessionForkedData,
+    AgentEvent, BranchCreateAt, EventKind, ModelRequest, RecoverySnapshot, SessionForkedData,
     grant::{GrantKind, GrantMode, SessionGrant},
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -88,7 +87,7 @@ enum Command {
 /// One process writer batches every Session; only pending events reside here.
 pub struct SqliteTimelineStore {
     pub(super) db: Arc<SqliteStorage>,
-    /// Bytes of decoded request content each read or validation pass keeps.
+    /// Bytes of decoded request content each read keeps.
     content_budget: usize,
     /// Schedules a Session-file sweep after a commit released owner rows.
     sweep_files: Arc<tokio::sync::Notify>,
@@ -98,10 +97,6 @@ pub struct SqliteTimelineStore {
     /// The writer memo (§6.2 of the request storage design), `None` when a
     /// flow test disabled it. Only the writer thread changes it.
     memo: Option<Mutex<Memo>>,
-    /// Per Session, the branch directory a successful validation pass checked
-    /// or a closing load last left. A restore reuses the pass while the stored
-    /// directory equals this record ([restore validation reuse](../../../../docs/design/appserver/restore-validation.md)).
-    validated: Mutex<BTreeMap<String, ValidatedDirectory>>,
     #[cfg(feature = "testing")]
     node_loads: Mutex<codec::NodeLoads>,
     #[cfg(feature = "testing")]
@@ -233,7 +228,6 @@ impl SqliteTimelineStore {
             worker: Mutex::new(None),
             closing: Mutex::new(None),
             memo: memo.then(Mutex::default),
-            validated: Mutex::default(),
             #[cfg(feature = "testing")]
             node_loads: Mutex::default(),
             #[cfg(feature = "testing")]
@@ -279,7 +273,6 @@ impl SqliteTimelineStore {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .failures
                             .remove(&session_id);
-                        store.refresh_validated(&session_id);
                         let _ = done.send(Ok(()));
                         continue;
                     }
@@ -325,7 +318,7 @@ impl SqliteTimelineStore {
         *store.worker.lock().unwrap() = Some(writer);
         store
     }
-    /// A reader for one read call or validation pass.
+    /// A reader for one read call.
     fn reader(&self, request_bodies: RequestBodies) -> Reader {
         match request_bodies {
             RequestBodies::Rebuild => Reader::new(self.content_budget),
@@ -597,49 +590,6 @@ impl SqliteTimelineStore {
                 .remove(session);
         }
     }
-    /// Drops the validation record of `session`, so its next restore validates.
-    fn forget_validated(&self, session: &str) {
-        self.validated
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(session);
-    }
-    /// Refreshes the validation record of `session` to the directory the writer
-    /// just settled. Only a Session whose stored history this process validated
-    /// has a record; a failed read drops it, and the next restore validates.
-    fn refresh_validated(&self, session: &str) {
-        if !self
-            .validated
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(session)
-        {
-            return;
-        }
-        let current = {
-            let guard = self
-                .db
-                .connection
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            guard
-                .as_ref()
-                .ok_or_else(|| error("SQLite storage is closed"))
-                .and_then(|connection| directory_rows(connection, session))
-        };
-        let mut validated = self
-            .validated
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match current {
-            Ok(directory) => {
-                validated.insert(session.to_owned(), directory);
-            }
-            Err(_) => {
-                validated.remove(session);
-            }
-        }
-    }
     /// Runs `step` with `reader` in connection holds of at most
     /// `NODE_LOADS_PER_HOLD` node loads until it returns a value; the
     /// writer's form of `holds`.
@@ -702,6 +652,7 @@ impl SqliteTimelineStore {
                         session,
                         branch,
                         sequence.saturating_sub(1),
+                        request,
                         &round,
                         &mut reader,
                     )?;
@@ -811,13 +762,15 @@ impl SqliteTimelineStore {
     /// storage design): the last request through `through` on `branch`,
     /// else through the cut on each ancestor in turn. Earlier records of
     /// the round come first, then the memo, then the store, whose request
-    /// is rebuilt from its list in holds of node loads. A v16 row has no
-    /// list to share, so it gives no previous request.
+    /// values are proved from `request`'s addresses or rebuilt from its
+    /// list in bounded holds. A v16 row has no list to share, so it gives
+    /// no previous request.
     fn previous(
         &self,
         session: &str,
         branch: &str,
         through: u64,
+        request: &Arc<ModelRequest>,
         round: &Round,
         reader: &mut Reader,
     ) -> Result<Option<Previous>> {
@@ -887,6 +840,13 @@ impl SqliteTimelineStore {
                 let Some(refs) = record.list()?.cloned() else {
                     return Ok(None);
                 };
+                if codec::matches_list(request, &refs)? {
+                    return Ok(Some(Previous {
+                        sequence,
+                        values: Values::Written(request.clone()),
+                        refs,
+                    }));
+                }
                 return self
                     .hold(reader, |connection, reader| {
                         reader.previous(connection, session, sequence, &refs)
@@ -915,6 +875,11 @@ impl SqliteTimelineStore {
             .map_err(error)?;
         let released = files::release(&tx, session_id).map_err(error)?;
         for table in [
+            "timeline_output_ids",
+            "timeline_member_roots",
+            "timeline_member_origins",
+            "timeline_member_terminals",
+            "timeline_member_nodes",
             "timeline_text",
             "timeline_text_tails",
             "timeline_snapshots",
@@ -945,7 +910,6 @@ impl SqliteTimelineStore {
         if released > 0 {
             self.sweep_files.notify_one();
         }
-        self.forget_validated(session_id);
         self.admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1045,6 +1009,12 @@ impl SessionStore {
     }
     pub fn timeline_store(&self) -> Arc<dyn TimelineStore> {
         self.timeline.clone()
+    }
+
+    /// Native query counters for product-flow verification.
+    #[cfg(feature = "testing")]
+    pub fn timeline_diagnostics(&self) -> &SqliteTimelineStore {
+        &self.timeline
     }
     /// Adds a canonical user grant for `session_id`. The caller resolves
     /// `path`; a write grant is not downgraded by a later read grant, and a
@@ -1553,6 +1523,7 @@ fn insert_branch(connection: &Connection, session: &str, info: &BranchRecord) ->
             serde_json::to_string(info).map_err(error)?
         ])
         .map_err(error)?;
+    super::members::branch(connection, session, &info.id)?;
     Ok(())
 }
 fn writer_operation<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -1621,6 +1592,12 @@ pub(super) enum Row {
     },
 }
 impl Row {
+    pub(super) fn wires_mut(&mut self) -> &mut [WireEvent] {
+        match self {
+            Row::Event { record } => std::slice::from_mut(record),
+            Row::Output { records, .. } => records,
+        }
+    }
     pub(super) fn wires(&self) -> &[WireEvent] {
         match self {
             Row::Event { record } => std::slice::from_ref(record),
@@ -1628,9 +1605,6 @@ impl Row {
         }
     }
 }
-/// Whether events of `kind` are streamed model output, which `write_batch`
-/// merges into output rows (native storage format). Output rows carry no
-/// identity index, and a write round of them alone waits for its window.
 fn output_row(kind: &str) -> bool {
     matches!(kind, "step/text" | "step/thinking")
 }
@@ -1681,6 +1655,16 @@ fn write_batch(
         sequence += 1;
         let mut wire = codec::encode(record, lists.iter().cloned())?;
         let kind = record.event.kind.key();
+        if !output_row(kind) {
+            super::text::event(
+                connection,
+                &batch.key.session_id,
+                &batch.key.branch_id,
+                sequence,
+                &wire.event,
+            )?;
+        }
+        wire.externalize_arrays(connection, &batch.key.session_id)?;
         match &record.event.kind {
             EventKind::Text(data) | EventKind::Thinking(data) => {
                 if !outputs.contains_key(&batch.key.branch_id) {
@@ -1728,6 +1712,14 @@ fn write_batch(
                         previous.sequence,
                         &serde_json::to_value(&record.event).map_err(error)?,
                     )?;
+                    super::identities::insert(
+                        connection,
+                        &batch.key.session_id,
+                        &batch.key.branch_id,
+                        previous.sequence,
+                        &record.event.id,
+                        sequence,
+                    )?;
                     previous.bytes = body.len();
                     continue;
                 }
@@ -1744,6 +1736,21 @@ fn write_batch(
                     kind,
                     record.event.context_flags(),
                     &row,
+                )?;
+                super::text::event(
+                    connection,
+                    &batch.key.session_id,
+                    &batch.key.branch_id,
+                    sequence,
+                    &serde_json::to_value(&record.event).map_err(error)?,
+                )?;
+                super::identities::insert(
+                    connection,
+                    &batch.key.session_id,
+                    &batch.key.branch_id,
+                    sequence,
+                    &record.event.id,
+                    sequence,
                 )?;
                 outputs.insert(
                     batch.key.branch_id.clone(),
@@ -1769,6 +1776,12 @@ fn write_batch(
                 )?;
             }
         }
+        super::members::event(
+            connection,
+            &batch.key.session_id,
+            &batch.key.branch_id,
+            &record.event,
+        )?;
         if let EventKind::BranchCreate(data) = &record.event.kind {
             let info = BranchRecord {
                 id: data.branch.clone(),
@@ -1843,34 +1856,6 @@ fn insert_event(
             i64::from(flags.1),
         ])
         .map_err(error)?;
-    match row {
-        Row::Event { record } => super::text::event(
-            connection,
-            &key.session_id,
-            &key.branch_id,
-            sequence,
-            &record.event,
-        )?,
-        Row::Output {
-            turn_id,
-            request_id,
-            records,
-            ..
-        } => {
-            for record in records {
-                let mut event = record.event.clone();
-                event["data"]["turn_id"] = turn_id.clone().into();
-                event["data"]["request_id"] = request_id.clone().into();
-                super::text::event(
-                    connection,
-                    &key.session_id,
-                    &key.branch_id,
-                    sequence,
-                    &event,
-                )?;
-            }
-        }
-    }
     Ok(body.len())
 }
 /// A stored row whose records are decoded in order, across connection holds.
@@ -1878,19 +1863,12 @@ struct Fetched {
     first: u64,
     last: u64,
     kind: String,
-    event_id: Option<String>,
     /// Records not decoded yet.
     wires: VecDeque<WireEvent>,
     records: Vec<StoredEvent>,
 }
 impl Fetched {
-    fn parse(
-        first: u64,
-        last: u64,
-        kind: String,
-        body: &str,
-        event_id: Option<String>,
-    ) -> Result<Self> {
+    fn parse(first: u64, last: u64, kind: String, body: &str) -> Result<Self> {
         let row: Row = serde_json::from_str(body).map_err(error)?;
         let wires = match row {
             Row::Event { record } => VecDeque::from([*record]),
@@ -1920,7 +1898,6 @@ impl Fetched {
             first,
             last,
             kind,
-            event_id,
             wires,
             records: vec![],
         })
@@ -1960,7 +1937,7 @@ impl Rows {
         let fetched = rows
             .map(|row| {
                 let (first, last, kind, body) = row.map_err(error)?;
-                Fetched::parse(first, last, kind, &body, None)
+                Fetched::parse(first, last, kind, &body)
             })
             .collect::<Result<_>>()?;
         Ok(Self {
@@ -2145,7 +2122,7 @@ impl SqliteTimelineStore {
         at: u64,
         config: &str,
     ) -> Result<()> {
-        let references = fork_references(&self.db, source, at).await?;
+        let (references, arrays) = fork_references(&self.db, source, at).await?;
         let content: Vec<String> = content_closure(&self.db, source, references)
             .await?
             .into_iter()
@@ -2153,7 +2130,7 @@ impl SqliteTimelineStore {
         let (source, fork, config) = (source.to_owned(), fork.to_owned(), config.to_owned());
         self.db
             .run_copy(move |connection| {
-                copy_fork(connection, &source, &fork, at, &content, &config)
+                copy_fork(connection, &source, &fork, at, &content, &arrays, &config)
             })
             .await
     }
@@ -2228,9 +2205,10 @@ fn copy_fork(
     fork: &str,
     at: u64,
     content: &[String],
+    arrays: &BTreeMap<String, u64>,
     config: &str,
 ) -> Result<()> {
-    let copied = copy_fork_rows(connection, source, fork, at, content, config);
+    let copied = copy_fork_rows(connection, source, fork, at, content, arrays, config);
     if copied.is_err()
         && let Err(cleanup) = drop_session(connection, fork)
     {
@@ -2245,6 +2223,7 @@ fn copy_fork_rows(
     fork: &str,
     at: u64,
     content: &[String],
+    arrays: &BTreeMap<String, u64>,
     config: &str,
 ) -> Result<()> {
     let cut = sql_sequence(at)?;
@@ -2280,37 +2259,23 @@ fn copy_fork_rows(
                 params![fork, id, info, head],
             )
             .map_err(error)?;
+            super::members::branch(tx, fork, id)?;
         }
         Ok(())
     })?;
-    let mut after = 0;
-    while after < at {
-        let end = (after + COPY_EVENTS).min(at);
-        chunk(connection, |tx| {
-            tx.execute(
-                "INSERT INTO timeline_events (session_id, branch_id, sequence, last_sequence, kind, body, event_id, context_render, context_state) \
-                 SELECT ?2, branch_id, sequence, last_sequence, kind, body, event_id, context_render, context_state FROM timeline_events \
-                 WHERE session_id=?1 AND branch_id='main' AND sequence>?3 AND sequence<=?4",
-                params![source, fork, sql_sequence(after)?, sql_sequence(end)?],
-            )
-            .map_err(error)?;
-            let mut statement = tx.prepare("SELECT sequence,body FROM timeline_events WHERE session_id=?1 AND branch_id='main' AND sequence>?2 AND sequence<=?3 ORDER BY sequence").map_err(error)?;
-            let mut rows = statement
-                .query(params![fork, sql_sequence(after)?, sql_sequence(end)?])
-                .map_err(error)?;
-            while let Some(row) = rows.next().map_err(error)? {
-                super::text::row_through(
-                    tx,
-                    fork,
-                    "main",
-                    read_sequence(row, 0).map_err(error)?,
-                    &row.get::<_, String>(1).map_err(error)?,
-                    at,
-                )?;
-            }
-            Ok(())
-        })?;
-        after = end;
+    for (array, length) in arrays {
+        let mut after = 0;
+        while after < *length {
+            let end = after.saturating_add(COPY_CONTENT as u64).min(*length);
+            chunk(connection, |tx| {
+                let copied=tx.execute("INSERT INTO timeline_array_elements(session_id,array_id,element_index,content_ref,array_length) SELECT ?2,array_id,element_index,content_ref,array_length FROM timeline_array_elements WHERE session_id=?1 AND array_id=?3 AND element_index>=?4 AND element_index<?5",params![source,fork,array,sql_sequence(after)?,sql_sequence(end)?]).map_err(error)?;
+                if u64::try_from(copied).map_err(error)? != end - after {
+                    return Err(error("incomplete array during fork"));
+                }
+                Ok(())
+            })?;
+            after = end;
+        }
     }
     for hashes in content.chunks(COPY_CONTENT) {
         let hashes = serde_json::to_string(hashes).map_err(error)?;
@@ -2324,6 +2289,53 @@ fn copy_fork_rows(
             .map_err(error)?;
             Ok(())
         })?;
+    }
+    let mut after = 0;
+    while after < at {
+        let end = (after + COPY_EVENTS).min(at);
+        chunk(connection, |tx| {
+            tx.execute(
+                "INSERT INTO timeline_events (session_id, branch_id, sequence, last_sequence, kind, body, event_id, context_render, context_state) \
+                 SELECT ?2, branch_id, sequence, last_sequence, kind, body, event_id, context_render, context_state FROM timeline_events \
+                 WHERE session_id=?1 AND branch_id='main' AND sequence>?3 AND sequence<=?4",
+                params![source, fork, sql_sequence(after)?, sql_sequence(end)?],
+            )
+            .map_err(error)?;
+            let mut statement = tx.prepare("SELECT sequence,kind,body FROM timeline_events WHERE session_id=?1 AND branch_id='main' AND sequence>?2 AND sequence<=?3 ORDER BY sequence").map_err(error)?;
+            let mut rows = statement
+                .query(params![fork, sql_sequence(after)?, sql_sequence(end)?])
+                .map_err(error)?;
+            while let Some(row) = rows.next().map_err(error)? {
+                super::text::row_through(
+                    tx,
+                    fork,
+                    "main",
+                    read_sequence(row, 0).map_err(error)?,
+                    &row.get::<_, String>(2).map_err(error)?,
+                    at,
+                )?;
+                let kind: String = row.get(1).map_err(error)?;
+                if output_row(&kind) {
+                    super::identities::row(
+                        tx,
+                        fork,
+                        "main",
+                        read_sequence(row, 0).map_err(error)?,
+                        &row.get::<_, String>(2).map_err(error)?,
+                        at,
+                    )?;
+                }
+                super::members::row(
+                    tx,
+                    fork,
+                    "main",
+                    &row.get::<_, String>(1).map_err(error)?,
+                    &row.get::<_, String>(2).map_err(error)?,
+                )?;
+            }
+            Ok(())
+        })?;
+        after = end;
     }
     let mut after = 0;
     while after < at {
@@ -2403,6 +2415,7 @@ fn copy_fork_rows(
                 branch_id: "main".into(),
             };
             let wire = codec::encode(&forked, std::iter::empty())?;
+            super::text::event(tx, fork, "main", at + 1, &wire.event)?;
             insert_event(
                 tx,
                 &key,
@@ -2465,11 +2478,17 @@ fn drop_session(connection: &mut Connection, session: &str) -> Result<usize> {
         .pragma_update(None, "synchronous", "NORMAL")
         .map_err(error)?;
     for table in [
+        "timeline_output_ids",
+        "timeline_member_roots",
+        "timeline_member_origins",
+        "timeline_member_terminals",
+        "timeline_member_nodes",
         "timeline_text",
         "timeline_text_tails",
         "timeline_snapshots",
         "timeline_events",
         "timeline_content",
+        "timeline_array_elements",
     ] {
         loop {
             let deleted = chunk(connection, |tx| {
@@ -2496,8 +2515,9 @@ async fn fork_references(
     db: &Arc<SqliteStorage>,
     source: &str,
     at: u64,
-) -> Result<BTreeSet<String>> {
+) -> Result<(BTreeSet<String>, BTreeMap<String, u64>)> {
     let mut references = BTreeSet::new();
+    let mut arrays = BTreeMap::new();
     let mut after = 0;
     loop {
         let (session, start, limit) = (source.to_owned(), after, sql_sequence(at)?);
@@ -2526,11 +2546,42 @@ async fn fork_references(
             let row: Row = serde_json::from_str(body).map_err(error)?;
             for wire in row.wires() {
                 references.extend(wire.references().map(str::to_owned));
+                for array in wire.array_references() {
+                    if arrays
+                        .insert(array.id.clone(), array.length)
+                        .is_some_and(|length| length != array.length)
+                    {
+                        return Err(error("array references disagree on length"));
+                    }
+                }
             }
         }
         after = *last;
     }
-    Ok(references)
+    for (id, length) in &arrays {
+        let array = super::arrays::Reference {
+            id: id.clone(),
+            length: *length,
+        };
+        let session = source.to_owned();
+        db.run_read(move |connection| super::arrays::check(connection, &session, &array))
+            .await?;
+        let mut after = 0;
+        while after < *length {
+            let end = after.saturating_add(COPY_CONTENT as u64).min(*length);
+            let (session, id) = (source.to_owned(), id.clone());
+            let hashes=db.run_read(move |connection| {
+                connection.prepare_cached("SELECT content_ref FROM timeline_array_elements WHERE session_id=?1 AND array_id=?2 AND element_index>=?3 AND element_index<?4 ORDER BY element_index").map_err(error)?
+                    .query_map(params![session,id,sql_sequence(after)?,sql_sequence(end)?],|row|row.get::<_,String>(0)).map_err(error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(error)
+            }).await?;
+            if u64::try_from(hashes.len()).map_err(error)? != end - after {
+                return Err(error("incomplete array during fork"));
+            }
+            references.extend(hashes);
+            after = end;
+        }
+    }
+    Ok((references, arrays))
 }
 
 /// The content rows the references reach through node parents, read in one
@@ -2613,8 +2664,7 @@ impl TimelineStore for SqliteTimelineStore {
         Box::pin(async move {
             let session = session_id.to_owned();
             let config = config.clone();
-            let result = self
-                .db
+            self.db
                 .run(move |connection| {
                     let tx = connection
                         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -2622,11 +2672,7 @@ impl TimelineStore for SqliteTimelineStore {
                     create_session(&tx, &session, &config, None, SessionOrigin::Unknown)?;
                     tx.commit().map_err(error)
                 })
-                .await;
-            if result.is_ok() {
-                self.forget_validated(session_id);
-            }
-            result
+                .await
         })
     }
     fn rollback_session<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<()>> {
@@ -2684,45 +2730,7 @@ impl TimelineStore for SqliteTimelineStore {
         })
     }
     fn branches<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Vec<StoredBranch>>> {
-        Box::pin(async move {
-            let directory = match read_directory(&self.db, session_id).await {
-                Ok(directory) => directory,
-                Err(failure) => {
-                    self.forget_validated(session_id);
-                    return Err(failure);
-                }
-            };
-            let reused = self
-                .validated
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(session_id)
-                .is_some_and(|validated| validated == &directory);
-            if reused {
-                return match directory.branches() {
-                    Ok(branches) => Ok(branches.into_values().collect()),
-                    Err(failure) => {
-                        self.forget_validated(session_id);
-                        Err(failure)
-                    }
-                };
-            }
-            let mut reader = self.reader(RequestBodies::Unused);
-            let result = validate_session(&self.db, session_id, &directory, &mut reader).await;
-            match result {
-                Ok(branches) => {
-                    self.validated
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(session_id.to_owned(), directory);
-                    Ok(branches)
-                }
-                Err(failure) => {
-                    self.forget_validated(session_id);
-                    Err(failure)
-                }
-            }
-        })
+        Box::pin(read_directory(&self.db, session_id))
     }
     fn head<'a>(&'a self, key: &'a TimelineKey) -> BoxFuture<'a, Result<u64>> {
         Box::pin(async move {
@@ -2904,84 +2912,7 @@ impl TimelineStore for SqliteTimelineStore {
     }
 }
 
-/// The branch directory a validation pass fixes: every branch row, in
-/// branch-id order. The Session config is parsed by the read but is not part of
-/// the directory (restore validation reuse).
-#[derive(Clone, PartialEq, Eq)]
-pub(super) struct ValidatedDirectory {
-    branches: Vec<(String, String, u64)>,
-}
-impl ValidatedDirectory {
-    /// The directory's branches after the checks that need no event: identity,
-    /// main as the root, and every child's parent, anchor, cut and a
-    /// cycle-free ancestry.
-    fn branches(&self) -> Result<BTreeMap<String, StoredBranch>> {
-        let mut branches = BTreeMap::new();
-        for (id, info, sequence) in &self.branches {
-            let info: BranchRecord = serde_json::from_str(info).map_err(error)?;
-            if info.id != *id {
-                return Err(error("branch directory identity mismatch"));
-            }
-            branches.insert(
-                id.clone(),
-                StoredBranch {
-                    info,
-                    sequence: *sequence,
-                },
-            );
-        }
-        let main = branches
-            .get("main")
-            .ok_or_else(|| error("Session main directory is missing"))?;
-        if main.info.parent.is_some()
-            || main.info.branch_point.is_some()
-            || main.info.create_anchor.is_some()
-        {
-            return Err(error("invalid main branch directory"));
-        }
-        for (id, branch) in &branches {
-            if id == "main" {
-                continue;
-            }
-            let parent = branch
-                .info
-                .parent
-                .as_ref()
-                .ok_or_else(|| error("child branch has no parent"))?;
-            let anchor = branch
-                .info
-                .create_anchor
-                .ok_or_else(|| error("child branch has no create anchor"))?;
-            branch
-                .info
-                .branch_point
-                .ok_or_else(|| error("child branch has no branch point"))?;
-            let parent_branch = branches
-                .get(parent)
-                .ok_or_else(|| error("child branch parent is missing"))?;
-            if anchor > parent_branch.sequence {
-                return Err(error("child branch references future create anchor"));
-            }
-            let mut seen = BTreeSet::new();
-            let mut cursor = Some(id);
-            while let Some(current) = cursor {
-                if !seen.insert(current) {
-                    return Err(error("branch directory cycle"));
-                }
-                cursor = branches
-                    .get(current)
-                    .ok_or_else(|| error("child branch ancestor is missing"))?
-                    .info
-                    .parent
-                    .as_ref();
-            }
-        }
-        Ok(branches)
-    }
-}
-/// Reads `session`'s directory: the config must exist and parse, and the branch
-/// rows come in branch-id order.
-fn directory_rows(connection: &Connection, session: &str) -> Result<ValidatedDirectory> {
+fn directory_rows(connection: &Connection, session: &str) -> Result<Vec<StoredBranch>> {
     let config: String = connection
         .query_row(
             "SELECT config FROM agent_sessions WHERE session_id=?1",
@@ -2990,7 +2921,7 @@ fn directory_rows(connection: &Connection, session: &str) -> Result<ValidatedDir
         )
         .map_err(error)?;
     let _: SessionConfig = serde_json::from_str(&config).map_err(error)?;
-    let branches = connection
+    let rows = connection
         .prepare("SELECT branch_id, info, sequence FROM timeline_branches WHERE session_id=?1 ORDER BY branch_id")
         .map_err(error)?
         .query_map([session], |row| {
@@ -3003,218 +2934,28 @@ fn directory_rows(connection: &Connection, session: &str) -> Result<ValidatedDir
         .map_err(error)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(error)?;
-    Ok(ValidatedDirectory { branches })
-}
-/// The directory read of a restore or export pass.
-pub(super) async fn read_directory(
-    db: &Arc<SqliteStorage>,
-    session: &str,
-) -> Result<ValidatedDirectory> {
-    let id = session.to_owned();
-    db.run_read(move |connection| directory_rows(connection, &id))
-        .await
-}
-
-/// The batch and content references of one validation pass over a branch.
-/// `references` holds what the batch's rows name, checked on the batch's
-/// connection and emptied once checked.
-#[derive(Default)]
-struct ValidationPass {
-    rows: Option<Rows>,
-    references: BTreeSet<String>,
-}
-
-/// Fails unless every content row `references` names exists in `session`,
-/// reading hashes only: one statement on the caller's connection, no body
-/// loaded or parsed, and the set is emptied once checked. A batch of 64
-/// physical rows bounds the set, so memory does not grow with the Session.
-fn check_references(
-    connection: &Connection,
-    session: &str,
-    references: &mut BTreeSet<String>,
-) -> Result<()> {
-    if references.is_empty() {
-        return Ok(());
+    let mut branches = BTreeMap::new();
+    for (id, info, sequence) in &rows {
+        let info: BranchRecord = serde_json::from_str(info).map_err(error)?;
+        if info.id != *id {
+            return Err(error("branch directory identity mismatch"));
+        }
+        branches.insert(
+            id.clone(),
+            StoredBranch {
+                info,
+                sequence: *sequence,
+            },
+        );
     }
-    let names = serde_json::to_string(references).map_err(error)?;
-    let mut query = connection
-        .prepare_cached(
-            "SELECT hash FROM timeline_content WHERE session_id = ?1 \
-             AND hash IN (SELECT value FROM json_each(?2))",
-        )
-        .map_err(error)?;
-    let found: BTreeSet<String> = query
-        .query_map(params![session, names], |row| row.get(0))
-        .map_err(error)?
-        .collect::<rusqlite::Result<_>>()
-        .map_err(error)?;
-    if let Some(missing) = references
-        .iter()
-        .find(|reference| !found.contains(*reference))
+    let main = branches
+        .get("main")
+        .ok_or_else(|| error("Session main directory is missing"))?;
+    if main.info.parent.is_some()
+        || main.info.branch_point.is_some()
+        || main.info.create_anchor.is_some()
     {
-        return Err(error(format!("missing request content {missing}")));
-    }
-    references.clear();
-    Ok(())
-}
-
-/// Fails unless every node row in `session` names an existing parent row: one
-/// statement over the Session's node rows, reading only each body's `parent`
-/// field, so no body is loaded or hashed. With `check_references` it proves
-/// every chain reachable from a reference complete by induction: the
-/// referenced node exists, every parent exists by this check, and the walk
-/// ends at a node whose `parent` is null. Memory does not grow with the
-/// Session.
-fn check_parents(connection: &Connection, session: &str) -> Result<()> {
-    let missing: Option<String> = connection
-        .query_row(
-            "SELECT json_extract(n.body, '$.parent') FROM timeline_content n \
-             WHERE n.session_id = ?1 AND n.kind = 'node' \
-               AND json_valid(n.body) AND json_type(n.body, '$.parent') = 'text' \
-               AND NOT EXISTS (SELECT 1 FROM timeline_content p \
-                 WHERE p.session_id = ?1 AND p.hash = json_extract(n.body, '$.parent')) \
-             LIMIT 1",
-            [session],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(error)?;
-    if let Some(missing) = missing {
-        return Err(error(format!("missing request content {missing}")));
-    }
-    Ok(())
-}
-
-/// Validates `session`'s stored rows and returns its branch directory.
-/// `reader` decides what the pass does with request bodies: restore passes a
-/// reader without bodies, so the pass checks that every content reference a
-/// record names and every node's parent resolve, and a body is loaded,
-/// decoded and hash-checked only by the reads that use it (§7 of the request
-/// storage design); export passes a rebuilding reader, so every body is
-/// rebuilt and hash-checked before the export writes its first line.
-pub(super) async fn validate_session(
-    db: &Arc<SqliteStorage>,
-    session: &str,
-    directory: &ValidatedDirectory,
-    reader: &mut Reader,
-) -> Result<Vec<StoredBranch>> {
-    let id = session.to_owned();
-    db.run_read(move |connection| {
-        let orphan: bool = connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM timeline_events e LEFT JOIN timeline_branches b \
-             ON b.session_id=e.session_id AND b.branch_id=e.branch_id \
-             WHERE e.session_id=?1 AND b.branch_id IS NULL)",
-                [&id],
-                |row| row.get(0),
-            )
-            .map_err(error)?;
-        if orphan {
-            return Err(error("Timeline event references a missing branch"));
-        }
-        check_parents(connection, &id)
-    })
-    .await?;
-    let branches = directory.branches()?;
-    let mut event_ids = BTreeSet::new();
-    let mut created = BTreeSet::new();
-    let mut completions = vec![];
-    for (id, _info, sequence) in &directory.branches {
-        let mut next = 1;
-        let mut batch_end = 0;
-        loop {
-            let key = TimelineKey {
-                session_id: session.into(),
-                branch_id: id.clone(),
-            };
-            let pass = holds(db, reader, ValidationPass::default(), move |connection, reader, pass: &mut ValidationPass| {
-                let rows = match pass.rows.as_mut() {
-                    Some(rows) => rows,
-                    None => {
-                        let mut query = connection.prepare_cached("SELECT sequence, last_sequence, kind, body, event_id FROM timeline_events WHERE session_id=?1 AND branch_id=?2 AND sequence>=?3 ORDER BY sequence LIMIT 64").map_err(error)?;
-                        let mut references = BTreeSet::new();
-                        let fetched = query.query_map(params![key.session_id, key.branch_id, sql_sequence(next)?], |row| Ok((
-                            read_sequence(row,0)?, read_sequence(row,1)?, row.get::<_,String>(2)?, row.get::<_,String>(3)?, row.get::<_,Option<String>>(4)?
-                        ))).map_err(error)?.map(|row| {
-                            let (first, last, kind, body, event_id) = row.map_err(error)?;
-                            let fetched = Fetched::parse(first, last, kind, &body, event_id)?;
-                            references.extend(fetched.wires.iter().flat_map(|wire| wire.references().map(str::to_owned)));
-                            Ok(fetched)
-                        }).collect::<Result<_>>()?;
-                        pass.references = references;
-                        pass.rows.insert(Rows { fetched, decoded: vec![] })
-                    }
-                };
-                let done = rows.advance(connection, &key.session_id, reader)?;
-                check_references(connection, &key.session_id, &mut pass.references)?;
-                Ok(done)
-            }).await?;
-            let page = pass.rows.expect("a finished pass fetched its rows").decoded;
-            if page.is_empty() {
-                break;
-            }
-            for Fetched {
-                first,
-                last,
-                kind,
-                event_id,
-                records,
-                ..
-            } in page
-            {
-                let indexed = !output_row(&kind);
-                if indexed && event_id.as_deref() != Some(records[0].event.id.as_str())
-                    || !indexed && event_id.is_some()
-                {
-                    return Err(error("event identity index does not match row"));
-                }
-                if first != next || records.last().unwrap().event.sequence != last {
-                    return Err(error("Timeline contains a sequence gap"));
-                }
-                for record in records {
-                    if !event_ids.insert(record.event.id.clone()) {
-                        return Err(error("duplicate Timeline event identity"));
-                    }
-                    if record.event.sequence != next
-                        || record.batch_end < next
-                        || record.batch_end > *sequence
-                    {
-                        return Err(error("invalid Timeline sequence or batch boundary"));
-                    }
-                    if next > batch_end {
-                        batch_end = record.batch_end
-                    } else if batch_end != record.batch_end {
-                        return Err(error("inconsistent atomic batch boundary"));
-                    }
-                    if record.trace.as_ref().is_some_and(|trace| {
-                        trace.event_id != record.event.id
-                            || trace.original.kind.key() != kind
-                            || trace.steps.iter().any(|step| {
-                                step.result
-                                    .as_ref()
-                                    .is_some_and(|draft| draft.kind.key() != kind)
-                            })
-                    }) {
-                        return Err(error("before trace does not match event"));
-                    }
-                    if let EventKind::BranchCreate(data) = &record.event.kind {
-                        created.insert(data.branch.clone());
-                    }
-                    if let EventKind::ContextCompaction(data) = &record.event.kind
-                        && matches!(data.outcome, ContextCompactionResult::Completed { .. })
-                    {
-                        completions.push((id.clone(), record.event.sequence, data.through));
-                    }
-                    next += 1;
-                }
-            }
-        }
-        if next != *sequence + 1 || batch_end != *sequence {
-            return Err(error("Timeline head or final batch boundary is invalid"));
-        }
-    }
-    if created.iter().any(|id| !branches.contains_key(id)) {
-        return Err(error("branch create event has no directory"));
+        return Err(error("invalid main branch directory"));
     }
     for (id, branch) in &branches {
         if id == "main" {
@@ -3224,49 +2965,45 @@ pub(super) async fn validate_session(
             .info
             .parent
             .as_ref()
-            .expect("the directory check required a parent");
+            .ok_or_else(|| error("child branch has no parent"))?;
         let anchor = branch
             .info
             .create_anchor
-            .expect("the directory check required a create anchor");
-        let cut = branch
+            .ok_or_else(|| error("child branch has no create anchor"))?;
+        branch
             .info
             .branch_point
-            .expect("the directory check required a branch point");
-        let parent_key = TimelineKey {
-            session_id: session.into(),
-            branch_id: parent.clone(),
-        };
-        let create = read_range(db, reader, &parent_key, anchor..=anchor, false)
-            .await?
-            .pop()
-            .ok_or_else(|| error("branch create event is missing"))?;
-        match &create.event.kind {
-            EventKind::BranchCreate(data)
-                if data.branch == *id
-                    && cut
-                        == match data.at {
-                            BranchCreateAt::Create {} => anchor,
-                            BranchCreateAt::Sequence { sequence } => sequence,
-                        } => {}
-            _ => return Err(error("branch directory does not match create event")),
+            .ok_or_else(|| error("child branch has no branch point"))?;
+        let parent_branch = branches
+            .get(parent)
+            .ok_or_else(|| error("child branch parent is missing"))?;
+        if anchor > parent_branch.sequence {
+            return Err(error("child branch references future create anchor"));
         }
-    }
-    for (branch, at, through) in completions {
-        if through >= at || through > branches[&branch].sequence {
-            return Err(error("compaction refers to a future preparation boundary"));
-        }
-        let key = TimelineKey {
-            session_id: session.into(),
-            branch_id: branch.clone(),
-        };
-        if through > 0 {
-            read_range(db, reader, &key, through..=through, true)
-                .await
-                .map_err(|_| error("compaction preparation boundary is inside an atomic batch"))?;
+        let mut seen = BTreeSet::new();
+        let mut cursor = Some(id);
+        while let Some(current) = cursor {
+            if !seen.insert(current) {
+                return Err(error("branch directory cycle"));
+            }
+            cursor = branches
+                .get(current)
+                .ok_or_else(|| error("child branch ancestor is missing"))?
+                .info
+                .parent
+                .as_ref();
         }
     }
     Ok(branches.into_values().collect())
+}
+/// The directory read of a restore or export pass.
+pub(super) async fn read_directory(
+    db: &Arc<SqliteStorage>,
+    session: &str,
+) -> Result<Vec<StoredBranch>> {
+    let id = session.to_owned();
+    db.run_read(move |connection| directory_rows(connection, &id))
+        .await
 }
 
 #[cfg(test)]
