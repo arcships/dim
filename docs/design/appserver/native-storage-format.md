@@ -1377,3 +1377,21 @@ v39→v40事务内建立表达式索引并从handover输入与其终态回填存
 ### ContextUsage private numeric version
 
 ContextUsage v5 changes only its private extension data: optional legacy_result and explicit unknown legacy counting metadata. Existing v4 and v1–v3 results are interpreted by ContextUsage. Native v41 is unchanged by Usage's private version: SQL schema, event envelope, content encodings and the indexed epoch/current.at properties are unchanged; no native migration or Store-side token calculation is added. The owner rejects an unsupported numeric schema explicitly. See [ContextUsage §6](../plugins/ContextUsage.md#61-统计版本与旧数据).
+
+## Proposed v42: indexes for unfinished external work
+
+This proposal adds no recovery snapshots and no executable progress. It extends the existing versioned member index with the following relationships, using original facts:
+
+| Origin | Removed by | Match |
+| --- | --- | --- |
+| `approval/request` | `approval/respond`, `approval/cancelled` | `data.approval_id` |
+| Each of `collaboration/request`, `collaboration/cancel`, `collaboration/close`, `collaboration/message` | `collaboration/delivered` | origin `id` = terminal `data.op_event_id` |
+| `exec/ended` that requires a notification | tagged `input/message` | `exec-wake-result:` + origin `id` = an input tag |
+
+Collaboration keeps its existing unfinished-request index for accepted delegations without a final result. The new undelivered-operation roots locate only missing delivery terminals; recovery writes Closed without repeating the operation. These are outstanding decisions/notifications, not old execution state. Completed work is absent from the current root; loading an empty root must not examine any old origin. Recovery reads current members only. Historical task output is located by task identity when requested, rather than loaded into a permanent task catalog on resume.
+
+The existing schema can encode these roots, but v41 does not guarantee their contents. Therefore adding them requires v42 rather than treating absent v41 roots as empty. The upgrade builds the derived relationships in the existing upgrade transaction and switches the marker only after success. Failure rolls back. Existing v41 and both historical version families remain readable through upgrade. Old binaries refuse v42. Verification uses disposable stores.
+
+The notification relationship requires string concatenation in the existing property-query operand: a string literal prefix and the outer event ID. Add an optional operand variant; existing query objects and clients remain unchanged. The store recognizes the exact indexed relationship and still evaluates arbitrary unsupported expressions correctly. No new business state API, owner database, event type or per-source recovery event is introduced.
+
+Native upgrade cost is separate from normal loading. A v41 database cannot acquire an index over its older facts without reading the indexed facts once; this proposal does not call that work a sub-200ms normal resume. The <=200ms end-to-end acceptance uses an already indexed native database; first upgrade is reported separately.

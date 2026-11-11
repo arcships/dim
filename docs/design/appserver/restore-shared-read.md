@@ -3,13 +3,7 @@
 > Current restoration has no whole-history validation pass. All validation-pass rows and timings below
 > describe the historical implementation; the [restore read boundary](restore-validation.md) is authoritative.
 
-Status: Implemented in [#235](https://github.com/arcships/dim/pull/235); §17 (TimelineTree's restore facts,
-[#239](https://github.com/arcships/dim/issues/239)) extends it. Phase 3 of
-[#193](https://github.com/arcships/dim/issues/193). Phase 1, a bounded content cache shared across the pages of a read,
-merged as [#213](https://github.com/arcships/dim/pull/213); phase 2, request message lists (native format v17), merged
-as [#224](https://github.com/arcships/dim/pull/224), and §15 of its [design](request-delta-storage.md) leaves this
-phase to the runtime. The numbers in §2 to §8 were measured on #224's branch with a prototype; §8 ends with the
-implementation's.
+This document records the historical shared-copy implementation and its measurements. It does not require any owner to replay history. The current read contract is [resume reads](../resume-read-design.md) and [native restore](restore-validation.md). TimelineTree now reads known creation positions and child terminals, without the scan described in the historical §17 below.
 
 > **The opening copy is withdrawn.** [ADR 021](../adr/021-reads-follow-the-state-owner.md) D6 and
 > [#1063](https://github.com/arcships/dim/issues/1063) removed the shared decoded copy of a branch's opening: no read
