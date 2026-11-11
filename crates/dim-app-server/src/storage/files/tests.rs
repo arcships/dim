@@ -13,6 +13,21 @@ use rutis::host::CtxHost;
 use std::path::PathBuf;
 use tokio::sync::Semaphore;
 
+/// The reply path is the face's string; a path the host cannot spell is a
+/// storage failure, and `put` computes it before txn 1 so nothing is written.
+#[cfg(unix)]
+#[test]
+fn a_reply_path_that_is_not_utf8_is_a_storage_error() {
+    use std::os::unix::ffi::OsStringExt;
+    let path = PathBuf::from(std::ffi::OsString::from_vec(
+        b"/tmp/db-\xff/paste.txt".to_vec(),
+    ));
+    assert_eq!(
+        path_text(path).unwrap_err().code,
+        SessionFileErrorCode::Storage
+    );
+}
+
 /// Hooks that run once, for the named Session, right before the
 /// cancellation check that precedes txn 2.
 type Hook = Box<dyn FnOnce() + Send>;

@@ -739,8 +739,9 @@ async fn a_put_over_the_face_limit_is_too_large_before_it_writes() {
 }
 
 /// A non-UTF-8 database path cannot be carried in the reply, so the put is
-/// refused before txn 1: nothing is written and nothing is owned.
-#[cfg(unix)]
+/// refused before txn 1: nothing is written and nothing is owned. Linux is the
+/// checked Unix that admits such a name; macOS refuses it at `mkdir` (EILSEQ).
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_non_utf8_database_directory_refuses_a_put_before_it_writes() {
     use std::os::unix::ffi::OsStringExt;
