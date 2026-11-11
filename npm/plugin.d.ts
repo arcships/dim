@@ -101,6 +101,16 @@ export interface AuxiliaryModel {
   /** Resolving or rejecting cancelled cancels and joins the original model call. */
   complete(call: { model: ModelId; request: AuxiliaryRequest }, cancelled?: () => Promise<void>): Promise<AuxiliaryReply>;
 }
+/** A Session file SessionStore stored; `path` is absolute on the Session's resource node. */
+export interface StoredSessionFile { fileId: string; path: string; bytes: number }
+export type SessionFileErrorCode = 'not_found' | 'invalid' | 'too_large' | 'node_unavailable' | 'cancelled' | 'storage';
+/** Process service `sessionFiles` (session files §9.1); `content` is base64, at most 11 MiB. */
+export interface SessionFiles {
+  put(request: { sessionId: string; name: string; content: string }): Promise<StoredSessionFile>;
+  register(request: { sessionId: string; path: string }): Promise<void>;
+  owns(request: { sessionId: string; path: string }): Promise<{ owned: boolean }>;
+  owned_paths(request: { sessionId: string }): Promise<{ paths: string[] }>;
+}
 export type PermissionPreset = 'read-only' | 'workspace-write' | 'full-access';
 export interface PermissionPolicy {
   preset: PermissionPreset;
